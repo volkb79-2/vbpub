@@ -136,6 +136,68 @@ class NotifyConfig:
                 f"{', '.join(NOTIFY_BACKENDS)}; got {self.backend!r}")
 
 
+#: Valid `[intake_bridge] transport` selector values (B9 / nyxloom-P109).
+#: Schema-side twin of `intake_bridge._READERS`, for the same reason
+#: NOTIFY_BACKENDS is the twin of notify._BACKENDS: config.py is imported BY
+#: intake_bridge.py and cannot import the reader registry back.
+#: `test_intake_bridge` asserts the two never drift.
+INTAKE_TRANSPORTS = ("mmctl", "rest")
+
+
+@dataclass
+class IntakeBridgeConfig:
+    """`[intake_bridge]` -- the Mattermost channel the feature-intake
+    interview (P29 `intake_chat`) is conducted over. B9 / nyxloom-P109.
+
+    Deliberately its OWN table rather than more `[notify]` fields: notify is
+    a one-way push channel and this is a bidirectional bridge with a read
+    credential, a read transport selector and a durable poll cursor. Folding
+    the two would make `NotifyConfig` mean two things and would put a
+    bearer token beside a webhook URL that is scoped to a different account.
+
+    Off unless `transport` names one -- absent table = no bridge, exactly as
+    an absent `[notify]` means no push channel.
+    """
+
+    #: Which read transport. None = the bridge is not configured (the poll
+    #: verb reports it and exits 0, the way notify.send() no-ops).
+    transport: str | None = None
+    team: str | None = None
+    channel: str | None = None
+    #: `mmctl` transport: the app container `docker exec` targets. Same
+    #: name the P107 provisioning hook builds from
+    #: `[mattermost].container_prefix`.
+    container: str | None = None
+    #: `rest` transport: the API base, e.g. the stack's private-bridge
+    #: address `http://nyxloom-prod-mattermost:8065`.
+    base_url: str | None = None
+    #: The PAT lives in the environment, never in the (committed,
+    #: bind-mounted) nyxloom.toml -- same rule and same shape as
+    #: NotifyConfig.webhook_url_env. Only the var NAME is configurable.
+    token_env: str = "NYXLOOM_INTAKE_MM_TOKEN"
+    token: str | None = None
+    #: The reply channel's OWN incoming webhook (a different credential from
+    #: `[notify] webhook_url`, which is bound to `alerts`). Env-resolved for
+    #: the same reason: a Mattermost incoming-webhook URL IS the credential.
+    webhook_url_env: str = "NYXLOOM_INTAKE_WEBHOOK_URL"
+    webhook_url: str | None = None
+    #: Upper bound on how many new posts one poll folds into its single
+    #: interview turn. A poll costs at most ONE model call by construction;
+    #: this bounds how much text that call carries.
+    max_messages_per_poll: int = 20
+    #: Posts to adopt on the FIRST poll of a channel, before any cursor
+    #: exists. 0 = adopt none, just record where "now" is. Replaying a
+    #: channel's whole history into an interview engine is never what an
+    #: operator meant by "turn the bridge on".
+    bootstrap_messages: int = 0
+
+    def __post_init__(self) -> None:
+        if self.transport is not None and self.transport not in INTAKE_TRANSPORTS:
+            raise ValueError(
+                "[intake_bridge] transport must be one of "
+                f"{', '.join(INTAKE_TRANSPORTS)}; got {self.transport!r}")
+
+
 @dataclass
 class Policy:
     max_active_tasks: int = 4
@@ -350,6 +412,7 @@ class ProjectConfig:
     infra_globs: list[str] = field(default_factory=list)   # lint L9
     redact_patterns: list[str] = field(default_factory=list)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    intake_bridge: IntakeBridgeConfig = field(default_factory=IntakeBridgeConfig)
     decisions_inbox: str = "docs/DECISIONS-INBOX.md"
     reports_dir: str = "handoff/reports"
     # Direction-spine docs (docs/spine-documents-spec.md, PACKAGE F1),
@@ -497,6 +560,22 @@ class ProjectConfig:
         if env_webhook:
             notify_data["webhook_url"] = env_webhook
         noti = NotifyConfig(**notify_data)
+        # B9 (nyxloom-P109): the intake bridge's two credentials resolve from
+        # the environment exactly like `webhook_url` above, and for the same
+        # reason -- a PAT and an incoming-webhook URL are both bearer secrets,
+        # and nyxloom.toml is committed and bind-mounted verbatim. Resolved
+        # HERE rather than in __post_init__ so a caller constructing
+        # IntakeBridgeConfig(...) directly keeps the values it passes.
+        bridge_data = dict(data.get("intake_bridge", {}))
+        env_token = os.environ.get(
+            bridge_data.get("token_env") or "NYXLOOM_INTAKE_MM_TOKEN", "")
+        if env_token:
+            bridge_data["token"] = env_token
+        env_bridge_hook = os.environ.get(
+            bridge_data.get("webhook_url_env") or "NYXLOOM_INTAKE_WEBHOOK_URL", "")
+        if env_bridge_hook:
+            bridge_data["webhook_url"] = env_bridge_hook
+        bridge = IntakeBridgeConfig(**bridge_data)
         # D-060: resolve + validate the pipeline at load. A preset name or an
         # explicit list under top-level `pipeline` (or [project].pipeline);
         # absent -> DEFAULT_PIPELINE. validate_pipeline raises ValueError on a
@@ -573,6 +652,7 @@ class ProjectConfig:
             infra_globs=list(data["project"].get("infra_globs", [])),
             redact_patterns=list(data.get("redact", {}).get("patterns", [])),
             notify=noti,
+            intake_bridge=bridge,
             decisions_inbox=data["project"].get("decisions_inbox", "docs/DECISIONS-INBOX.md"),
             reports_dir=data["project"].get("reports_dir", "handoff/reports"),
             north_star=data["project"].get("north_star"),

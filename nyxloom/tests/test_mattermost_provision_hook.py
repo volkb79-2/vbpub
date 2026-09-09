@@ -625,7 +625,12 @@ _ACCOUNTS = [
 
 
 def _roles_stub(hook, monkeypatch, roles: dict[str, set[str]]):
-    monkeypatch.setattr(hook, "_user_roles", lambda _c, u: roles.get(u, {"system_user"}))
+    # `_require_user_roles`, not `_user_roles`: the demotion guard reads the
+    # fail-CLOSED twin on purpose, and stubbing the wrong one would leave the
+    # real function running against a `docker exec` that is not there.
+    monkeypatch.setattr(
+        hook, "_require_user_roles", lambda _c, u: roles.get(u, {"system_user"})
+    )
     calls: list[tuple] = []
     monkeypatch.setattr(
         hook, "_must", lambda _c, *args, what="": calls.append(args) or ""
@@ -693,6 +698,180 @@ def test_demote_is_a_no_op_when_the_role_was_never_granted(hook, monkeypatch):
         == []
     )
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# _require_user_roles — the demotion guard's fail-CLOSED role read
+#
+# `_user_roles` returns an empty set on any rc/parse failure. Read by the
+# DEMOTION guard that would be "not an admin, nothing to strip", so an mmctl
+# output-format drift would silently leave a freshly created service account
+# holding system administration — reinstating the exact defect the guard was
+# added for, with no message anywhere. A privilege guard fails closed.
+# ---------------------------------------------------------------------------
+
+_USER_JSON = '{"username": "nyxloom-daemon", "roles": "system_admin system_user"}'
+
+
+def test_require_user_roles_parses_the_roles(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl(_USER_JSON))
+    assert hook._require_user_roles("c", "nyxloom-daemon") == {
+        "system_admin",
+        "system_user",
+    }
+
+
+def test_require_user_roles_raises_when_the_probe_fails(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "user not found", rc=1))
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._require_user_roles("c", "nyxloom-daemon")
+    assert "refusing to assume" in str(excinfo.value)
+
+
+def test_require_user_roles_raises_on_non_json_output(hook, monkeypatch):
+    # mmctl prints human-readable errors on both streams even under --json.
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("id: abc\nusername: x\n"))
+    with pytest.raises(hook.ProvisionError):
+        hook._require_user_roles("c", "nyxloom-daemon")
+
+
+def test_require_user_roles_raises_when_the_roles_field_is_gone(hook, monkeypatch):
+    # Valid JSON, drifted schema — the failure mode a bare `.get("roles", "")`
+    # turns into a confident "this account has no roles".
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl('{"username": "nyxloom-daemon"}'))
+    with pytest.raises(hook.ProvisionError):
+        hook._require_user_roles("c", "nyxloom-daemon")
+
+
+def test_demote_refuses_rather_than_skipping_when_roles_are_unreadable(hook, monkeypatch):
+    """The whole point, end to end: drift must abort, not silently skip."""
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "boom", rc=1))
+    monkeypatch.setattr(hook, "_must", lambda *a, **k: pytest.fail("must not mutate"))
+    with pytest.raises(hook.ProvisionError):
+        hook._demote_unintended_admins("c", {"accounts": _ACCOUNTS}, ["nyxloom-daemon"])
+
+
+def test_user_roles_still_fails_open_for_the_promotion_guard(hook, monkeypatch):
+    # The twin is deliberately unchanged: `_ensure_account` reads it, an empty
+    # answer means "promote", and promoting an account that already holds the
+    # role is a server-side no-op. Erring toward a redundant promotion is
+    # harmless; aborting a deploy over a transient parse failure is not.
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "boom", rc=1))
+    assert hook._user_roles("c", "nyxloom-operator") == set()
+
+
+# ---------------------------------------------------------------------------
+# _ensure_account — the "merging cannot touch the live bootstrap admin" claim
+#
+# nyxloom-P110 declares `nyxloom-admin` for the first time, and the entire
+# argument that this is safe on the live instance rests on ONE property of
+# this function: an account that already exists is never sent a password and
+# never has a role taken away. That property had no direct test on either
+# branch; it was verified by reading the code. These pin it.
+# ---------------------------------------------------------------------------
+
+
+def _account_stub(hook, monkeypatch, *, exists: bool, roles=frozenset()):
+    """Record every mmctl verb `_ensure_account` issues, mutating nothing."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(hook, "_user_exists", lambda _c, _u: exists)
+    monkeypatch.setattr(hook, "_user_roles", lambda _c, _u: set(roles))
+    monkeypatch.setattr(
+        hook, "_must", lambda _c, *args, what="": calls.append(args) or ""
+    )
+    return calls
+
+
+class _NoSecretCtx:
+    """Minimal ctx whose `secret_file` fails loudly if anything reads a secret.
+
+    Named to avoid colliding with nyxloom-P109's own `_Ctx` further down this
+    file — one module namespace, two packages, last definition wins.
+    """
+
+    def __init__(self):
+        self.reads: list[str] = []
+
+    def secret_file(self, name):
+        self.reads.append(name)
+        raise AssertionError(f"a secret was read for an existing account: {name}")
+
+
+_ADMIN_SPEC = {
+    "username": "nyxloom-admin",
+    "email": "admin@nyxloom.local",
+    "password_secret": "mattermost_admin_password",
+    "channels": ["alerts"],
+    "system_admin": True,
+}
+
+
+def test_ensure_account_never_reads_a_password_for_an_existing_account(hook, monkeypatch):
+    ctx = _NoSecretCtx()
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    created = hook._ensure_account("c", ctx, {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert created is False
+    assert ctx.reads == []
+    # `user create` is the ONLY verb that carries a password, and it must not
+    # appear; nor may any password value reach any argv.
+    assert all(a[:2] != ("user", "create") for a in calls)
+    flat = [tok for a in calls for tok in a]
+    assert "--password" not in flat
+
+
+def test_ensure_account_only_adds_team_membership_for_an_existing_admin(hook, monkeypatch):
+    # The full verb set for the live `nyxloom-admin` reconcile: one idempotent
+    # `team users add`, and nothing else. In particular no `roles member`
+    # anywhere — this function only ever promotes.
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert calls == [("team", "users", "add", "nyxloom", "nyxloom-admin")]
+
+
+def test_ensure_account_promotes_but_never_demotes(hook, monkeypatch):
+    # Declared system_admin, does not hold it -> promote.
+    calls = _account_stub(hook, monkeypatch, exists=True, roles={"system_user"})
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert ("roles", "system-admin", "nyxloom-admin") in calls
+
+    # NOT declared system_admin, but holds it -> left alone. An operator's
+    # manual promotion of a pre-existing account survives every reconcile;
+    # stripping it is `_demote_unintended_admins`' job and only for accounts
+    # the same run created.
+    spec = dict(_ADMIN_SPEC, username="nyxloom-daemon", system_admin=False)
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, spec)
+    assert all(a[0] != "roles" for a in calls)
+
+
+def test_ensure_account_reads_the_password_only_when_creating(hook, monkeypatch):
+    class _Store:
+        def __init__(self, path):
+            self.path = path
+
+        def secret_file(self, name):
+            assert name == "mattermost_admin_password"
+            return self.path
+
+    calls = _account_stub(hook, monkeypatch, exists=False)
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        secret = Path(tmp) / "admin_password"
+        secret.write_text("s3cret-value")
+        created = hook._ensure_account(
+            "c", _Store(secret), {"team": "nyxloom"}, _ADMIN_SPEC
+        )
+    assert created is True
+    create = next(a for a in calls if a[:2] == ("user", "create"))
+    assert "--password" in create and "s3cret-value" in create
 
 
 # ---------------------------------------------------------------------------
@@ -782,21 +961,35 @@ def test_expose_public_stays_false_in_the_committed_defaults():
     assert assignments == ["expose_public = false"]
 
 
-def test_all_four_accounts_are_declared_with_admin_first():
-    # The operator's requirement is "our 4 users are created on fresh stack
-    # create". Measured on a genuinely empty instance, P107's config produced
-    # THREE — nothing created `nyxloom-admin`. Order matters because
-    # Mattermost promotes the first-ever account to system_admin.
+def test_every_account_is_declared_with_admin_first():
+    """`nyxloom-admin` heads the list, and the list is the full declared set.
+
+    The operator's requirement was "our 4 users are created on fresh stack
+    create". Measured on a genuinely empty instance, P107's config produced
+    THREE — nothing created `nyxloom-admin`.
+
+    The FIRST position is the part that carries weight: Mattermost promotes
+    the first-ever account on an empty server to system_admin, so whoever
+    heads this list is what a fresh create makes an administrator. The rest of
+    the order is incidental.
+
+    The full list is asserted anyway, not just the head, so that ADDING an
+    account is a deliberate act that updates this test rather than something
+    that slides in unnoticed — nyxloom-P109's `nyxloom-intake` is the fifth
+    entry and is why the test is no longer named "four".
+    """
     order = [
         line.split("=", 1)[1].strip().strip('"')
         for line in _DEFAULTS_TEXT.splitlines()
         if line.startswith("username = ")
     ]
+    assert order[0] == "nyxloom-admin"
     assert order == [
         "nyxloom-admin",
         "nyxloom-daemon",
         "nyxloom-operator",
         "nyxloom-installer",
+        "nyxloom-intake",
     ]
 
 
@@ -838,3 +1031,340 @@ def test_fallback_does_not_drift_from_the_template():
         if literal[k] != fallback[k]
     }
     assert not mismatched, f"value drift between the two compose files: {mismatched}"
+# personal access tokens (nyxloom-P109 / B9)
+#
+# Same rule as everything above: every payload here is a VERBATIM 11.10.1
+# capture, and every test pins a failure mode that can actually happen. Two
+# of them are the ones that cost real time to find:
+#
+# * `token list` on an account with NO tokens exits 1 and puts
+#   `there are no tokens for the "<user>"` on STDERR with an empty stdout.
+#   Treating that rc as a failure aborts every first `ciu up`.
+# * Mattermost reveals a token's value EXACTLY ONCE. So "a token with our
+#   description exists" does not imply "we still hold it", and the gap
+#   between those two is a state that must refuse rather than guess.
+# ---------------------------------------------------------------------------
+
+
+class _Ctx:
+    def __init__(self, stack_dir):
+        self.stack_dir = stack_dir
+
+
+def _routed_mmctl(routes):
+    """Stub `_mmctl` dispatching on the leading verb pair."""
+
+    calls = []
+
+    def _impl(_container, *args, as_json=False):
+        calls.append(list(args))
+        key = " ".join(args[:2])
+        return routes.get(key, (0, "", ""))
+
+    return calls, _impl
+
+
+def _token_prov(**overrides):
+    spec = {
+        "secret": "intake_pat",
+        "user": "nyxloom-intake",
+        "description": "nyxloom-intake-bridge",
+    }
+    spec.update(overrides)
+    return {"tokens": [spec]}
+
+
+def _enabled_config():
+    return {"mattermost": {"enable_user_access_tokens": True}}
+
+
+def test_user_tokens_pairs_id_to_description(hook, monkeypatch):
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl(
+            "xyb66us4wjgtbbd3i4b1n69sxw: nyxloom-intake-bridge\n"
+            "u5csy7kgijdg8brij9nxzemb3h: p109-json-probe\n",
+            stderr="There are 2 tokens on local instance\n",
+        ),
+    )
+    assert hook._user_tokens("mm", "nyxloom-intake") == [
+        {"id": "xyb66us4wjgtbbd3i4b1n69sxw", "description": "nyxloom-intake-bridge"},
+        {"id": "u5csy7kgijdg8brij9nxzemb3h", "description": "p109-json-probe"},
+    ]
+
+
+def test_user_tokens_treats_the_no_tokens_error_as_an_empty_set(hook, monkeypatch):
+    # rc=1 + this exact stderr is what a healthy account with no token looks
+    # like; raising here would abort every first `ciu up`.
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl(
+            "",
+            stderr=('There are 0 tokens on local instance\n'
+                    'Error: there are no tokens for the "nyxloom-intake"\n'),
+            rc=1,
+        ),
+    )
+    assert hook._user_tokens("mm", "nyxloom-intake") == []
+
+
+def test_user_tokens_raises_on_a_genuine_failure(hook, monkeypatch):
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl("", stderr="Error: could not retrieve user information\n", rc=1))
+    with pytest.raises(hook.ProvisionError, match="cannot list access tokens"):
+        hook._user_tokens("mm", "nope")
+
+
+def test_user_tokens_refuses_a_drifted_row_format(hook, monkeypatch):
+    # An unrecognised list read as "no tokens" mints another token on every
+    # `ciu up` -- the webhook incident, in a credential that cannot be
+    # de-duplicated by value afterwards.
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl("xyb66us4wjgtbbd3i4b1n69sxw | nyxloom-intake-bridge\n"))
+    with pytest.raises(hook.ProvisionError, match="access tokens"):
+        hook._user_tokens("mm", "nyxloom-intake")
+
+
+def test_user_tokens_ignores_the_count_sentence_on_stdout(hook, monkeypatch):
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl("There are 1 tokens on local instance\n"
+                    "xyb66us4wjgtbbd3i4b1n69sxw: nyxloom-intake-bridge\n"))
+    assert len(hook._user_tokens("mm", "nyxloom-intake")) == 1
+
+
+def test_generate_token_reads_the_secret_out_of_the_json_array(hook, monkeypatch):
+    # `token generate --json` prints a ONE-ELEMENT ARRAY holding the secret
+    # in `token` (captured verbatim; the id and the token are distinct
+    # 26-char values).
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl(
+            '[\n  {\n    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaa",\n'
+            '    "token": "bbbbbbbbbbbbbbbbbbbbbbbbbb",\n'
+            '    "user_id": "cccccccccccccccccccccccccc",\n'
+            '    "description": "nyxloom-intake-bridge",\n'
+            '    "is_active": true,\n    "expires_at": 0\n  }\n]\n'))
+    assert hook._generate_token("mm", "nyxloom-intake", "nyxloom-intake-bridge", None) \
+        == "bbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def test_generate_token_passes_expires_in_only_when_declared(hook, monkeypatch):
+    calls, impl = _routed_mmctl({
+        "token generate": (0, '[{"token": "t", "description": "d"}]', "")})
+    monkeypatch.setattr(hook, "_mmctl", impl)
+    hook._generate_token("mm", "u", "d", None)
+    assert "--expires-in" not in calls[0]
+    hook._generate_token("mm", "u", "d", "90d")
+    assert calls[1][-2:] == ["--expires-in", "90d"]
+
+
+def test_generate_token_names_the_disabled_server_setting(hook, monkeypatch):
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl(
+            "",
+            stderr=('Error: could not create token for "nyxloom-intake": '
+                    "Personal access tokens are disabled on this server.\n"),
+            rc=1,
+        ),
+    )
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._generate_token("mm", "nyxloom-intake", "d", None)
+    assert "MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS" in str(excinfo.value)
+
+
+def test_generate_token_error_never_carries_the_token_value(hook, monkeypatch):
+    # The one command whose STDOUT is a credential. `_must` is not used for
+    # it precisely because `_must` folds stdout into its exception.
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl('[{"description": "d"}]', stderr="SECRET-ON-STDERR", rc=0))
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._generate_token("mm", "u", "d", None)
+    assert "SECRET-ON-STDERR" not in str(excinfo.value)
+    assert "no token value" in str(excinfo.value)
+
+
+def test_ensure_tokens_mints_when_absent_and_persists_the_value(hook, monkeypatch, tmp_path):
+    _calls, impl = _routed_mmctl({
+        "token list": (1, "", 'Error: there are no tokens for the "nyxloom-intake"'),
+        "token generate": (0, '[{"token": "minted-value", "description": "x"}]', ""),
+    })
+    monkeypatch.setattr(hook, "_mmctl", impl)
+    out = hook._ensure_tokens("mm", _Ctx(tmp_path), _enabled_config(), _token_prov())
+    assert out == {"intake_pat": "minted-value"}
+
+
+def test_ensure_tokens_is_a_no_op_once_token_and_store_file_both_exist(hook, monkeypatch, tmp_path):
+    store = tmp_path / ".ciu" / "secrets"
+    store.mkdir(parents=True)
+    (store / "intake_pat").write_text("already-here")
+    calls, impl = _routed_mmctl({
+        "token list": (0, "abc123: nyxloom-intake-bridge\n", ""),
+        "token generate": (0, '[{"token": "SHOULD-NOT-HAPPEN"}]', ""),
+    })
+    monkeypatch.setattr(hook, "_mmctl", impl)
+    assert hook._ensure_tokens("mm", _Ctx(tmp_path), _enabled_config(), _token_prov()) == {}
+    assert not any(c[:2] == ["token", "generate"] for c in calls)
+
+
+def test_ensure_tokens_refuses_the_orphan_rather_than_minting_a_second(hook, monkeypatch, tmp_path):
+    # Token present, store file gone. Minting again leaves a live orphan
+    # nobody can revoke by value; skipping leaves the consumer with no
+    # credential and says nothing.
+    calls, impl = _routed_mmctl({
+        "token list": (0, "abc123: nyxloom-intake-bridge\n", ""),
+        "token generate": (0, '[{"token": "SHOULD-NOT-HAPPEN"}]', ""),
+    })
+    monkeypatch.setattr(hook, "_mmctl", impl)
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._ensure_tokens("mm", _Ctx(tmp_path), _enabled_config(), _token_prov())
+    assert "token revoke" in str(excinfo.value)
+    assert not any(c[:2] == ["token", "generate"] for c in calls)
+
+
+def test_ensure_tokens_refuses_a_duplicated_description(hook, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        hook, "_mmctl",
+        _fake_mmctl("aaa: nyxloom-intake-bridge\nbbb: nyxloom-intake-bridge\n"))
+    with pytest.raises(hook.ProvisionError, match="share the description"):
+        hook._ensure_tokens("mm", _Ctx(tmp_path), _enabled_config(), _token_prov())
+
+
+def test_ensure_tokens_skips_entirely_while_the_server_flag_is_off(hook, monkeypatch, tmp_path, capsys):
+    # This gate is what lets the token table ship BEFORE the operator widens
+    # the server: without it, merging the entry breaks the next `ciu up`.
+    calls, impl = _routed_mmctl({})
+    monkeypatch.setattr(hook, "_mmctl", impl)
+    config = {"mattermost": {"enable_user_access_tokens": False}}
+    assert hook._ensure_tokens("mm", _Ctx(tmp_path), config, _token_prov()) == {}
+    assert calls == [], "a disabled server must not even be probed"
+    assert "intake_pat" in capsys.readouterr().out, "the skip must be announced"
+
+
+def test_hook_secret_path_follows_the_S9_4a_store_layout(hook, tmp_path):
+    # ctx.secret_file() cannot answer this: it resolves DECLARED names only
+    # and raises KeyError for every hook-persisted one.
+    assert hook._hook_secret_path(_Ctx(tmp_path), "intake_pat") == \
+        tmp_path / ".ciu" / "secrets" / "intake_pat"
+
+
+def test_validate_config_accepts_the_shipped_token_shape(hook):
+    config = _valid_provision_config()
+    config["mattermost"]["provision"]["tokens"] = [_token_prov()["tokens"][0]]
+    config["mattermost"]["provision"]["accounts"].append({
+        "username": "nyxloom-intake", "email": "intake@nyxloom.local",
+        "password_secret": "mattermost_daemon_password", "channels": ["alerts"],
+    })
+    assert hook.validate_config(config, None) == []
+
+
+def test_validate_config_flags_a_token_for_an_undeclared_account(hook):
+    config = _valid_provision_config()
+    config["mattermost"]["provision"]["tokens"] = [_token_prov()["tokens"][0]]
+    assert any("'nyxloom-intake'" in f and "not a declared account" in f
+               for f in hook.validate_config(config, None))
+
+
+def test_validate_config_requires_a_token_description(hook):
+    config = _valid_provision_config()
+    config["mattermost"]["provision"]["tokens"] = [
+        {"secret": "intake_pat", "user": "nyxloom-daemon"}]
+    assert any("deduplicates on" in f for f in hook.validate_config(config, None))
+
+
+def test_validate_config_flags_two_tokens_sharing_one_description(hook):
+    config = _valid_provision_config()
+    config["mattermost"]["provision"]["tokens"] = [
+        {"secret": "pat_a", "user": "nyxloom-daemon", "description": "same"},
+        {"secret": "pat_b", "user": "nyxloom-daemon", "description": "same"},
+    ]
+    assert any("could not tell them apart" in f for f in hook.validate_config(config, None))
+
+
+def test_validate_config_flags_a_token_secret_a_directive_already_owns(hook):
+    config = _valid_provision_config()
+    config["mattermost"]["secrets"]["intake_pat"] = {}
+    config["mattermost"]["provision"]["tokens"] = [
+        {"secret": "intake_pat", "user": "nyxloom-daemon", "description": "d"}]
+    assert any("intake_pat" in f and "S9.4a" in f for f in hook.validate_config(config, None))
+
+
+# ---------------------------------------------------------------------------
+# the ACTUALLY-SHIPPED config, not a synthetic shape
+#
+# Every `validate_config` test above feeds a hand-built dict. That proves the
+# validator works; it does not prove the file this stack really deploys
+# satisfies it -- and a mismatch there (a password secret not declared, a
+# token naming an account that does not exist) aborts `ciu up` at preflight
+# on the LIVE stack, which is the one place it must not.
+#
+# OPPORTUNISTIC by design: `ciu.defaults.toml.j2` is a Jinja template, and
+# STANDING.md caps this project's dependencies at stdlib + PyYAML +
+# jsonschema. `importorskip` means this adds NO dependency -- it runs where
+# jinja2 happens to be present (the devcontainer, where it was verified) and
+# skips silently where it is not, rather than making the gate need one.
+# ---------------------------------------------------------------------------
+
+
+def _render_shipped_defaults():
+    jinja2 = pytest.importorskip("jinja2")
+    import tomllib
+
+    src = (_HOOK_PATH.parents[1] / "ciu.defaults.toml.j2").read_text()
+    env = jinja2.Environment(undefined=jinja2.ChainableUndefined)
+    return tomllib.loads(env.from_string(src).render(env={"PUBLIC_FQDN": "example.test"}))
+
+
+def test_the_shipped_defaults_pass_their_own_preflight(hook):
+    assert hook.validate_config(_render_shipped_defaults(), None) == []
+
+
+def test_the_shipped_intake_channel_is_private(hook):
+    # The read boundary itself: measured on 11.10.1, a non-member team member
+    # reads a PUBLIC channel's posts (200) and is refused on a private one
+    # (403). A public `intake` would bound a leaked PAT at nothing.
+    prov = _render_shipped_defaults()["mattermost"]["provision"]
+    intake = next(c for c in prov["channels"] if c["name"] == "intake")
+    assert intake.get("private") is True
+
+
+def test_the_shipped_intake_account_is_scoped_and_not_an_admin(hook):
+    prov = _render_shipped_defaults()["mattermost"]["provision"]
+    account = next(a for a in prov["accounts"] if a["username"] == "nyxloom-intake")
+    assert account.get("system_admin") is False
+    assert account.get("channels") == ["intake"]
+    assert not account.get("all_channels")
+
+
+def test_the_shipped_pat_flag_is_off_so_merging_cannot_widen_the_live_server(hook):
+    # Merging this package must not change live behaviour. The token entry is
+    # inert while this is false (_ensure_tokens returns early), so the
+    # account/channel/webhook provision on an ordinary `ciu up` and only the
+    # PAT waits on an explicit operator decision.
+    assert _render_shipped_defaults()["mattermost"]["enable_user_access_tokens"] is False
+
+
+def test_the_shipped_pat_flag_is_off_without_needing_jinja(hook):
+    """The same property as above, enforced UNCONDITIONALLY.
+
+    Every other assertion in this section renders the template and so sits
+    behind `importorskip("jinja2")` -- correct for shape assertions, wrong for
+    this one. "Merging cannot widen the live server" is the package's headline
+    safety claim, and a gate container without jinja2 would skip the only test
+    that checks it and still report green. This reads the shipped bytes
+    instead: no dependency, nothing to skip.
+    """
+    src = (_HOOK_PATH.parents[1] / "ciu.defaults.toml.j2").read_text()
+    assignments = re.findall(r"(?m)^enable_user_access_tokens\s*=\s*(\S+)\s*$", src)
+    assert assignments == ["false"], (
+        "ciu.defaults.toml.j2 must ship exactly one `enable_user_access_tokens` "
+        f"assignment and it must be false; found {assignments!r}")
+
+
+def test_this_package_did_not_touch_expose_public(hook):
+    # Explicitly out of scope for nyxloom-P109.
+    assert _render_shipped_defaults()["mattermost"]["expose_public"] is False

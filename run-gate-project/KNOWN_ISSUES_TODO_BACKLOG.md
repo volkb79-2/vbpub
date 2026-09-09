@@ -3348,4 +3348,75 @@ worktree before any ad-hoc invocation from outside it"), filed here per
 the estate's own cross-repo convention rather than left as a
 workaround-only lesson.
 
+---
+
+## RG-48 — an environment that declares no `resources.cpus` leaves the lane's worker count and the operator's CPU cap to be decided in two places that contradict each other
+
+> **ID note:** filed from the `nyxloom-P109` worktree, whose base predates
+> main's RG-47. Confirmed at merge time (2026-09-09) that 48 was still free
+> on `main` — no renumbering needed.
+
+**Found by:** nyxloom-P109 gate runs, 2026-09-09.
+
+`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+`image` only — no `resources.cpus`. The gate container therefore starts
+**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_BACKGROUND`
+(`dev-background.slice`), which deprioritises but does not bound it. Because
+this host is shared with a live production game server, every agent prompt
+carries a standing rule to run `docker update --cpus=3` on any container it
+launches, immediately after launch. Meanwhile the lane's judged argv is
+`pytest tests -n auto`, documented in nyxloom's `assay.toml` as "the measured
+optimum on this 8-core host" — i.e. 8 workers.
+
+So the two halves of the decision live in different files owned by different
+people, and they disagree by 2.7x. Measured consequence on nyxloom at commit
+`16c3e361`, same tree every time:
+
+| container cap | outcome |
+| --- | --- |
+| `--cpus=3` | `FAIL / COMMAND_FAILED` — 2 failures in `tests/test_behavioral.py`, a file the branch under test did not touch |
+| `--cpus=3` (retry) | `BUDGET_EXCEEDED / LANE_TIMEOUT` at `budget = "30m"`; container pinned at 295% of its 300% ceiling for the duration |
+| `--cpus=6` | **PASS**, 9m24s |
+
+The failing tests are bounded `for _ in range(20)` daemon-tick loops driving
+real subprocesses; oversubscribed, they exhaust their tick budget before the
+state they poll for lands. Controls at the identical commit: full suite serial
+= 3932 passed; full suite `-n 4` = 0 failures; `test_behavioral.py` alone under
+xdist = 14 passed.
+
+**Addendum, same day, at `--cpus=6`.** Two further runs at a later commit on
+the same branch, four minutes apart, both at the lane-matching cap:
+
+| host load at start | outcome |
+| --- | --- |
+| ~6, rising to ~15 during the run | `FAIL / COMMAND_FAILED` — one failure, `test_behavioral.py::test_fake_approved_review_reaches_merge_ready` (a sibling of the two above). R1 passed at 100.0% |
+| ~8 | **PASS**, 2m10s |
+
+Two things follow. First, the cap is only half the problem: at the *correct*
+cap the lane still goes red once unrelated work pushes the 8-core box past
+~15, so declaring `resources.cpus` bounds the gate's own footprint but does
+not make the lane robust against the rest of the host. The other half belongs
+to the tests — bounded tick loops measure wall-clock progress with no bound on
+what shares the machine. Second, note the wall times: **9m24s versus 2m10s at
+the same cap on the same lane**, a 4x spread driven purely by ambient load,
+which is also why `budget = "30m"` is not a meaningful timeout here.
+
+The damage is not the slowness, it is that **the first failure mode is a
+plausible-looking red gate on files the change never touched** — an implementer
+who trusts it goes hunting a nonexistent regression, and one who doesn't trust
+it has learned to discount red gates. (RG-45 is the neighbouring problem —
+host-wide contention across *different* repos' containers — and was moved to
+assay as B078. This one is narrower and entirely inside run-gate's own config:
+a single repo's environment and lane contradicting each other with no
+contention from anyone else required.)
+
+**Possible shapes, not yet decided:** declare `resources.cpus` on the
+environment so run-gate applies the cap itself and one file owns the number;
+and/or let a lane declare the worker count it needs (or derive `-n` from the
+environment's declared cpus) so `-n auto` cannot read the *host's* core count
+through a cgroup that does not grant it. A cheaper interim: have run-gate warn
+when a lane's argv contains `-n auto` while its environment declares no cpu
+bound, since that is precisely the configuration whose behaviour depends on
+what an operator does to the container out-of-band after launch.
+
 ### Status — OPEN 2026-09-09

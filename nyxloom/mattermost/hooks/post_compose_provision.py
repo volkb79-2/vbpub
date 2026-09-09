@@ -41,6 +41,49 @@ briefly visible in the host's process table as an argument of the short-lived
 (`--password "$MM_ADMIN_PW"`), minus that recipe's shell history and exported
 environment variable. It is bounded to account CREATION: a reconcile run over
 already-existing accounts passes no password at all.
+
+nyxloom-P109 adds a SECOND, narrower instance of the same shape:
+`mmctl token generate` PRINTS the minted token on stdout (`<token>:
+<description>`, or a one-element JSON array under `--json`). The value is
+never an ARGUMENT, so it does not reach the process table; it is read out of
+the captured stdout of one `docker exec`, handed straight to S9.4a, and never
+logged, never put in an exception message, and never returned to a caller
+that prints. `_must` is deliberately NOT used for that one command, because
+`_must`'s failure path folds stdout into the raised message.
+
+PERSONAL ACCESS TOKENS (nyxloom-P109 / backlog B9) — what was MEASURED
+----------------------------------------------------------------------
+Every claim below was verified against a throwaway 11.10.1 instance, not read
+off documentation, because three of them are the opposite of the obvious
+guess:
+
+* `mmctl --local token generate <user> <description>` needs
+  `ServiceSettings.EnableUserAccessTokens = true`. With it false the command
+  fails cleanly: `Personal access tokens are disabled on this server.`
+* The TARGET account needs NO role grant. Mattermost's app layer checks only
+  `EnableUserAccessTokens` (and a bot exemption); the `system_user_access_token`
+  role gates a user minting their OWN token through the UI, and a local-mode
+  session is unrestricted. Confirmed by minting against a plain `system_user`
+  with no extra roles. This matters because `mmctl roles` can ONLY promote to
+  or demote from system admin — there is no verb that could have granted it.
+* The BOT-account escape (Mattermost exempts bots from
+  `EnableUserAccessTokens` entirely) is NOT reachable here:
+  `mmctl bot create` answers `This command cannot be run in local mode`.
+  Reaching it would mean using the network admin API with an admin password,
+  which is the exact widening this hook's local-mode design rejects. So the
+  server-setting flip really is required; it was tested, not assumed.
+* `mmctl --local token list <user>` prints `<id>: <description>` per token and
+  exits 1 with `there are no tokens for the "<user>"` on stderr when there are
+  none. The DESCRIPTION is what makes deduplication possible — the same
+  display-name matching `_ensure_webhooks` uses.
+* `token list` NEVER returns the token VALUE (only `id`, `user_id`,
+  `description`, `is_active`, `expires_at`). Mattermost hands the secret out
+  exactly once, at creation. That is what forces `_ensure_token`'s orphan
+  refusal below: "the token exists" and "we still have the token" are
+  different questions, and only the second one keeps the consumer working.
+* `token revoke <token-id>` DELETES the row — it does not deactivate it, so a
+  revoked token is absent from `token list --active` and `--inactive` alike.
+  Rotation is therefore `revoke` + the next `ciu up`, exactly like a webhook.
 """
 from __future__ import annotations
 
@@ -776,6 +819,183 @@ def _parse_webhook_id(out: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# personal access tokens (nyxloom-P109 / B9) — see the module docstring
+# ---------------------------------------------------------------------------
+
+
+def _user_tokens(container: str, username: str) -> list[dict]:
+    """Active tokens of *username* as ``{'id', 'description'}`` dicts.
+
+    Parses the PLAIN-TEXT `<id>: <description>` rows rather than `--json`,
+    for the same reason `_incoming_webhooks` does: mmctl's `--json` container
+    shape is not stable across result counts (`token list` prints the whole
+    slice as one printer row, so it is bare `null` for zero and an array
+    otherwise — while `post list` prints one row PER post and so emits a bare
+    OBJECT for exactly one). One text parser with the drift guard already
+    established here is safer than tracking that per command.
+
+    An EMPTY token set is NOT an error: mmctl exits 1 and puts
+    `there are no tokens for the "<user>"` on stderr. Treating that rc as a
+    failure would abort every `ciu up` on a healthy first run; treating an
+    UNPARSEABLE list as empty would mint a second token on every run, which
+    is precisely the webhook incident F1 taught this hook to refuse.
+    """
+    rc, out, err = _mmctl(container, "token", "list", username)
+    stream = f"{out}\n{err}"
+    if rc != 0:
+        if "no tokens for" in stream.lower():
+            return []
+        raise ProvisionError(
+            f"cannot list access tokens of {username!r} (rc={rc}): "
+            f"{(err or out).strip()[:400]}"
+        )
+    tokens: list[dict] = []
+    unrecognised = 0
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line or _is_noise(line):
+            continue
+        ident, sep, description = line.partition(": ")
+        if not sep or not ident.strip():
+            unrecognised += 1
+            continue
+        tokens.append({"id": ident.strip(), "description": description.strip()})
+    _refuse_unrecognised(
+        unrecognised,
+        what=f"access tokens of {username!r}",
+        fix="Compare `mmctl --local token list <user>` against _user_tokens(). "
+        "Do NOT re-run the hook until it parses — each run over an "
+        "unparseable list mints another token.",
+    )
+    return tokens
+
+
+def _hook_secret_path(ctx, name: str) -> Path:
+    """Store path of a HOOK-PERSISTED secret (S9.4a).
+
+    `ctx.secret_file` cannot answer this: it resolves only names DECLARED in
+    the secrets table and raises `KeyError` for everything else, which is
+    every S9.4a name by definition (S9.4a's uniqueness rule forbids declaring
+    one). The path is not an implementation detail being reached around —
+    S9.4a states it normatively: `<stack>/.ciu/secrets/<name>`. Filed against
+    ciu as the real gap it is (a hook cannot read back its own persisted
+    secret through the context it was given).
+    """
+    return Path(ctx.stack_dir) / ".ciu" / "secrets" / name
+
+
+def _generate_token(container: str, username: str, description: str,
+                    expires_in: str | None) -> str:
+    """Mint ONE personal access token and return its secret value.
+
+    Deliberately NOT routed through `_must`: that helper folds stdout into
+    the ProvisionError it raises, and this command's stdout IS the
+    credential (S4.23). Nothing here is logged, printed or re-raised with
+    the value in it — the refusals name the USER and the verb only.
+    """
+    argv = ["token", "generate", username, description]
+    if expires_in:
+        argv += ["--expires-in", expires_in]
+    rc, out, err = _mmctl(container, *argv, as_json=True)
+    if rc != 0:
+        detail = (err or "").strip()[:200]
+        raise ProvisionError(
+            f"could not mint an access token for {username!r} (rc={rc}): {detail}. "
+            "If this says personal access tokens are disabled, set "
+            "MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS=true on the app service "
+            "and re-run."
+        )
+    try:
+        parsed = json.loads(out)
+    except (json.JSONDecodeError, ValueError):
+        raise ProvisionError(
+            f"token generate for {username!r} printed unparseable JSON; a token "
+            "may have been created — check `mmctl --local token list` and revoke "
+            "any extra before re-running"
+        ) from None
+    rows = parsed if isinstance(parsed, list) else [parsed]
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("token"), str) and row["token"]:
+            return row["token"]
+    raise ProvisionError(
+        f"token generate for {username!r} returned no token value; a token may "
+        "have been created — check `mmctl --local token list` and revoke any "
+        "extra before re-running"
+    )
+
+
+def _ensure_tokens(container: str, ctx, config: dict, prov: dict) -> dict[str, str]:
+    """Mint each declared PAT when absent; return secret name -> token value.
+
+    A no-op while `[mattermost].enable_user_access_tokens` is false, and that
+    gate is what lets this table ship BEFORE the operator decides to widen
+    the server. Without it, merging a `[[mattermost.provision.tokens]]` entry
+    would break the very next `ciu up` on the live stack, because minting
+    against a server with PATs disabled is a hard failure. It is announced,
+    not silent: a declared token that is not being minted prints its name.
+
+    Only names in the RETURNED dict get re-persisted, so an already-provisioned
+    token is left completely alone — no re-mint, no rotation, no second write.
+
+    THE ORPHAN CASE, and why it refuses instead of doing something. Mattermost
+    hands a token's value out exactly once, so this hook can ask "does a token
+    with our description exist?" but can never ask "and is it the one we
+    stored?". Three states, three answers:
+
+      token absent, store file absent  -> mint, persist.        (first run)
+      token present, store file present-> nothing.              (reconcile)
+      token present, store file ABSENT -> REFUSE.
+
+    The third is the one that must not be guessed at. Skipping (the naive
+    "it exists, we're done") leaves the consumer with no credential forever
+    and says nothing. Minting a second one leaves a live orphan token nobody
+    can revoke by value and starts the unbounded duplication F1 exists to
+    prevent. So it stops and names the exact `revoke` that resolves it —
+    the same "will not choose one for you" stance `_ensure_webhooks` takes.
+    """
+    declared = prov.get("tokens", [])
+    if declared and not _root(config).get("enable_user_access_tokens"):
+        print(
+            "[PROVISION] access tokens NOT minted "
+            f"({sorted(s.get('secret', '?') for s in declared)}): "
+            "[mattermost].enable_user_access_tokens is false. Set it (and "
+            "MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS follows) to provision them.",
+            flush=True,
+        )
+        return {}
+
+    tokens: dict[str, str] = {}
+    for spec in declared:
+        username = spec["user"]
+        description = spec["description"]
+        secret_name = spec["secret"]
+        found = [t for t in _user_tokens(container, username)
+                 if t["description"] == description]
+        stored = _hook_secret_path(ctx, secret_name).exists()
+        if len(found) > 1:
+            raise ProvisionError(
+                f"{len(found)} access tokens of {username!r} share the "
+                f"description {description!r}; revoke the extras "
+                "(`mmctl --local token revoke <token-id>`) and re-run — this "
+                "hook will not choose one for you"
+            )
+        if found and stored:
+            continue
+        if found and not stored:
+            raise ProvisionError(
+                f"account {username!r} already has an access token described "
+                f"{description!r}, but its store file {secret_name!r} is gone. "
+                "Mattermost only ever reveals a token's value once, so it "
+                "cannot be recovered. Revoke it (`mmctl --local token revoke "
+                f"<token-id>`, id from `mmctl --local token list {username}`) "
+                "and re-run to mint a fresh one."
+            )
+        tokens[secret_name] = _generate_token(
+            container, username, description, spec.get("expires_in"))
+    return tokens
+
+
+# ---------------------------------------------------------------------------
 # S9.5 preflight
 # ---------------------------------------------------------------------------
 
@@ -871,6 +1091,48 @@ def validate_config(config: dict, ctx) -> list:
                 f"webhook {secret!r} has url_base={base!r}; "
                 "expected 'internal' or 'siteurl'"
             )
+
+    # nyxloom-P109: `[[mattermost.provision.tokens]]`. The description is
+    # checked as strictly as the secret name because it is the DEDUPLICATION
+    # KEY (`_ensure_tokens`) — two token entries sharing one description on
+    # one account would make every reconcile ambiguous and refuse the deploy.
+    descriptions_seen: set[tuple[str, str]] = set()
+    for spec in prov.get("tokens", []):
+        if not isinstance(spec, dict):
+            findings.append("[[mattermost.provision.tokens]] entry is not a table")
+            continue
+        secret = spec.get("secret")
+        if not secret:
+            findings.append("a token entry has no `secret` name to persist into")
+        elif secret in declared:
+            findings.append(
+                f"token secret {secret!r} is ALSO declared in "
+                "[mattermost.secrets]; S9.4a refuses a hook-persisted name "
+                "that a directive already owns"
+            )
+        elif secret in secrets_seen:
+            findings.append(f"token secret {secret!r} is declared twice")
+        if secret:
+            secrets_seen.add(secret)
+        user = spec.get("user")
+        if user not in usernames:
+            findings.append(
+                f"token {secret!r} belongs to {user!r}, which is not a "
+                "declared account"
+            )
+        description = spec.get("description")
+        if not description:
+            findings.append(
+                f"token {secret!r} has no `description` — it is the key this "
+                "hook deduplicates on, so it is required, not cosmetic"
+            )
+        elif (user, description) in descriptions_seen:
+            findings.append(
+                f"account {user!r} has two tokens described {description!r}; "
+                "reconcile could not tell them apart"
+            )
+        else:
+            descriptions_seen.add((user, description))
     return findings
 
 
@@ -905,14 +1167,18 @@ def run(config: dict, ctx) -> dict:
     demoted = _demote_unintended_admins(container, prov, accounts_created)
     memberships_added = _ensure_memberships(container, prov)
     webhook_urls = _ensure_webhooks(container, config, prov)
+    token_values = _ensure_tokens(container, ctx, config, prov)
 
+    # NAMES only, never values — the same S4.23 rule the webhook line follows
+    # (a webhook URL and a PAT are both bearer credentials).
     print(
         f"[PROVISION] team_created={team_created} "
         f"channels_created={channels_created} "
         f"accounts_created={accounts_created} "
         f"admin_role_stripped={demoted} "
         f"memberships_added={memberships_added} "
-        f"webhooks={sorted(webhook_urls)}",
+        f"webhooks={sorted(webhook_urls)} "
+        f"tokens_minted={sorted(token_values)}",
         flush=True,
     )
 
@@ -923,6 +1189,11 @@ def run(config: dict, ctx) -> dict:
     result: dict = {
         name: {"value": url, "persist": "secret"} for name, url in webhook_urls.items()
     }
+    # nyxloom-P109: a PAT is the same case for the same reason — it does not
+    # exist until Mattermost mints it, so no S4 directive can express it.
+    result.update(
+        {name: {"value": value, "persist": "secret"} for name, value in token_values.items()}
+    )
     result["provision.accounts_created"] = {
         "value": len(accounts_created),
         "persist": "state",

@@ -166,7 +166,14 @@ services:
       # Mattermost ignores both unless these overrides are enabled.
       MM_SERVICESETTINGS_ENABLEPOSTUSERNAMEOVERRIDE: "true"
       MM_SERVICESETTINGS_ENABLEPOSTICONOVERRIDE: "true"
-      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
+      # nyxloom-P109 (B9): server-wide personal access tokens, off unless
+      # `[mattermost].enable_user_access_tokens` says otherwise. Required by
+      # the intake bridge's `rest` read transport and by nothing else -- its
+      # `mmctl` transport needs no server change, which is why both exist.
+      # Turning this on lets any system admin mint a bearer token for any
+      # account, so it stays a declared decision rather than a side effect of
+      # declaring a token to provision.
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "{{ 'true' if mattermost.enable_user_access_tokens else 'false' }}"
       MM_SERVICESETTINGS_ENABLEDEVELOPER: "false"
       MM_SERVICESETTINGS_ENABLETESTING: "false"
       # ── nyxloom-P110: settings whose SILENT DEFAULT was wrong for a

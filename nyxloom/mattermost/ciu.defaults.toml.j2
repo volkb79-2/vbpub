@@ -34,6 +34,28 @@ expose_public = false
 # Public hostname routed by tls-edge when expose_public = true. Same domain
 # convention as ntfy's nyxloom.{{ env.PUBLIC_FQDN }}.
 public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
+
+# ── Personal access tokens — DELIBERATELY OFF BY DEFAULT (nyxloom-P109) ──
+# Drives MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS on the app service. It is
+# a SERVER-WIDE setting, not a per-account one: turning it on lets any system
+# admin mint a bearer token for any account through the UI, and lets a user
+# holding the `system_user_access_token` role mint their own. That is a real
+# widening of the credential surface on a service that is expected to face
+# the internet, and it is why this is its own flag rather than something the
+# `[[mattermost.provision.tokens]]` table quietly implies.
+#
+# It is required by the B9 intake bridge's `rest` transport and by nothing
+# else — the `mmctl` transport needs no server change at all, which is why
+# both exist. Leave this false and the bridge still works over `mmctl`.
+#
+# That is also why a [[mattermost.provision.tokens]] table can ship while
+# this stays false, and why merging one cannot break the next `ciu up` here:
+# the hook's token step is a NO-OP under a false flag. It does not raise, and
+# it does not skip silently either -- it PRINTS the declared secret names it
+# is not minting and returns nothing to persist. So the accounts, channels
+# and webhooks provision as usual and only the PAT waits, visibly, on an
+# operator flipping this line.
+enable_user_access_tokens = false
 # tls-edge shared ingress network (external) — joined only when exposed.
 ingress_network = "ingress_public"
 
@@ -163,6 +185,11 @@ mattermost_admin_password = { directive = "GEN_LOCAL:mattermost/admin_password",
 mattermost_daemon_password = { directive = "GEN_LOCAL:mattermost/daemon_password", consumed_by = "hook" }
 mattermost_operator_password = { directive = "GEN_LOCAL:mattermost/operator_password", consumed_by = "hook" }
 mattermost_installer_password = { directive = "GEN_LOCAL:mattermost/installer_password", consumed_by = "hook" }
+# nyxloom-P109: the intake chatbot account. Same shape and same reason as the
+# three above. The account's PAT is NOT declared here and could not be — it
+# does not exist until Mattermost mints it, which is what S9.4a is for; see
+# [[mattermost.provision.tokens]] below.
+mattermost_intake_password = { directive = "GEN_LOCAL:mattermost/intake_password", consumed_by = "hook" }
 
 # ── Provisioning (S9.1 post_compose hook) — nyxloom-P107 ────────────────────
 # Replaces the manual `mmctl` recipe P106's README carried. The hook is
@@ -188,6 +215,26 @@ display_name = "Alerts"
 [[mattermost.provision.channels]]
 name = "installs"
 display_name = "Host Installs"
+
+# nyxloom-P109 (B9): the feature-intake interview's own channel.
+#
+# PRIVATE, and that is the security boundary, not decoration. Measured on
+# 11.10.1 with a plain `system_user` account: a team member who is NOT a
+# channel member reads a PUBLIC channel's posts (HTTP 200) and is REFUSED on
+# a PRIVATE one (HTTP 403). Since the intake account holds a personal access
+# token that inherits its account's FULL permissions, "which channels is that
+# account a member of" is the only thing bounding what a leaked token can
+# read — and on a public channel that bound would be "the whole team".
+#
+# This is also the first use of `private = true` from the shipped config
+# surface. `_channel_names`' ` (private)` suffix handling (P107) was written
+# for exactly this and had never been exercised live; it was re-verified
+# against a throwaway 11.10.1 instance during P109 and prints, as it says,
+# `intake (private)`.
+[[mattermost.provision.channels]]
+name = "intake"
+display_name = "Feature Intake"
+private = true
 
 # ── Accounts ───────────────────────────────────────────────────────────────
 # ORDER MATTERS on an EMPTY instance and nowhere else: Mattermost promotes the
@@ -256,6 +303,39 @@ password_secret = "mattermost_installer_password"
 channels = ["installs"]
 system_admin = false
 
+# nyxloom-P109 (B9): the feature-intake chatbot's identity. A FIFTH account
+# rather than reuse, on the same boundary logic P107 used for
+# `nyxloom-installer` — team membership plus channel scoping, not "which
+# account posts".
+#
+# What is new here is a capability none of the other four has: this is the
+# only account that READS. Its personal access token is a bearer credential
+# that inherits the account's FULL permissions (Team Edition has no
+# per-token scoping), so the account IS the scope, and each alternative
+# fails on exactly that:
+#   nyxloom-operator  — system_admin. A leaked PAT would be a system-admin
+#                       bearer token on a service headed for public
+#                       exposure. Not a candidate.
+#   nyxloom-daemon    — a PAT here could read all of `alerts` (decision
+#                       pushes, budget figures, operator traffic) and POST
+#                       as the daemon, i.e. forge notifications. It also
+#                       fuses the notification identity with the
+#                       conversational one.
+#   nyxloom-installer — scoped to `installs` for a third party; giving the
+#                       install-host credential a second, unrelated
+#                       capability is the opposite of what it is for.
+#   nyxloom-admin     — the bootstrap account this hook deliberately never
+#                       touches.
+# So: regular (never system_admin), member of `intake` and nothing else.
+# A leaked intake PAT can read and post in one private channel it was
+# already conversing in, and can do nothing else.
+[[mattermost.provision.accounts]]
+username = "nyxloom-intake"
+email = "intake@nyxloom.local"
+password_secret = "mattermost_intake_password"
+channels = ["intake"]
+system_admin = false
+
 # ── Incoming webhooks ──────────────────────────────────────────────────────
 # Two, not three: the operator account is a HUMAN login and has nothing to
 # post programmatically. Minting an unused credential would be strictly worse
@@ -284,6 +364,59 @@ description = "scripts/netcup + debian-install-v2 host installation progress"
 # the credential is provisioned and waiting, and becomes usable in the same
 # edit that flips `expose_public`. Said out loud in the README too.
 url_base = "siteurl"
+
+# nyxloom-P109 (B9): the intake bridge's REPLY path. Three webhooks now, and
+# the third is not a contradiction of the "the operator account is a human
+# login and gets none" rule above — `nyxloom-intake` is a service account
+# that genuinely posts. It exists because a Mattermost incoming webhook is
+# bound to ONE channel at creation: the daemon's webhook can only ever write
+# into `alerts`, so an intake reply has no way to reach `intake` without a
+# webhook of its own. (This is the same one-channel-per-webhook constraint
+# decision_chat's docstring records as the reason its two logical channels
+# collapsed to one.)
+#
+# The reply path is a webhook, NOT the PAT, even though the PAT could post:
+# a webhook is post-only and channel-bound, so the reply path cannot be used
+# to read anything or to write anywhere else. Keeping the two directions on
+# two credentials is what makes that true.
+[[mattermost.provision.webhooks]]
+secret = "intake_webhook_url"
+channel = "intake"
+user = "nyxloom-intake"
+display_name = "nyxloom-intake"
+description = "nyxloom feature-intake chatbot replies (B9)"
+# nyxloomd/the CLI reach Mattermost over the stack's private bridge.
+url_base = "internal"
+
+# ── Personal access tokens (nyxloom-P109 / B9) ─────────────────────────────
+# The `rest` read transport's credential. Minted by the hook through S9.4a
+# for the same reason as the webhook URLs: it does not exist until Mattermost
+# mints it, so no S4 directive can express it. Lands in the STACK store at
+# `nyxloom/mattermost/.ciu/secrets/intake_pat`, 0440, gitignored by `**/.ciu/`.
+#
+# REQUIRES `[mattermost].enable_user_access_tokens = true` (which drives
+# MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS). While that is false this entry
+# is INERT BY DESIGN, not broken: `_ensure_tokens` prints the names it is not
+# minting and returns, so this table can ship — and the account, channel and
+# reply webhook can be provisioned — before the operator decides to widen the
+# server. Exactly the "provisioned and waiting" shape `installer_webhook_url`
+# already has against `expose_public`. The measured evidence for why the flip
+# is genuinely unavoidable (the bot-account exemption is unreachable from
+# local mode) is in the hook's module docstring.
+#
+# `description` is the deduplication key the hook matches on, so it is stable
+# and must not be edited casually: changing it makes the next `ciu up` mint a
+# SECOND token and leave the first live.
+#
+# `expires_in` is deliberately unset. An expiring token would silently break
+# the bridge between two `ciu up` runs, and there is no daemon to notice; a
+# revoked token vanishes from `token list` entirely, so the hook self-heals
+# on the next run either way. Set it (e.g. "90d") only alongside a schedule
+# that actually re-runs provisioning.
+[[mattermost.provision.tokens]]
+secret = "intake_pat"
+user = "nyxloom-intake"
+description = "nyxloom-intake-bridge"
 
 [mattermost.health]
 # Mattermost's first boot runs the full schema migration before /api/v4/ping
