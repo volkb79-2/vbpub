@@ -2260,8 +2260,8 @@ class Daemon:
         "not judged" rather than "judged clean".
         """
         out: dict[str, review_progress.ReviewLegSignals] = {}
-        if not getattr(cfg.policy, "review_progress_wall_seconds", 0) and \
-                not getattr(cfg.policy, "review_progress_max_records", 0):
+        if (not cfg.policy.review_progress_wall_seconds
+                and not cfg.policy.review_progress_max_records):
             return out  # both budgets disabled -- measure nothing
 
         legs: dict[str, tuple[Attempt, list[str]]] = {}

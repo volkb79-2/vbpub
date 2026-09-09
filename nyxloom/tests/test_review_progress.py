@@ -245,6 +245,35 @@ def test_over_limit_paths_are_capped_and_flagged():
     assert truncated is True
 
 
+def test_a_dedup_heavy_transcript_that_hits_the_raw_cap_reports_truncated():
+    """Round-1 review nit 1, the reviewer's exact repro.
+
+    `truncated` was derived from the DEDUPED output alone, so a transcript
+    that re-reads one file until the raw-volume cap trips and only then reads
+    50 others returned `(('src/dup.py',), False)` -- fifty real inspected
+    files never scanned, with the flag saying nothing was dropped. A silently
+    partial list is worse than a short one: it is the one a restart consumer
+    would trust.
+
+    NEGATIVE, same shape, one line under the cap: nothing is dropped, so
+    `truncated` stays False. That pins the flag to the CAP rather than to
+    "this transcript had duplicates in it".
+    """
+    dupes = [_tool_use_line("Read", {"file_path": "src/dup.py"})] * 200
+    distinct = [_tool_use_line("Read", {"file_path": f"src/other{i:03d}.py"})
+                for i in range(50)]
+    found, truncated = inspected_paths(dupes + distinct)
+    assert truncated is True
+    assert found == ("src/dup.py",)   # the 50 were never reached -- hence the flag
+
+    under = [_tool_use_line("Read", {"file_path": "src/dup.py"})
+             ] * (review_progress._RAW_HIT_LIMIT - 1)
+    found2, truncated2 = inspected_paths(under + [
+        _tool_use_line("Read", {"file_path": "src/last.py"})])
+    assert truncated2 is False
+    assert found2 == ("src/dup.py", "src/last.py")
+
+
 def test_an_empty_path_argument_is_dropped_rather_than_recorded():
     """An empty string is a path nobody inspected; recording "" would put a
     meaningless row in the summary a restart is supposed to trust."""

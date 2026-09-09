@@ -137,14 +137,27 @@ Payload = `review_progress.compact_summary(...)`: fixed fields only — ids,
 enum values, counts, budgets, the four signals, and `inspected_paths`.
 
 `inspected_paths` is the half that carries real reviewer knowledge forward
-(so a restart is seeded from it instead of replaying the transcript). It is
-derived **structure** — tool-call `file_path`/`path`/`notebook_path`
-arguments walked out of stream-json records — never the reviewer's prose,
-which is why it can be persisted without inheriting the transcript's trust
-problem. Bounded in both directions (40 paths, 200 chars each), control
-characters rejected outright, sorted for determinism, unparsable lines
-skipped (a partially-flushed final line is the *normal* state of a log
-belonging to a running process).
+(so a restart is seeded from it instead of replaying the transcript).
+
+**What is structural** (and the round-1 review confirmed it, pinned by a test
+that a `Grep` `pattern` value is *not* harvested): only the `file_path` /
+`notebook_path` / `path` slots inside a `tool_use` block are read, so the
+reviewer's prose and a tool's free-text arguments are never collected at all.
+
+**What is not** — and the first draft of this report overstated it: the
+*values* in those slots are still model-authored text. There is no claim here
+that free-text model output cannot reach this field; the claim is that it is
+**bounded and defended in layers**, none trusted alone:
+
+1. structural extraction (above) — prose and free-text args never enter;
+2. control characters rejected outright, not stripped (`_clean_path`) —
+   they would otherwise break the JSONL event line and a terminal reading it;
+3. length capped at 200 chars, count capped at 40, sorted for determinism;
+4. the trace row renders a **count**, not the list (`handoff_trace.py`);
+5. `html.escape` at render time.
+
+Unparsable lines are skipped, not fatal — a partially-flushed final line is
+the *normal* state of a log belonging to a running process.
 
 The transcript read happens **at the effect boundary**, and **once per
 stalled leg** — not on every 30s pass. An unreadable transcript degrades to
@@ -275,26 +288,41 @@ this number, and the code that produces them is live by default.
 
 ### 4.2 PL11 item 5 — "suppress delivery-profile subagents / capability bookkeeping for a bounded review leg"
 
-**Not buildable here today, verified rather than assumed.** `grep -rn
-'subagent\|delivery.profile\|dispatch_profile' src/nyxloom/` returns
-**nothing**: nyxloom has no subagent-expansion or capability-bookkeeping
-concept at all. PL11's incident ran under a *different* delivery runtime
-(Reasonix/DeepSeek Pro). There is nothing in this codebase to suppress.
+**Deferred — and the round-1 review corrected the reason, which is recorded
+here rather than quietly restated.**
 
-The natural vehicle if there were — a standing instruction on the
-`REVIEW_INDEPENDENT` dispatch prompt — is **blocked by a measured ceiling**:
-`adapters.build_dispatch`'s reviewer prompt is ~1369 chars against a pinned
-regression cap of 1400 and `argv_max` 1500
+What is verified: `grep -rn 'subagent\|delivery.profile\|dispatch_profile'
+src/nyxloom/` returns **nothing** — nyxloom has no subagent-expansion or
+capability-bookkeeping concept *in code* to suppress. PL11's incident ran
+under a different delivery runtime (Reasonix/DeepSeek Pro).
+
+What is also verified: the **prompt-instruction** vehicle is blocked by a
+measured ceiling. `adapters.build_dispatch`'s reviewer prompt is ~1369 chars
+against a pinned regression cap of 1400 and `argv_max` 1500
 (`test_review_independent_prompt_stays_under_argv_max_with_real_paths`, whose
 docstring records that overflowing it once stranded every review dispatch).
-Optional appends there are already being skipped for realistic paths.
+Optional appends there are already skipped for realistic paths.
 
-**Forcing function (two, either suffices):** (a) an adapter/route is added
-that expands a review dispatch into subagent workflows — the suppression then
-belongs in *its* `build_dispatch` branch; or (b) the reviewer prompt gains
-argv headroom, either by raising `argv_max` on the review routes or by moving
-standing instructions into the review **packet file** (which the prompt
-already references by path) instead of argv.
+**The correction:** the first draft of this report generalised those two
+findings into "not buildable here today." That was too strong, and the
+reviewer was right to flag it. `RouteDef.dispatch_extra` (`config.py:739`) is
+an existing, **operator-reachable** per-route argv extension — already in live
+use in `routes.host.toml` (`["--auto"]`,
+`["--dangerously-skip-permissions"]`) — and it could carry a tool restriction
+on the review route with **zero code change** and without touching the prompt
+budget at all. So the *idea* is reachable today; what is absent is a reason to
+reach for it.
+
+**Forcing function (any one suffices):** (a) an adapter/route is added that
+expands a review dispatch into subagent workflows — the suppression then
+belongs in *its* `build_dispatch` branch; (b) a real nyxloom review leg is
+observed burning budget on capability/tool overhead, which is exactly what
+this package's own `REVIEW_PROGRESS_STALLED` summaries would evidence — at
+which point `dispatch_extra` on the review route is the cheap first move, and
+an operator can make it without a release; or (c) the reviewer prompt gains
+argv headroom (raise `argv_max` on the review routes, or move standing
+instructions into the review **packet file** the prompt already references by
+path).
 
 ### 4.3 "Escalate to AI to determine the next action" / restart-with-hints / model-or-tier switch
 
@@ -335,7 +363,30 @@ convention `adapters.classify_log_tail` already parses for `BLOCKED:` and
 and pointless *today*, because instructing the reviewer to emit one runs
 straight into §4.2's argv ceiling. Same unblocker.
 
-### 4.5 Noted, not fixed (pre-existing, out of scope)
+### 4.5 Accepted design tradeoffs (round-1 review confirmed intentional)
+
+Recorded because they are the kind of thing a later reader would otherwise
+re-derive as a suspected defect.
+
+- **A resumed stalled leg is re-marked without a new audit event.** A leg
+  resumed under the *same* `attempt_id` that is still unproductive gets
+  `ATTEMPT_STALLED` again on its first pass, while `already_recorded`
+  suppresses a second `REVIEW_PROGRESS_STALLED`. One audit record per leg is
+  the intent (the alternative re-records the same stall every pass), and the
+  loop is bounded by `policy.max_resume_failures`. It is directionally
+  **fail-open toward letting a productive resume through**: a resume that
+  reaches a finding, a gate or a commit flips (b)/(c)/(d) and is immune
+  before the mark is ever planned.
+- **`gate_active` is task-scoped while the leg is attempt-scoped.** Any gate
+  run against a member task confers immunity regardless of what caused it,
+  because the gate runs the daemon authorises are recorded against the task,
+  not the reviewer's attempt. This is stated in `event_progress`'s own
+  docstring and is deliberate: the failure it prevents (stalling a leg that
+  *is* getting somewhere) is strictly worse than the one it admits (a leg
+  riding out its budget behind someone else's gate run, which the wall-clock
+  cap still ends).
+
+### 4.6 Noted, not fixed (pre-existing, out of scope)
 
 - `attempt.started` is never refreshed on resume, so `elapsed_seconds` is the
   attempt **record's** total life, not the current leg's. Harmless for a
@@ -372,6 +423,51 @@ All five reverted; suite green. Several tests additionally carry an explicit
 **negative** in the same test body (the same event *after* the boundary does
 count; a `False` baseline is a different answer from `None`; a trace without
 the event carries no such leg) so no assertion can pass for the wrong reason.
+
+### 5.0 Round-1 independent review: ACCEPT with nits
+
+Unconditional accept. The reviewer verified all 9 claims and ran 3 of its own
+mutants against the ladder-bug fix, confirming the guards are non-vacuous. Six
+low-severity nits, none blocking; resolved in one round (no re-review, per the
+P106 precedent):
+
+| # | nit | resolution |
+| --- | --- | --- |
+| 1 | `truncated` under-reports when the raw-volume cap stops the scan | **fixed** — see below |
+| 2 | fail-silent `getattr` on declared `Policy` fields | **fixed** — direct attribute access |
+| 3 | claim 8(b) "not buildable" overstated (`dispatch_extra` exists) | **report corrected**, §4.2 |
+| 4 | claim 5 "never lets free-text model output reach this field" overstated | **report corrected**, §2.4 |
+| 5 | resumed stalled leg re-marked with no new audit event | noted as intentional, §4.5 |
+| 6 | `gate_active` task-scoped vs attempt-scoped leg | noted as intentional, §4.5 |
+
+**Nit 1 (`truncated`).** The reviewer's repro: 200 duplicate-path lines
+followed by 50 distinct ones returned `(('src/dup.py',), False)` — the raw cap
+had stopped the scan, but `truncated` was derived from the *deduped* output,
+so 50 genuinely-inspected files were dropped while the flag said nothing was.
+Advisory-only (it affects the salvage summary, never detection), but a
+silently partial list is worse than a short one because it is the one a
+restart consumer would trust.
+
+Fixed by having the walk report the drop. Writing the fix surfaced a second,
+subtler bug of my own: an early `return True` at the top of the walk also
+fires for the sibling nodes visited *after* the append that happened to reach
+the cap — over-reporting truncation for a transcript from which nothing was
+lost. The cap is therefore enforced at the point a path is **actually
+dropped**, so the signal means exactly what it says. Both directions are
+pinned by
+`test_a_dedup_heavy_transcript_that_hits_the_raw_cap_reports_truncated`: the
+reviewer's exact scenario asserts `truncated is True`, and a one-under-the-cap
+twin asserts `False` — which is what caught the over-report. Verified against
+the pre-fix form (mutant 7).
+
+**Nit 2 (`getattr`).** `Policy` declares both fields *with defaults*, so
+`getattr(cfg.policy, "review_progress_wall_seconds", 0)` bought nothing and
+cost the thing that matters: a rename would return 0 forever and silently
+disarm the whole feature instead of raising. Three call sites
+(`rules_attempts.py`, `daemon.py`, `effects_lifecycle.py`) switched to direct
+attribute access — also removing the inconsistency the reviewer noted, where
+`cfg.policy.stall_log_quiet_seconds` is read directly ~20 lines away in the
+same method.
 
 ### 5.1 A latent drift caught by self-review, and pinned
 

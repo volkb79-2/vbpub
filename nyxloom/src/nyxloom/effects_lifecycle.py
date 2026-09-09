@@ -231,10 +231,8 @@ class LifecycleEffector:
             role=attempt.role.value, route_id=attempt.route.route_id,
             model=attempt.route.model, trigger=action.trigger or "",
             signals=action.signals, budget=review_progress.ReviewProgressBudget(
-                wall_seconds=getattr(
-                    ctx.cfg.policy, "review_progress_wall_seconds", 0),
-                max_records=getattr(
-                    ctx.cfg.policy, "review_progress_max_records", 0)),
+                wall_seconds=ctx.cfg.policy.review_progress_wall_seconds,
+                max_records=ctx.cfg.policy.review_progress_max_records),
             paths=inspected, paths_truncated=truncated)
 
     def stall_check(self, ctx: effects.EffectContext,

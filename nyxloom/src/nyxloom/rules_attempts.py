@@ -85,9 +85,14 @@ def _review_stall_trigger(attempt, inp) -> str | None:
     signals = inp.review_leg_signals.get(attempt.attempt_id)
     if signals is None:
         return None
+    # Direct attribute access, not getattr-with-default: both are DECLARED
+    # Policy fields with their own defaults, so a fallback buys nothing and
+    # costs the one thing that matters -- a rename would silently return 0,
+    # disarming the whole feature forever instead of raising. Matches how
+    # inp.cfg.policy.stall_log_quiet_seconds is read a few lines below.
     return evaluate_leg(signals, ReviewProgressBudget(
-        wall_seconds=getattr(inp.cfg.policy, "review_progress_wall_seconds", 0),
-        max_records=getattr(inp.cfg.policy, "review_progress_max_records", 0),
+        wall_seconds=inp.cfg.policy.review_progress_wall_seconds,
+        max_records=inp.cfg.policy.review_progress_max_records,
     ))
 
 

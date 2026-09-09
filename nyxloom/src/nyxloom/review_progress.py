@@ -131,6 +131,13 @@ _FINDING_EVENT_TYPES = frozenset({
 INSPECTED_PATH_LIMIT = 40
 INSPECTED_PATH_MAX_LEN = 200
 
+#: How many RAW path hits the walk will collect before giving up, counted
+#: BEFORE dedup and cleaning. Bounds the work a pathological transcript can
+#: cost; generous against INSPECTED_PATH_LIMIT so an ordinary reviewer that
+#: re-reads the same handful of files never reaches it. Tripping it is
+#: reported (see `_walk_tool_use_paths`) rather than silently swallowed.
+_RAW_HIT_LIMIT = INSPECTED_PATH_LIMIT * 4
+
 #: Depth cap for the tool-use walk below. stream-json nests a tool_use block
 #: about four levels down; eight is slack, and a cap means a pathological
 #: (or hostile) record cannot cost unbounded recursion.
@@ -292,9 +299,26 @@ def already_recorded(events: Sequence[Event], attempt_id: str) -> bool:
                and ev.attempt_id == attempt_id for ev in events)
 
 
-def _walk_tool_use_paths(node: Any, depth: int, found: list[str]) -> None:
-    if depth > _WALK_MAX_DEPTH or len(found) >= INSPECTED_PATH_LIMIT * 4:
-        return
+def _walk_tool_use_paths(node: Any, depth: int, found: list[str]) -> bool:
+    """Collect tool-use path arguments into ``found``. Returns True when a
+    path was found and DROPPED because the raw-volume cap was already full.
+
+    Only the volume cap reports back, and the asymmetry is deliberate. It can
+    say precisely what it means -- a path existed and was not kept. The depth
+    cap cannot: it returns without ever learning whether a tool_use existed
+    further down, so reporting truncation there would flag ordinary
+    transcripts whose tool arguments merely nest deeply. A summary that cries
+    wolf is worth less than one that under-reports a shape real stream-json
+    (about four levels) does not produce.
+
+    Traversal itself is not cut short at the cap. It is already bounded by
+    the transcript the caller read into memory, and stopping early is what
+    made the naive version report truncation for the sibling nodes visited
+    after a perfectly successful final append.
+    """
+    if depth > _WALK_MAX_DEPTH:
+        return False
+    capped = False
     if isinstance(node, dict):
         if node.get("type") == "tool_use":
             tool_input = node.get("input")
@@ -302,12 +326,24 @@ def _walk_tool_use_paths(node: Any, depth: int, found: list[str]) -> None:
                 for key in _TOOL_INPUT_PATH_KEYS:
                     value = tool_input.get(key)
                     if isinstance(value, str):
-                        found.append(value)
+                        # The cap is enforced HERE, at the point a path is
+                        # actually dropped, rather than as an early return at
+                        # the top. An early return also fires on the sibling
+                        # nodes visited AFTER the append that happened to
+                        # reach the cap -- reporting truncation for a
+                        # transcript from which nothing was lost. This
+                        # reports exactly what it means: a path was seen and
+                        # could not be kept.
+                        if len(found) >= _RAW_HIT_LIMIT:
+                            capped = True
+                        else:
+                            found.append(value)
         for value in node.values():
-            _walk_tool_use_paths(value, depth + 1, found)
+            capped = _walk_tool_use_paths(value, depth + 1, found) or capped
     elif isinstance(node, list):
         for value in node:
-            _walk_tool_use_paths(value, depth + 1, found)
+            capped = _walk_tool_use_paths(value, depth + 1, found) or capped
+    return capped
 
 
 def _clean_path(raw: str) -> str | None:
@@ -331,16 +367,27 @@ def inspected_paths(lines: Iterable[str]) -> tuple[tuple[str, ...], bool]:
 
     Returns ``(paths, truncated)`` -- paths sorted (determinism: a summary
     that reorders between two reads of the same log is not a summary), and
-    ``truncated`` True when the cap dropped some.
+    ``truncated`` True when EITHER cap dropped something: the raw-volume cap
+    that stopped the scan, or the output limit that trimmed the result.
 
     This is the half of PL11's compact summary that carries actual reviewer
-    knowledge forward: it is derived STRUCTURE (tool-call arguments), never
-    the reviewer's prose, which is why it can be persisted without inheriting
-    the trust problem of the transcript it came from. A line that will not
-    parse is skipped, not fatal -- a partially-flushed final line is the
-    normal state of a log belonging to a process that is still running.
+    knowledge forward. What makes it safe to persist is STRUCTURAL, not a
+    claim about content: only the ``file_path``/``notebook_path``/``path``
+    slots inside a ``tool_use`` block are read, so a tool's free-text
+    arguments (a Grep ``pattern``, say) and the reviewer's prose are never
+    collected at all. The VALUES in those slots are still model-authored
+    text, so they are treated as untrusted and defended in layers --
+    control characters rejected outright (`_clean_path`), length capped at
+    INSPECTED_PATH_MAX_LEN, count capped at INSPECTED_PATH_LIMIT, reported
+    as a COUNT rather than a list on the trace row (handoff_trace.py), and
+    HTML-escaped at render time. No single layer is trusted alone.
+
+    A line that will not parse is skipped, not fatal -- a partially-flushed
+    final line is the normal state of a log belonging to a process that is
+    still running.
     """
     found: list[str] = []
+    volume_capped = False
     for line in lines:
         line = line.strip()
         if not line or not line.startswith("{"):
@@ -349,7 +396,7 @@ def inspected_paths(lines: Iterable[str]) -> tuple[tuple[str, ...], bool]:
             record = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        _walk_tool_use_paths(record, 0, found)
+        volume_capped = _walk_tool_use_paths(record, 0, found) or volume_capped
 
     cleaned: set[str] = set()
     for raw in found:
@@ -357,7 +404,14 @@ def inspected_paths(lines: Iterable[str]) -> tuple[tuple[str, ...], bool]:
         if value is not None:
             cleaned.add(value)
     ordered = sorted(cleaned)
-    truncated = len(ordered) > INSPECTED_PATH_LIMIT
+    # BOTH caps, OR-ed. Deriving `truncated` from the deduped output alone
+    # under-reports the case where the RAW cap stopped the scan early: a
+    # transcript that re-reads one file 200 times and then reads 50 others
+    # dedupes to a single path, so `len(ordered) > LIMIT` is False while 50
+    # real inspected files were never even looked at. The flag exists to tell
+    # a restart "this list is partial"; a silently partial list is worse than
+    # a short one, because it is the one a consumer would trust.
+    truncated = volume_capped or len(ordered) > INSPECTED_PATH_LIMIT
     return tuple(ordered[:INSPECTED_PATH_LIMIT]), truncated
 
 
@@ -377,9 +431,15 @@ def compact_summary(*, attempt_id: str, task_id: str, role: str,
     correction, no gate and no verdict, so nothing of its output needs
     honouring and only its READING (``inspected_paths``) is worth carrying.
 
-    Fixed fields only -- ids, enum values, counts and derived paths. No
-    transcript prose, in keeping with the same injection boundary
-    watchdog.RunawaySignal and reconcile.py's Action payloads hold.
+    Fixed FIELDS -- ids, enum values, counts, and the derived path list. Every
+    field but ``inspected_paths`` is generated here or copied from a typed
+    constant, so it holds the same injection boundary watchdog.RunawaySignal
+    and reconcile.py's Action payloads do. ``inspected_paths`` is the one
+    exception and is NOT claimed to be free of model-authored text: its values
+    come out of a transcript. What bounds it is structural extraction plus
+    layered defense, described on `inspected_paths` -- no free-text tool
+    argument or reviewer prose is collected, and what IS collected is
+    cleaned, capped, count-only on the trace row, and escaped at render.
     """
     return {
         "reason": REVIEW_NO_CONCRETE_PROGRESS,
