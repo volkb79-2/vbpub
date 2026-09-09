@@ -538,10 +538,20 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
         installer._health_gate_swap_devices()
 
 
+def test_configure_journald_writes_1g_60d_retention(tmp_path):
+    installer = make_installer(tmp_path)
+    installer._configure_journald()
+    written = installer.actions.dry_run_writes["/etc/systemd/journald.conf.d/99-vbpub-v2.conf"]
+    assert "SystemMaxUse=1G" in written
+    assert "MaxRetentionSec=60d" in written
+    assert "200M" not in written
+    assert "12month" not in written
+
+
 def test_config_docker_daemon_defaults():
     config = Config(telegram_bot_token="", telegram_chat_id="")
     assert config.docker_live_restore is True
-    assert config.docker_log_driver == "json-file"
+    assert config.docker_log_driver == "journald"
     assert config.docker_log_max_size == "50m"
     assert config.docker_log_max_file == "3"
 
@@ -600,8 +610,39 @@ def test_configure_docker_daemon_merges_existing_unrelated_key(tmp_path, monkeyp
     written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
     assert written["dns"] == ["1.1.1.1"]
     assert written["live-restore"] is True
-    assert written["log-driver"] == "json-file"
-    assert written["log-opts"] == {"max-size": "50m", "max-file": "3"}
+    assert written["log-driver"] == "journald"
+    assert "log-opts" not in written
+
+
+def test_configure_docker_daemon_sets_log_opts_for_json_file_and_local_only(tmp_path):
+    for driver in ("json-file", "local"):
+        installer = make_installer(tmp_path, docker_log_driver=driver)
+        installer._configure_docker_daemon()
+        written = json.loads(installer.actions.dry_run_writes["/etc/docker/daemon.json"])
+        assert written["log-opts"] == {"max-size": "50m", "max-file": "3"}
+
+    installer = make_installer(tmp_path, docker_log_driver="journald")
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.dry_run_writes["/etc/docker/daemon.json"])
+    assert "log-opts" not in written
+
+
+def test_configure_docker_daemon_drops_stale_log_opts_when_driver_changes(tmp_path, monkeypatch):
+    # A host previously provisioned with docker_log_driver=json-file (i.e.
+    # every host provisioned before the 2026-09-09 default flip to
+    # journald) re-run under the new default must not keep a stale,
+    # meaningless log-opts block -- this function owns log-driver/log-opts
+    # together, so an idempotent re-run must fully reflect the current
+    # driver, not just add to what's there.
+    installer = make_installer(tmp_path, dry_run=False, docker_log_driver="journald")
+    _patch_daemon_json_exists(monkeypatch, {
+        "log-driver": "json-file",
+        "log-opts": {"max-size": "50m", "max-file": "3"},
+    })
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
+    assert written["log-driver"] == "journald"
+    assert "log-opts" not in written
 
 
 def test_install_docker_merges_existing_key_and_omits_daemon_config_owned_keys(tmp_path, monkeypatch):

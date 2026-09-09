@@ -54,6 +54,25 @@ def test_docker_cleanup_max_age_hours_bounds(value):
         load_config(raw_json=json.dumps(dict(BASE, docker_cleanup_max_age_hours=value)))
 
 
+def test_io_benchmark_defaults():
+    config = Config()
+    assert config.run_io_benchmark is False
+    assert config.io_benchmark_duration_s == 30
+    assert config.io_benchmark_max_size_gb == 32
+
+
+@pytest.mark.parametrize("value", [0, 301])
+def test_io_benchmark_duration_s_bounds(value):
+    with pytest.raises(ConfigError, match="io_benchmark_duration_s"):
+        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_duration_s=value)))
+
+
+@pytest.mark.parametrize("value", [0, 1025])
+def test_io_benchmark_max_size_gb_bounds(value):
+    with pytest.raises(ConfigError, match="io_benchmark_max_size_gb"):
+        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_max_size_gb=value)))
+
+
 def test_swap_discard_defaults_true_and_is_boolean_validated():
     assert Config().swap_discard is True
     with pytest.raises(ConfigError, match="must be a JSON boolean"):

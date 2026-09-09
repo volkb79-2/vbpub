@@ -361,18 +361,22 @@ class Installer:
         self._mark_step("user_config", "success", ", ".join(packages))
 
     def _configure_journald(self) -> None:
+        # 1G/60d, not the earlier 200M/12month: with docker_log_driver
+        # defaulting to journald, this is now also every container's log
+        # store, not just the host's own -- operator-set retention,
+        # 2026-09-09.
         content = """[Journal]
 Storage=persistent
 Compress=yes
-SystemMaxUse=200M
+SystemMaxUse=1G
 SystemKeepFree=500M
 SystemMaxFileSize=100M
-MaxRetentionSec=12month
+MaxRetentionSec=60d
 MaxFileSec=1month
 """
         self.actions.write_file("/etc/systemd/journald.conf.d/99-vbpub-v2.conf", content)
         self._run(["/usr/bin/systemctl", "restart", "systemd-journald"], "restart journald", dangerous=True)
-        self._mark_step("journald_config", "success", "persistent 200M journal")
+        self._mark_step("journald_config", "success", "persistent 1G/60d journal")
 
     def _install_docker(self) -> None:
         arch = platform.machine()
@@ -441,9 +445,21 @@ MaxFileSec=1month
         existing = self._read_json_for_merge("/etc/docker/daemon.json")
         existing["live-restore"] = self.config.docker_live_restore
         existing["log-driver"] = self.config.docker_log_driver
-        existing.setdefault("log-opts", {})
-        existing["log-opts"]["max-size"] = self.config.docker_log_max_size
-        existing["log-opts"]["max-file"] = self.config.docker_log_max_file
+        # max-size/max-file are json-file/local-specific rotation options --
+        # meaningless (Docker logs a per-container warning and ignores them)
+        # under journald, where _configure_journald()'s SystemMaxUse/
+        # MaxRetentionSec are the real retention knobs instead.
+        if self.config.docker_log_driver in ("json-file", "local"):
+            existing.setdefault("log-opts", {})
+            existing["log-opts"]["max-size"] = self.config.docker_log_max_size
+            existing["log-opts"]["max-file"] = self.config.docker_log_max_file
+        else:
+            # A host re-run after switching drivers (e.g. json-file ->
+            # journald, the 2026-09-09 default flip) must not leave a
+            # stale, meaningless log-opts block behind -- this function
+            # owns log-driver/log-opts together (see comment above), so an
+            # idempotent re-run must fully reflect the current driver.
+            existing.pop("log-opts", None)
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 

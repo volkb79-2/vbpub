@@ -69,7 +69,13 @@ class Config:
     # host in the gstammtisch mold. See debian_install_v2/README.md.
     vm_swappiness: int = 50
     docker_live_restore: bool = True
-    docker_log_driver: str = "json-file"
+    # journald, not json-file: container logs must survive `docker rm`
+    # (operator requirement, 2026-09-09) -- json-file's log is deleted with
+    # the container's own directory, journald's is not. docker_log_max_size/
+    # _max_file below only apply when a driver that honors them (json-file,
+    # local) is selected instead -- see _configure_journald()'s own
+    # SystemMaxUse/MaxRetentionSec for the journald-driver retention knobs.
+    docker_log_driver: str = "journald"
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
     docker_cleanup_max_age_hours: int = 240
@@ -88,6 +94,31 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Runs the kernel's own official iocost calibration tool
+    # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
+    # a throwaway partition carved from the same free space swap will use,
+    # deleted again before the real swap layout is written. NOT a v1-style
+    # fio sweep, and NOT targeted at the swap partitions themselves
+    # (operator correction, 2026-09-09: "we do not want to replicate the
+    # swap-specific tests we did in v1" -- this measures the underlying
+    # block device generally, the same input io.cost's own model wants).
+    # Off by default: it's destructive-by-design against its target and
+    # adds real time to every install. Persists rbps/rseqiops/rrandiops/
+    # wbps/wseqiops/wrandiops (io.cost.model's own fields) to state_dir/
+    # io-benchmark.json; nothing yet enables io.cost itself from the
+    # result -- that's a separate, later decision. See
+    # debian_install_v2/README.md and the design note this same commit adds.
+    run_io_benchmark: bool = False
+    # Per sub-test duration in seconds (iocost_coef_gen.py's own --duration;
+    # it runs 6 sub-tests, so wall-clock cost is roughly 6x this). Its own
+    # upstream default is 120 (~12 minutes total) -- operator-set default
+    # here is far shorter; 5 is enough for fast VM-harness iteration.
+    io_benchmark_duration_s: int = 30
+    # Upper bound on the throwaway benchmark partition's size; the actual
+    # size used is min(this, available free space minus the swap shape's
+    # own requirement minus a safety margin) -- never let the benchmark
+    # itself eat space the real swap layout needs.
+    io_benchmark_max_size_gb: int = 32
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
@@ -115,7 +146,7 @@ def _validate(config: Config) -> None:
     integer_names = [
         "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "vm_swappiness",
-        "docker_cleanup_max_age_hours",
+        "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
     ]
     for name in integer_names:
         value = getattr(config, name)
@@ -162,6 +193,10 @@ def _validate(config: Config) -> None:
         raise ConfigError("vm_swappiness must be from 0 to 100")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
+    if not 1 <= config.io_benchmark_duration_s <= 300:
+        raise ConfigError("io_benchmark_duration_s must be from 1 to 300")
+    if not 1 <= config.io_benchmark_max_size_gb <= 1024:
+        raise ConfigError("io_benchmark_max_size_gb must be from 1 to 1024")
     if config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
         raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
     if not _HHMM_RE.fullmatch(config.reboot_window_time):
