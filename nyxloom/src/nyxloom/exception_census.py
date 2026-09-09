@@ -115,7 +115,10 @@ LEGACY_BUDGET: dict[str, int] = {
     "render.py": 13,
     # Human-facing chat/CLI surfaces. CR-14 owns the interruption/answer
     # path; CR-01 already owns the CLI's document-truth reporting.
-    "decision_chat.py": 7,
+    # P108 (7 -> 6): the two push functions' identical send-failure handlers
+    # collapsed into the single `_push` helper when both stopped hand-building
+    # an ntfy-shaped NotifyConfig -- one fewer handler, not a reclassified one.
+    "decision_chat.py": 6,
     "cli.py": 6,
     "commands.py": 5,
     # Store and process boundaries. CR-04 owns the store's; CR-13a owned the

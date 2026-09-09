@@ -482,8 +482,13 @@ def mattermost_payload(nc: NotifyConfig, note: dict) -> dict:
         [open](http://127.0.0.1:8942/www/task/demo/T-3.html)
         _tags: decision_
 
-    SPEC §13: every part comes from the typed note fields or from the fixed
-    template strings above -- nothing model-authored is interpolated.
+    SPEC §13: for every caller but one, each part comes from the typed note
+    fields or from the fixed template strings above and nothing
+    model-authored is interpolated. The exception, since P108 routed the
+    decision-chat bridge onto this backend, is
+    decision_chat._post_feedback -- §13's ONE sanctioned free-text carve-out
+    (the operator explicitly opted into a live conversation), whose `body`
+    IS the decision agent's own prose.
 
     The text is NOT Markdown-escaped, deliberately, but the reason is worth
     stating honestly rather than as an absolute: `notification_for` builds
@@ -493,9 +498,21 @@ def mattermost_payload(nc: NotifyConfig, note: dict) -> dict:
     SPEC_ATTENTION's `payload.reason`), so "there is nothing to escape" is a
     property of the callers, not of this function. The residual blast radius
     if one of those ever carried a stray `*` or `_` is a formatting oddity
-    in a private channel: Mattermost sanitizes HTML, `click` is always a
-    code-owned constant (so a Markdown link cannot be redirected), and §13
-    already forbids the free-text sources that would make this interesting.
+    in a private channel: Mattermost sanitizes HTML and `click` is always a
+    code-owned constant, so a Markdown link cannot be redirected.
+
+    P108 makes that last clause narrower and it is restated rather than
+    left as-was: §13 no longer forbids ALL free-text sources here, because
+    `_post_feedback` is now a real caller with model-authored prose. Its
+    unescaped rendering is ACCEPTED, not overlooked. What bounds it is the
+    caller, not this function: the text is passed through `cfg.redact()`,
+    capped at MAX_REPLY_CHARS, and produced by an agent dispatched with a
+    read-only tool allowlist -- and the destination is an operator-only
+    channel. What is genuinely conceded is cosmetic-to-minor: odd Markdown,
+    a model-authored link, or an `@here`/`@channel` that Mattermost would
+    honour. Escaping only `_post_feedback`'s body would be the tighter fix
+    and belongs with the next change to this seam; it is recorded here so
+    the concession is a decision rather than a stale claim.
     """
     lines: list[str] = []
     title = str(note.get("title", "") or "")

@@ -1,4 +1,4 @@
-"""Decision-chat bridge: ntfy/UI <-> a live decision agent. PACKAGE P18.
+"""Decision-chat bridge: chat/UI <-> a live decision agent. PACKAGE P18.
 
 Lets an operator turn a DECISIONS-INBOX.md entry into a live back-and-forth:
 reply on the feedback channel (or via the UI), a resumable read-only claude
@@ -35,6 +35,49 @@ handoff/P18-decision-chat-bridge.md + nyxloom-trove/nyxloom.toml [notify]):
    feedback topic/identity now, shared with P12's cmd verbs. This is a
    real behavioral narrowing versus the handoff text and is the item this
    report flags most prominently for reviewer sign-off.
+
+   1b. SECOND NARROWING, PACKAGE P108 (2026-09-09), after the Mattermost
+   cutover (P106/P107, NL-17). ntfy is retired; `[notify] backend =
+   "mattermost"` names a SINGLE outbound channel, delivered through one
+   incoming webhook that Mattermost binds to one channel at creation time
+   (nyxloom/mattermost/ciu.defaults.toml.j2: `daemon_webhook_url` ->
+   `alerts`; the only other minted webhook, `installer_webhook_url` ->
+   `installs`, belongs to the host-installer identity and is deliberately
+   not a member of `alerts`). There is NO webhook for a separate feedback/
+   decisions channel, and minting one is infrastructure provisioning, not
+   a code change. So the two channels above collapse to one for OUTBOUND
+   pushes -- exactly the same kind of narrowing as (1), applied one level
+   further:
+     notifications (progress)  -> cfg.notify  (the configured backend)
+     feedback (decision pushes) -> cfg.notify  (the SAME channel)
+   Concretely, both pushes below now go through `_push`, which hands
+   `cfg.notify` to notify.send() instead of hand-building an ntfy-shaped
+   NotifyConfig from `ntfy_url`/`cmd_topic`. That hand-built config, plus
+   its `if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic)` guard, is
+   what made every decision-chat push a silent no-op from the cutover
+   until P108.
+
+   The collapse is Mattermost's, NOT a rewrite of (1): ntfy is kept
+   selectable for rollback and is the one backend that still has two
+   distinct topics, so `_decision_channel` below redirects an ntfy send
+   back onto `cmd_topic` and (1)'s topology survives verbatim there.
+
+   The INBOUND half is NOT migrated here and is still ntfy-only:
+   commands.CommandListener long-polls ntfy's `/{topic}/json` endpoint and
+   has no Mattermost equivalent yet (a shared inbound-message capability
+   is a separate, larger package). Consequences, stated rather than
+   papered over:
+     - While the backend is Mattermost, a decision push lands in `alerts`
+       alongside ordinary daemon notifications, and the only way to answer
+       it is the UI (decisions.html) -- so the push text says so, gated on
+       commands.cmd_transport_configured(), instead of telling the operator
+       to reply on a channel nothing reads.
+     - DECISION_OPENED therefore produces TWO same-titled messages in
+       `alerts`: notify.notification_for's generic push (push_classes) and
+       notify_decision_opened's own. Accepted deliberately -- the second
+       carries the actionable "how to answer" text the first lacks, and
+       two beats the zero this package found. It de-duplicates on its own
+       the moment a second channel exists to send one of them to.
 2. CONFIG KNOBS. The handoff also asks for `Policy.decision_agent_route`/
    `decision_agent_effort` (config.py) with a 'frontier-review' default.
    Since config.py is frozen for this wave, this module hardcodes
@@ -77,7 +120,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -107,6 +150,12 @@ READONLY_ARGV_SUFFIX = ["--allowedTools", "Read Grep Glob",
 
 TURN_TIMEOUT_SECONDS = 120
 MAX_REPLY_CHARS = 1200
+
+# P108: the `click` target for both pushes below. Same loopback dashboard
+# base notify.notification_for already hardcodes for every other push; the
+# old target (`cfg.notify.ntfy_url`) is empty once ntfy is retired, and
+# decisions.html is where an operator can actually answer now.
+DECISIONS_UI_URL = "http://127.0.0.1:8942/www/decisions.html"
 
 # ntfy tag on THIS module's own posts -- the loop-guard: a message carrying
 # this tag (or commands.REPLY_TAG, P12's own loop-guard tag) is never
@@ -453,28 +502,71 @@ def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: 
 # ---------------------------------------------------------------------------
 # outbound pushes
 
+def _decision_channel(nc: NotifyConfig) -> NotifyConfig:
+    """The config these two pushes deliver on: the FEEDBACK channel.
+
+    P18's deviation 1 sends both decision pushes to `cmd_topic` (the
+    bidirectional feedback topic), never to `ntfy_topic` (the write-only
+    progress topic). ntfy is the one backend that still has two distinct
+    topics to choose between, and it is kept selectable on purpose --
+    nyxloom-trove/nyxloom.toml calls it "RETIRED -- kept for rollback" --
+    so that choice has to survive P108 rather than be flattened by it:
+    handing `cfg.notify` verbatim to an ntfy send would put decision-agent
+    replies on the progress topic and make `notify_decision_opened`'s
+    "reply here" hint point at a topic CommandListener does not poll.
+
+    Every other backend has a single destination (a Mattermost incoming
+    webhook is channel-bound at creation; see deviation 1b), so there is
+    nothing to redirect and the config passes through untouched."""
+    # FIRST resolved backend, not "the chain contains ntfy": with no explicit
+    # selector the legacy chain is (ntfy, webhook), and ntfy is the one that
+    # actually delivers. A fallthrough to webhook carries the swapped topic
+    # harmlessly -- no non-ntfy backend reads ntfy_topic.
+    backends = notify.resolve_backends(nc)
+    if nc.cmd_topic and backends and backends[0].name == "ntfy":
+        return replace(nc, ntfy_topic=nc.cmd_topic)
+    return nc
+
+
+def _push(cfg: ProjectConfig, decision_id: str, note: dict) -> None:
+    """Deliver one decision-chat push over the project's CONFIGURED backend.
+
+    P108 (see docstring deviation 1b): the pushes below used to hand-build
+    an ntfy-shaped NotifyConfig behind an
+    `if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic)` guard, so the
+    Mattermost cutover silently turned both into no-ops. "Is any channel
+    configured, and which one?" is notify.py's question -- it owns the
+    backend registry -- so it is delegated to notify.send() (which no-ops
+    harmlessly on an unconfigured config) rather than re-encoded here
+    against one backend's field names."""
+    try:
+        notify.send(_decision_channel(cfg.notify), note)
+    except Exception as exc:
+        log.warning("notify send failed", decision_id=decision_id, exc_type=type(exc).__name__)
+
+
 def notify_decision_opened(cfg: ProjectConfig, decision_id: str) -> None:
-    """P18 Behavior #1: push an actionable notice to the feedback channel
-    IN ADDITION to the normal DECISION_OPENED push already sent to the
-    notifications channel by notify.notify_event's push_classes handling.
+    """P18 Behavior #1: push an actionable notice about an opened decision,
+    IN ADDITION to the generic DECISION_OPENED push notify.notify_event's
+    push_classes handling already sent. Those were two distinct channels
+    under the ntfy topology and still are on the rollback path; on
+    Mattermost they are two messages in one channel (deviation 1b).
     Typed fields (decision_id) + a fixed template ONLY -- not the sanctioned
     free-text exception (that is _post_feedback, below)."""
-    if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic):
-        return
-    nc = NotifyConfig(ntfy_url=cfg.notify.ntfy_url, ntfy_topic=cfg.notify.cmd_topic,
-                       token_env=cfg.notify.token_env)
+    # The "reply here" instruction is only true while an inbound transport
+    # is actually reading the feedback channel (ntfy-only; see 1b).
+    if commands.cmd_transport_configured(cfg):
+        how = f"Reply here to discuss (e.g. '{decision_id}: <your message>')."
+    else:
+        how = "Open the decisions page to discuss or decide."
     note = {
         "title": f"Decision needed: {decision_id}",
-        "body": (f"Decision {decision_id} opened. Reply here to discuss "
-                 f"(e.g. '{decision_id}: <your message>')."),
-        "click": cfg.notify.ntfy_url or "",
+        "body": f"Decision {decision_id} opened. {how}",
+        "click": DECISIONS_UI_URL,
         "priority": 5,
         "tags": ["decision"],
     }
-    try:
-        notify.send(nc, note)
-    except Exception as exc:
-        log.warning("notify send failed", decision_id=decision_id, exc_type=type(exc).__name__)
+    _push(cfg, decision_id, note)
 
 
 def _post_feedback(cfg: ProjectConfig, decision_id: str, reply_text: str) -> None:
@@ -482,21 +574,14 @@ def _post_feedback(cfg: ProjectConfig, decision_id: str, reply_text: str) -> Non
     reply_text is model-authored free text, posted ONLY because the
     operator explicitly opted into this conversation. Already redacted +
     length-capped by the caller (advance_chat)."""
-    if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic):
-        return
-    nc = NotifyConfig(ntfy_url=cfg.notify.ntfy_url, ntfy_topic=cfg.notify.cmd_topic,
-                       token_env=cfg.notify.token_env)
     note = {
         "title": f"Decision {decision_id}",
         "body": reply_text,
-        "click": cfg.notify.ntfy_url or "",
+        "click": DECISIONS_UI_URL,
         "priority": 3,
         "tags": [DECISION_AGENT_TAG],
     }
-    try:
-        notify.send(nc, note)
-    except Exception as exc:
-        log.warning("notify send failed", decision_id=decision_id, exc_type=type(exc).__name__)
+    _push(cfg, decision_id, note)
 
 
 # ---------------------------------------------------------------------------

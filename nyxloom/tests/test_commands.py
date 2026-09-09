@@ -841,3 +841,82 @@ def test_digest_verb_empty_digest_has_fixed_reply(tmp_state, sample_project, mon
     cl = CommandListener(load_registry())
     reply = cl.handle_message("digest demo", [])
     assert reply == "no recent activity"
+
+
+# ==========================================================================
+# PACKAGE P108 (2026-09-09): the inbound half is ntfy-only, so a Mattermost-
+# only deployment has nothing to poll. That state used to be indistinguishable
+# from a healthy listener -- `start()` logged "command listener started" and
+# `_run` then spun in silence forever. It must say so, exactly once.
+# ==========================================================================
+
+def test_cmd_transport_configured_requires_all_three_ntfy_facts(
+        tmp_state, sample_project, monkeypatch):
+    from nyxloom.commands import cmd_transport_configured
+
+    cfg = sample_project
+    monkeypatch.setenv("NTFY_CMD_TOKEN", "read-tok")
+    cfg.notify.cmd_token_env = "NTFY_CMD_TOKEN"
+
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.cmd_topic = "feedback"
+    assert cmd_transport_configured(cfg) is True
+
+    # The Mattermost-only shape: a backend is selected and a webhook is set,
+    # but nothing can READ.
+    cfg.notify.backend = "mattermost"
+    cfg.notify.webhook_url = "http://mm.example/hooks/abc"
+    cfg.notify.ntfy_url = None
+    assert cmd_transport_configured(cfg) is False
+
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.cmd_topic = None
+    assert cmd_transport_configured(cfg) is False
+
+    cfg.notify.cmd_topic = "feedback"
+    monkeypatch.delenv("NTFY_CMD_TOKEN", raising=False)
+    assert cmd_transport_configured(cfg) is False
+
+
+def test_unconfigured_inbound_transport_logs_once(tmp_state, sample_project,
+                                                   monkeypatch):
+    """Drives the REAL `_run()` thread with no ntfy-readable project (the
+    live post-cutover state) and asserts the single WARNING. Same
+    `_Watcher`/Event de-flaking convention as the transport-failure test
+    above: the Event fires the instant the real logger call happens."""
+    import time
+
+    from nyxloom import commands as commands_mod
+
+    monkeypatch.delenv("NTFY_URL", raising=False)
+    monkeypatch.delenv("NTFY_CMD_TOKEN", raising=False)
+
+    warned = threading.Event()
+    real_log = commands_mod.log
+    calls = []
+
+    class _Watcher:
+        def __getattr__(self, name):
+            return getattr(real_log, name)
+
+        def warning(self, event, *args, **kwargs):
+            real_log.warning(event, *args, **kwargs)
+            if event.startswith("command listener idle"):
+                calls.append(event)
+                warned.set()
+
+    monkeypatch.setattr(commands_mod, "log", _Watcher())
+
+    cl = CommandListener(load_registry(), poll_timeout=2)
+    cl.BACKOFF_INITIAL = 0.02
+    cl.BACKOFF_MAX = 0.05
+    cl.start()
+    try:
+        assert warned.wait(timeout=5), "idle listener never warned"
+        # Several more backoff cycles must NOT repeat it: the warning is
+        # edge-triggered, not a per-tick log storm.
+        time.sleep(0.5)
+    finally:
+        cl.stop()
+
+    assert len(calls) == 1
