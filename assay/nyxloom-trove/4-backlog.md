@@ -7610,6 +7610,21 @@ per-test events without becoming a second verdict format.
 - [ ] `assay verify` is unaffected, same as every other progress-family
       item — this is diagnostic-only, never evidence.
 
+**Live corroboration, 2026-09-09 (wings-cgroups session, `vbpub` controller).**
+Hit exactly the gap this entry describes, on a real `judge.mode =
+"whole_target"` Go lane (`go test ./sftp/...`), not a fixture: run without
+`--progress` first (the mistake, not a finding) produced a fully opaque
+10-minute wait ending in `BUDGET_EXCEEDED`/`LANE_TIMEOUT` with zero
+observability — B064's phase heartbeat would have shown `command_started`
+ticking but, exactly as this entry predicts, `command_finished` is where all
+the real time sits for a `go test` invocation, and a time-based heartbeat
+cannot distinguish "compiling/linking/running 40 tests, on track" from
+"stuck." `go test -json` (this entry's own named first candidate) would have
+answered that directly — real evidence the gap is not hypothetical, at least
+for Go specifically, where the candidate producer this entry recommends
+already exists and is exactly what a consumer reaches for by hand today. No
+new entry filed — this corroborates B073 as written.
+
 ---
 
 ## B074 — a lane cannot put DEPLOYED LIBRARY CODE under a whole-target judge when it lives under a `tests/` segment; `is_test_path` has no per-target opt-out
@@ -8916,3 +8931,125 @@ not an oversight the same fix already answers.
       the positive (flag/mechanism set, target resolves), the controlled
       negative (same lane without it, still refuses), and confirmation
       that R1/R2's own behavior is unaffected.
+
+---
+
+## B086 — Go mutation testing (R2): `generate_mutation_sites` is unconditionally `UNSUPPORTED`; a real Go mutant generator is buildable, not blocked, and other Go-ecosystem tools already prove the shape
+
+**Proposed by:** `wings-cgroups`, 2026-09-09, from a cross-language rigor
+matrix built while documenting `README.md`'s "Rigor levels, and what's
+registered where" section. **Design first, same shape as B037 — do not
+implement against this entry directly.**
+
+### What was measured
+
+`GoAdapter.generate_mutation_sites` (`src/assay/adapters/go.py`) is
+unconditionally `"UNSUPPORTED"`, and `_built_in_registry()`'s own docstring
+(`cli.py:449-451`) confirms this is deliberate, not an oversight: Go is
+registered at `{"R1"}` only, and the Wave C prompt's own NOT-IN-SCOPE list
+forbade widening it. `P29 already reserved its future R2 namespace` in
+`vocabulary.py` (per the R1-registration entry's own note, above) — a
+placeholder exists, but nothing populates it.
+
+**This is a real gap, not a structural impossibility — the distinction this
+project's own docs now name explicitly** (`README.md`'s new rigor matrix).
+Unlike Go branch coverage (`go-cover`'s file format has no branch concept to
+parse, full stop), Go mutation testing has real, working prior art in the
+wider ecosystem: `go-mutesting` (AST-level operator mutation, the most
+direct precedent for what `generate_mutation_sites` would need to produce),
+`gremlins` (a newer, actively maintained alternative). Neither is assay's to
+adopt wholesale — assay's own R2 model expects assay itself to generate and
+apply mutants against a declared operator vocabulary
+(`MUTATION_OPERATORS_BY_LANGUAGE`), the same shape Python and SQL already
+ship — but both prove Go's `go/ast`/`go/parser` stdlib packages are
+sufficient to do real, safe source-level mutation without an external
+toolchain beyond `go` itself (which an R1 Go lane already requires).
+
+### Why design-first, not carve-directly
+
+Real design surface, same class of question B037 (JS mutation) worked
+through before implementation: which operator catalogue Go ships with first
+(the obvious minimal set mirrors Python's shipped compare-swap/boolop-swap/
+falsy-swap shape, but Go's type system admits mutations Python's dynamic
+typing doesn't — e.g. integer overflow-adjacent constant changes, nil-check
+removal); whether mutants are generated via `go/ast` manipulation and
+re-emitted as source (matching how the existing Go R1 statement-position
+oracle already round-trips through real Go source, a precedent this item
+can reuse) or via a different mechanism; how a killed/survived mutant is
+distinguished when `go test`'s own output is the only signal (no framework-
+level "which assertion failed" the way pytest's traceback gives Python);
+and whether Go's build step (mutants must still compile) becomes a new,
+Go-specific `NO_MEASUREMENT` reason distinct from anything R2 currently
+names.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a design ruling recorded as a decisions.md A-row, naming the chosen
+      operator catalogue and the rejected alternatives (adopting
+      `go-mutesting` wholesale; deferring indefinitely);
+- [ ] `generate_mutation_sites` returns real sites for a real Go package,
+      qualified against a live consumer the way the R1 Go adapter was
+      (`shared-ramdisk-depot-manager`, or another real Go project already in
+      the estate — `wings-cgroups`'s own `internal/cgroups`/`sftp` packages
+      are a live candidate, already carrying real, mutation-tested-by-hand
+      logic per that project's own review chain, 2026-09-09);
+- [ ] a killed-vs-survived mutant is distinguished from `go test`'s exit
+      code and output alone, with no assumption about test framework
+      internals `go test` itself doesn't expose;
+- [ ] `MUTATION_OPERATORS_BY_LANGUAGE`'s reserved Go entry (P29) is filled,
+      not left as a placeholder alongside a working adapter.
+
+## B087 — JavaScript/TypeScript canary (R3): the injection methods are real, implemented code; no producer path reaches them through the CLI registry
+
+**Proposed by:** `wings-cgroups`, 2026-09-09, same session/matrix as B086.
+**Cheap, scoped, NOT design-first — the harder design work is already done.**
+
+### What was measured
+
+`_built_in_registry()`'s own docstring (`cli.py`, B036's paragraph) states
+this outright: *"the two canary injection methods are real implementations
+rather than stubs, but a producer path is a separate claim from a method
+existing (DESIGN-GUIDE §7), and wiring one is a fast-follow, not part of
+B036."* That fast-follow was never given its own tracked id — this entry is
+that id. Grepping the backlog for "javascript" + "canary" before filing
+(this entry's own search-before-file step) found only the original,
+now-superseded R1-registration proposal's passing mention of R3 as future
+work, no dedicated tracking entry, and no evidence it was ever picked up.
+
+Python and Go both prove the registry-wiring step itself is small once the
+adapter methods exist: registering a language at a new rigor level is a
+one-line change to `_built_in_registry()`'s `new_registry(...)` call
+(`cli.py:261-265` region, per the JS-R1-registration entry's own
+precedent), the same single wiring point every prior rigor addition to an
+already-registered language used.
+
+### Why this is the cheap one, and B086 is not
+
+Unlike Go mutation (B086), nothing here needs new adapter code written from
+scratch — the injection methods already exist and, per the docstring's own
+framing, are not stubs. The work is: confirm the existing methods actually
+produce a working canary transform pair against a real JS/TS project (not
+just that they exist syntactically), register `"javascript"` at
+`{"R1","R2","R3"}` in `_built_in_registry()`, and qualify it the way every
+other rigor-level addition in this project's history has been qualified —
+against a real consumer, not only fixtures (the standard this project holds
+every other registration to, per its own repeated "a library surface is not
+a product capability until a supported producer path reaches it" framing).
+
+### Acceptance (for whoever picks this up)
+
+- [ ] the existing canary injection methods are exercised end-to-end against
+      a real JS/TS project's real source (not a fixture), confirming they
+      produce a genuine control/transform pair the R3 machinery can judge;
+- [ ] `_built_in_registry()` registers `"javascript"` at R3;
+- [ ] a real qualification run, the same shape as the Go R1 qualification
+      (`README.md`'s "Qualified on a real project" paragraph) — a real
+      commit range, through the shipped zipapp, compared against a hand-
+      verified expectation, with any defect found treated as what a
+      qualification is for (the same framing B061 used);
+- [ ] `README.md`'s Status line and the new rigor matrix are updated to
+      reflect `{"R1","R2","R3"}` once this lands — this entry's own filing
+      is what corrected the matrix to `{"R1","R2"}` (R3 unregistered) in the
+      first place, so the matrix is the freshness check for whoever closes
+      this.
+
