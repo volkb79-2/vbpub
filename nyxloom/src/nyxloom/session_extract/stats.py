@@ -35,20 +35,9 @@ from pathlib import Path
 
 from . import classifier
 from .adapters import claude_code, detect
-from .config import ExtractConfig
+from .config import PROFILES, ExtractConfig
 from .events import EventKind, NormalizedEvent
 from .select import select
-
-# Named compression-profile presets (open design question in
-# session_extract/README.md, "Named compression profiles" -- these are a
-# first-pass definition, not a settled taxonomy). "manual_fresh" matches
-# the real --max-lifecycle-markers -1 --max-words 8000 run validated
-# against the real dstdns session (E-009 follow-up).
-PROFILES: dict[str, ExtractConfig] = {
-    "tight": ExtractConfig(max_checkpoints=3, max_words=4_000, long_comment_chars=240),
-    "default": ExtractConfig(),
-    "manual_fresh": ExtractConfig(max_checkpoints=1_000_000, max_words=8_000, max_lifecycle_markers=-1),
-}
 
 
 @dataclass

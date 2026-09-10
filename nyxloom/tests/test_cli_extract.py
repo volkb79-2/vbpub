@@ -165,6 +165,66 @@ def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys)
     assert "before the boundary" in capsys.readouterr().out
 
 
+def test_extract_profile_supplies_defaults_for_the_selection_knobs(tmp_path, capsys):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "before the boundary"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1",
+             timestamp="2026-01-01T00:00:01Z", compactMetadata={}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    # "manual_fresh"'s max_lifecycle_markers=-1 default applies with no
+    # --max-lifecycle-markers flag at all.
+    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh"])
+    assert exit_code == 0
+    assert "before the boundary" in capsys.readouterr().out
+
+    # "default" (or no --profile) keeps today's hard-stop behavior.
+    exit_code = cli.main(["extract", str(fp), "--profile", "default"])
+    assert exit_code == 0
+    assert "before the boundary" not in capsys.readouterr().out
+
+
+def test_extract_max_words_independently_overrides_a_profiles_own_default(tmp_path, capsys):
+    # --max-words is a separate axis from --profile (operator request,
+    # 2026-09-10): passing it alongside --profile overrides only the
+    # target-length knob, leaving the profile's other knobs (here,
+    # max_lifecycle_markers=-1) intact.
+    records = [
+        _rec(type="assistant", uuid="old0", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [
+                 {"type": "text", "text": "Found it -- a genuinely long root-cause finding worth keeping."},
+             ]}),
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "before the boundary"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1",
+             timestamp="2026-01-01T00:00:02Z", compactMetadata={}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:03Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    # manual_fresh's own 8000-word default comfortably reaches old0.
+    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Found it" in out
+
+    # Overridden down to a 5-word budget: still walks past the marker
+    # (manual_fresh's max_lifecycle_markers=-1 is untouched)...
+    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "5"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "before the boundary" in out
+    # ...but the tighter budget now stops the walk before reaching old0.
+    assert "Found it" not in out
+
+
 def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     prior = tmp_path / "prior.json"

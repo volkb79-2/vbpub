@@ -105,3 +105,35 @@ class ExtractConfig:
     # "text" (delimited prose, ready to paste into a fresh session) or
     # "json" (structured, for a script/second-stage tool to consume).
     output_format: str = "text"
+
+
+# Named presets bundling the "how aggressively should selection filter
+# content" knobs -- max_checkpoints, checkpoint_score_threshold,
+# long_comment_chars, max_lifecycle_markers. Deliberately does NOT bundle
+# max_words as a fixed, profile-defining value: target length is its own
+# axis (an operator asked for this explicitly, 2026-09-10) -- "how
+# permissive is the selection bar" and "how big should the final output be"
+# are independent questions, and conflating them into one preset value
+# makes "strict criteria, generous budget" or "lenient criteria, tight
+# budget" impossible to ask for. Each profile below still carries a
+# max_words value, but ONLY as a sensible per-profile DEFAULT that
+# `nyxloom extract --profile X --max-words N` (or ExtractConfig's own
+# dataclass replace) freely overrides -- see cli.py's cmd_extract for how
+# the override is applied. See also
+# design-context-lifecycle-experiments.md's E-009 "Named compression
+# profiles" open question and its 2026-09-10 follow-up.
+PROFILES: dict[str, ExtractConfig] = {
+    # Strict bar, no walking past a real compaction -- the default chained-
+    # snapshot-pipeline shape (config.py's own append-only/cache-stable
+    # principle governs this one).
+    "tight": ExtractConfig(max_checkpoints=3, max_words=4_000, long_comment_chars=240),
+    # This package's plain, unnamed default -- kept as a named profile too
+    # so every extraction, --profile or not, is expressible as "some
+    # profile plus overrides."
+    "default": ExtractConfig(),
+    # Ignores lifecycle markers entirely -- the one-time manual-extraction-
+    # for-a-fresh-session use case (validated against a real dstdns session,
+    # E-009's follow-up): richest possible brief within a word budget, not
+    # chained-run cache stability.
+    "manual_fresh": ExtractConfig(max_checkpoints=1_000_000, max_words=8_000, max_lifecycle_markers=-1),
+}

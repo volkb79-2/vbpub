@@ -78,6 +78,14 @@ control-plane import (`daemon.py` already imports `watchdog`). The other
 files P104 touched (`daemon.py`, `adapters.py`, `wrapper.py`) all remain
 inside their own tolerances.
 
+Re-measured 2026-09-10 for `cli.py`'s row: 2,220 -> 2,486 lines. All growth is
+the `nyxloom extract`/`nyxloom session-stats` surfaces (`session_extract/`,
+outside the control-plane closure -- see rule 2 below): `--max-lifecycle-markers`
+and `--profile` flags on `extract`, and the new `session-stats` subcommand
+(condensed + detailed cost/timeline views on top of `session_extract/stats.py`).
+No control-plane import added; `cli.py` is already listed as a non-closure
+surface per rule 2. Responsibility text and ownership unchanged.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and
@@ -131,7 +139,7 @@ why. The rules are deliberately structural, never line-exact:
 | `src/nyxloom/containment.py` | new | CR-13a (added 2026-08-03, D-R7): execution containment — the fail-closed requirement rule (only an explicit `trust = "operator"` on a non-free route runs uncontained), the environment ALLOWLIST that replaced `wrapper.DAEMON_ONLY_ENV`, host-path translation for a docker-out-of-docker daemon, the `docker run` plan, and the runtime probe behind the launch gate. Pure functions plus one injectable runner, so the effect boundary passes its own process port and the detached wrapper passes a plain subprocess. CR-13b adds resource and per-task policy ON this plan; it must not add a way to establish containment PARTIALLY |
 | `src/nyxloom/adapters.py` | 1,161 | Provider argv/prompt and usage adapters | CR-08, CR-10, CR-13a | Route selection must not remain at adapter call sites; preserve argv-budget tests |
 | `src/nyxloom/render.py` | 2,526 | Dashboard/operator rendering | CR-14 | Consume trace/evidence projections; do not derive authority from presentation data |
-| `src/nyxloom/cli.py` | 2,220 | Operator and recovery commands | CR-01, CR-04, CR-14, CR-15 | Keep state-changing paths on the same authoritative store/evidence rules |
+| `src/nyxloom/cli.py` | 2,486 | Operator and recovery commands | CR-01, CR-04, CR-14, CR-15 | Keep state-changing paths on the same authoritative store/evidence rules |
 
 ## Supporting boundaries
 

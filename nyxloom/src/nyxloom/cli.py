@@ -661,8 +661,8 @@ def cmd_render(args) -> int:
 
 
 def cmd_extract(args) -> int:
-    """extract <path> [--session ID] [--format FMT] [--json] [--checkpoints N]
-    [--long-threshold N] [--max-words N] [--include-thinking]
+    """extract <path> [--session ID] [--format FMT] [--json] [--profile NAME]
+    [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
     [--max-lifecycle-markers N] [--since MARKER | --since-file PATH]
     [--until MARKER] [--lossless]
 
@@ -672,6 +672,14 @@ def cmd_extract(args) -> int:
     Codex CLI JSONL file, or an opencode SQLite store); --format overrides
     when detection is ambiguous or wrong. Prints the resumable brief to
     stdout: delimited text by default, or --json for a second-stage tool.
+
+    --profile picks a named PROFILES preset (session_extract/config.py) for
+    the selection-aggressiveness knobs. --max-words (target length) is a
+    deliberately SEPARATE axis, not part of a profile's identity -- a
+    profile only supplies its own sensible default for it; pass --max-words
+    to override that default regardless of --profile. Any other individual
+    flag, if also passed, likewise overrides just that one knob from the
+    chosen profile.
 
     --since-file is the delta-extraction UX: point it at a PRIOR run's saved
     output (text or json) and this run picks up exactly where that one left
@@ -696,6 +704,7 @@ def cmd_extract(args) -> int:
 
     from .session_extract import ExtractConfig, extract, read_since_marker
     from .session_extract.adapters import detect
+    from .session_extract.config import PROFILES
 
     since_marker = args.since
     if args.since_file:
@@ -717,14 +726,23 @@ def cmd_extract(args) -> int:
         print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
         return 0
 
+    # --profile supplies defaults for the selection-aggressiveness knobs
+    # (and its own default target length); any of --checkpoints/
+    # --long-threshold/--max-words/--max-lifecycle-markers, if ALSO passed,
+    # overrides that one knob -- target length is always independently
+    # settable, never locked to whichever profile was chosen.
+    base = PROFILES[args.profile] if args.profile else ExtractConfig()
     config = ExtractConfig(
-        max_checkpoints=args.checkpoints,
-        long_comment_chars=args.long_threshold,
-        max_words=args.max_words,
+        max_checkpoints=args.checkpoints if args.checkpoints is not None else base.max_checkpoints,
+        long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
+        max_words=args.max_words if args.max_words is not None else base.max_words,
         include_thinking=args.include_thinking,
         since_marker=since_marker,
         until_marker=args.until,
-        max_lifecycle_markers=args.max_lifecycle_markers,
+        max_lifecycle_markers=(
+            args.max_lifecycle_markers if args.max_lifecycle_markers is not None
+            else base.max_lifecycle_markers
+        ),
         output_format="json" if args.json else "text",
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
@@ -2013,6 +2031,8 @@ def main(argv: list[str] | None = None) -> int:
     render_parser = subparsers.add_parser("render")
 
     # extract
+    from .session_extract.config import PROFILES
+
     extract_parser = subparsers.add_parser("extract")
     extract_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
                                               "a file or directory for opencode's SQLite store)")
@@ -2023,22 +2043,34 @@ def main(argv: list[str] | None = None) -> int:
                                  help="Force the adapter instead of auto-detecting from the path")
     extract_parser.add_argument("--json", action="store_true",
                                  help="JSON output instead of delimited text")
-    extract_parser.add_argument("--checkpoints", type=int, default=5,
-                                 help="How many recent checkpoints to anchor on (default 5)")
-    extract_parser.add_argument("--long-threshold", type=int, default=180,
+    extract_parser.add_argument("--profile", choices=sorted(PROFILES),
+                                 help="Named preset for the selection-aggressiveness knobs "
+                                      "(--checkpoints/--long-threshold/--max-lifecycle-markers) "
+                                      "-- see session_extract/config.py's PROFILES. --max-words "
+                                      "is a SEPARATE axis: a profile only supplies its own "
+                                      "sensible default for it, still freely overridden by "
+                                      "--max-words. Any individual flag below, if also passed, "
+                                      "overrides that one knob from the chosen profile.")
+    extract_parser.add_argument("--checkpoints", type=int, default=None,
+                                 help="How many recent checkpoints to anchor on (default 5, or "
+                                      "the --profile's value)")
+    extract_parser.add_argument("--long-threshold", type=int, default=None,
                                  help="Char threshold for keeping a non-checkpoint comment "
-                                      "(default 180; a concrete-finding comment survives "
-                                      "regardless of length)")
-    extract_parser.add_argument("--max-words", type=int, default=10_000,
-                                 help="Hard output word budget (default 10000)")
+                                      "(default 180, or the --profile's value; a concrete-"
+                                      "finding comment survives regardless of length)")
+    extract_parser.add_argument("--max-words", type=int, default=None,
+                                 help="Hard output word budget -- target length, independent of "
+                                      "--profile (default 10000, or the --profile's own default "
+                                      "if --profile is set and this isn't)")
     extract_parser.add_argument("--include-thinking", action="store_true",
                                  help="Also emit assistant thinking/reasoning content where the "
                                       "adapter can recover it")
-    extract_parser.add_argument("--max-lifecycle-markers", type=int, default=0,
+    extract_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
                                  help="How many real compaction/[/compact]/[/clear] boundaries "
-                                      "the walk may pass before stopping at one (default 0 -- "
-                                      "stop at the first). -1 = never stop at a marker (only "
-                                      "--max-words/--checkpoints bound the walk)")
+                                      "the walk may pass before stopping at one (default 0, or "
+                                      "the --profile's value -- stop at the first). -1 = never "
+                                      "stop at a marker (only --max-words/--checkpoints bound "
+                                      "the walk)")
     since_group = extract_parser.add_mutually_exclusive_group()
     since_group.add_argument("--since",
                               help="Resume marker from a prior run's last_marker -- only "
