@@ -4,8 +4,9 @@
 
 [deploy]
 project_name = "pwmcp"
-environment_tag = "local"
-network_name = "pwmcp"
+# $INSTANCE_ID, matching ciu.global.defaults.toml.j2 -- see its comment.
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
 # Hostdir ownership values (ciu S6/S7), expanded from ciu.env. pwmcp mounts no

@@ -10,8 +10,14 @@
 
 [deploy]
 project_name = "pwmcp"
-environment_tag = "local"
-network_name = "pwmcp"
+# $INSTANCE_ID (S3.2 $VAR expansion), not a fixed literal: this file is a
+# maintainer's LOCAL build-test root (see header) — two worktrees each
+# running `ciu up --dir .` here would otherwise collide on the identical
+# `pwmcp-local-pwmcp` container name (CIU-104). Matches dstdns's own
+# convention (dstdns/ciu.global.defaults.toml.j2).
+environment_tag = "$INSTANCE_ID"
+# Same reasoning, same fix, for the network (dstdns: $DOCKER_NETWORK_INTERNAL).
+network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
 # Hostdir ownership values (ciu S6/S7), expanded from ciu.env. pwmcp mounts no

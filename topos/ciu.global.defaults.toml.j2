@@ -12,8 +12,12 @@
 
 [deploy]
 project_name = "topos"
-environment_tag = "ui-test"
-network_name = "topos-ui-test"
+# $INSTANCE_ID (S3.2 $VAR expansion), not a fixed literal -- two worktrees
+# each running the UI-testing scaffold would otherwise collide on the
+# identical `topos-ui-test-pwmcp` container name (CIU-104). Matches
+# dstdns's own convention (dstdns/ciu.global.defaults.toml.j2).
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
 # Hostdir ownership values (ciu S6/S7), expanded from ciu.env.
