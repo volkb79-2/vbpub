@@ -5,11 +5,11 @@
 # nyxloom's OWN browser service (see ciu.defaults.toml.j2 for the why). The
 # browser inside this container drives the nyxloom dashboard at nyxloomd:8942;
 # the devcontainer / Claude Code reaches the MCP at pwmcp:8931. Both legs ride
-# the ONE network the nyxloomd stack owns (nyxloom-prod-nyxloomd-net), attached
+# the ONE network the nyxloomd stack owns (nyxloom-1dd3d1-nyxloomd-net), attached
 # here as EXTERNAL — we ATTACH to it, we do not define it.
 #
 # COMPOSE PROJECT NAME is ciu's job: ciu drives `docker compose` with an explicit,
-# ciu-derived project scope (project + env + stack, e.g. nyxloom-prod-pwmcp-instance),
+# ciu-derived project scope (project + env + stack, e.g. nyxloom-1dd3d1-pwmcp-instance),
 # NOT the bare directory basename — so a bare `docker compose up` from here (which
 # would default the compose project to the dir basename "pwmcp-instance" and could
 # collide with another project's pwmcp) is NOT the supported path. Use

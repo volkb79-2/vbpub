@@ -2,7 +2,7 @@
 name = "nyxloomd"
 image = "ghcr.io/volkb79-2/nyxloomd:0.0.0-dev"
 version = "0.0.0-dev"
-container_prefix = "nyxloom-prod"
+container_prefix = "nyxloom-1dd3d1"
 dashboard_port = 8942
 
 [nyxloomd.runtime]

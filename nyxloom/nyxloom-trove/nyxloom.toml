@@ -242,6 +242,10 @@ feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectio
 transport = "mmctl"
 team = "nyxloom"
 channel = "intake"
-container = "nyxloom-prod-mattermost"
+container = "nyxloom-1dd3d1-mattermost"
 # Only read by the `rest` transport; the stack's private-bridge address.
-base_url = "http://nyxloom-prod-mattermost:8065"
+# Both values follow mattermost's environment_tag ($INSTANCE_ID since
+# 2026-09-10, CIU-104) -- they name THIS checkout's instance (1dd3d1,
+# ../ciu.instance.generated.toml) and must be updated by hand here if this
+# checkout is ever re-cloned to a new physical path.
+base_url = "http://nyxloom-1dd3d1-mattermost:8065"

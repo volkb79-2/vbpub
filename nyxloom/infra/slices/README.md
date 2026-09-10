@@ -5,6 +5,18 @@ templates, not shipped config: several values must be measured on the target
 host before they mean anything, and are deliberately left commented out rather
 than guessed.
 
+> **This describes a real, dedicated-host production deployment of nyxloom —
+> not this devcontainer.** The "target host" these templates and this file's
+> `MemoryMax`/`MemoryMin` guidance refer to is a machine nyxloom is
+> deliberately placed on (sharing it with the production `soulmask` game
+> server, per the RAM-budget row below); it is not this environment, which is
+> dev. There was past confusion about this (this checkout's `nyxloom`
+> ciu root itself was mislabeled `environment_tag = "prod"` until 2026-09-10 —
+> see `../../ciu.global.defaults.toml.j2` and CIU-104,
+> `vbpub/ciu/KNOWN_ISSUES_TODO_BACKLOG.md`). `nyxloom.slice` "has never
+> existed on this host" (`../../docs/plan-resource-governance.md`) precisely
+> because this devcontainer is not that target host.
+
 ## The hierarchy is the naming
 
 systemd derives nesting from dash-separated names. `nyxloom-gates.slice` is

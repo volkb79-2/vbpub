@@ -32,7 +32,7 @@ cd /workspaces/vbpub && ciu up --dir nyxloom/ntfy -y
 Standalone-root ciu stack (own `ciu.global.defaults.toml.j2` + stack-local
 `ciu.env`; server.yml arrives via the S5 configfile overlay — a raw relative
 volume bind would resolve to the LOGICAL devcontainer path and the host
-daemon would create an empty directory). Container: `nyxloom-prod-ntfy`.
+daemon would create an empty directory). Container: `nyxloom-1dd3d1-ntfy`.
 Data volume `nyxloom-ntfy_ntfy-data` is external — survives `ciu --reset`.
 
 Fallback (plain compose, pre-rendered with absolute physical binds):
@@ -43,13 +43,13 @@ Fallback (plain compose, pre-rendered with absolute physical binds):
 
 ```bash
 # admin (interactive password prompt — or NTFY_PASSWORD env for scripted):
-docker exec -it nyxloom-prod-ntfy ntfy user add --role=admin admin
+docker exec -it nyxloom-1dd3d1-ntfy ntfy user add --role=admin admin
 # nyxloom publisher: restricted user + access token, write-only on its topics
-docker exec -it nyxloom-prod-ntfy ntfy user add nyxloom
-docker exec nyxloom-prod-ntfy ntfy access nyxloom "nyxloom-*" write-only
-docker exec nyxloom-prod-ntfy ntfy token add nyxloom   # -> tk_... for notify config
+docker exec -it nyxloom-1dd3d1-ntfy ntfy user add nyxloom
+docker exec nyxloom-1dd3d1-ntfy ntfy access nyxloom "nyxloom-*" write-only
+docker exec nyxloom-1dd3d1-ntfy ntfy token add nyxloom   # -> tk_... for notify config
 # your phone/browser subscriber (read access):
-docker exec nyxloom-prod-ntfy ntfy access admin "nyxloom-*" read-write
+docker exec nyxloom-1dd3d1-ntfy ntfy access admin "nyxloom-*" read-write
 ```
 
 Auth state lives in the `ntfy-data` volume (`auth.db`) — never in files here.

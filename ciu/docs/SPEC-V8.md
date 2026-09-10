@@ -815,6 +815,14 @@ S3.5.5 (two-pass render) withdrawn · S6.4 (init edges) → S6.4 (bindings) · S
 ## Appendix D — Changes in draft.4, draft.5 and draft.6 and why (third-party review rounds 1–3)
 Each row names the finding, the rule(s) changed, and the reasoning; the full dispositions are in `CIU-V8-THIRD-PARTY-REVIEW-RESPONSE-2026-09-03.md` (§1 for round 1, §6 for round 2, §7 for round 3).
 
+### D.5 — operator note for the next review round (2026-09-10, pending — not yet a change)
+
+Round 4 (`CIU-V8-THIRD-PARTY-REVIEW-ROUND4-2026-09-03.md`) did not touch S4.5; this is a separate thread the operator wants weighed whenever S4.5 next comes up for review, not a response to T4-01..T4-10.
+
+| source | rules | note |
+|---|---|---|
+| operator, 2026-09-10 (see CIU-105, `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`) | S4.1.1, S4.5.1–S4.5.3 | **Operator judgement: the `owner_id`/`ciu.owner` label design is too convoluted for what it buys.** It exists to tell a genuine cross-checkout collision on the 24-bit `instance_id` apart from the rightful owner's own resources (S4.5.3) — a real but narrow threat model — and a 128-bit random token stamped on every resource plus an adoption/`--move`/`--fresh` state machine (S4.1.2, S4.5.3) is a lot of machinery for that. Protection *level* based on the existing `instance_id` alone is judged sufficient: raise `instance_id` from 6 to 8 hex characters (S4.1.1) to push collision probability low enough, and drop `owner_id` rather than layer a second identity on top of it. Separately — and this is the more important half — `owner_id` was reasoned about alongside CIU-105 (the rightful owner, standing in the actual protected checkout, running `ciu down`/`ciu clean` there themselves by mistake — wrong tab, muscle memory) but does **not** cover that case at all: S4.5.3's refusal only fires when `ciu.owner` differs, and it is identical in the rightful owner's own checkout. CIU-104's live incident (`nyxloom-prod-mattermost`, 2026-09-10) was the cross-checkout case `owner_id` does address; CIU-105 is the same-checkout case it does not. Proposed fix: instead of `owner_id`, reintroduce the specific per-instance protection flags for shutdown/deletion that an earlier v8 draft had (`[deploy.profiles.<name>.locks] down=true clean=true`-shaped, a "production-lockdown" profile, superseded in the current text by `owner_id` alone) so that `down`/`clean` become a no-op or require an explicit override on a flagged instance — protecting the rightful owner from themselves, which the label design was never going to do regardless of `instance_id` length. |
+
 ### D.4 draft.7 — host enrollment (operator direction 2026-09-03, CIU-93)
 
 | source | rules | change and reasoning |

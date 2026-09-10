@@ -349,7 +349,7 @@ the logs-vs-events principle. Finalize rotation/retention (size×backups) with a
   caveat) so `/opt/nyxloom-venv` carries structlog. This is the one phase whose deploy is a full
   image rebuild rather than a bind-mount restart.
 - P01–P03 change **daemon runtime code** → each needs a daemon restart to take effect
-  (`docker exec nyxloom-prod-nyxloomd pkill -f 'nyxloom.cli daemon'` — note this recycles the
+  (`docker exec nyxloom-1dd3d1-nyxloomd pkill -f 'nyxloom.cli daemon'` — note this recycles the
   container via the argv artifact; verify healthy + doctor after). Behaviour is otherwise
   additive; production stays functional at INFO throughout.
 - P04 adds UI/endpoints → restart to serve the new page; static `logs.html` re-renders on the

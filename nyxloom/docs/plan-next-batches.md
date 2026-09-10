@@ -33,7 +33,7 @@
 > as historical narrative, not current state.
 
 **State (as of 2026-07-25, see stale-notice above):** vbpub/nyxloom `main` @
-`8af765b7`, tree clean, daemon `nyxloom-prod-nyxloomd`
+`8af765b7`, tree clean, daemon `nyxloom-1dd3d1-nyxloomd`
 STOPPED. Pipeline hardened this session: A/F/G/GA1/GA2/D-part-1 merged; gate is
 parallel (`-n auto`) + coverage-honest (pytest-cov) + auto-reverting (F) + verifiable
 (`nyxloom gate verify`, GA1) + rigor-declaring (`asserts=`, GA2); review is
@@ -292,13 +292,13 @@ today (feature was DARK throughout). Detail in `docs/handoff/f018-ad3-LOG.md`.
 With the checklist clear, dogfooding the persistent carver is a deliberate manual→autonomous
 control-handoff, reserved for the operator. The pilot steps, when approved:
 1. Set `cfg.carve.session = "project-persistent"` on ONE pilot project (leave others `"fresh"`).
-2. `docker start nyxloom-prod-nyxloomd` (it stays STOPPED until then — two-dispatcher guard).
+2. `docker start nyxloom-1dd3d1-nyxloomd` (it stays STOPPED until then — two-dispatcher guard).
 3. Lift `carve_ahead_target` 0→N and `test_health_interval_days` 0→14 for the pilot.
 4. Watch the once-per-daemon `carver.enablement.active` line + merge-feed cadence + context growth.
 
 `reconcile.py` is FROZEN-CORE: A1 gets a SOLO gate + a full adversarial review; A2 gets a SOLO
 gate + medium review. A1→A2 serial (A2 depends on A1's fields). After A2 lands → **DOGFOOD
-TRANSITION**: `docker start nyxloom-prod-nyxloomd`; decide `max_active_tasks` (concurrency is
+TRANSITION**: `docker start nyxloom-1dd3d1-nyxloomd`; decide `max_active_tasks` (concurrency is
 memory-safe per the 2026-07-25 measurement — the gating factor is flake-tolerance, not RAM).
 
 ## BATCH B — finish gate-adoption · dogfood candidates (or manual)

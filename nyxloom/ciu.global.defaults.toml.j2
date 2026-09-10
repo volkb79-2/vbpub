@@ -8,8 +8,19 @@
 
 [deploy]
 project_name = "nyxloom"
-environment_tag = "prod"
-network_name = "nyxloom"
+# $INSTANCE_ID (S3.2 $VAR expansion), not a fixed literal. This root's
+# `environment_tag` was "prod" until 2026-09-10 -- deliberately, on the
+# mistaken belief this devcontainer checkout WAS the real production
+# deployment. It is not: this is dev, and a fixed environment_tag collided
+# with the primary checkout's live containers from any `ciu worktree`
+# (CIU-104, live-reproduced against nyxloom-prod-mattermost). Matches
+# dstdns's own convention and vbpub/pwmcp + vbpub/topos (both migrated the
+# same day, commit 28a70b24). A REAL dedicated-host production deployment
+# of nyxloom would set its own fixed environment_tag deliberately, the way
+# this file used to -- that is a different, not-yet-existing checkout, not
+# this one.
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
 log_level = "INFO"
 
 # Hostdir ownership values (ciu S6/S7), expanded from ciu.env.

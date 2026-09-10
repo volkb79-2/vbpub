@@ -15,7 +15,7 @@ daemon stopped, and it is genuinely independent of the daemon.
 
 Its *invocation* was not. CR-16 shipped exactly one invoker — the container
 healthcheck — and **Docker does not run healthchecks on a stopped container**.
-So the incident the package exists to prevent (`nyxloom-prod-nyxloomd` sitting
+So the incident the package exists to prevent (`nyxloom-1dd3d1-nyxloomd` sitting
 `Exited (143)` for ten days while the notification channel crash-looped, with
 nothing reporting either) would have gone exactly as unnoticed. Worse, even
 when the healthcheck does run and fail, `unhealthy` is a state in

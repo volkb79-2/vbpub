@@ -22,8 +22,8 @@
 #   docker compose -f docker-compose.yml -p nyxloom-mattermost up -d
 #
 # Container names differ from the ciu path on purpose (nyxloom-mattermost vs
-# nyxloom-prod-mattermost) so the two cannot silently collide — stop the ciu
-# stack first.
+# nyxloom-<instance_id>-mattermost, e.g. nyxloom-1dd3d1-mattermost on this
+# checkout) so the two cannot silently collide — stop the ciu stack first.
 #
 # STORAGE — READ THIS, it CHANGED in nyxloom-P107. The three bind mounts
 # below (vol-postgres-data / vol-mattermost-config / vol-mattermost-logs) are
@@ -37,10 +37,12 @@
 #
 # The remaining three named volumes (mattermost-data / -plugins /
 # -client-plugins) DO still diverge by compose project — nyxloom-mattermost_*
-# here vs nyxloom-prod-mattermost_* under ciu. All three are empty in practice
-# (attachments and the plugin framework are both disabled), so the divergence
-# is inert; it is recorded rather than fixed because giving a fallback path
-# its own copy of nothing is harmless.
+# here vs nyxloom-<instance_id>-mattermost_* under ciu. mattermost-plugins /
+# -client-plugins are empty in practice (the plugin framework is disabled);
+# mattermost-data is NOT — file attachments are enabled (nyxloom-P111) and
+# the ciu path's copy holds real uploads. The divergence is recorded rather
+# than fixed because a from-scratch fallback run starts with its own empty
+# copy, which is the expected "fresh instance" behavior for this path anyway.
 #
 # HOSTDIR OWNERSHIP IS NOT AUTOMATIC HERE. Under ciu, S6.5 pre-owns those
 # three directories with a root helper container. Plain compose has no such

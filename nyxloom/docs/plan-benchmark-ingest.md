@@ -44,7 +44,7 @@ safely (a DOM/schema change must fail loud, never corrupt our data) and cumulati
   parses (model non-empty, pass@1∈[0,100], cost≥0, effort∈known∪{null}); canary sentinel
   string present (proves we're on the real page, not an error/placeholder).
 - **D-B5 pwmcp-driven, not in-process.** The daemon has no browser; the scrape source talks
-  to nyxloom's own pwmcp (nyxloom-prod-pwmcp) — WebSocket/Playwright — exactly as the
+  to nyxloom's own pwmcp (nyxloom-1dd3d1-pwmcp) — WebSocket/Playwright — exactly as the
   cockpit did. Selectors/interactions are config-driven so a small DOM tweak is a config
   edit, not a code change; a structural change trips D-B4 and fails safe.
 - **D-B6 Static-seed fallback.** The committed DeepSWE v1.1 snapshot (captured this session,
