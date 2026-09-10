@@ -7766,6 +7766,37 @@ class TestProgressWatch:
         assert ("run-gate: progress sql-mutation: candidate 60/172, 3.0/min, "
                 "ETA 37m") in capsys.readouterr().out
 
+    def test_the_first_real_candidate_at_index_zero_yields_no_rate_not_a_crash(
+            self, tmp_path, capsys):
+        """Regression (found running a real mutation lane, 2026-09-10): a
+        candidate's own `candidate_index` is 0-based, so the FIRST one to
+        complete carries `candidate_index: 0`. `0 / elapsed_s` is a literal
+        `0.0`, not "nothing to measure yet" -- treating it as a real rate
+        divided `(total - index) / rate` by zero and crashed the whole gate
+        run. index=0 must degrade to the bare-count line exactly like `rate
+        is None` already does."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(0, elapsed_s=27.677, outcome_bucket="killed"))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "run-gate: progress sql-mutation: candidate 0/172\n" in out
+        assert "/min" not in out and "ETA" not in out
+
+    def test_a_baseline_sentinel_at_index_negative_one_yields_no_rate(
+            self, tmp_path, capsys):
+        """assay's own progress schema emits a `"baseline"` event ahead of
+        any real candidate, carrying `candidate_index: -1` as a sentinel --
+        the same B065 own-clock branch computed a nonsensical negative
+        rate/ETA from it (`-1 / elapsed_s`) before this guard."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, {"event": "baseline", "candidate_index": -1,
+                                 "candidate_total": 81, "elapsed_s": 15.9,
+                                 "operator": "baseline", "path": "."})
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "run-gate: progress sql-mutation: candidate -1/81\n" in out
+        assert "/min" not in out and "ETA" not in out
+
     def test_a_rewrite_that_does_not_advance_the_candidate_yields_no_rate(
             self, tmp_path, capsys):
         """The file moved (mtime) but the candidate did not. There is still

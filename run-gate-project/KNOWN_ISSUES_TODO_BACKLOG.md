@@ -3495,3 +3495,57 @@ this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
       RG-38 was built and verified against).
 
 ### Status — OPEN 2026-09-09
+
+---
+
+## RG-50 — `ProgressWatch._rate_per_min`'s B065 own-clock branch divides by an index of 0 (the first real candidate) and produces a nonsensical negative rate for assay's own `-1` baseline sentinel
+
+A native R2 mutation lane's `candidate_index` is 0-based, so the FIRST
+candidate to finish carries `candidate_index: 0`. B065's own-clock branch
+(`index / elapsed * 60.0`, gated only on `elapsed > 0`) evaluated this as a
+literal `0.0`, not "nothing measured yet" — and `_report`'s ETA line
+(`(total - index) / rate`) then divided by that zero and crashed the whole
+gate run with an unhandled `ZeroDivisionError`, killing the run BEFORE any
+verdict was produced (the underlying assay container itself had already
+completed candidate 0 cleanly; only run-gate's own client-side progress
+print crashed):
+
+```
+File "run-gate.py", line 3345, in _report
+    print(f"{head}, {rate:.1f}/min, ETA {(total - index) / rate:.0f}m", ...)
+ZeroDivisionError: division by zero
+```
+
+A related, non-crashing cosmetic defect from the SAME unguarded branch:
+assay's progress schema emits a `"baseline"` event (the pre-sweep full-suite
+run, proving the lane is green before any mutant) carrying `candidate_index:
+-1` as a sentinel, not a real candidate. Un-guarded, this produced lines
+like `candidate -1/81, -3.3/min, ETA -25m` — negative rate and ETA, silently
+wrong rather than caught.
+
+### Provenance
+
+Found running the real `session-extract` mutation lane in nyxloom (a vbpub
+sibling project) while verifying an unrelated fix, 2026-09-10 — not
+nyxloom's own bug, filed here per estate cross-repo convention.
+
+### Status — FIXED 2026-09-10
+
+`_rate_per_min`'s B065 branch now also requires `index > 0` before treating
+`index / elapsed` as a real measurement; `index <= 0` (the first real
+candidate at 0, or assay's `-1` baseline sentinel) falls through to the
+existing `None` path, which `_report` already renders as the bare
+`candidate N/M` count with no rate/ETA — the same degrade-gracefully shape
+already used for "no clock yet" and "the file moved but the candidate
+didn't." Two regression tests added to `TestProgressWatch`
+(`test_the_first_real_candidate_at_index_zero_yields_no_rate_not_a_crash`,
+`test_a_baseline_sentinel_at_index_negative_one_yields_no_rate`); full
+suite green (668 passed, 3 pre-existing unrelated skips).
+
+Vendored copies (run-gate.py is a plain COPY, not a symlink, in every
+consumer per this file's own header note) need re-syncing on their own
+schedule — nyxloom's copy was re-synced immediately as part of this fix
+since it was the blocking consumer; the other eight (assay,
+plesk-mailbox-create, cmru, ciu, topos, pwmcp,
+shared-ramdisk-depot-manager, modern-debian-tools-python-debug) were not
+touched and remain on rev 38 without this fix until their own next sync.
