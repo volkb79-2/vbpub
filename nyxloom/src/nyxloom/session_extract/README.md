@@ -501,27 +501,28 @@ Surfaced building a cost/timeline analysis tool (V9 in
 validated against a real dstdns session (`8ebff140-...`, E-009 in that file).
 Parked here rather than acted on unilaterally:
 
-- **Should `LIFECYCLE_MARKER` stay a hard stop?** Today `select()`'s
-  backward walk stops unconditionally at the nearest real compaction or
-  `/compact`/`/clear` — see "Why is `compact_boundary` a hard stop, not
-  ignored?" above. Counter-case: a short post-compaction epoch may leave a
-  lot of budget unspent (measured on the real dstdns session: raising
-  `--checkpoints`/`--max-words` past default made zero difference, because
-  there just wasn't more content before the hard stop to spend it on) even
-  though genuinely useful older prose sits just past the boundary. A softer
-  version would annotate the boundary in the rendered text (something like
-  `---restarted-after-lossy-compaction---`, so a resuming agent knows
-  anything past that point already survived one lossy pass) and allow
-  pulling a *bounded* amount of pre-compaction prose past it instead of an
-  absolute wall. Tension: the hard stop is exactly what keeps marker
-  resolution cache-stable across chained `--since` runs (see the
-  marker-reindexing fix, `48aca4f3`/`9d2f06ae`) — softening it needs its
-  own stability analysis, not a quick knob flip.
-- **Named "compression profiles"** — grouped `--checkpoints`/`--max-words`/
-  `--long-threshold` presets (e.g. tight/balanced/generous) instead of raw
-  knobs, surfaced in the timeline tool as parallel columns ("what would
-  each profile have produced if triggered here") rather than only a CLI
-  convenience.
+- **Should `LIFECYCLE_MARKER` stay a hard stop?** — **PARTIALLY RESOLVED
+  2026-09-10**: the hard-stop-at-0 behavior is now a configurable knob,
+  `max_lifecycle_markers` (`config.py`, `--max-lifecycle-markers` on the
+  CLI: `0` keeps today's hard stop, `N` walks past N markers, `-1` ignores
+  them entirely). What's still open is the *annotation* half of the
+  original idea — labeling a walked-past boundary as
+  `---restarted-after-lossy-compaction---` so a resuming agent can tell
+  "this content already survived one lossy harness pass" from "this
+  content was simply never dropped" — plus a related, never-annotated gap
+  today: two adjacent *kept* events carry no signal about how much
+  ordinary content was mechanically dropped between them. Both given a
+  concrete proposed format and an explicit first-person "yes, this would
+  help me" judgment in `design-context-lifecycle-experiments.md`'s `E-011`
+  (2026-09-10) — not yet implemented.
+- **Named "compression profiles"** — **SHIPPED 2026-09-10**: `config.py`'s
+  `PROFILES` dict (`tight`/`default`/`manual_fresh`), wired into the CLI as
+  `nyxloom extract --profile <name>`, with `--max-words` staying an
+  independent, always-overridable axis rather than baked into a profile's
+  identity. Still open: surfacing profiles as parallel columns in
+  `session-stats`' timeline view (`_simulate_profile` already computes the
+  per-profile running word count needed for this; nothing renders it as a
+  table yet).
 - **CLI-version-aware schema-drift detection** — every adapter's docstring
   already states its verified `cli_version`/`version` range (see
   `adapters/codex.py`'s 0.147.0 schema-break finding). Nothing today checks
@@ -539,4 +540,14 @@ Parked here rather than acted on unilaterally:
 See `design-context-lifecycle-experiments.md`'s `E-009` for the full
 discussion and the real per-CLI usage-field inventory (`usage`/
 `token_count`/`tokens` — every adapter's source format already carries a
-complete per-call token/cost ledger, unused by this package today).
+complete per-call token/cost ledger, unused by this package today), and
+`E-011` for a 2026-09-10 follow-up: a qualitative read of real v1/v5/v6a
+extractions against the "seed a fresh session" use case, the annotation/
+omission-marker proposal above, and a proposed north-star refinement —
+`select.py`'s core walk stays strictly mechanical/deterministic always
+(this package's zero-model-calls guarantee is not just a cost property, it
+is what keeps the append-only/cache-stability principle above true at
+all), with an explicit opt-in "compression-assist" tier layered on top
+that may only touch content the mechanical walk already decided was
+marginal, and may only *add* a clearly-tagged synthesized sentence, never
+edit or replace verbatim kept text.

@@ -1873,3 +1873,137 @@ far cheaper than the primary agent. A hybrid between "mechanical extraction" and
 retention," distinct from both. Explicitly NOT proposed as the default path — `session_extract`'s
 whole north star is zero model calls (deterministic, free, safe on secrets-bearing transcripts);
 this would need to ship as an opt-in mode that leaves the default guarantee untouched.
+
+## E-011 · 2026-09-10 · reading v1/v5/v6a for real, the omission-marker idea (first-person LLM
+## judgment), and a north-star reframe
+
+Direct follow-up to E-009/E-010. Three things the operator asked for that need a real read/
+judgment call, not just more measurement — captured here so they aren't lost.
+
+**1. Qualitative read of the real dstdns `8ebff140` extractions (not just word counts).**
+Actually read `v1` (default, 2,515 words), `v6a` (`--max-lifecycle-markers -1 --max-words 7000`,
+7,512 words) and the first 300/781 lines of `v5` (`--lossless` since the last real compaction,
+11,420 words total). Use case: seed a fresh session to continue the controller work.
+
+- `v1` stops dead at the nearest real `compact_boundary` and only shows the tail of the session —
+  the P102/P93/P175 wave's final wrap-up, the pause/handoff exchange, the RG-49/B088 filing, the
+  `/goal clear` answer. It's crisp and current, and it does keep the one big piece of genuinely
+  load-bearing content from that stretch (the full resumption handoff prompt the assistant wrote,
+  verbatim). What it can't have — the hard stop is *before* it — is anything from earlier the same
+  day: the P176-P179 close-out saga, the domains.ts/B080 saga, or the standing operational hazards
+  that saga produced (subagent backgrounds-a-gate-and-never-self-resumes; ambient-cwd drift inside
+  a worktree; a controller's own staged file getting swept into a concurrently-running agent's
+  commit).
+- `v6a` walks past that one marker and recovers all of it, including the hazards list above and
+  the prior compaction's own "Primary Request and Intent" summary block (itself pasted in as raw
+  text — a compressed representation of the same stretch `v6a`'s own fuller prose also covers,
+  mild but harmless double-encoding, clearly delimited by its own `===[... USER]===` header). It
+  also recovers the full B1-B9 / O5-MAJOR-gaps review verdicts verbatim.
+- `v5` is the true floor: every prose turn, unabridged, including large amounts of pure
+  procedural/waiting filler ("still waiting on the gate", repeated status echoes). Confirms the
+  tool's premise from the other direction — hand this to a fresh session as its own seed prompt and
+  most of the budget goes to narrative filler, not decision-relevant content.
+
+**My take**: for "continue the controller work," `v6a` is the better artifact of the three, but not
+because it's longer — because the extra length past `v1` happens to contain the standing hazards a
+resuming controller needs (parking pattern, ambient cwd, staging collision) that `v1`'s hard stop
+cuts off entirely. A meaningful fraction of `v6a`'s *own* extra weight past `v1` — the granular,
+already-reconciled B1-B9/O5 review-finding prose for review rounds that already concluded and were
+fixed — is audit trail, not forward-looking operational content, and isn't obviously worth its word
+cost for THIS use case (it would be, for a "write the retrospective" use case). This is a real gap
+in `select.py`'s current selection signal: checkpoint-score + long-comment-length treats "a standing
+operational hazard worth not repeating" and "a concluded review round's blow-by-blow" identically —
+both just score as long, finding-signal-bearing prose. Nothing here demands an immediate code
+change; flagging it as the concrete shape a future selection-signal refinement should target, if one
+is ever built (e.g. a lightweight "hazard/lesson" vs. "resolved-detail" distinction — plausibly
+approximable mechanically by keying off `⚠`/"caused a real"/"never do X again"-style phrasing this
+project's own memory-writing convention already uses, rather than needing an LLM judge for it).
+
+**2. First-person judgment: would `---restarted-after-lossy-compaction---`-style annotations and
+`...`-style omission markers actually help me (the consuming LLM)?**
+
+Asked directly, answering directly, as the model that will eventually read one of these
+extractions cold: **yes, both would help, and cheaply.**
+
+- *Compaction-provenance tag.* Today a `LIFECYCLE_MARKER`'s label (`[compact boundary]`, `[compact
+  summary]`) tells me *that* something happened there but conflates two very different trust
+  situations under similar-looking text: (a) the harness's own real auto-compaction — an LLM
+  already summarized everything before that point, so what I'm reading post-boundary is complete
+  but what's pre-boundary is already-lossy, secondhand; vs. (b) `nyxloom extract`'s own mechanical
+  trim — nothing was summarized, material was simply omitted verbatim, so pre-cut content isn't
+  "already digested," it's just not present at all, and if I need it I should go read the raw log
+  rather than trust the label to mean "nothing important was there." I currently can't tell these
+  apart from the label alone, which changes how much I should trust "this is probably the whole
+  picture" reasoning right after a marker. A one-token-ish distinguishing tag on each kind (the two
+  already-distinct `LIFECYCLE_MARKER` subtypes could just carry this, no new event kind needed)
+  would remove a real ambiguity, not a cosmetic one.
+- *Omission markers between kept spans.* More valuable than I expected while actually reading `v1`:
+  right now, two checkpoints sitting adjacent in the rendered text carry no signal about whether
+  they were adjacent in real time too. I currently default to a soft assumption that "if it
+  survived selection, it mattered, and gaps between survivors were probably quiet" — but that's not
+  actually how `select()` works; plenty of ordinary, unremarkable turns get silently dropped
+  between checkpoints with zero trace. A terse marker at each such gap — e.g. `[...12 turns
+  omitted...]`, aggregated per contiguous run of dropped events rather than per dropped event
+  (would be far too noisy otherwise) — costs roughly the same handful of tokens as today's bare
+  section divider and lets me calibrate confidence about what I don't know, instead of silently
+  assuming I know more of the story than I do.
+- *Format guidance, token-efficiency first*: short fixed sigils over prose every time (`[gap: ~12
+  turns]` beats a sentence explaining it), computed once per contiguous dropped run at render time
+  (not stored per-event), and kept fully compatible with the append-only/cache-stability principle
+  — the marker is a property of a *given render's* walk, not retroactively-edited content, so a
+  later `--since`-chained run just computes its own gap markers fresh over its own span, nothing
+  already emitted changes.
+
+Neither idea is implemented; recording the judgment (and the concrete format) so it doesn't need
+re-deriving before it's built.
+
+**3. North-star reframe — "dark factory, cost-optimized" vs. "mechanical, zero model calls".**
+
+The operator's framing (cheapest-model-that-works, tunable spend-for-quality budget, "little LLM
+intelligence" for batched short-snippet compression) is a legitimate, larger point worth engaging
+directly rather than rubber-stamping. My synthesis: don't replace the mechanical-core guarantee,
+wrap it. The reason `session_extract` being deterministic/zero-model-calls matters isn't only cost
+— it's also what makes the append-only/cache-stability principle (`config.py`'s own header doc)
+hold at all: a reproducible, auditable selection is what lets a chained `--since` run trust that
+nothing upstream silently changed. An LLM call sitting in the hot selection path reintroduces
+exactly the nondeterminism that principle exists to avoid. So the proposed shape is a strict split,
+not a blend: the core walk (`select.py`) stays 100% mechanical, always — full stop, no exceptions,
+this is the part that must stay free/deterministic/safe on secrets-bearing transcripts. On top of
+it, an explicitly-opt-in, separately-labeled **compression-assist tier** (budget/profile parameter,
+e.g. `--llm-assist cheap|off`, default `off`) operates only on content the mechanical walk has
+*already decided* is marginal (the short, no-finding-signal lines it currently just drops) — never
+on content the mechanical walk already decided to keep verbatim — and only ever *adds* a clearly
+tagged synthesized sentence, never *replaces* or edits verbatim kept text. This keeps a hard
+architectural line between "verbatim, mechanically selected, reproducible" and "LLM-synthesized,
+opt-in, priced" content, gives the operator the literal budget/quality dial they asked for, and
+composes directly with idea (2) above — a synthesized block is exactly the kind of thing that wants
+its own explicit provenance tag.
+
+**4. "Is deciding to fork/checkpoint necessarily an LLM call?" — no, and this project already has a
+working counter-example.** Raw context/token SIZE is mechanically readable today (real per-call
+`usage`/`token_count`/`tokens` fields, `session-stats` already proves this for Claude Code). The
+part that sounds like it needs judgment — *is this a good moment to cut* — already has a working
+mechanical proxy in production use in this very estate: the `dispatch` skill's own ARM/CUT rule
+(`vbpub/CLAUDE.md`: "ARM at ~120k context or ~60 tool calls ... CUT at the next coherent boundary:
+green gate > commit > LOG/REPORT write > edit-cluster end; never on a red gate"). That's a fully
+mechanical structural-signal proxy for "coherent boundary," not a judgment call, and it's already
+what makes **cooperative self-checkpointing** (the operator's stated target direction) practical:
+the OUTER loop (arm/measure/detect-boundary) is mechanical; only the CHECKPOINT'S OWN CONTENT is
+authored by the agent, and only at those mechanically-triggered moments — never a full LLM call
+just to decide "should I cut here." This directly matches and confirms the operator's own
+"mechanical outer loop, only escalate to the intelligent controller at major summaries/completion/
+decision-needed" framing — it's not a new mechanism, it's the one already running today.
+
+**Structuring the many use-cases/controllers (raised, not resolved)**: worth treating as three
+independent axes rather than a flat list of named "workflows" — (a) **trigger**: controller-driven
+per-turn / cooperative self-checkpoint / one-shot manual extraction; (b) **selection profile**:
+`tight`/`default`/`manual_fresh`/future ones (`config.py`'s `PROFILES`); (c) **consumer**: fresh-
+session reseed / next-tier snapshot (V6) / audit-and-retrospective. Any given real scenario is a
+point in that 3D space rather than its own bespoke thing — consistent with how trigger and profile
+are already kept as separate, independently-overridable axes in the shipped code
+(`config.py`'s`PROFILES` module comment, `--max-words` overriding a profile). Not designed further
+here; flagging the shape rather than committing to it.
+
+**Status**: ideas only, captured per standing "persist everything" instruction. Nothing here is
+implemented. Separately dispatched same session: Codex/opencode support for `session-stats` and
+`--lossless` (an agent task, unrelated to the design questions above).
