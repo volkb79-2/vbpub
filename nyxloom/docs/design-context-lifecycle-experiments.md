@@ -1768,3 +1768,57 @@ V6's "eventually fold into a real Pattern-(b) snapshot" fallback (already implic
 
 None of #5 acted on yet — captured for the next design pass, per operator instruction to persist
 the discussion before any implementation starts.
+
+**Follow-up shipped same day**: `--max-lifecycle-markers` (`25df4807`) turns the first open
+question above into a configurable knob rather than a binary decision — 0 (default) keeps the
+hard-stop behavior; -1 ignores markers entirely, bounded only by `--max-words`; N walks past N
+markers. Validated against the real dstdns session: default stops at the most recent of 5 real
+compactions (2,515 words); `--max-lifecycle-markers -1 --max-words 8000` walks past 4 of them
+(8,468 words). `nyxloom session-stats` (`3881d9a1`) also shipped same day — the V9 cost/timeline
+harness this entry's point 1 described as unbuilt raw material; see its own module docstring
+(`session_extract/stats.py`) rather than duplicating here.
+
+---
+
+## E-010 (proposed, not yet run) · mitmproxy trace of Claude Code's real internal auto-compaction API call
+
+Surfaced same session as E-009, a distinct idea from V6: instead of racing Claude Code's own
+auto-compaction with an externally-triggered fork (V6), intercept the compaction call itself at
+the network layer and answer it with `nyxloom extract`'s mechanical output instead of letting the
+real LLM summarization call happen at all.
+
+**Full protocol, install/config/capture/analysis steps, and safety notes**: see
+`docs/mitmproxy-compaction-trace-howto.md` — kept as its own operational doc rather than inlined
+here since it's mechanically reusable (any future need to trace this CLI's API traffic), not
+specific to this one experiment. This entry carries only the WHY and the oracle.
+
+**Hypothesis**: a compaction API call is distinguishable from a normal turn by its request body
+(a distinctive system prompt, a parameter, or nothing structurally different at all — genuinely
+unknown, that's the point of tracing rather than guessing) — and its response is a standard
+Messages API streaming shape, plausibly fabricable later without reverse-engineering an obscure
+protocol (Anthropic's SSE format is publicly documented).
+
+**Relationship to prior art, not a replacement for it**: `docs/research-external-compaction.md`
+(2026-07-24) already covers the DOCUMENTED external mechanism per CLI (Claude Code's `/compact
+<instructions>`, Codex's `thread/compact/start` RPC) — Pattern (a) in `design-context-lifecycle.md`.
+This experiment is about the UNDOCUMENTED internal path: what Claude Code's own binary sends when
+its internal threshold fires with nobody asking. Different question, same family.
+
+**Explicitly weighed against, not chosen over, V6**: racing the built-in mechanism externally
+(`--resume --fork-session`, already validated at the primitive level, `reference/LESSONS.md` L24)
+gets a similar practical outcome — mechanical extraction instead of an LLM-driven compaction —
+with none of this experiment's reverse-engineering or CLI-version-coupling risk. This is
+legitimately worth running as research regardless (understanding the real mechanism has value on
+its own), but "worth productionizing" and "worth understanding" are different bars, and only the
+second one is what this entry commits to.
+
+**Oracle / what a result would change**: if the request side turns out to carry a simple,
+stable, greppable signal (e.g. a fixed system-prompt string), detection is cheap and this becomes
+a real candidate for an active-interception follow-up experiment (fabricating a response instead
+of forwarding). If the request is structurally indistinguishable from an ordinary huge-transcript
+turn, detection would need to fall back to heuristics (request size vs. a running estimate of
+context size) that are unreliable enough to likely rule this approach out in favor of V6.
+
+**Status**: not run. See the HOWTO doc's own "Open points / what's left to do" section for the
+concrete blockers (auto-triggering a real compaction on demand isn't yet a controllable recipe;
+the trace-analysis script is written but untested against real data).

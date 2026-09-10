@@ -40,6 +40,15 @@ badlogic's cross-CLI compaction research gist
 (`gist.github.com/badlogic/cd2ef65b0697c4dbe2d13fbecb0a0a5f` — covers Claude Code,
 Codex CLI, OpenCode, Amp).
 
+A separate, network-layer idea (2026-09-10, not a replacement for anything above):
+intercept Claude Code's real *internal* auto-compaction API call via a MITM proxy and
+answer it with mechanical extraction instead of a real LLM summarization call — the
+undocumented-internal-path counterpart to this doc's `/compact`-based Pattern (a),
+which only covers the documented, externally-*requested* case. See
+`docs/design-context-lifecycle-experiments.md`'s `E-010` and
+`docs/mitmproxy-compaction-trace-howto.md`. Explicitly weighed against V6 (racing the
+built-in mechanism instead of intercepting it) in that entry, not chosen over it.
+
 ---
 
 ## 2. Pattern (a) — checkpoint → designed compact → resume
