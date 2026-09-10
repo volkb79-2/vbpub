@@ -663,7 +663,8 @@ def cmd_render(args) -> int:
 def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--checkpoints N]
     [--long-threshold N] [--max-words N] [--include-thinking]
-    [--since MARKER | --since-file PATH] [--until MARKER] [--lossless]
+    [--max-lifecycle-markers N] [--since MARKER | --since-file PATH]
+    [--until MARKER] [--lossless]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -723,6 +724,7 @@ def cmd_extract(args) -> int:
         include_thinking=args.include_thinking,
         since_marker=since_marker,
         until_marker=args.until,
+        max_lifecycle_markers=args.max_lifecycle_markers,
         output_format="json" if args.json else "text",
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
@@ -1993,6 +1995,11 @@ def main(argv: list[str] | None = None) -> int:
     extract_parser.add_argument("--include-thinking", action="store_true",
                                  help="Also emit assistant thinking/reasoning content where the "
                                       "adapter can recover it")
+    extract_parser.add_argument("--max-lifecycle-markers", type=int, default=0,
+                                 help="How many real compaction/[/compact]/[/clear] boundaries "
+                                      "the walk may pass before stopping at one (default 0 -- "
+                                      "stop at the first). -1 = never stop at a marker (only "
+                                      "--max-words/--checkpoints bound the walk)")
     since_group = extract_parser.add_mutually_exclusive_group()
     since_group.add_argument("--since",
                               help="Resume marker from a prior run's last_marker -- only "

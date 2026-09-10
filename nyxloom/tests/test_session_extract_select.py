@@ -96,6 +96,57 @@ def test_lifecycle_marker_hard_stops_the_walk():
     assert "op0" not in markers
 
 
+def test_max_lifecycle_markers_zero_is_the_default_hard_stop():
+    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [_op(0), marker, _cp(2)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=0))
+    markers = {e.marker for e in kept}
+    assert markers == {"cp2", "lc1"}
+    assert "op0" not in markers
+
+
+def test_max_lifecycle_markers_one_walks_past_the_first_and_stops_at_the_second():
+    # Chronological: op0, lc1 (1st marker), op2 (between the two markers),
+    # lc3 (2nd marker), cp4 (newest). max_lifecycle_markers=1 permits
+    # walking past lc1 but must stop AT lc3 -- op0 (before both markers)
+    # never survives.
+    lc1 = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    lc3 = NormalizedEvent(3, "lc3", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [_op(0), lc1, _op(2, "between the boundaries"), lc3, _cp(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=1))
+    markers = {e.marker for e in kept}
+    assert markers == {"cp4", "lc3", "op2", "lc1"}
+    assert "op0" not in markers
+
+
+def test_max_lifecycle_markers_negative_one_never_stops_on_a_marker():
+    lc1 = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    lc3 = NormalizedEvent(3, "lc3", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [_op(0), lc1, _op(2), lc3, _cp(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=-1))
+    markers = {e.marker for e in kept}
+    assert markers == {"cp4", "lc3", "op2", "lc1", "op0"}
+
+
+def test_max_lifecycle_markers_negative_one_is_still_bounded_by_max_words():
+    # "ignore markers, just cap the word budget" -- the operator's stated
+    # use case for a one-time manual extraction. max_lifecycle_markers=-1
+    # lets the walk pass the marker, but max_words still eventually stops
+    # it from reaching all the way back to the oldest event.
+    too_old = NormalizedEvent(0, "old0", _TS, EventKind.ASSISTANT_TEXT,
+                               "way too old to ever survive the budget", checkpoint_score=0.0)
+    big = NormalizedEvent(1, "big1", _TS, EventKind.ASSISTANT_TEXT,
+                           " ".join(f"w{i}" for i in range(150)), checkpoint_score=0.0)
+    lc2 = NormalizedEvent(2, "lc2", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    newest = _short(3, "newest short")
+    events = [too_old, big, lc2, newest]
+
+    kept = select(events, ExtractConfig(max_lifecycle_markers=-1, max_words=100, long_comment_chars=1))
+    markers = {e.marker for e in kept}
+    assert markers == {"sh3", "lc2", "big1"}  # passed the marker, then the word budget stopped it
+    assert "old0" not in markers
+
+
 def test_short_finding_kept_but_short_procedural_line_dropped():
     # Same 4-checkpoint construction as the drops-short/keeps-long test
     # above, but both candidates are SHORT -- one reports a concrete finding

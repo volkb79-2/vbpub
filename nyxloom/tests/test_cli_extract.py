@@ -107,6 +107,27 @@ def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     assert "not allowed with argument --since" in capsys.readouterr().err
 
 
+def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "before the boundary"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1",
+             timestamp="2026-01-01T00:00:01Z", compactMetadata={}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    default = cli.main(["extract", str(fp)])
+    assert default == 0
+    assert "before the boundary" not in capsys.readouterr().out
+
+    past_boundary = cli.main(["extract", str(fp), "--max-lifecycle-markers", "-1"])
+    assert past_boundary == 0
+    assert "before the boundary" in capsys.readouterr().out
+
+
 def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     prior = tmp_path / "prior.json"

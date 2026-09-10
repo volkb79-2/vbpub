@@ -27,9 +27,12 @@ Windowing contract:
     ("append-only / cache-stable") for why the tool should default toward
     dropping marginal content rather than keeping it;
   - OPERATOR_TEXT and QA_PAIR are always kept, anywhere in the walked span;
-  - a LIFECYCLE_MARKER is kept (as a note) and then hard-stops the walk --
+  - a LIFECYCLE_MARKER is always kept (as a note); by default (
+    config.max_lifecycle_markers == 0) the FIRST one hard-stops the walk --
     content on the far side of a compaction boundary or an explicit
-    /compact//clear is a different kind of artifact, never raw-extracted;
+    /compact//clear is a different kind of artifact, not walked past, by
+    default. config.max_lifecycle_markers raises how many markers the walk
+    is allowed to pass before it finally stops at one -- see config.py;
   - once max_checkpoints have been found, the walk stops immediately
     (the window never reaches further back than the oldest of the target
     checkpoints);
@@ -47,11 +50,16 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
     kept: list[NormalizedEvent] = []
     checkpoints_found = 0
     word_count = 0
+    markers_passed = 0
 
     for ev in reversed(events):
         if ev.kind is EventKind.LIFECYCLE_MARKER:
             kept.append(ev)
-            break
+            may_pass = config.max_lifecycle_markers == -1 or markers_passed < config.max_lifecycle_markers
+            if not may_pass:
+                break
+            markers_passed += 1
+            continue
 
         if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
             kept.append(ev)
