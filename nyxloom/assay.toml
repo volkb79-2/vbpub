@@ -134,11 +134,18 @@ base = "edc55648"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME base=edc55648 diff, so this mutates exactly the lines
-# this session touched, not the whole package. jobs=4/max_mutants=200/
-# budget_per_candidate=120s are generous for this diff's real size (a few
-# hundred changed lines across 6 files); raised if BUDGET_EXCEEDED fires.
+# this session touched, not the whole package. jobs=1 (serial), NOT higher:
+# the argv already runs pytest -n auto (up to 8 xdist workers on this
+# host), so N concurrent mutation jobs would mean up to N*8 worker
+# processes on an 8-core host shared with a production game server
+# (host-shared-with-production-load-rule: load hit 85 doing exactly this
+# kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
+# concurrency bounded to the single already-accounted-for xdist fan-out.
+# max_mutants=200/budget_per_candidate=120s are generous for this diff's
+# real size (a few hundred changed lines across 6 files); raised if
+# BUDGET_EXCEEDED fires.
 [lanes.session-extract.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 200
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
