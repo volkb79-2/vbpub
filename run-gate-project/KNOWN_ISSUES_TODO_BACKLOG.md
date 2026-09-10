@@ -3542,10 +3542,16 @@ didn't." Two regression tests added to `TestProgressWatch`
 `test_a_baseline_sentinel_at_index_negative_one_yields_no_rate`); full
 suite green (668 passed, 3 pre-existing unrelated skips).
 
-Vendored copies (run-gate.py is a plain COPY, not a symlink, in every
-consumer per this file's own header note) need re-syncing on their own
-schedule — nyxloom's copy was re-synced immediately as part of this fix
-since it was the blocking consumer; the other eight (assay,
-plesk-mailbox-create, cmru, ciu, topos, pwmcp,
-shared-ramdisk-depot-manager, modern-debian-tools-python-debug) were not
-touched and remain on rev 38 without this fix until their own next sync.
+**Correction to this entry's first cut**: every in-monorepo consumer's own
+`run-gate.py` (nyxloom, assay, ciu, topos, pwmcp, cmru,
+plesk-mailbox-create, shared-ramdisk-depot-manager,
+modern-debian-tools-python-debug) is in fact a real SYMLINK to
+`../run-gate-project/run-gate.py` (`ls -la` confirmed on several), not an
+independent copy — this file's own header note about vendored copies
+needing re-sync describes consumers OUTSIDE this monorepo (dstdns and
+beyond), which this fix does not reach automatically. Every in-repo
+consumer already sees this fix the moment this commit lands; nothing to
+re-sync there. (An earlier draft of this paragraph incorrectly `cp`'d over
+one of these symlinks' target file directly, momentarily dirtying an
+unrelated worktree's git state with a duplicate of this same fix — caught
+and reverted before it was ever committed anywhere.)
