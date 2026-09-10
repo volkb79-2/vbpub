@@ -1954,8 +1954,33 @@ extractions cold: **yes, both would help, and cheaply.**
   later `--since`-chained run just computes its own gap markers fresh over its own span, nothing
   already emitted changes.
 
-Neither idea is implemented; recording the judgment (and the concrete format) so it doesn't need
-re-deriving before it's built.
+**SHIPPED 2026-09-10** (`vbpub@7c152e13`): both ideas from point 1 are implemented, in the form
+proposed here plus two rounds of real-data-driven refinement. `select.py` attaches `gap_after`
+(raw adapter-seq-unit count between two kept events with nothing of ours kept in between --
+covers both a select()-rejected event and a raw record that never became a NormalizedEvent at
+all, e.g. a tool call) and `walk_stopped_because` (why the walk stopped short of the true session
+start: `max_words`/`max_checkpoints`; a LIFECYCLE_MARKER's own kept text already explains that
+third stop reason, no redundant tag) via `NormalizedEvent.meta` -- purely additive, no signature
+change. `render.py` surfaces both as bracketed text-mode notes and typed JSON fields.
+
+Real-data validation against the dstdns `8ebff140` replay immediately surfaced two things this
+entry's original design didn't anticipate, both fixed same-day: (a) an unfiltered gap note fired
+~40-80 times on a real, tool-call-heavy multi-agent orchestration session, inflating output
+~15-17% over the requested `max_words` with mostly low-information 1-2-record gaps -- fixed with
+`min_gap_to_annotate` (default 3, text-mode only; JSON always reports the true count); (b) the
+per-occurrence gap-note text originally carried a repeated boilerplate explanation ("...short/
+procedural content or tool activity not kept") that read as pure bloat once it appeared dozens of
+times -- shortened to a bare count by default, with an opt-in `gap_note_show_marker` naming the
+adapter's own opaque marker token instead (the SAME token --since/--until already resolve --
+generalizes to Codex/opencode for free: a uuid/ordinal grep-able in JSONL, a DB row id queryable
+in opencode's SQLite store -- no new per-adapter plumbing needed).
+
+A THIRD round of the same real-data feedback loop, on the SAME day, also killed the pre-existing
+`## [timestamp] LABEL` per-block header entirely (measured as its own source of bloat once gap
+notes made output long enough to matter) in favor of a bare `USER: ` prefix on OPERATOR_TEXT/
+QA_PAIR only -- not originally part of this entry's proposal, but the natural next finding once
+real output was actually read at length rather than spot-checked. See render.py's own module
+docstring for the full rationale chain.
 
 **3. North-star reframe — "dark factory, cost-optimized" vs. "mechanical, zero model calls".**
 

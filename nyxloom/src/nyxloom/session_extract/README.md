@@ -508,20 +508,21 @@ Surfaced building a cost/timeline analysis tool (V9 in
 validated against a real dstdns session (`8ebff140-...`, E-009 in that file).
 Parked here rather than acted on unilaterally:
 
-- **Should `LIFECYCLE_MARKER` stay a hard stop?** — **PARTIALLY RESOLVED
-  2026-09-10**: the hard-stop-at-0 behavior is now a configurable knob,
+- **Should `LIFECYCLE_MARKER` stay a hard stop?** — **RESOLVED 2026-09-10**:
+  the hard-stop-at-0 behavior is now a configurable knob,
   `max_lifecycle_markers` (`config.py`, `--max-lifecycle-markers` on the
   CLI: `0` keeps today's hard stop, `N` walks past N markers, `-1` ignores
-  them entirely). What's still open is the *annotation* half of the
-  original idea — labeling a walked-past boundary as
-  `---restarted-after-lossy-compaction---` so a resuming agent can tell
-  "this content already survived one lossy harness pass" from "this
-  content was simply never dropped" — plus a related, never-annotated gap
-  today: two adjacent *kept* events carry no signal about how much
-  ordinary content was mechanically dropped between them. Both given a
-  concrete proposed format and an explicit first-person "yes, this would
-  help me" judgment in `design-context-lifecycle-experiments.md`'s `E-011`
-  (2026-09-10) — not yet implemented.
+  them entirely). The *annotation* half is also shipped, in a different
+  shape than first proposed: rather than a literal
+  `---restarted-after-lossy-compaction---` string, `select.py` attaches
+  `walk_stopped_because` (why the walk stopped short of the real session
+  start — a LIFECYCLE_MARKER's own kept text already self-explains that
+  case) and `gap_after` (how much raw content, including tool activity,
+  sits between two kept events that aren't actually time-adjacent) via
+  `NormalizedEvent.meta`; `render.py` surfaces both as bracketed text-mode
+  notes and typed JSON fields. See `design-context-lifecycle-experiments.md`'s
+  `E-011` for the full design + two rounds of real-data-driven refinement
+  (`vbpub@7c152e13`).
 - **Named "compression profiles"** — **SHIPPED 2026-09-10**: `config.py`'s
   `PROFILES` dict (`tight`/`default`/`manual_fresh`), wired into the CLI as
   `nyxloom extract --profile <name>`, with `--max-words` staying an
