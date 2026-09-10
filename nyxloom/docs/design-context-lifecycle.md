@@ -189,6 +189,20 @@ V1/V3 are the gate for adoption (V3 cleared 2026-08-20; note that V4 measured
 parallel forks paying full snapshot-body creation, so fan-out must be budgeted cold); V2/V5 justify the "designed" part; V7/V8 shape
 placement and the service.
 
+> **Naming collision, not yet resolved (2026-09-10):** the experiments log's later
+> "`## V6 (proposed, not yet run) · fork-from-orientation-checkpoint + delta`" section
+> (added 2026-08-21, after this doc's own V6 row above was written) is a DIFFERENT V6 —
+> "fork from a real earlier turn, append a small delta" (a genuine third lever, distinct
+> from compact-and-resume and from a synthesized snapshot chain) — not this table's
+> "re-orientation trigger" measurement. Left as-is rather than silently renumbered; next
+> person to touch this table should pick one V6 and renumber the other. See the
+> experiments log's `V6` section and its `E-009` follow-up (2026-09-10) for the live
+> content of the fork-from-real-turn idea — it independently converges with what an
+> operator called a "micro-reset" in a separate session the same day, and E-009 also
+> connects `nyxloom extract`'s mechanical (no-LLM) output as a candidate zero-cost
+> source for V6's delta text when a real checkpoint/compaction marker already exists at
+> a useful fork point.
+
 ## 6. Adoption plan
 
 - **Phase 0 (now):** run V1–V5 on a sandbox task in nyxloom's own repo (it is a

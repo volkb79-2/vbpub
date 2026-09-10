@@ -493,3 +493,50 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   adapter, it cannot resume from or bound to such a record. Acceptable for
   its current use (a manual debugging/ground-truth tool, not part of the
   automated chained-snapshot pipeline), but worth knowing if that changes.
+
+## Open design questions (raised 2026-09-10, not yet decided)
+
+Surfaced building a cost/timeline analysis tool (V9 in
+`nyxloom/docs/design-context-lifecycle-experiments.md`) on top of this package,
+validated against a real dstdns session (`8ebff140-...`, E-009 in that file).
+Parked here rather than acted on unilaterally:
+
+- **Should `LIFECYCLE_MARKER` stay a hard stop?** Today `select()`'s
+  backward walk stops unconditionally at the nearest real compaction or
+  `/compact`/`/clear` — see "Why is `compact_boundary` a hard stop, not
+  ignored?" above. Counter-case: a short post-compaction epoch may leave a
+  lot of budget unspent (measured on the real dstdns session: raising
+  `--checkpoints`/`--max-words` past default made zero difference, because
+  there just wasn't more content before the hard stop to spend it on) even
+  though genuinely useful older prose sits just past the boundary. A softer
+  version would annotate the boundary in the rendered text (something like
+  `---restarted-after-lossy-compaction---`, so a resuming agent knows
+  anything past that point already survived one lossy pass) and allow
+  pulling a *bounded* amount of pre-compaction prose past it instead of an
+  absolute wall. Tension: the hard stop is exactly what keeps marker
+  resolution cache-stable across chained `--since` runs (see the
+  marker-reindexing fix, `48aca4f3`/`9d2f06ae`) — softening it needs its
+  own stability analysis, not a quick knob flip.
+- **Named "compression profiles"** — grouped `--checkpoints`/`--max-words`/
+  `--long-threshold` presets (e.g. tight/balanced/generous) instead of raw
+  knobs, surfaced in the timeline tool as parallel columns ("what would
+  each profile have produced if triggered here") rather than only a CLI
+  convenience.
+- **CLI-version-aware schema-drift detection** — every adapter's docstring
+  already states its verified `cli_version`/`version` range (see
+  `adapters/codex.py`'s 0.147.0 schema-break finding). Nothing today checks
+  that range against a given session file's own reported version at parse
+  time; an unverified newer version is silently parsed with whatever the
+  adapter currently assumes, the same way the 0.147.0 break went unnoticed
+  until manually caught against real files.
+- **Prompting extension for the agents being extracted from** (not a code
+  change here) — steer checkpoint-writing to front-load anything
+  "memorable" from tool output into the prose, since mechanical extraction
+  structurally cannot recover raw tool output that was never restated in
+  words. Extends `design-context-lifecycle.md` §3's existing "summaries are
+  indexes, not archives" mitigation to the no-agent-authored-summary case.
+
+See `design-context-lifecycle-experiments.md`'s `E-009` for the full
+discussion and the real per-CLI usage-field inventory (`usage`/
+`token_count`/`tokens` — every adapter's source format already carries a
+complete per-call token/cost ledger, unused by this package today).

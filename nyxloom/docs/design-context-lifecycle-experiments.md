@@ -1671,3 +1671,100 @@ not by a single "resume vs respawn" axis as currently written. If condition (b) 
 realistic Δt (the sliding-breakpoint concern), that's equally valuable: it would mean early
 checkpoints need to be *periodically re-touched* (a cheap no-op turn) to stay forkable, which is
 itself an actionable scheduling rule for a controller or future nyxloom daemon to implement.
+
+---
+
+## E-009 · 2026-09-10 · `nyxloom extract` (mechanical, no-LLM session_extract package) meets V6 + V9: per-CLI usage-field anatomy, a real dstdns replay, and a zero-cost delta candidate
+
+Surfaced in an operator discussion (vbpub session) about building V9's cost-accounting harness.
+The operator independently re-derived V6's "fork from a real earlier turn, append a small delta"
+mechanism from first principles, unaware V6 already existed pre-registered above — recorded here
+as confirmation the design converges from two directions, and as the connecting data V6/V9 both
+still need.
+
+**1. V9's raw material is already sitting in every session file, unbuilt-on, across all three
+CLIs this repo's `session_extract` package supports** (see `src/nyxloom/session_extract/`):
+- Claude Code: every `assistant` record's `message.usage` is the full Anthropic API response —
+  `input_tokens`, `cache_creation_input_tokens` (split `ephemeral_1h_input_tokens` /
+  `ephemeral_5m_input_tokens` — directly names which TTL regime a given call used), 
+  `cache_read_input_tokens`, `output_tokens` (+ `output_tokens_details.thinking_tokens`), `model`,
+  `service_tier`, `effort`. `input + cache_creation + cache_read` = exact context size sent for
+  that call.
+- Codex: `event_msg.payload.type == "token_count"` (currently dropped as noise by
+  `adapters/codex.py`, correctly per that adapter's own scope) carries
+  `info.total_token_usage`/`info.last_token_usage` (input/cached/cache_write/output/
+  reasoning_output) **and `info.model_context_window` and `rate_limits`** per turn.
+- opencode: `message.data.tokens` = `{input, output, reasoning, cache:{read,write}}` **plus a
+  precomputed `cost` field** and `time:{created,completed}` (real per-call latency, not just a
+  timestamp) — opencode does the price-table math itself already.
+- Claude Code's `system/compact_boundary.compactMetadata` (`trigger`, `preTokens`, `postTokens`,
+  `cumulativeDroppedTokens`, `durationMs`) is exact ground truth for every REAL compaction a
+  session actually underwent — the baseline any simulated strategy gets scored against.
+
+**2. Real replay, dstdns session `8ebff140-ae54-4262-900e-781101700326`** (23MB / 11,670 lines,
+a live controller session, read-only): 5 real compactions (mixed `auto`/`manual`),
+`cumulativeDroppedTokens` reaching 10.8M by the last one, `durationMs` 106,485–346,623 per
+compaction. `nyxloom extract`'s mechanical default (`--checkpoints 5 --max-words 10000
+--long-threshold 180`, zero API calls) produced a **2,515-word** coherent checkpoint for the
+post-last-compaction epoch, against an **11,420-word** verbatim ground truth for that same span
+(`--lossless --since <last compact_boundary uuid>`, also zero API calls) — ≈4.5× compression — and
+a **105,043-word** verbatim ceiling for the whole multi-compaction session
+(`--lossless`, no bound). Raising `--checkpoints`/`--max-words` past default made **no difference**
+here — `select()`'s walk hard-stops at the nearest `LIFECYCLE_MARKER` regardless of remaining
+budget, so a short post-compaction epoch just doesn't have more content to spend extra budget on.
+Command lines and output files: see this session's own transcript / scratchpad
+(`8ebff140-v{0..5}-*.txt`); not committed to the repo (real-session excerpts, not synthetic
+fixtures).
+
+**3. The connecting idea — worth flagging even though it changes nothing about V6's protocol
+above.** V6 proposes an iteration delta as "a short iteration-summary + `git diff`" — something
+the agent (or a script) still has to spend effort producing. `nyxloom extract`'s mechanical
+extraction is a candidate ZERO-COST source for that delta text in the specific case where the
+segment being forked past already contains a real `LIFECYCLE_MARKER` (a real compaction, or an
+operator `/compact`/`/clear`) or a natural checkpoint the classifier already scores highly — no
+LLM call, no agent output tokens spent narrating it. This doesn't change V6's cache-warmth
+question (condition (b), the sliding-breakpoint unknown, is about the FORK POINT's prefix bytes,
+orthogonal to how the delta text was produced) — it only cheapens the delta side, and only when a
+real marker already exists at a useful spot. Worth a V6 sub-arm once V6 itself runs: **Arm C′ —
+same as Arm C, but the delta is `nyxloom extract`'s mechanical output instead of an
+agent-authored summary** — scored on the same fact-retention oracle, to see whether mechanical
+extraction is a safe substitute or measurably worse at surfacing what the next iteration needs.
+
+**4. Correction to how the operator and I initially described V6's cost model in conversation**
+(worth recording since it's a natural mistake): it is NOT "the base is a flat cheap read every
+round while only the newest delta is ever new." If each round's fork point is the PRIOR round's
+own real tip (base + delta₁ + ... + deltaₖ₋₁, genuinely sent once as that round's own live
+output — matching V6's "a genuine prior turn is a different case" framing, not a synthesized
+injected message), then the growing PREFIX is what gets re-forked each round, not just the base —
+so the read-cost (if warm) grows with the accumulated tail, and the *risk* of a cold re-creation
+of the WHOLE growing prefix (not just the latest delta) grows with elapsed time against the TTL
+and V6's still-unmeasured sliding-breakpoint condition. This is exactly why V6 already frames the
+payoff as "cheap **IF** the forked-from turn's specific prefix is still cache-warm" — the growing
+tail is precisely what erodes that IF over successive rounds, which is the natural trigger for
+V6's "eventually fold into a real Pattern-(b) snapshot" fallback (already implicit in §3's
+"snapshot chain grows monotonically ... periodic re-orientation resets it").
+
+**5. Open questions raised, not yet decided, parked here rather than acted on unilaterally:**
+- Should `select()`'s `LIFECYCLE_MARKER` hard stop (never look past the nearest real compaction)
+  become a soft stop — annotate it (e.g. a `---restarted-after-lossy-compaction---` marker in the
+  rendered text) and allow pulling a *bounded, explicitly smaller* amount of pre-compaction prose
+  past it, rather than an absolute wall? Tension: the current hard stop is what makes marker
+  resolution cache-stable across chained `--since` runs (see `48aca4f3`/`9d2f06ae`, this repo);
+  relaxing it needs its own stability analysis, not a quick knob flip.
+- Named "compression profiles" (grouped `--checkpoints`/`--max-words`/`--long-threshold` presets,
+  e.g. tight/balanced/generous) instead of raw knobs, surfaced in V9's timeline output as parallel
+  columns ("what would each profile have produced if triggered here") rather than only as a CLI
+  convenience.
+- CLI-version-aware schema-drift detection: each adapter's docstring already states its verified
+  `cli_version`/`version` range (see `adapters/codex.py`'s 0.147.0 finding, this repo); make that
+  machine-checked against the session file's own reported version at parse time, so an unverified
+  newer version is flagged instead of silently mis-parsed the way the Codex 0.147.0 break was
+  until manually caught.
+- Prompting extension for agents themselves: steer checkpoint-writing to front-load anything
+  "memorable" from tool output into the prose (a CLAUDE.md/dispatch-skill-level instruction, not a
+  session_extract code change) — since mechanical extraction structurally cannot recover raw tool
+  output that was never restated in words. Directly extends Pattern (b)'s existing "summaries are
+  indexes, not archives" mitigation (§3 above) to the no-agent-summary case.
+
+None of #5 acted on yet — captured for the next design pass, per operator instruction to persist
+the discussion before any implementation starts.
