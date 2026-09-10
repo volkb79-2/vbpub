@@ -214,6 +214,18 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
                 continue
 
+            if raw_text.lstrip().startswith("<task-notification>"):
+                # A background-agent (Task tool) completion push. Same shape
+                # as a real operator turn (type "user", plain-string
+                # content, no isMeta flag) but it's controller-injected tool
+                # output, not operator intent -- and confirmed, on a real
+                # session, to be pure noise for a resume brief: the assistant
+                # always re-narrates whatever mattered from it in its own
+                # next reply, which IS captured normally. Verified against a
+                # real ~950-word raw notification block that added nothing
+                # a human curating the same session chose to keep.
+                continue
+
             cmd = _command_name(raw_text)
             cleaned = _strip_harness_tags(raw_text)
             if cmd in _LIFECYCLE_COMMANDS:

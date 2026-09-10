@@ -3,11 +3,13 @@ CLI's session transcript into a compact, resumable brief -- real operator
 turns, structured Q&A, and content-detected checkpoints, in delimited text
 or JSON. Used from `nyxloom extract`; see cli.py's cmd_extract.
 
-Public entry point: extract(path, config, format=None, session_id=None).
+Public entry points: extract(path, config, fmt=None, session_id=None), and
+read_since_marker(path) for delta-extraction (see its own docstring).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from .adapters import DetectionError, detect, get_adapter
 from .config import ExtractConfig
 from .events import NormalizedEvent
 
-__all__ = ["ExtractConfig", "ExtractResult", "extract", "DetectionError"]
+__all__ = ["ExtractConfig", "ExtractResult", "extract", "DetectionError", "read_since_marker"]
 
 
 @dataclass
@@ -28,12 +30,36 @@ class ExtractResult:
 
     def render(self) -> str:
         if self._output_format == "json":
-            return render.render_json(self.events, self._checkpoint_threshold, self.last_marker)
-        return render.render_text(self.events, self._checkpoint_threshold)
+            return render.render_json(self.events, self._checkpoint_threshold, self.format, self.last_marker)
+        return render.render_text(self.events, self._checkpoint_threshold, self.format, self.last_marker)
 
     # set by extract() below; not part of the public dataclass contract
     _output_format: str = "text"
     _checkpoint_threshold: float = 3.0
+
+
+def read_since_marker(path: Path) -> tuple[str, str]:
+    """Read back the (format, marker) a prior extract() call embedded in
+    its own output file -- the delta-extraction UX: point --since-file at a
+    previous run's saved output instead of hunting for or hand-copying a
+    raw marker string. Works on either output format (JSON's top-level
+    `format`/`last_marker` fields, or text's trailing HTML-comment footer).
+    Raises ValueError if the file has no embedded marker (e.g. the prior
+    run's own event list was empty, or the file wasn't produced by this
+    tool)."""
+    text = Path(path).read_text(encoding="utf-8")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("last_marker"):
+        return payload["format"], payload["last_marker"]
+
+    m = render.MARKER_FOOTER_RE.search(text)
+    if m:
+        return m.group(1), m.group(2)
+
+    raise ValueError(f"{path} has no embedded nyxloom-extract marker (empty prior run, or not our output)")
 
 
 def extract(

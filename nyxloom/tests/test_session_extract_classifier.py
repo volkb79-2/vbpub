@@ -5,7 +5,7 @@ structural signal.
 
 from __future__ import annotations
 
-from nyxloom.session_extract.classifier import score_events
+from nyxloom.session_extract.classifier import has_finding_signal, score_events
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 
 _TS = "2026-01-01T00:00:00Z"
@@ -61,3 +61,52 @@ def test_only_assistant_text_events_get_scored():
     events = [_op(0)]
     score_events(events)
     assert events[0].checkpoint_score is None
+
+
+def test_followed_by_more_assistant_text_gets_no_pause_bonus():
+    # Two assistant turns back to back (no real pause in between) --
+    # the lookahead must stop at the next ASSISTANT_TEXT without granting
+    # the "followed_by_pause" bonus, since nothing paused for input.
+    bare = [_asst(0, "some assistant text with no shape signal at all")]
+    score_events(bare)
+    events = [
+        _asst(0, "some assistant text with no shape signal at all"),
+        _asst(1, "more assistant text"),
+    ]
+    score_events(events)
+    assert events[0].checkpoint_score == bare[0].checkpoint_score
+
+
+def test_followed_by_lifecycle_marker_gets_no_pause_bonus():
+    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    bare = [_asst(0, "some assistant text with no shape signal at all")]
+    score_events(bare)
+    events = [_asst(0, "some assistant text with no shape signal at all"), marker]
+    score_events(events)
+    assert events[0].checkpoint_score == bare[0].checkpoint_score
+
+
+# has_finding_signal: real examples mined by comparing tool output against
+# the operator's own hand-curated excerpt of a real session -- these two
+# short one-liners were, respectively, kept and dropped from that excerpt.
+def test_finding_opener_is_a_signal():
+    assert has_finding_signal(
+        "Found it -- a pgrep -f '/apt-cacher-ng ' pattern bug: a bare-command "
+        "invocation doesn't put a leading / in argv[0]."
+    )
+
+
+def test_purely_procedural_line_is_not_a_signal():
+    assert not has_finding_signal("Now let's fix the detection to match on process name instead.")
+
+
+def test_code_reference_is_a_signal():
+    assert has_finding_signal("Let me check `config.py` for the existing pattern.")
+
+
+def test_bare_backtick_word_is_not_a_signal():
+    assert not has_finding_signal("Let me check `config` for the existing pattern.")
+
+
+def test_filename_mention_is_a_signal():
+    assert has_finding_signal("Fixed in ensure_apt_cache.py, verified.")

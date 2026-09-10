@@ -7,16 +7,23 @@ satisfied" a natural early-exit instead of a full-scan-then-discard, and it
 means the OLDEST material is always what gets dropped first when max_words
 is tight -- nothing already accepted is ever un-accepted.
 
-Windowing contract (operator-specified):
+Windowing contract:
   - the last `max_checkpoints` ASSISTANT_TEXT events scoring at or above
     checkpoint_score_threshold are always kept in full;
-  - from the newest checkpoint back through the 2nd-oldest of those (i.e.
-    while fewer than max_checkpoints - 1 have been found), every
-    ASSISTANT_TEXT event is kept in full, checkpoint or not ("recent
-    history: keep all comments");
-  - once the 2nd-oldest checkpoint is reached, a non-checkpoint
-    ASSISTANT_TEXT (or THINKING) event survives only if longer than
-    long_comment_chars;
+  - a non-checkpoint ASSISTANT_TEXT/THINKING event survives if it's longer
+    than a length bar, OR it reports a concrete finding
+    (classifier.has_finding_signal) regardless of length -- real-excerpt
+    comparison (an operator's own hand-curated brief vs. this tool's output
+    on the same real session span) showed a human keeps "Found it -- a
+    pgrep pattern bug..." but drops "Now let's fix the detection" even
+    though both are one-liners. The length bar itself is two-tiered: from
+    the newest checkpoint back through the 2nd-oldest of the target
+    max_checkpoints, it's config.recent_comment_chars (low -- "recent
+    history" is lenient, but NOT "keep everything": that unconditional
+    version was the original design and the same real-excerpt comparison
+    showed it over-keeps low-value procedural narration even in the most
+    recent part of a session); past the 2nd-oldest checkpoint it's the
+    stricter config.long_comment_chars;
   - OPERATOR_TEXT and QA_PAIR are always kept, anywhere in the walked span;
   - a LIFECYCLE_MARKER is kept (as a note) and then hard-stops the walk --
     content on the far side of a compaction boundary or an explicit
@@ -29,6 +36,7 @@ Windowing contract (operator-specified):
 
 from __future__ import annotations
 
+from . import classifier
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
 
@@ -62,9 +70,11 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
                     in_recent_window = False
                 if checkpoints_found >= config.max_checkpoints:
                     break
-            elif in_recent_window or len(ev.text) > config.long_comment_chars:
-                kept.append(ev)
-                word_count += len(ev.text.split())
+            else:
+                bar = config.recent_comment_chars if in_recent_window else config.long_comment_chars
+                if len(ev.text) > bar or classifier.has_finding_signal(ev.text):
+                    kept.append(ev)
+                    word_count += len(ev.text.split())
 
         if word_count > config.max_words:
             break

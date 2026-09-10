@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from nyxloom.session_extract import ExtractConfig
 from nyxloom.session_extract.adapters import codex
 from nyxloom.session_extract.events import EventKind
@@ -68,3 +70,53 @@ def test_since_marker(tmp_path):
     events = codex.parse(fp, str(fp), ExtractConfig(since_marker="6"))
     assert all(e.marker != "3" for e in events)
     assert any(e.kind is EventKind.LIFECYCLE_MARKER for e in events)
+
+
+def test_since_marker_unknown_raises(tmp_path):
+    fp = _write_fixture(tmp_path)
+    with pytest.raises(ValueError, match="not found as an ordinal"):
+        codex.parse(fp, str(fp), ExtractConfig(since_marker="does-not-exist"))
+
+
+def test_list_sessions_returns_the_one_synthetic_id(tmp_path):
+    fp = _write_fixture(tmp_path)
+    assert codex.list_sessions(fp) == [str(fp)]
+
+
+def test_sniff_rejects_non_jsonl_suffix(tmp_path):
+    fp = tmp_path / "rollout.txt"
+    fp.write_text("irrelevant\n")
+    assert not codex.sniff(fp)
+
+
+def test_sniff_skips_blank_and_malformed_lines(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text(
+        "\n   \nnot json\n"
+        + json.dumps({"timestamp": "t", "type": "session_meta",
+                       "payload": {"cli_version": "0.1.0"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert codex.sniff(fp)
+
+
+def test_sniff_directory_with_jsonl_suffix_is_false(tmp_path):
+    a_dir = tmp_path / "adir.jsonl"
+    a_dir.mkdir()
+    assert not codex.sniff(a_dir)  # open() raises IsADirectoryError (an OSError) -> False
+
+
+def test_parse_skips_blank_and_malformed_lines(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text(
+        "\n   \nnot json at all\n"
+        + json.dumps({"timestamp": "2026-01-01T00:00:00Z", "ordinal": 0, "type": "event_msg",
+                       "payload": {"type": "user_message", "message": "hi"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    events = codex.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert events[0].text == "hi"

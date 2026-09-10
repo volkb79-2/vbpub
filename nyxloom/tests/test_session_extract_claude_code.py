@@ -64,7 +64,7 @@ def _write_fixture(tmp_path: Path) -> Path:
                       "content": "<command-name>/compact</command-name>\n<command-message>compact</command-message>"}),
         _rec(type="system", uuid="sys1", timestamp="2026-01-01T00:00:11Z", subtype="compact_boundary"),
         _rec(type="assistant", uuid="a6", timestamp="2026-01-01T00:00:12Z",
-             message={"role": "assistant", "content": [{"type": "text", "text": "should never be reached"}]}),
+             message={"role": "assistant", "content": [{"type": "text", "text": "should never be reached because it postdates the boundary"}]}),
     ]
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
@@ -132,7 +132,7 @@ def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     result = extract(fp)
     assert result.format == "claude-code"
     text = result.render()
-    assert "should never be reached" in text
+    assert "should never be reached because it postdates the boundary" in text
     assert "compact boundary" in text
     assert "telegram alternative" not in text
     assert "Which host?" not in text
@@ -165,3 +165,193 @@ def test_json_output_marks_checkpoint(tmp_path):
     payload = json.loads(result.render())
     checkpoint_events = [e for e in payload["events"] if e["checkpoint"]]
     assert any("Status update" in e["text"] for e in checkpoint_events)
+
+
+def test_sniff_skips_malformed_json_lines_and_directories(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("not json at all\n" + json.dumps(_rec(type="user", uuid="u1")) + "\n", encoding="utf-8")
+    assert claude_code.sniff(fp)
+
+    a_dir = tmp_path / "adir.jsonl"
+    a_dir.mkdir()
+    assert not claude_code.sniff(a_dir)  # open() raises IsADirectoryError (an OSError) -> False
+
+
+def test_sniff_rejects_non_jsonl_suffix(tmp_path):
+    fp = tmp_path / "session.txt"
+    fp.write_text(json.dumps(_rec(type="user", uuid="u1")) + "\n")
+    assert not claude_code.sniff(fp)
+
+
+def test_sniff_skips_blank_lines(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n   \n" + json.dumps(_rec(type="user", uuid="u1")) + "\n", encoding="utf-8")
+    assert claude_code.sniff(fp)
+
+
+def test_sniff_gives_up_past_the_scan_window(tmp_path):
+    # A real match beyond _SNIFF_SCAN_LINES (50) must NOT be found -- the
+    # scan-forward-a-bit design is deliberately bounded, not unlimited.
+    housekeeping = [json.dumps({"type": "mode", "value": "plan"}) for _ in range(60)]
+    real = json.dumps(_rec(type="user", uuid="u1"))
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(housekeeping + [real]) + "\n", encoding="utf-8")
+    assert not claude_code.sniff(fp)
+
+
+def test_load_records_skips_malformed_json_lines(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(
+        "garbage, not json\n"
+        + json.dumps(_rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+                           message={"role": "user", "content": "hello"}))
+        + "\n",
+        encoding="utf-8",
+    )
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert [e.marker for e in events] == ["u1"]
+
+
+def test_load_records_skips_blank_lines(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(
+        "\n   \n"
+        + json.dumps(_rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+                           message={"role": "user", "content": "hello"}))
+        + "\n",
+        encoding="utf-8",
+    )
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert [e.marker for e in events] == ["u1"]
+
+
+def test_user_content_neither_list_nor_string_is_dropped(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": None}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events == []
+
+
+def test_operator_text_that_is_only_harness_tags_is_dropped(tmp_path):
+    # After stripping harness wrapper tags, nothing real is left -- must not
+    # surface as an empty-string OPERATOR_TEXT event.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "<local-command-caveat>Caveat: ...</local-command-caveat>"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events == []
+
+
+def test_thinking_block_included_only_when_configured(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [
+                 "not-a-dict-block",
+                 {"type": "thinking", "thinking": "reasoning about the bug"},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    default_events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert not any(e.kind is EventKind.THINKING for e in default_events)
+
+    with_thinking = claude_code.parse(fp, str(fp), ExtractConfig(include_thinking=True))
+    thinking_ev = next(e for e in with_thinking if e.kind is EventKind.THINKING)
+    assert thinking_ev.text == "reasoning about the bug"
+
+
+def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isCompactSummary=True,
+             message={"role": "user", "content": "whatever the summary body is"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert events[0].text == "[compact summary]"
+
+
+def test_user_list_content_with_only_text_blocks_becomes_operator_text(tmp_path):
+    # A real operator turn can arrive as a list containing a lone "text"
+    # block instead of a plain string -- both shapes mean the same thing.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": [
+                 "not-a-dict-block",
+                 {"type": "text", "text": "please continue"},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert events[0].text == "please continue"
+
+
+def test_user_list_content_with_no_text_and_no_tool_result_is_dropped(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": [{"type": "image", "source": {}}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events == []
+
+
+def test_askuserquestion_answer_with_non_string_content_is_json_dumped(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "aq1", "name": "AskUserQuestion",
+                  "input": {"questions": [{"question": "Which?", "header": "H",
+                                            "options": [{"label": "A", "description": "d"}],
+                                            "multiSelect": False}]}},
+             ]}),
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "aq1", "content": {"answer": "A"}},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    qa = next(e for e in events if e.kind is EventKind.QA_PAIR)
+    assert json.loads(qa.text) == {"answer": "A"}
+
+
+def test_task_notification_is_dropped_as_noise(tmp_path):
+    # Found by comparing this tool's output against the operator's own
+    # hand-curated excerpt of a real session: a background-agent completion
+    # push arrives as a genuine "user"-type, plain-string-content record
+    # (same shape as real operator text -- no isMeta flag) but is
+    # controller-injected tool output, not something the operator said, and
+    # the operator's own curation never kept these raw blocks.
+    notification_text = (
+        "<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n"
+        "<summary>Agent finished</summary>\n<result>some long nested review report "
+        + ("filler " * 100) + "</result>\n</task-notification>"
+    )
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": notification_text}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": "Real bug confirmed, fixing it."}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert not any(e.marker == "u1" for e in events)
+    assert any(e.marker == "a1" for e in events)

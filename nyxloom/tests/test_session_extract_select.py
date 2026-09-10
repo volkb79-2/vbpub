@@ -25,18 +25,35 @@ def _short(seq, text="short"):
     return NormalizedEvent(seq, f"sh{seq}", _TS, EventKind.ASSISTANT_TEXT, text, checkpoint_score=0.0)
 
 
+def _medium(seq, chars=100):
+    return NormalizedEvent(seq, f"md{seq}", _TS, EventKind.ASSISTANT_TEXT, "x" * chars, checkpoint_score=0.0)
+
+
 def _long(seq, chars=300):
     return NormalizedEvent(seq, f"lg{seq}", _TS, EventKind.ASSISTANT_TEXT, "x" * chars, checkpoint_score=0.0)
 
 
-def test_recent_window_keeps_short_comments_newer_than_second_oldest_checkpoint():
+def test_recent_window_keeps_comments_above_the_lower_recent_bar():
     # Chronological (oldest->newest): cp_a(5th=oldest), cp_b(4th=2nd-oldest),
-    # short_recent, cp_c(3rd), cp_d(2nd), cp_e(1st=newest). short_recent is
-    # NEWER than the 2nd-oldest checkpoint (cp_b) -> still "recent history":
-    # kept regardless of length.
-    events = [_cp(0), _cp(1), _short(2), _cp(3), _cp(4), _cp(5)]
-    kept = select(events, ExtractConfig(max_checkpoints=5, long_comment_chars=180))
-    assert any(e.marker == "sh2" for e in kept)
+    # medium_recent, cp_c(3rd), cp_d(2nd), cp_e(1st=newest). medium_recent is
+    # NEWER than the 2nd-oldest checkpoint (cp_b) -> "recent history": kept
+    # once it clears recent_comment_chars (40), well below long_comment_chars
+    # (180) -- the two-tier bar, not "keep everything regardless of length"
+    # (that unconditional version over-kept low-value narration -- see
+    # test_recent_window_still_drops_tiny_non_substantive_comments below).
+    events = [_cp(0), _cp(1), _medium(2), _cp(3), _cp(4), _cp(5)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, recent_comment_chars=40, long_comment_chars=180))
+    assert any(e.marker == "md2" for e in kept)
+
+
+def test_recent_window_still_drops_tiny_non_substantive_comments():
+    # Same position as above (newer than the 2nd-oldest checkpoint), but a
+    # tiny, content-free comment with no finding signal -- real-excerpt
+    # comparison showed a human drops these even in the most recent part of
+    # a session.
+    events = [_cp(0), _cp(1), _short(2, text="Now let's fix that."), _cp(3), _cp(4), _cp(5)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, recent_comment_chars=40, long_comment_chars=180))
+    assert not any(e.marker == "sh2" for e in kept)
 
 
 def test_older_window_drops_short_but_keeps_long_past_second_oldest_checkpoint():
@@ -76,6 +93,23 @@ def test_lifecycle_marker_hard_stops_the_walk():
     markers = {e.marker for e in kept}
     assert markers == {"cp2", "lc1"}
     assert "op0" not in markers
+
+
+def test_older_window_keeps_a_short_finding_but_not_a_short_procedural_line():
+    # Same 4-checkpoint construction as the drops-short/keeps-long test
+    # above, but the two older-window candidates are both SHORT -- one
+    # reports a concrete finding (survives via has_finding_signal even
+    # though it's under long_comment_chars), one is purely procedural
+    # narration (dropped, same length).
+    finding = NormalizedEvent(0, "find0", _TS, EventKind.ASSISTANT_TEXT,
+                               "Found it -- a `pgrep` pattern bug.", checkpoint_score=0.0)
+    procedural = NormalizedEvent(1, "proc1", _TS, EventKind.ASSISTANT_TEXT,
+                                  "Now let's fix that.", checkpoint_score=0.0)
+    events = [finding, procedural, _cp(2), _cp(3), _cp(4), _cp(5)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, long_comment_chars=180))
+    kept_markers = {e.marker for e in kept}
+    assert "find0" in kept_markers
+    assert "proc1" not in kept_markers
 
 
 def test_word_budget_trims_the_oldest_end():

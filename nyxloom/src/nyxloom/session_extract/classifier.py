@@ -28,6 +28,19 @@ a first-pass, real-data-informed starting point, in the same spirit as
 jsonl-metrics.py's own boundary-detection heuristics (E-008), which needed
 three rounds of repair once run against real transcripts. Expect to retune
 WEIGHTS from evidence, not replace the shape of this approach.
+
+A SEPARATE, lighter signal -- has_finding_signal() -- exists for a
+different question: not "is this a checkpoint" (full-length, scored) but
+"is this short non-checkpoint comment worth keeping anyway once we're past
+the 2nd-oldest checkpoint" (select.py's older-window filter, otherwise a
+bare char-count). Found by direct comparison against the operator's own
+hand-curated excerpt of a real session: they kept short one-liners that
+named a concrete finding ("Found it -- a pgrep pattern bug...", "Found the
+real root cause: pgrep isn't installed...") and dropped short purely-
+procedural ones ("Now let's fix X", "Let me check Y") of about the same
+length. The distinguishing feature isn't length, it's whether the line
+reports something CONCRETE (a finding, a specific file/command/identifier)
+versus announcing an upcoming action.
 """
 
 from __future__ import annotations
@@ -60,6 +73,25 @@ _DIRECT_ADDRESS_RE = re.compile(
     r"Good (scoping|catch) instinct\b|Here('|’)s (my|the|where) read)",
     re.IGNORECASE,
 )
+
+_FINDING_OPENER_RE = re.compile(
+    r"^(Found\b|Confirmed\b|Root cause\b|The real (bug|cause|root cause)\b)",
+    re.IGNORECASE,
+)
+# A backtick span containing a slash or dot reads as a file path, command,
+# or code identifier ("`/apt-cacher-ng`", "`config.py`") rather than a bare
+# word -- that's the difference between naming something concrete and just
+# emphasizing a term.
+_CODE_REFERENCE_RE = re.compile(r"`[^`\n]*[/.][^`\n]*`")
+_FILENAME_RE = re.compile(r"\b\w[\w-]*\.(py|sh|md|toml|json|jsonl|ya?ml|js|ts|cfg|ini)\b")
+
+
+def has_finding_signal(text: str) -> bool:
+    first_line = text.split("\n", 1)[0][:160]
+    if _FINDING_OPENER_RE.match(first_line):
+        return True
+    return bool(_CODE_REFERENCE_RE.search(text) or _FILENAME_RE.search(text))
+
 
 _LENGTH_FLOOR_CHARS = 800
 _LENGTH_FLOOR_STEP = 1000

@@ -20,11 +20,22 @@ class ExtractConfig:
     # event must reach to count as one of the max_checkpoints anchors.
     checkpoint_score_threshold: float = 3.0
 
-    # Below the 2nd-oldest kept checkpoint (the "older" window), an
-    # ASSISTANT_TEXT event survives only if longer than this (chars).
-    # From the 2nd-oldest checkpoint onward (the "recent" window), every
-    # ASSISTANT_TEXT event survives regardless of length.
+    # Below the 2nd-oldest kept checkpoint (the "older" window), a
+    # non-checkpoint ASSISTANT_TEXT/THINKING event survives only if longer
+    # than this (chars) or classifier.has_finding_signal(text).
     long_comment_chars: int = 180
+
+    # From the 2nd-oldest checkpoint onward (the "recent" window), the same
+    # rule applies but at a much lower bar. NOT unconditional "keep
+    # everything": a real-excerpt comparison (an operator's own hand-curated
+    # brief of a real session, checked against this tool's output on the
+    # same span) showed most of the low-value churn this tool over-keeps is
+    # short, purely-procedural narration ("Now let's fix X", "Let me check
+    # Y") that a human drops even in the most recent part of a session --
+    # while a short line naming a concrete finding survives regardless of
+    # window (has_finding_signal always applies). 40 chars is a first-pass
+    # value, not yet tuned against a labeled corpus.
+    recent_comment_chars: int = 40
 
     # Hard output budget. Selection walks backward from the end and stops
     # accepting older material once this is exceeded -- the trim always

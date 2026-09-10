@@ -1,12 +1,21 @@
 """Turn a selected event list into output: delimited text (paste-ready for
 a fresh session) or JSON (for a second-stage script).
+
+Both formats embed the true end-of-session marker (from the FULL parse,
+not just what survived selection) so a later run can be pointed at THIS
+output file as --since-file and pick up exactly where it left off --
+finding the delta border by reading the marker back out, not by re-typing
+or diffing text. See __init__.py's read_since_marker().
 """
 
 from __future__ import annotations
 
 import json
+import re
 
 from .events import EventKind, NormalizedEvent
+
+MARKER_FOOTER_RE = re.compile(r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+) -->$", re.MULTILINE)
 
 _LABELS = {
     EventKind.OPERATOR_TEXT: "OPERATOR",
@@ -23,15 +32,19 @@ def _label(ev: NormalizedEvent, checkpoint_threshold: float) -> str:
     return _LABELS.get(ev.kind, ev.kind.value.upper())
 
 
-def render_text(events: list[NormalizedEvent], checkpoint_threshold: float) -> str:
+def render_text(events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str, last_marker: str | None) -> str:
     blocks = []
     for ev in events:
         blocks.append(f"## [{ev.timestamp}] {_label(ev, checkpoint_threshold)}\n\n{ev.text}")
-    return "\n\n---\n\n".join(blocks) + "\n"
+    body = "\n\n---\n\n".join(blocks) + "\n"
+    if last_marker is None:
+        return body
+    return body + f"\n<!-- nyxloom-extract: format={fmt} marker={last_marker} -->\n"
 
 
-def render_json(events: list[NormalizedEvent], checkpoint_threshold: float, last_marker: str | None) -> str:
+def render_json(events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str, last_marker: str | None) -> str:
     payload = {
+        "format": fmt,
         "events": [
             {
                 "timestamp": ev.timestamp,

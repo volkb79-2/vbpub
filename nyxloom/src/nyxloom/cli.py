@@ -662,7 +662,8 @@ def cmd_render(args) -> int:
 
 def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--checkpoints N]
-    [--long-threshold N] [--max-words N] [--include-thinking] [--since MARKER]
+    [--long-threshold N] [--recent-threshold N] [--max-words N]
+    [--include-thinking] [--since MARKER | --since-file PATH]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -670,17 +671,34 @@ def cmd_extract(args) -> int:
     Codex CLI JSONL file, or an opencode SQLite store); --format overrides
     when detection is ambiguous or wrong. Prints the resumable brief to
     stdout: delimited text by default, or --json for a second-stage tool.
+
+    --since-file is the delta-extraction UX: point it at a PRIOR run's saved
+    output (text or json) and this run picks up exactly where that one left
+    off, reading back the (format, marker) that run embedded in its own
+    output rather than requiring you to hunt down or hand-copy a raw marker
+    string. It also cross-checks the resolved format against --format/the
+    auto-detected one, since a marker from one adapter is meaningless fed
+    into another. Mutually exclusive with --since (enforced by argparse).
     """
     from pathlib import Path
 
-    from .session_extract import ExtractConfig, extract
+    from .session_extract import ExtractConfig, extract, read_since_marker
+
+    since_marker = args.since
+    if args.since_file:
+        since_format, since_marker = read_since_marker(Path(args.since_file))
+        if args.format and args.format != since_format:
+            print(f"error: --since-file was produced by the {since_format!r} adapter, "
+                  f"but --format={args.format!r} was requested", file=sys.stderr)
+            return 1
 
     config = ExtractConfig(
         max_checkpoints=args.checkpoints,
         long_comment_chars=args.long_threshold,
+        recent_comment_chars=args.recent_threshold,
         max_words=args.max_words,
         include_thinking=args.include_thinking,
-        since_marker=args.since,
+        since_marker=since_marker,
         output_format="json" if args.json else "text",
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
@@ -1945,14 +1963,24 @@ def main(argv: list[str] | None = None) -> int:
     extract_parser.add_argument("--long-threshold", type=int, default=180,
                                  help="Char threshold for keeping a non-checkpoint comment in "
                                       "the older window (default 180)")
+    extract_parser.add_argument("--recent-threshold", type=int, default=40,
+                                 help="Char threshold for keeping a non-checkpoint comment in "
+                                      "the recent window, i.e. at/after the 2nd-oldest kept "
+                                      "checkpoint (default 40; a concrete-finding comment "
+                                      "survives regardless of length in either window)")
     extract_parser.add_argument("--max-words", type=int, default=10_000,
                                  help="Hard output word budget (default 10000)")
     extract_parser.add_argument("--include-thinking", action="store_true",
                                  help="Also emit assistant thinking/reasoning content where the "
                                       "adapter can recover it")
-    extract_parser.add_argument("--since",
-                                 help="Resume marker from a prior run's last_marker -- only "
-                                      "events after it are considered")
+    since_group = extract_parser.add_mutually_exclusive_group()
+    since_group.add_argument("--since",
+                              help="Resume marker from a prior run's last_marker -- only "
+                                   "events after it are considered")
+    since_group.add_argument("--since-file",
+                              help="Path to a prior extract run's saved output (text or json); "
+                                   "its embedded marker is read back and used as --since, so you "
+                                   "don't have to hunt down or hand-copy the raw marker string")
 
     # migrate-store
     migrate_store_parser = subparsers.add_parser("migrate-store")
