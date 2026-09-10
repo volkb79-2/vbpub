@@ -412,6 +412,38 @@ def test_coalesce_compaction_cluster_keeps_the_real_post_compaction_work_visible
     assert "Bash×1" in text
 
 
+def test_coalesce_compaction_clusters_leaves_a_run_with_no_real_member_untouched():
+    # _coalesce_compaction_clusters's own docstring: a lifecycle-kind
+    # cluster run where NEITHER member carries a real compaction "shouldn't
+    # normally happen, but not assumed away" -- left block-for-block, not
+    # merged into a synthetic kind="compaction" block.
+    from nyxloom.session_extract.stats import Block
+
+    def _lifecycle_block(marker, preview, ts):
+        return Block(
+            trigger_marker=marker, trigger_kind="lifecycle", trigger_text_preview=preview,
+            trigger_timestamp=ts,
+            has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+            first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+            first_response_timestamp="", start_ts="", end_ts="",
+            n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+            sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+            sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+            contains_real_lifecycle_marker=False,
+        )
+
+    b1 = _lifecycle_block("lc1", "[compact boundary]", "2026-01-01T00:00:00Z")
+    b2 = _lifecycle_block("lc2", "[compact summary]", "2026-01-01T00:00:01Z")
+    assert stats._coalesce_compaction_clusters([b1, b2]) == [b1, b2]
+
+
+def test_fmt_elapsed_formats_hours_and_minutes_branches():
+    assert stats._fmt_elapsed(None) == ""
+    assert stats._fmt_elapsed(45) == "45s"
+    assert stats._fmt_elapsed(125) == "2m05s"
+    assert stats._fmt_elapsed(3725) == "1h02m"
+
+
 def test_build_blocks_on_an_empty_row_list_returns_no_blocks():
     assert stats.build_blocks([]) == []
 

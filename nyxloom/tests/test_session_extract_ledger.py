@@ -120,6 +120,90 @@ def test_build_ledger_defaults_repo_root_to_cwd(tmp_path, monkeypatch):
         assert not Path(p).is_absolute()
 
 
+def test_dedup_preserve_order_skips_an_already_seen_item():
+    assert ledger._dedup_preserve_order(["a", "b", "a", "c", "b"]) == ["a", "b", "c"]
+
+
+def test_build_ledger_ignores_file_edit_tool_use_with_no_file_path(tmp_path):
+    # A malformed/partial Edit tool_use (no file_path in input) must be
+    # skipped, not crash or append a falsy entry.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Edit", old_string="x", new_string="y"),
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].files_edited == []
+
+
+def test_build_ledger_ignores_tool_use_that_is_neither_file_nor_bash(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Grep", pattern="foo"),
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].is_empty() is True
+
+
+def test_build_ledger_bash_commit_without_tool_id_is_not_tracked(tmp_path):
+    # A Bash tool_use block missing its own "id" can never be correlated
+    # with a later tool_result -- must not raise, and no commit is recorded.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "name": "Bash", "input": {"command": 'git commit -m x'}},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].commits == []
+
+
+def test_build_ledger_skips_record_types_that_are_neither_assistant_nor_user(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="system", uuid="sys1", timestamp="2026-01-01T00:00:01Z", content="a system note"),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].is_empty() is True
+
+
+def test_build_ledger_commit_result_not_matching_commit_regex_records_nothing(tmp_path):
+    # git commit can fail ("nothing to commit, working tree clean") --
+    # the pending correlation must not manufacture a bogus commit hash.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Bash", command='git commit -m x'),
+             ]}),
+        _rec(type="user", uuid="ur1", timestamp="2026-01-01T00:00:02Z",
+             message=_tool_result("tu1", "nothing to commit, working tree clean")),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].commits == []
+
+
 def test_build_ledger_relativize_falls_back_gracefully_outside_root():
     # A path outside repo_root grows a "../" prefix rather than erroring --
     # os.path.relpath, unlike Path.relative_to, never raises for this case.

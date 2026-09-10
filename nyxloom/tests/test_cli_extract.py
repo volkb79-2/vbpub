@@ -245,6 +245,50 @@ def test_extract_debug_works_for_codex_too(tmp_path, capsys):
     assert "hi" in out
 
 
+def test_extract_debug_opencode_single_session_needs_no_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=1)
+    exit_code = cli.main(["extract-debug", str(db)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+
+
+def test_extract_debug_opencode_multi_session_requires_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    exit_code = cli.main(["extract-debug", str(db)])
+    assert exit_code == 1
+    assert "2 opencode sessions" in capsys.readouterr().err
+
+    exit_code = cli.main(["extract-debug", str(db), "--session", "s0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+
+
+def test_extract_debug_opencode_no_sessions_errors(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=0)
+    exit_code = cli.main(["extract-debug", str(db)])
+    assert exit_code == 1
+    assert "no opencode sessions found" in capsys.readouterr().err
+
+
+def test_extract_debug_rejects_a_format_unsupported_by_lossless(tmp_path, capsys, monkeypatch):
+    # --format's own argparse choices already refuse anything outside
+    # claude-code/codex/opencode, so this branch (cmd_extract_debug's own
+    # "does not support {fmt!r}" fallback) is only reachable if adapter
+    # auto-detection ever returns a name --format's choices haven't caught
+    # up to -- a real registry/CLI drift scenario, exercised here by
+    # monkeypatching detect() the way that drift would actually present.
+    from nyxloom.session_extract import adapters as adapters_mod
+
+    fp = _write_codex_fixture(tmp_path)
+    fake = type("FakeAdapter", (), {"name": "does-not-exist"})()
+    monkeypatch.setattr(adapters_mod, "detect", lambda path: fake)
+    exit_code = cli.main(["extract-debug", str(fp)])
+    assert exit_code == 1
+    assert "extract-debug does not support 'does-not-exist'" in capsys.readouterr().err
+
+
 def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     # cli.main() catches argparse's SystemExit itself and converts it to a
     # plain return code (see main()'s parse_args try/except) -- it never
