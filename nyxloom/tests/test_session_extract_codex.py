@@ -78,6 +78,18 @@ def test_since_marker_unknown_raises(tmp_path):
         codex.parse(fp, str(fp), ExtractConfig(since_marker="does-not-exist"))
 
 
+def test_until_marker(tmp_path):
+    fp = _write_fixture(tmp_path)
+    events = codex.parse(fp, str(fp), ExtractConfig(until_marker="6"))
+    assert [e.marker for e in events] == ["3", "6"]  # the context_compacted (7) is excluded
+
+
+def test_until_marker_unknown_raises(tmp_path):
+    fp = _write_fixture(tmp_path)
+    with pytest.raises(ValueError, match="not found as an ordinal"):
+        codex.parse(fp, str(fp), ExtractConfig(until_marker="does-not-exist"))
+
+
 def test_list_sessions_returns_the_one_synthetic_id(tmp_path):
     fp = _write_fixture(tmp_path)
     assert codex.list_sessions(fp) == [str(fp)]

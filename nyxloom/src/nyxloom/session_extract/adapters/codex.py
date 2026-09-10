@@ -113,6 +113,12 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             raise ValueError(f"--since marker {config.since_marker!r} not found as an ordinal in {path}")
         raw = raw[idx + 1 :]
 
+    if config.until_marker is not None:
+        idx = next((i for i, r in enumerate(raw) if str(r.get("ordinal")) == config.until_marker), None)
+        if idx is None:
+            raise ValueError(f"--until marker {config.until_marker!r} not found as an ordinal in {path}")
+        raw = raw[: idx + 1]
+
     events: list[NormalizedEvent] = []
     for seq, rec in enumerate(raw):
         ordinal = str(rec.get("ordinal", seq))

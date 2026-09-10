@@ -111,6 +111,12 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 raise ValueError(f"--since marker {config.since_marker!r} not found in session {session_id}")
             rows = rows[idx + 1 :]
 
+        if config.until_marker is not None:
+            idx = next((i for i, r in enumerate(rows) if r[0] == config.until_marker), None)
+            if idx is None:
+                raise ValueError(f"--until marker {config.until_marker!r} not found in session {session_id}")
+            rows = rows[: idx + 1]
+
         events: list[NormalizedEvent] = []
         for seq, (msg_id, time_created, data_json) in enumerate(rows):
             try:

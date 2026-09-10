@@ -85,6 +85,18 @@ def test_since_marker_unknown_raises(tmp_path):
         opencode.parse(db, "s1", ExtractConfig(since_marker="does-not-exist"))
 
 
+def test_until_marker(tmp_path):
+    db = _write_fixture(tmp_path)
+    events = opencode.parse(db, "s1", ExtractConfig(until_marker="m1"))
+    assert [e.marker for e in events] == ["m1"]
+
+
+def test_until_marker_unknown_raises(tmp_path):
+    db = _write_fixture(tmp_path)
+    with pytest.raises(ValueError, match="not found in session"):
+        opencode.parse(db, "s1", ExtractConfig(until_marker="does-not-exist"))
+
+
 def test_sniff_rejects_a_db_missing_the_expected_tables(tmp_path):
     db = tmp_path / "opencode.db"
     conn = sqlite3.connect(db)

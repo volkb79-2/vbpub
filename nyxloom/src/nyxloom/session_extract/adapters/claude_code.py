@@ -138,6 +138,14 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             )
         records = records[idx + 1 :]
 
+    if config.until_marker is not None:
+        idx = next((i for i, r in enumerate(records) if r.get("uuid") == config.until_marker), None)
+        if idx is None:
+            raise ValueError(
+                f"--until marker {config.until_marker!r} not found as a uuid in {path}"
+            )
+        records = records[: idx + 1]
+
     askuserquestion_ids: set[str] = set()
     for rec in records:
         if rec.get("type") != "assistant":

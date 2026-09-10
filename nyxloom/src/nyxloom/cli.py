@@ -662,8 +662,8 @@ def cmd_render(args) -> int:
 
 def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--checkpoints N]
-    [--long-threshold N] [--recent-threshold N] [--max-words N]
-    [--include-thinking] [--since MARKER | --since-file PATH]
+    [--long-threshold N] [--max-words N] [--include-thinking]
+    [--since MARKER | --since-file PATH] [--until MARKER] [--lossless]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -679,10 +679,22 @@ def cmd_extract(args) -> int:
     string. It also cross-checks the resolved format against --format/the
     auto-detected one, since a marker from one adapter is meaningless fed
     into another. Mutually exclusive with --since (enforced by argparse).
+
+    --until bounds the walk's far (older) end at a given marker (inclusive)
+    -- symmetric with --since, mainly for pinning a run to a fixed
+    historical span (e.g. reproducing a run against a fixed hand-curated
+    reference) rather than everyday resumption.
+
+    --lossless bypasses classification/windowing entirely and dumps every
+    text/thinking content block verbatim (dropping only tool_use/tool_result
+    and harness bookkeeping records) -- see session_extract/lossless.py's
+    module docstring. Claude Code only today; --checkpoints/--long-threshold/
+    --include-thinking/--json are ignored in this mode.
     """
     from pathlib import Path
 
     from .session_extract import ExtractConfig, extract, read_since_marker
+    from .session_extract.adapters import detect
 
     since_marker = args.since
     if args.since_file:
@@ -692,13 +704,25 @@ def cmd_extract(args) -> int:
                   f"but --format={args.format!r} was requested", file=sys.stderr)
             return 1
 
+    if args.lossless:
+        from .session_extract import lossless
+
+        path = Path(args.path)
+        fmt = args.format or detect(path).name
+        if fmt != "claude-code":
+            print(f"error: --lossless is only implemented for the claude-code adapter, "
+                  f"not {fmt!r}", file=sys.stderr)
+            return 1
+        print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+        return 0
+
     config = ExtractConfig(
         max_checkpoints=args.checkpoints,
         long_comment_chars=args.long_threshold,
-        recent_comment_chars=args.recent_threshold,
         max_words=args.max_words,
         include_thinking=args.include_thinking,
         since_marker=since_marker,
+        until_marker=args.until,
         output_format="json" if args.json else "text",
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
@@ -1961,13 +1985,9 @@ def main(argv: list[str] | None = None) -> int:
     extract_parser.add_argument("--checkpoints", type=int, default=5,
                                  help="How many recent checkpoints to anchor on (default 5)")
     extract_parser.add_argument("--long-threshold", type=int, default=180,
-                                 help="Char threshold for keeping a non-checkpoint comment in "
-                                      "the older window (default 180)")
-    extract_parser.add_argument("--recent-threshold", type=int, default=40,
-                                 help="Char threshold for keeping a non-checkpoint comment in "
-                                      "the recent window, i.e. at/after the 2nd-oldest kept "
-                                      "checkpoint (default 40; a concrete-finding comment "
-                                      "survives regardless of length in either window)")
+                                 help="Char threshold for keeping a non-checkpoint comment "
+                                      "(default 180; a concrete-finding comment survives "
+                                      "regardless of length)")
     extract_parser.add_argument("--max-words", type=int, default=10_000,
                                  help="Hard output word budget (default 10000)")
     extract_parser.add_argument("--include-thinking", action="store_true",
@@ -1981,6 +2001,13 @@ def main(argv: list[str] | None = None) -> int:
                               help="Path to a prior extract run's saved output (text or json); "
                                    "its embedded marker is read back and used as --since, so you "
                                    "don't have to hunt down or hand-copy the raw marker string")
+    extract_parser.add_argument("--until",
+                                 help="Stop at this marker (inclusive) -- symmetric with --since, "
+                                      "for pinning a run to a fixed historical span")
+    extract_parser.add_argument("--lossless", action="store_true",
+                                 help="Bypass classification/windowing: dump every text/thinking "
+                                      "block verbatim (Claude Code only). See "
+                                      "session_extract/lossless.py")
 
     # migrate-store
     migrate_store_parser = subparsers.add_parser("migrate-store")

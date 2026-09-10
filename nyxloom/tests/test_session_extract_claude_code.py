@@ -64,7 +64,10 @@ def _write_fixture(tmp_path: Path) -> Path:
                       "content": "<command-name>/compact</command-name>\n<command-message>compact</command-message>"}),
         _rec(type="system", uuid="sys1", timestamp="2026-01-01T00:00:11Z", subtype="compact_boundary"),
         _rec(type="assistant", uuid="a6", timestamp="2026-01-01T00:00:12Z",
-             message={"role": "assistant", "content": [{"type": "text", "text": "should never be reached because it postdates the boundary"}]}),
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "Found it -- this line should surface because it postdates the "
+                 "compact boundary, not because of its own length or shape."
+             )}]}),
     ]
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
@@ -120,6 +123,30 @@ def test_since_marker_unknown_raises(tmp_path):
         claude_code.parse(fp, str(fp), ExtractConfig(since_marker="does-not-exist"))
 
 
+def test_until_marker_slices_backward_inclusive(tmp_path):
+    fp = _write_fixture(tmp_path)
+    cfg = ExtractConfig(until_marker="a1")
+    events = claude_code.parse(fp, str(fp), cfg)
+    assert any(e.marker == "a1" for e in events)
+    assert not any(e.marker == "a5" for e in events)
+
+
+def test_since_and_until_together_bound_a_span(tmp_path):
+    fp = _write_fixture(tmp_path)
+    cfg = ExtractConfig(since_marker="u4", until_marker="a5")
+    events = claude_code.parse(fp, str(fp), cfg)
+    markers = {e.marker for e in events}
+    assert "a5" in markers
+    assert not markers & {"u1", "a1", "u4"}
+    assert "u5" not in markers  # after the until marker
+
+
+def test_until_marker_unknown_raises(tmp_path):
+    fp = _write_fixture(tmp_path)
+    with pytest.raises(ValueError):
+        claude_code.parse(fp, str(fp), ExtractConfig(until_marker="does-not-exist"))
+
+
 def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     # In this fixture the compact_boundary (sys1) sits right before the very
     # last event (a6). Selection walks backward from the newest event, hits
@@ -132,7 +159,7 @@ def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     result = extract(fp)
     assert result.format == "claude-code"
     text = result.render()
-    assert "should never be reached because it postdates the boundary" in text
+    assert "postdates the compact boundary" in text
     assert "compact boundary" in text
     assert "telegram alternative" not in text
     assert "Which host?" not in text

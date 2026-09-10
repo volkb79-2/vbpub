@@ -11,19 +11,21 @@ Windowing contract:
   - the last `max_checkpoints` ASSISTANT_TEXT events scoring at or above
     checkpoint_score_threshold are always kept in full;
   - a non-checkpoint ASSISTANT_TEXT/THINKING event survives if it's longer
-    than a length bar, OR it reports a concrete finding
+    than config.long_comment_chars, OR it reports a concrete finding
     (classifier.has_finding_signal) regardless of length -- real-excerpt
     comparison (an operator's own hand-curated brief vs. this tool's output
     on the same real session span) showed a human keeps "Found it -- a
     pgrep pattern bug..." but drops "Now let's fix the detection" even
-    though both are one-liners. The length bar itself is two-tiered: from
-    the newest checkpoint back through the 2nd-oldest of the target
-    max_checkpoints, it's config.recent_comment_chars (low -- "recent
-    history" is lenient, but NOT "keep everything": that unconditional
-    version was the original design and the same real-excerpt comparison
-    showed it over-keeps low-value procedural narration even in the most
-    recent part of a session); past the 2nd-oldest checkpoint it's the
-    stricter config.long_comment_chars;
+    though both are one-liners. This bar is applied UNIFORMLY across the
+    whole walked span -- an earlier design gave the newest part of the span
+    a much lower, more lenient bar on the theory that recent history
+    deserves more slack. A full replay of every ASSISTANT_TEXT event in the
+    same real span against the operator's excerpt (not a sample) found
+    dozens of short procedural lines the operator dropped even in the very
+    last few turns, right up against the newest checkpoint -- no case of
+    recency alone rescuing one. See config.py's module docstring
+    ("append-only / cache-stable") for why the tool should default toward
+    dropping marginal content rather than keeping it;
   - OPERATOR_TEXT and QA_PAIR are always kept, anywhere in the walked span;
   - a LIFECYCLE_MARKER is kept (as a note) and then hard-stops the walk --
     content on the far side of a compaction boundary or an explicit
@@ -45,8 +47,6 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
     kept: list[NormalizedEvent] = []
     checkpoints_found = 0
     word_count = 0
-    in_recent_window = True
-    second_oldest_rank = max(1, config.max_checkpoints - 1)
 
     for ev in reversed(events):
         if ev.kind is EventKind.LIFECYCLE_MARKER:
@@ -66,15 +66,11 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
                 checkpoints_found += 1
                 kept.append(ev)
                 word_count += len(ev.text.split())
-                if checkpoints_found >= second_oldest_rank:
-                    in_recent_window = False
                 if checkpoints_found >= config.max_checkpoints:
                     break
-            else:
-                bar = config.recent_comment_chars if in_recent_window else config.long_comment_chars
-                if len(ev.text) > bar or classifier.has_finding_signal(ev.text):
-                    kept.append(ev)
-                    word_count += len(ev.text.split())
+            elif len(ev.text) > config.long_comment_chars or classifier.has_finding_signal(ev.text):
+                kept.append(ev)
+                word_count += len(ev.text.split())
 
         if word_count > config.max_words:
             break
