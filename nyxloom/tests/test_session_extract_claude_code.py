@@ -697,5 +697,29 @@ def test_split_qa_pairs_last_answer_not_quote_wrapped_is_taken_verbatim():
     )
 
 
+def test_split_qa_pairs_middle_answer_with_no_trailing_comma():
+    # A middle question's segment that doesn't end in "," after rstrip --
+    # the harness always separates pairs with ", " in every real example
+    # seen, but nothing guarantees it always will.
+    text = 'The user answered: "First?"="yes" "Second?"="no".'
+    out = claude_code._split_qa_pairs(text, [_q("First?", "yes", "no"), _q("Second?", "yes", "no")])
+    assert out == [("First?", "yes"), ("Second?", "no")]
+
+
+def test_format_qa_pairs_skips_a_question_whose_options_is_not_a_list():
+    text = 'The user answered: "Pick one?"="A".'
+    malformed = {"question": "Pick one?", "header": "h", "multiSelect": False, "options": None}
+    out = claude_code._format_qa_pairs(text, [malformed])
+    assert out == "Pick one?\n\nOPERATOR: A"
+
+
+def test_format_qa_pairs_skips_an_option_with_no_label():
+    text = 'The user answered: "Pick one?"="A".'
+    q = {"question": "Pick one?", "header": "h", "multiSelect": False,
+         "options": [{"description": "no label here"}, {"label": "A", "description": "d"}]}
+    out = claude_code._format_qa_pairs(text, [q])
+    assert out == "Pick one?\n- A\n\nOPERATOR: A"
+
+
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
     assert claude_code._format_qa_pairs("anything", []) == "anything"
