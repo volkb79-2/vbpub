@@ -732,6 +732,45 @@ def cmd_extract(args) -> int:
     return 0
 
 
+def cmd_session_stats(args) -> int:
+    """session-stats <path> [--format FMT] [--detailed] [--json]
+
+    Cost/timeline analysis on top of session_extract -- V9 in
+    nyxloom/docs/design-context-lifecycle-experiments.md. Claude Code only
+    today (see session_extract/stats.py's module docstring). Default output
+    is the condensed, one-page-per-session block view; --detailed switches
+    to one row per real API call (CSV); --json dumps the detailed rows as
+    JSON instead of CSV.
+    """
+    from .session_extract import stats
+
+    try:
+        rows = stats.build_call_rows(Path(args.path), fmt=args.format)
+    except NotImplementedError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if args.detailed:
+        if args.json:
+            import dataclasses
+            import json as jsonlib
+
+            print(jsonlib.dumps([dataclasses.asdict(r) for r in rows], indent=2))
+        else:
+            print(stats.render_detailed_csv(rows), end="")
+        return 0
+
+    blocks = stats.build_blocks(rows)
+    if args.json:
+        import dataclasses
+        import json as jsonlib
+
+        print(jsonlib.dumps([dataclasses.asdict(b) for b in blocks], indent=2))
+    else:
+        print(stats.render_condensed(blocks), end="")
+    return 0
+
+
 def cmd_migrate_store(args) -> int:
     """migrate-store <project>
 
@@ -2016,6 +2055,17 @@ def main(argv: list[str] | None = None) -> int:
                                       "block verbatim (Claude Code only). See "
                                       "session_extract/lossless.py")
 
+    # session-stats
+    session_stats_parser = subparsers.add_parser("session-stats")
+    session_stats_parser.add_argument("path", help="Session log path (Claude Code JSONL only today)")
+    session_stats_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                       help="Force the adapter instead of auto-detecting from the path")
+    session_stats_parser.add_argument("--detailed", action="store_true",
+                                       help="One row per real API call instead of the condensed "
+                                            "one-page block view")
+    session_stats_parser.add_argument("--json", action="store_true",
+                                       help="JSON instead of CSV/text")
+
     # migrate-store
     migrate_store_parser = subparsers.add_parser("migrate-store")
     migrate_store_parser.add_argument("project", help="Project ID")
@@ -2300,6 +2350,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_render(args)
         elif args.cmd == "extract":
             return cmd_extract(args)
+        elif args.cmd == "session-stats":
+            return cmd_session_stats(args)
         elif args.cmd == "migrate-store":
             return cmd_migrate_store(args)
         elif args.cmd == "daemon":

@@ -107,6 +107,43 @@ def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     assert "not allowed with argument --since" in capsys.readouterr().err
 
 
+def test_session_stats_condensed_view_by_default(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["session-stats", str(fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "trigger text" in out  # condensed view's header row
+    assert "blocks)" in out
+
+
+def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["session-stats", str(fp), "--detailed"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    lines = out.strip().splitlines()
+    assert lines[0].startswith("marker,timestamp")
+    assert "please look into this" in out
+
+
+def test_session_stats_json_output(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["session-stats", str(fp), "--json"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    parsed = json.loads(out)
+    assert isinstance(parsed, list)
+    assert parsed  # at least one block
+
+
+def test_session_stats_rejects_non_claude_code_format(tmp_path, capsys):
+    fp = _write_codex_fixture(tmp_path)
+    exit_code = cli.main(["session-stats", str(fp)])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "codex" in captured.err
+
+
 def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
