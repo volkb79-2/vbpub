@@ -23,6 +23,18 @@ files during this tool's design, not from documentation):
   synthetic `user`-type record ("[Request interrupted by user]") carrying a
   top-level `interruptedMessageId`; excluded the same way -- it is harness
   bookkeeping, not something the operator typed.
+- A real API-level failure (429 rate limit, `overloaded_error`, etc.) is an
+  `assistant`-type record too (`model: "<synthetic>"`, `isApiErrorMessage:
+  true`, `error`/`apiErrorStatus` giving the kind/HTTP status), indistin-
+  guishable from genuine model prose without checking that flag -- verified
+  against a real 429 ("You've hit your session limit ... resets 12:20am
+  (UTC)", `error: "rate_limit"`, `apiErrorStatus: 429`). Tagged as its own
+  ASSISTANT_TEXT with a `[API ERROR: ...]` prefix (still assistant-channel
+  content, just not model-generated) rather than a new EventKind, so
+  classifier.has_finding_signal's own dedicated pattern keeps it regardless
+  of length -- a rate-limit notice is usually one short line, exactly what
+  select()'s length filter would otherwise silently drop, and the fact a
+  session actually stalled on a real API error is never noise.
 - Claude Code wraps slash-command invocations in the operator's own text as
   `<command-name>NAME</command-name>` (+ optional `<command-message>` /
   `<command-args>`); `/compact` and `/clear` specifically are promoted to
@@ -309,6 +321,34 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             continue
 
         if rtype == "assistant":
+            if rec.get("isApiErrorMessage"):
+                # A real API-level failure (429 rate limit, overloaded_error,
+                # etc.) -- Claude Code injects it as an ordinary "assistant"
+                # record with model="<synthetic>", so without this check it
+                # renders indistinguishably from genuine model prose despite
+                # being harness/API-injected notification text, and (being
+                # typically short) is exactly the shape select()'s length
+                # filter silently drops -- the session-relevant fact that a
+                # rate limit was actually HIT would vanish. Tagged
+                # ASSISTANT_TEXT still (it IS on the assistant channel, just
+                # not model-generated), with the error identity in the text
+                # itself so classifier.has_finding_signal keeps it regardless
+                # of length.
+                text_blocks = [
+                    b.get("text", "") for b in rec.get("message", {}).get("content", []) or []
+                    if isinstance(b, dict) and b.get("type") == "text"
+                ]
+                body = "\n".join(t for t in text_blocks if t)
+                label_parts = [p for p in (rec.get("error"), rec.get("apiErrorStatus")) if p is not None]
+                label = ", ".join(
+                    str(p) if not isinstance(p, int) else f"HTTP {p}" for p in label_parts
+                )
+                prefix = f"[API ERROR: {label}]" if label else "[API ERROR]"
+                events.append(NormalizedEvent(
+                    seq, uuid, ts, EventKind.ASSISTANT_TEXT,
+                    f"{prefix} {body}".rstrip() if body else prefix,
+                ))
+                continue
             content = rec.get("message", {}).get("content", []) or []
             for block in content:
                 if not isinstance(block, dict):

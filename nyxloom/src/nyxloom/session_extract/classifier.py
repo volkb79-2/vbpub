@@ -94,11 +94,17 @@ _FINDING_OPENER_RE = re.compile(
 # emphasizing a term.
 _CODE_REFERENCE_RE = re.compile(r"`[^`\n]*[/.][^`\n]*`")
 _FILENAME_RE = re.compile(r"\b\w[\w-]*\.(py|sh|md|toml|json|jsonl|ya?ml|js|ts|cfg|ini)\b")
+# adapters/claude_code.py's own "[API ERROR: ...]" tag for an
+# isApiErrorMessage record (a real 429/overloaded_error the harness hit) --
+# a rate-limit notice is typically SHORT ("You've hit your session limit"),
+# exactly the shape the length filter otherwise drops, but the fact a
+# session actually stalled on a real API error is never noise.
+_API_ERROR_RE = re.compile(r"^\[API ERROR\b")
 
 
 def has_finding_signal(text: str) -> bool:
     first_line = text.split("\n", 1)[0][:160]
-    if _FINDING_OPENER_RE.match(first_line):
+    if _FINDING_OPENER_RE.match(first_line) or _API_ERROR_RE.match(first_line):
         return True
     return bool(_CODE_REFERENCE_RE.search(text) or _FILENAME_RE.search(text))
 

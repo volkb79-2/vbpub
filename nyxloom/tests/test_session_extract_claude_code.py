@@ -578,6 +578,46 @@ def test_task_notification_is_dropped_as_noise(tmp_path):
     assert any(e.marker == "a1" for e in events)
 
 
+def test_api_error_message_is_tagged_not_mistaken_for_model_prose(tmp_path):
+    # A real 429/overloaded_error arrives as an ordinary "assistant" record
+    # (model="<synthetic>") -- shape verified against a real rate-limit hit.
+    # Operator question: "how are encountered errors like 429 or so
+    # handled in the logs and subsequently by us?" -- answer, before this
+    # fix: not at all, it rendered as indistinguishable model prose and (at
+    # this length) was likely dropped entirely by select()'s length filter.
+    records = [
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "model": "<synthetic>", "content": [
+                 {"type": "text", "text": "You've hit your session limit · resets 12:20am (UTC)"},
+             ]}),
+    ]
+    records[0]["error"] = "rate_limit"
+    records[0]["isApiErrorMessage"] = True
+    records[0]["apiErrorStatus"] = 429
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    ev = next(e for e in events if e.marker == "a1")
+    assert ev.kind is EventKind.ASSISTANT_TEXT
+    assert ev.text == "[API ERROR: rate_limit, HTTP 429] You've hit your session limit · resets 12:20am (UTC)"
+
+
+def test_api_error_message_with_no_text_content_still_gets_a_tagged_event(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "model": "<synthetic>", "content": []}),
+    ]
+    records[0]["isApiErrorMessage"] = True
+    records[0]["error"] = "overloaded_error"
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    ev = next(e for e in events if e.marker == "a1")
+    assert ev.text == "[API ERROR: overloaded_error]"
+
+
 # ---------------------------------------------------------------------------
 # _format_qa_pairs / _split_qa_pairs (operator-reported, 2026-09-10): the
 # raw AskUserQuestion tool_result is the harness's own flattened
@@ -629,6 +669,32 @@ def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
     text = "some totally different shape the harness might emit someday"
     out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B")])
     assert out == text
+
+
+def test_split_qa_pairs_returns_none_when_a_question_has_no_question_text():
+    text = 'The user answered: "Pick one?"="A".'
+    malformed = {"header": "h", "multiSelect": False, "options": []}  # no "question" key
+    assert claude_code._split_qa_pairs(text, [malformed]) is None
+
+
+def test_split_qa_pairs_returns_none_when_the_second_questions_text_is_missing():
+    text = 'The user answered: "First?"="A", "Second?"="B".'
+    malformed = {"header": "h", "multiSelect": False, "options": []}
+    assert claude_code._split_qa_pairs(text, [_q("First?", "A", "B"), malformed]) is None
+
+
+def test_split_qa_pairs_returns_none_when_the_second_marker_is_not_in_the_text():
+    text = 'The user answered: "First?"="A". Read the answers carefully...'
+    assert claude_code._split_qa_pairs(text, [_q("First?", "A"), _q("Never appears?", "X")]) is None
+
+
+def test_split_qa_pairs_last_answer_not_quote_wrapped_is_taken_verbatim():
+    # A harness rendering that doesn't wrap the final answer in quotes at
+    # all -- the non-quoted fallback branch.
+    text = 'The user answered: "Pick one?"=B unquoted trailing text'
+    assert claude_code._split_qa_pairs(text, [_q("Pick one?", "A", "B")]) == (
+        [("Pick one?", "B unquoted trailing text")]
+    )
 
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
