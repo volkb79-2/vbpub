@@ -295,6 +295,207 @@ snapshot is deliberately retained as a recovery point and named in
 `zfs-events.jsonl`; an operator must quiesce, restore, and destroy it. Never point
 this mechanism at production data or a dataset shared with another audit.
 
+## Property-based testing and Hypothesis
+
+The "Property/state-machine testing" catalogue row names what it
+establishes: invariants hold over generated values, not just the specific
+examples an author happened to write down. The estate already has a
+concrete design for this (`run-gate-project/LANE-AUTHORING.md` §4 and §7,
+written 2026-09-02) and, as of 2026-09-10, two real dated bugs that motivate
+following it.
+
+### Case study — two 2026-09-10 bugs, both missed by full R0-R3 rigor
+
+Both found the same way: running the shipped CLI against a real dstdns
+session, not trusting unit tests in isolation, inside a lane
+(`session-extract`) that already declared full rigor, R0 through R3.
+
+**`render.py` double `OPERATOR:` prefix.** `_USER_AUTHORED` included
+`EventKind.QA_PAIR`, so `render_text` prefixed a QA_PAIR event's text with
+`OPERATOR: ` unconditionally — correct when written, wrong once
+`adapters/claude_code.py`'s `_format_qa_pairs` started embedding its own
+`OPERATOR: {answer}` label per line. The two functions' contracts drifted
+apart and nothing forced them back into agreement; `render_text`'s own unit
+test kept passing throughout, because its QA_PAIR fixture never contained an
+embedded label. Fixed by narrowing `_USER_AUTHORED` to
+`(EventKind.OPERATOR_TEXT,)`.
+
+**`run-gate.py` RG-50, `ZeroDivisionError`.** `ProgressWatch._rate_per_min`
+(`run-gate.py:3316-3337`) computed `index / elapsed * 60.0`, guarded only by
+`elapsed > 0`. `index` is a real mutation candidate's 0-based position,
+supplied by another process's (assay's) progress-event stream. The first
+candidate carries `index=0`; `0 / elapsed` is a silent `0.0`, not "no
+measurement yet," and `_report`'s ETA line (`run-gate.py:3355`) then divided
+by that `0.0` — `ZeroDivisionError`, crashing the whole gate run before any
+verdict. The same branch separately produced a nonsensical negative rate for
+assay's own `-1` baseline-sentinel event. `run-gate.py`'s own suite had 668
+passing tests and full branch coverage on this file before the fix. Fixed by
+requiring `index > 0` before the branch, with two regression tests.
+
+**Why full rigor didn't catch either one.** R1 proved every line in both
+files ran. R2 proved the tests kill supported mutations of the code that
+*exists*. Neither can compel a test for a branch that was never written:
+assay's mutation operator catalogue (`compare-swap`, `boolop-swap`,
+`bool-const-flip`, `falsy-swap`) mutates operators *inside* existing
+conditionals — a bare `and elapsed > 0` with no `index` term at all is not a
+mutation target for any of those four, because there is no `index`-comparing
+operator yet to mutate. The RG-50 gap was a *missing* guard clause, not a
+weak one. The render.py gap is a different shape again: full coverage and a
+fully-killed mutation set on *both* functions individually proved nothing
+about whether the two still agreed with each other, because no mutation
+operator invents a test that composes them.
+
+### The rule this earns
+
+For any input sourced from another process's serialized output — a count,
+an index, an ordinal, a length, a status code, anything a message envelope
+or file format hands you rather than something the caller constructs — the
+"Decision-table, boundary-value, and equivalence-partition tests" row above
+is not optional coverage. Write down the legal range and every documented
+sentinel (even informally, in a comment), and test each explicitly: `0`,
+`1`, the type's negative values if the field is ever legally negative (this
+estate's own `-1` baseline-phase convention is exactly such a sentinel),
+empty/`None`/missing. "Coverage shows the line ran" cannot distinguish
+`index=7` covering a branch from `index=0` covering the same branch
+differently. And where a test isolates function A from its real collaborator
+B with a hand-written fixture, confirm the fixture still matches B's
+*current* real output, not what B produced when the fixture was written —
+prefer running the real composition (an integration test, or literally
+running the shipped CLI against real data) over trusting two isolated units
+to stay in agreement forever.
+
+### Hypothesis: already adopted, already designed for this estate
+
+nyxloom already depends on it (`pyproject.toml:12`, `hypothesis>=6`) and
+already ships a real suite (`tests/test_properties.py`, package P11:
+properties 1-5 over `nyxloom.storage`/`nyxloom.types` frozen-core
+round-trip/transition/replay invariants; crash-drills 6-10 deterministic).
+The estate-wide integration design already exists —
+`run-gate-project/LANE-AUTHORING.md` §4 and §7 — this section is nyxloom's
+own instantiation of that design.
+
+**Where it lives.** `LANE-AUTHORING.md` §1 classifies property-based testing
+as a test-*authoring* technique, not its own lane: it runs as ordinary
+pytest inside whatever lane already runs the suite (nyxloom:
+`tester-unified`, `rigor = ["R0", "R1"]` only today — `assay.toml:37-39`).
+
+**Determinism under a gate.** A lane must give the same answer for the same
+commit. Hypothesis's default example generation is not reproducible across
+runs — confirmed directly this session: two clean pytest runs of an
+identical `@given(st.integers())` test, no shared `.hypothesis/` database,
+produced two different example sequences; the same test with
+`derandomize=True` produced byte-identical sequences across both runs.
+`LANE-AUTHORING.md` §4 already prescribes the fix — two named profiles,
+selected by environment variable:
+
+```python
+from hypothesis import settings, HealthCheck
+settings.register_profile("gate", derandomize=True, deadline=None,
+                          max_examples=200,
+                          suppress_health_check=[HealthCheck.too_slow])
+settings.register_profile("nightly", deadline=None, max_examples=5000)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "gate"))
+```
+
+`deadline=None` matters under `nice -n 19` on the shared host — Hypothesis's
+default per-example wall-clock deadline turns host load into flakes, not
+failures. `derandomize=True` is what makes the `gate` profile's mutant-kill
+verdicts reproducible under R2, where every candidate re-runs the whole
+suite: a non-derandomized property test could kill a mutant on one
+candidate's run and miss it on another's, purely from which random examples
+happened to be drawn — a survivor list that isn't reproducible between two
+runs of the identical commit, exactly the determinism violation `## Scope,
+rigor, and lanes` already forbids for every other reason.
+
+**The R2 budget interaction.** Under mutation testing every surviving
+candidate re-runs the target suite once per candidate; a property test's
+`max_examples` multiplies directly into that per-candidate cost
+(`## Mutation testing`'s own `wall time ≈ mutants × median selected-test
+time / parallelism`). `LANE-AUTHORING.md` §4's framing: keep the `gate`
+profile's example count small and push a large count to a `nightly` profile
+on a separate, unbudgeted remote lane. Sizing the gate profile too large is
+the direct mechanism by which adding Hypothesis coverage can silently blow a
+mutation lane's `budget_per_candidate`.
+
+**`.hypothesis/` under assay's snapshot isolation.** assay's own git-aware
+scratch-copy diffing already treats `.hypothesis/` as a self-ignoring cache
+directory, the same way it treats `.pytest_cache/`
+(`assay/tests/test_standalone.py:1229-1233`) — a real run's own cache writes
+are not mistaken for tree pollution. assay does not depend on Hypothesis
+itself (no `hypothesis` line in `assay/pyproject.toml`); this is assay
+correctly handling a *consumer's* test-tool side effect, not assay adopting
+the library.
+
+**nyxloom's own gap, live as of 2026-09-10.** `tests/test_properties.py`
+uses `@settings(max_examples=50, deadline=None)` per test today — no
+`derandomize=True`, no profile registration, no `HYPOTHESIS_PROFILE`
+selection. `LANE-AUTHORING.md` §7 already tracks this: "Hypothesis
+`gate`/`nightly` profiles in nyxloom and dstdns conftests | per project |
+not started" — confirmed still true by direct grep, not assumed. Not yet a
+live bug (`tester-unified` is R0+R1 only, no R2, so the non-reproducibility
+above has no gate consumer yet), but it is exactly the gap that would need
+closing before `tester-unified` — or any future lane running
+`test_properties.py` — could safely add R2. The same tracked row already
+names dstdns, not only nyxloom or run-gate-project: adopting Hypothesis
+project-by-project across vbpub and dstdns means landing this exact
+`gate`/`nightly` profile pair in each project's own `conftest.py`, not a new
+per-project design.
+
+**No prior recorded "discussion with assay about Hypothesis" as such.**
+Both `assay/nyxloom-trove/4-backlog.md` and `decisions.md`'s own
+"hypothesis" hits are the plain English word (epistemics of a hypothesis
+vs. a measurement — entries A-215/A-333/A-334/A-335/A-396), not the
+library. The real design document is `run-gate-project/LANE-AUTHORING.md`,
+written 2026-09-02 "from an operator discussion" — one repo over from where
+the recollection placed it.
+
+## Definition of done: a per-change testing checklist
+
+Everything above answers "what methods exist" and "how mature is this
+project's testing." This answers a narrower, more frequent question: for
+*one* change, what has to be true before its author or reviewer can say
+tests are done. Every line should be answerable from the diff and the
+gate's own artifacts, not from memory.
+
+- [ ] **Reach.** R1 (changed-line + branch coverage) is green at the
+      declared floor, measured, not asserted (the 0/0-is-100% trap; assay
+      A-026/A-035).
+- [ ] **Assertion strength.** R2 (mutation) is clean on changed lines, or
+      the survivor is a named, reviewed equivalent mutant, not a silent
+      exclusion.
+- [ ] **Boundary values named, not assumed.** For every input sourced from
+      another process's serialized output, the legal range and every
+      documented sentinel are written down and each has an explicit test
+      case: `0`, `1`, legal negative values, and any producer-defined
+      sentinel (RG-50's `index=-1` is exactly this). "Typical" mid-range
+      examples are not boundary coverage.
+- [ ] **Property coverage for pure/stateful cores.** Where an invariant can
+      be stated (round-trip, idempotence, ordering, a state machine's legal
+      transitions), a Hypothesis test states it, with `@settings` declared
+      explicitly and `derandomize=True`/`database=None` set if the lane also
+      runs R2 (`## Property-based testing and Hypothesis` above).
+- [ ] **No drifted fixtures at a seam.** Where a test isolates function A
+      from real collaborator B with a hand-written fixture, confirm the
+      fixture still matches B's *current* real output (render.py's exact
+      failure mode above) — prefer running the real composition at least
+      once over trusting two isolated units stay in agreement forever.
+- [ ] **Regression evidence for every bug fix.** A fail-before/pass-after
+      pair, not a test that only documents the symptom.
+- [ ] **Determinism.** No network, seeded or `derandomize=True` randomness,
+      no order dependence, no `xdist` on the shared host — the same lane
+      gives the same answer for the same commit.
+- [ ] **The gate was actually run, and its verdict was read from the
+      artifact, not a notification summary.** `pytest tests/` green is not
+      the gate green (estate memory: `assay-gate-vs-pytest-gap`).
+- [ ] **Independent review happened**, not just the author's own read —
+      the one row in `## Do tests test the right thing?` below no
+      mechanical method substitutes for.
+- [ ] **A real bug found this way is filed upstream**, in the owning tool's
+      own backlog, not just fixed silently where it was noticed.
+
+This checklist is deliberately not a gate: it is a reviewer's/author's own
+pass, the kind of thing that goes in a PR description or review comment.
+
 ## Do tests test the right thing?
 
 Not fully mechanically. The strongest practical approach is independent,
@@ -328,10 +529,15 @@ mutation score can preserve a wrong specification.
    lifecycle workflows. Add fail-before/pass-after evidence for bugs.
 5. Pilot changed-line mutation on one small risk-bearing module. Add bounded job
    control before enabling it broadly.
-6. Add properties/model-based state machines where crisp invariants exist;
-   use pairwise/t-wise matrices for configuration space, fault injection for
-   recovery contracts, and fuzzing for untrusted structured input. Promote
-   minimized findings to regressions.
+6. Add properties/model-based state machines where crisp invariants exist —
+   Hypothesis is nyxloom's adopted tool for this (`## Property-based testing
+   and Hypothesis` above), with `gate`/`nightly` profiles per
+   `LANE-AUTHORING.md` §4 inside any lane that also runs R2. Treat any input
+   crossing a serialization boundary as requiring explicit boundary-value
+   cases even before a property test exists. Use pairwise/t-wise matrices
+   for configuration space, fault injection for recovery contracts, and
+   fuzzing for untrusted structured input. Promote minimized findings to
+   regressions.
 7. Run sampled whole-project mutation, shuffled-order/repetition, dependency
    scans, and fuzzing asynchronously on a remote/batch worker. Promote only
    measured, valuable checks into release requirements.
@@ -346,3 +552,10 @@ mutation score can preserve a wrong specification.
   with finding/escalation policy.
 - Define a remote-runner result-integrity protocol; never treat a vendor status
   badge alone as a gate verdict.
+- Register the `gate`/`nightly` Hypothesis profiles in nyxloom's own
+  `tests/conftest.py` (`LANE-AUTHORING.md` §7's tracked TODO) and pilot the
+  resulting suite through an R2 lane — `[lanes.tester-unified]`
+  (`assay.toml:37-39`) is R0+R1 only today, so `test_properties.py`'s
+  existing Hypothesis suite has never been through native mutation testing
+  anywhere in this estate; the profile mechanics above are unverified
+  against a real mutation run until this lands.
