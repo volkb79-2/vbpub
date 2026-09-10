@@ -64,6 +64,38 @@ public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
 # and webhooks provision as usual and only the PAT waits, visibly, on an
 # operator flipping this line.
 enable_user_access_tokens = true
+
+# ── File attachments — OFF by default, flipped ON for the installer PAT's
+# sake (nyxloom-P111) ────────────────────────────────────────────────────
+# Drives MM_FILESETTINGS_ENABLEFILEATTACHMENTS. nyxloom's OWN notification
+# path (`notify.py`'s Mattermost backend) never sends an attachment
+# regardless of this flag — SPEC §13 keeps every nyxloom-authored
+# notification typed-fields-only, folded into the webhook's Markdown
+# `text`, same as ntfy before it. This flag is not for that path.
+#
+# It exists for THIRD-PARTY producers instead: a Mattermost incoming
+# webhook cannot carry a file attachment at all (verified against
+# Mattermost's own webhook docs), so the REST Files API plus a PAT is the
+# only upload path there is, and the Files API refuses every upload while
+# this is false. `nyxloom-installer`'s `installer_pat` (declared above)
+# was minted specifically so a producer like scripts/netcup /
+# debian-install-v2 CAN use that path once it needs one (an install log,
+# say) — this flag is what actually turns the capability on; the PAT alone
+# does not.
+#
+# Uploaded files land in the `mattermost-data` NAMED volume, not a bind
+# mount like config/logs — there was nothing there worth host-visibility
+# for while this was permanently false. Left as a residual, not fixed
+# here: converting it follows the exact bind-mount-conversion recipe
+# nyxloom-P107 used for postgres-data (dump the old volume -> `ciu down`
+# -> `docker rm` the stopped containers -> `ciu up --dry-run` to create the
+# hostdir -> copy data in -> re-up), whenever an operator wants
+# `mattermost-data` to be `ciu clean`-wipeable/host-visible like the others.
+#
+# TRUE as of 2026-09-09 (nyxloom-P111). Reversible on its own: set false
+# and `ciu up` — existing uploaded files are not deleted, just made
+# unreachable through the API while the flag is off.
+enable_file_attachments = true
 # tls-edge shared ingress network (external) — joined only when exposed.
 ingress_network = "ingress_public"
 

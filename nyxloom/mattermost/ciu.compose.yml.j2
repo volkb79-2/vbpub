@@ -281,9 +281,13 @@ services:
       # mirror-image reason. The peer address IS the caller here.
       MM_RATELIMITSETTINGS_VARYBYREMOTEADDR: "true"
 {% endif %}
-      # nyxloom notifications are typed text only (SPEC §13) — the same
-      # reason ntfy runs with attachments disabled.
-      MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "false"
+      # nyxloom's OWN notifications stay typed text only (SPEC §13) — this
+      # flag is not for `notify.py`, which never attaches anything
+      # regardless of it. It gates the REST Files API for third-party
+      # producers with their own PAT (nyxloom-P111 — see
+      # `ciu.defaults.toml.j2`'s `enable_file_attachments` for the full
+      # reasoning, including the named-volume residual it leaves open).
+      MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "{{ 'true' if mattermost.enable_file_attachments else 'false' }}"
       # The whole plugin framework is off: the image ships prepackaged
       # plugins (playbooks, the AI agent) that start their own processes and
       # run their own DB migrations on first boot — none of which a
@@ -309,9 +313,14 @@ services:
       #         makes the one unbounded-growth surface in this stack visible
       #         to `du` instead of hidden under /var/lib/docker.
       - {{ mattermost.app.hostdir.logs }}:/mattermost/logs
-      #   data: file attachments are DISABLED
-      #         (MM_FILESETTINGS_ENABLEFILEATTACHMENTS=false), so this holds
-      #         nothing an operator would open. Named volume.
+      #   data: holds uploaded file attachments now that
+      #         MM_FILESETTINGS_ENABLEFILEATTACHMENTS can be true
+      #         (nyxloom-P111). Still a NAMED volume, not a bind mount —
+      #         there was nothing here worth host-visibility for while this
+      #         was permanently false. Converting it follows the same
+      #         recipe nyxloom-P107 used for postgres-data/config; not done
+      #         here (residual, stated not buried — see the flag's own
+      #         comment in ciu.defaults.toml.j2).
       - mattermost-data:/mattermost/data
       #   plugins / client-plugins: the plugin framework is off entirely
       #         (MM_PLUGINSETTINGS_ENABLE=false). These two exist ONLY because
