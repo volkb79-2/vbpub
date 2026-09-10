@@ -90,7 +90,7 @@ artifact = "coverage.json"
 
 [lanes.session-extract]
 scope = "S1"
-rigor = ["R0", "R1", "R2"]
+rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_adapters_registry.py",
@@ -154,3 +154,16 @@ budget_per_candidate = "120s"
 [lanes.session-extract.judge.coverage]
 format = "coverage-py-json"
 artifact = "coverage-session-extract.json"
+
+# R3: cause-sensitive canary, uncovered-line mechanism -- proves this lane's
+# R1 changed-line coverage FLOOR actually has teeth (a genuinely uncovered
+# line in the judged package really does FAIL the gate), not merely that
+# some failure mode exists. `uncovered-line` requires R1 declared (it does,
+# above) and, since this lane is diff-mode (judge.mode is NOT
+# "whole_target"), the target need not be one of an explicit judge.targets
+# list -- any real file under source_roots qualifies. classifier.py: small,
+# stable, and central to the package this lane actually judges.
+[lanes.session-extract.judge.canary]
+mechanism = "uncovered-line"
+target = "src/nyxloom/session_extract/classifier.py"
+budget_per_attempt = "120s"
