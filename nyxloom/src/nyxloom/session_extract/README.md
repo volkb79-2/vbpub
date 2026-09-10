@@ -333,8 +333,8 @@ chain two real hops and assert the second returns nothing, not a replay.
 
 ## Lossless dump
 
-`nyxloom extract --lossless` (Claude Code only today, `lossless.py`)
-bypasses classification/windowing entirely: it keeps every text/thinking
+`nyxloom extract --lossless` (Claude Code, Codex, and opencode today,
+`lossless.py`) bypasses classification/windowing entirely: it keeps every text/thinking
 content block verbatim and drops only `tool_use`/`tool_result` blocks and
 non-conversational bookkeeping records, with no `isMeta`/task-notification/
 AskUserQuestion-pairing logic at all. It's deliberately NOT the smart
@@ -467,9 +467,16 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   individually lack `ordinal`, is fixed and covered by regression tests
   (see "Delta extraction" above); only a hop that crosses the schema-version
   boundary mid-chain is the still-open gap.
-- `--lossless` is Claude Code only; Codex's `event_msg` layer and
-  opencode's SQLite rows would each need their own "keep prose, drop
-  machine calls" dumper.
+- `--lossless` and `session-stats` now both support Claude Code, Codex, and
+  opencode (2026-09-10) -- see `stats.py`/`lossless.py`'s own module
+  docstrings for the real per-format usage-ledger shape and gaps each
+  found (incl. a correction to `adapters/codex.py`'s own claim about
+  `compacted.payload.message` always carrying real compaction summary
+  text -- it's empty for ~91% of real compactions). Unlike
+  `dump_claude_code`, neither `dump_codex` nor `dump_opencode` has been
+  checked against a real hand-curated reference yet -- validated against
+  real local session files at the shape/field level, not against a
+  human's own "what should have survived" judgment.
 - No config-file loading yet — `ExtractConfig` is centralized (single
   source of truth for every knob) but only constructible from Python or
   the CLI flags in `cli.py`'s `extract` subparser today.

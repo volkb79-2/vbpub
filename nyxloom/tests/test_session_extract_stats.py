@@ -212,12 +212,15 @@ def test_simulate_profile_agrees_with_select_across_checkpoint_and_length_branch
     assert running["cp0"] == kept_total
 
 
-def test_non_claude_code_format_raises_not_implemented(tmp_path):
-    fp = tmp_path / "rollout.jsonl"
-    fp.write_text(json.dumps({"timestamp": "t", "ordinal": 0, "type": "session_meta",
-                               "payload": {"cli_version": "0.149.0"}}) + "\n", encoding="utf-8")
+def test_unsupported_format_raises_not_implemented(tmp_path):
+    # codex/opencode are now both supported (see test_session_extract_stats_codex.py
+    # and test_session_extract_stats_opencode.py) -- this exercises the
+    # still-unsupported-format branch with an explicit fmt override, since
+    # every REAL adapter this package ships is now wired up.
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps({"foo": "bar"}) + "\n", encoding="utf-8")
     try:
-        stats.build_call_rows(fp, fmt="codex")
+        stats.build_call_rows(fp, fmt="some-future-cli")
         assert False, "expected NotImplementedError"
     except NotImplementedError as e:
-        assert "codex" in str(e)
+        assert "some-future-cli" in str(e)

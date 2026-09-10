@@ -53,6 +53,46 @@ def _write_codex_fixture(tmp_path: Path) -> Path:
     return fp
 
 
+def _write_opencode_fixture(tmp_path: Path, n_sessions: int = 1) -> Path:
+    import sqlite3
+
+    db = tmp_path / "opencode.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER);"
+        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, "
+        "time_updated INTEGER, data TEXT);"
+        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, "
+        "time_created INTEGER, time_updated INTEGER, data TEXT);"
+    )
+    for n in range(n_sessions):
+        sid = f"s{n}"
+        conn.execute("INSERT INTO session VALUES (?, ?)", (sid, 100 + n))
+        conn.execute(
+            "INSERT INTO message VALUES (?, ?, 1, 1, ?)",
+            (f"m{n}a", sid, json.dumps({"role": "user"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES (?, ?, ?, 1, 1, ?)",
+            (f"p{n}a", f"m{n}a", sid, json.dumps({"type": "text", "text": "please look into this"})),
+        )
+        conn.execute(
+            "INSERT INTO message VALUES (?, ?, 2, 2, ?)",
+            (f"m{n}b", sid, json.dumps({
+                "role": "assistant", "modelID": "z-ai/glm-5.2", "cost": 0.001234,
+                "tokens": {"input": 620, "output": 40, "reasoning": 0, "cache": {"read": 100, "write": 0}},
+                "time": {"created": 2, "completed": 3},
+            })),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES (?, ?, ?, 2, 2, ?)",
+            (f"p{n}b", f"m{n}b", sid, json.dumps({"type": "text", "text": "Let me check."})),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
 def test_extract_lossless_dumps_prose_and_drops_tool_calls(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp), "--lossless"])
@@ -67,14 +107,30 @@ def test_extract_lossless_dumps_prose_and_drops_tool_calls(tmp_path, capsys):
     assert "file1" not in out
 
 
-def test_extract_lossless_errors_for_non_claude_code_format(tmp_path, capsys):
+def test_extract_lossless_works_for_codex_too(tmp_path, capsys):
+    # codex is now a supported --lossless format (was errored-out once);
+    # the genuinely-unsupported-format path is covered separately below.
     fp = _write_codex_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp), "--lossless"])
-    captured = capsys.readouterr()
+    out = capsys.readouterr().out
 
-    assert exit_code == 1
-    assert "codex" in captured.err
-    assert "claude-code" in captured.err
+    assert exit_code == 0
+    assert "hi" in out
+
+
+def test_extract_format_flag_rejects_an_unregistered_adapter_name(tmp_path, capsys):
+    # --format's argparse choices are exactly the three registered
+    # adapters -- an unregistered name is rejected before cmd_extract (or
+    # its --lossless dispatch) ever runs, whether --lossless is passed or
+    # not; the "unsupported format" branch inside cmd_extract's --lossless
+    # dispatch itself is therefore reachable only via a future 4th adapter
+    # that gets auto-DETECTED without also being added to --format's
+    # choices/the lossless dispatch -- not exercisable against today's
+    # registered adapter set.
+    fp = _write_codex_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--lossless", "--format", "does-not-exist"])
+    assert exit_code == 2
+    assert "invalid choice" in capsys.readouterr().err
 
 
 def test_extract_until_bounds_the_walk(tmp_path, capsys):
@@ -136,12 +192,13 @@ def test_session_stats_json_output(tmp_path, capsys):
     assert parsed  # at least one block
 
 
-def test_session_stats_rejects_non_claude_code_format(tmp_path, capsys):
+def test_session_stats_works_for_codex_too(tmp_path, capsys):
+    # codex is now a supported session-stats format (was errored-out once).
     fp = _write_codex_fixture(tmp_path)
     exit_code = cli.main(["session-stats", str(fp)])
-    captured = capsys.readouterr()
-    assert exit_code == 1
-    assert "codex" in captured.err
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "blocks)" in out
 
 
 def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys):
@@ -236,3 +293,37 @@ def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
     assert exit_code == 1
     assert "codex" in captured.err
     assert "claude-code" in captured.err
+
+
+def test_extract_lossless_opencode_single_session_needs_no_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=1)
+    exit_code = cli.main(["extract", str(db), "--lossless"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+    assert "Let me check." in out
+
+
+def test_extract_lossless_opencode_multi_session_requires_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    exit_code = cli.main(["extract", str(db), "--lossless"])
+    assert exit_code == 1
+    assert "2 opencode sessions" in capsys.readouterr().err
+
+    exit_code = cli.main(["extract", str(db), "--lossless", "--session", "s0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+
+
+def test_session_stats_opencode_needs_session_flag_when_ambiguous(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    exit_code = cli.main(["session-stats", str(db)])
+    assert exit_code == 1
+    assert "2 opencode sessions" in capsys.readouterr().err
+
+    exit_code = cli.main(["session-stats", str(db), "--session", "s0", "--detailed"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "cost_usd" in out.splitlines()[0]
+    assert "0.001234" in out

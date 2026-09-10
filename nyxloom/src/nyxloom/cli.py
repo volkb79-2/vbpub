@@ -697,8 +697,10 @@ def cmd_extract(args) -> int:
     --lossless bypasses classification/windowing entirely and dumps every
     text/thinking content block verbatim (dropping only tool_use/tool_result
     and harness bookkeeping records) -- see session_extract/lossless.py's
-    module docstring. Claude Code only today; --checkpoints/--long-threshold/
-    --include-thinking/--json are ignored in this mode.
+    module docstring. Supports Claude Code, Codex, and opencode today (an
+    opencode store holding more than one session needs --session in this
+    mode too); --checkpoints/--long-threshold/--include-thinking/--json are
+    ignored in this mode.
     """
     from pathlib import Path
 
@@ -719,11 +721,32 @@ def cmd_extract(args) -> int:
 
         path = Path(args.path)
         fmt = args.format or detect(path).name
-        if fmt != "claude-code":
-            print(f"error: --lossless is only implemented for the claude-code adapter, "
-                  f"not {fmt!r}", file=sys.stderr)
+        if fmt == "claude-code":
+            print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+        elif fmt == "codex":
+            print(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
+        elif fmt == "opencode":
+            from .session_extract.adapters import opencode as opencode_adapter
+
+            resolved_session = args.session
+            if resolved_session is None:
+                sessions = opencode_adapter.list_sessions(path)
+                if len(sessions) == 1:
+                    resolved_session = sessions[0]
+                elif not sessions:
+                    raise ValueError(f"{path}: no opencode sessions found")
+                else:
+                    raise ValueError(
+                        f"{path} holds {len(sessions)} opencode sessions; pass --session "
+                        f"(e.g. {sessions[0]!r})"
+                    )
+            print(lossless.dump_opencode(
+                path, resolved_session, since_marker=since_marker, until_marker=args.until
+            ))
+        else:
+            print(f"error: --lossless does not support {fmt!r} -- see session_extract/lossless.py's "
+                  f"module docstring for what's implemented", file=sys.stderr)
             return 1
-        print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
         return 0
 
     # --profile supplies defaults for the selection-aggressiveness knobs
@@ -751,20 +774,23 @@ def cmd_extract(args) -> int:
 
 
 def cmd_session_stats(args) -> int:
-    """session-stats <path> [--format FMT] [--detailed] [--json]
+    """session-stats <path> [--format FMT] [--session ID] [--detailed] [--json]
 
     Cost/timeline analysis on top of session_extract -- V9 in
-    nyxloom/docs/design-context-lifecycle-experiments.md. Claude Code only
-    today (see session_extract/stats.py's module docstring). Default output
-    is the condensed, one-page-per-session block view; --detailed switches
-    to one row per real API call (CSV); --json dumps the detailed rows as
-    JSON instead of CSV.
+    nyxloom/docs/design-context-lifecycle-experiments.md. Supports Claude
+    Code, Codex, and opencode today (see session_extract/stats.py's module
+    docstring for the real per-format usage-ledger shape each reads, and
+    its honest gaps). --session disambiguates an opencode store holding
+    more than one session (Claude Code/Codex are one-file-one-session, so
+    it's unused there). Default output is the condensed, one-page-per-
+    session block view; --detailed switches to one row per real API call
+    (CSV); --json dumps the detailed rows as JSON instead of CSV.
     """
     from .session_extract import stats
 
     try:
-        rows = stats.build_call_rows(Path(args.path), fmt=args.format)
-    except NotImplementedError as e:
+        rows = stats.build_call_rows(Path(args.path), fmt=args.format, session_id=args.session)
+    except (NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
@@ -2084,12 +2110,16 @@ def main(argv: list[str] | None = None) -> int:
                                       "for pinning a run to a fixed historical span")
     extract_parser.add_argument("--lossless", action="store_true",
                                  help="Bypass classification/windowing: dump every text/thinking "
-                                      "block verbatim (Claude Code only). See "
+                                      "block verbatim (Claude Code, Codex, and opencode). See "
                                       "session_extract/lossless.py")
 
     # session-stats
     session_stats_parser = subparsers.add_parser("session-stats")
-    session_stats_parser.add_argument("path", help="Session log path (Claude Code JSONL only today)")
+    session_stats_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
+                                                     "a file or directory for opencode's SQLite store)")
+    session_stats_parser.add_argument("--session",
+                                       help="Session id, required when the store holds more than "
+                                            "one (e.g. opencode)")
     session_stats_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
                                        help="Force the adapter instead of auto-detecting from the path")
     session_stats_parser.add_argument("--detailed", action="store_true",
