@@ -3782,6 +3782,53 @@ takeover was caught within ~83 seconds; a package using named volumes for
 its primary state, or a longer detection gap, would have looked like — or
 caused — real, harder-to-diagnose data loss.
 
+### Correction / additional context, 2026-09-10 (same day, operator follow-up)
+
+The proposed-fix section above under-sold what is ALREADY available in v7,
+today, with zero new ciu code: `dstdns/ciu.global.defaults.toml.j2:75` sets
+`environment_tag = "$INSTANCE_ID"` (an existing S3.2 `$VAR`-expansion
+mechanism, not new), which makes `container_name()`
+(`{project}-{env_tag}-{service}`) resolve to `dstdns-98535c-<service>` for
+EVERY dstdns container — confirmed live via `docker ps`
+(`dstdns-98535c-postgres`, `dstdns-98535c-controller`, etc., and the same
+`$REPO_NAME-$INSTANCE_ID-<service>` shape reused for internal hostnames
+throughout the same file). This is a general, already-working v7 pattern
+any project can adopt; nyxloom's mattermost package (the one that hit this
+finding) simply never adopted it, hardcoding a literal `environment_tag =
+"prod"` instead. Had it used `"$INSTANCE_ID"`, this specific incident could
+not have happened — a worktree's different physical path derives a
+different `INSTANCE_ID` automatically, so the worktree's container name
+would never have collided with the primary's, with no ciu change at all.
+
+This does NOT close the finding — nothing currently stops an author from
+doing what nyxloom's mattermost package did (a fixed literal instead of
+`$INSTANCE_ID`), and nothing warns when that choice later collides with a
+worktree. But it re-weights proposed fix (c): rather than only clarifying
+that container-name uniqueness isn't guaranteed, `ciu init`'s scaffold
+(`scaffold.py`'s `environment_tag` default) and `docs/CONFIG.md`/`SPEC.md`
+S7.7/S7.8 could actively RECOMMEND (or for a project wanting worktree
+safety, require) `environment_tag = "$INSTANCE_ID"` as the default/blessed
+value, documented alongside dstdns's own file as the worked example, rather
+than defaulting to an inert literal (`"dev"`) that gives no hint this
+hazard exists. A stack that genuinely wants a stable, non-instance-varying
+name (nyxloom/mattermost's real, legitimate reason: a public DNS name and
+hardcoded operator recipes) would still opt out deliberately — but that
+would then be a visible, intentional choice instead of the accidental
+default shape every fresh `ciu init` currently produces.
+
+Separately confirmed (asked and checked, not assumed): the v8
+`{project}-{instance}-{stack}-{service}[-{replica}]` scheme and the
+`owner_id`-token ownership refusal (S4.1.1/S4.5.3, `docs/SPEC-V8.md`) that
+would ALSO close this class of hazard structurally are real, current V8
+design — but v8 is unbuilt (`ciu8/` has one shelved carve, `P001`, the
+config-schema piece only; the identity/naming/ownership piece is
+unstarted "checkpoint A" work) and was never decided as a v7 backport
+(only host enrollment, V8-29/CIU-93, has that explicit exception). An
+earlier `CIU-V8-TESTING-GATE-PROPOSAL.md` draft also carried a
+`[deploy.profiles.<name>.locks]` "production-lockdown"/interactive-
+confirmation-on-teardown mechanism; it is no longer in the current file —
+superseded by the `owner_id` approach above, not merely forgotten.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
