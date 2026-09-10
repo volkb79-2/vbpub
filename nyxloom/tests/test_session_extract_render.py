@@ -237,6 +237,13 @@ def test_render_text_skips_empty_ledger_entries():
     events = [_ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1")]
     text = render_text(events, fmt="claude-code", last_marker=None, ledger={"op1": Ledger()})
     assert "[files" not in text
+    # A PRESENT-but-empty Ledger's own render() is "" -- an empty string is
+    # not a substring match for "[files" either way, so that check alone
+    # can't tell "no extra block was appended" from "an empty block WAS
+    # appended, it just renders as nothing visible". Blocks are joined with
+    # "\n\n---\n\n"; a real single-block render has NO such separator at
+    # all, which an erroneously-appended empty second block would add.
+    assert "---" not in text
 
 
 def test_render_text_ledger_ignores_non_boundary_kinds():

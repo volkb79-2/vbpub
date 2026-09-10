@@ -314,6 +314,39 @@ def test_render_condensed_shows_first_response_and_trailing_rows_separately():
     assert "Bash×5" in agent_line
 
 
+def test_render_condensed_numbers_the_agents_row_too_and_stays_sequential():
+    # Operator feedback (2026-09-10): an unnumbered `↳agents` row made it
+    # impossible to reference it directly -- every PRINTED row (trigger AND
+    # ↳agents) gets its own # now, counting up across both, not one number
+    # per block.
+    from nyxloom.session_extract.stats import Block
+
+    def _block(marker, preview, n_trailing):
+        return Block(
+            trigger_marker=marker, trigger_kind="operator", trigger_text_preview=preview,
+            trigger_timestamp="2026-01-01T00:00:00Z",
+            has_response=True, first_response_input_tokens=1, first_response_cache_creation_tokens=0,
+            first_response_cache_read_tokens=0, first_response_output_tokens=0,
+            first_response_context_size=1, first_response_timestamp="2026-01-01T00:00:05Z",
+            start_ts="", end_ts="2026-01-01T00:01:00Z",
+            n_trailing_calls=n_trailing, n_checkpoints=0, n_minor_updates=0,
+            tool_call_counts={"Bash": 1} if n_trailing else {},
+            sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+            sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=1,
+            contains_real_lifecycle_marker=False,
+        )
+
+    blocks = [_block("op1", "first ask", n_trailing=2), _block("op2", "second ask", n_trailing=0)]
+    text = stats.render_condensed(blocks)
+    lines = [line for line in text.splitlines() if line.strip()]
+    first_line = next(line for line in lines if "first ask" in line)
+    agent_line = next(line for line in lines if "↳agents" in line)
+    second_line = next(line for line in lines if "second ask" in line)
+    assert first_line.strip().startswith("1 ")
+    assert agent_line.strip().startswith("2 ")
+    assert second_line.strip().startswith("3 ")
+
+
 def test_render_condensed_no_cost_column():
     from nyxloom.session_extract.stats import Block
 
@@ -410,6 +443,87 @@ def test_coalesce_compaction_cluster_keeps_the_real_post_compaction_work_visible
     assert "40000" in text
     assert "45000" in text
     assert "Bash×1" in text
+
+
+def test_coalesce_compaction_clusters_leaves_a_run_with_no_real_member_untouched():
+    # _coalesce_compaction_clusters's own docstring: a lifecycle-kind
+    # cluster run where NEITHER member carries a real compaction "shouldn't
+    # normally happen, but not assumed away" -- left block-for-block, not
+    # merged into a synthetic kind="compaction" block.
+    from nyxloom.session_extract.stats import Block
+
+    def _lifecycle_block(marker, preview, ts):
+        return Block(
+            trigger_marker=marker, trigger_kind="lifecycle", trigger_text_preview=preview,
+            trigger_timestamp=ts,
+            has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+            first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+            first_response_timestamp="", start_ts="", end_ts="",
+            n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+            sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+            sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+            contains_real_lifecycle_marker=False,
+        )
+
+    b1 = _lifecycle_block("lc1", "[compact boundary]", "2026-01-01T00:00:00Z")
+    b2 = _lifecycle_block("lc2", "[compact summary]", "2026-01-01T00:00:01Z")
+    assert stats._coalesce_compaction_clusters([b1, b2]) == [b1, b2]
+
+
+def test_fmt_elapsed_formats_hours_and_minutes_branches():
+    assert stats._fmt_elapsed(None) == ""
+    assert stats._fmt_elapsed(45) == "45s"
+    assert stats._fmt_elapsed(125) == "2m05s"
+    assert stats._fmt_elapsed(3725) == "1h02m"
+
+
+def _minimal_block(**overrides):
+    from nyxloom.session_extract.stats import Block
+
+    base = dict(
+        trigger_marker="op1", trigger_kind="operator", trigger_text_preview="x",
+        trigger_timestamp="2026-01-01T00:00:00Z",
+        has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+        first_response_timestamp="", start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+        contains_real_lifecycle_marker=False,
+    )
+    base.update(overrides)
+    return Block(**base)
+
+
+def test_compaction_label_falls_back_to_the_raw_trigger_for_an_unrecognized_value():
+    # _COMPACT_LABEL only maps "auto"/"manual" -- an unrecognized value
+    # (a future compactMetadata.trigger this package hasn't seen) must show
+    # ITS OWN text, not silently collapse to the same "unknown" string a
+    # genuinely absent trigger gets.
+    b = _minimal_block(compact_trigger="some-new-trigger-kind")
+    assert stats._compaction_label(b) == "[some-new-trigger-kind, LLM-Endpoint]"
+
+
+def test_compaction_label_unknown_when_trigger_is_absent():
+    b = _minimal_block(compact_trigger=None)
+    assert stats._compaction_label(b) == "[unknown, LLM-Endpoint]"
+
+
+def test_compaction_label_omits_detail_when_only_one_token_count_is_present():
+    # Both pre AND post are required for the detail clause -- a real
+    # compactMetadata always carries both together, but this guards against
+    # a partial/malformed record silently rendering a nonsense detail.
+    b = _minimal_block(compact_trigger="auto", compact_pre_tokens=500000, compact_post_tokens=None)
+    assert stats._compaction_label(b) == "[Auto, LLM-Endpoint]"
+    b2 = _minimal_block(compact_trigger="auto", compact_pre_tokens=None, compact_post_tokens=10000)
+    assert stats._compaction_label(b2) == "[Auto, LLM-Endpoint]"
+
+
+def test_row_duration_s_is_none_when_either_timestamp_is_unparseable():
+    assert stats._row_duration_s("2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z") == 60.0
+    assert stats._row_duration_s("", "2026-01-01T00:01:00Z") is None
+    assert stats._row_duration_s("2026-01-01T00:00:00Z", "") is None
+    assert stats._row_duration_s("", "") is None
 
 
 def test_build_blocks_on_an_empty_row_list_returns_no_blocks():

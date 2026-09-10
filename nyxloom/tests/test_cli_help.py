@@ -148,6 +148,24 @@ def test_unknown_command_exits_2_and_names_the_bad_token(capsys):
     assert f"nyxloom {__version__}" in captured.err
 
 
+def test_unrecognized_top_level_flag_hits_argparses_own_error_path(capsys):
+    # Unlike an unrecognized COMMAND (the "unknown" classify branch above,
+    # intercepted before argparse ever runs), a lone unrecognized top-level
+    # OPTION starts with "-" so _classify_top_level_invocation defers it to
+    # argparse via ("dispatch", None). With exit_on_error=False, argparse's
+    # own parse_args() raises argparse.ArgumentError for this ("unrecognized
+    # arguments: --bogus-flag") rather than calling self.error() directly --
+    # this is the one real path that reaches main()'s
+    # `except argparse.ArgumentError:` branch, which prints argparse's OWN
+    # default usage (not the custom grouped screen) and returns 2.
+    exit_code = cli.main(["--bogus-flag"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage: nyxloom" in captured.err
+    assert "Commands (grouped by purpose" not in captured.err
+
+
 def test_valid_verb_still_dispatches_normally(capsys):
     # `version` takes no args and has no filesystem/registry dependency --
     # a clean way to prove a known verb is untouched by the new top-level
@@ -190,3 +208,45 @@ def test_classify_leaves_subcommand_help_to_argparse():
     # not get swallowed as a top-level help request.
     assert _classify_top_level_invocation(
         ["extract", "--help"], {"extract"}) == ("dispatch", None)
+
+
+# ---------------------------------------------------------------------------
+# A known subcommand's OWN --help / argument errors (operator-reported,
+# 2026-09-10): main()'s generic `except (SystemExit, argparse.ArgumentError)`
+# around parser.parse_args() used to catch a subparser's own ALREADY-CORRECT
+# -h/--help exit (SystemExit(0)) and a missing/bad-argument .error() exit
+# (SystemExit(2)) alike, print the WRONG top-level help on top of the
+# correct output every time, and turn --help's own clean exit 0 into 2
+# (`e.code or 2` -- 0 is falsy). Both are real user-visible bugs distinct
+# from _print_top_level_help itself, which only ever fires for a bare/
+# top-level-help/unknown-command invocation and was never wrong.
+# ---------------------------------------------------------------------------
+
+def test_subcommand_help_exits_0_shows_only_its_own_usage_and_carries_a_banner(capsys):
+    exit_code = cli.main(["session-stats", "--help"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "usage: nyxloom session-stats" in captured.out
+    assert f"nyxloom {__version__}" in captured.out
+    assert "--detailed" in captured.out
+    # The wrong top-level verb list must not appear alongside the correct,
+    # targeted help.
+    assert "Commands (grouped by purpose" not in captured.out
+
+
+def test_subcommand_missing_required_arg_shows_only_its_own_error(capsys):
+    exit_code = cli.main(["session-stats"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage: nyxloom session-stats" in captured.err
+    assert "the following arguments are required: path" in captured.err
+    # No redundant top-level dump appended after the real, targeted error.
+    assert "Commands (grouped by purpose" not in captured.err
+
+
+def test_every_subcommand_help_carries_the_version_banner():
+    _, subparsers = _build_parser()
+    for verb, sub in subparsers.choices.items():
+        assert sub.description == f"nyxloom {__version__}", verb

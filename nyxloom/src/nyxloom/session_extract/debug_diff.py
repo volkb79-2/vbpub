@@ -116,6 +116,13 @@ def render_debug(lossless_text: str, extract_text: str, use_color: bool) -> str:
         return f"{code}{text}{_RESET}" if use_color and code else text
 
     out: list[str] = []
+    # The leading `None` is isjunk (no junk filtering). A mutation-testing
+    # None->[] swap on this arg is a PROVEN-equivalent mutant, not an
+    # untested gap: difflib only ever calls `self.isjunk(...)` behind its
+    # own `if isjunk:` guard, and `[]` is exactly as falsy as `None` there --
+    # so the two are behaviorally identical through every real code path,
+    # not merely untested by this package's own suite (verified against
+    # cpython's difflib source, not assumed).
     sm = difflib.SequenceMatcher(None, lossless_norm, extract_norm, autojunk=False)
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":

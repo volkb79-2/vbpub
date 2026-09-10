@@ -245,6 +245,50 @@ def test_extract_debug_works_for_codex_too(tmp_path, capsys):
     assert "hi" in out
 
 
+def test_extract_debug_opencode_single_session_needs_no_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=1)
+    exit_code = cli.main(["extract-debug", str(db)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+
+
+def test_extract_debug_opencode_multi_session_requires_session_flag(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    exit_code = cli.main(["extract-debug", str(db)])
+    assert exit_code == 1
+    assert "2 opencode sessions" in capsys.readouterr().err
+
+    exit_code = cli.main(["extract-debug", str(db), "--session", "s0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+
+
+def test_extract_debug_opencode_no_sessions_errors(tmp_path, capsys):
+    db = _write_opencode_fixture(tmp_path, n_sessions=0)
+    exit_code = cli.main(["extract-debug", str(db)])
+    assert exit_code == 1
+    assert "no opencode sessions found" in capsys.readouterr().err
+
+
+def test_extract_debug_rejects_a_format_unsupported_by_lossless(tmp_path, capsys, monkeypatch):
+    # --format's own argparse choices already refuse anything outside
+    # claude-code/codex/opencode, so this branch (cmd_extract_debug's own
+    # "does not support {fmt!r}" fallback) is only reachable if adapter
+    # auto-detection ever returns a name --format's choices haven't caught
+    # up to -- a real registry/CLI drift scenario, exercised here by
+    # monkeypatching detect() the way that drift would actually present.
+    from nyxloom.session_extract import adapters as adapters_mod
+
+    fp = _write_codex_fixture(tmp_path)
+    fake = type("FakeAdapter", (), {"name": "does-not-exist"})()
+    monkeypatch.setattr(adapters_mod, "detect", lambda path: fake)
+    exit_code = cli.main(["extract-debug", str(fp)])
+    assert exit_code == 1
+    assert "extract-debug does not support 'does-not-exist'" in capsys.readouterr().err
+
+
 def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     # cli.main() catches argparse's SystemExit itself and converts it to a
     # plain return code (see main()'s parse_args try/except) -- it never
@@ -312,6 +356,38 @@ def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys)
     past_boundary = cli.main(["extract", str(fp), "--max-lifecycle-markers", "-1"])
     assert past_boundary == 0
     assert "before the boundary" in capsys.readouterr().out
+
+
+def test_extract_debug_max_lifecycle_markers_walks_past_a_compaction_too(tmp_path, capsys):
+    # cmd_extract_debug carries its OWN copy of the --max-lifecycle-markers
+    # override (separate from cmd_extract's, same shape) -- must honor an
+    # explicit value exactly the same way, not silently fall back to the
+    # profile default.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "before the boundary"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1",
+             timestamp="2026-01-01T00:00:01Z", compactMetadata={}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    default = cli.main(["extract-debug", str(fp), "--no-color"])
+    assert default == 0
+    default_out = capsys.readouterr().out
+    # "before the boundary" was dropped -- its own lossless block sits
+    # AFTER the gap marker that reports it, inside the dropped span.
+    assert default_out.index(">>> [gap:") < default_out.index("before the boundary")
+
+    past_boundary = cli.main(["extract-debug", str(fp), "--max-lifecycle-markers", "-1", "--no-color"])
+    assert past_boundary == 0
+    past_out = capsys.readouterr().out
+    # Walked past the boundary: "before the boundary" is kept, printed
+    # BEFORE any gap marker (the remaining gap covers only the boundary's
+    # own bookkeeping blocks, not this content).
+    assert past_out.index("before the boundary") < past_out.index(">>> [gap:")
 
 
 def test_extract_profile_supplies_defaults_for_the_selection_knobs(tmp_path, capsys):

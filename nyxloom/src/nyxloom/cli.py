@@ -2680,6 +2680,19 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     bix = backlog_subs.add_parser("index", help="regenerate INDEX.md")
     _add_project_arg(bix)
 
+    # Every top-level subcommand's OWN --help (e.g. `nyxloom session-stats
+    # --help`) is otherwise plain argparse output with no version/name
+    # banner -- _print_top_level_help's banner only fires for a bare
+    # invocation, top-level -h/--help, or an unrecognized command
+    # (operator-reported gap, 2026-09-10). `description` is argparse's own
+    # mechanism for a line shown right after the usage block in --help
+    # output; it does not appear in the terse `.error()` usage-only path
+    # (missing/bad argument), which stays a standard one-line message like
+    # every other CLI's argument error.
+    from . import __version__ as _cli_version
+    for _sub in subparsers.choices.values():
+        _sub.description = f"nyxloom {_cli_version}"
+
     return parser, subparsers
 
 
@@ -2709,10 +2722,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         args = parser.parse_args(argv)
-    except (SystemExit, argparse.ArgumentError) as e:
+    except SystemExit as e:
+        # A KNOWN subcommand's own -h/--help or argparse's own .error() has
+        # ALREADY printed the correct, targeted message by the time this
+        # exception reaches here -- --help to stdout with exit 0, a missing/
+        # bad-argument .error() to stderr with exit 2 -- via the SAME
+        # subparser `nyxloom <verb> --help` would use directly (operator-
+        # reported bug, 2026-09-10: this used to ALSO print the wrong
+        # TOP-LEVEL help on top of that correct output, and `e.code or 2`
+        # corrupted --help's own clean exit 0 into 2 since 0 is falsy).
+        # Nothing to add here; just propagate the real exit code.
+        return e.code if e.code is not None else 0
+    except argparse.ArgumentError:
+        # Only the TOP-level parser can raise this (exit_on_error=False);
+        # a malformed invocation before any subcommand is even identified
+        # (e.g. an unrecognized top-level flag) -- the top-level help IS
+        # the right thing to show here, unlike the SystemExit case above.
         parser.print_help(sys.stderr)
-        if isinstance(e, SystemExit):
-            return e.code or 2
         return 2
 
     # Route to handler

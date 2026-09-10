@@ -122,3 +122,13 @@ def test_bare_backtick_word_is_not_a_signal():
 
 def test_filename_mention_is_a_signal():
     assert has_finding_signal("Fixed in ensure_apt_cache.py, verified.")
+
+
+def test_api_error_tag_is_a_signal_even_though_its_short():
+    # adapters/claude_code.py's own "[API ERROR: ...]" tag for a real
+    # isApiErrorMessage record (429/overloaded_error) -- short (a rate
+    # limit notice is often one line), which is exactly the shape the
+    # length filter otherwise drops; the fact a session actually hit a
+    # real API error must never be silently dropped as noise.
+    assert has_finding_signal("[API ERROR: rate_limit, HTTP 429] You've hit your session limit")
+    assert has_finding_signal("[API ERROR]")

@@ -215,8 +215,21 @@ constrained the interface or turned up a real bug:
 - **Claude Code** (`adapters/claude_code.py`) — flat JSONL, one record
   per line, `type` discriminates `user`/`assistant`/`system`/housekeeping.
   `AskUserQuestion` batches are pre-rendered by the harness into a single
-  `"The user answered: ..."` tool_result string covering every question
-  in the batch — the adapter doesn't need to reconstruct pairing itself.
+  flattened `"The user answered: \"Q1\"=\"A1\", \"Q2\"=\"A2\", ..."`
+  tool_result string covering every question in the batch, with a trailing
+  boilerplate sentence observed in at least two different wordings
+  (`"Read the answers carefully..."` vs `"You can now continue with these
+  answers in mind."`). `_split_qa_pairs`/`_format_qa_pairs` re-split that
+  string back into per-question `(question, answer)` pairs — anchored on
+  each question's own verbatim text from `tool_use.input.questions`, not
+  the varying boilerplate — and render each as the question text, every
+  declared option as a bullet list, a blank line, then
+  `OPERATOR: <answer>`, one block per question with a blank line between
+  blocks (operator-reported finding, 2026-09-10: the raw flattened string,
+  including its "OPERATOR: The user answered: ..." framing, used to be
+  passed straight through as the rendered operator turn). Falls back to
+  the unmodified raw string the moment an expected marker isn't found — a
+  harness rendering change this adapter hasn't seen yet.
   Real schema quirks found only by running against live files, not
   documentation, several caught only by a later adversarial review's own
   reproductions rather than the initial design pass: the first line of a

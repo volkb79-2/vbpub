@@ -120,6 +120,131 @@ def test_build_ledger_defaults_repo_root_to_cwd(tmp_path, monkeypatch):
         assert not Path(p).is_absolute()
 
 
+def test_dedup_preserve_order_skips_an_already_seen_item():
+    assert ledger._dedup_preserve_order(["a", "b", "a", "c", "b"]) == ["a", "b", "c"]
+
+
+def test_build_ledger_ignores_file_edit_tool_use_with_no_file_path(tmp_path):
+    # A malformed/partial Edit tool_use (no file_path in input) must be
+    # skipped, not crash or append a falsy entry.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Edit", old_string="x", new_string="y"),
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].files_edited == []
+
+
+def test_build_ledger_ignores_tool_use_that_is_neither_file_nor_bash(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Grep", pattern="foo"),
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].is_empty() is True
+
+
+def test_build_ledger_skips_a_non_dict_entry_mixed_into_assistant_content(tmp_path):
+    # A non-dict entry alongside a REAL tool_use in the same content list --
+    # `not isinstance(block, dict) or ...` must skip the non-dict one
+    # without ever reaching `.get()` on it, and still pick up the real one.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 "a stray non-dict content entry",
+                 _tool_use("tu1", "Read", file_path="/repo/README.md"),
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].files_read == ["README.md"]
+
+
+def test_build_ledger_skips_a_non_dict_entry_mixed_into_user_content(tmp_path):
+    # Same guard, user/tool_result side: `not isinstance(block, dict) or
+    # block.get("type") != "tool_result"`.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Bash", command="pytest -q"),
+             ]}),
+        _rec(type="user", uuid="ur1", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": [
+                 "a stray non-dict content entry",
+                 {"type": "tool_result", "tool_use_id": "tu1", "content": "3 passed"},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].tests == ["3 passed"]
+
+
+def test_build_ledger_bash_commit_without_tool_id_is_not_tracked(tmp_path):
+    # A Bash tool_use block missing its own "id" can never be correlated
+    # with a later tool_result -- must not raise, and no commit is recorded.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "name": "Bash", "input": {"command": 'git commit -m x'}},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].commits == []
+
+
+def test_build_ledger_skips_record_types_that_are_neither_assistant_nor_user(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="system", uuid="sys1", timestamp="2026-01-01T00:00:01Z", content="a system note"),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].is_empty() is True
+
+
+def test_build_ledger_commit_result_not_matching_commit_regex_records_nothing(tmp_path):
+    # git commit can fail ("nothing to commit, working tree clean") --
+    # the pending correlation must not manufacture a bogus commit hash.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "go"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 _tool_use("tu1", "Bash", command='git commit -m x'),
+             ]}),
+        _rec(type="user", uuid="ur1", timestamp="2026-01-01T00:00:02Z",
+             message=_tool_result("tu1", "nothing to commit, working tree clean")),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].commits == []
+
+
 def test_build_ledger_relativize_falls_back_gracefully_outside_root():
     # A path outside repo_root grows a "../" prefix rather than erroring --
     # os.path.relpath, unlike Path.relative_to, never raises for this case.
@@ -183,6 +308,13 @@ def test_build_ledger_skips_blank_malformed_lines_and_non_tool_result_content(tm
 def test_ledger_is_empty():
     assert ledger.Ledger().is_empty() is True
     assert ledger.Ledger(files_read=["a.py"]).is_empty() is False
+    # Each field checked as the ONLY populated one -- is_empty()'s `or`
+    # chain has a real, independently-observable effect at every position
+    # only when the True value isn't always in the same (first) slot.
+    assert ledger.Ledger(files_edited=["a.py"]).is_empty() is False
+    assert ledger.Ledger(commits=["deadbeef"]).is_empty() is False
+    assert ledger.Ledger(branches=["feature/x"]).is_empty() is False
+    assert ledger.Ledger(tests=["1 passed"]).is_empty() is False
 
 
 def test_build_ledger_unsupported_format_raises_not_implemented(tmp_path):

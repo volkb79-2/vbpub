@@ -87,11 +87,10 @@ artifact = "coverage.json"
 # rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
 # R2 (native python mutation) is added in a follow-up edit once R1 is
 # confirmed green, not declared here on day one.
-schema_version = 2
 
 [lanes.session-extract]
 scope = "S1"
-rigor = ["R0", "R1"]
+rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_adapters_registry.py",
@@ -111,6 +110,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_stats_opencode.py",
   "tests/test_session_extract_stats.py",
   "tests/test_cli_extract.py",
+  "tests/test_cli_help.py",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
@@ -133,6 +133,37 @@ allow_excluded = false
 require_branch = true
 base = "edc55648"
 
+# R2: native python mutation, changed-lines-only -- resolve_mutation_targets
+# reuses R1's SAME base=edc55648 diff, so this mutates exactly the lines
+# this session touched, not the whole package. jobs=1 (serial), NOT higher:
+# the argv already runs pytest -n auto (up to 8 xdist workers on this
+# host), so N concurrent mutation jobs would mean up to N*8 worker
+# processes on an 8-core host shared with a production game server
+# (host-shared-with-production-load-rule: load hit 85 doing exactly this
+# kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
+# concurrency bounded to the single already-accounted-for xdist fan-out.
+# max_mutants=200/budget_per_candidate=120s are generous for this diff's
+# real size (a few hundred changed lines across 6 files); raised if
+# BUDGET_EXCEEDED fires.
+[lanes.session-extract.judge.mutation]
+jobs = 1
+max_mutants = 200
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "120s"
+
 [lanes.session-extract.judge.coverage]
 format = "coverage-py-json"
 artifact = "coverage-session-extract.json"
+
+# R3: cause-sensitive canary, uncovered-line mechanism -- proves this lane's
+# R1 changed-line coverage FLOOR actually has teeth (a genuinely uncovered
+# line in the judged package really does FAIL the gate), not merely that
+# some failure mode exists. `uncovered-line` requires R1 declared (it does,
+# above) and, since this lane is diff-mode (judge.mode is NOT
+# "whole_target"), the target need not be one of an explicit judge.targets
+# list -- any real file under source_roots qualifies. classifier.py: small,
+# stable, and central to the package this lane actually judges.
+[lanes.session-extract.judge.canary]
+mechanism = "uncovered-line"
+target = "src/nyxloom/session_extract/classifier.py"
+budget_per_attempt = "120s"
