@@ -174,3 +174,79 @@ def test_word_budget_trims_the_oldest_end():
     kept_markers = [e.marker for e in kept]
     assert kept_markers[-1] == "e4"  # newest always present
     assert "e0" not in kept_markers  # oldest is what got trimmed
+
+
+# --- gap_after / walk_stopped_because annotations (E-011) ---------------
+
+def test_gap_after_counts_raw_seq_units_between_two_kept_events():
+    # seq 0 kept, seq 1-3 are raw records that never even reach select()
+    # (an adapter drops tool_use/tool_result before creating a
+    # NormalizedEvent) or ARE NormalizedEvents select() itself rejects --
+    # either way, 3 raw records (seq 1,2,3) sit strictly between seq=0 and
+    # seq=4, with nothing of ours kept for that stretch.
+    events = [_op(0), _op(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5))
+    by_marker = {e.marker: e for e in kept}
+    assert by_marker["op0"].meta.get("gap_after") == "3"
+    # the newest kept event has no "next newer kept event" to gap against
+    assert "gap_after" not in by_marker["op4"].meta
+
+
+def test_gap_after_absent_when_kept_events_are_seq_adjacent():
+    events = [_op(0), _op(1)]
+    kept = select(events, ExtractConfig(max_checkpoints=5))
+    by_marker = {e.marker: e for e in kept}
+    assert "gap_after" not in by_marker["op0"].meta
+
+
+def test_gap_after_zero_when_two_events_share_one_raw_record_seq():
+    # Two NormalizedEvents minted from the SAME raw record (e.g. a text
+    # block plus a thinking block on one assistant record) share a seq --
+    # must not go negative.
+    cp = _cp(0, text="checkpoint prose")
+    same_record_short = NormalizedEvent(0, "extra0", _TS, EventKind.OPERATOR_TEXT, "also from record 0")
+    events = [same_record_short, cp]
+    kept = select(events, ExtractConfig(max_checkpoints=5))
+    by_marker = {e.marker: e for e in kept}
+    assert "gap_after" not in by_marker["extra0"].meta
+
+
+def test_gap_after_counts_gaps_across_lifecycle_markers_too():
+    marker = NormalizedEvent(2, "lc2", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [_op(0), marker, _op(5)]
+    kept = select(events, ExtractConfig(max_checkpoints=5))
+    by_marker = {e.marker: e for e in kept}
+    assert by_marker["lc2"].meta.get("gap_after") == "2"  # seq 3,4 between lc2 and op5
+
+
+def test_walk_stopped_because_max_words_tags_the_oldest_kept_event():
+    long_text = "word " * 1000
+    events = [NormalizedEvent(i, f"e{i}", _TS, EventKind.OPERATOR_TEXT, long_text) for i in range(5)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_words=2500))
+    by_marker = {e.marker: e for e in kept}
+    assert by_marker["e2"].meta.get("walk_stopped_because") == "max_words"
+    # not on the newest event, and not spuriously on events that didn't cause the stop
+    assert "walk_stopped_because" not in by_marker["e4"].meta
+
+
+def test_walk_stopped_because_max_checkpoints_tags_the_oldest_kept_event():
+    events = [_op(0), _cp(1), _cp(2), _cp(3), _cp(4), _cp(5), _op(6)]
+    kept = select(events, ExtractConfig(max_checkpoints=3))
+    by_marker = {e.marker: e for e in kept}
+    assert by_marker["cp3"].meta.get("walk_stopped_because") == "max_checkpoints"
+
+
+def test_walk_stopped_because_absent_when_the_walk_reaches_the_real_start():
+    events = [_op(0), _cp(1)]
+    kept = select(events, ExtractConfig(max_checkpoints=5))
+    assert all("walk_stopped_because" not in e.meta for e in kept)
+
+
+def test_walk_stopped_because_absent_when_a_lifecycle_marker_is_the_stop():
+    # The marker's own kept text ("[compact boundary]") already explains
+    # the stop -- no redundant tag needed.
+    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [_op(0), marker, _cp(2)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=0))
+    by_marker = {e.marker: e for e in kept}
+    assert "walk_stopped_because" not in by_marker["lc1"].meta

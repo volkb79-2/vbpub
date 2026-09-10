@@ -106,6 +106,30 @@ class ExtractConfig:
     # "json" (structured, for a script/second-stage tool to consume).
     output_format: str = "text"
 
+    # Text rendering only (see render.py, select.py's "gap_after" meta,
+    # design-context-lifecycle-experiments.md's E-011): the smallest
+    # raw-record gap between two kept events worth surfacing as a "[gap: N
+    # records omitted]" note. Below this, no note is rendered -- a gap of 1
+    # or 2 is usually just the tool_use/tool_result pair for a single
+    # ordinary tool call, not informative, and real-data validation (the
+    # dstdns 8ebff140 replay) found dozens of them per run, inflating output
+    # by ~17% over max_words with mostly-uninformative noise. select.py
+    # still records the EXACT count in meta regardless of this threshold --
+    # only text rendering filters; JSON rendering (a second-stage tool's
+    # input) always reports the true count, filtering being a text-UX
+    # concern, not a data-completeness one.
+    min_gap_to_annotate: int = 3
+
+    # Text rendering only: opt into naming the adapter's own opaque marker
+    # token in each gap/stop-reason note ("...raw log continues after
+    # marker <marker>") instead of a bare count. That marker is the exact
+    # same token --since/--until already resolve -- a Claude Code uuid, a
+    # Codex ordinal, an opencode message-table row id -- so this is a "go
+    # look it up yourself" pointer into the raw log, not new data. Off by
+    # default (see render.py's module docstring): most readers most of the
+    # time only need to know a gap existed, not recover it.
+    gap_note_show_marker: bool = False
+
 
 # Named presets bundling the "how aggressively should selection filter
 # content" knobs -- max_checkpoints, checkpoint_score_threshold,

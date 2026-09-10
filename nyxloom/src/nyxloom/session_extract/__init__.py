@@ -31,11 +31,15 @@ class ExtractResult:
     def render(self) -> str:
         if self._output_format == "json":
             return render.render_json(self.events, self._checkpoint_threshold, self.format, self.last_marker)
-        return render.render_text(self.events, self._checkpoint_threshold, self.format, self.last_marker)
+        return render.render_text(
+            self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker
+        )
 
     # set by extract() below; not part of the public dataclass contract
     _output_format: str = "text"
     _checkpoint_threshold: float = 3.0
+    _min_gap_to_annotate: int = 3
+    _gap_note_show_marker: bool = False
 
 
 def read_since_marker(path: Path) -> tuple[str, str]:
@@ -98,4 +102,6 @@ def extract(
     result = ExtractResult(events=kept, format=adapter.name, session_id=session_id, last_marker=last_marker)
     result._output_format = config.output_format
     result._checkpoint_threshold = config.checkpoint_score_threshold
+    result._min_gap_to_annotate = config.min_gap_to_annotate
+    result._gap_note_show_marker = config.gap_note_show_marker
     return result

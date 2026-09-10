@@ -106,7 +106,7 @@ def test_extract_multiple_sessions_without_session_id_raises(tmp_path):
 
 
 def test_read_since_marker_from_text_output(tmp_path):
-    text = render_text([], checkpoint_threshold=3.0, fmt="claude-code", last_marker="abc-123")
+    text = render_text([], fmt="claude-code", last_marker="abc-123")
     fp = tmp_path / "prior_run.txt"
     fp.write_text(text, encoding="utf-8")
     fmt, marker = read_since_marker(fp)
@@ -122,7 +122,7 @@ def test_read_since_marker_from_json_output(tmp_path):
 
 
 def test_read_since_marker_raises_on_file_with_no_marker(tmp_path):
-    text = render_text([], checkpoint_threshold=3.0, fmt="claude-code", last_marker=None)
+    text = render_text([], fmt="claude-code", last_marker=None)
     fp = tmp_path / "prior_run.txt"
     fp.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="no embedded"):

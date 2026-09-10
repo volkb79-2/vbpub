@@ -37,6 +37,39 @@ Windowing contract:
     (the window never reaches further back than the oldest of the target
     checkpoints);
   - once the cumulative word count exceeds max_words, the walk stops.
+
+Two annotations, purely additive via NormalizedEvent.meta (never the return
+type or an event's own .text -- so this changes nothing about equality
+comparisons in existing tests, which already exclude meta via
+compare=False, and nothing about word-budget accounting, which only ever
+reads .text):
+
+  - `meta["gap_after"]` -- set on a kept event when one or more raw source
+    records (adapter `seq` units -- JSONL lines, rollout ordinals, DB rows;
+    see events.py) sit between it and the NEXT-NEWER kept event, with no
+    kept event of our own for that stretch. This covers BOTH kinds of gap
+    uniformly: an ASSISTANT_TEXT/THINKING event this walk itself considered
+    and rejected (too short, no finding signal), and raw records that never
+    even became a NormalizedEvent (tool_use/tool_result, mode switches,
+    etc -- adapters drop these before select() ever sees them). Either way
+    the reader is being told "something real happened here that you are not
+    seeing," which is exactly the gap E-011 (docs/design-context-lifecycle-
+    experiments.md) flagged: two adjacent kept events currently look
+    time-adjacent whether or not they actually were.
+  - `meta["walk_stopped_because"]` -- set on the OLDEST kept event, but
+    ONLY for the two ways the walk can stop with more session left unread:
+    "max_words" or "max_checkpoints". Reaching the true start of the
+    session (the for/else below) and hard-stopping at a LIFECYCLE_MARKER
+    are both left untagged on purpose -- the former genuinely lost nothing,
+    and the marker's own kept text ("[compact boundary]" etc) already says
+    why the walk stopped there; a second tag would be redundant. This is
+    the "why did selection stop here" signal E-011 asked for: today
+    reaching the real start of the log and hitting a budget wall render
+    identically, with no way for a reader to tell the difference.
+
+Both are a property of THIS render's own walk over its own span, computed
+fresh every call -- nothing already emitted by a prior --since run is ever
+retroactively edited (config.py's append-only / cache-stable principle).
 """
 
 from __future__ import annotations
@@ -51,10 +84,20 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
     checkpoints_found = 0
     word_count = 0
     markers_passed = 0
+    last_kept_seq: int | None = None
+
+    def _keep(ev: NormalizedEvent) -> None:
+        nonlocal last_kept_seq
+        if last_kept_seq is not None:
+            gap = last_kept_seq - ev.seq - 1
+            if gap > 0:
+                ev.meta["gap_after"] = str(gap)
+        kept.append(ev)
+        last_kept_seq = ev.seq
 
     for ev in reversed(events):
         if ev.kind is EventKind.LIFECYCLE_MARKER:
-            kept.append(ev)
+            _keep(ev)
             may_pass = config.max_lifecycle_markers == -1 or markers_passed < config.max_lifecycle_markers
             if not may_pass:
                 break
@@ -62,7 +105,7 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             continue
 
         if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
-            kept.append(ev)
+            _keep(ev)
             word_count += len(ev.text.split())
 
         elif ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
@@ -72,15 +115,19 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             )
             if is_checkpoint:
                 checkpoints_found += 1
-                kept.append(ev)
+                _keep(ev)
                 word_count += len(ev.text.split())
                 if checkpoints_found >= config.max_checkpoints:
+                    if kept:
+                        kept[-1].meta["walk_stopped_because"] = "max_checkpoints"
                     break
             elif len(ev.text) > config.long_comment_chars or classifier.has_finding_signal(ev.text):
-                kept.append(ev)
+                _keep(ev)
                 word_count += len(ev.text.split())
 
         if word_count > config.max_words:
+            if kept:
+                kept[-1].meta["walk_stopped_because"] = "max_words"
             break
 
     kept.reverse()
