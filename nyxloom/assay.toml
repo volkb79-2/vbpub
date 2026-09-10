@@ -87,7 +87,6 @@ artifact = "coverage.json"
 # rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
 # R2 (native python mutation) is added in a follow-up edit once R1 is
 # confirmed green, not declared here on day one.
-schema_version = 2
 
 [lanes.session-extract]
 scope = "S1"
