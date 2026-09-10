@@ -660,6 +660,34 @@ def cmd_render(args) -> int:
     return 0
 
 
+def cmd_extract(args) -> int:
+    """extract <path> [--session ID] [--format FMT] [--json] [--checkpoints N]
+    [--long-threshold N] [--max-words N] [--include-thinking] [--since MARKER]
+
+    Mechanical (no LLM roundtrip) session-log extraction -- see
+    session_extract/__init__.py's module docstring for the full contract.
+    Auto-detects the source CLI's format from the path (a Claude Code or
+    Codex CLI JSONL file, or an opencode SQLite store); --format overrides
+    when detection is ambiguous or wrong. Prints the resumable brief to
+    stdout: delimited text by default, or --json for a second-stage tool.
+    """
+    from pathlib import Path
+
+    from .session_extract import ExtractConfig, extract
+
+    config = ExtractConfig(
+        max_checkpoints=args.checkpoints,
+        long_comment_chars=args.long_threshold,
+        max_words=args.max_words,
+        include_thinking=args.include_thinking,
+        since_marker=args.since,
+        output_format="json" if args.json else "text",
+    )
+    result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
+    print(result.render())
+    return 0
+
+
 def cmd_migrate_store(args) -> int:
     """migrate-store <project>
 
@@ -1901,6 +1929,31 @@ def main(argv: list[str] | None = None) -> int:
     # render
     render_parser = subparsers.add_parser("render")
 
+    # extract
+    extract_parser = subparsers.add_parser("extract")
+    extract_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
+                                              "a file or directory for opencode's SQLite store)")
+    extract_parser.add_argument("--session",
+                                 help="Session id, required when the store holds more than one "
+                                      "(e.g. opencode)")
+    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                 help="Force the adapter instead of auto-detecting from the path")
+    extract_parser.add_argument("--json", action="store_true",
+                                 help="JSON output instead of delimited text")
+    extract_parser.add_argument("--checkpoints", type=int, default=5,
+                                 help="How many recent checkpoints to anchor on (default 5)")
+    extract_parser.add_argument("--long-threshold", type=int, default=180,
+                                 help="Char threshold for keeping a non-checkpoint comment in "
+                                      "the older window (default 180)")
+    extract_parser.add_argument("--max-words", type=int, default=10_000,
+                                 help="Hard output word budget (default 10000)")
+    extract_parser.add_argument("--include-thinking", action="store_true",
+                                 help="Also emit assistant thinking/reasoning content where the "
+                                      "adapter can recover it")
+    extract_parser.add_argument("--since",
+                                 help="Resume marker from a prior run's last_marker -- only "
+                                      "events after it are considered")
+
     # migrate-store
     migrate_store_parser = subparsers.add_parser("migrate-store")
     migrate_store_parser.add_argument("project", help="Project ID")
@@ -2183,6 +2236,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_resync(args)
         elif args.cmd == "render":
             return cmd_render(args)
+        elif args.cmd == "extract":
+            return cmd_extract(args)
         elif args.cmd == "migrate-store":
             return cmd_migrate_store(args)
         elif args.cmd == "daemon":
