@@ -603,6 +603,31 @@ def test_api_error_message_is_tagged_not_mistaken_for_model_prose(tmp_path):
     assert ev.text == "[API ERROR: rate_limit, HTTP 429] You've hit your session limit · resets 12:20am (UTC)"
 
 
+def test_api_error_message_skips_a_non_dict_content_entry_without_crashing(tmp_path):
+    # The text-block comprehension's guard is `isinstance(b, dict) and
+    # b.get("type") == "text"` -- with a non-dict entry mixed into content,
+    # `and` short-circuits before ever calling .get() on it (skips it
+    # cleanly); a broken `or` guard would instead evaluate b.get("type")
+    # on the non-dict entry and raise AttributeError. A stray non-text
+    # block (no "text" key) alongside it must also be skipped, not KeyError.
+    records = [
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "model": "<synthetic>", "content": [
+                 "not-a-dict",
+                 {"type": "other"},
+                 {"type": "text", "text": "rate limited"},
+             ]}),
+    ]
+    records[0]["isApiErrorMessage"] = True
+    records[0]["error"] = "rate_limit"
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    ev = next(e for e in events if e.marker == "a1")
+    assert ev.text == "[API ERROR: rate_limit] rate limited"
+
+
 def test_api_error_message_with_no_text_content_still_gets_a_tagged_event(tmp_path):
     records = [
         _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
@@ -704,6 +729,26 @@ def test_split_qa_pairs_middle_answer_with_no_trailing_comma():
     text = 'The user answered: "First?"="yes" "Second?"="no".'
     out = claude_code._split_qa_pairs(text, [_q("First?", "yes", "no"), _q("Second?", "yes", "no")])
     assert out == [("First?", "yes"), ("Second?", "no")]
+
+
+def test_split_qa_pairs_middle_answer_that_is_only_an_empty_quoted_pair():
+    # answer == '""' (len exactly 2) must still be unwrapped to "" -- this
+    # is the boundary that distinguishes the `len(answer) >= 2` guard from
+    # an off-by-one `> 2` (which would leave the literal '""' untouched
+    # instead of stripping it to an empty string).
+    text = 'The user answered: "First?"="", "Second?"="B".'
+    out = claude_code._split_qa_pairs(text, [_q("First?", "", "B"), _q("Second?", "A", "B")])
+    assert out == [("First?", ""), ("Second?", "B")]
+
+
+def test_split_qa_pairs_middle_answer_starting_but_not_ending_with_a_quote_is_kept_verbatim():
+    # answer.startswith('"') is True but answer.endswith('"') is False --
+    # the strip-quotes guard requires BOTH (an `and`), so this answer must
+    # be left untouched. Distinguishes the guard's `and` from an `or`
+    # (which would fire on startswith alone and wrongly chop both ends).
+    text = 'The user answered: "First?"="abc, "Second?"="B".'
+    out = claude_code._split_qa_pairs(text, [_q("First?", "A", "B"), _q("Second?", "A", "B")])
+    assert out == [("First?", '"abc'), ("Second?", "B")]
 
 
 def test_format_qa_pairs_skips_a_question_whose_options_is_not_a_list():

@@ -148,6 +148,24 @@ def test_unknown_command_exits_2_and_names_the_bad_token(capsys):
     assert f"nyxloom {__version__}" in captured.err
 
 
+def test_unrecognized_top_level_flag_hits_argparses_own_error_path(capsys):
+    # Unlike an unrecognized COMMAND (the "unknown" classify branch above,
+    # intercepted before argparse ever runs), a lone unrecognized top-level
+    # OPTION starts with "-" so _classify_top_level_invocation defers it to
+    # argparse via ("dispatch", None). With exit_on_error=False, argparse's
+    # own parse_args() raises argparse.ArgumentError for this ("unrecognized
+    # arguments: --bogus-flag") rather than calling self.error() directly --
+    # this is the one real path that reaches main()'s
+    # `except argparse.ArgumentError:` branch, which prints argparse's OWN
+    # default usage (not the custom grouped screen) and returns 2.
+    exit_code = cli.main(["--bogus-flag"])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage: nyxloom" in captured.err
+    assert "Commands (grouped by purpose" not in captured.err
+
+
 def test_valid_verb_still_dispatches_normally(capsys):
     # `version` takes no args and has no filesystem/registry dependency --
     # a clean way to prove a known verb is untouched by the new top-level

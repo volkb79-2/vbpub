@@ -64,6 +64,37 @@ def test_color_wraps_dropped_content_in_grey_and_gap_note_in_cyan():
     assert f"{_CYAN}<<<{_RESET}" in text
 
 
+def test_autojunk_false_still_matches_a_rare_repeated_block_past_the_200_element_threshold():
+    # `autojunk=False` on the SequenceMatcher call is a real, load-bearing
+    # keyword distinct from the leading `None` (isjunk) argument's own
+    # proven-equivalent None->[] mutant above: difflib.SequenceMatcher's
+    # autojunk heuristic only activates when len(b) >= 200, at which point
+    # any element appearing more than ~1% of the time is dropped as
+    # "popular" and can no longer seed a match -- so this needs >=200
+    # extract blocks with one value repeated often enough to be junked.
+    #
+    # Fixture: 200 lossless blocks (L0..L99, one "DUP", L100..L198) vs 200
+    # extract blocks (N0..N99, "DUP" x10, N100..N189) -- L{i}/N{i} never
+    # overlap by construction, so the single lossless "DUP" can ONLY be
+    # matched to one of the extract "DUP"s via SequenceMatcher's own
+    # popularity-based b2j index, not via any adjacent equal run bleeding
+    # into it (verified directly against difflib's own find_longest_match:
+    # with autojunk=True this exact fixture collapses to ONE all-200
+    # "replace" with zero equal blocks; with autojunk=False the single
+    # "DUP" survives as its own equal block between two 100/99-block
+    # replaces).
+    lossless_blocks = [f"L{i}" for i in range(100)] + ["DUP"] + [f"L{i}" for i in range(100, 199)]
+    extract_blocks = [f"N{i}" for i in range(100)] + ["DUP"] * 10 + [f"N{i}" for i in range(100, 190)]
+    lossless_text = _lossless(*lossless_blocks)
+    extract_text = "\n\n---\n\n".join(f"OPERATOR: {b}" for b in extract_blocks) + "\n"
+
+    text = render_debug(lossless_text, extract_text, use_color=False)
+
+    assert "[gap: 200 lossless blocks dropped]" not in text
+    assert "[gap: 100 lossless blocks dropped]" in text
+    assert "[gap: 99 lossless blocks dropped]" in text
+
+
 def test_render_only_gap_note_colored_cyan():
     lossless_text = _lossless("older text", "kept text")
     extract_text = "[gap: 5 records omitted]\n\n---\n\nOPERATOR: kept text\n"
