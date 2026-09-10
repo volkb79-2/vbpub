@@ -1822,3 +1822,54 @@ context size) that are unreliable enough to likely rule this approach out in fav
 **Status**: not run. See the HOWTO doc's own "Open points / what's left to do" section for the
 concrete blockers (auto-triggering a real compaction on demand isn't yet a controllable recipe;
 the trace-analysis script is written but untested against real data).
+
+### E-010 addendum — correcting "race V6" for the harness-triggered case; a sharper taxonomy (2026-09-10)
+
+An operator's follow-up question exposed a real gap in how E-010 first framed itself against V6:
+"racing" V6's external fork against the harness's own INTERNAL, opaque auto-compact decision was
+presented as roughly equivalent to endpoint control (E-010). It is not, for this specific case.
+
+**Why racing doesn't work here.** The harness's decision "the next call is a compact call, not a
+normal turn" happens inside the same internal step that formulates and sends that request — there
+is no externally-observable pause between "decided" and "sent" for a monitor to catch. An external
+process trying to preempt it by killing the running agent earlier risks exactly what L24 already
+flags: a dangling `tool_use` with no `tool_result`, an unclean state a later fork/resume can choke
+on. V6's fork mechanism only has a clean cut point in two situations: (1) controller-driven,
+per-turn headless invocation (the process already returns after each complete turn — nothing to
+race), or (2) cooperative self-checkpointing (the agent's own prompt discipline, e.g. the
+`dispatch` skill's "ARM at ~120k context / ~60 tool calls, CUT at the next coherent boundary"
+clause — the agent voluntarily stops at a clean point). Neither is "externally interrupt a
+harness-driven decision mid-flight, uncoordinated with the agent." **For that specific case — the
+one E-010 is actually about — endpoint control is the structurally correct tool precisely because
+it doesn't need to win any race**: the harness fires whenever its own opaque threshold says to,
+and the proxy just answers whatever request that produces. No timing problem, because nothing is
+being preempted.
+
+A partial mitigation for the COOPERATIVE case only (not the passive-race case, which doesn't
+exist as a clean mechanism): real `compactMetadata.preTokens` values already gathered this session
+(dstdns session `c444f5ab`) cluster tightly around **~465,000–470,000** for most real firings
+(with some outliers, likely a different context-window mode active at the time) — a usable,
+empirically-grounded conservative threshold for a cooperative controller to preempt with real
+margin. Doesn't help case (2)'s uncooperative variant; recorded because it's real data already in
+hand, not a new measurement.
+
+**A sharper taxonomy than "V6 vs E-010", from the same discussion — four things, not two:**
+
+| type | who decides WHEN | who decides WHAT to keep | availability |
+|---|---|---|---|
+| Dumb harness auto-compact | harness, opaque threshold | an LLM, no steering ("half semantic") | built into Claude Code / Codex has its own equivalent |
+| Steered compaction | operator/controller, on demand | an LLM, following our retention instructions | only where the harness exposes a hook (`/compact`, Codex `thread/compact/start`) — not universal (Pattern (a)) |
+| Mechanical extraction (`nyxloom extract`) | operator/controller, on demand | pure structural/lexical heuristics, no semantics | any CLI with an adapter |
+| Endpoint control (E-010) | harness's own trigger, unmodified | whatever we choose to answer with | requires MITM or a supported gateway endpoint |
+
+Endpoint control is a DELIVERY MECHANISM, orthogonal to the other three — it's what lets us swap
+which of the first three rows actually answers the harness's own auto-compact request, without
+needing to solve the timing problem at all.
+
+**New idea surfaced, not yet built**: a cheap/local LLM as a narrow judge for `select.py`'s
+currently-mechanical ambiguous-short-line calls — a per-line question like "does this ~80-char
+line carry semantic value; would losing it hurt the ability to proceed?", batchable, using a model
+far cheaper than the primary agent. A hybrid between "mechanical extraction" and "an LLM decides
+retention," distinct from both. Explicitly NOT proposed as the default path — `session_extract`'s
+whole north star is zero model calls (deterministic, free, safe on secrets-bearing transcripts);
+this would need to ship as an opt-in mode that leaves the default guarantee untouched.
