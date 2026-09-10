@@ -39,6 +39,9 @@ def _write_fixture(tmp_path: Path) -> Path:
              ]}),
         _rec(type="user", uuid="u3", timestamp="2026-01-01T00:00:04Z", isMeta=True,
              message={"role": "user", "content": "<local-command-caveat>Caveat: ...</local-command-caveat>"}),
+        _rec(type="user", uuid="u3b", timestamp="2026-01-01T00:00:04.5Z",
+             interruptedMessageId="msg_01xyz",
+             message={"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}),
         _rec(type="assistant", uuid="a3", timestamp="2026-01-01T00:00:05Z",
              message={"role": "assistant", "content": [
                  {"type": "tool_use", "id": "aq1", "name": "AskUserQuestion",
@@ -93,10 +96,15 @@ def test_parse_shapes(tmp_path):
     assert any(e.marker == "a1" and e.kind is EventKind.ASSISTANT_TEXT for e in events)
     # isMeta framing is dropped entirely
     assert not any(e.marker == "u3" for e in events)
-    # AskUserQuestion answer becomes one QA_PAIR carrying the full rendered string
+    # a Ctrl+C interrupt's own synthetic record is dropped entirely too --
+    # not a real operator turn, and never shows up as an all-zero row
+    assert not any(e.marker == "u3b" for e in events)
+    # AskUserQuestion answer becomes one QA_PAIR: question, its options as a
+    # bullet list, then the operator's actual answer -- not the harness's
+    # own flattened '"Q"="A"' string verbatim (operator-reported, 2026-09-10)
     qa = next(e for e in events if e.marker == "u4")
     assert qa.kind is EventKind.QA_PAIR
-    assert "Which host?" in qa.text and "=\"A\"" in qa.text
+    assert qa.text == "Which host?\n- A\n\nOPERATOR: A"
     # /compact is promoted to a lifecycle marker, not plain operator text
     compact_ev = next(e for e in events if e.marker == "u6")
     assert compact_ev.kind is EventKind.LIFECYCLE_MARKER
@@ -568,3 +576,60 @@ def test_task_notification_is_dropped_as_noise(tmp_path):
     events = claude_code.parse(fp, str(fp), ExtractConfig())
     assert not any(e.marker == "u1" for e in events)
     assert any(e.marker == "a1" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# _format_qa_pairs / _split_qa_pairs (operator-reported, 2026-09-10): the
+# raw AskUserQuestion tool_result is the harness's own flattened
+# '"Q1"="A1", "Q2"="A2", ...' string, unreadable for a batch of more than
+# one question. Reformatted per question as: question text, its options as
+# a bullet list, a blank line, `OPERATOR: <answer>` -- blank line between
+# question blocks in a batch. Real-data note: the harness's own trailing
+# boilerplate sentence after the LAST answer has been observed in at least
+# two different exact wordings ("Read the answers carefully..." vs "You can
+# now continue with these answers in mind.") -- these tests cover both,
+# which is why the split anchors on the answer's own quote pairing rather
+# than either exact phrase.
+# ---------------------------------------------------------------------------
+
+def _q(question, *labels):
+    return {"question": question, "header": "h", "multiSelect": False,
+            "options": [{"label": lbl, "description": ""} for lbl in labels]}
+
+
+def test_format_qa_pairs_single_question_read_carefully_boilerplate():
+    text = ('The user answered: "Pick one?"="B". Read the answers carefully -- they may '
+            "request clarification, changes, or that you not proceed -- and follow what "
+            "they actually say.")
+    out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B", "C")])
+    assert out == "Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
+
+
+def test_format_qa_pairs_single_question_continue_boilerplate():
+    text = 'Your questions have been answered: "Pick one?"="B". You can now continue with these answers in mind.'
+    out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B", "C")])
+    assert out == "Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
+
+
+def test_format_qa_pairs_multi_question_batch_gets_one_block_each():
+    text = ('The user answered: "First?"="yes", "Second?"="custom free text here". '
+            "Read the answers carefully -- they may request clarification, changes, or "
+            "that you not proceed -- and follow what they actually say.")
+    out = claude_code._format_qa_pairs(text, [_q("First?", "yes", "no"), _q("Second?", "x", "y")])
+    assert out == (
+        "First?\n- yes\n- no\n\nOPERATOR: yes"
+        "\n\n"
+        "Second?\n- x\n- y\n\nOPERATOR: custom free text here"
+    )
+
+
+def test_format_qa_pairs_falls_back_to_raw_text_when_marker_not_found():
+    # A harness rendering this adapter has never seen -- must not raise or
+    # silently drop content, just hand back the raw string unmodified.
+    text = "some totally different shape the harness might emit someday"
+    out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B")])
+    assert out == text
+
+
+def test_format_qa_pairs_no_questions_returns_text_unchanged():
+    assert claude_code._format_qa_pairs("anything", []) == "anything"

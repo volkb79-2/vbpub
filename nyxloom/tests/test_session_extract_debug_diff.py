@@ -6,7 +6,7 @@ matches the style of test_session_extract_render.py's hand-built events.
 
 from __future__ import annotations
 
-from nyxloom.session_extract.debug_diff import render_debug
+from nyxloom.session_extract.debug_diff import _note_color, render_debug
 
 _RESET = "\x1b[0m"
 _GREY = "\x1b[90m"
@@ -84,3 +84,12 @@ def test_render_ledger_line_plain_when_color_off():
     text = render_debug(lossless_text, extract_text, use_color=False)
     assert "[files read: a.py]" in text
     assert _GREEN not in text
+
+
+def test_note_color_returns_none_not_a_falsy_placeholder_for_plain_text():
+    # render_debug's own call site only ever checks truthiness (`if
+    # color:`), but _note_color's documented return type is `str | None` --
+    # worth pinning directly, not only through that one truthiness use.
+    assert _note_color("ordinary kept text, no bracket prefix at all") is None
+    assert _note_color("[gap: 3 lossless blocks dropped]") == _CYAN
+    assert _note_color("[files read: a.py]") == _GREEN

@@ -19,7 +19,10 @@ files during this tool's design, not from documentation):
   one "text" block); harness-injected framing (a context-usage report, a
   local-command-caveat notice, "session continued from...") is marked
   `isMeta: true` or `isVisibleInTranscriptOnly: true` and is excluded here
-  rather than treated as operator intent.
+  rather than treated as operator intent. A Ctrl+C interrupt injects its own
+  synthetic `user`-type record ("[Request interrupted by user]") carrying a
+  top-level `interruptedMessageId`; excluded the same way -- it is harness
+  bookkeeping, not something the operator typed.
 - Claude Code wraps slash-command invocations in the operator's own text as
   `<command-name>NAME</command-name>` (+ optional `<command-message>` /
   `<command-args>`); `/compact` and `/clear` specifically are promoted to
@@ -83,6 +86,88 @@ _HARNESS_TAG_RE = re.compile(
 )
 _COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.IGNORECASE | re.DOTALL)
 _LIFECYCLE_COMMANDS = {"compact", "clear"}
+
+def _split_qa_pairs(text: str, questions: list[Any]) -> list[tuple[str, str]] | None:
+    """Best-effort re-split of the harness's own flattened tool_result
+    string ('"Q1"="A1", "Q2"="A2", ...') back into (question, answer) pairs,
+    anchored on each question's OWN verbatim text from
+    tool_use.input.questions -- unambiguous, no quote-escaping guesswork
+    needed. Returns None (render the raw string unmodified) the moment an
+    expected marker isn't found, e.g. a harness rendering change this
+    adapter hasn't seen yet.
+    """
+    pairs: list[tuple[str, str]] = []
+    pos = 0
+    for i, q in enumerate(questions):
+        qtext = q.get("question") if isinstance(q, dict) else None
+        if not qtext:
+            return None
+        marker = f'"{qtext}"='
+        idx = text.find(marker, pos)
+        if idx == -1:
+            return None
+        start = idx + len(marker)
+        if i + 1 < len(questions):
+            next_q = questions[i + 1]
+            next_qtext = next_q.get("question") if isinstance(next_q, dict) else None
+            if not next_qtext:
+                return None
+            end = text.find(f'"{next_qtext}"=', start)
+            if end == -1:
+                return None
+            segment = text[start:end].rstrip()
+            if segment.endswith(","):
+                segment = segment[:-1].rstrip()
+        else:
+            # Last question: the harness always wraps the answer value in
+            # its own matching quotes immediately after "="; whatever
+            # trailing prose it appends afterward starts right after that
+            # closing quote. Observed to vary ("Read the answers
+            # carefully..." vs "You can now continue with these answers in
+            # mind.") -- anchoring on the quote pairing itself, not specific
+            # wording, is robust to that.
+            remainder = text[start:]
+            if remainder.startswith('"'):
+                close = remainder.find('"', 1)
+                segment = remainder[1:close] if close != -1 else remainder[1:]
+            else:
+                segment = remainder
+        answer = segment.strip()
+        if len(answer) >= 2 and answer.startswith('"') and answer.endswith('"'):
+            answer = answer[1:-1]
+        pairs.append((qtext, answer))
+        pos = start
+    return pairs or None
+
+
+def _format_qa_pairs(text: str, questions: list[Any]) -> str:
+    """Render an AskUserQuestion tool_result as, per question: the question
+    text, every declared option as a bullet list, a blank line, then
+    `OPERATOR: <the actual answer>` -- a batch answering several questions
+    at once gets one such block per question, blank line between blocks
+    (operator-reported, 2026-09-10: the harness's own verbatim
+    '"Q"="A"'-joined string was unreadable). Falls back to the raw string
+    unmodified if re-splitting doesn't line up (see _split_qa_pairs) --
+    never raises, never silently drops content it couldn't parse.
+    """
+    if not questions:
+        return text
+    pairs = _split_qa_pairs(text, questions)
+    if pairs is None:
+        return text
+    blocks = []
+    for (qtext, answer), q in zip(pairs, questions):
+        options = q.get("options") if isinstance(q, dict) else None
+        lines = [qtext]
+        if isinstance(options, list):
+            for opt in options:
+                label = opt.get("label") if isinstance(opt, dict) else None
+                if label:
+                    lines.append(f"- {label}")
+        lines.append("")
+        lines.append(f"OPERATOR: {answer}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 _SNIFF_SCAN_LINES = 50
@@ -193,7 +278,11 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             )
         indexed = [(i, r) for i, r in indexed if i <= idx]
 
-    askuserquestion_ids: set[str] = set()
+    # tool_use_id -> its own input.questions list (question/header/options),
+    # captured here (not just an id set) so the tool_result branch below can
+    # re-render the Q&A pair with each question's real options shown,
+    # instead of the harness's own flattened '"Q"="A"' string verbatim.
+    askuserquestion_inputs: dict[str, list[Any]] = {}
     for _, rec in indexed:
         if rec.get("type") != "assistant":
             continue
@@ -201,7 +290,9 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
                 tid = block.get("id")
                 if tid:
-                    askuserquestion_ids.add(tid)
+                    questions = block.get("input", {}).get("questions")
+                    askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
+    askuserquestion_ids = set(askuserquestion_inputs)
 
     events: list[NormalizedEvent] = []
     for seq, (abs_i, rec) in enumerate(indexed):
@@ -238,6 +329,18 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]"))
                 continue
 
+            if rec.get("interruptedMessageId"):
+                # Claude Code's OWN synthetic "[Request interrupted by user]"
+                # record, injected when Ctrl+C cuts off a running response --
+                # not real operator intent (operator-reported, 2026-09-10: it
+                # was rendering as an ordinary all-zero OPERATOR_TEXT row,
+                # indistinguishable from real content). interruptedMessageId
+                # is a structural field the harness sets specifically for
+                # this record, not a text-match on the message body, so this
+                # can't misfire on a real prompt that happens to contain that
+                # phrase.
+                continue
+
             content = rec.get("message", {}).get("content")
 
             if isinstance(content, list):
@@ -247,14 +350,17 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 # tool_result is still noise, but a real text block sitting
                 # next to it must not be discarded along with it.
                 qa_text = None
+                qa_tool_id = None
                 for block in content:
                     if not isinstance(block, dict):
                         continue
                     if block.get("type") == "tool_result" and block.get("tool_use_id") in askuserquestion_ids:
                         c = block.get("content")
                         qa_text = c if isinstance(c, str) else json.dumps(c)
+                        qa_tool_id = block.get("tool_use_id")
                 if qa_text is not None:
-                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.QA_PAIR, qa_text))
+                    formatted = _format_qa_pairs(qa_text, askuserquestion_inputs.get(qa_tool_id, []))
+                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.QA_PAIR, formatted))
                     continue
                 text_blocks = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
                 if not text_blocks:

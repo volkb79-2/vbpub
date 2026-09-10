@@ -1035,6 +1035,14 @@ def render_condensed(blocks: list[Block]) -> str:
     long this ask took to get answered); on the `↳agents` row,
     first-response timestamp -> the block's own end timestamp (how long the
     trailing agent work that followed took).
+
+    The `#` column numbers every PRINTED row, not one number per block --
+    a block with trailing agent work prints two lines (its own trigger row,
+    then `↳agents`) and both get their own number (operator feedback,
+    2026-09-10: an unnumbered `↳agents` row made it impossible to reference
+    it directly). The footer's own "N rows shown" still counts BLOCKS, not
+    printed lines -- it can be smaller than the highest `#` printed whenever
+    any block had trailing agent work.
     """
     lines = [
         "cp = checkpoint-scored assistant turns; minor = other (non-checkpoint) assistant prose turns; "
@@ -1048,6 +1056,7 @@ def render_condensed(blocks: list[Block]) -> str:
     ]
 
     shown = 0
+    line_no = 0  # every PRINTED row's own number, trigger and ↳agents alike
     total_calls = total_cp = total_minor = 0
     total_in = total_cache_w = total_cache_r = total_out = 0
     total_peak_ctx = 0
@@ -1065,20 +1074,22 @@ def render_condensed(blocks: list[Block]) -> str:
         if _is_suppressed(b):
             continue
         shown += 1
+        line_no += 1
         own_dur = _row_duration_s(b.trigger_timestamp, b.first_response_timestamp) if b.has_response else None
         lines.append(
-            f"{shown:>3} {b.trigger_kind:<11} {_fmt_time(b.trigger_timestamp):<8} "
+            f"{line_no:>3} {b.trigger_kind:<11} {_fmt_time(b.trigger_timestamp):<8} "
             f"{_fmt_elapsed(own_dur):>7} {(1 if b.has_response else 0):>5} {0:>3} {0:>5} "
             f"{b.first_response_input_tokens:>8} {b.first_response_cache_creation_tokens:>8} "
             f"{b.first_response_cache_read_tokens:>8} {b.first_response_output_tokens:>7} "
             f"{b.first_response_context_size:>9}  {b.trigger_text_preview}"
         )
         if b.n_trailing_calls:
+            line_no += 1
             trailing_dur = _row_duration_s(b.first_response_timestamp, b.end_ts)
             top_tools = sorted(b.tool_call_counts.items(), key=lambda kv: -kv[1])[:4]
             tool_summary = ", ".join(f"{t}×{n}" for t, n in top_tools)
             lines.append(
-                f"{'':>3} {'  ↳agents':<11} {'':<8} {_fmt_elapsed(trailing_dur):>7} {b.n_trailing_calls:>5} "
+                f"{line_no:>3} {'  ↳agents':<11} {'':<8} {_fmt_elapsed(trailing_dur):>7} {b.n_trailing_calls:>5} "
                 f"{b.n_checkpoints:>3} {b.n_minor_updates:>5} {b.sum_input_tokens:>8} "
                 f"{b.sum_cache_creation_tokens:>8} {b.sum_cache_read_tokens:>8} {b.sum_output_tokens:>7} "
                 f"{b.peak_context_size:>9}  {tool_summary}"

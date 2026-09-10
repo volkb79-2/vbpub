@@ -358,6 +358,38 @@ def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys)
     assert "before the boundary" in capsys.readouterr().out
 
 
+def test_extract_debug_max_lifecycle_markers_walks_past_a_compaction_too(tmp_path, capsys):
+    # cmd_extract_debug carries its OWN copy of the --max-lifecycle-markers
+    # override (separate from cmd_extract's, same shape) -- must honor an
+    # explicit value exactly the same way, not silently fall back to the
+    # profile default.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "before the boundary"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1",
+             timestamp="2026-01-01T00:00:01Z", compactMetadata={}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    default = cli.main(["extract-debug", str(fp), "--no-color"])
+    assert default == 0
+    default_out = capsys.readouterr().out
+    # "before the boundary" was dropped -- its own lossless block sits
+    # AFTER the gap marker that reports it, inside the dropped span.
+    assert default_out.index(">>> [gap:") < default_out.index("before the boundary")
+
+    past_boundary = cli.main(["extract-debug", str(fp), "--max-lifecycle-markers", "-1", "--no-color"])
+    assert past_boundary == 0
+    past_out = capsys.readouterr().out
+    # Walked past the boundary: "before the boundary" is kept, printed
+    # BEFORE any gap marker (the remaining gap covers only the boundary's
+    # own bookkeeping blocks, not this content).
+    assert past_out.index("before the boundary") < past_out.index(">>> [gap:")
+
+
 def test_extract_profile_supplies_defaults_for_the_selection_knobs(tmp_path, capsys):
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
