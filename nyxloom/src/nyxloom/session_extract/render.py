@@ -45,7 +45,7 @@ which lines are the OPERATOR's own words versus everything else -- that's
 the actual decision-relevant distinction (README's own "structured-Q&A-
 preserving" framing: an operator's real input is the highest-signal content
 in a session). So OPERATOR_TEXT and QA_PAIR (a recorded operator decision,
-same bucket) get a bare `USER: ` prefix directly on the text; every other
+same bucket) get a bare `OPERATOR: ` prefix directly on the text; every other
 kind renders as plain, unprefixed text. Checkpoint-vs-not and per-event
 timestamps are dropped from text mode entirely (they were never load-bearing
 for a human/LLM reading the rendered brief) but remain full-fidelity fields
@@ -103,7 +103,7 @@ def render_text(
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
             blocks.append(note)
     for ev in events:
-        prefix = "USER: " if ev.kind in _USER_AUTHORED else ""
+        prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
         blocks.append(f"{prefix}{ev.text}")
         gap = _gap_note(ev, min_gap_to_annotate, show_gap_marker)
         if gap:

@@ -5,8 +5,24 @@ itself never reads (it only needs event text, not usage). This module reads
 that ledger and turns it into two views:
 
   - a DETAILED view, one row per real API call (`build_call_rows`), and
-  - a CONDENSED view, one row per block of calls between prompt boundaries
-    (`build_blocks`), meant to fit a whole session on one page.
+  - a CONDENSED view, up to two rows per block of calls between prompt
+    boundaries (`build_blocks`), meant to fit a whole session on one page:
+    the block's FIRST REAL RESPONSE (its own individual tokens -- see
+    Block's own docstring for why this is the first response and not the
+    boundary row itself, which never carries usage in any of the three
+    formats) plus, only if the block had more than one real call, a second
+    indented row aggregating every TRAILING call after it. A real
+    compaction gets its own one-line divider (`Compaction: Auto|Steered,
+    LLM-Endpoint (pre→post tok, Ns)`, from `compactMetadata.trigger` --
+    "auto" vs "manual" is already exactly the dumb-harness-vs-steered
+    distinction this package's own E-010/E-012 taxonomy names, nothing to
+    detect) instead of an ordinary row; the content-free `[compact
+    boundary]`/`[compact summary]` LIFECYCLE_MARKER rows themselves, and a
+    bare `/compact <prompt>` dispatch block, are suppressed from this view
+    entirely (2026-09-10, operator feedback against real output: two
+    content-free rows and a mechanical-dispatch row added no information
+    the divider/preceding operator row didn't already carry -- see
+    `_is_suppressed`, `render_condensed`).
 
 Both are annotated with what `select.select()` would have kept, under each
 of a small set of named `PROFILES`, if an extraction had been triggered at
@@ -130,23 +146,63 @@ class Block:
     """One span between prompt boundaries -- a human "turn" of the session:
     an OPERATOR_TEXT/QA_PAIR row (or the very start of the file) through the
     row right before the NEXT OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER row.
+
+    Split into the block's FIRST REAL RESPONSE and a TRAILING aggregate over
+    every call after it (2026-09-10, operator feedback, refined after
+    checking real data): the original ask was "a row for the operator call,
+    a row for the agent-induced aggregate," to see whether the operator's
+    own prompt landed a warm cache -- but the boundary row itself
+    (OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER) NEVER carries usage in any of
+    the three formats this package reads (confirmed against the real
+    dstdns 8ebff140 replay: 0 of 706 real rows of kind
+    operator/qa/lifecycle carry any nonzero token field -- Claude Code and
+    opencode only attach usage to an assistant-role record, and
+    `_build_call_rows_codex` hardcodes zero usage on its own
+    operator/qa/lifecycle rows for the same structural reason). The cache-
+    warmth signal the operator actually wants -- was THIS prompt answered
+    from a warm cache -- lives on the FIRST real call that responded to the
+    boundary, not on the boundary row itself. So `first_response_*` here is
+    that first call's own individual tokens (high cache_read/low
+    cache_creation = warm; the reverse = cold), and `sum_*`/`n_trailing_calls`
+    aggregate everything AFTER it -- not "everything but the trigger," which
+    would still have buried this exact signal in a sum.
     """
 
-    trigger_text_preview: str  # verbatim preview of whatever opened this block -- see module docstring
+    trigger_marker: str
     trigger_kind: str
+    trigger_text_preview: str  # verbatim preview of whatever opened this block -- see module docstring
+    trigger_timestamp: str
+    # True wall-clock gap since the PREVIOUS block's own trigger, tracked
+    # across the full block sequence regardless of whether that previous
+    # block ends up suppressed from the condensed render (see
+    # render_condensed) -- a suppressed block (a real compaction, or a bare
+    # `/compact ...` dispatch) still consumed real time.
+    elapsed_since_prev_block_s: float | None
+    has_response: bool  # False for a block with no real call at all (e.g. the session's very last operator turn)
+    first_response_input_tokens: int
+    first_response_cache_creation_tokens: int
+    first_response_cache_read_tokens: int
+    first_response_output_tokens: int
+    first_response_context_size: int
     start_ts: str
     end_ts: str
-    n_calls: int
+    n_trailing_calls: int  # calls in this block AFTER the first response (excludes trigger AND first response)
     n_checkpoints: int
     n_minor_updates: int  # non-checkpoint ASSISTANT_TEXT rows -- "mini prose status updates"
     tool_call_counts: dict[str, int]
-    sum_input_tokens: int
+    sum_input_tokens: int  # trailing calls only -- excludes the trigger AND the first response
     sum_cache_creation_tokens: int
     sum_cache_read_tokens: int
     sum_output_tokens: int
-    sum_cost_usd: float  # opencode only today -- 0.0 for formats with no precomputed cost
-    peak_context_size: int
+    sum_cost_usd: float  # opencode only today -- 0.0 for formats with no precomputed cost; whole block
+    peak_context_size: int  # max over EVERY row in the block -- a true peak, not trailing-only
     contains_real_lifecycle_marker: bool
+    # Only meaningful when contains_real_lifecycle_marker -- see
+    # render_condensed's compaction divider.
+    compact_trigger: str | None = None
+    compact_pre_tokens: int | None = None
+    compact_post_tokens: int | None = None
+    compact_duration_ms: int | None = None
 
 
 def _parse_ts(ts: str) -> datetime | None:
@@ -700,31 +756,56 @@ def build_blocks(rows: list[CallRow]) -> list[Block]:
     """
     blocks: list[Block] = []
     current: list[CallRow] = []
+    prev_trigger_ts: datetime | None = None
 
     def flush() -> None:
+        nonlocal prev_trigger_ts
         if not current:
             return
         trigger = current[0]
+        rest = current[1:]  # every call after the boundary row itself
+        first_response = rest[0] if rest else None
+        trailing = rest[1:]  # every call after the FIRST response
         tool_counts: dict[str, int] = {}
         for r in current:
             for t in r.tools_called:
                 tool_counts[t] = tool_counts.get(t, 0) + 1
+
+        ts = _parse_ts(trigger.timestamp)
+        elapsed = (ts - prev_trigger_ts).total_seconds() if ts and prev_trigger_ts else None
+        if ts:
+            prev_trigger_ts = ts
+
+        is_real = trigger.is_real_lifecycle
         blocks.append(Block(
-            trigger_text_preview=trigger.text_preview,
+            trigger_marker=trigger.marker,
             trigger_kind=trigger.kind,
+            trigger_text_preview=trigger.text_preview,
+            trigger_timestamp=trigger.timestamp,
+            elapsed_since_prev_block_s=elapsed,
+            has_response=first_response is not None,
+            first_response_input_tokens=first_response.input_tokens if first_response else 0,
+            first_response_cache_creation_tokens=first_response.cache_creation_tokens if first_response else 0,
+            first_response_cache_read_tokens=first_response.cache_read_tokens if first_response else 0,
+            first_response_output_tokens=first_response.output_tokens if first_response else 0,
+            first_response_context_size=first_response.context_size if first_response else 0,
             start_ts=current[0].timestamp,
             end_ts=current[-1].timestamp,
-            n_calls=len(current),
+            n_trailing_calls=len(trailing),
             n_checkpoints=sum(1 for r in current if r.kind == "checkpoint"),
             n_minor_updates=sum(1 for r in current if r.kind == "assistant_minor"),
             tool_call_counts=tool_counts,
-            sum_input_tokens=sum(r.input_tokens for r in current),
-            sum_cache_creation_tokens=sum(r.cache_creation_tokens for r in current),
-            sum_cache_read_tokens=sum(r.cache_read_tokens for r in current),
-            sum_output_tokens=sum(r.output_tokens for r in current),
+            sum_input_tokens=sum(r.input_tokens for r in trailing),
+            sum_cache_creation_tokens=sum(r.cache_creation_tokens for r in trailing),
+            sum_cache_read_tokens=sum(r.cache_read_tokens for r in trailing),
+            sum_output_tokens=sum(r.output_tokens for r in trailing),
             sum_cost_usd=sum((r.cost_usd or 0.0) for r in current),
             peak_context_size=max((r.context_size for r in current), default=0),
-            contains_real_lifecycle_marker=any(r.is_real_lifecycle for r in current),
+            contains_real_lifecycle_marker=is_real,
+            compact_trigger=trigger.compact_trigger if is_real else None,
+            compact_pre_tokens=trigger.compact_pre_tokens if is_real else None,
+            compact_post_tokens=trigger.compact_post_tokens if is_real else None,
+            compact_duration_ms=trigger.compact_duration_ms if is_real else None,
         ))
 
     for row in rows:
@@ -777,45 +858,120 @@ def render_detailed_csv(rows: list[CallRow]) -> str:
     return out.getvalue()
 
 
+_TABLE_WIDTH = 112
+
+# compactMetadata.trigger's real observed values (dstdns 8ebff140 replay,
+# E-009/E-012) -> the reader-facing label. "Steered" over "Manual" to match
+# design-context-lifecycle-experiments.md's own established taxonomy
+# ("steered compaction": `/compact <prompt>` or equivalent, semantic,
+# operator-directed). "LLM-Endpoint" is the second field, always this value
+# today (every real compaction this package can currently observe went
+# through the real Anthropic endpoint) -- kept as its own field, not folded
+# into the first, so a future substitution (E-010's endpoint-control idea,
+# or a mechanical nyxloom-authored compaction) has a place to show up
+# without changing this line's shape.
+_COMPACT_LABEL = {"auto": "Auto", "manual": "Steered"}
+
+_COMPACT_PREFIX = "/compact"
+
+
+def _fmt_elapsed(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    seconds = max(0, seconds)
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _fmt_time(ts: str) -> str:
+    dt = _parse_ts(ts)
+    return dt.strftime("%H:%M:%S") if dt else ""
+
+
+def _is_suppressed(b: Block) -> bool:
+    """A block not worth its own row in the condensed view: a
+    LIFECYCLE_MARKER trigger (its own compaction divider, or nothing at all
+    for a content-free `[compact summary]` marker, already says everything
+    a reader needs -- see render_condensed) or a bare `/compact <prompt>`
+    dispatch (the mechanical act of submitting a compaction prompt, not
+    itself a decision worth a row -- the operator ask that PRODUCED the
+    prompt, e.g. "give me a compaction prompt", still gets its own row).
+    """
+    if b.trigger_kind == "lifecycle":
+        return True
+    return b.trigger_text_preview.strip().lower().startswith(_COMPACT_PREFIX)
+
+
 def render_condensed(blocks: list[Block]) -> str:
-    """One line per block, meant to fit a whole session's shape on one page.
-    A LIFECYCLE_MARKER-triggered block gets its own visible divider, since
-    that's the one boundary this package treats as structurally different
-    from an ordinary prompt.
+    """Two lines per (non-suppressed) block, meant to fit a whole session's
+    shape on one page: the block's FIRST REAL RESPONSE (its own individual
+    tokens -- the actual cache-warmth signal a summed row hides; see
+    Block's own docstring for why this is the first response, not the
+    trigger row itself) and, only when the block had more than one real
+    call, a second indented row aggregating every TRAILING call after it. A
+    LIFECYCLE_MARKER-triggered block gets a single compaction-divider line
+    instead of an ordinary row -- see `_is_suppressed`.
     """
     lines = [
-        f"{'#':>3}  {'trigger':<9} {'calls':>5} {'cp':>3} {'minor':>5} "
-        f"{'in':>8} {'cache_w':>8} {'cache_r':>8} {'out':>7} {'cost_usd':>9} {'peak_ctx':>9}  trigger text",
-        "-" * 120,
+        "cp = checkpoint-scored assistant turns; minor = other (non-checkpoint) assistant prose turns; "
+        "row 1/block = the first real response (cache_r/cache_w here is the actual cache-warmth signal)",
+        f"{'#':>3} {'kind':<9} {'time':<8} {'+prev':>6} {'calls':>5} {'cp':>3} {'minor':>5} "
+        f"{'in':>8} {'cache_w':>8} {'cache_r':>8} {'out':>7} {'peak_ctx':>9}  trigger text",
+        "-" * _TABLE_WIDTH,
     ]
-    for i, b in enumerate(blocks, 1):
+
+    shown = 0
+    total_calls = total_cp = total_minor = 0
+    total_in = total_cache_w = total_cache_r = total_out = 0
+    total_peak_ctx = 0
+
+    for b in blocks:
         if b.contains_real_lifecycle_marker:
-            lines.append(f"{'':>3}  {'=' * 114}  REAL COMPACTION")
-        marker = "**" if b.trigger_kind == "lifecycle" else ""
+            label = _COMPACT_LABEL.get(b.compact_trigger, b.compact_trigger or "unknown")
+            detail = ""
+            if b.compact_pre_tokens is not None and b.compact_post_tokens is not None:
+                dur_s = (b.compact_duration_ms or 0) / 1000.0
+                detail = f" ({b.compact_pre_tokens:,}→{b.compact_post_tokens:,} tok, {dur_s:.1f}s)"
+            header = f"===== Compaction: {label}, LLM-Endpoint{detail} "
+            lines.append(header.ljust(_TABLE_WIDTH, "="))
+
+        total_calls += (1 if b.has_response else 0) + b.n_trailing_calls
+        total_cp += b.n_checkpoints
+        total_minor += b.n_minor_updates
+        total_in += b.first_response_input_tokens + b.sum_input_tokens
+        total_cache_w += b.first_response_cache_creation_tokens + b.sum_cache_creation_tokens
+        total_cache_r += b.first_response_cache_read_tokens + b.sum_cache_read_tokens
+        total_out += b.first_response_output_tokens + b.sum_output_tokens
+        total_peak_ctx = max(total_peak_ctx, b.peak_context_size)
+
+        if _is_suppressed(b):
+            continue
+        shown += 1
         lines.append(
-            f"{i:>3}  {b.trigger_kind:<9} {b.n_calls:>5} {b.n_checkpoints:>3} {b.n_minor_updates:>5} "
-            f"{b.sum_input_tokens:>8} {b.sum_cache_creation_tokens:>8} {b.sum_cache_read_tokens:>8} "
-            f"{b.sum_output_tokens:>7} {b.sum_cost_usd:>9.4f} {b.peak_context_size:>9}  {marker}{b.trigger_text_preview}"
+            f"{shown:>3} {b.trigger_kind:<9} {_fmt_time(b.trigger_timestamp):<8} "
+            f"{_fmt_elapsed(b.elapsed_since_prev_block_s):>6} {(1 if b.has_response else 0):>5} {0:>3} {0:>5} "
+            f"{b.first_response_input_tokens:>8} {b.first_response_cache_creation_tokens:>8} "
+            f"{b.first_response_cache_read_tokens:>8} {b.first_response_output_tokens:>7} "
+            f"{b.first_response_context_size:>9}  {b.trigger_text_preview}"
         )
-    totals = Block(
-        trigger_text_preview="TOTAL", trigger_kind="", start_ts="", end_ts="",
-        n_calls=sum(b.n_calls for b in blocks),
-        n_checkpoints=sum(b.n_checkpoints for b in blocks),
-        n_minor_updates=sum(b.n_minor_updates for b in blocks),
-        tool_call_counts={},
-        sum_input_tokens=sum(b.sum_input_tokens for b in blocks),
-        sum_cache_creation_tokens=sum(b.sum_cache_creation_tokens for b in blocks),
-        sum_cache_read_tokens=sum(b.sum_cache_read_tokens for b in blocks),
-        sum_output_tokens=sum(b.sum_output_tokens for b in blocks),
-        sum_cost_usd=sum(b.sum_cost_usd for b in blocks),
-        peak_context_size=max((b.peak_context_size for b in blocks), default=0),
-        contains_real_lifecycle_marker=False,
-    )
-    lines.append("-" * 120)
+        if b.n_trailing_calls:
+            top_tools = sorted(b.tool_call_counts.items(), key=lambda kv: -kv[1])[:4]
+            tool_summary = ", ".join(f"{t}×{n}" for t, n in top_tools)
+            lines.append(
+                f"{'':>3} {'  ↳agents':<9} {'':<8} {'':>6} {b.n_trailing_calls:>5} {b.n_checkpoints:>3} "
+                f"{b.n_minor_updates:>5} {b.sum_input_tokens:>8} {b.sum_cache_creation_tokens:>8} "
+                f"{b.sum_cache_read_tokens:>8} {b.sum_output_tokens:>7} {b.peak_context_size:>9}  {tool_summary}"
+            )
+
+    lines.append("-" * _TABLE_WIDTH)
     lines.append(
-        f"{'':>3}  {'':<9} {totals.n_calls:>5} {totals.n_checkpoints:>3} {totals.n_minor_updates:>5} "
-        f"{totals.sum_input_tokens:>8} {totals.sum_cache_creation_tokens:>8} "
-        f"{totals.sum_cache_read_tokens:>8} {totals.sum_output_tokens:>7} {totals.sum_cost_usd:>9.4f} "
-        f"{totals.peak_context_size:>9}  ({len(blocks)} blocks)"
+        f"{'':>3} {'':<9} {'':<8} {'':>6} {total_calls:>5} {total_cp:>3} {total_minor:>5} "
+        f"{total_in:>8} {total_cache_w:>8} {total_cache_r:>8} {total_out:>7} {total_peak_ctx:>9}  "
+        f"({shown} rows shown, {len(blocks)} blocks total)"
     )
     return "\n".join(lines) + "\n"

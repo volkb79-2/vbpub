@@ -2120,3 +2120,145 @@ so the real, sampled evidence behind the idea doesn't need re-deriving before it
 implemented. The `AskUserQuestion` input-capture gap (item 1) is small and surgical enough to be a
 reasonable standalone fix whenever prioritized; the structured-ledger idea (item 2) is a larger,
 separate feature needing its own design pass before building.
+
+## E-013 · 2026-09-10 · `session-stats` condensed view: compaction-type divider, first-response/
+## trailing split, timestamp+elapsed columns (real-data-driven, ships same day as E-011/E-012)
+
+Direct follow-up to a live read of `session-stats`'s condensed output against the real dstdns
+`8ebff140` session. Operator questions answered in order:
+
+- **"how are `[compact boundary]`/`[compact summary]` LIFECYCLE_MARKER rows helpful? do we need
+  them?"** No — they never carry usage (see below) and their content is already fully represented
+  by the compaction divider. **Fixed**: `render_condensed` now suppresses any block whose
+  `trigger_kind == "lifecycle"` from the numbered row list entirely (`_is_suppressed`); the
+  divider itself (drawn once per real compaction, keyed off `contains_real_lifecycle_marker`)
+  is the only trace left, and it now carries strictly more information than the two suppressed
+  rows did (see next point).
+- **"the compaction divider should front-load the TYPE (detect steered vs. auto)."** Verified
+  directly against real data: `compactMetadata.trigger` is already exactly `"auto"` or `"manual"`
+  in the real dstdns replay (5 real compactions: 2 manual, 3 auto) — no detection heuristic
+  needed, just surfacing an already-extracted field. **Fixed**: the divider is now
+  `===== Compaction: Auto, LLM-Endpoint (628,386→10,301 tok, 168.1s) =====...` (label map
+  `{"auto": "Auto", "manual": "Steered"}`, `LLM-Endpoint` fixed suffix — the only kind of
+  compaction this tool can currently see; a future non-LLM/local-summarizer compaction path would
+  get its own suffix rather than reusing this one), line-length-adjusted to the table's own width.
+- **"execution of `/compact` itself is also not worth a row"** (a raw-typed `/compact KEEP: ...`
+  operator message, which renders as an ordinary `operator`-kind row because Claude Code only
+  classifies `/compact` as a lifecycle marker when it's wrapped in the harness's structured
+  `<command-name>` tag — a raw-typed one isn't). **Fixed**: `_is_suppressed` also drops any block
+  whose `trigger_text_preview` starts with `/compact`, as a presentation-layer heuristic in
+  `stats.py` — the underlying classification in `claude_code.py` is untouched.
+- **"what is `cp` and `minor`?"** `cp` = checkpoint-scored assistant turns (checkpoint_score above
+  threshold — the ones `select()` would keep by content-quality signal); `minor` = other
+  assistant prose turns below that threshold. Now stated directly in the table's own legend line
+  so the question doesn't need re-asking from the output alone.
+- **"split `1 operator 43 0 42 84 179824 8158783 60765 ...` into a row for the operator call, then
+  an aggregate of all following agent-induced calls — important to see if the operator call was
+  in cache TTL."** Implemented, but with a real-data-driven correction along the way: the FIRST
+  attempt put the boundary row's own tokens on "row 1," which cannot work because **boundary rows
+  never carry usage in any of the three formats this package reads** — confirmed by directly
+  checking all 706 real rows of kind operator/qa/lifecycle in the dstdns replay: 0 had any nonzero
+  token field (Claude Code and opencode only attach `usage` to an assistant-role record; Codex's
+  own `_build_call_rows_codex` hardcodes zero usage on boundary rows for the same structural
+  reason). The cache-warmth signal the operator actually wants lives on the block's FIRST REAL
+  RESPONSE instead. **Shipped shape**: `Block` now splits into `first_response_*` (that one call's
+  own individual tokens — high `cache_read`/low `cache_creation` reads as warm, the reverse as
+  cold) and `sum_*`/`n_trailing_calls` (every call strictly AFTER the first response, rendered as
+  a second `↳agents` line). Verified against the real replay post-fix: first-response rows now
+  show real, nonzero `cache_r` values (e.g. row 2: `cache_r=315677`), confirming the corrected
+  design actually delivers the requested cache-TTL visibility (the pre-fix version showed all
+  zeros on every "row 1," which would have silently failed the operator's stated use case).
+- **"the table misses the actual timestamp and elapsed time row-to-row; remove the cost."**
+  Fixed directly: `Block` gained `trigger_timestamp`/`elapsed_since_prev_block_s` (elapsed
+  computed from real per-block trigger timestamps, not a synthetic clock); the condensed table
+  gained `time`/`+prev` columns and dropped the `cost` column entirely (still present, unaffected,
+  in `render_detailed_csv`'s per-call view — a cost/time view the operator didn't ask to change).
+
+**Also folded in same day**: the `USER: ` text-mode prefix (E-011, point 1's third round) was
+renamed to `OPERATOR: ` per direct operator correction — matches `EventKind.OPERATOR_TEXT`'s own
+name. See `render.py`'s module docstring and `_USER_AUTHORED`.
+
+**Status**: SHIPPED. All of the above implemented in `stats.py`/`render.py`, validated against
+real dstdns data, full test suite green except the 4 known pre-existing
+`test_mattermost_provision_hook.py` failures (unrelated — a prior mattermost go-public change).
+`session_extract` package coverage held at 98% (pre-existing gaps, none introduced by this
+entry's changes).
+
+## E-014 · 2026-09-10 · E-012 ledger format decided (aggregated per-block, not implemented) +
+## `extract-debug` colored-diff verb design response
+
+**Ledger format, resolved (extends E-012's "structured ledger" idea with a concrete shape).**
+Operator framing: aggregate between major events, not per-tool-call — `[files read: asd, sdf,
+fdg] [files edited: cv/dfg]`, `[commits created xxxxxx yyyyyy]`, `[feature branches involved:
+nyxloom-extractor-v2]`. This maps directly onto `stats.py`'s existing `Block` concept — a Block
+already IS "the span between two prompt boundaries," and `build_blocks` already walks every raw
+call row (including tool_use-driven ones) into whichever block is currently open. So the ledger's
+natural home is a per-`Block` aggregation pass, reusing that grouping rather than inventing a new
+one: for each block, scan its member rows' raw tool_use records for `Edit`/`Write`/`Read` (→
+files read/edited, deduplicated, preserving first-touch order) and `Bash` commands matching
+`git commit`/`git checkout -b`/`git push -u` (→ commits created / branches involved, extracted
+from the command's own arguments or the commit's reported hash in `tool_result`) — then render.py
+emits one bracketed line per category, per block boundary, in `[category: item, item]` form,
+placed where the ledger for that block's span logically sits (immediately after the block's
+OPERATOR_TEXT/QA_PAIR trigger line, before the kept prose that follows it).
+
+**Test-run mentions: pass/fail counts, not argv.** Operator's own framing ("do we want to copy
+the whole argv?") reads as its own answer — confirmed: copying a full `pytest tests/ -k "..." -q
+--cov=... --cov-report=...` invocation verbatim is exactly the kind of low-signal noise this
+whole tool exists to strip. Decision: extend E-012's already-proposed "test-result ledger" bullet
+(regex over `tool_result` text for a `"N passed, M failed"`-shaped string) — a `[tests: 3984
+passed, 0 failed]` line, sourced from the RESULT text, never the invocation argv. This is the
+same "keep the outcome, drop the mechanism" filter the tool already applies to prose.
+
+**Status**: format decided, NOT implemented — this is a design decision only, same as E-012's own
+"proposed shape, not committed" status. Building it means: (a) a new per-block scan over member
+rows' raw tool_use fields (needs `CallRow` or the underlying raw record to retain enough of the
+original tool_use payload to regex/inspect — currently `CallRow` doesn't carry `command`/
+`file_path`, only usage-ledger fields, so this needs its own raw-record pass, distinct from
+`build_call_rows`'s usage-focused one), (b) a render.py insertion point keyed to block boundaries
+in the EXTRACT text-mode walk (not just `session-stats`'s condensed view — the ledger's home per
+the operator's own framing is `extract`'s prose output, aggregated at the same boundaries
+`session-stats` already computes for its own unrelated purpose), (c) its own config-gated on/off
+flag per E-012's original framing (a "structured ledger" side-channel, clearly labeled, not
+interleaved silently into the prose walk).
+
+**`extract-debug` verb — design response to the operator's "thoughts?" ask.**
+
+The core idea is sound and, importantly, is **almost entirely a free byproduct of code that
+already exists** — no new selection logic needed, just a new rendering mode over the SAME two
+computations `extract`/`extract --lossless` already perform:
+
+1. Run the full lossless event walk (today's `--lossless` path — the unfiltered
+   `events.normalize()` output, no `select()` budget cut) to get the "grey original" base.
+2. Run `select()` with the given profile/params (identical CLI surface to `extract` itself, per
+   the operator's own framing) to get the KEPT marker set.
+3. Walk the lossless list in original order. For each event: if its marker is in the kept set,
+   render it **white** (unchanged, verbatim — this is the "identical in both" case). If not,
+   accumulate a contiguous run of dropped events and render the run as a **grey** block between
+   `---` dividers (the verbatim original content select() chose to drop) wrapped in a **cyan**
+   `>>> [gap: N records omitted] <<<` pair — this is exactly `select()`'s own existing
+   `gap_after`/`_keep()` bookkeeping, just rendered VISIBLE (showing the actual dropped text)
+   instead of collapsed to a bare count the way `render_text`'s normal gap note does today. The
+   stop-reason note (`walk_stopped_because`) gets the same cyan treatment at the oldest boundary.
+4. **Green** (`extract`'s own added value, e.g. a future `[files read: ...]` ledger line per
+   E-012/this entry's ledger design above) is naturally just ANOTHER cyan-adjacent insertion
+   `render.py` already knows how to tag once it exists — `extract-debug` doesn't need its own
+   separate logic for it, it just needs the ledger feature to exist first. **This is the one real
+   dependency**: white/grey/cyan are buildable TODAY (pure diff over `select()`'s existing kept-
+   marker set and existing gap bookkeeping); green has nothing to render until the E-012 ledger
+   (previous section, NOT YET implemented) ships. Recommendation: ship the white/grey/cyan
+   three-color diff view now — it's independently useful today for validating profile/budget
+   tuning ("show me exactly what a given `--max-words`/profile threw away, in place, not just a
+   count") — and let green appear for free once the ledger lands, rather than blocking
+   `extract-debug` on the ledger first.
+5. **Mechanics**: ANSI color codes, gated behind `sys.stdout.isatty()` (auto-plain when piped/
+   redirected to a file) with an explicit `--no-color`/`--color` override for forcing either way
+   in a script or a color-supporting pager. CLI surface mirrors `extract`'s own exactly (same
+   `--profile`/`--max-words`/`--format`/path args) per the operator's own framing "identical how
+   we would call extract" — `extract-debug` is a debug LENS on the same call, not a separate
+   selection mode.
+
+**Status**: design response only, NOT implemented — operator explicitly asked "thoughts?" rather
+than requesting a build; this entry records the reaction ("yes, and it's cheaper than it looks
+because steps 1-3 reuse existing `select()`/`--lossless` machinery verbatim") so it doesn't need
+re-deriving whenever it's actually prioritized.

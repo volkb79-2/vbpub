@@ -147,7 +147,11 @@ def test_api_call_rows_fold_into_the_block_opened_by_the_nearest_preceding_bound
     assert first_block.sum_input_tokens == 1200 - 800  # the first token_count's usage
 
     lifecycle_block = next(b for b in blocks if b.contains_real_lifecycle_marker)
-    assert lifecycle_block.sum_input_tokens == 2000 - 1500 - 100  # the second token_count's usage
+    # This block has only one call after the boundary (the token_count
+    # itself) -- it becomes the block's first_response, not a trailing
+    # aggregate member (Block's own docstring: the first real response
+    # after a boundary carries the cache-warmth signal on its own fields).
+    assert lifecycle_block.first_response_input_tokens == 2000 - 1500 - 100  # the second token_count's usage
 
 
 def test_old_generation_shape_is_supported(tmp_path):

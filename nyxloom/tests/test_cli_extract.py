@@ -169,7 +169,7 @@ def test_session_stats_condensed_view_by_default(tmp_path, capsys):
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "trigger text" in out  # condensed view's header row
-    assert "blocks)" in out
+    assert "blocks total)" in out
 
 
 def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
@@ -198,7 +198,7 @@ def test_session_stats_works_for_codex_too(tmp_path, capsys):
     exit_code = cli.main(["session-stats", str(fp)])
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "blocks)" in out
+    assert "blocks total)" in out
 
 
 def test_extract_max_lifecycle_markers_walks_past_a_compaction(tmp_path, capsys):

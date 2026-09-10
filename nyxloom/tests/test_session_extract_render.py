@@ -21,7 +21,9 @@ def test_render_text_prefixes_user_authored_kinds_only():
     # 2026-09-10, operator feedback: timestamps and a per-block "## [ts]
     # LABEL" header were measured as pure bloat -- the one thing worth
     # keeping inline is which lines are the operator's own words. See
-    # render.py's module docstring for the full rationale.
+    # render.py's module docstring for the full rationale. Prefix word
+    # chosen as "OPERATOR: " (not "USER: ") to match EventKind.OPERATOR_TEXT's
+    # own name -- a later same-day correction.
     events = [
         _ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1"),
         _ev(EventKind.QA_PAIR, "Q=A", marker="qa1"),
@@ -30,18 +32,19 @@ def test_render_text_prefixes_user_authored_kinds_only():
         _ev(EventKind.ASSISTANT_TEXT, "plain prose", marker="as1", score=0.0),
     ]
     text = render_text(events, fmt="claude-code", last_marker=None)
-    assert "USER: do the thing" in text
-    assert "USER: Q=A" in text
-    # everything else renders bare -- no header, no label, no USER: prefix
-    assert "[compact boundary]" in text and "USER: [compact boundary]" not in text
-    assert "checkpoint prose" in text and "USER: checkpoint prose" not in text
-    assert "plain prose" in text and "USER: plain prose" not in text
+    assert "OPERATOR: do the thing" in text
+    assert "OPERATOR: Q=A" in text
+    # everything else renders bare -- no header, no label, no OPERATOR: prefix
+    assert "[compact boundary]" in text and "OPERATOR: [compact boundary]" not in text
+    assert "checkpoint prose" in text and "OPERATOR: checkpoint prose" not in text
+    assert "plain prose" in text and "OPERATOR: plain prose" not in text
     # no timestamp, no "##" header, no checkpoint/kind label anywhere
     assert _TS not in text
     assert "##" not in text
     assert "ASSISTANT" not in text
-    assert "OPERATOR" not in text
     assert "LIFECYCLE" not in text
+    # exactly the two OPERATOR: prefixes, nothing else says "OPERATOR"
+    assert text.count("OPERATOR") == 2
 
 
 def test_render_text_no_marker_omits_footer():

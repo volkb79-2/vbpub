@@ -132,17 +132,55 @@ def test_build_blocks_groups_by_prompt_boundary_and_flags_real_compaction(tmp_pa
     rows = stats.build_call_rows(fp)
     blocks = stats.build_blocks(rows)
 
-    # u1 opens block 1 (a1 + a2's tool-result-only turn folds in); the
-    # compact_boundary opens its own block; u3 opens the final block.
+    # u1 opens block 1 (a1 + a2's tool-result-only turn folds in as
+    # agent-induced calls); the compact_boundary opens its own block; u3
+    # opens the final block.
     assert blocks[0].trigger_kind == "operator"
     assert blocks[0].trigger_text_preview.startswith("please look into")
-    assert blocks[0].n_calls >= 1
+    assert blocks[0].has_response
     assert "Bash" in blocks[0].tool_call_counts
 
     lifecycle_block = next(b for b in blocks if b.contains_real_lifecycle_marker)
     assert lifecycle_block.trigger_kind == "lifecycle"
+    assert lifecycle_block.compact_trigger == "auto"
+    assert lifecycle_block.compact_pre_tokens == 900000
+    assert lifecycle_block.compact_post_tokens == 12000
+    assert lifecycle_block.compact_duration_ms == 150000
 
     assert blocks[-1].trigger_text_preview.startswith("great, what's next")
+
+
+def test_build_blocks_first_response_carries_its_own_tokens_not_a_sum(tmp_path):
+    # The boundary row (u1) itself never carries usage in any format
+    # (confirmed against real data, see Block's own docstring) -- the
+    # cache-warmth signal lives on the FIRST REAL RESPONSE (a1) instead,
+    # and must NOT be folded into the trailing aggregate (which here is
+    # only a2, since a1 IS the first response).
+    fp = _write_fixture(tmp_path)
+    rows = stats.build_call_rows(fp)
+    blocks = stats.build_blocks(rows)
+
+    a1 = next(r for r in rows if r.marker == "a1")
+    a2 = next(r for r in rows if r.marker == "a2")
+    block = blocks[0]
+    assert block.trigger_marker == "u1"
+    assert block.has_response is True
+    assert block.first_response_cache_creation_tokens == a1.cache_creation_tokens
+    # a2's real usage (cache_read=5000) shows up only in the trailing sum,
+    # never folded into the first response's own fields.
+    assert block.sum_cache_read_tokens == a2.cache_read_tokens
+
+
+def test_build_blocks_elapsed_since_prev_block_tracks_trigger_timestamps(tmp_path):
+    fp = _write_fixture(tmp_path)
+    rows = stats.build_call_rows(fp)
+    blocks = stats.build_blocks(rows)
+    # First block has no predecessor.
+    assert blocks[0].elapsed_since_prev_block_s is None
+    # Every later block's elapsed is a real, non-negative gap.
+    for b in blocks[1:]:
+        assert b.elapsed_since_prev_block_s is not None
+        assert b.elapsed_since_prev_block_s >= 0
 
 
 def test_render_detailed_csv_has_a_header_and_one_row_per_call(tmp_path):
@@ -154,14 +192,131 @@ def test_render_detailed_csv_has_a_header_and_one_row_per_call(tmp_path):
     assert len(lines) == 1 + len(rows)
 
 
-def test_render_condensed_shows_a_real_compaction_divider(tmp_path):
+def test_render_condensed_shows_a_typed_compaction_divider(tmp_path):
     fp = _write_fixture(tmp_path)
     rows = stats.build_call_rows(fp)
     blocks = stats.build_blocks(rows)
     text = stats.render_condensed(blocks)
-    assert "REAL COMPACTION" in text
-    assert "TOTAL" not in text  # totals row has no literal label column collision
-    assert str(len(blocks)) + " blocks" in text
+    # The fixture's compactMetadata.trigger is "auto" -> "Auto" label.
+    assert "Compaction: Auto, LLM-Endpoint" in text
+    assert "900,000→12,000 tok" in text
+    assert "150.0s" in text
+    assert str(len(blocks)) + " blocks total" in text
+
+
+def test_render_condensed_suppresses_lifecycle_marker_rows():
+    # The two content-free LIFECYCLE_MARKER rows ([compact boundary] and
+    # [compact summary]) must never get their own numbered row -- only the
+    # compaction divider (for the real one) represents them.
+    from nyxloom.session_extract.stats import Block
+
+    real = Block(
+        trigger_marker="lc1", trigger_kind="lifecycle", trigger_text_preview="[compact boundary]",
+        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+        start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+        contains_real_lifecycle_marker=True, compact_trigger="manual",
+        compact_pre_tokens=500000, compact_post_tokens=10000, compact_duration_ms=100000,
+    )
+    summary = Block(
+        trigger_marker="lcs1", trigger_kind="lifecycle", trigger_text_preview="[compact summary]",
+        trigger_timestamp="2026-01-01T00:00:01Z", elapsed_since_prev_block_s=1.0,
+        has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+        start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+        contains_real_lifecycle_marker=False,
+    )
+    text = stats.render_condensed([real, summary])
+    assert "[compact boundary]" not in text
+    assert "[compact summary]" not in text
+    assert "Compaction: Steered, LLM-Endpoint" in text
+    assert "500,000→10,000 tok" in text
+    assert "0 rows shown, 2 blocks total" in text
+
+
+def test_render_condensed_suppresses_bare_compact_dispatch_rows():
+    from nyxloom.session_extract.stats import Block
+
+    real_ask = Block(
+        trigger_marker="op1", trigger_kind="operator", trigger_text_preview="give me a compaction prompt",
+        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        has_response=True, first_response_input_tokens=1, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=1,
+        start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=1,
+        contains_real_lifecycle_marker=False,
+    )
+    dispatch = Block(
+        trigger_marker="op2", trigger_kind="operator", trigger_text_preview="/compact KEEP: exact per-package state",
+        trigger_timestamp="2026-01-01T00:00:01Z", elapsed_since_prev_block_s=1.0,
+        has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+        start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
+        contains_real_lifecycle_marker=False,
+    )
+    text = stats.render_condensed([real_ask, dispatch])
+    assert "give me a compaction prompt" in text
+    assert "/compact KEEP" not in text
+    assert "1 rows shown, 2 blocks total" in text
+
+
+def test_render_condensed_shows_first_response_and_trailing_rows_separately():
+    from nyxloom.session_extract.stats import Block
+
+    block = Block(
+        trigger_marker="op1", trigger_kind="operator", trigger_text_preview="do the thing",
+        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        has_response=True, first_response_input_tokens=5, first_response_cache_creation_tokens=100,
+        first_response_cache_read_tokens=200000, first_response_output_tokens=0,
+        first_response_context_size=200105, start_ts="", end_ts="",
+        n_trailing_calls=3, n_checkpoints=1, n_minor_updates=2,
+        tool_call_counts={"Bash": 5, "Edit": 2},
+        sum_input_tokens=10, sum_cache_creation_tokens=5000, sum_cache_read_tokens=1000,
+        sum_output_tokens=900, sum_cost_usd=0.0, peak_context_size=210000,
+        contains_real_lifecycle_marker=False,
+    )
+    text = stats.render_condensed([block])
+    lines = [line for line in text.splitlines() if line.strip()]
+    trigger_line = next(line for line in lines if "do the thing" in line)
+    agent_line = next(line for line in lines if "↳agents" in line)
+    # The first response's own high cache_read (200000) must appear on ITS
+    # row -- this is the actual cache-warmth signal for the operator's
+    # prompt -- not summed with the trailing aggregate's much smaller
+    # cache_read (1000).
+    assert "200000" in trigger_line
+    assert "1000" in agent_line and "200000" not in agent_line
+    assert "Bash×5" in agent_line
+
+
+def test_render_condensed_no_cost_column():
+    from nyxloom.session_extract.stats import Block
+
+    block = Block(
+        trigger_marker="op1", trigger_kind="operator", trigger_text_preview="hi",
+        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
+        first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
+        start_ts="", end_ts="",
+        n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
+        sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
+        sum_output_tokens=0, sum_cost_usd=1.2345, peak_context_size=0,
+        contains_real_lifecycle_marker=False,
+    )
+    text = stats.render_condensed([block])
+    assert "cost" not in text.lower()
+    assert "1.2345" not in text
 
 
 def test_build_blocks_on_an_empty_row_list_returns_no_blocks():
