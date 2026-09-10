@@ -2184,8 +2184,62 @@ real dstdns data, full test suite green except the 4 known pre-existing
 `session_extract` package coverage held at 98% (pre-existing gaps, none introduced by this
 entry's changes).
 
-## E-014 · 2026-09-10 · E-012 ledger format decided (aggregated per-block, not implemented) +
-## `extract-debug` colored-diff verb design response
+**Addendum, same day, second round of operator feedback against the SHIPPED divider**: reading
+the actual rendered output surfaced that the divider design above was itself covering up a real
+bug, not just a formatting choice. Four concrete findings from the operator, each verified
+directly against the real dstdns raw JSONL before fixing:
+
+1. **A block's `+prev` elapsed column measured the wrong thing.** It showed the gap between this
+   block's own trigger timestamp and the PREVIOUS block's trigger timestamp — which mixes in
+   however long the operator spent reading/thinking before typing the next prompt, not "how long
+   did this row's own work take." Operator's own framing: "a row's elapsed time is from its first
+   call's start to its last call's return." **Fixed**: `Block` gained `first_response_timestamp`;
+   the condensed table's `dur` column (renamed from `+prev`) now shows, per PRINTED row, that
+   row's own span — trigger→first-response for the numbered row (the real call-latency signal),
+   first-response→end for the trailing `↳agents` row (how long the follow-on work took).
+2. **The compaction divider hid real work, not just boundary noise.** Direct inspection of the
+   raw JSONL around the first real compaction (dstdns `8ebff140`, `preTokens=928592`) found THREE
+   back-to-back near-content-free boundary records in file order — the raw `/compact <prompt>`
+   dispatch (kind=operator, un-tagged so it doesn't classify as lifecycle), the real `[compact
+   boundary]` system record, and a `[compact summary]` synthetic one — and only AFTER those three
+   did the real post-compaction recovery work begin. The shipped design suppressed every
+   lifecycle-triggered block outright, which meant that recovery work — in the real replay, **104
+   real calls spanning 2h56m**, recovering context from the compacted ~16.6k tokens back up past
+   500k before the next operator prompt — was silently absorbed into a suppressed block's totals
+   and NEVER shown as a row. This produced exactly the two operator-reported symptoms: the
+   compaction looked "attributed to the following call" (nothing printed at its own chronological
+   position), and a later row's suddenly-large `cache_r` (e.g. `555447`, right after a compaction
+   that ended at `16599`) looked unexplainable because the 2h56m of real intervening work that
+   grew it back up was invisible. **Fixed**: `build_blocks` gained
+   `_coalesce_compaction_clusters` — it merges a maximal run of adjacent lifecycle/`/compact`-
+   dispatch blocks that contains a real `compactMetadata` member into ONE `kind="compaction"`
+   block, keeping the run's EARLIEST timestamp, the real member's own trigger/pre/post/duration
+   (rendered inline in the bracketed trigger-text field, e.g. `[Steered, LLM-Endpoint,
+   928,592→16,599 tok, 185.2s]`, replacing the old full-width `=====` divider), and the run's LAST
+   member's own has_response/first_response/trailing content — the real recovery work, now a
+   normal, fully visible row like any other. Re-validated against the real replay: the second real
+   compaction (`558,300→16,631`), previously entirely invisible (folded into the first
+   compaction's own suppressed trailing), now shows as its own row too.
+3. **"What is `cp`/`minor`?"** Answered directly in the legend (unchanged from the first round);
+   confirmed again this round the columns mean what the legend already says.
+4. **"Isn't `cache_r` just a kind of input token?"** Confirmed directly: yes — Claude Code's usage
+   block is additively decomposed (`in` = fresh/uncached input tokens, with cache_read and
+   cache_creation SUBTRACTED out; `cache_w` = newly-cached this call; `cache_r` = served from
+   cache, a subset of the call's real input size, not a separate thing from "input"). The legend
+   now states this explicitly: `in + cache_w + cache_r = this call's real input size`.
+
+A synthetic fixture reproducing the exact 3-record cluster-then-recovery pattern
+(`test_coalesce_compaction_cluster_keeps_the_real_post_compaction_work_visible`) is the regression
+test for finding 2 — it asserts the recovered calls' real tokens survive into the merged block's
+own fields, not just that a row gets printed.
+
+**Status (addendum)**: SHIPPED. Re-validated against the real dstdns replay end to end (all 5 real
+compactions now show as their own rows with correct pre/post/duration and visible recovery work);
+full test suite green (same 4 known pre-existing `test_mattermost_provision_hook.py` failures,
+unrelated); `session_extract` coverage held at 98%.
+
+## E-014 · 2026-09-10 · E-012 ledger SHIPPED (`ledger.py`, aggregated per-block) +
+## `extract-debug` colored-diff verb SHIPPED (`debug_diff.py`)
 
 **Ledger format, resolved (extends E-012's "structured ledger" idea with a concrete shape).**
 Operator framing: aggregate between major events, not per-tool-call — `[files read: asd, sdf,
@@ -2210,55 +2264,79 @@ whole tool exists to strip. Decision: extend E-012's already-proposed "test-resu
 passed, 0 failed]` line, sourced from the RESULT text, never the invocation argv. This is the
 same "keep the outcome, drop the mechanism" filter the tool already applies to prose.
 
-**Status**: format decided, NOT implemented — this is a design decision only, same as E-012's own
-"proposed shape, not committed" status. Building it means: (a) a new per-block scan over member
-rows' raw tool_use fields (needs `CallRow` or the underlying raw record to retain enough of the
-original tool_use payload to regex/inspect — currently `CallRow` doesn't carry `command`/
-`file_path`, only usage-ledger fields, so this needs its own raw-record pass, distinct from
-`build_call_rows`'s usage-focused one), (b) a render.py insertion point keyed to block boundaries
-in the EXTRACT text-mode walk (not just `session-stats`'s condensed view — the ledger's home per
-the operator's own framing is `extract`'s prose output, aggregated at the same boundaries
-`session-stats` already computes for its own unrelated purpose), (c) its own config-gated on/off
-flag per E-012's original framing (a "structured ledger" side-channel, clearly labeled, not
-interleaved silently into the prose walk).
+**Status**: SHIPPED (`ledger.py`, wired into `nyxloom extract --ledger`). Built essentially as
+designed above, with the one real implementation choice this entry left open now resolved: the
+per-boundary aggregation is its OWN raw-record scan (`build_ledger_claude_code`), not a `stats.py`
+`Block` extension — `CallRow`/`Block` are usage-ledger-focused and don't retain `command`/
+`file_path`, and threading that through would have coupled two independently-evolving concerns
+(usage accounting vs. tool-activity ledgering) for no real benefit, since both scans already walk
+the same raw JSONL independently. `boundary_markers` is passed in by the CALLER (`cli.py`'s
+`cmd_extract`, from the already-computed kept-event list's own OPERATOR_TEXT/QA_PAIR/
+LIFECYCLE_MARKER markers) rather than re-derived here, keeping `ledger.py` decoupled from
+`select()`/`classifier.py` entirely. `render.py`'s `render_text` gained an optional `ledger` param
+(off by default — config-gated per this entry's own framing) inserting the boundary's rendered
+`[files read: ...] [files edited: ...] [commits created: ...] [branches involved: ...] [tests:
+...]` line (only non-empty categories shown) right after that boundary's own text. Commit-hash
+extraction is a real two-step correlation (a `Bash` tool_use matching `git commit` is tracked by
+its own `tool_use.id`; the hash itself only appears in the matching `tool_result`'s own `[branch
+hash] message` first line) -- validated against the real dstdns replay (real commit hashes like
+`5c63d998`/`04cfaac2` recovered correctly, `git checkout -b` branch names recovered directly from
+their own command text with no correlation needed). Claude Code only, text-mode only, per the
+original scope note — Codex/opencode tool-call shapes not yet checked. `session_extract` package
+coverage: `ledger.py` 100%.
 
-**`extract-debug` verb — design response to the operator's "thoughts?" ask.**
+**`extract-debug` verb — design response to the operator's "thoughts?" ask, then SHIPPED same day
+with one real correction to the original plan below.**
 
-The core idea is sound and, importantly, is **almost entirely a free byproduct of code that
-already exists** — no new selection logic needed, just a new rendering mode over the SAME two
-computations `extract`/`extract --lossless` already perform:
+The original plan proposed diffing the FULL lossless event walk (`adapter.parse()`'s own unfiltered
+output, before `select()` trims it) against `select()`'s kept-marker set, on the theory that both
+share the SAME marker space so a direct membership check would work for free. **That plan was
+wrong, caught before building it**: `lossless.py` is DELIBERATELY an independent, "dumb" raw-
+record reader that shares no code with the adapters at all — its own module docstring names this
+as the whole point (point 1: "an unbiased ground truth for judging the smart classifier," found
+two real classifier bugs exactly because it doesn't inherit the adapter's own blind spots). Diffing
+`adapter.parse()`'s own output against `select()`'s kept set would have compared "smart-processed-
+but-unbudgeted" against "smart-processed-and-selected" — silently missing anything the ADAPTER
+itself already dropped upstream (isMeta content, tool-result-only turns, AskUserQuestion
+reformatting), which is exactly the category of loss `--lossless`/this verb exist to surface.
 
-1. Run the full lossless event walk (today's `--lossless` path — the unfiltered
-   `events.normalize()` output, no `select()` budget cut) to get the "grey original" base.
-2. Run `select()` with the given profile/params (identical CLI surface to `extract` itself, per
-   the operator's own framing) to get the KEPT marker set.
-3. Walk the lossless list in original order. For each event: if its marker is in the kept set,
-   render it **white** (unchanged, verbatim — this is the "identical in both" case). If not,
-   accumulate a contiguous run of dropped events and render the run as a **grey** block between
-   `---` dividers (the verbatim original content select() chose to drop) wrapped in a **cyan**
-   `>>> [gap: N records omitted] <<<` pair — this is exactly `select()`'s own existing
-   `gap_after`/`_keep()` bookkeeping, just rendered VISIBLE (showing the actual dropped text)
-   instead of collapsed to a bare count the way `render_text`'s normal gap note does today. The
-   stop-reason note (`walk_stopped_because`) gets the same cyan treatment at the oldest boundary.
-4. **Green** (`extract`'s own added value, e.g. a future `[files read: ...]` ledger line per
-   E-012/this entry's ledger design above) is naturally just ANOTHER cyan-adjacent insertion
-   `render.py` already knows how to tag once it exists — `extract-debug` doesn't need its own
-   separate logic for it, it just needs the ledger feature to exist first. **This is the one real
-   dependency**: white/grey/cyan are buildable TODAY (pure diff over `select()`'s existing kept-
-   marker set and existing gap bookkeeping); green has nothing to render until the E-012 ledger
-   (previous section, NOT YET implemented) ships. Recommendation: ship the white/grey/cyan
-   three-color diff view now — it's independently useful today for validating profile/budget
-   tuning ("show me exactly what a given `--max-words`/profile threw away, in place, not just a
-   count") — and let green appear for free once the ledger lands, rather than blocking
-   `extract-debug` on the ledger first.
-5. **Mechanics**: ANSI color codes, gated behind `sys.stdout.isatty()` (auto-plain when piped/
-   redirected to a file) with an explicit `--no-color`/`--color` override for forcing either way
-   in a script or a color-supporting pager. CLI surface mirrors `extract`'s own exactly (same
-   `--profile`/`--max-words`/`--format`/path args) per the operator's own framing "identical how
-   we would call extract" — `extract-debug` is a debug LENS on the same call, not a separate
-   selection mode.
+**Shipped shape instead (`debug_diff.py`)**: a TEXT-level diff (`difflib.SequenceMatcher`) between
+`lossless.py`'s own dump and `extract()`'s own rendered output for the given profile/params —
+sidesteps the marker-space mismatch entirely, and is arguably the more honest comparison anyway:
+it shows what's in the final output vs. not, regardless of which stage (adapter-level filtering or
+`select()`-level windowing) did the cutting, since both are real information loss from the
+reader's point of view. Each side's own blocks are normalized just enough to strip formatting
+(`lossless.py`'s `===[i|ts|TAG]===` header; `render.py`'s bare `OPERATOR: ` prefix) before
+comparison, so genuinely-identical content on both sides still matches as `equal` despite the
+different wrapping. `difflib`'s own opcodes map directly onto the color scheme: `equal` → white
+(printed verbatim, no color code), a contiguous `delete`/`replace` run → grey, wrapped in this
+module's OWN `>>> [gap: N lossless blocks dropped] <<<` note (a DELIBERATELY separate count from
+`render.py`'s own `[gap: N records omitted]` note, which may also appear here as a cyan
+`insert` — the two count different units, lossless-block-granularity vs. adapter-seq-granularity,
+and conflating them into one number would be a wrong label, not just an imprecise one), and an
+`insert`-only block gets colored by its own bracket prefix: `[gap:`/`[older session content` →
+cyan, `[files `/`[commits `/`[branches `/`[tests ` (an E-012 ledger line, when `extract()`'s own
+render used one) → green. `--profile`/`--max-words`/`--checkpoints`/`--long-threshold`/
+`--include-thinking`/`--max-lifecycle-markers`/`--format`/`--session` mirror `extract`'s own
+surface exactly, per the operator's "identical how we would call extract" framing; `--color`/
+`--no-color` override the `sys.stdout.isatty()` auto-detection. Claude Code, Codex, and opencode
+all supported (same set `--lossless` supports, since this reuses `lossless.dump_*` directly).
 
-**Status**: design response only, NOT implemented — operator explicitly asked "thoughts?" rather
-than requesting a build; this entry records the reaction ("yes, and it's cheaper than it looks
-because steps 1-3 reuse existing `select()`/`--lossless` machinery verbatim") so it doesn't need
-re-deriving whenever it's actually prioritized.
+**A real bug this caught in itself, same day**: the first cut of the lossless-block splitting
+regex, `r"\n\n(?===\[)"`, is one `=` short of matching lossless.py's own `===[` header (`(?=` is
+itself 3 characters, so the lookahead body was only `==\[`, which never matches "\n\n===["). This
+silently collapsed EVERY lossless dump into ONE giant block regardless of session size — and the
+bug was invisible by eye against real output, because the `insert`-only fallback path prints
+unrecognized extract blocks with no color at all, which looks identical to a correctly-matched
+`equal`/white block unless you know to look for it. Caught only by a small synthetic test with a
+deliberately distinguishable multi-block fixture (asserting an exact dropped-block COUNT, not just
+"some grey text appears") — a real instance of this session's own standing lesson: verify against
+constructed, checkable cases, not just a real-data spot-check that happens to look plausible.
+Fixed (`r"\n\n(?=={3}\[)"`); re-validated against the real dstdns replay, which now shows the
+correct interleaved shape (e.g. `--max-words 3000 --max-lifecycle-markers -1`: one large leading
+`796 lossless blocks dropped` run, matching the tool's own documented default-stop-at-nearest-
+marker behavior, then 16 small interleaved gaps within the kept recent span, not one giant
+merged block for the whole session).
+
+**Status**: SHIPPED (`debug_diff.py`, wired into `nyxloom extract-debug`). `session_extract`
+package coverage: `debug_diff.py` 100%.

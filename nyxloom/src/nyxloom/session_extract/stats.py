@@ -11,18 +11,39 @@ that ledger and turns it into two views:
     Block's own docstring for why this is the first response and not the
     boundary row itself, which never carries usage in any of the three
     formats) plus, only if the block had more than one real call, a second
-    indented row aggregating every TRAILING call after it. A real
-    compaction gets its own one-line divider (`Compaction: Auto|Steered,
-    LLM-Endpoint (pre→post tok, Ns)`, from `compactMetadata.trigger` --
-    "auto" vs "manual" is already exactly the dumb-harness-vs-steered
-    distinction this package's own E-010/E-012 taxonomy names, nothing to
-    detect) instead of an ordinary row; the content-free `[compact
-    boundary]`/`[compact summary]` LIFECYCLE_MARKER rows themselves, and a
-    bare `/compact <prompt>` dispatch block, are suppressed from this view
-    entirely (2026-09-10, operator feedback against real output: two
-    content-free rows and a mechanical-dispatch row added no information
-    the divider/preceding operator row didn't already carry -- see
-    `_is_suppressed`, `render_condensed`).
+    indented row aggregating every TRAILING call after it.
+
+    A real compaction gets its own ROW, `kind="compaction"`, not a separate
+    divider line (2026-09-10, second round of operator feedback against real
+    output -- a compaction and everything that immediately surrounds it in
+    the raw log is itself a cluster of several near-content-free boundary
+    records: Claude Code logs the raw `/compact <prompt>` dispatch text, the
+    `[compact boundary]` system record carrying `compactMetadata`, AND a
+    `[compact summary]` synthetic record, typically all three essentially
+    back-to-back with nothing of their own in between. The FIRST version of
+    this view suppressed all of them outright, which produced two real bugs
+    once checked against the actual dstdns replay: (a) it looked like the
+    compaction was "attributed to the following operator row" purely because
+    nothing was printed AT the compaction's own chronological position, and
+    (b) far worse, any REAL post-compaction work that happened to fall inside
+    one of those now-hidden lifecycle-triggered blocks (in the replay: over
+    3 hours of real agent activity recovering context from a compacted
+    ~16.6k tokens back up past 500k, before the NEXT operator prompt) was
+    silently dropped from the rendered view entirely, not just the boundary
+    markers -- exactly the kind of information loss this whole package
+    exists to avoid. `_coalesce_compaction_clusters` fixes both: it merges a
+    maximal run of adjacent lifecycle/`/compact`-dispatch blocks that
+    contains a real `compactMetadata` member into ONE block, keeping the
+    EARLIEST member's timestamp (closest to "when did the operator actually
+    ask for this"), the real member's own trigger/pre/post/duration stats
+    (rendered inline in the trigger-text field, e.g. `[Steered, LLM-Endpoint,
+    928,592→16,599 tok, 185.2s]`, not a separate divider), and the LAST
+    member's own has_response/first_response/trailing content (the real
+    post-compaction recovery work, now visible instead of silently absorbed
+    into a suppressed block's totals). A lifecycle marker that ISN'T part of
+    a real compaction (no real member in its run -- shouldn't normally
+    happen, but handled rather than assumed away) is left as an ordinary,
+    still-suppressible block; see `_is_suppressed`, `render_condensed`.
 
 Both are annotated with what `select.select()` would have kept, under each
 of a small set of named `PROFILES`, if an extraction had been triggered at
@@ -82,7 +103,7 @@ Known gaps, left honest rather than guessed:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -172,18 +193,23 @@ class Block:
     trigger_kind: str
     trigger_text_preview: str  # verbatim preview of whatever opened this block -- see module docstring
     trigger_timestamp: str
-    # True wall-clock gap since the PREVIOUS block's own trigger, tracked
-    # across the full block sequence regardless of whether that previous
-    # block ends up suppressed from the condensed render (see
-    # render_condensed) -- a suppressed block (a real compaction, or a bare
-    # `/compact ...` dispatch) still consumed real time.
-    elapsed_since_prev_block_s: float | None
     has_response: bool  # False for a block with no real call at all (e.g. the session's very last operator turn)
     first_response_input_tokens: int
     first_response_cache_creation_tokens: int
     first_response_cache_read_tokens: int
     first_response_output_tokens: int
     first_response_context_size: int
+    # This block's OWN duration, not a gap to some other block (2026-09-10,
+    # operator correction of the first cut's "+prev" column, which measured
+    # wall-clock gap to the PREVIOUS block's trigger -- that mixes in
+    # however long the operator spent reading/thinking before typing the
+    # NEXT prompt, not how long this row's own work took). Given as three
+    # raw timestamps so render_condensed can show each printed row's own
+    # span: trigger_timestamp -> first_response_timestamp is "how long did
+    # this ask take to get answered" (the numbered row's own duration);
+    # first_response_timestamp -> end_ts is "how long did the trailing
+    # agent work that followed take" (the `↳agents` row's own duration).
+    first_response_timestamp: str
     start_ts: str
     end_ts: str
     n_trailing_calls: int  # calls in this block AFTER the first response (excludes trigger AND first response)
@@ -198,7 +224,7 @@ class Block:
     peak_context_size: int  # max over EVERY row in the block -- a true peak, not trailing-only
     contains_real_lifecycle_marker: bool
     # Only meaningful when contains_real_lifecycle_marker -- see
-    # render_condensed's compaction divider.
+    # render_condensed's bracketed compaction trigger-text.
     compact_trigger: str | None = None
     compact_pre_tokens: int | None = None
     compact_post_tokens: int | None = None
@@ -756,10 +782,8 @@ def build_blocks(rows: list[CallRow]) -> list[Block]:
     """
     blocks: list[Block] = []
     current: list[CallRow] = []
-    prev_trigger_ts: datetime | None = None
 
     def flush() -> None:
-        nonlocal prev_trigger_ts
         if not current:
             return
         trigger = current[0]
@@ -771,24 +795,19 @@ def build_blocks(rows: list[CallRow]) -> list[Block]:
             for t in r.tools_called:
                 tool_counts[t] = tool_counts.get(t, 0) + 1
 
-        ts = _parse_ts(trigger.timestamp)
-        elapsed = (ts - prev_trigger_ts).total_seconds() if ts and prev_trigger_ts else None
-        if ts:
-            prev_trigger_ts = ts
-
         is_real = trigger.is_real_lifecycle
         blocks.append(Block(
             trigger_marker=trigger.marker,
             trigger_kind=trigger.kind,
             trigger_text_preview=trigger.text_preview,
             trigger_timestamp=trigger.timestamp,
-            elapsed_since_prev_block_s=elapsed,
             has_response=first_response is not None,
             first_response_input_tokens=first_response.input_tokens if first_response else 0,
             first_response_cache_creation_tokens=first_response.cache_creation_tokens if first_response else 0,
             first_response_cache_read_tokens=first_response.cache_read_tokens if first_response else 0,
             first_response_output_tokens=first_response.output_tokens if first_response else 0,
             first_response_context_size=first_response.context_size if first_response else 0,
+            first_response_timestamp=first_response.timestamp if first_response else "",
             start_ts=current[0].timestamp,
             end_ts=current[-1].timestamp,
             n_trailing_calls=len(trailing),
@@ -816,7 +835,77 @@ def build_blocks(rows: list[CallRow]) -> list[Block]:
             current.append(row)
     flush()
 
-    return blocks
+    return _coalesce_compaction_clusters(blocks)
+
+
+def _is_compaction_cluster_member(b: Block) -> bool:
+    """A block whose own trigger is pure compaction-lifecycle furniture --
+    `[compact boundary]`/`[compact summary]` (kind=="lifecycle"), or a raw
+    `/compact <prompt>` dispatch line typed by the operator (which Claude
+    Code only classifies as kind=="lifecycle" when wrapped in its own
+    structured `<command-name>` tag -- a raw-typed one renders as an
+    ordinary operator-kind row instead, so both shapes must be checked here).
+    """
+    if b.trigger_kind == "lifecycle":
+        return True
+    return b.trigger_kind in ("operator", "qa") and b.trigger_text_preview.strip().lower().startswith(_COMPACT_PREFIX)
+
+
+def _merge_compaction_cluster(run: list[Block]) -> Block:
+    """Collapse a run of `_is_compaction_cluster_member` blocks (found by
+    `_coalesce_compaction_clusters`) into ONE block: the earliest timestamp
+    in the run (closest to when the operator actually triggered this), the
+    real member's own compactMetadata, and the LAST member's own
+    has_response/first_response/trailing content -- that's the one whose
+    `rest` actually reaches the real post-compaction work, since every
+    earlier member in the run is, by construction, itself content-free
+    (see `_coalesce_compaction_clusters`).
+    """
+    real = next((m for m in run if m.contains_real_lifecycle_marker), run[0])
+    last = run[-1]
+    dated = [(t, m) for m in run if (t := _parse_ts(m.trigger_timestamp))]
+    earliest = min(dated, key=lambda pair: pair[0])[1].trigger_timestamp if dated else real.trigger_timestamp
+    return replace(
+        last,
+        trigger_marker=real.trigger_marker,
+        trigger_kind="compaction",
+        trigger_text_preview=_compaction_label(real),
+        trigger_timestamp=earliest,
+        start_ts=earliest,
+        contains_real_lifecycle_marker=True,
+        compact_trigger=real.compact_trigger,
+        compact_pre_tokens=real.compact_pre_tokens,
+        compact_post_tokens=real.compact_post_tokens,
+        compact_duration_ms=real.compact_duration_ms,
+    )
+
+
+def _coalesce_compaction_clusters(blocks: list[Block]) -> list[Block]:
+    """Merge each maximal run of adjacent `_is_compaction_cluster_member`
+    blocks that contains a real compaction into one `kind="compaction"`
+    block -- see `build_blocks`'s own docstring for why (real post-
+    compaction work was silently vanishing into a suppressed block
+    otherwise). A run with no real member (shouldn't normally happen, but
+    not assumed away) is left untouched, block-for-block.
+    """
+    out: list[Block] = []
+    i, n = 0, len(blocks)
+    while i < n:
+        b = blocks[i]
+        if not _is_compaction_cluster_member(b):
+            out.append(b)
+            i += 1
+            continue
+        run = [b]
+        i += 1
+        while not run[-1].has_response and i < n and _is_compaction_cluster_member(blocks[i]):
+            run.append(blocks[i])
+            i += 1
+        if any(m.contains_real_lifecycle_marker for m in run):
+            out.append(_merge_compaction_cluster(run))
+        else:
+            out.extend(run)
+    return out
 
 
 def render_detailed_csv(rows: list[CallRow]) -> str:
@@ -858,7 +947,7 @@ def render_detailed_csv(rows: list[CallRow]) -> str:
     return out.getvalue()
 
 
-_TABLE_WIDTH = 112
+_TABLE_WIDTH = 115
 
 # compactMetadata.trigger's real observed values (dstdns 8ebff140 replay,
 # E-009/E-012) -> the reader-facing label. "Steered" over "Manual" to match
@@ -873,6 +962,21 @@ _TABLE_WIDTH = 112
 _COMPACT_LABEL = {"auto": "Auto", "manual": "Steered"}
 
 _COMPACT_PREFIX = "/compact"
+
+
+def _compaction_label(b: Block) -> str:
+    """The bracketed trigger-text a merged `kind="compaction"` block shows
+    in place of prose, e.g. `[Steered, LLM-Endpoint, 928,592→16,599 tok,
+    185.2s]` -- moved inline (2026-09-10, operator feedback) from what used
+    to be a separate full-width divider line, so the compaction is an
+    ordinary row like any other rather than special-cased chrome.
+    """
+    label = _COMPACT_LABEL.get(b.compact_trigger, b.compact_trigger or "unknown")
+    detail = ""
+    if b.compact_pre_tokens is not None and b.compact_post_tokens is not None:
+        dur_s = (b.compact_duration_ms or 0) / 1000.0
+        detail = f", {b.compact_pre_tokens:,}→{b.compact_post_tokens:,} tok, {dur_s:.1f}s"
+    return f"[{label}, LLM-Endpoint{detail}]"
 
 
 def _fmt_elapsed(seconds: float | None) -> str:
@@ -894,17 +998,24 @@ def _fmt_time(ts: str) -> str:
 
 
 def _is_suppressed(b: Block) -> bool:
-    """A block not worth its own row in the condensed view: a
-    LIFECYCLE_MARKER trigger (its own compaction divider, or nothing at all
-    for a content-free `[compact summary]` marker, already says everything
-    a reader needs -- see render_condensed) or a bare `/compact <prompt>`
-    dispatch (the mechanical act of submitting a compaction prompt, not
-    itself a decision worth a row -- the operator ask that PRODUCED the
-    prompt, e.g. "give me a compaction prompt", still gets its own row).
+    """A block not worth its own row in the condensed view. Real compactions
+    no longer hit this at all -- `build_blocks`'s own
+    `_coalesce_compaction_clusters` already turned them into a normal, fully
+    visible `kind="compaction"` row -- so what's left here is only the
+    leftover case that coalescing deliberately declines to touch: a
+    LIFECYCLE_MARKER or bare `/compact <prompt>` dispatch block that was NOT
+    part of any real compaction's cluster (no `compactMetadata` anywhere in
+    its run). That shouldn't normally happen, but if it does, it's still
+    pure boundary furniture with nothing of its own to show.
     """
     if b.trigger_kind == "lifecycle":
         return True
-    return b.trigger_text_preview.strip().lower().startswith(_COMPACT_PREFIX)
+    return b.trigger_kind in ("operator", "qa") and b.trigger_text_preview.strip().lower().startswith(_COMPACT_PREFIX)
+
+
+def _row_duration_s(start: str, end: str) -> float | None:
+    a, b = _parse_ts(start), _parse_ts(end)
+    return (b - a).total_seconds() if a and b else None
 
 
 def render_condensed(blocks: list[Block]) -> str:
@@ -914,13 +1025,24 @@ def render_condensed(blocks: list[Block]) -> str:
     Block's own docstring for why this is the first response, not the
     trigger row itself) and, only when the block had more than one real
     call, a second indented row aggregating every TRAILING call after it. A
-    LIFECYCLE_MARKER-triggered block gets a single compaction-divider line
-    instead of an ordinary row -- see `_is_suppressed`.
+    real compaction is an ordinary `kind="compaction"` row like any other
+    (see `build_blocks`'s `_coalesce_compaction_clusters`), its own
+    trigger/pre/post/duration stats folded into the bracketed trigger-text
+    field rather than a separate divider.
+
+    `dur` is each printed row's OWN span, not a gap to some other row: on
+    the numbered row, trigger timestamp -> first-response timestamp (how
+    long this ask took to get answered); on the `↳agents` row,
+    first-response timestamp -> the block's own end timestamp (how long the
+    trailing agent work that followed took).
     """
     lines = [
         "cp = checkpoint-scored assistant turns; minor = other (non-checkpoint) assistant prose turns; "
-        "row 1/block = the first real response (cache_r/cache_w here is the actual cache-warmth signal)",
-        f"{'#':>3} {'kind':<9} {'time':<8} {'+prev':>6} {'calls':>5} {'cp':>3} {'minor':>5} "
+        "row 1/block = the first real response (cache_r/cache_w here is the actual cache-warmth signal); "
+        "dur = this row's own span (start of its first call to the return of its last), not a gap to the next row",
+        "in = fresh (uncached) input tokens; cache_w = newly cached this call; cache_r = served from cache "
+        "(also input tokens, just already-cached ones -- in + cache_w + cache_r = this call's real input size)",
+        f"{'#':>3} {'kind':<11} {'time':<8} {'dur':>7} {'calls':>5} {'cp':>3} {'minor':>5} "
         f"{'in':>8} {'cache_w':>8} {'cache_r':>8} {'out':>7} {'peak_ctx':>9}  trigger text",
         "-" * _TABLE_WIDTH,
     ]
@@ -931,15 +1053,6 @@ def render_condensed(blocks: list[Block]) -> str:
     total_peak_ctx = 0
 
     for b in blocks:
-        if b.contains_real_lifecycle_marker:
-            label = _COMPACT_LABEL.get(b.compact_trigger, b.compact_trigger or "unknown")
-            detail = ""
-            if b.compact_pre_tokens is not None and b.compact_post_tokens is not None:
-                dur_s = (b.compact_duration_ms or 0) / 1000.0
-                detail = f" ({b.compact_pre_tokens:,}→{b.compact_post_tokens:,} tok, {dur_s:.1f}s)"
-            header = f"===== Compaction: {label}, LLM-Endpoint{detail} "
-            lines.append(header.ljust(_TABLE_WIDTH, "="))
-
         total_calls += (1 if b.has_response else 0) + b.n_trailing_calls
         total_cp += b.n_checkpoints
         total_minor += b.n_minor_updates
@@ -952,25 +1065,28 @@ def render_condensed(blocks: list[Block]) -> str:
         if _is_suppressed(b):
             continue
         shown += 1
+        own_dur = _row_duration_s(b.trigger_timestamp, b.first_response_timestamp) if b.has_response else None
         lines.append(
-            f"{shown:>3} {b.trigger_kind:<9} {_fmt_time(b.trigger_timestamp):<8} "
-            f"{_fmt_elapsed(b.elapsed_since_prev_block_s):>6} {(1 if b.has_response else 0):>5} {0:>3} {0:>5} "
+            f"{shown:>3} {b.trigger_kind:<11} {_fmt_time(b.trigger_timestamp):<8} "
+            f"{_fmt_elapsed(own_dur):>7} {(1 if b.has_response else 0):>5} {0:>3} {0:>5} "
             f"{b.first_response_input_tokens:>8} {b.first_response_cache_creation_tokens:>8} "
             f"{b.first_response_cache_read_tokens:>8} {b.first_response_output_tokens:>7} "
             f"{b.first_response_context_size:>9}  {b.trigger_text_preview}"
         )
         if b.n_trailing_calls:
+            trailing_dur = _row_duration_s(b.first_response_timestamp, b.end_ts)
             top_tools = sorted(b.tool_call_counts.items(), key=lambda kv: -kv[1])[:4]
             tool_summary = ", ".join(f"{t}×{n}" for t, n in top_tools)
             lines.append(
-                f"{'':>3} {'  ↳agents':<9} {'':<8} {'':>6} {b.n_trailing_calls:>5} {b.n_checkpoints:>3} "
-                f"{b.n_minor_updates:>5} {b.sum_input_tokens:>8} {b.sum_cache_creation_tokens:>8} "
-                f"{b.sum_cache_read_tokens:>8} {b.sum_output_tokens:>7} {b.peak_context_size:>9}  {tool_summary}"
+                f"{'':>3} {'  ↳agents':<11} {'':<8} {_fmt_elapsed(trailing_dur):>7} {b.n_trailing_calls:>5} "
+                f"{b.n_checkpoints:>3} {b.n_minor_updates:>5} {b.sum_input_tokens:>8} "
+                f"{b.sum_cache_creation_tokens:>8} {b.sum_cache_read_tokens:>8} {b.sum_output_tokens:>7} "
+                f"{b.peak_context_size:>9}  {tool_summary}"
             )
 
     lines.append("-" * _TABLE_WIDTH)
     lines.append(
-        f"{'':>3} {'':<9} {'':<8} {'':>6} {total_calls:>5} {total_cp:>3} {total_minor:>5} "
+        f"{'':>3} {'':<11} {'':<8} {'':>7} {total_calls:>5} {total_cp:>3} {total_minor:>5} "
         f"{total_in:>8} {total_cache_w:>8} {total_cache_r:>8} {total_out:>7} {total_peak_ctx:>9}  "
         f"({shown} rows shown, {len(blocks)} blocks total)"
     )

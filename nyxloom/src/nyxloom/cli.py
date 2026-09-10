@@ -701,12 +701,19 @@ def cmd_extract(args) -> int:
     opencode store holding more than one session needs --session in this
     mode too); --checkpoints/--long-threshold/--include-thinking/--json are
     ignored in this mode.
+
+    --ledger appends a mechanically-extracted `[files read: ...] [files
+    edited: ...] [commits created: ...] [branches involved: ...] [tests:
+    ...]` line after each kept boundary's own text (E-012, session_extract/
+    ledger.py) -- zero LLM calls, same guarantee as the rest of this
+    package. Claude Code only today; --json and --lossless ignore it.
     """
     from pathlib import Path
 
     from .session_extract import ExtractConfig, extract, read_since_marker
     from .session_extract.adapters import detect
     from .session_extract.config import PROFILES
+    from .session_extract.events import EventKind
 
     since_marker = args.since
     if args.since_file:
@@ -769,7 +776,92 @@ def cmd_extract(args) -> int:
         output_format="json" if args.json else "text",
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
+
+    if args.ledger:
+        if args.json:
+            print("error: --ledger has no JSON equivalent yet -- text mode only", file=sys.stderr)
+            return 1
+        if result.format != "claude-code":
+            print(f"error: --ledger does not support {result.format!r} yet -- see "
+                  f"session_extract/ledger.py's module docstring", file=sys.stderr)
+            return 1
+        from .session_extract import ledger as ledger_mod
+
+        boundary_markers = {
+            ev.marker for ev in result.events
+            if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
+        }
+        result._ledger = ledger_mod.build_ledger(Path(args.path), result.format, boundary_markers)
+
     print(result.render())
+    return 0
+
+
+def cmd_extract_debug(args) -> int:
+    """extract-debug <path> [--session ID] [--format FMT] [--profile NAME]
+    [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
+    [--max-lifecycle-markers N] [--color | --no-color]
+
+    A colored diff between the full lossless base (lossless.py's own dump)
+    and what `extract` -- called with these SAME flags -- would actually
+    keep: white = kept verbatim, grey = dropped (wrapped in a cyan `>>> ...
+    <<<` gap note), cyan = a nyxloom-authored note (gap/stop-reason) with no
+    lossless counterpart, green = an E-012 ledger line. See
+    session_extract/debug_diff.py's module docstring for the full color-
+    scheme rationale. Always compares the FULL session (--since/--until/
+    --json/--lossless don't apply here -- this verb only makes sense
+    against the complete lossless base). --color/--no-color override the
+    isatty() auto-detection (color off when piped to a file by default).
+    """
+    from pathlib import Path
+
+    from .session_extract import ExtractConfig, extract, lossless
+    from .session_extract.adapters import detect
+    from .session_extract.config import PROFILES
+    from .session_extract.debug_diff import render_debug
+
+    path = Path(args.path)
+    fmt = args.format or detect(path).name
+
+    if fmt == "claude-code":
+        lossless_text = lossless.dump_claude_code(path)
+    elif fmt == "codex":
+        lossless_text = lossless.dump_codex(path)
+    elif fmt == "opencode":
+        from .session_extract.adapters import opencode as opencode_adapter
+
+        resolved_session = args.session
+        if resolved_session is None:
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                resolved_session = sessions[0]
+            elif not sessions:
+                print(f"error: {path}: no opencode sessions found", file=sys.stderr)
+                return 1
+            else:
+                print(f"error: {path} holds {len(sessions)} opencode sessions; pass --session "
+                      f"(e.g. {sessions[0]!r})", file=sys.stderr)
+                return 1
+        lossless_text = lossless.dump_opencode(path, resolved_session)
+    else:
+        print(f"error: extract-debug does not support {fmt!r} -- see session_extract/lossless.py's "
+              f"module docstring for what's implemented", file=sys.stderr)
+        return 1
+
+    base = PROFILES[args.profile] if args.profile else ExtractConfig()
+    config = ExtractConfig(
+        max_checkpoints=args.checkpoints if args.checkpoints is not None else base.max_checkpoints,
+        long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
+        max_words=args.max_words if args.max_words is not None else base.max_words,
+        include_thinking=args.include_thinking,
+        max_lifecycle_markers=(
+            args.max_lifecycle_markers if args.max_lifecycle_markers is not None
+            else base.max_lifecycle_markers
+        ),
+    )
+    result = extract(path, config, fmt=fmt, session_id=args.session)
+    use_color = sys.stdout.isatty() if args.color is None else args.color
+    print(render_debug(lossless_text, result.render(), use_color))
     return 0
 
 
@@ -2027,7 +2119,7 @@ _VERB_GROUPS: dict[str, list[str]] = {
         "reject", "resume", "resync", "status", "tick",
     ],
     "content & extraction tooling": [
-        "digest", "events", "extract", "render", "session-stats",
+        "digest", "events", "extract", "extract-debug", "render", "session-stats",
     ],
     "intake & onboarding": [
         "init", "intake", "intake-bridge", "onboard",
@@ -2256,6 +2348,39 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                  help="Bypass classification/windowing: dump every text/thinking "
                                       "block verbatim (Claude Code, Codex, and opencode). See "
                                       "session_extract/lossless.py")
+    extract_parser.add_argument("--ledger", action="store_true",
+                                 help="Append a mechanically-extracted files-touched/commits/"
+                                      "branches/tests line after each kept boundary (E-012, "
+                                      "session_extract/ledger.py). Claude Code only; text mode only")
+
+    # extract-debug
+    extract_debug_parser = subparsers.add_parser(
+        "extract-debug", help="Colored diff: lossless base vs what extract would keep")
+    extract_debug_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
+                                                     "a file or directory for opencode's SQLite store)")
+    extract_debug_parser.add_argument("--session",
+                                       help="Session id, required when the store holds more than "
+                                            "one (e.g. opencode)")
+    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                       help="Force the adapter instead of auto-detecting from the path")
+    extract_debug_parser.add_argument("--profile", choices=sorted(PROFILES),
+                                       help="Same meaning as extract's --profile -- run this "
+                                            "profile and show exactly what it drops")
+    extract_debug_parser.add_argument("--checkpoints", type=int, default=None,
+                                       help="Same as extract's --checkpoints")
+    extract_debug_parser.add_argument("--long-threshold", type=int, default=None,
+                                       help="Same as extract's --long-threshold")
+    extract_debug_parser.add_argument("--max-words", type=int, default=None,
+                                       help="Same as extract's --max-words")
+    extract_debug_parser.add_argument("--include-thinking", action="store_true",
+                                       help="Same as extract's --include-thinking")
+    extract_debug_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
+                                       help="Same as extract's --max-lifecycle-markers")
+    debug_color_group = extract_debug_parser.add_mutually_exclusive_group()
+    debug_color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
+                                    help="Force ANSI color even when stdout isn't a terminal")
+    debug_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
+                                    help="Disable ANSI color even when stdout is a terminal")
 
     # session-stats
     session_stats_parser = subparsers.add_parser(
@@ -2612,6 +2737,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_render(args)
         elif args.cmd == "extract":
             return cmd_extract(args)
+        elif args.cmd == "extract-debug":
+            return cmd_extract_debug(args)
         elif args.cmd == "session-stats":
             return cmd_session_stats(args)
         elif args.cmd == "migrate-store":

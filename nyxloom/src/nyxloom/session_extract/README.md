@@ -273,6 +273,14 @@ __init__.py     extract() — orchestrates adapter → parse → score →
                 support (see below).
 lossless.py     dump_claude_code(): the independent ground-truth dumper --
                 see "Lossless dump" below.
+ledger.py       build_ledger(): E-012's mechanical files-touched/commits/
+                branches/test-results ledger, aggregated per prompt
+                boundary. Opt-in via `extract --ledger` (Claude Code only,
+                text mode only today).
+debug_diff.py   render_debug(): `nyxloom extract-debug`'s colored diff
+                between lossless.py's own dump and a given extract() run --
+                see its own module docstring for the full color-scheme
+                rationale (white/grey/cyan/green).
 ```
 
 ## Delta extraction
@@ -559,3 +567,17 @@ all), with an explicit opt-in "compression-assist" tier layered on top
 that may only touch content the mechanical walk already decided was
 marginal, and may only *add* a clearly-tagged synthesized sentence, never
 edit or replace verbatim kept text.
+
+`E-012`/`E-013`/`E-014` (same file, all 2026-09-10) cover three more SHIPPED
+pieces: the real-data inventory of what's mechanically recoverable from
+tool_use/tool_result records nyxloom otherwise drops (`E-012`, feeding
+`ledger.py`'s `--ledger` flag), a second round of real-data-driven fixes to
+`session-stats`' condensed view (`E-013` addendum — a real compaction is
+now its own `kind="compaction"` row with visible post-compaction recovery
+work, not a suppressed block hidden behind a divider; the elapsed-time
+column now measures each row's own call latency, not a gap to the previous
+row), and `extract-debug`'s colored lossless-vs-kept diff (`E-014`,
+`debug_diff.py` — including a real design correction: it diffs
+`lossless.py`'s own dump against `extract()`'s own render as TEXT, not by
+marker, since `lossless.py` deliberately shares no marker space with the
+adapters).

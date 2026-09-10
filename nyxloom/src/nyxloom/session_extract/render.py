@@ -51,6 +51,14 @@ timestamps are dropped from text mode entirely (they were never load-bearing
 for a human/LLM reading the rendered brief) but remain full-fidelity fields
 in JSON mode, which is for a second-stage tool, not a paste target -- terse-
 ness there would cost correctness for no reader benefit.
+
+Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
+marker -- when given, `render_text` inserts that boundary's rendered
+`[files read: ...] [files edited: ...] [commits created: ...] [branches
+involved: ...] [tests: ...]` line right after the boundary's own text, only
+for the categories that actually have entries. Off by default (`ledger=None`
+skips this entirely -- opt-in, per E-012's own "config-gated" framing), and
+text-mode only; JSON mode has no equivalent yet.
 """
 
 from __future__ import annotations
@@ -59,6 +67,7 @@ import json
 import re
 
 from .events import EventKind, NormalizedEvent
+from .ledger import Ledger
 
 MARKER_FOOTER_RE = re.compile(r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+) -->$", re.MULTILINE)
 
@@ -74,6 +83,12 @@ _STOP_REASON_TEXT = {
 # decision, for QA_PAIR) -- see the module docstring above for why these are
 # the one distinction worth keeping inline in text mode.
 _USER_AUTHORED = (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR)
+
+# Kinds a `ledger` dict (E-012, ledger.py) is keyed by -- the same boundary
+# concept stats.py's Block groups by, extended to LIFECYCLE_MARKER too (a
+# real compaction's own "since the last boundary" tool activity is just as
+# aggregation-worthy as an operator turn's).
+_LEDGER_BOUNDARY_KINDS = (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
 
 
 def _gap_note(ev: NormalizedEvent, min_gap_to_annotate: int, show_marker: bool) -> str | None:
@@ -92,6 +107,7 @@ def render_text(
     last_marker: str | None,
     min_gap_to_annotate: int = 3,
     show_gap_marker: bool = False,
+    ledger: dict[str, Ledger] | None = None,
 ) -> str:
     blocks = []
     if events:
@@ -105,6 +121,10 @@ def render_text(
     for ev in events:
         prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
         blocks.append(f"{prefix}{ev.text}")
+        if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
+            entry = ledger.get(ev.marker)
+            if entry and not entry.is_empty():
+                blocks.append(entry.render())
         gap = _gap_note(ev, min_gap_to_annotate, show_gap_marker)
         if gap:
             blocks.append(gap)

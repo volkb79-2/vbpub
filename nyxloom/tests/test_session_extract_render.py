@@ -206,3 +206,44 @@ def test_render_text_stop_reason_show_marker_off_by_default():
     oldest.meta["walk_stopped_because"] = "max_words"
     text = render_text([oldest], fmt="claude-code", last_marker=None)
     assert "op-uuid-000" not in text
+
+
+# --- ledger param (E-012) -------------------------------------------------
+
+def test_render_text_ledger_none_by_default_inserts_nothing():
+    events = [_ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None)
+    assert "files read" not in text
+
+
+def test_render_text_inserts_nonempty_ledger_entry_after_its_boundary():
+    from nyxloom.session_extract.ledger import Ledger
+
+    events = [
+        _ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1"),
+        _ev(EventKind.ASSISTANT_TEXT, "checkpoint prose", marker="cp1", score=5.0),
+    ]
+    entry = Ledger(files_read=["a.py"], files_edited=["b.py"])
+    text = render_text(events, fmt="claude-code", last_marker=None, ledger={"op1": entry})
+    assert "[files read: a.py]" in text
+    assert "[files edited: b.py]" in text
+    # Between the boundary's own text and the following kept content.
+    assert text.index("do the thing") < text.index("[files read") < text.index("checkpoint prose")
+
+
+def test_render_text_skips_empty_ledger_entries():
+    from nyxloom.session_extract.ledger import Ledger
+
+    events = [_ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None, ledger={"op1": Ledger()})
+    assert "[files" not in text
+
+
+def test_render_text_ledger_ignores_non_boundary_kinds():
+    from nyxloom.session_extract.ledger import Ledger
+
+    events = [_ev(EventKind.ASSISTANT_TEXT, "plain prose", marker="as1", score=0.0)]
+    # Even if a ledger entry happens to exist under this marker, only
+    # OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER kinds are boundary rows.
+    text = render_text(events, fmt="claude-code", last_marker=None, ledger={"as1": Ledger(files_read=["a.py"])})
+    assert "files read" not in text

@@ -141,7 +141,10 @@ def test_build_blocks_groups_by_prompt_boundary_and_flags_real_compaction(tmp_pa
     assert "Bash" in blocks[0].tool_call_counts
 
     lifecycle_block = next(b for b in blocks if b.contains_real_lifecycle_marker)
-    assert lifecycle_block.trigger_kind == "lifecycle"
+    # A real compaction is coalesced into its own kind="compaction" block
+    # (see build_blocks's _coalesce_compaction_clusters), not left as an
+    # ordinary "lifecycle"-kind block.
+    assert lifecycle_block.trigger_kind == "compaction"
     assert lifecycle_block.compact_trigger == "auto"
     assert lifecycle_block.compact_pre_tokens == 900000
     assert lifecycle_block.compact_post_tokens == 12000
@@ -171,16 +174,21 @@ def test_build_blocks_first_response_carries_its_own_tokens_not_a_sum(tmp_path):
     assert block.sum_cache_read_tokens == a2.cache_read_tokens
 
 
-def test_build_blocks_elapsed_since_prev_block_tracks_trigger_timestamps(tmp_path):
+def test_build_blocks_first_response_timestamp_is_the_first_responses_own_ts(tmp_path):
+    # 2026-09-10, second round of operator feedback: "a row's elapsed time is
+    # from its first call's start to its last call's return" -- corrects the
+    # first cut's elapsed_since_prev_block_s (gap to the PREVIOUS block's
+    # trigger, which mixes in operator think-time). first_response_timestamp
+    # is what render_condensed now uses to compute each printed row's own
+    # span (trigger -> first_response for the numbered row, first_response
+    # -> end_ts for the trailing ↳agents row).
     fp = _write_fixture(tmp_path)
     rows = stats.build_call_rows(fp)
     blocks = stats.build_blocks(rows)
-    # First block has no predecessor.
-    assert blocks[0].elapsed_since_prev_block_s is None
-    # Every later block's elapsed is a real, non-negative gap.
-    for b in blocks[1:]:
-        assert b.elapsed_since_prev_block_s is not None
-        assert b.elapsed_since_prev_block_s >= 0
+    a1 = next(r for r in rows if r.marker == "a1")
+    assert blocks[0].first_response_timestamp == a1.timestamp
+    # A block with no real response at all carries no first_response_timestamp.
+    assert blocks[-1].first_response_timestamp == ""
 
 
 def test_render_detailed_csv_has_a_header_and_one_row_per_call(tmp_path):
@@ -192,30 +200,37 @@ def test_render_detailed_csv_has_a_header_and_one_row_per_call(tmp_path):
     assert len(lines) == 1 + len(rows)
 
 
-def test_render_condensed_shows_a_typed_compaction_divider(tmp_path):
+def test_render_condensed_shows_a_typed_compaction_row(tmp_path):
+    # 2026-09-10, second round of operator feedback: a real compaction is an
+    # ordinary numbered ROW (kind="compaction"), not a separate divider line
+    # -- the type/stats move into the bracketed trigger-text field instead.
     fp = _write_fixture(tmp_path)
     rows = stats.build_call_rows(fp)
     blocks = stats.build_blocks(rows)
     text = stats.render_condensed(blocks)
+    assert "=====" not in text  # no more divider chrome
+    assert " compaction " in text  # the kind column
     # The fixture's compactMetadata.trigger is "auto" -> "Auto" label.
-    assert "Compaction: Auto, LLM-Endpoint" in text
-    assert "900,000→12,000 tok" in text
-    assert "150.0s" in text
+    assert "[Auto, LLM-Endpoint, 900,000→12,000 tok, 150.0s]" in text
     assert str(len(blocks)) + " blocks total" in text
 
 
-def test_render_condensed_suppresses_lifecycle_marker_rows():
-    # The two content-free LIFECYCLE_MARKER rows ([compact boundary] and
-    # [compact summary]) must never get their own numbered row -- only the
-    # compaction divider (for the real one) represents them.
+def test_render_condensed_suppresses_uncoalesced_lifecycle_marker_rows():
+    # render_condensed's OWN suppression only ever sees kind=="lifecycle" --
+    # a REAL compaction never reaches it that way (build_blocks's
+    # _coalesce_compaction_clusters already relabels it kind="compaction"
+    # before render_condensed runs); this test exercises render_condensed in
+    # isolation, feeding it raw lifecycle-kind blocks directly, the shape
+    # it would see for the "no real member in this run" edge case
+    # _coalesce_compaction_clusters deliberately leaves untouched.
     from nyxloom.session_extract.stats import Block
 
     real = Block(
         trigger_marker="lc1", trigger_kind="lifecycle", trigger_text_preview="[compact boundary]",
-        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        trigger_timestamp="2026-01-01T00:00:00Z",
         has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
         first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
-        start_ts="", end_ts="",
+        first_response_timestamp="", start_ts="", end_ts="",
         n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
         sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
         sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
@@ -224,10 +239,10 @@ def test_render_condensed_suppresses_lifecycle_marker_rows():
     )
     summary = Block(
         trigger_marker="lcs1", trigger_kind="lifecycle", trigger_text_preview="[compact summary]",
-        trigger_timestamp="2026-01-01T00:00:01Z", elapsed_since_prev_block_s=1.0,
+        trigger_timestamp="2026-01-01T00:00:01Z",
         has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
         first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
-        start_ts="", end_ts="",
+        first_response_timestamp="", start_ts="", end_ts="",
         n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
         sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
         sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
@@ -236,8 +251,6 @@ def test_render_condensed_suppresses_lifecycle_marker_rows():
     text = stats.render_condensed([real, summary])
     assert "[compact boundary]" not in text
     assert "[compact summary]" not in text
-    assert "Compaction: Steered, LLM-Endpoint" in text
-    assert "500,000→10,000 tok" in text
     assert "0 rows shown, 2 blocks total" in text
 
 
@@ -246,10 +259,10 @@ def test_render_condensed_suppresses_bare_compact_dispatch_rows():
 
     real_ask = Block(
         trigger_marker="op1", trigger_kind="operator", trigger_text_preview="give me a compaction prompt",
-        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        trigger_timestamp="2026-01-01T00:00:00Z",
         has_response=True, first_response_input_tokens=1, first_response_cache_creation_tokens=0,
         first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=1,
-        start_ts="", end_ts="",
+        first_response_timestamp="2026-01-01T00:00:05Z", start_ts="", end_ts="",
         n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
         sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
         sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=1,
@@ -257,10 +270,10 @@ def test_render_condensed_suppresses_bare_compact_dispatch_rows():
     )
     dispatch = Block(
         trigger_marker="op2", trigger_kind="operator", trigger_text_preview="/compact KEEP: exact per-package state",
-        trigger_timestamp="2026-01-01T00:00:01Z", elapsed_since_prev_block_s=1.0,
+        trigger_timestamp="2026-01-01T00:00:01Z",
         has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
         first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
-        start_ts="", end_ts="",
+        first_response_timestamp="", start_ts="", end_ts="",
         n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
         sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
         sum_output_tokens=0, sum_cost_usd=0.0, peak_context_size=0,
@@ -277,10 +290,11 @@ def test_render_condensed_shows_first_response_and_trailing_rows_separately():
 
     block = Block(
         trigger_marker="op1", trigger_kind="operator", trigger_text_preview="do the thing",
-        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        trigger_timestamp="2026-01-01T00:00:00Z",
         has_response=True, first_response_input_tokens=5, first_response_cache_creation_tokens=100,
         first_response_cache_read_tokens=200000, first_response_output_tokens=0,
-        first_response_context_size=200105, start_ts="", end_ts="",
+        first_response_context_size=200105, first_response_timestamp="2026-01-01T00:00:05Z",
+        start_ts="", end_ts="2026-01-01T00:01:00Z",
         n_trailing_calls=3, n_checkpoints=1, n_minor_updates=2,
         tool_call_counts={"Bash": 5, "Edit": 2},
         sum_input_tokens=10, sum_cache_creation_tokens=5000, sum_cache_read_tokens=1000,
@@ -305,10 +319,10 @@ def test_render_condensed_no_cost_column():
 
     block = Block(
         trigger_marker="op1", trigger_kind="operator", trigger_text_preview="hi",
-        trigger_timestamp="2026-01-01T00:00:00Z", elapsed_since_prev_block_s=None,
+        trigger_timestamp="2026-01-01T00:00:00Z",
         has_response=False, first_response_input_tokens=0, first_response_cache_creation_tokens=0,
         first_response_cache_read_tokens=0, first_response_output_tokens=0, first_response_context_size=0,
-        start_ts="", end_ts="",
+        first_response_timestamp="", start_ts="", end_ts="",
         n_trailing_calls=0, n_checkpoints=0, n_minor_updates=0, tool_call_counts={},
         sum_input_tokens=0, sum_cache_creation_tokens=0, sum_cache_read_tokens=0,
         sum_output_tokens=0, sum_cost_usd=1.2345, peak_context_size=0,
@@ -317,6 +331,85 @@ def test_render_condensed_no_cost_column():
     text = stats.render_condensed([block])
     assert "cost" not in text.lower()
     assert "1.2345" not in text
+
+
+def _write_compaction_recovery_fixture(tmp_path: Path) -> Path:
+    # Reproduces the exact real-data pattern found in the dstdns 8ebff140
+    # replay (2026-09-10, second round of operator feedback): a raw-typed
+    # `/compact ...` dispatch (kind=operator, since it's not wrapped in
+    # Claude Code's own <command-name> harness tag), immediately followed by
+    # the real `[compact boundary]` system record and a `[compact summary]`
+    # synthetic one -- THREE back-to-back near-content-free boundary rows --
+    # and only THEN the real post-compaction recovery work. The first cut of
+    # this view suppressed every lifecycle-triggered block outright, which
+    # silently dropped that recovery work (a3/a4 below) from the rendered
+    # output entirely, not just the three boundary markers.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "give me a compaction prompt"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:05Z",
+             message={"role": "assistant", "model": "claude-sonnet-5",
+                       "usage": _usage(cache_read=900000), "content": [{"type": "text", "text": "Here it is."}]}),
+        _rec(type="user", uuid="u_dispatch", timestamp="2026-01-01T00:00:06Z",
+             message={"role": "user", "content": "/compact KEEP: exact per-package state"}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1", timestamp="2026-01-01T00:00:10Z",
+             compactMetadata={"trigger": "manual", "preTokens": 500000, "postTokens": 10000, "durationMs": 100000}),
+        _rec(type="user", uuid="lcs1", timestamp="2026-01-01T00:00:11Z", isCompactSummary=True,
+             message={"role": "user", "content": "Summary of prior work."}),
+        _rec(type="assistant", uuid="a3", timestamp="2026-01-01T00:00:15Z",
+             message={"role": "assistant", "model": "claude-sonnet-5",
+                       "usage": _usage(cache_read=40000), "content": [{"type": "text", "text": "Resuming work."}]}),
+        _rec(type="assistant", uuid="a4", timestamp="2026-01-01T00:00:20Z",
+             message={"role": "assistant", "model": "claude-sonnet-5",
+                       "usage": _usage(cache_read=45000), "content": [
+                           {"type": "text", "text": "Continuing."},
+                           {"type": "tool_use", "id": "tu2", "name": "Bash", "input": {"command": "git status"}},
+                       ]}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:25Z",
+             message={"role": "user", "content": "what's next?"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_coalesce_compaction_cluster_keeps_the_real_post_compaction_work_visible(tmp_path):
+    fp = _write_compaction_recovery_fixture(tmp_path)
+    rows = stats.build_call_rows(fp)
+    blocks = stats.build_blocks(rows)
+    a3 = next(r for r in rows if r.marker == "a3")
+    a4 = next(r for r in rows if r.marker == "a4")
+
+    # u1 ("give me a compaction prompt"), the merged compaction cluster
+    # (u_dispatch + lc1 + lcs1), and u2 -- three blocks, not five: the run
+    # of three back-to-back boundary-only records collapses into one.
+    assert len(blocks) == 3
+    compaction = blocks[1]
+    assert compaction.trigger_kind == "compaction"
+    assert compaction.contains_real_lifecycle_marker is True
+    # Earliest timestamp in the cluster (the raw dispatch), not the system
+    # record's own (later) timestamp -- closest to "when did the operator
+    # actually trigger this."
+    assert compaction.trigger_timestamp == "2026-01-01T00:00:06Z"
+    assert compaction.compact_trigger == "manual"
+    assert compaction.compact_pre_tokens == 500000
+    assert compaction.compact_post_tokens == 10000
+    # The real post-compaction work (a3/a4) is NOT dropped -- it's the
+    # merged block's own first_response/trailing content, inherited from
+    # the run's LAST member (lcs1's own block), exactly as if lcs1 itself
+    # had opened this block.
+    assert compaction.has_response is True
+    assert compaction.first_response_cache_read_tokens == a3.cache_read_tokens
+    assert compaction.n_trailing_calls == 1
+    assert compaction.sum_cache_read_tokens == a4.cache_read_tokens
+
+    text = stats.render_condensed(blocks)
+    assert "[Steered, LLM-Endpoint, 500,000→10,000 tok, 100.0s]" in text
+    # The recovered work is visible in the rendered table, not silently
+    # absorbed into a suppressed block's totals.
+    assert "40000" in text
+    assert "45000" in text
+    assert "Bash×1" in text
 
 
 def test_build_blocks_on_an_empty_row_list_returns_no_blocks():

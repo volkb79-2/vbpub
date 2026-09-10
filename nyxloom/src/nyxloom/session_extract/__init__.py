@@ -17,6 +17,7 @@ from . import classifier, render, select
 from .adapters import DetectionError, detect, get_adapter
 from .config import ExtractConfig
 from .events import NormalizedEvent
+from .ledger import Ledger
 
 __all__ = ["ExtractConfig", "ExtractResult", "extract", "DetectionError", "read_since_marker"]
 
@@ -32,7 +33,8 @@ class ExtractResult:
         if self._output_format == "json":
             return render.render_json(self.events, self._checkpoint_threshold, self.format, self.last_marker)
         return render.render_text(
-            self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker
+            self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker,
+            ledger=self._ledger,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -40,6 +42,9 @@ class ExtractResult:
     _checkpoint_threshold: float = 3.0
     _min_gap_to_annotate: int = 3
     _gap_note_show_marker: bool = False
+    # E-012 (ledger.py) -- opt-in, built and attached by cli.py's cmd_extract
+    # when --ledger is passed; None means "not requested," skipped entirely.
+    _ledger: dict[str, Ledger] | None = None
 
 
 def read_since_marker(path: Path) -> tuple[str, str]:

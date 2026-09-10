@@ -153,6 +153,97 @@ def test_extract_default_run_produces_delimited_text(tmp_path, capsys):
     assert "nyxloom-extract: format=claude-code" in out
 
 
+def _write_claude_code_ledger_fixture(tmp_path: Path) -> Path:
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "fix the flaky test"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 {"type": "text", "text": "Fixing it."},
+                 {"type": "tool_use", "id": "tu1", "name": "Edit", "input": {"file_path": "/repo/t.py"}},
+             ]}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu1", "content": "edited"},
+             ]}),
+        _rec(type="assistant", uuid="a2", timestamp="2026-01-01T00:00:03Z",
+             message={"role": "assistant", "content": [
+                 {"type": "text", "text": "Committing."},
+                 {"type": "tool_use", "id": "tu2", "name": "Bash", "input": {"command": 'git commit -m "fix"'}},
+             ]}),
+        _rec(type="user", uuid="u3", timestamp="2026-01-01T00:00:04Z",
+             message={"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu2", "content": "[main abc1234] fix"},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_extract_ledger_appends_files_and_commits_line(tmp_path, capsys):
+    fp = _write_claude_code_ledger_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--ledger"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "fix the flaky test" in out
+    assert "[files edited: /repo/t.py]" in out
+    assert "[commits created: abc1234]" in out
+
+
+def test_extract_ledger_rejects_json(tmp_path, capsys):
+    fp = _write_claude_code_ledger_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--ledger", "--json"])
+    assert exit_code == 1
+    assert "--ledger has no JSON equivalent" in capsys.readouterr().err
+
+
+def test_extract_ledger_rejects_non_claude_code_format(tmp_path, capsys):
+    fp = _write_codex_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--ledger"])
+    assert exit_code == 1
+    assert "--ledger does not support 'codex'" in capsys.readouterr().err
+
+
+def test_extract_debug_shows_dropped_content_as_a_gap_note(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    # max_words=1 forces select() to drop everything past the operator's
+    # own turn, so a1/a2's real content shows up on the lossless-only side.
+    exit_code = cli.main(["extract-debug", str(fp), "--max-words", "1", "--no-color"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "please look into this" in out
+    assert ">>> [gap:" in out
+    assert "lossless block" in out
+    assert "\x1b[" not in out  # --no-color: no ANSI codes at all
+
+
+def test_extract_debug_color_forces_ansi_codes_even_when_piped(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-debug", str(fp), "--max-words", "1", "--color"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "\x1b[36m" in out  # cyan gap note, forced on despite capsys not being a tty
+
+
+def test_extract_debug_rejects_unregistered_format(tmp_path, capsys):
+    fp = _write_codex_fixture(tmp_path)
+    exit_code = cli.main(["extract-debug", str(fp), "--format", "does-not-exist"])
+    assert exit_code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_extract_debug_works_for_codex_too(tmp_path, capsys):
+    fp = _write_codex_fixture(tmp_path)
+    exit_code = cli.main(["extract-debug", str(fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "hi" in out
+
+
 def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     # cli.main() catches argparse's SystemExit itself and converts it to a
     # plain return code (see main()'s parse_args try/except) -- it never
