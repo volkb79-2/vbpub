@@ -39,9 +39,8 @@ transcript, cherry-picking their own prompts, the assistant's summaries,
 and Q&A answers, and hand-inserting delimiters between them. That excerpt
 worked well as a fresh-session seed. The question was whether the same
 selection could be done mechanically, and the answer — validated against
-that exact hand-built excerpt and its source session (see "Validation
-against a real hand-curated excerpt" below) — is yes, with caveats that
-shaped the design below.
+that exact hand-built excerpt and its source session (see "Why not just
+use length?" below) — is yes, with caveats that shaped the design below.
 
 ### Why not just use each CLI's own `/compact`?
 
@@ -59,37 +58,70 @@ half — it never asks a model to compact anything, it decides what to
 
 The operator's own instinct (episode 2 of the design conversation) was
 "last 5 checkpoints, full comments in recent history, only long comments
-further back." That is close, but two real gaps only showed up once the
+further back." That is close, but real gaps only showed up once the
 tool's actual output was diffed against the operator's real hand-curated
-excerpt, run against its own source session:
+excerpt, run against its own source session — twice, at two levels of
+rigor:
 
 1. **A short, concrete finding survives; a short procedural aside
    doesn't** — the operator kept "Found it — a `pgrep` pattern bug" but
    dropped "Now let's fix that," despite near-identical length. This is
    `classifier.has_finding_signal()`: a finding-opener regex, a
    code-reference-in-backticks pattern, and a filename-mention pattern,
-   checked independently of the length bars and _OR_'d into the keep
+   checked independently of the length bar and _OR_'d into the keep
    decision at any distance from the newest checkpoint.
-2. **"Recent history: keep everything" is too permissive** — running the
-   tool with `--checkpoints 5` and `--checkpoints 10` against the real
-   excerpt's span produced almost identical output, which meant the
-   whole span held only ~5 real checkpoints and so "recent" (by the
-   original design) covered nearly the *entire* transcript. Unconditional
-   keep-everything in that window let through large amounts of low-value
-   procedural narration the operator's own excerpt never kept. The fix
-   was a second, lower length bar for the recent window
-   (`recent_comment_chars`, default 40) instead of no bar at all — still
-   far more lenient than the older window's `long_comment_chars` (180),
-   but not unconditional. This is a deliberate, evidence-based deviation
-   from the original "recent = keep everything" instruction; it has not
-   yet been re-confirmed with the operator in a live conversation, only
-   validated numerically against the one real excerpt available.
+2. **"Recent history: keep everything" is too permissive, and so is
+   "recent history: a lower bar."** A first pass compared `--checkpoints 5`
+   vs `--checkpoints 10` output and, seeing them nearly identical, tried a
+   second, lower length bar for content near the newest checkpoints instead
+   of no bar at all. That was still wrong: a full, line-by-line replay of
+   **every** ASSISTANT_TEXT event in the real excerpt's span against the
+   excerpt (not a sampled before/after diff) found roughly 40 short
+   (40-150 char), no-finding-signal procedural lines ("Now the
+   `log-opts` cleanup gap...", "Real bug confirmed and it's a quick fix.
+   Let me apply it...") that the operator dropped even in the very LAST
+   turns of the span, immediately next to the newest checkpoint — no case
+   anywhere of recency alone rescuing a short procedural line. The
+   recency-based leniency was removed rather than re-tuned a second time:
+   `long_comment_chars` (180) now applies uniformly across the whole
+   walked span, with `has_finding_signal()` as the only length-independent
+   escape hatch, at any distance from the newest checkpoint.
 
 Both fixes are real bugs a naive length-only reading of the original
 spec would have shipped with. A labeled corpus of more than one
-hand-curated excerpt would let the thresholds be tuned properly instead
+hand-curated excerpt would let the threshold be tuned properly instead
 of eyeballed against a single data point — noted as a real limitation,
 not hidden.
+
+### Why default toward dropping marginal content? (append-only / cache-stable extraction)
+
+A rendered extraction's whole reason to exist is to become the start of a
+fresh session's prompt, which the inference provider then prefix-caches.
+Once a later `--since`/`--since-file` run has extended that session
+further and the cache has built up on top of it, retroactively deciding
+"actually, drop that one-liner from three checkpoints back" would edit the
+middle of an already-cached prefix and tear the cache for everything built
+on top of it — an expensive, one-way mistake, not a free do-over. Two
+consequences follow, and both are enforced in `select.py`/`config.py`:
+
+1. Selection for a span must never depend on anything that happens in a
+   LATER span. A tempting-looking idea — "drop this because a later
+   checkpoint restates the same numbers" (real example: an intermediate
+   "299 passed, 93% coverage" line the operator dropped because the next
+   checkpoint restated the final numbers) — was considered and rejected for
+   exactly this reason: it would require re-visiting an earlier span's
+   decision once something later makes it redundant, which is precisely
+   the kind of retroactive edit this section rules out.
+2. When a threshold is ambiguous, default toward DROPPING marginal content
+   rather than keeping it. Dropping loses nothing permanently (the raw
+   session log is always still there to re-read — see "Lossless dump"
+   below); keeping something marginal bakes it into a prefix that becomes
+   expensive to ever revise. This is the operator's own stated reasoning
+   for removing the recency leniency above, independent of the excerpt
+   evidence: even if a human curator's *own* in-the-moment judgment about
+   what to keep is admittedly "a very fast intuitive decision," not a
+   precisely-reproducible policy, the asymmetric cost of being wrong in
+   each direction still favors the strict default.
 
 ### Why a backward (newest-first) walk, not forward-scan-then-trim?
 
@@ -138,42 +170,72 @@ first principles.
 
 Skimmed real session logs from Claude Code, Codex, and opencode before
 finalizing the `SessionAdapter` protocol (`adapters/base.py`), to avoid
-designing an interface that only fits Claude Code's shape. Findings, in
-descending order of how much they constrained the interface:
+designing an interface that only fits Claude Code's shape. All three
+adapters have since been run end-to-end against real local session data
+(hundreds of Codex rollout files spanning cli_version 0.142.2-0.151.0, a
+72-session opencode.db, and multiple real Claude Code project logs), not
+just synthetic fixtures — one of those real runs is what found the
+schema-migration bug below. Findings, in descending order of how much they
+constrained the interface or turned up a real bug:
 
+- **Codex** (`adapters/codex.py`) — **real, load-bearing finding: Codex's
+  `event_msg` schema was restructured entirely around cli_version 0.147.0
+  (2026-08-09).** The adapter's first version read only the OLD flat shape
+  (`payload.type` directly naming `user_message`/`agent_message`/
+  `context_compacted`) — verified correct against files up to 0.145.0, but
+  every real local file from 0.147.0 onward (i.e. the last month of local
+  Codex history at the time this was found) uses a completely different
+  NEW shape: every event arrives as `payload.type == "item_completed"`
+  wrapping a typed `payload.item` (`"UserMessage"`, `"AgentMessage"`,
+  `"Reasoning"`, tool/machine item types to skip), and the compaction
+  boundary moved to a top-level `type: "compacted"` record carrying
+  Codex's own real compaction-summary text. Running the adapter against a
+  real recent file silently produced **zero events** before this was
+  caught — a stark demonstration of why "verified against real session
+  logs" has to mean *many* real logs spanning time, not a handful from one
+  period, especially against a fast-moving external CLI this tool doesn't
+  control the versioning of. Both generations are now handled; see the
+  adapter's own module docstring for the full shape of each.
+  **A second, related correction from the same wider sampling:** the
+  earlier documented finding that Codex's chain-of-thought is opaque
+  (`encrypted_content` in the old `response_item.reasoning` layer) turned
+  out to be generation-specific, not universal — the NEW schema's
+  `"Reasoning"` item carries a `raw_content` list of **plain-text**
+  reasoning strings, not encrypted at all. THINKING is now emitted from
+  real Codex sessions (new generation, `--include-thinking`) where it
+  previously never could be. Whether the OLD layer's `encrypted_content`
+  is genuinely unrecoverable, or just a different code path, is a
+  narrower open question left to the Codex-encryption research thread
+  (see "Known limitations" below).
+  Remaining honest gap: no `AskUserQuestion`-equivalent structured Q&A
+  signal was found in either generation, including a
+  `"CollabAgentToolCall"` item that looked promising but turned out (its
+  `"tool": "spawn_agent"` field, checked directly) to be a sub-agent
+  spawn, not a question/answer mechanism.
 - **Claude Code** (`adapters/claude_code.py`) — flat JSONL, one record
   per line, `type` discriminates `user`/`assistant`/`system`/housekeeping.
   `AskUserQuestion` batches are pre-rendered by the harness into a single
   `"The user answered: ..."` tool_result string covering every question
   in the batch — the adapter doesn't need to reconstruct pairing itself.
-  Two real schema quirks found only by running against live files, not
-  documentation: the first line of a real file is often a housekeeping
-  `"mode"` record with no `sessionId`/`parentUuid` (sniff must scan
-  several lines, not just line 1), and background Task-tool completions
-  arrive as `<task-notification>` blocks inside an otherwise
-  operator-turn-shaped record (`type: "user"`, plain string content, no
-  `isMeta` flag) — real controller-injected noise that must be filtered
-  by content, since the schema alone doesn't distinguish it from a real
-  operator prompt.
-- **Codex** (`adapters/codex.py`) — flat JSONL, but two layers: a clean
-  `event_msg` layer (`user_message`/`agent_message`/`context_compacted`)
-  that's almost a 1:1 fit for this tool's event model, and a raw
-  `response_item` layer (the literal model-call transcript, including
-  `function_call`/`function_call_output` and `reasoning` items) that's
-  much harder to parse cleanly. The adapter deliberately uses only the
-  `event_msg` layer. Two gaps, documented in the adapter's own docstring
-  rather than papered over: no `AskUserQuestion`-equivalent structured
-  Q&A signal was found in the samples inspected (Codex's interaction
-  model may simply not have one), and `reasoning` items' `summary` array
-  was empty with `encrypted_content` opaque in every sample checked —
-  Codex is open-source, so it's plausible the real reasoning text is
-  recoverable from a local build with the right flag/log level rather
-  than genuinely inaccessible; this is exactly what the Codex-encryption
-  research fork launched alongside this work was checking (see below).
-  Also found a real schema-version gap purely by testing against files
-  from two different CLI versions: the `ordinal` top-level field exists
-  in 2026-08+ rollout files but is entirely absent in 2026-07 and earlier
-  ones — `sniff()` does not require it.
+  Real schema quirks found only by running against live files, not
+  documentation, several caught only by a later adversarial review's own
+  reproductions rather than the initial design pass: the first line of a
+  real file is often a housekeeping `"mode"` record with no
+  `sessionId`/`parentUuid` (sniff must scan several lines, not just line
+  1); background Task-tool completions arrive as `<task-notification>`
+  blocks that can appear ANYWHERE in an otherwise operator-turn-shaped
+  record, not only as the whole message, and must be stripped wherever
+  they occur rather than only when the whole message starts with one (the
+  provenance-smuggling risk: controller-injected content rendered as
+  trustworthy operator intent); `<command-args>`'s inner content is the
+  operator's own typed argument text and must be unwrapped, never
+  discarded along with the surrounding tag noise; `<command-name>`
+  detection must be anchored to the start of the message, since an
+  unanchored search matches this tool's own docs/tests merely *mentioning*
+  the literal tag string mid-sentence; and a `--since`/`--until` marker
+  generated from a uuid-less record must be resolved via the exact same
+  `f"line{i}"` fallback used to generate it, or it can never be resolved
+  again.
 - **opencode** (`adapters/opencode.py`) — the odd one out: a relational
   SQLite store (`session`/`message`/`part` tables), not flat JSONL. This
   is why `SessionAdapter.parse()` takes a path and a `config`, not a
@@ -185,7 +247,10 @@ descending order of how much they constrained the interface:
   operator-vs-injected distinctions respectively — but neither was
   confirmed against real compacted/injected data, so the adapter does
   not claim to detect lifecycle markers or operator/injected provenance
-  for opencode yet. Documented as an open gap, not guessed at.
+  for opencode yet. Documented as an open gap, not guessed at. A real
+  72-session local opencode.db run produced a coherent, substantive
+  brief with no crashes or garbage output, giving reasonable confidence
+  in what IS implemented even though these gaps remain.
 
 ## Architecture
 
@@ -206,6 +271,8 @@ config.py       ExtractConfig — every tunable knob, centralized.
 __init__.py     extract() — orchestrates adapter → parse → score →
                 select → render. read_since_marker() — delta-extraction
                 support (see below).
+lossless.py     dump_claude_code(): the independent ground-truth dumper --
+                see "Lossless dump" below.
 ```
 
 ## Delta extraction
@@ -233,6 +300,36 @@ session:
 the auto-detected adapter) before running — a marker from one adapter is
 meaningless fed to another, and this fails loudly instead of silently
 returning nothing or garbage.
+
+`--until <marker>` is the symmetric bound: stop at a given marker
+(inclusive) instead of walking to the end of the log. Its main use isn't
+everyday resumption but pinning a run to a fixed historical span — e.g.
+reproducing a run against a fixed hand-curated reference, which is exactly
+what made the exhaustive real-excerpt replay above reproducible.
+
+## Lossless dump
+
+`nyxloom extract --lossless` (Claude Code only today, `lossless.py`)
+bypasses classification/windowing entirely: it keeps every text/thinking
+content block verbatim and drops only `tool_use`/`tool_result` blocks and
+non-conversational bookkeeping records, with no `isMeta`/task-notification/
+AskUserQuestion-pairing logic at all. It's deliberately NOT the smart
+adapter's code path — a "dumb," independent implementation, so it forms a
+trustworthy superset rather than inheriting the real extractor's own blind
+spots. Two things it's for:
+
+1. **A ground-truth baseline for judging and tuning the real classifier.**
+   `select()`'s job is to pick a small, curated subset of a session's
+   prose; judging whether it picked well requires reading everything it
+   *could* have picked from. Comparing the real extraction against this
+   dump (not the raw JSONL, which is mostly machine noise) rather than
+   against memory or a sample is what surfaced the two-tier-window bug and
+   several of the adversarial-review findings above — it made a full,
+   line-by-line replay of a real span actually tractable to read end to
+   end, rather than eyeballing a diff.
+2. **Raw material for a future hybrid** (see "Future" below): an
+   agent-authored condensation of segments the mechanical path structurally
+   can't recover.
 
 ## Relationship to `jsonl-metrics.py` and the context-lifecycle experiments
 
@@ -282,21 +379,69 @@ single-run scale; a real multi-tier implementation (deciding *when* to
 fall back to hard-reset-plus-hints vs. a normal `--since-file` delta) is
 future work, not yet built.
 
+## Future: hybrid agent-authored condensation for tool-only history
+
+This tool's whole mechanism assumes a checkpoint already exists as prose
+the assistant wrote in-line, and just needs to be located and filtered —
+which is exactly why it can be free, instant, and deterministic. That's
+also its hard limit: it structurally cannot recover information that only
+ever existed in raw tool output the assistant never restated in its own
+words.
+
+Direct inspection of what Claude Code's own built-in auto-compaction does
+(reading the raw session log across its own `compact_boundary`, not just
+the resulting summary) makes the shape of the gap concrete. Its
+`compactMetadata` shows a hybrid: a short verbatim tail of the most recent
+messages survives completely unsummarized — **including raw tool_result
+content**, e.g. a 43,250-character file dump kept byte-for-byte in one real
+case — while everything older than that tail is sent to the model and
+compressed into prose. That older-segment summarization is a genuine
+generative act (the model reads arbitrary command output, diffs, and
+review reports, and synthesizes a narrative connecting them), not an
+extraction — which is precisely why it costs a real API round-trip
+(measured directly: ~240 seconds of model latency for one compaction in
+this tool's own development session) instead of being free like this tool.
+
+A future design point, not yet implemented: on a genuine cold restart with
+no prefix-cache reuse worth preserving, hand an agent the `--lossless`
+dump for the segment being retired and ask it to describe, in its own
+words, what should be remembered from it — especially anything that exists
+ONLY in tool output — then prepend that agent-authored condensation before
+this tool's own mechanically-extracted, unsummarized prose for whatever
+span IS still worth keeping verbatim. This is a targeted, operator/tool-
+triggered version of what Claude Code's built-in compaction does
+automatically and opaquely: pay the model-call cost only for the segment
+that genuinely needs synthesis, and get the mechanical, free, deterministic
+treatment for everything else. See "Multi-tier strategy at scale" above
+for how this could fit the hard-reset-past-N-boundaries case specifically.
+
 ## Known limitations / open work
 
-- Thresholds (`recent_comment_chars=40`, `long_comment_chars=180`,
-  `checkpoint_score_threshold=3.0`) are tuned against exactly one real
-  hand-curated excerpt. A small labeled corpus would let this be done
-  properly.
+- `long_comment_chars=180` and `checkpoint_score_threshold=3.0` are tuned
+  against one real hand-curated excerpt, now via a full replay rather than
+  a sampled diff (see "Why not just use length?" above), but still one
+  data point. A small labeled corpus would let this be done properly.
 - opencode: no lifecycle-marker detection, no QA_PAIR equivalent, no
   operator-vs-injected distinction — `session_context_epoch` and
   `session_input.delivery` are plausible hooks for these but unverified
-  against real compacted/injected data.
-- Codex: no QA_PAIR equivalent found in the samples inspected;
-  `reasoning` content was opaque (`encrypted_content`) in every sample —
-  under active investigation given Codex is open-source (see the
-  research fork referenced above; fold its findings back into
-  `adapters/codex.py`'s documented gaps once it returns).
+  against real compacted/injected data. Also unaddressed (adversarial
+  review, low priority): the SQLite connection URI is built by naive
+  string interpolation (a store path containing `?`/`#`/`%` would break
+  it), and part-fetching is one query per message (N+1; fine at real-world
+  session scale seen so far, won't scale indefinitely).
+- Codex: no `AskUserQuestion`-equivalent found in either schema generation
+  (see "Cross-CLI adapter findings" above). Whether the OLD generation's
+  `response_item.reasoning.encrypted_content` is genuinely unrecoverable,
+  or just a different code path from the NEW generation's plain-text
+  `raw_content`, is still open — under active investigation (see the
+  Codex-encryption research thread; fold its findings back into
+  `adapters/codex.py`'s documented gaps once it returns). `--since`
+  chaining across the 0.145.0→0.147.0 schema boundary, or across the
+  ordinal-present/absent boundary, is not guaranteed to resolve (the
+  marker scheme is generation-internal, not a stable cross-version id).
+- `--lossless` is Claude Code only; Codex's `event_msg` layer and
+  opencode's SQLite rows would each need their own "keep prose, drop
+  machine calls" dumper.
 - No config-file loading yet — `ExtractConfig` is centralized (single
   source of truth for every knob) but only constructible from Python or
   the CLI flags in `cli.py`'s `extract` subparser today.

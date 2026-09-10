@@ -95,3 +95,26 @@ def test_extract_default_run_produces_delimited_text(tmp_path, capsys):
     assert exit_code == 0
     assert "please look into this" in out
     assert "nyxloom-extract: format=claude-code" in out
+
+
+def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
+    # cli.main() catches argparse's SystemExit itself and converts it to a
+    # plain return code (see main()'s parse_args try/except) -- it never
+    # propagates as a raised SystemExit to the caller.
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--since", "u1", "--since-file", str(fp)])
+    assert exit_code == 2
+    assert "not allowed with argument --since" in capsys.readouterr().err
+
+
+def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps({"format": "codex", "events": [], "last_marker": "5"}), encoding="utf-8")
+
+    exit_code = cli.main(["extract", str(fp), "--since-file", str(prior), "--format", "claude-code"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "codex" in captured.err
+    assert "claude-code" in captured.err

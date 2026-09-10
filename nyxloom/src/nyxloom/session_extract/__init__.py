@@ -55,8 +55,14 @@ def read_since_marker(path: Path) -> tuple[str, str]:
     if isinstance(payload, dict) and payload.get("last_marker"):
         return payload["format"], payload["last_marker"]
 
-    m = render.MARKER_FOOTER_RE.search(text)
-    if m:
+    # The LAST match, not the first: a kept event's own text can quote an
+    # old footer verbatim (realistic given the README's own "paste a prior
+    # run's output back as context" snapshot-chain pattern) -- taking the
+    # first match would silently resolve to that stale, embedded marker
+    # instead of the real trailing one this run actually appended.
+    matches = list(render.MARKER_FOOTER_RE.finditer(text))
+    if matches:
+        m = matches[-1]
         return m.group(1), m.group(2)
 
     raise ValueError(f"{path} has no embedded nyxloom-extract marker (empty prior run, or not our output)")

@@ -358,6 +358,134 @@ def test_askuserquestion_answer_with_non_string_content_is_json_dumped(tmp_path)
     assert json.loads(qa.text) == {"answer": "A"}
 
 
+# Adversarial-review regression tests, one per finding.
+
+
+def test_custom_command_args_survive_as_operator_text(tmp_path):
+    # Review finding: <command-args> was stripped along with its content --
+    # a custom command's typed argument text (real operator intent, not
+    # harness noise) was silently dropped entirely, with zero trace.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "<command-name>my-custom-cmd</command-name>\n"
+                 "<command-message>my-custom-cmd</command-message>\n"
+                 "<command-args>please review the auth module for security holes</command-args>"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert "please review the auth module for security holes" in events[0].text
+
+
+def test_compact_command_guidance_text_survives_in_the_lifecycle_label(tmp_path):
+    # Milder version of the same bug: /compact's own guidance text ("focus
+    # on X, drop Y") must not be thrown away just because /compact is a
+    # lifecycle command.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "<command-name>compact</command-name>\n"
+                 "<command-args>focus on the auth bug, drop the docs tangent</command-args>"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert "focus on the auth bug" in events[0].text
+
+
+def test_command_name_tag_merely_mentioned_in_prose_is_not_a_real_command(tmp_path):
+    # Review finding: an unanchored search matched <command-name> ANYWHERE
+    # in the text, so prose merely discussing this tool's own tag format
+    # was misclassified as a real /compact invocation and hard-stopped the
+    # backward walk.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "Please note the format looks like <command-name>compact</command-name> "
+                 "in the logs, can you handle that case?"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert "in the logs, can you handle that case?" in events[0].text
+
+
+def test_task_notification_embedded_mid_message_is_stripped_not_the_whole_message(tmp_path):
+    # Review finding: the old check only looked at the START of the text,
+    # so a notification appearing anywhere else survived verbatim as
+    # OPERATOR_TEXT -- a provenance-smuggling risk (controller-injected
+    # content rendered as trustworthy operator intent). The fix strips the
+    # notification block wherever it appears, preserving real surrounding
+    # operator text rather than either keeping the raw block or discarding
+    # genuine commentary along with it.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "By the way, <task-notification><task-id>x</task-id>"
+                 "<result>should not survive</result></task-notification> "
+                 "please keep going"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert "should not survive" not in events[0].text
+    assert "By the way" in events[0].text and "please keep going" in events[0].text
+
+
+def test_real_text_alongside_an_unrelated_tool_result_is_not_dropped(tmp_path):
+    # Review finding: a user record mixing a real text block with an
+    # unrelated tool_result block (not an AskUserQuestion answer) in the
+    # same content list dropped the real text entirely.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu1", "content": "irrelevant"},
+                 {"type": "text", "text": "actually stop, use a different approach instead"},
+             ]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.OPERATOR_TEXT
+    assert "actually stop" in events[0].text
+
+
+def test_since_marker_resolves_a_uuid_less_record_via_the_same_fallback(tmp_path):
+    # Review finding: a record without a uuid gets a synthetic f"line{seq}"
+    # marker at generation time, but resolution compared only against the
+    # raw uuid field, never replicating that fallback -- an extraction
+    # ending on a marker-less record produced a last_marker that could
+    # never be fed back in as --since.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "first"}),
+        _rec(type="system", subtype="compact_boundary", timestamp="2026-01-01T00:00:01Z"),  # no uuid
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": "after the boundary"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    full = claude_code.parse(fp, str(fp), ExtractConfig())
+    boundary = next(e for e in full if e.kind is EventKind.LIFECYCLE_MARKER)
+    assert boundary.marker == "line1"
+
+    resumed = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="line1"))
+    assert [e.text for e in resumed] == ["after the boundary"]
+
+
 def test_task_notification_is_dropped_as_noise(tmp_path):
     # Found by comparing this tool's output against the operator's own
     # hand-curated excerpt of a real session: a background-agent completion

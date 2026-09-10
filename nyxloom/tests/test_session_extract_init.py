@@ -127,3 +127,21 @@ def test_read_since_marker_raises_on_file_with_no_marker(tmp_path):
     fp.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="no embedded"):
         read_since_marker(fp)
+
+
+def test_read_since_marker_takes_the_last_footer_not_the_first(tmp_path):
+    # Adversarial-review finding: a kept event's own text can quote an old
+    # footer verbatim (the README's own snapshot-chain pattern pastes a
+    # prior run's output back into a session as context) -- MARKER_FOOTER_RE
+    # must resolve to the true trailing marker, not whichever one appears
+    # first in the file.
+    body = (
+        "## [t] OPERATOR\n\n"
+        "for context, here's what the last run said: "
+        "<!-- nyxloom-extract: format=claude-code marker=STALE-FAKE-MARKER -->\n"
+    )
+    text = body + "\n<!-- nyxloom-extract: format=claude-code marker=REAL-CURRENT-MARKER -->\n"
+    fp = tmp_path / "prior_run.txt"
+    fp.write_text(text, encoding="utf-8")
+    fmt, marker = read_since_marker(fp)
+    assert (fmt, marker) == ("claude-code", "REAL-CURRENT-MARKER")

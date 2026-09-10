@@ -49,6 +49,18 @@ def test_plain_narration_scores_near_zero():
     assert events[0].checkpoint_score < 1.0
 
 
+def test_long_shapeless_text_does_not_score_as_a_checkpoint_on_length_alone():
+    # Adversarial-review finding: an earlier revision had an undocumented
+    # length-based floor that could push a long message over the
+    # checkpoint threshold with zero header/closure/meta/direct-address
+    # signal -- directly contradicting this module's own thesis. A long
+    # narration with no checkpoint shape must score near zero, same as a
+    # short one.
+    events = [_asst(0, "blah " * 1000)]  # ~5000 chars, no shape signal at all
+    score_events(events)
+    assert events[0].checkpoint_score < 1.0
+
+
 def test_followed_by_operator_pause_adds_score():
     bare = [_asst(0, "some assistant text with no shape signal at all")]
     score_events(bare)

@@ -29,18 +29,28 @@ jsonl-metrics.py's own boundary-detection heuristics (E-008), which needed
 three rounds of repair once run against real transcripts. Expect to retune
 WEIGHTS from evidence, not replace the shape of this approach.
 
+An earlier revision also added an undocumented length-based floor (any
+message over ~800 chars gained score purely from size, capped at +3.0) --
+found by adversarial review to directly contradict this file's own opening
+claim ("length alone is a poor signal") and to be capable of pushing a
+long, shapeless tool-output narration to checkpoint-anchor status on size
+alone. Removed rather than re-tuned: nothing in the real-data validation
+(the header/closure/direct-address checkpoints actually found) depended on
+it.
+
 A SEPARATE, lighter signal -- has_finding_signal() -- exists for a
 different question: not "is this a checkpoint" (full-length, scored) but
-"is this short non-checkpoint comment worth keeping anyway once we're past
-the 2nd-oldest checkpoint" (select.py's older-window filter, otherwise a
-bare char-count). Found by direct comparison against the operator's own
-hand-curated excerpt of a real session: they kept short one-liners that
-named a concrete finding ("Found it -- a pgrep pattern bug...", "Found the
-real root cause: pgrep isn't installed...") and dropped short purely-
-procedural ones ("Now let's fix X", "Let me check Y") of about the same
-length. The distinguishing feature isn't length, it's whether the line
-reports something CONCRETE (a finding, a specific file/command/identifier)
-versus announcing an upcoming action.
+"is this short non-checkpoint comment worth keeping anyway" (select.py's
+length filter, otherwise a bare char-count, applied uniformly across the
+whole walked span -- see select.py's module docstring for why "uniformly"
+replaced an earlier recency-dependent version). Found by direct comparison
+against the operator's own hand-curated excerpt of a real session: they
+kept short one-liners that named a concrete finding ("Found it -- a pgrep
+pattern bug...", "Found the real root cause: pgrep isn't installed...")
+and dropped short purely-procedural ones ("Now let's fix X", "Let me check
+Y") of about the same length. The distinguishing feature isn't length,
+it's whether the line reports something CONCRETE (a finding, a specific
+file/command/identifier) versus announcing an upcoming action.
 """
 
 from __future__ import annotations
@@ -93,11 +103,6 @@ def has_finding_signal(text: str) -> bool:
     return bool(_CODE_REFERENCE_RE.search(text) or _FILENAME_RE.search(text))
 
 
-_LENGTH_FLOOR_CHARS = 800
-_LENGTH_FLOOR_STEP = 1000
-_LENGTH_FLOOR_WEIGHT = 1.0
-_LENGTH_FLOOR_CAP = 3.0
-
 WEIGHTS = {
     "header": 3.0,
     "closure": 2.0,
@@ -118,9 +123,6 @@ def _shape_score(text: str) -> float:
         score += WEIGHTS["meta_compact"]
     if _DIRECT_ADDRESS_RE.match(first_line):
         score += WEIGHTS["direct_address"]
-    if len(text) > _LENGTH_FLOOR_CHARS:
-        over = len(text) - _LENGTH_FLOOR_CHARS
-        score += min(_LENGTH_FLOOR_CAP, _LENGTH_FLOOR_WEIGHT * (over / _LENGTH_FLOOR_STEP))
     return score
 
 

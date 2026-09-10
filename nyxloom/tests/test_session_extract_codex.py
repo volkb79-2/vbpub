@@ -119,6 +119,104 @@ def test_sniff_directory_with_jsonl_suffix_is_false(tmp_path):
     assert not codex.sniff(a_dir)  # open() raises IsADirectoryError (an OSError) -> False
 
 
+def test_since_marker_resolves_an_ordinal_less_rollout_via_the_same_fallback(tmp_path):
+    # Adversarial-review finding: pre-2026-08 rollout files lack `ordinal`
+    # entirely (per this adapter's own docstring); the marker embedded on a
+    # full parse falls back to str(seq), but resolution compared only
+    # against str(r.get("ordinal")) -- the literal string "None" -- so
+    # --since could never be resolved against such a file at all.
+    lines = [
+        {"timestamp": "t0", "type": "event_msg", "payload": {"type": "user_message", "message": "first"}},
+        {"timestamp": "t1", "type": "event_msg", "payload": {"type": "agent_message", "message": "second"}},
+    ]
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    full = codex.parse(fp, str(fp), ExtractConfig())
+    assert full[0].marker == "0"
+
+    resumed = codex.parse(fp, str(fp), ExtractConfig(since_marker="0"))
+    assert [e.text for e in resumed] == ["second"]
+
+
+def _write_new_generation_fixture(tmp_path: Path) -> Path:
+    # Mirrors the real item_completed schema Codex switched to at
+    # cli_version 0.147.0 (2026-08-09) -- verified directly against real
+    # local rollout files, not guessed. Every file from that version onward
+    # uses ONLY this shape; the OLD flat user_message/agent_message shape
+    # never appears.
+    lines = [
+        {"timestamp": "2026-08-23T00:00:00Z", "ordinal": 0, "type": "session_meta",
+         "payload": {"session_id": "abc", "cli_version": "0.149.0"}},
+        {"timestamp": "2026-08-23T00:00:01Z", "ordinal": 1, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "UserMessage", "content": [{"type": "text", "text": "evaluate the new schema"}]}}},
+        {"timestamp": "2026-08-23T00:00:02Z", "ordinal": 2, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "Reasoning", "raw_content": ["thinking about the schema change"]}}},
+        {"timestamp": "2026-08-23T00:00:03Z", "ordinal": 3, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "AgentMessage", "content": [{"type": "Text", "text": "Confirmed, it works."}]}}},
+        {"timestamp": "2026-08-23T00:00:04Z", "ordinal": 4, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "CommandExecution", "command": "ls"}}},
+        {"timestamp": "2026-08-23T00:00:05Z", "ordinal": 5, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "CollabAgentToolCall", "tool": "spawn_agent"}}},
+        {"timestamp": "2026-08-24T00:00:00Z", "ordinal": 6, "type": "compacted",
+         "payload": {"message": "Summary of prior work: schema migration verified."}},
+        {"timestamp": "2026-08-24T00:00:01Z", "ordinal": 7, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {"type": "ContextCompaction"}}},
+        {"timestamp": "2026-08-24T00:00:02Z", "ordinal": 8, "type": "event_msg",
+         "payload": {"type": "item_completed", "item": {
+             "type": "AgentMessage", "content": [{"type": "Text", "text": "should never be reached"}]}}},
+    ]
+    fp = tmp_path / "rollout-new-schema.jsonl"
+    fp.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_new_generation_item_completed_schema_is_parsed(tmp_path):
+    fp = _write_new_generation_fixture(tmp_path)
+    events = codex.parse(fp, str(fp), ExtractConfig())
+
+    op = next(e for e in events if e.kind is EventKind.OPERATOR_TEXT)
+    assert op.text == "evaluate the new schema"
+
+    asst = [e for e in events if e.kind is EventKind.ASSISTANT_TEXT]
+    assert any("Confirmed, it works." in e.text for e in asst)
+
+    # CommandExecution/CollabAgentToolCall/ContextCompaction are all noise
+    assert not any("spawn_agent" in e.text for e in events)
+    assert len(events) == 4  # UserMessage, AgentMessage x2, the compacted marker
+
+    marker = next(e for e in events if e.kind is EventKind.LIFECYCLE_MARKER)
+    assert "schema migration verified" in marker.text
+
+
+def test_new_generation_reasoning_emitted_only_when_include_thinking_set(tmp_path):
+    fp = _write_new_generation_fixture(tmp_path)
+    default = codex.parse(fp, str(fp), ExtractConfig())
+    assert not any(e.kind is EventKind.THINKING for e in default)
+
+    with_thinking = codex.parse(fp, str(fp), ExtractConfig(include_thinking=True))
+    thinking = next(e for e in with_thinking if e.kind is EventKind.THINKING)
+    assert "thinking about the schema change" in thinking.text
+
+
+def test_new_generation_compacted_record_hard_stops_the_walk(tmp_path):
+    from nyxloom.session_extract import classifier
+    from nyxloom.session_extract.select import select
+
+    fp = _write_new_generation_fixture(tmp_path)
+    events = codex.parse(fp, str(fp), ExtractConfig())
+    classifier.score_events(events)
+    kept = select(events, ExtractConfig())
+    kept_texts = [e.text for e in kept]
+    assert not any("evaluate the new schema" in t for t in kept_texts)  # older than the boundary
+    assert any("schema migration verified" in t for t in kept_texts)
+
+
 def test_parse_skips_blank_and_malformed_lines(tmp_path):
     fp = tmp_path / "rollout.jsonl"
     fp.write_text(

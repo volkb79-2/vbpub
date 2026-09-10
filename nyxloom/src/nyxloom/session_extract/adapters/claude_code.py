@@ -59,11 +59,21 @@ from ..events import EventKind, NormalizedEvent
 name = "claude-code"
 
 _COMMAND_NAME_RE = re.compile(r"<command-name>([^<]*)</command-name>", re.IGNORECASE)
+_LEADING_CAVEAT_RE = re.compile(r"\A\s*<local-command-caveat>.*?</local-command-caveat>\s*", re.IGNORECASE | re.DOTALL)
+# command-args is deliberately NOT in this strip set: its inner content is
+# the operator's own typed argument text (e.g. "/review please check the
+# auth module"), not harness noise -- see _strip_harness_tags, which
+# unwraps it to plain text instead of discarding it. task-notification IS
+# noise (a controller-injected background-agent push, never operator
+# intent) and belongs here so it's removed wherever it appears in a
+# message, not just when it's the entire message (see the docstring above
+# on the "task-notification is pure noise" finding).
 _HARNESS_TAG_RE = re.compile(
-    r"<(local-command-caveat|local-command-stdout|command-name|command-message|command-args)>.*?"
-    r"</\1>|<(local-command-caveat|local-command-stdout|command-name|command-message|command-args)\b[^>]*/?>",
+    r"<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)>.*?"
+    r"</\1>|<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)\b[^>]*/?>",
     re.IGNORECASE | re.DOTALL,
 )
+_COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.IGNORECASE | re.DOTALL)
 _LIFECYCLE_COMMANDS = {"compact", "clear"}
 
 
@@ -101,11 +111,20 @@ def list_sessions(path: Path) -> list[str]:
 
 
 def _strip_harness_tags(text: str) -> str:
+    text = _COMMAND_ARGS_RE.sub(r"\1", text)  # unwrap, don't discard
     return _HARNESS_TAG_RE.sub("", text).strip()
 
 
 def _command_name(text: str) -> str | None:
-    m = _COMMAND_NAME_RE.search(text)
+    # Anchored to the actual start of the message (past an optional leading
+    # caveat block) -- a real slash-command invocation always begins the
+    # message that way. An unanchored search would also match prose merely
+    # *mentioning* "<command-name>compact</command-name>" mid-sentence
+    # (this tool's own docs/tests are full of that literal string), which
+    # would misclassify ordinary narration as a real /compact and hard-stop
+    # the backward walk there.
+    head = _LEADING_CAVEAT_RE.sub("", text, count=1).lstrip()
+    m = _COMMAND_NAME_RE.match(head)
     if not m:
         return None
     return m.group(1).strip().lstrip("/").lower()
@@ -130,8 +149,13 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:
     records = _load_records(path)
 
+    # A record's real marker is its uuid, falling back to f"line{i}" when
+    # absent (mirrors the same fallback used below when events are actually
+    # generated) -- resolution must replicate that fallback or a marker
+    # from a uuid-less record (e.g. a system record in some real sessions)
+    # can never be resolved by a later --since/--until run.
     if config.since_marker is not None:
-        idx = next((i for i, r in enumerate(records) if r.get("uuid") == config.since_marker), None)
+        idx = next((i for i, r in enumerate(records) if (r.get("uuid") or f"line{i}") == config.since_marker), None)
         if idx is None:
             raise ValueError(
                 f"--since marker {config.since_marker!r} not found as a uuid in {path}"
@@ -139,7 +163,7 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
         records = records[idx + 1 :]
 
     if config.until_marker is not None:
-        idx = next((i for i, r in enumerate(records) if r.get("uuid") == config.until_marker), None)
+        idx = next((i for i, r in enumerate(records) if (r.get("uuid") or f"line{i}") == config.until_marker), None)
         if idx is None:
             raise ValueError(
                 f"--until marker {config.until_marker!r} not found as a uuid in {path}"
@@ -194,21 +218,20 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             content = rec.get("message", {}).get("content")
 
             if isinstance(content, list):
+                # A tool_result block for some OTHER tool call can share a
+                # content list with a genuine text block (e.g. an operator
+                # follow-up typed alongside residual tool output) -- the
+                # tool_result is still noise, but a real text block sitting
+                # next to it must not be discarded along with it.
                 qa_text = None
-                has_other_tool_result = False
                 for block in content:
                     if not isinstance(block, dict):
                         continue
-                    if block.get("type") == "tool_result":
-                        if block.get("tool_use_id") in askuserquestion_ids:
-                            c = block.get("content")
-                            qa_text = c if isinstance(c, str) else json.dumps(c)
-                        else:
-                            has_other_tool_result = True
+                    if block.get("type") == "tool_result" and block.get("tool_use_id") in askuserquestion_ids:
+                        c = block.get("content")
+                        qa_text = c if isinstance(c, str) else json.dumps(c)
                 if qa_text is not None:
                     events.append(NormalizedEvent(seq, uuid, ts, EventKind.QA_PAIR, qa_text))
-                    continue
-                if has_other_tool_result:
                     continue
                 text_blocks = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
                 if not text_blocks:
@@ -220,18 +243,6 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 continue
 
             if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
-                continue
-
-            if raw_text.lstrip().startswith("<task-notification>"):
-                # A background-agent (Task tool) completion push. Same shape
-                # as a real operator turn (type "user", plain-string
-                # content, no isMeta flag) but it's controller-injected tool
-                # output, not operator intent -- and confirmed, on a real
-                # session, to be pure noise for a resume brief: the assistant
-                # always re-narrates whatever mattered from it in its own
-                # next reply, which IS captured normally. Verified against a
-                # real ~950-word raw notification block that added nothing
-                # a human curating the same session chose to keep.
                 continue
 
             cmd = _command_name(raw_text)
