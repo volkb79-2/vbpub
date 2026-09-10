@@ -90,6 +90,7 @@ htmlcov/
 nosetests.xml
 coverage.xml
 coverage.json
+coverage-session-extract.json
 *.cover
 *.py.cover
 .hypothesis/
