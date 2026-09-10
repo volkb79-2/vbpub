@@ -143,27 +143,39 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             if obj.get("type") in _TOP_LEVEL_TYPES:
                 raw.append(obj)
 
-    # A record's real marker is its ordinal, falling back to its own index
-    # when ordinal is absent (mirrors the fallback used below when events
-    # are actually generated -- see this adapter's docstring on the
-    # pre-2026-08 files that lack ordinal entirely). Resolution must
-    # replicate that same fallback, or a marker generated from an
-    # ordinal-less record can never be resolved by a later --since/--until.
+    # Tag every record with its absolute position in the full (unsliced)
+    # file BEFORE any --since/--until slicing, and use that absolute
+    # position -- never a position re-numbered from 0 after slicing -- as
+    # the ordinal fallback everywhere below (mirrors the fallback used when
+    # events are actually generated -- see this adapter's docstring on the
+    # pre-2026-08 files that lack `ordinal` entirely). Resolution must
+    # replicate the exact fallback used when a marker was originally
+    # emitted: re-enumerating a sliced list from 0 would make a record's
+    # fallback marker depend on how many prior --since hops had already
+    # been applied, so the same physical record could mint a different
+    # marker on every chained run -- and a later run resolving an old
+    # marker against a freshly re-parsed (unsliced) file would then land on
+    # the wrong record, silently re-emitting content already flushed to a
+    # prior snapshot. Absolute, pre-slice position is stable across any
+    # number of chained --since/--until runs since every run re-parses the
+    # same on-disk file from scratch.
+    indexed = list(enumerate(raw))
+
     if config.since_marker is not None:
-        idx = next((i for i, r in enumerate(raw) if str(r.get("ordinal", i)) == config.since_marker), None)
+        idx = next((i for i, r in indexed if str(r.get("ordinal", i)) == config.since_marker), None)
         if idx is None:
             raise ValueError(f"--since marker {config.since_marker!r} not found as an ordinal in {path}")
-        raw = raw[idx + 1 :]
+        indexed = [(i, r) for i, r in indexed if i > idx]
 
     if config.until_marker is not None:
-        idx = next((i for i, r in enumerate(raw) if str(r.get("ordinal", i)) == config.until_marker), None)
+        idx = next((i for i, r in indexed if str(r.get("ordinal", i)) == config.until_marker), None)
         if idx is None:
             raise ValueError(f"--until marker {config.until_marker!r} not found as an ordinal in {path}")
-        raw = raw[: idx + 1]
+        indexed = [(i, r) for i, r in indexed if i <= idx]
 
     events: list[NormalizedEvent] = []
-    for seq, rec in enumerate(raw):
-        ordinal = str(rec.get("ordinal", seq))
+    for seq, (abs_i, rec) in enumerate(indexed):
+        ordinal = str(rec.get("ordinal", abs_i))
         ts = rec.get("timestamp", "")
         payload = rec.get("payload", {}) or {}
         ptype = payload.get("type")

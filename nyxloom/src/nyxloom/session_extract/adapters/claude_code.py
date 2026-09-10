@@ -69,8 +69,16 @@ _LEADING_CAVEAT_RE = re.compile(r"\A\s*<local-command-caveat>.*?</local-command-
 # message, not just when it's the entire message (see the docstring above
 # on the "task-notification is pure noise" finding).
 _HARNESS_TAG_RE = re.compile(
-    r"<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)>.*?"
-    r"</\1>|<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)\b[^>]*/?>",
+    # First branch: an opening tag (attributes allowed -- a real
+    # task-notification carries e.g. id="...") through to its matching
+    # close tag via backreference, so both the tag AND its body are
+    # removed. Second branch is the fallback for a tag with no matching
+    # close anywhere in the text (malformed/truncated content) or a
+    # genuinely self-closing tag -- strips just the tag itself, since
+    # there is no body to consume.
+    r"<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)"
+    r"\b[^>]*>.*?</\1>"
+    r"|<(local-command-caveat|local-command-stdout|command-name|command-message|task-notification)\b[^>]*/?>",
     re.IGNORECASE | re.DOTALL,
 )
 _COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.IGNORECASE | re.DOTALL)
@@ -147,31 +155,46 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:
-    records = _load_records(path)
+    all_records = _load_records(path)
 
-    # A record's real marker is its uuid, falling back to f"line{i}" when
-    # absent (mirrors the same fallback used below when events are actually
-    # generated) -- resolution must replicate that fallback or a marker
-    # from a uuid-less record (e.g. a system record in some real sessions)
-    # can never be resolved by a later --since/--until run.
+    # Tag every record with its absolute position in the full (unsliced)
+    # file BEFORE any --since/--until slicing, and use that absolute
+    # position -- never a position re-numbered from 0 after slicing -- as
+    # the uuid fallback everywhere below. A record's real marker is its
+    # uuid, falling back to f"line{i}" when absent; resolution must
+    # replicate the exact fallback used when a marker was originally
+    # emitted, or a marker from a uuid-less record (e.g. a system record in
+    # some real sessions) resolves to the WRONG record on a later run once
+    # an earlier --since has already sliced the list once. Concretely: if
+    # emission re-enumerated the post-slice list from 0, a record's fallback
+    # marker would depend on how many prior --since hops had already been
+    # applied, so the same physical record could mint a different marker on
+    # every chained run -- and a later run resolving an old marker against
+    # a freshly re-parsed (unsliced) file would then land on the wrong
+    # record entirely, silently re-emitting content already flushed to a
+    # prior snapshot. Absolute, pre-slice position is stable across any
+    # number of chained --since/--until runs since every run re-parses the
+    # same on-disk file from scratch.
+    indexed = list(enumerate(all_records))
+
     if config.since_marker is not None:
-        idx = next((i for i, r in enumerate(records) if (r.get("uuid") or f"line{i}") == config.since_marker), None)
+        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
         if idx is None:
             raise ValueError(
                 f"--since marker {config.since_marker!r} not found as a uuid in {path}"
             )
-        records = records[idx + 1 :]
+        indexed = [(i, r) for i, r in indexed if i > idx]
 
     if config.until_marker is not None:
-        idx = next((i for i, r in enumerate(records) if (r.get("uuid") or f"line{i}") == config.until_marker), None)
+        idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.until_marker), None)
         if idx is None:
             raise ValueError(
                 f"--until marker {config.until_marker!r} not found as a uuid in {path}"
             )
-        records = records[: idx + 1]
+        indexed = [(i, r) for i, r in indexed if i <= idx]
 
     askuserquestion_ids: set[str] = set()
-    for rec in records:
+    for _, rec in indexed:
         if rec.get("type") != "assistant":
             continue
         for block in rec.get("message", {}).get("content", []) or []:
@@ -181,11 +204,11 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                     askuserquestion_ids.add(tid)
 
     events: list[NormalizedEvent] = []
-    for seq, rec in enumerate(records):
+    for seq, (abs_i, rec) in enumerate(indexed):
         if rec.get("isSidechain"):
             continue
 
-        uuid = rec.get("uuid") or f"line{seq}"
+        uuid = rec.get("uuid") or f"line{abs_i}"
         ts = rec.get("timestamp", "")
         rtype = rec.get("type")
 

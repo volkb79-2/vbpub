@@ -307,6 +307,30 @@ everyday resumption but pinning a run to a fixed historical span — e.g.
 reproducing a run against a fixed hand-curated reference, which is exactly
 what made the exhaustive real-excerpt replay above reproducible.
 
+**Fixed bug, load-bearing for the whole chained-snapshot pattern above**: a
+record without a real id (a uuid-less Claude Code record, an ordinal-less
+pre-2026-08 Codex rollout line) falls back to a positional marker. Both
+adapters used to compute that fallback position by re-`enumerate()`-ing the
+record list — but they did this *after* slicing off everything at or before
+`--since`, so the fallback restarted at 0 on every hop instead of counting
+from the true start of the file. A marker minted from an already-sliced
+parse therefore lived in a different index space than the same marker
+resolved against a fresh, unsliced re-parse on the *next* run — so chaining
+a second `--since` hop off the first hop's own output marker could resolve
+to the wrong record and silently re-emit content a prior snapshot had
+already captured, tearing exactly the cache-stability invariant this tool
+exists to preserve (see "append-only / cache-stable extraction" above).
+Caught by a fresh adversarial review with an empirical two-hop repro, not
+by the test suite (the existing marker tests each only exercised a single
+hop off a fresh full parse — the one case where the two index spaces still
+happen to coincide). Fixed by tagging every record with its absolute,
+pre-slice position once, up front, and using that same tag as the fallback
+both when resolving a marker and when minting one — never a position
+re-numbered after slicing. Regression tests
+(`test_chained_since_on_uuid_less_records_never_reindexes_from_zero`,
+`test_chained_since_on_ordinal_less_rollout_never_reindexes_from_zero`)
+chain two real hops and assert the second returns nothing, not a replay.
+
 ## Lossless dump
 
 `nyxloom extract --lossless` (Claude Code only today, `lossless.py`)
@@ -433,15 +457,39 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   (see "Cross-CLI adapter findings" above). Whether the OLD generation's
   `response_item.reasoning.encrypted_content` is genuinely unrecoverable,
   or just a different code path from the NEW generation's plain-text
-  `raw_content`, is still open — under active investigation (see the
-  Codex-encryption research thread; fold its findings back into
-  `adapters/codex.py`'s documented gaps once it returns). `--since`
-  chaining across the 0.145.0→0.147.0 schema boundary, or across the
-  ordinal-present/absent boundary, is not guaranteed to resolve (the
-  marker scheme is generation-internal, not a stable cross-version id).
+  `raw_content`, is still an open question — not currently under active
+  investigation; fold findings back into `adapters/codex.py`'s documented
+  gaps if and when that thread resumes. `--since` chaining across the
+  0.145.0→0.147.0 schema boundary, or across the ordinal-present/absent
+  boundary, is not guaranteed to resolve (the marker scheme is
+  generation-internal, not a stable cross-version id) — narrower than it
+  sounds: chaining *within* one generation, including across records that
+  individually lack `ordinal`, is fixed and covered by regression tests
+  (see "Delta extraction" above); only a hop that crosses the schema-version
+  boundary mid-chain is the still-open gap.
 - `--lossless` is Claude Code only; Codex's `event_msg` layer and
   opencode's SQLite rows would each need their own "keep prose, drop
   machine calls" dumper.
 - No config-file loading yet — `ExtractConfig` is centralized (single
   source of truth for every knob) but only constructible from Python or
   the CLI flags in `cli.py`'s `extract` subparser today.
+- No operator-visible signal when an adapter silently yields zero (or
+  suspiciously few) events for a file it claims to recognize — exactly the
+  failure mode the Codex schema migration produced, caught only by manually
+  diffing extraction output against a real file rather than any automated
+  check. `codex.py`'s `_SKIPPED_ITEM_TYPES` is documentation of what's
+  known-noise, not an enforced allowlist the parser checks against — an
+  unrecognized future `item.type` falls through the same silent `elif`
+  chain as a deliberately-skipped one, with no distinction visible from the
+  output. Worth a "did this file produce a plausible amount of content"
+  sanity check someday; not built.
+- `read_since_marker()`'s "last footer match wins" fix (for a file whose
+  kept text happens to quote an earlier footer verbatim) is a heuristic,
+  not a structural guarantee — it has no way to distinguish a genuine
+  trailing footer from prose that coincidentally follows it and looks like
+  one. Narrow enough not to have a known real trigger.
+- `lossless.py`'s `--since`/`--until` compare raw `uuid` only, with no
+  `f"line{i}"`-style fallback for a uuid-less record — unlike the real
+  adapter, it cannot resume from or bound to such a record. Acceptable for
+  its current use (a manual debugging/ground-truth tool, not part of the
+  automated chained-snapshot pipeline), but worth knowing if that changes.

@@ -486,6 +486,64 @@ def test_since_marker_resolves_a_uuid_less_record_via_the_same_fallback(tmp_path
     assert [e.text for e in resumed] == ["after the boundary"]
 
 
+def test_chained_since_on_uuid_less_records_never_reindexes_from_zero(tmp_path):
+    # Adversarial-review finding: marker resolution (before slicing) and
+    # marker emission (after slicing) each independently re-enumerated
+    # `records`, so a marker minted from an already-sliced parse used a
+    # DIFFERENT fallback index space than a fresh, unsliced parse would
+    # resolve it against. A second --since hop, chained off a first hop's
+    # own output marker, would then resolve to the wrong record and
+    # silently re-emit content already flushed to a prior snapshot -- the
+    # exact "tears the cache" failure this tool's whole design forbids.
+    # None of these four records carry a uuid, forcing every marker through
+    # the f"line{i}" fallback.
+    records = [
+        _rec(type="user", timestamp="2026-01-01T00:00:00Z", message={"role": "user", "content": "msg0"}),
+        _rec(type="user", timestamp="2026-01-01T00:00:01Z", message={"role": "user", "content": "msg1"}),
+        _rec(type="user", timestamp="2026-01-01T00:00:02Z", message={"role": "user", "content": "msg2"}),
+        _rec(type="user", timestamp="2026-01-01T00:00:03Z", message={"role": "user", "content": "msg3"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    hop1 = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert [e.marker for e in hop1] == ["line0", "line1", "line2", "line3"]
+
+    # First hop: resume after msg1 -- the two survivors must keep their
+    # TRUE absolute-position markers (line2/line3), not re-based-from-zero
+    # ones (line0/line1), or this hop's own output would already collide
+    # with markers used as --since input.
+    hop2 = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="line1"))
+    assert [(e.text, e.marker) for e in hop2] == [("msg2", "line2"), ("msg3", "line3")]
+
+    # Second hop, chained off hop2's own last marker: everything was
+    # already emitted, so nothing should come back. Under the bug this
+    # resolved "line3" against the wrong record and re-emitted msg3 (or
+    # worse) a second time.
+    hop3 = claude_code.parse(fp, str(fp), ExtractConfig(since_marker=hop2[-1].marker))
+    assert hop3 == []
+
+
+def test_task_notification_with_attributes_and_body_is_fully_stripped(tmp_path):
+    # Adversarial-review finding: the harness-tag regex only fully
+    # consumed a tag's body when its opening tag had zero attributes; an
+    # attributed opening tag (e.g. a real id="...") matched only the
+    # opening-tag fallback branch, leaking the body and the stray closing
+    # tag into what became OPERATOR_TEXT.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 '<task-notification id="55">should not survive</task-notification> keep this'
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].text == "keep this"
+
+
 def test_task_notification_is_dropped_as_noise(tmp_path):
     # Found by comparing this tool's output against the operator's own
     # hand-curated excerpt of a real session: a background-agent completion

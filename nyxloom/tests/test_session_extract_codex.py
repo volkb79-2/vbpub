@@ -139,6 +139,35 @@ def test_since_marker_resolves_an_ordinal_less_rollout_via_the_same_fallback(tmp
     assert [e.text for e in resumed] == ["second"]
 
 
+def test_chained_since_on_ordinal_less_rollout_never_reindexes_from_zero(tmp_path):
+    # Adversarial-review finding: marker resolution (before slicing) and
+    # marker emission (after slicing) each independently re-enumerated
+    # `raw`, so a marker minted from an already-sliced parse used a
+    # DIFFERENT fallback index space than a fresh, unsliced parse would
+    # resolve it against -- a second --since hop chained off a first hop's
+    # own output marker could resolve to the wrong record and silently
+    # re-emit content already flushed to a prior snapshot. None of these
+    # records carry `ordinal`, forcing every marker through the
+    # str(seq)-style fallback (real pre-2026-08 rollout shape).
+    lines = [
+        {"timestamp": "t0", "type": "event_msg", "payload": {"type": "user_message", "message": "msg0"}},
+        {"timestamp": "t1", "type": "event_msg", "payload": {"type": "user_message", "message": "msg1"}},
+        {"timestamp": "t2", "type": "event_msg", "payload": {"type": "user_message", "message": "msg2"}},
+        {"timestamp": "t3", "type": "event_msg", "payload": {"type": "user_message", "message": "msg3"}},
+    ]
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    hop1 = codex.parse(fp, str(fp), ExtractConfig())
+    assert [e.marker for e in hop1] == ["0", "1", "2", "3"]
+
+    hop2 = codex.parse(fp, str(fp), ExtractConfig(since_marker="1"))
+    assert [(e.text, e.marker) for e in hop2] == [("msg2", "2"), ("msg3", "3")]
+
+    hop3 = codex.parse(fp, str(fp), ExtractConfig(since_marker=hop2[-1].marker))
+    assert hop3 == []
+
+
 def _write_new_generation_fixture(tmp_path: Path) -> Path:
     # Mirrors the real item_completed schema Codex switched to at
     # cli_version 0.147.0 (2026-08-09) -- verified directly against real
