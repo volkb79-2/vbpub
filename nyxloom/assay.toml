@@ -90,7 +90,7 @@ artifact = "coverage.json"
 
 [lanes.session-extract]
 scope = "S1"
-rigor = ["R0", "R1"]
+rigor = ["R0", "R1", "R2"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_adapters_registry.py",
@@ -131,6 +131,17 @@ fail_under = 100.0
 allow_excluded = false
 require_branch = true
 base = "edc55648"
+
+# R2: native python mutation, changed-lines-only -- resolve_mutation_targets
+# reuses R1's SAME base=edc55648 diff, so this mutates exactly the lines
+# this session touched, not the whole package. jobs=4/max_mutants=200/
+# budget_per_candidate=120s are generous for this diff's real size (a few
+# hundred changed lines across 6 files); raised if BUDGET_EXCEEDED fires.
+[lanes.session-extract.judge.mutation]
+jobs = 4
+max_mutants = 200
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "120s"
 
 [lanes.session-extract.judge.coverage]
 format = "coverage-py-json"
