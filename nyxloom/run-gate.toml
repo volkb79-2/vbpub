@@ -29,3 +29,22 @@ budget = "30m"                       # advisory; consumers may enforce
 [lanes.tester-unified.pins.assay]
 version = "6.1.0"
 sha256 = "tools/assay/assay-6.1.0.pyz.sha256"
+
+# session-extract: a NARROW, package-scoped lane for src/nyxloom/session_extract
+# (+ its cli.py wiring), added 2026-09-10 to carry R1 branch coverage and R2
+# mutation for that package without touching tester-unified's existing R0+R1
+# contract or its origin/main base. judge.base is pinned to the last commit
+# before this package's session-extract work started (edc55648) rather than
+# origin/main -- local main was 61 commits ahead of origin/main at the time
+# this lane was authored, spanning many unrelated subprojects; origin/main
+# would have judged that whole accumulated diff, not this package's own.
+[lanes.session-extract]
+kind = "assay"
+assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
+environment = "tester-unified"       # central [environments.tester-unified]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.0.pyz"]
+budget = "30m"
+
+[lanes.session-extract.pins.assay]
+version = "6.1.0"
+sha256 = "tools/assay/assay-6.1.0.pyz.sha256"

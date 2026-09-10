@@ -67,3 +67,72 @@ base = "origin/main"
 [lanes.tester-unified.judge.coverage]
 format = "coverage-py-json"
 artifact = "coverage.json"
+
+# session-extract: narrow package lane (2026-09-10), added alongside
+# tester-unified rather than modifying it. Scope: src/nyxloom/session_extract
+# and the extract-related slice of src/nyxloom/cli.py (--ledger/extract-debug
+# wiring), argv restricted to that package's own test files so an unrelated,
+# pre-existing failure elsewhere in the tree (e.g. mattermost provisioning
+# tests, dstdns snapshot-fault tests) cannot block this lane.
+#
+# require_branch = true: unlike tester-unified, this lane's argv passes
+# --cov-branch and this judge.mode is the ONLY thing gating the new
+# session_extract code, so there is no reason to leave branch coverage
+# unmeasured here the way tester-unified's D-064-L2 migration had to.
+#
+# base = "edc55648": the commit immediately before this session's two
+# session_extract commits (43f8da48, de61854f), NOT origin/main -- see the
+# run-gate.toml comment beside this lane for why.
+#
+# rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
+# R2 (native python mutation) is added in a follow-up edit once R1 is
+# confirmed green, not declared here on day one.
+schema_version = 2
+
+[lanes.session-extract]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
+  "tests/test_session_extract_adapters_registry.py",
+  "tests/test_session_extract_classifier.py",
+  "tests/test_session_extract_claude_code.py",
+  "tests/test_session_extract_codex.py",
+  "tests/test_session_extract_debug_diff.py",
+  "tests/test_session_extract_init.py",
+  "tests/test_session_extract_ledger.py",
+  "tests/test_session_extract_lossless_codex.py",
+  "tests/test_session_extract_lossless_opencode.py",
+  "tests/test_session_extract_lossless.py",
+  "tests/test_session_extract_opencode.py",
+  "tests/test_session_extract_render.py",
+  "tests/test_session_extract_select.py",
+  "tests/test_session_extract_stats_codex.py",
+  "tests/test_session_extract_stats_opencode.py",
+  "tests/test_session_extract_stats.py",
+  "tests/test_cli_extract.py",
+  "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.session-extract.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.session-extract.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "edc55648"
+
+[lanes.session-extract.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage-session-extract.json"

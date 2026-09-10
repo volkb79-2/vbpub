@@ -75,17 +75,17 @@ def _write_fixture(tmp_path: Path) -> Path:
 
 def test_build_ledger_groups_files_and_commits_under_the_right_boundary(tmp_path):
     fp = _write_fixture(tmp_path)
-    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1", "u2"})
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1", "u2"}, repo_root=Path("/repo"))
 
     u1 = ledgers["u1"]
-    assert u1.files_read == ["/repo/tests/test_flaky.py"]
-    assert u1.files_edited == ["/repo/tests/test_flaky.py"]
+    assert u1.files_read == ["tests/test_flaky.py"]
+    assert u1.files_edited == ["tests/test_flaky.py"]
     assert u1.commits == ["abc1234"]
     assert u1.branches == ["feature/flaky-fix"]
     assert u1.tests == ["1 passed"]
 
     u2 = ledgers["u2"]
-    assert u2.files_read == ["/repo/README.md"]
+    assert u2.files_read == ["README.md"]
     assert u2.files_edited == []
     assert u2.commits == []
 
@@ -96,9 +96,35 @@ def test_build_ledger_dedups_repeated_file_touches(tmp_path):
     # entry (E-012's own framing: "[files read: asd, sdf, fdg]", not a
     # per-tool-call log).
     fp = _write_fixture(tmp_path)
-    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1", "u2"})
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1", "u2"}, repo_root=Path("/repo"))
     assert len(ledgers["u1"].files_read) == 1
     assert len(ledgers["u1"].files_edited) == 1
+
+
+def test_build_ledger_relativizes_against_the_given_repo_root(tmp_path):
+    fp = _write_fixture(tmp_path)
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1", "u2"}, repo_root=Path("/repo"))
+    assert ledgers["u1"].files_read == ["tests/test_flaky.py"]
+    assert ledgers["u2"].files_read == ["README.md"]
+    for p in ledgers["u1"].files_read + ledgers["u1"].files_edited:
+        assert not Path(p).is_absolute()
+
+
+def test_build_ledger_defaults_repo_root_to_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    fp = _write_fixture(tmp_path)
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"})
+    # /repo/tests/test_flaky.py relative to tmp_path (an unrelated directory)
+    # legitimately climbs out via ".." -- still relative, never absolute.
+    for p in ledgers["u1"].files_read + ledgers["u1"].files_edited:
+        assert not Path(p).is_absolute()
+
+
+def test_build_ledger_relativize_falls_back_gracefully_outside_root():
+    # A path outside repo_root grows a "../" prefix rather than erroring --
+    # os.path.relpath, unlike Path.relative_to, never raises for this case.
+    assert ledger._relativize("/repo/tests/test_flaky.py", Path("/repo/sub")) == "../tests/test_flaky.py"
+    assert ledger._relativize("relative/already.py", Path("/repo")) == "relative/already.py"
 
 
 def test_ledger_render_only_shows_nonempty_categories():
@@ -150,7 +176,7 @@ def test_build_ledger_skips_blank_malformed_lines_and_non_tool_result_content(tm
                          ]})),
     ]
     fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"})
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers={"u1"}, repo_root=Path("/repo"))
     assert ledgers["u1"].commits == ["deadbee1"]
 
 
@@ -173,6 +199,6 @@ def test_build_ledger_tool_activity_before_any_boundary_lands_in_unbounded(tmp_p
     # first real boundary this run ever sees -- that shouldn't silently
     # attach to whatever boundary marker happens to be iterated first.
     fp = _write_fixture(tmp_path)
-    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers=set())
+    ledgers = ledger.build_ledger_claude_code(fp, boundary_markers=set(), repo_root=Path("/repo"))
     assert ledger.UNBOUNDED in ledgers
-    assert ledgers[ledger.UNBOUNDED].files_read == ["/repo/tests/test_flaky.py", "/repo/README.md"]
+    assert ledgers[ledger.UNBOUNDED].files_read == ["tests/test_flaky.py", "README.md"]

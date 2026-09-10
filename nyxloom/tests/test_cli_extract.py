@@ -160,7 +160,7 @@ def _write_claude_code_ledger_fixture(tmp_path: Path) -> Path:
         _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
              message={"role": "assistant", "content": [
                  {"type": "text", "text": "Fixing it."},
-                 {"type": "tool_use", "id": "tu1", "name": "Edit", "input": {"file_path": "/repo/t.py"}},
+                 {"type": "tool_use", "id": "tu1", "name": "Edit", "input": {"file_path": str(tmp_path / "t.py")}},
              ]}),
         _rec(type="user", uuid="u2", timestamp="2026-01-01T00:00:02Z",
              message={"role": "user", "content": [
@@ -181,14 +181,15 @@ def _write_claude_code_ledger_fixture(tmp_path: Path) -> Path:
     return fp
 
 
-def test_extract_ledger_appends_files_and_commits_line(tmp_path, capsys):
+def test_extract_ledger_appends_files_and_commits_line(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     fp = _write_claude_code_ledger_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp), "--ledger"])
     out = capsys.readouterr().out
 
     assert exit_code == 0
     assert "fix the flaky test" in out
-    assert "[files edited: /repo/t.py]" in out
+    assert "[files edited: t.py]" in out
     assert "[commits created: abc1234]" in out
 
 

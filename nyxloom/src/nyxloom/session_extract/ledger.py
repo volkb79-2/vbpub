@@ -35,6 +35,7 @@ not yet checked for tool calls either.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,7 +91,21 @@ def _dedup_preserve_order(items: list[str]) -> list[str]:
     return out
 
 
-def build_ledger_claude_code(path: Path, boundary_markers: set[str]) -> dict[str, Ledger]:
+def _relativize(fp: str, repo_root: Path) -> str:
+    """Best-effort: an absolute `file_path` becomes relative to `repo_root`
+    (via `os.path.relpath`, which -- unlike `Path.relative_to` -- never
+    raises for a path outside the root; it just grows a `../` prefix, which
+    is still a meaningfully shorter and more portable rendering than the raw
+    absolute path). A non-absolute `fp` is returned unchanged.
+    """
+    if not os.path.isabs(fp):
+        return fp
+    return os.path.relpath(fp, repo_root)
+
+
+def build_ledger_claude_code(
+    path: Path, boundary_markers: set[str], repo_root: Path | None = None
+) -> dict[str, Ledger]:
     """One `Ledger` per marker in `boundary_markers` (pass the `.marker` of
     every OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER event that survived
     `select()` -- render.py's caller already has this list). Raw tool
@@ -102,7 +117,15 @@ def build_ledger_claude_code(path: Path, boundary_markers: set[str]) -> dict[str
     kept boundary is still "current" -- consistent with how `select.py`'s
     own `gap_after` already treats intervening dropped content as belonging
     to the surviving span before it.
+
+    `files_read`/`files_edited` entries are rendered relative to `repo_root`
+    (default: the process's own CWD, i.e. run this from within the repo the
+    session worked in) -- `tool_use.input.file_path` is always absolute at
+    the source, and the raw absolute form is a wall of repeated `/workspaces/
+    <repo>/...` noise across every entry with nothing repo-relative paths
+    don't already say just as precisely.
     """
+    root = repo_root if repo_root is not None else Path.cwd()
     ledgers: dict[str, Ledger] = {UNBOUNDED: Ledger()}
     current = UNBOUNDED
     # tool_use_id -> the boundary marker owning it, for a Bash call whose
@@ -139,7 +162,7 @@ def build_ledger_claude_code(path: Path, boundary_markers: set[str]) -> dict[str
                         if fp:
                             bucket = ledgers[current].files_read if name in _READ_TOOLS \
                                 else ledgers[current].files_edited
-                            bucket.append(fp)
+                            bucket.append(_relativize(fp, root))
                     elif name == "Bash":
                         command = tinput.get("command", "")
                         if re.search(r"git\s+commit\b", command):
@@ -182,10 +205,12 @@ def build_ledger_claude_code(path: Path, boundary_markers: set[str]) -> dict[str
     return ledgers
 
 
-def build_ledger(path: Path, fmt: str, boundary_markers: set[str]) -> dict[str, Ledger]:
+def build_ledger(
+    path: Path, fmt: str, boundary_markers: set[str], repo_root: Path | None = None
+) -> dict[str, Ledger]:
     """Dispatches on `fmt` -- see module docstring for what's implemented."""
     if fmt == "claude-code":
-        return build_ledger_claude_code(Path(path), boundary_markers)
+        return build_ledger_claude_code(Path(path), boundary_markers, repo_root)
     raise NotImplementedError(
         f"the E-012 ledger does not support {fmt!r} yet -- see ledger.py's module docstring"
     )
