@@ -2032,3 +2032,91 @@ here; flagging the shape rather than committing to it.
 **Status**: ideas only, captured per standing "persist everything" instruction. Nothing here is
 implemented. Separately dispatched same session: Codex/opencode support for `session-stats` and
 `--lossless` (an agent task, unrelated to the design questions above).
+
+## E-012 · 2026-09-10 · is prose enough, or is real information stranded in dropped tool calls?
+## A real-data inventory, not a guess
+
+Operator question, verbatim framing: "we need to tackle if prose is enough or some information on
+tool calls or their results is important as well. is there related prose we *could* extract? is
+there other information we could mechanically extract and use?" Answered by directly sampling the
+real dstdns `8ebff140` session's raw tool_use records rather than reasoning abstractly.
+
+**Headline finding: for THIS session, prose narration held up well.** Reading `v6a` end to end
+(the qualitative read from `E-011`'s point 1) found the assistant's own prose consistently restated
+the decision-relevant outcome of tool activity in its own words -- "P102 implementer finished — 4
+commits total (`8da835aa`→`f1b22d1a`)..." names the exact commits without the reader ever seeing the
+underlying `Agent`/`SendMessage` tool calls. This validates the tool's core bet (drop tool_use/
+tool_result, keep prose) for a well-disciplined narrator, and ties directly to the README's existing
+"prompting extension" open question -- the tool's real dependency isn't "can nyxloom see tool
+output," it's "does the agent bother to narrate it." A terse agent ("Fixed it.") leaves nothing for
+ANY mechanical extractor to recover, tool-call access or not.
+
+**But real, concrete gaps exist, found by sampling this exact session's raw records:**
+
+1. **`AskUserQuestion`'s own question text and its REJECTED options are dropped; only the chosen
+   answer survives, in a shape Claude Code's harness controls, not nyxloom.** Direct inspection
+   of both real occurrences in this session: `adapters/claude_code.py` captures only the
+   `tool_use.id` (to later recognize the matching `tool_result` as a QA answer) — the `tool_use.input`
+   itself (the actual `question`/`header`/`options[].label+description` fields, real and
+   substantive in both samples) is never read into any event. In practice this is a PARTIAL, not
+   total, loss: Claude Code's own tool_result content happened to restate the question verbatim in
+   both real samples ("Your questions have been answered: \"<question>\"=\"<answer>\"") — an
+   observed harness convention, not a documented contract nyxloom can rely on — so the question
+   text usually survives by accident, but the REJECTED alternatives (what the operator chose NOT
+   to do, and why that mattered) never do. Real severity in this session: low (only 2
+   `AskUserQuestion` calls total, out of 897 Bash + 139 Edit + 123 Read + 48 Agent + ... calls) but
+   the fix is small and surgical if ever prioritized: also capture `tool_use.input` for
+   `AskUserQuestion` records into the QA_PAIR event, independent of what the harness's own
+   tool_result formatting happens to restate.
+
+2. **Cheap, purely mechanical structured signals exist in tool_use/tool_result that prose
+   narration currently either restates faithfully (redundant but harmless) or sometimes doesn't
+   restate at all (a real, silent loss with no narration-quality dependency):**
+   - **File-touch ledger** — every `Edit`/`Write`/`Read`/`NotebookEdit` tool_use carries a clean
+     `file_path` field (confirmed: 139 Edit + 9 Write + 123 Read calls in this one session, every
+     one sampled had a trivially-extractable path). A deduplicated "files touched this session"
+     list is nearly free to build (no parsing beyond reading one known JSON key) and is exactly the
+     kind of fact a resuming controller needs that prose sometimes glosses over ("fixed the bug in
+     the usual place" without naming it).
+   - **Command ledger** — `Bash` tool_use's `command` field (897 calls in this session — by far the
+     largest category). Naively extracting all 897 would be pure noise; a cheap, still-fully-
+     mechanical filter (regex on the leading verb: `git commit|push|merge`, `pip install`,
+     etc. vs. `git status|log|diff|ps|ls|cat|grep`) could separate load-bearing/state-changing
+     commands from read-only orientation ones — the same "keep vs. drop" shape `classifier.py`
+     already applies to prose, just re-aimed at shell verbs instead of English sentences. Still
+     zero LLM calls.
+   - **Artifact-mention ledger** — commit hashes, branch/worktree names, PR/URLs. These already
+     mostly survive because the assistant narrates them in kept prose (the real `v6a` output is
+     full of them: `8b41a5f1`, `ec931d27`, `p102-port-strategy-rewrite`) — but that's contingent on
+     narration discipline, same dependency as the headline finding above. A regex sweep
+     (`[0-9a-f]{7,40}` near "commit", worktree/branch name patterns) over BOTH kept prose and
+     dropped tool_result text would catch the case where a hash is mentioned only in a short
+     procedural line `select()` drops and never repeated in a surviving checkpoint -- a redundant
+     safety net, not a replacement for narration.
+   - **Subagent dispatch index** — 48 `Agent` tool_use calls in this one session (it dispatched
+     exactly the P102/P93/P175 implementers/reviewers the real transcript is about). Currently
+     fully dropped at parse time, same as any other tool_use; the assistant's own prose narrated
+     dispatch/completion reasonably well in this session, but a compact structural index (task
+     label, dispatch timestamp, eventual outcome if narrated) would be a cheap complement, not
+     dependent on narration quality, and distinct from the full verbatim `<task-notification>`
+     body (already correctly stripped as harness noise -- keeping the INDEX, not the raw payload,
+     is the right level of compression here).
+   - **Test-result ledger** — pass/fail counts (`"3984 passed, 0 failed"`-shaped strings) appear
+     in raw `tool_result` text from gate/pytest runs; a narrow regex over that text (still zero
+     semantics, zero LLM) would recover them even on a turn whose prose got pruned by the selector,
+     independent of whether the assistant happened to restate the exact numbers.
+
+**Proposed shape, not committed**: none of the above requires touching the mechanical-core
+guarantee or the north-star reframe from `E-011` point 3 -- every one of these is a structural field
+read or a regex, the same category of "mechanical" `select.py`/`classifier.py` already are. The
+natural design is a SEPARATE, optional, clearly-labeled "structured ledger" side-channel (files
+touched / notable commands / artifact mentions / subagent dispatch index / test-result mentions),
+config-gated (ties to the existing budget/profile tunable idea), rendered as its own labeled
+section rather than interleaved into the prose walk -- so a reader can tell at a glance "this line
+is nyxloom's own mechanical index, not something the agent said." Not yet built; this entry exists
+so the real, sampled evidence behind the idea doesn't need re-deriving before it is.
+
+**Status**: research/inventory only, real-data-grounded (this session's own `8ebff140` file), not
+implemented. The `AskUserQuestion` input-capture gap (item 1) is small and surgical enough to be a
+reasonable standalone fix whenever prioritized; the structured-ledger idea (item 2) is a larger,
+separate feature needing its own design pass before building.
