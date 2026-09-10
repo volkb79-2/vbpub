@@ -3829,6 +3829,100 @@ earlier `CIU-V8-TESTING-GATE-PROPOSAL.md` draft also carried a
 confirmation-on-teardown mechanism; it is no longer in the current file —
 superseded by the `owner_id` approach above, not merely forgotten.
 
+## CIU-105 — no protection against the RIGHTFUL owner's own accidental `ciu down`/`ciu clean` against a flagged-important instance, in v7 or as currently designed for v8
+
+**Filed by:** nyxloom, 2026-09-10, same session as CIU-104, prompted by an
+operator question during that finding's follow-up: "how does the
+`owner_id` refusal protect a prod instance when the user correctly runs
+`ciu down`/`ciu clean` for THAT instance?" It doesn't, and that is a
+distinct, real gap from CIU-104, not a restatement of it.
+
+### Observed mechanism
+
+CIU-104's `owner_id` mitigation (S4.1.1/S4.5.3, `docs/SPEC-V8.md`) answers
+exactly one question: "does this resource belong to the checkout invoking
+this command?" When the answer is yes — the operator standing in the
+actual primary/production checkout, running `ciu down` or `ciu clean`
+there, on purpose or by mistake (wrong terminal tab, muscle memory, forgot
+which checkout they're in) — the token matches perfectly and the command
+proceeds with zero friction. Ownership answers "is this mine to touch",
+never "did I mean to touch it right now." These are different failure
+modes: CIU-104 is cross-instance (someone/something else's checkout
+touching mine); this is same-instance self-inflicted (the rightful owner's
+own slip).
+
+Verified in v7 by reading source, not assumed: the ONLY `input()`-gated
+confirmation anywhere in the CLI is `ciu secrets reset`
+(`src/ciu/engine.py:2189`, `Delete {scope} for {working_dir.name}? [y/N]`).
+`ciu down` and `ciu clean` have no confirmation step at all — `-y` is
+accepted but nothing prompts without it either; they simply execute.
+Verified in the current v8 design by reading `docs/SPEC-V8.md` S14.1.3/
+S14.1.4 (down/clean's normative definitions) and S9.5.6 (clean's one
+refusal, which — like S4.5.3 — is a CROSS-instance check: "another
+instance's containers are attached to this instance's network"): neither
+mentions any same-owner confirmation gate. An earlier design draft (see
+CIU-104's correction above) had exactly this — `[deploy.profiles.<name>.
+locks] down = true / clean = true` requiring "explicit unlock AND
+interactive confirmation," with a named `production-lockdown` profile —
+and it is gone from the current spec, replaced ONLY by the (orthogonal)
+`owner_id` mechanism. Nothing fills the gap it left.
+
+### Why ciu owns it
+
+This is the same class of protection every mature infra tool provides for
+exactly this failure mode, and it is a category ciu does not cover at any
+layer today: AWS EC2 termination protection, Kubernetes finalizers/
+`ResourceQuota` guards, Terraform's `prevent_destroy`, even a plain `rm -i`
+— all exist because "the command that ran was exactly what the authorized
+operator typed" is not the same fact as "the operator meant to run it
+against THIS target, right now." A project author cannot build this
+themselves: `ciu down`/`ciu clean` are ciu's own verbs, and nothing in a
+stack's declarations can intercept or gate them.
+
+### Proposed fix
+
+Reintroduce the dropped mechanism's INTENT (not necessarily its literal
+shape) as its own, standalone feature — independent of `owner_id`, and
+buildable in v7 without waiting for the rest of the v8 identity model:
+
+1. A declared, project-level flag (e.g. `[deploy] protected = true`, or a
+   named profile as the earlier draft had) that a stack/project author (or
+   an operator, post-deploy) sets for an instance they consider
+   important/production.
+2. With it set, `ciu down` and `ciu clean` (and arguably a `ciu up` that
+   would RECREATE, not just reconcile, an already-running protected
+   service — the exact CIU-104 incident's own last step) refuse without an
+   additional, explicit signal beyond the ordinary `-y`: a typed
+   confirmation of the instance/project name (the GitHub "type the repo
+   name to delete it" pattern), a separate `--i-understand-this-is-
+   protected` flag, or both.
+3. The flag should be checked from the RENDERED config the live container
+   was actually deployed with (or a label stamped at deploy time, mirroring
+   `ciu.owner`), not just the caller's current tree — so a protected
+   instance stays protected even from a checkout whose local `protected`
+   value was since (accidentally or not) edited back to false.
+
+### Behavioral oracle for the fix
+
+An instance deployed with `protected = true`: `ciu down`/`ciu clean` (and a
+config change that would force-recreate a running protected service) with
+ordinary `-y` and no additional confirmation MUST refuse, naming what
+additional step is required; the SAME commands against an instance without
+the flag proceed exactly as they do today (no regression for the common
+case). A regression test: deploy a protected fixture stack, attempt
+`ciu down -y`/`ciu clean -y`, assert refusal and that the container is
+still running/present after the attempt.
+
+### Severity
+
+Medium-High — no live incident has resulted from this specific gap (unlike
+CIU-104), but the blast radius when it does fire is total data loss for
+whatever the instance holds (a `ciu clean` removes named volumes), it is
+trivially easy to trigger (a wrong-tab mistake, not a rare cross-instance
+coincidence), and the mitigating design already existed once and was
+dropped without a replacement — this is a known, previously-solved gap
+reopening, not an undiscovered one.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
