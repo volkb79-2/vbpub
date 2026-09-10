@@ -2003,29 +2003,169 @@ def cmd_auth(args) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    _bootstrap_logging()
+# --------------------------------------------------------------------------
+# Top-level verb groups for the custom help/usage screen (see
+# _print_top_level_help below) -- argparse's own default subparsers
+# rendering is a flat, unordered, unexplained comma-separated list of all
+# ~32 verb names with no version banner, which is the operator-reported
+# problem this whole block exists to fix.
+#
+# This is a flat group-name -> [verb, ...] mapping, deliberately NOT the
+# source of the verb LIST itself (that's always read back from the real
+# `subparsers.choices` argparse actually registered in _build_parser
+# above) -- only of which group each already-registered verb belongs to.
+# To add a 33rd verb: add its `subparsers.add_parser("new-verb", help=...)`
+# call in _build_parser, then add "new-verb" to exactly one list below.
+# Forgetting the second step fails tests/test_cli_help.py's sync-check
+# loudly (every registered verb must appear in exactly one group, and vice
+# versa) rather than letting the help screen silently drift out of sync
+# with what's actually wired up.
+# --------------------------------------------------------------------------
+_VERB_GROUPS: dict[str, list[str]] = {
+    "project & workflow lifecycle": [
+        "decide", "discuss", "gate", "leases", "merge", "pause", "project",
+        "reject", "resume", "resync", "status", "tick",
+    ],
+    "content & extraction tooling": [
+        "digest", "events", "extract", "render", "session-stats",
+    ],
+    "intake & onboarding": [
+        "init", "intake", "intake-bridge", "onboard",
+    ],
+    "system & ops": [
+        "auth", "capability-map", "daemon", "doctor", "free-models",
+        "migrate-store", "route",
+    ],
+    "knowledge & backlog": [
+        "backlog", "finding", "lint",
+    ],
+    "misc": [
+        "version",
+    ],
+}
+
+
+def _classify_top_level_invocation(
+    argv: list[str], known_verbs: set[str],
+) -> "tuple[str, str | None]":
+    """Classify a raw argv (top-level only -- never looks past the first
+    command-shaped token) so `main()` can hand a bare invocation, a
+    top-level -h/--help, and an unrecognized command to the custom grouped
+    help screen, while leaving everything else (a known verb, however it
+    then gets parsed -- including its OWN --help/argument errors) to
+    argparse exactly as before.
+
+    Returns (kind, token):
+      ("help", None)     -- -h/--help appears before any command-shaped
+                             token (including when argv is empty of
+                             command tokens but still, say, `--debug -h`).
+      ("bare", None)      -- no -h/--help and no command-shaped token at
+                             all (e.g. `[]` or `["--debug"]`).
+      ("unknown", token)  -- the first command-shaped token isn't a
+                             registered verb.
+      ("dispatch", None)  -- a real known verb, or some other token
+                             (e.g. a lone unrecognized option) that
+                             argparse's own error reporting should own.
+    """
+    for tok in argv:
+        if tok in ("-h", "--help"):
+            return "help", None
+        if tok == "--debug":
+            continue
+        if tok.startswith("-"):
+            return "dispatch", None
+        if tok not in known_verbs:
+            return "unknown", tok
+        return "dispatch", None
+    return "bare", None
+
+
+def _print_top_level_help(parser, subparsers, *, file) -> None:
+    """The custom top-level help/usage screen: a `nyxloom <version>`
+    banner, then every registered verb grouped by purpose (_VERB_GROUPS)
+    and alphabetized within each group, each with its one-line `help=`
+    text. Fires only for a bare invocation, top-level -h/--help, or an
+    unrecognized top-level command (see _classify_top_level_invocation) --
+    per-subcommand help (`nyxloom extract --help`) is untouched.
+
+    Verb help text is read back from argparse's own `_choices_actions`
+    list -- the same (private but long-stable) attribute argparse's own
+    HelpFormatter uses to render a subparsers positional's per-choice help
+    -- rather than a second hand-maintained string table, so the ONE place
+    a verb's one-liner is authored is its own `add_parser(..., help=...)`
+    call in _build_parser."""
+    from . import __version__
+
+    registered = subparsers.choices  # verb name -> its own subparser
+    verb_help = {a.dest: (a.help or "") for a in subparsers._choices_actions}
+
+    grouped_verbs = {v for verbs in _VERB_GROUPS.values() for v in verbs}
+    ungrouped = sorted(set(registered) - grouped_verbs)
+
+    print(f"nyxloom {__version__}", file=file)
+    print(file=file)
+    print(parser.format_usage().strip(), file=file)
+    print(file=file)
+    print("Commands (grouped by purpose; alphabetical within each group):", file=file)
+
+    width = max((len(v) for v in registered), default=0)
+
+    def _print_group(name: str, verbs: list[str]) -> None:
+        present = sorted(v for v in verbs if v in registered)
+        if not present:
+            return
+        print(file=file)
+        print(f"  {name}:", file=file)
+        for verb in present:
+            print(f"    {verb.ljust(width)}  {verb_help.get(verb, '')}".rstrip(), file=file)
+
+    for group_name, verbs in _VERB_GROUPS.items():
+        _print_group(group_name, verbs)
+    if ungrouped:
+        # A verb registered in _build_parser but missing from _VERB_GROUPS
+        # -- tests/test_cli_help.py fails loudly on this; this branch is
+        # only a rendering fallback so a sync gap degrades gracefully here
+        # rather than crashing the CLI.
+        _print_group("other (ungrouped -- fix _VERB_GROUPS)", ungrouped)
+
+    print(file=file)
+    print("  --debug               Show tracebacks", file=file)
+    print(file=file)
+    print("Run `nyxloom <command> --help` for details on any command.", file=file)
+
+
+def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersAction]":
+    """Construct the full argparse tree (all ~32 top-level verbs + their own
+    sub-subcommands). Split out of `main()` so tests can inspect the REAL
+    registered parser/subparsers directly (`subparsers.choices`, each
+    choice's own `.help` via `subparsers._choices_actions`) instead of
+    hand-maintaining a second list that can drift from what's actually
+    wired up -- see `_VERB_GROUPS` and `_print_top_level_help` below, and
+    tests/test_cli_help.py's sync-check tests."""
     parser = argparse.ArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
     parser.add_argument("--debug", action="store_true", help="Show tracebacks")
 
     subparsers = parser.add_subparsers(dest="cmd", help="Command")
 
     # project
-    project_parser = subparsers.add_parser("project")
+    project_parser = subparsers.add_parser(
+        "project", help="Manage the project registry (add, list)")
     project_subs = project_parser.add_subparsers(dest="project_cmd")
 
-    add_parser = project_subs.add_parser("add")
+    add_parser = project_subs.add_parser("add", help="register a project")
     add_parser.add_argument("id", help="Project ID")
     add_parser.add_argument("root", help="Project root path")
 
-    list_parser = project_subs.add_parser("list")
+    list_parser = project_subs.add_parser("list", help="list registered projects")
 
     # lint
-    lint_parser = subparsers.add_parser("lint")
+    lint_parser = subparsers.add_parser(
+        "lint", help="Lint handoff files; exit 1 on any blocking finding")
     lint_parser.add_argument("path", nargs="*", help="Handoff file paths (optional)")
 
     # doctor
-    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Health-check findings for registered projects")
     doctor_parser.add_argument("--project", help="Project ID (optional)")
     doctor_parser.add_argument("--rebuild", action="store_true", help="Rebuild mode")
     doctor_parser.add_argument("--write", action="store_true", help="Write changes")
@@ -2038,11 +2178,13 @@ def main(argv: list[str] | None = None) -> int:
                                      "notify transport) -- fast path for a healthcheck")
 
     # status
-    status_parser = subparsers.add_parser("status")
+    status_parser = subparsers.add_parser(
+        "status", help="Per-task status table from statefiles")
     status_parser.add_argument("--project", help="Project ID (optional)")
 
     # resync
-    resync_parser = subparsers.add_parser("resync")
+    resync_parser = subparsers.add_parser(
+        "resync", help="Re-baseline project state (dry-run unless --apply)")
     resync_parser.add_argument("project", help="Project ID")
     resync_parser.add_argument("--apply", action="store_true",
                                 help="PACKAGE RP02: emit the audited re-baseline "
@@ -2054,12 +2196,14 @@ def main(argv: list[str] | None = None) -> int:
                                      "-- requires --apply")
 
     # render
-    render_parser = subparsers.add_parser("render")
+    render_parser = subparsers.add_parser(
+        "render", help="Render the project dashboard site")
 
     # extract
     from .session_extract.config import PROFILES
 
-    extract_parser = subparsers.add_parser("extract")
+    extract_parser = subparsers.add_parser(
+        "extract", help="Extract a condensed transcript from a session log")
     extract_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
                                               "a file or directory for opencode's SQLite store)")
     extract_parser.add_argument("--session",
@@ -2114,7 +2258,8 @@ def main(argv: list[str] | None = None) -> int:
                                       "session_extract/lossless.py")
 
     # session-stats
-    session_stats_parser = subparsers.add_parser("session-stats")
+    session_stats_parser = subparsers.add_parser(
+        "session-stats", help="Cost/timeline stats for a session log")
     session_stats_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
                                                      "a file or directory for opencode's SQLite store)")
     session_stats_parser.add_argument("--session",
@@ -2129,43 +2274,51 @@ def main(argv: list[str] | None = None) -> int:
                                        help="JSON instead of CSV/text")
 
     # migrate-store
-    migrate_store_parser = subparsers.add_parser("migrate-store")
+    migrate_store_parser = subparsers.add_parser(
+        "migrate-store", help="Migrate a project's events to the SQLite backend")
     migrate_store_parser.add_argument("project", help="Project ID")
 
     # daemon
-    daemon_parser = subparsers.add_parser("daemon")
+    daemon_parser = subparsers.add_parser(
+        "daemon", help="Run the supervising daemon (foreground)")
     daemon_parser.add_argument("--foreground", action="store_true", help="Foreground mode")
 
     # control-plane operator credential
-    auth_parser = subparsers.add_parser("auth")
+    auth_parser = subparsers.add_parser(
+        "auth", help="Manage the HTTP control-plane credential")
     auth_subs = auth_parser.add_subparsers(dest="auth_cmd")
-    auth_subs.add_parser("show")
-    auth_bootstrap = auth_subs.add_parser("bootstrap")
+    auth_subs.add_parser("show", help="print the current operator credential")
+    auth_bootstrap = auth_subs.add_parser(
+        "bootstrap", help="create the credential store if absent")
     auth_bootstrap.add_argument("--operator", help="Named operator identity")
-    auth_rotate = auth_subs.add_parser("rotate")
+    auth_rotate = auth_subs.add_parser("rotate", help="atomically issue a new credential")
     auth_rotate.add_argument("--operator", help="New named operator identity")
     auth_rotate.add_argument(
         "--force", action="store_true",
         help="Replace a store this loader refuses (resets generation to 1)")
 
     # tick
-    tick_parser = subparsers.add_parser("tick")
+    tick_parser = subparsers.add_parser(
+        "tick", help="Run one daemon dispatch pass (debug/fallback mode)")
     tick_parser.add_argument("--project", help="Project ID (optional)")
 
     # decide
-    decide_parser = subparsers.add_parser("decide")
+    decide_parser = subparsers.add_parser(
+        "decide", help="Resolve a decision with a chosen option")
     decide_parser.add_argument("project", help="Project ID")
     decide_parser.add_argument("decision_id", help="Decision ID")
     decide_parser.add_argument("--choose", required=True, help="Choice")
     decide_parser.add_argument("--note", help="Note (optional)")
 
     # discuss
-    discuss_parser = subparsers.add_parser("discuss")
+    discuss_parser = subparsers.add_parser(
+        "discuss", help="Print the CLI command to resume-discuss a decision")
     discuss_parser.add_argument("project", help="Project ID")
     discuss_parser.add_argument("decision_id", help="Decision ID")
 
     # intake
-    intake_parser = subparsers.add_parser("intake")
+    intake_parser = subparsers.add_parser(
+        "intake", help="Advance one feature-intake chat turn")
     intake_parser.add_argument("project", help="Project ID")
     intake_parser.add_argument("intake_id", help="Intake ID")
     intake_parser.add_argument("message", help="Message to the intake agent")
@@ -2185,13 +2338,15 @@ def main(argv: list[str] | None = None) -> int:
                      help="override [intake_bridge] transport for this poll")
 
     # reject
-    reject_parser = subparsers.add_parser("reject")
+    reject_parser = subparsers.add_parser(
+        "reject", help="Send a MERGE_READY task back to rework")
     reject_parser.add_argument("project", help="Project ID")
     reject_parser.add_argument("task", help="Task ID")
     reject_parser.add_argument("--note", help="Rejection reason (optional)")
 
     # merge
-    merge_parser = subparsers.add_parser("merge")
+    merge_parser = subparsers.add_parser(
+        "merge", help="Record a manual merge for a task")
     merge_parser.add_argument("project", help="Project ID")
     merge_parser.add_argument("task", help="Task ID")
     merge_parser.add_argument("--commit", help="Merge commit SHA (optional; default: git rev-parse HEAD)")
@@ -2202,16 +2357,19 @@ def main(argv: list[str] | None = None) -> int:
     # was the only one, retired nyxloom-P98 -- gate_runner.py is now the
     # only gate-execution path, and Assay's own R2/R3 mechanisms supersede
     # external gate-trustworthiness verification)
-    gate_parser = subparsers.add_parser("gate")
+    gate_parser = subparsers.add_parser(
+        "gate", help="Reserved namespace; gate_runner.py owns execution")
     gate_parser.add_subparsers(dest="gate_cmd")
 
     # pause
-    pause_parser = subparsers.add_parser("pause")
+    pause_parser = subparsers.add_parser(
+        "pause", help="Pause a project or a single task")
     pause_parser.add_argument("project", help="Project ID")
     pause_parser.add_argument("task", nargs="?", help="Task ID (optional)")
 
     # resume
-    resume_parser = subparsers.add_parser("resume")
+    resume_parser = subparsers.add_parser(
+        "resume", help="Resume a paused project or task (drift-guarded)")
     resume_parser.add_argument("project", help="Project ID")
     resume_parser.add_argument("task", nargs="?", help="Task ID (optional)")
     resume_parser.add_argument("--force", action="store_true",
@@ -2223,15 +2381,18 @@ def main(argv: list[str] | None = None) -> int:
                                      "unguarded).")
 
     # leases
-    leases_parser = subparsers.add_parser("leases")
+    leases_parser = subparsers.add_parser(
+        "leases", help="Show mutex lease holders across all projects")
 
     # digest
-    digest_parser = subparsers.add_parser("digest")
+    digest_parser = subparsers.add_parser(
+        "digest", help="Print the notification digest for a project")
     digest_parser.add_argument("project", help="Project ID")
     digest_parser.add_argument("--since", help="Since sequence (optional)")
 
     # events
-    events_parser = subparsers.add_parser("events")
+    events_parser = subparsers.add_parser(
+        "events", help="Dump/tail a project's event log as JSONL")
     events_parser.add_argument("project", help="Project ID")
     events_parser.add_argument("--since", help="Since sequence (optional)")
     events_parser.add_argument("--type", help="Event type (optional)")
@@ -2241,10 +2402,12 @@ def main(argv: list[str] | None = None) -> int:
                                 help="Explicit JSONL output (default; no other output mode exists)")
 
     # version
-    version_parser = subparsers.add_parser("version")
+    version_parser = subparsers.add_parser(
+        "version", help="Print the installed nyxloom version")
 
     # init
-    init_parser = subparsers.add_parser("init")
+    init_parser = subparsers.add_parser(
+        "init", help="Scaffold a nyxloom-trove into a project folder")
     init_parser.add_argument("project_folder", help="Target project folder to scaffold a trove into")
 
     # onboard (PACKAGE F2). Choices are hardcoded literals here (not
@@ -2253,7 +2416,8 @@ def main(argv: list[str] | None = None) -> int:
     # optional module (mirrors main()'s "lazy import inside handlers"
     # design intent above); onboarding.WizardAnswers re-validates these same
     # choice sets at construction time regardless.
-    onboard_parser = subparsers.add_parser("onboard")
+    onboard_parser = subparsers.add_parser(
+        "onboard", help="Run the onboarding wizard (spine + optional AI scan)")
     onboard_parser.add_argument("project_folder", help="Target project folder (trove scaffolded here if absent)")
     onboard_parser.add_argument("--maturity", choices=["empty", "partial", "mature"],
                                  default="empty", help="Project maturity (default: empty)")
@@ -2284,22 +2448,27 @@ def main(argv: list[str] | None = None) -> int:
                                       "adjusting it (docs/plan-gate-adoption.md §GA3)")
 
     # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
-    free_models_parser = subparsers.add_parser("free-models")
+    free_models_parser = subparsers.add_parser(
+        "free-models", help="Discover or refresh free-tier model routes")
     free_models_subs = free_models_parser.add_subparsers(dest="free_models_cmd")
 
-    fm_list_parser = free_models_subs.add_parser("list")
+    fm_list_parser = free_models_subs.add_parser(
+        "list", help="discover currently-free models (read-only)")
     fm_list_parser.add_argument("--source", help="Restrict to one source name (optional)")
 
-    fm_refresh_parser = free_models_subs.add_parser("refresh")
+    fm_refresh_parser = free_models_subs.add_parser(
+        "refresh", help="discover + regenerate routes.toml's free-tier block")
     fm_refresh_parser.add_argument("--source", help="Restrict to one source name (optional)")
     fm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the plan without writing routes.toml")
 
     # capability-map (B20: capability catalog refresh)
-    capability_map_parser = subparsers.add_parser("capability-map")
+    capability_map_parser = subparsers.add_parser(
+        "capability-map", help="Refresh the model capability catalog in routes.toml")
     capmap_subs = capability_map_parser.add_subparsers(dest="capability_map_cmd")
 
-    cm_refresh_parser = capmap_subs.add_parser("refresh")
+    cm_refresh_parser = capmap_subs.add_parser(
+        "refresh", help="rebuild the capability catalog from benchmark sources")
     cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the catalog without writing routes.toml")
     cm_refresh_parser.add_argument("--emit-findings", dest="emit_findings",
@@ -2307,19 +2476,22 @@ def main(argv: list[str] | None = None) -> int:
                                    help="record cost_crossover findings under this registered project")
 
     # route (B1: route doctor -- validate routes.toml + live-probe each route)
-    route_parser = subparsers.add_parser("route")
+    route_parser = subparsers.add_parser(
+        "route", help="Validate routes.toml and live-probe each route")
     route_subs = route_parser.add_subparsers(dest="route_cmd")
 
-    route_doctor_parser = route_subs.add_parser("doctor")
+    route_doctor_parser = route_subs.add_parser(
+        "doctor", help="schema-validate + live-probe every route")
     route_doctor_parser.add_argument("--no-probe", action="store_true", dest="no_probe",
                                       help="skip live route probing -- schema validation only "
                                            "(offline-safe)")
 
     # finding (FN-4: CLI verbs)
-    finding_parser = subparsers.add_parser("finding")
+    finding_parser = subparsers.add_parser(
+        "finding", help="Record or list findings for registered projects")
     finding_subs = finding_parser.add_subparsers(dest="finding_cmd")
 
-    fr = finding_subs.add_parser("record")
+    fr = finding_subs.add_parser("record", help="record a finding")
     fr.add_argument("--project", required=True)
     fr.add_argument("--kind", required=True)
     fr.add_argument("--title", required=True)
@@ -2329,12 +2501,13 @@ def main(argv: list[str] | None = None) -> int:
     fr.add_argument("--task-id", dest="task_id", default=None)
     fr.add_argument("--severity", default="info")
 
-    fl = finding_subs.add_parser("list")
+    fl = finding_subs.add_parser("list", help="list findings")
     fl.add_argument("--project", default=None, help="default: all registered projects")
     fl.add_argument("--kind", default=None, help="filter by kind")
 
     # backlog (docs/backlog-entries-spec.md: managed per-entry backlog)
-    backlog_parser = subparsers.add_parser("backlog")
+    backlog_parser = subparsers.add_parser(
+        "backlog", help="Manage the per-entry backlog (new, promote, list, ...)")
     backlog_subs = backlog_parser.add_subparsers(dest="backlog_cmd")
 
     def _add_project_arg(p):
@@ -2381,6 +2554,33 @@ def main(argv: list[str] | None = None) -> int:
 
     bix = backlog_subs.add_parser("index", help="regenerate INDEX.md")
     _add_project_arg(bix)
+
+    return parser, subparsers
+
+
+def main(argv: list[str] | None = None) -> int:
+    _bootstrap_logging()
+    parser, subparsers = _build_parser()
+
+    # Intercept a bare invocation, a top-level -h/--help, or an unrecognized
+    # top-level command BEFORE handing off to argparse's own parsing --
+    # argparse's default subparsers rendering (used for anything below this
+    # point, e.g. `nyxloom extract --help` or a missing arg on a known
+    # subcommand) is untouched; this replaces ONLY the top-level listing,
+    # which by default is a flat, unordered, unexplained comma list of all
+    # ~32 verb names with no version banner. See _print_top_level_help.
+    invocation = list(argv) if argv is not None else sys.argv[1:]
+    kind, token = _classify_top_level_invocation(invocation, set(subparsers.choices))
+    if kind == "help":
+        _print_top_level_help(parser, subparsers, file=sys.stdout)
+        return 0
+    if kind == "bare":
+        _print_top_level_help(parser, subparsers, file=sys.stderr)
+        return 2
+    if kind == "unknown":
+        print(f"nyxloom: unrecognized command '{token}'\n", file=sys.stderr)
+        _print_top_level_help(parser, subparsers, file=sys.stderr)
+        return 2
 
     try:
         args = parser.parse_args(argv)
@@ -2434,7 +2634,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "intake-bridge":
             if getattr(args, "intake_bridge_cmd", None) == "poll":
                 return cmd_intake_bridge_poll(args)
-            intake_bridge_parser.print_help(sys.stderr)
+            subparsers.choices["intake-bridge"].print_help(sys.stderr)
             return 2
         elif args.cmd == "reject":
             return cmd_reject(args)
@@ -2493,7 +2693,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             handler = handlers.get(getattr(args, "backlog_cmd", None))
             if handler is None:
-                backlog_parser.print_help(sys.stderr)
+                subparsers.choices["backlog"].print_help(sys.stderr)
                 return 2
             return handler(args)
         elif args.cmd == "version":
