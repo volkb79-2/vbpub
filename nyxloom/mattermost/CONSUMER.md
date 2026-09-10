@@ -72,15 +72,14 @@ the narrower credential (webhook) whenever it does the job is the same
 least-privilege call the README makes for every other producer on this
 instance.
 
-**Use the PAT only when the job genuinely needs the REST API** — today,
-that's not the case for posting text. The PAT exists ahead of need for
-exactly one reason: a Mattermost incoming webhook **cannot carry file
-attachments at all** (verified against Mattermost's own webhook docs), so
-if/when this producer needs to attach a file (an install log, say), the PAT
-+ the REST Files API is the only path. **That path isn't live yet** — see
-below.
+**Use the PAT only when the job genuinely needs the REST API** — plain
+status posts still don't; keep using the webhook for those. The PAT exists
+for the one thing a webhook structurally cannot do: a Mattermost incoming
+webhook **cannot carry file attachments at all** (verified against
+Mattermost's own webhook docs), so attaching a file (an install log, say)
+has to go through the PAT + the REST Files API.
 
-## The PAT, and why file attachments don't work yet
+## The PAT and file attachments — both live (nyxloom-P111, 2026-09-09/10)
 
 `installer_pat` is minted and stored (same store, same account, same
 `installs` scope as the webhook — see "Getting your credential"). It
@@ -91,15 +90,31 @@ curl -sS -H "Authorization: Bearer $PAT" \
   "https://mattermost.gstammtisch.dchive.de/api/v4/teams/name/nyxloom/channels/name/installs"
 ```
 
-`MM_FILESETTINGS_ENABLEFILEATTACHMENTS` is still **off** on this instance.
-That flag — not the PAT — is what actually gates the Files API
-(`POST /api/v4/files`, then attaching the returned file id to a post). Until
-it's flipped, the PAT can authenticate to the REST API but there is no file
-upload endpoint to call. This was scoped out of the PAT-minting work
-deliberately (it's a separate, real widening of a public-facing server's
-attack surface — arbitrary file uploads, storage growth, MIME/type
-handling — not a one-line follow-on to "mint a credential"), so don't build
-a file-attachment path against this instance until it's confirmed flipped.
+`MM_FILESETTINGS_ENABLEFILEATTACHMENTS` is **on**. Uploading and attaching a
+file is two calls — upload, then attach the returned file id to a post —
+and both were verified end-to-end against the real public endpoint (not a
+mock, not an internal-network shortcut):
+
+```bash
+# 1. Upload — returns a file id.
+curl -sS -H "Authorization: Bearer $PAT" \
+  -F "channel_id=$CHANNEL_ID" -F "files=@install.log" \
+  "https://mattermost.gstammtisch.dchive.de/api/v4/files"
+
+# 2. Attach it to a post.
+curl -sS -H "Authorization: Bearer $PAT" -H 'Content-Type: application/json' \
+  -d "{\"channel_id\":\"$CHANNEL_ID\",\"message\":\"install finished\",\"file_ids\":[\"$FILE_ID\"]}" \
+  "https://mattermost.gstammtisch.dchive.de/api/v4/posts"
+```
+
+A file uploaded under one account's PAT and attached to a post is visible
+to anyone who can read that channel — same read boundary as everything
+else here (`installs` membership), nothing extra to configure.
+
+Uploaded files land in the `mattermost-data` **named volume** (not a bind
+mount like config/logs) — there's nothing to browse from the host for them
+yet. See `ciu.defaults.toml.j2`'s `enable_file_attachments` comment if that
+ever needs to change.
 
 ## Getting your credential
 

@@ -176,11 +176,15 @@ different endpoint). Lands in `nyxloom/mattermost/.ciu/secrets/installer_pat`,
 
 This PAT exists because the webhook is POST-only and Mattermost's
 incoming-webhook API has no attachment support at all — a PAT + the REST
-Files API is the only path to file uploads. **File attachments are still
-off** (`MM_FILESETTINGS_ENABLEFILEATTACHMENTS` unset/default): minting this
-token does not by itself unlock them. Until that flag flips, treat this PAT
-as read/post-only, the same job the webhook already does — it is provisioned
-ahead of need, not yet required by anything.
+Files API is the only path to file uploads. **File attachments are now on**
+(`enable_file_attachments = true`, `MM_FILESETTINGS_ENABLEFILEATTACHMENTS`,
+nyxloom-P111, 2026-09-10): upload+attach was verified end-to-end against the
+real public endpoint (`POST /api/v4/files` then `POST /api/v4/posts` with
+`file_ids`, both over `https://mattermost.gstammtisch.dchive.de`, not a
+mock) — see `CONSUMER.md` for the exact recipe. Uploaded files land in the
+`mattermost-data` **named volume**, not a bind mount like config/logs — a
+residual left open deliberately, see `enable_file_attachments`'s own comment
+in `ciu.defaults.toml.j2` for the conversion recipe if that's ever wanted.
 
 **Why a hook and not a one-shot init container** (both were evaluated): S9.4a
 is the only sanctioned way to get a minted webhook id back into ciu's secret
@@ -378,15 +382,23 @@ greyed out, and *verifying* hardening means reading the running config
 - Accounts: no open server, **no user creation over the API at all** — created
   only through the local admin socket. Until nyxloom-P110 this line said "no
   self-signup" and was **not true**; see the audit below for what closed it.
-- No file attachments, no plugin framework (the prepackaged playbooks/AI
-  plugins would otherwise run their own processes inside this 2g cgroup), no
-  marketplace, no outgoing webhooks, no slash commands, no telemetry, no email
-  (no SMTP is configured), no OAuth2 authorization server.
-- **Personal access tokens: off by default**, and their own declared flag
-  (`[mattermost].enable_user_access_tokens`) rather than an implication of
-  provisioning one. See "The `intake` channel and its PAT" above for what
-  turning it on widens and why the bridge's `mmctl` transport exists so it
-  does not have to be turned on at all.
+- No plugin framework (the prepackaged playbooks/AI plugins would otherwise
+  run their own processes inside this 2g cgroup), no marketplace, no
+  outgoing webhooks, no slash commands, no telemetry, no email (no SMTP is
+  configured), no OAuth2 authorization server.
+- **File attachments: ON as of nyxloom-P111** (`enable_file_attachments`,
+  its own declared flag, same shape as `enable_user_access_tokens` below).
+  Off by default from P106 through P110 for the reason stated in its own
+  `ciu.defaults.toml.j2` comment (SPEC §13 keeps nyxloom's own notifications
+  typed-text-only regardless); flipped specifically so `nyxloom-installer`'s
+  PAT can use the REST Files API. See "The `intake` channel and its PAT" /
+  `installer_pat`'s own section above.
+- **Personal access tokens: ON server-wide** (`[mattermost].
+  enable_user_access_tokens`, its own declared flag rather than an
+  implication of provisioning one). Two are currently minted:
+  `intake_pat` (P109) and `installer_pat` (P111). See "The `intake` channel
+  and its PAT" above for what turning this on widens and why the bridge's
+  `mmctl` transport exists so it does not strictly have to be turned on.
 - Postgres is dedicated to this stack, on a private bridge, never published,
   password from ciu's `GEN_LOCAL` store via `POSTGRES_PASSWORD_FILE`.
 - The one deliberate concession: the app's DSN password arrives through ciu's
@@ -703,7 +715,7 @@ needs no manual step.
 | `/var/lib/postgresql/data` | hostdir `vol-postgres-data` | `70:DOCKER_GID` `0700` | the data that matters; host-visible for `du`/wipe |
 | `/mattermost/config` | hostdir `vol-mattermost-config` | `2000:DOCKER_GID` `0770` | `config.json` is the file an operator reads and diffs |
 | `/mattermost/logs` | hostdir `vol-mattermost-logs` | `2000:DOCKER_GID` `0770` | grep across restarts; makes the one unbounded-growth surface visible |
-| `/mattermost/data` | named volume | image | file attachments are **disabled** — nothing to read |
+| `/mattermost/data` | named volume | image | file attachments are **on** (nyxloom-P111) — holds uploaded files; still a named volume, not host-visible (residual, see `enable_file_attachments`'s comment in `ciu.defaults.toml.j2`) |
 | `/mattermost/plugins`, `/mattermost/client/plugins` | named volumes | image | plugin framework is **off**; these exist only because the image declares `VOLUME` on both paths |
 
 The three hostdirs are ciu-managed (S6.1/S6.3), auto-pathed as
