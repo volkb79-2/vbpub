@@ -44,13 +44,25 @@ commentary, not transcript). The one thing genuinely worth keeping inline is
 which lines are the OPERATOR's own words versus everything else -- that's
 the actual decision-relevant distinction (README's own "structured-Q&A-
 preserving" framing: an operator's real input is the highest-signal content
-in a session). So OPERATOR_TEXT and QA_PAIR (a recorded operator decision,
-same bucket) get a bare `OPERATOR: ` prefix directly on the text; every other
-kind renders as plain, unprefixed text. Checkpoint-vs-not and per-event
-timestamps are dropped from text mode entirely (they were never load-bearing
-for a human/LLM reading the rendered brief) but remain full-fidelity fields
-in JSON mode, which is for a second-stage tool, not a paste target -- terse-
-ness there would cost correctness for no reader benefit.
+in a session). So OPERATOR_TEXT gets a bare `OPERATOR: ` prefix directly on
+the text; every other kind renders as plain, unprefixed text. Checkpoint-vs-not
+and per-event timestamps are dropped from text mode entirely (they were never
+load-bearing for a human/LLM reading the rendered brief) but remain full-
+fidelity fields in JSON mode, which is for a second-stage tool, not a paste
+target -- terseness there would cost correctness for no reader benefit.
+
+**QA_PAIR is deliberately EXCLUDED from that blanket prefix** (corrected
+2026-09-10, later the same day, against a real rendered session): when
+QA_PAIR's `.text` was still the harness's raw flattened blob, a single
+leading `OPERATOR: ` was the whole story. Once `claude_code.py`'s
+`_format_qa_pairs` started reconstructing the real per-question shape
+(question text, its option bullets, then `OPERATOR: <answer>` -- repeated
+per question in a multi-question batch, blank line between blocks), that
+`OPERATOR: ` label already lives INSIDE the formatted text, correctly
+placed before each answer and absent before each question. Also blanket-
+prefixing the kind duplicated it onto the QUESTION line instead ("OPERATOR:
+<question>\n- opt\n...\n\nOPERATOR: <answer>") and couldn't express more
+than one label for a multi-question batch either way.
 
 Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
 marker -- when given, `render_text` inserts that boundary's rendered
@@ -79,10 +91,11 @@ _STOP_REASON_TEXT = {
     "max_checkpoints": "checkpoint target reached (--checkpoints / max_checkpoints)",
 }
 
-# Kinds whose text IS the operator's own words (or a recorded operator
-# decision, for QA_PAIR) -- see the module docstring above for why these are
-# the one distinction worth keeping inline in text mode.
-_USER_AUTHORED = (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR)
+# Kinds whose text IS the operator's own words -- see the module docstring
+# above for why this is the one distinction worth keeping inline in text
+# mode, and why QA_PAIR is deliberately NOT here (its own OPERATOR: label(s)
+# are already embedded in the text by claude_code.py's _format_qa_pairs).
+_USER_AUTHORED = (EventKind.OPERATOR_TEXT,)
 
 # Kinds a `ledger` dict (E-012, ledger.py) is keyed by -- the same boundary
 # concept stats.py's Block groups by, extended to LIFECYCLE_MARKER too (a

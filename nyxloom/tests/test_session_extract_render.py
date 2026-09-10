@@ -17,23 +17,35 @@ def _ev(kind, text, seq=0, marker="m0", score=None):
     return NormalizedEvent(seq, marker, _TS, kind, text, checkpoint_score=score)
 
 
-def test_render_text_prefixes_user_authored_kinds_only():
+def test_render_text_prefixes_operator_text_only():
     # 2026-09-10, operator feedback: timestamps and a per-block "## [ts]
     # LABEL" header were measured as pure bloat -- the one thing worth
     # keeping inline is which lines are the operator's own words. See
     # render.py's module docstring for the full rationale. Prefix word
     # chosen as "OPERATOR: " (not "USER: ") to match EventKind.OPERATOR_TEXT's
     # own name -- a later same-day correction.
+    #
+    # QA_PAIR is deliberately NOT blanket-prefixed here (a second later-
+    # same-day correction, operator-caught against a real rendered session):
+    # once claude_code.py's _format_qa_pairs started embedding its own
+    # OPERATOR: label(s) directly in the text (correctly placed before each
+    # answer, never before the question), render.py ALSO prefixing the kind
+    # produced a duplicate, misplaced "OPERATOR: <question>" -- see
+    # test_render_text_does_not_double_prefix_a_preformatted_qa_pair below
+    # for the regression this exact bug shape is pinned against.
     events = [
         _ev(EventKind.OPERATOR_TEXT, "do the thing", marker="op1"),
-        _ev(EventKind.QA_PAIR, "Q=A", marker="qa1"),
+        _ev(EventKind.QA_PAIR, "Q?\n\nOPERATOR: A", marker="qa1"),
         _ev(EventKind.LIFECYCLE_MARKER, "[compact boundary]", marker="lc1"),
         _ev(EventKind.ASSISTANT_TEXT, "checkpoint prose", marker="cp1", score=5.0),
         _ev(EventKind.ASSISTANT_TEXT, "plain prose", marker="as1", score=0.0),
     ]
     text = render_text(events, fmt="claude-code", last_marker=None)
     assert "OPERATOR: do the thing" in text
-    assert "OPERATOR: Q=A" in text
+    # the QA_PAIR event's own embedded label survives verbatim...
+    assert "OPERATOR: A" in text
+    # ...but render.py added no SECOND prefix in front of the question
+    assert "OPERATOR: Q?" not in text
     # everything else renders bare -- no header, no label, no OPERATOR: prefix
     assert "[compact boundary]" in text and "OPERATOR: [compact boundary]" not in text
     assert "checkpoint prose" in text and "OPERATOR: checkpoint prose" not in text
@@ -43,8 +55,25 @@ def test_render_text_prefixes_user_authored_kinds_only():
     assert "##" not in text
     assert "ASSISTANT" not in text
     assert "LIFECYCLE" not in text
-    # exactly the two OPERATOR: prefixes, nothing else says "OPERATOR"
+    # exactly the two OPERATOR: occurrences (one render.py prefix, one the
+    # QA_PAIR event's own embedded label), nothing else says "OPERATOR"
     assert text.count("OPERATOR") == 2
+
+
+def test_render_text_does_not_double_prefix_a_preformatted_qa_pair():
+    # Regression for the real bug this replaces: a QA_PAIR event's text is
+    # ALREADY the fully-formatted question+bullets+"OPERATOR: <answer>"
+    # block claude_code.py's _format_qa_pairs produces. render.py must
+    # render it completely unprefixed -- adding its own blanket "OPERATOR: "
+    # in front duplicated the label onto the QUESTION line instead of the
+    # answer, and couldn't express more than one label for a multi-question
+    # batch either way.
+    formatted = "Pick one?\n- A\n- B\n\nOPERATOR: B"
+    events = [_ev(EventKind.QA_PAIR, formatted, marker="qa1")]
+    text = render_text(events, fmt="claude-code", last_marker=None)
+    assert formatted in text
+    assert "OPERATOR: Pick one?" not in text
+    assert text.count("OPERATOR: ") == 1
 
 
 def test_render_text_no_marker_omits_footer():
