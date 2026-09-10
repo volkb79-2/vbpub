@@ -3655,6 +3655,133 @@ provisioning hook in question happened to already be idempotent. A
 less-idempotent hook would have caused real, unintended live-state changes
 under a command whose entire purpose is previewing without changing state.
 
+## CIU-104 — `ciu worktree create` gives no protection or warning when a worktree's stack recreates a DIFFERENT checkout's already-running container under the same name
+
+**Filed by:** nyxloom, 2026-09-10, during nyxloom-P111 (Mattermost
+file-attachments flag). Verified live and by reading source
+(`src/ciu/worktree.py`, `src/ciu/deploy.py`, `src/ciu/scaffold.py`), not
+paraphrased; reproduced once, deliberately not retried against production a
+second time.
+
+### Observed mechanism and reproduction
+
+`ciu worktree create` derives a genuinely unique `INSTANCE_ID`/network/
+hostdir-base from the worktree's own physical path — this part works and is
+what `docs/SPEC.md` S16's opening paragraph documents ("a second checkout
+gets its own network, container prefix and volumes"). It does **not** touch
+`[deploy]` (`project_name`/`environment_tag`) at all — confirmed by grep,
+no writes to either key anywhere in `worktree.py`'s create/ensure path — and
+`scaffold.py`'s own `ciu init` default for a **fresh** repo is the literal
+string `environment_tag = "dev"` (not derived from `INSTANCE_ID` either), so
+this is ciu's general convention, not something specific to a hand-edited
+config.
+
+`deploy.py::container_name()` — ciu's own documented S7.7/S7.8 naming
+convention — is `f"{project}-{env_tag}-{service_name}"`, driven entirely by
+those two static values. A package's compose template setting an explicit
+`container_name:` from that expression (verified in
+`nyxloom/mattermost/ciu.compose.yml.j2` lines 18/70:
+`container_name: {{ mattermost.container_prefix }}-mattermost[-db]`) is
+correct, documented use of the convention — needed by any package that wants
+a stable, predictable name for a real deployment (DNS, hardcoded recipes,
+ingress routing labels).
+
+Net effect: for any repo whose `[deploy]` declares a fixed,
+already-in-use `environment_tag` (a legitimate choice — e.g. `"prod"`, so a
+redeploy from a fresh clone still targets the same live containers), **every
+checkout of that repo, worktree or not, renders the identical
+`container_name`.** Docker Compose, given an explicit `container_name:`,
+identifies the container by that literal name regardless of which directory
+invoked `up` — it does not scope by compose-project. So `ciu up` from a
+freshly created worktree of such a repo does not create new/parallel
+containers: it silently stops and recreates the PRIMARY checkout's live
+containers, rebinding them to the worktree's own (different, freshly-empty)
+hostdir/secret paths. No refusal, no warning — `docker compose` reports
+`Recreate`/`Recreated` exactly as it would for an ordinary, intended
+redeploy.
+
+Reproduced live: `nyxloom/mattermost` declares `environment_tag = "prod"` in
+`nyxloom/ciu.global.defaults.toml.j2` (P106, for the legitimate reason
+above). `ciu up --dir mattermost -y` run from inside a `ciu worktree
+create`-created worktree (`nyxloom-p111`) recreated the LIVE, publicly
+reachable `nyxloom-prod-mattermost`/`nyxloom-prod-mattermost-db` containers,
+rebinding them to the worktree's freshly-created EMPTY hostdirs — the public
+Mattermost instance briefly (~83s) served a fresh/empty bootstrap instance
+instead of production. Caught immediately and fixed by re-running `ciu up`
+from the primary checkout (which recreated the same containers back onto the
+correct paths); no data was lost, because bind mounts meant the original
+data on disk was never touched. `--dry-run` would not have caught this
+either — CIU-103 (this file, immediately above) already established that
+`--dry-run` runs the real `post_compose` hook against whatever container
+name resolves as live, which here is exactly the wrongly-recreated one.
+
+### Why ciu owns it
+
+This directly contradicts the plain-language guarantee in `docs/SPEC.md`
+S16's opening paragraph for any package using ciu's own documented S7.7/S7.8
+container-naming convention with a non-default `environment_tag` — which is
+the recommended pattern for a real, named deployment identity. It is also
+the same class of hazard (silent duplicate/silent takeover, "will not choose
+one for you") that this codebase's own established fail-closed philosophy
+already refuses elsewhere (RG-35/R-39e's "never two clients on one lane",
+`_ensure_tokens`'s orphan refusal in the mattermost hook) — just not yet
+covered for this path. It is related to, but a different root cause from,
+CIU-98 (worktree identity not syncing with what a *consumer* like run-gate
+actually resolves to): CIU-98 is about a stale/unlive generated identity
+being reported for LOCK-NAMING purposes; this is about `ciu up` itself
+having no guard against silently taking over a container that provably
+belongs to a different, currently-live `repo_root`.
+
+### Proposed fix
+
+Not mutually exclusive:
+
+1. `ciu up` (and `ciu check`'s live-adjacent paths) refuses, or at minimum
+   loudly warns and requires `-y`-beyond-the-usual-confirmation, when a
+   container name it is about to create/recreate already exists, is
+   currently RUNNING, and its existing mounts/labels point at a different
+   physical `repo_root` than the one invoking the command.
+2. `ciu worktree create`/`ensure` detects that the target stack's rendered
+   `environment_tag` is a non-`"dev"` fixed value with a live container
+   already matching that name, and refuses `ciu up` (not `ciu check`, which
+   stays safely in-memory) against it from the worktree without an explicit
+   override/acknowledgement flag.
+3. At minimum, `docs/SPEC.md` S16's opening paragraph and `ciu worktree
+   create --help` should say plainly that container-name uniqueness is
+   **not** guaranteed by the worktree mechanism and depends entirely on the
+   target package's own `deploy.environment_tag` choice — as written today
+   it reads as an unqualified guarantee, which is what led directly to this
+   incident (the operating session's own prior, carefully-derived worktree
+   safety lesson explicitly relied on that paragraph and only verified
+   hostdir-path isolation, never container-identity isolation).
+
+### Oracles
+
+- Two checkouts of the same ciu-managed repo (a primary and a
+  `ciu worktree create`-created worktree) where the target stack declares a
+  non-default `environment_tag`: `ciu up --dir <stack> -y` from the
+  worktree, with the primary's containers already running, must NOT recreate
+  the primary's containers without an explicit, named override — either by
+  refusing outright (oracle: exit non-zero, primary containers' mounts
+  unchanged after the attempt) or by requiring a flag whose absence causes
+  the same refusal.
+- A regression fixture: two checkouts (a real second `git worktree`
+  suffices, no `ciu worktree create` needed to reproduce) of a stack with a
+  fixed non-default `environment_tag` and an explicit `container_name:`;
+  bring the primary up, then attempt `ciu up` from the second checkout;
+  assert the primary's container ID does not change and its mounts still
+  resolve to the primary's own paths.
+
+### Severity
+
+High — this is a live-production-affecting silent takeover, not a
+hypothetical, reproduced against a real internet-facing service. It was
+recoverable only because the affected package happens to use bind mounts for
+its stateful paths (so the original data was untouched on disk) and the
+takeover was caught within ~83 seconds; a package using named volumes for
+its primary state, or a longer detection gap, would have looked like — or
+caused — real, harder-to-diagnose data loss.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
