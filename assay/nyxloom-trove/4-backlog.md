@@ -9059,6 +9059,20 @@ a product capability until a supported producer path reaches it" framing).
 `worker-execution-admission-r2-flips` lane, via `--state-dir`
 (RG-38/B066, freshly landed 2026-09-08).
 
+**Second independent hit:** vbpub nyxloom `session-extract` lane, 2026-09-10 --
+same shape exactly, different repo/project: four R2 survivors
+(`claude_code.py`/`debug_diff.py`, `python:compare-swap`/`boolop-swap`/
+`bool-const-flip`) replayed as `"survived"` across two consecutive
+`--resume` runs after real, verified-locally-passing tests were added for
+each one (no source-file bytes touched, only test files) -- confirmed via
+the same diagnostic (per-candidate JSON under
+`.run-gate/assay-state/.worktrees/.../<candidate-id>.json` showed
+`source_sha256` unchanged between runs) and the same workaround (clear the
+worktree's state-dir, re-run fresh -- all four then killed). One day and
+one repo apart from the original report, same root cause, same fix
+prescription below -- raises this from "one lane's bad luck" to a pattern
+any `--resume` mutation workflow will keep hitting.
+
 ### What was measured
 
 A mutant at `admission.py:39` (`@dataclass(frozen=True)` boolean-const flip)
