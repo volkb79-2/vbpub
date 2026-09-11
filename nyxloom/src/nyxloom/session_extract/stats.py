@@ -45,6 +45,21 @@ that ledger and turns it into two views:
     happen, but handled rather than assumed away) is left as an ordinary,
     still-suppressible block; see `_is_suppressed`, `render_condensed`.
 
+    An ORDINARY operator/qa block immediately before such a run, itself
+    with zero response before an AUTO compaction fired (2026-09-11,
+    operator direction against a real dstdns session: "check if you have in
+    your standing guidelines..." got zero response before an auto-compaction,
+    and the very next real work directly acted on it), is absorbed into the
+    SAME merged block too -- but with THAT block's own trigger identity
+    (kind and text), not "compaction": the compaction is real cost, not
+    what caused the session to do anything. A bare zero-response row here
+    was never a counting bug (nothing ran in that window), but it was
+    misleading either way it got shown: labeled "compaction" it looked like
+    the operator's own ask vanished; labeled with the operator's own text
+    but showing zero it looked like the ask was dropped. Attributing the
+    real post-compaction work's numbers to the input that actually caused
+    it is neither -- see `_merge_compaction_cluster`'s `real_trigger` param.
+
 Both are annotated with what `select.select()` would have kept, under each
 of a small set of named `PROFILES`, if an extraction had been triggered at
 that exact point -- so the timeline doubles as a "what would our extractor
@@ -851,18 +866,46 @@ def _is_compaction_cluster_member(b: Block) -> bool:
     return b.trigger_kind in ("operator", "qa") and b.trigger_text_preview.strip().lower().startswith(_COMPACT_PREFIX)
 
 
-def _merge_compaction_cluster(run: list[Block]) -> Block:
+def _merge_compaction_cluster(run: list[Block], real_trigger: Block | None = None) -> Block:
     """Collapse a run of `_is_compaction_cluster_member` blocks (found by
-    `_coalesce_compaction_clusters`) into ONE block: the earliest timestamp
-    in the run (closest to when the operator actually triggered this), the
-    real member's own compactMetadata, and the LAST member's own
-    has_response/first_response/trailing content -- that's the one whose
-    `rest` actually reaches the real post-compaction work, since every
-    earlier member in the run is, by construction, itself content-free
-    (see `_coalesce_compaction_clusters`).
+    `_coalesce_compaction_clusters`) into ONE block: the real member's own
+    compactMetadata, and the LAST member's own has_response/first_response/
+    trailing content -- that's the one whose `rest` actually reaches the
+    real post-compaction work, since every earlier member in the run is, by
+    construction, itself content-free (see `_coalesce_compaction_clusters`).
+
+    `real_trigger`, when given, is an ORDINARY (non-cluster-member)
+    OPERATOR_TEXT/QA_PAIR block that immediately preceded this run and
+    itself had zero response before the compaction fired (2026-09-11,
+    operator direction against a real dstdns AUTO compaction, not a
+    `/compact` dispatch: an ordinary ask -- "check if you have in your
+    standing guidelines..." -- got zero response before an auto-compaction,
+    and the very next real work directly acted on it, verified against the
+    raw session). That block's OWN text is what actually influenced the
+    session -- the compaction is real infrastructure cost, not the cause --
+    so it becomes this merged block's trigger identity, with the
+    compaction's own bracketed cost folded in as a suffix rather than
+    replacing it. Without `real_trigger`, falls back to the original
+    behavior: an earliest-timestamp `kind="compaction"` block, used when the
+    run's own first member IS the actual cause (a real `/compact <prompt>`
+    dispatch).
     """
     real = next((m for m in run if m.contains_real_lifecycle_marker), run[0])
     last = run[-1]
+    if real_trigger is not None:
+        return replace(
+            last,
+            trigger_marker=real_trigger.trigger_marker,
+            trigger_kind=real_trigger.trigger_kind,
+            trigger_text_preview=f"{real_trigger.trigger_text_preview} {_compaction_label(real)}",
+            trigger_timestamp=real_trigger.trigger_timestamp,
+            start_ts=real_trigger.trigger_timestamp,
+            contains_real_lifecycle_marker=True,
+            compact_trigger=real.compact_trigger,
+            compact_pre_tokens=real.compact_pre_tokens,
+            compact_post_tokens=real.compact_post_tokens,
+            compact_duration_ms=real.compact_duration_ms,
+        )
     dated = [(t, m) for m in run if (t := _parse_ts(m.trigger_timestamp))]
     earliest = min(dated, key=lambda pair: pair[0])[1].trigger_timestamp if dated else real.trigger_timestamp
     return replace(
@@ -882,11 +925,21 @@ def _merge_compaction_cluster(run: list[Block]) -> Block:
 
 def _coalesce_compaction_clusters(blocks: list[Block]) -> list[Block]:
     """Merge each maximal run of adjacent `_is_compaction_cluster_member`
-    blocks that contains a real compaction into one `kind="compaction"`
-    block -- see `build_blocks`'s own docstring for why (real post-
-    compaction work was silently vanishing into a suppressed block
-    otherwise). A run with no real member (shouldn't normally happen, but
-    not assumed away) is left untouched, block-for-block.
+    blocks that contains a real compaction into one block -- see
+    `build_blocks`'s own docstring for why (real post-compaction work was
+    silently vanishing into a suppressed block otherwise). A run with no
+    real member (shouldn't normally happen, but not assumed away) is left
+    untouched, block-for-block.
+
+    Also absorbs the ORDINARY block immediately before such a run when that
+    block itself has zero response (2026-09-11, operator direction): an
+    operator/qa turn followed directly by an AUTO compaction with no
+    response in between is not a "dropped instruction" (has_response=False
+    is correct -- nothing ran before the boundary) and not a separate
+    zero-value row either -- the real post-compaction work IS the response,
+    just attributed to the compaction's own generic label instead of the
+    input that actually caused it. See `_merge_compaction_cluster`'s
+    `real_trigger` param.
     """
     out: list[Block] = []
     i, n = 0, len(blocks)
@@ -901,10 +954,13 @@ def _coalesce_compaction_clusters(blocks: list[Block]) -> list[Block]:
         while not run[-1].has_response and i < n and _is_compaction_cluster_member(blocks[i]):
             run.append(blocks[i])
             i += 1
-        if any(m.contains_real_lifecycle_marker for m in run):
-            out.append(_merge_compaction_cluster(run))
-        else:
+        if not any(m.contains_real_lifecycle_marker for m in run):
             out.extend(run)
+            continue
+        real_trigger = None
+        if out and not out[-1].has_response:
+            real_trigger = out.pop()
+        out.append(_merge_compaction_cluster(run, real_trigger))
     return out
 
 
