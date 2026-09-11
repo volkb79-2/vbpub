@@ -87,6 +87,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.1.1] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=53d841a84ae16545025921ff126ade7cc167dbe8 -->
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.0.0 -> 6.1.0 (assay-v6.1.0) (ec868f14)
+
+### Changed
+- mutation: fold the round-1 review's findings into B088's judge identity (fd50183e)
+- backlog(assay): B088 -- FIXED, with three residuals recorded (dd62d88b)
+- mutation: resume identity folds in the judging suite (B088) (fd08df8f)
+- README: document the judge.base origin-drift pitfall (B019 follow-up) (734a6763)
+- backlog(assay): B088 -- second independent hit in vbpub nyxloom session-extract lane (e5455b2b)
+- backlog(assay): B086+B087 -- Go mutation (R2) and JS canary (R3) registration; B073 corroborated live (0865b2e6)
+- backlog(assay): B080 addendum -- predicted latent tripwire fired live (dstdns D-433) (568d866b)
+
+### Documentation
+- docs(assay): B088 -- --resume's candidate identity omits the judging test suite, replaying a stale verdict after a test-only fix (2abcb2a3)
+- docs(assay): canonical rigor-level explanation + language support matrix (509c3b89)
+
 ## [6.1.0] - 2026-09-09
 <!-- cmru: generated -->
 <!-- cmru: source-end=e1ab92ddc3006e6383a299620c7b44d06c3c9d22 -->
