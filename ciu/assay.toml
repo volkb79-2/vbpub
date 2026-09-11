@@ -40,13 +40,21 @@ unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
 ]
 
+# base = "main" (2026-09-11, corrected from "origin/main"): same fix and
+# same reasoning as nyxloom/assay.toml's tester-unified lane (see that
+# file's comment for the full mechanism). assay's resolve_base() always
+# computes merge-base(base, HEAD), so a stale remote-tracking ref (origin
+# drifted behind local main under the standing "not pushed, flagged
+# separately" policy) silently widens the R1 changed-line floor to the
+# whole accumulated local backlog instead of the current worktree's own
+# diff. "main" self-updates via merge-base and needs no re-pinning.
 [lanes.ciu.judge]
 language = "python"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "origin/main"
+base = "main"
 
 [lanes.ciu.judge.coverage]
 format = "coverage-py-json"
