@@ -609,3 +609,25 @@ items that must be folded in somewhere, should not be forgotten
   at the same tier sharing priors will otherwise converge on approval.
 
   Cost data for sizing this: `assay/nyxloom-trove/MEASUREMENTS.md`.
+
+## 2026-09-11 — tester-unified's R1 base=origin/main has rotted (85 commits behind local main)
+
+Found running the real `tester-unified` gate for an unrelated, isolated
+test-only fix (`nyxloom/tests/test_mattermost_provision_hook.py`, four
+stale assertions). The gate FAILed `R1/EXCLUDED_LINES` with missing-coverage
+lines in `cli.py`/`adapters/base.py`/`stats.py` that the actual diff never
+touched. Root cause: `assay.toml`'s `[lanes.tester-unified]` R1 config uses
+`base = "origin/main"` (`assay.toml:65`), and this session never pushed to
+origin (a standing, explicitly-flagged decision) — `git rev-list --count
+origin/main..main` = 85 at time of writing. Every commit already
+gate-verified through its OWN scoped lane (e.g. `session-extract`) during
+this session still shows up in `tester-unified`'s diff against the stale
+`origin/main`, so its coverage floor is being checked against an
+ever-growing, effectively-arbitrary diff rather than the actual change
+under test.
+
+Not a real coverage regression — confirmed by inspecting every flagged
+line; none belong to any commit made investigating/fixing this. Resolves
+itself once `origin/main` is pushed and resynced, or `tester-unified`'s
+base is changed to a fixed local ref for local-only work. Filed rather
+than worked around silently.
