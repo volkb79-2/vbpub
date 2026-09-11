@@ -70,6 +70,22 @@ restatement of the technical detail below it.
   (`unknown=['fork_point_sha']`); do not downgrade ciu against worktrees
   created with this version.
 
+### Fixed
+- **CIU-107 (partially) — a failed `adopt` no longer leaves a record whose
+  resume rewrites the operator's checkout.** `adopt()` wrote its instance
+  record and then called `_write_worktree_overlay` unguarded; `ensure()`
+  decides `checkout_required` from `recovery_status in (None,
+  "checkout-incomplete")`, so a record left behind with `None` resumed as if
+  it needed a checkout — running `git reset --hard <the adopted HEAD>` in the
+  operator's own worktree and **discarding every commit made there since**.
+  The call is now wrapped (`WorktreeError` and `OSError`, since it writes a
+  file) and marks `env-generation-failed`, which resumes with
+  `checkout_required=False` — adopt's own normal shape. Reproduced and
+  red-proven before fixing. The structural half, which no `try`/`except` can
+  reach (a SIGKILL between the record write and the marker), stays OPEN as
+  CIU-107; it needs a provenance fact in the record rather than a marker
+  written afterwards.
+
 ## [7.12.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=412c99eda22fecb10dba95cc03726582c85fdd23 -->

@@ -5224,6 +5224,80 @@ class TestRecordedWorktreeBase:
         write_instance_record(repo, base_ref="main")
         assert run_gate.recorded_worktree_base(repo, repo)[0] is None
 
+    # --- and a graph clause is not the same question as "is there work" ----
+
+    def test_a_branch_whose_work_was_REVERTED_is_refused(self, tmp_path):
+        """Found by round-5 review, reproduced here before being believed.
+
+        Every GRAPH clause passes: a real fork point, a merge-base that has
+        not moved, and ancestry in neither direction. But the diff is EMPTY,
+        and `tools/coverage_gate.py` scores zero changed executable lines as
+        `0/0 = 100%` — a PASS on a lane that examined nothing. No work
+        ESCAPES the judge (there is none), so this is not the false-green
+        class the other clauses exist for; it is another inlet into RG-53,
+        and refusing costs only a fall back to a base that HAS something to
+        judge.
+        """
+        repo = make_feature_repo(tmp_path)
+        git(repo, "revert", "--no-edit", "HEAD")
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "SAME CONTENT" in why
+        assert "0/0" in why
+        # the graph clauses really did all pass — this is not a duplicate of
+        # the containment case, which is what makes the extra clause earn its
+        # place rather than restate one already there
+        assert "already contains this tree's HEAD" not in why
+        assert "MOVED since the record was written" not in why
+
+    def test_a_branch_of_only_empty_commits_is_refused(self, tmp_path):
+        """The same emptiness reached without a revert: a branch that really
+        is AHEAD of its base (so the containment clause does not fire) but
+        whose commits change no file."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "reset", "-q", "--hard", "main")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "SAME CONTENT" in why
+        assert "already contains this tree's HEAD" not in why
+
+    def test_real_work_still_passes_the_emptiness_clause(self, tmp_path):
+        """The clause must not refuse the ordinary healthy case it sits in
+        front of — a one-line guard that refuses everything is green in
+        exactly the same way."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert why == ""
+        assert ref is not None
+
+    @pytest.mark.parametrize("returncode", [0, 2, 128, -9])
+    def test_the_emptiness_check_fails_CLOSED_on_a_git_error(
+        self, tmp_path, monkeypatch, returncode
+    ):
+        """`git diff --quiet` answers 1 for "there are differences" and 0 for
+        "there are none"; ANY other exit is git failing to answer, and a base
+        this reader cannot speak about is not one it should hand a judge.
+        Exit 0 is in the list because it is the refusing answer too."""
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], returncode, "", ""))
+        assert run_gate.judged_diff_is_empty(repo, "main") is True
+
+    def test_the_emptiness_check_never_raises(self, tmp_path, monkeypatch):
+        """Same rule as every other reader on this path: a broken environment
+        must degrade, never abort a gate run."""
+        def explode(*a, **k):
+            raise OSError("git is not on PATH")
+
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setattr(run_gate.subprocess, "run", explode)
+        assert run_gate.judged_diff_is_empty(repo, "main") is True
+
     def test_a_diverged_base_branch_is_accepted(self, tmp_path):
         """The complement: `main` moved on too, but HEAD is not contained in
         it, so there is a real fork point and a real diff to judge."""

@@ -84,6 +84,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     verified against the real function: a worktree with no commits of its own
     has `fork == merge-base == HEAD`, passes equality, and is caught only by
     containment.
+  - A fifth round added one more, found by asking a different question: every
+    clause above is about the commit GRAPH, and a branch that committed work
+    and then REVERTED it satisfies all of them while producing an EMPTY diff
+    — `0/0 = 100%` again. Nothing escapes the judge there (there is no work),
+    so it is not the same class; it is another inlet into RG-53, and
+    `git diff --quiet <fork> HEAD` closes it for the cost of falling back to
+    a base that has something to judge.
 
   What run-gate hands the judge is now that verified fork COMMIT rather than
   the branch name, so nothing can move it between run-gate's check and the

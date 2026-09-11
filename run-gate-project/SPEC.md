@@ -712,6 +712,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       here — verified against the real function rather than derived. The
       frozen-id (`adopt`) case is caught by the local-branch clause, since
       such a SHA is an ANCESTOR of HEAD once any commit follows the adopt.
+    - **The fork point and HEAD do not have the same TREE**
+      (`git diff --quiet <fork> HEAD`, FAIL-CLOSED: any exit other than
+      "differences exist" refuses). The clause above asks the commit GRAPH a
+      question, which is not the same question as "is there anything to
+      judge": a branch that committed work and then REVERTED it has a real
+      fork point, an unmoved merge-base and ancestry in neither direction,
+      and still produces an empty diff that a changed-line floor scores as
+      `0/0 = 100%`. No work ESCAPES the judge there, so this is not the
+      false-green class the clauses above exist for; it is another inlet
+      into `RG-53`, and refusing costs only a fall back to a base that has
+      something to judge. This clause DOES subsume the one above
+      (containment implies identical trees, never the converse — verified
+      against the real functions); the containment clause is kept, and kept
+      first, because it names a different and far more common cause and
+      answers from the graph without diffing two trees.
   - **A record whose `branch` disagrees with the tree's checked-out branch
     is refused**, the way ciu's own reader refuses it: that is the reused-
     worktree case, where a stale record would widen the judged diff to

@@ -364,9 +364,18 @@ local work with nobody changing a line of config — and every changed-line
 judgment against it silently widens from "this change's diff" to "everything
 since the drift began" (assay's own README, "Pitfall: a `judge.base` literal
 pointing at a remote-tracking ref rots silently"). The recorded `base_ref` is
-normally a LOCAL branch, so it self-updates by the same `merge-base(base,
-HEAD)` resolution assay applies to whatever string it is handed. Both refs are
-printed so you can SEE the drift.
+normally a LOCAL branch, which does not drift that way — and what run-gate
+hands the judge is not that name but the COMMIT it has just verified the
+branch still forks from, so nothing can move it in between. Both the commit
+taken and the `@{upstream}` ref it displaced are printed, so you can SEE the
+drift.
+
+One boundary this cannot cross: run-gate chooses the base, the judge decides
+what to do with it, and assay's `resolve_base` does NOT always compute
+`merge-base(base, HEAD)` — when HEAD is a merge commit it returns HEAD's
+first parent and discards the supplied base entirely (assay B008). A gate run
+on a merge of a sibling topic branch can therefore still judge less than you
+expect, under any base, including `--base`. Tracked as `RG-54`.
 
 **Which projects it covers in a monorepo.** run-gate looks in the judged
 worktree root and then in the project dir inside it, because ciu writes the
@@ -401,18 +410,24 @@ review as ways this feature could pass a lane that should have failed:
   real, live `base_ref = "main"` that `main` has since absorbed — same
   collapse, and it was true of 4 of the 7 real ciu worktrees in this estate
   when the check was added.
-
-- **Keeping a long-lived worktree current spends the record.** Merging the
-  base INTO the branch, or rebasing onto it, moves the shared history just as
-  surely as merging the other way — so the gate falls back to `@{upstream}`
-  exactly where an operator was being diligent. The fallback is safe (it errs
-  WIDE), but the feature goes inert until the worktree is recreated. Nothing
-  here can distinguish those from a base that absorbed the branch; that is
-  the same missing fact CIU-106 exists to supply, one level up.
 - A worktree whose base has since absorbed its work and which then got one
   more commit looks healthy to every other check — `merge-base` has quietly
   moved to the pre-merge branch tip. Only comparing against the recorded
   fork point catches it.
+- A branch that committed work and then REVERTED it passes every check about
+  the commit graph and still produces an empty diff, which a changed-line
+  floor scores as `0/0 = 100%`. No work escapes the judge there — there is
+  none — but a pass on nothing reads exactly like a pass on something, so
+  the record loses to a base that has something to judge.
+
+**What it costs you.** Keeping a long-lived worktree current SPENDS the
+record: merging the base INTO the branch, or rebasing onto it, moves the
+shared history just as surely as merging the other way, so the gate falls
+back to `@{upstream}` precisely where an operator was being diligent. That
+is a loss of benefit rather than a new hazard — the fallback errs WIDE — but
+it means the feature goes inert until the worktree is recreated. Nothing
+available locally distinguishes that from a base that absorbed the branch;
+it is the same missing fact CIU-106 exists to supply, one level further up.
 
 A frozen id, a tag, a remote-tracking ref, a deleted branch and the tree's own
 branch all fail one of the clauses, so none of them displaces `@{upstream}`.

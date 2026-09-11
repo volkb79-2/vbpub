@@ -3878,7 +3878,26 @@ def adopt(
                 f"[S16] {record.ciu_root} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
-        _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        # An adopt record must never be resumed as if it needed a CHECKOUT.
+        # `ensure` decides that from `recovery_status` alone
+        # (`in (None, "checkout-incomplete")`), and the record written just
+        # above carries `None` — so an overlay write that raises used to leave
+        # behind a record whose resume would `git reset --hard <the adopted
+        # HEAD>` in the operator's own checkout, destroying anything committed
+        # there since, and (CIU-106) record a fork point on an adopt-shaped
+        # record. Marking it is what `create` does one level up for its own
+        # overlay write; the marker is the same one adopt's instance-override
+        # refusal below already uses, and it means exactly "resume WITHOUT a
+        # checkout, and tolerate the existing network" — adopt's own normal
+        # `_finish_allocation` shape. `OSError` is caught too because this
+        # writes a file: ENOSPC and a read-only mount are not `WorktreeError`.
+        # A HARD kill in the same window cannot be caught here at all and is
+        # the pre-existing lifecycle gap CIU-107 tracks.
+        try:
+            _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        except (WorktreeError, OSError):
+            _mark_recovery(record, "env-generation-failed")
+            raise
         return _finish_allocation(
             repo_root, record, checkout_required=False, allow_existing_network=True
         )

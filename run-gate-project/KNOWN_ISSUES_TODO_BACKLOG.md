@@ -3654,10 +3654,11 @@ checkout's HEAD into the same field.
 - **The recorded ref is used only when it is gate-safe ref text, the
   record's `branch` still matches the tree, git resolves it to a LOCAL
   branch there, `merge-base(base, HEAD)` still equals the recorded
-  `fork_point_sha`, and that branch does NOT already contain the tree's
-  HEAD.** See "Review findings" below — each clause closes a way the
-  record would have been WORSE than the `@{upstream}` it displaces, and
-  three of them were false-greens found only by review.
+  `fork_point_sha`, that branch does NOT already contain the tree's
+  HEAD, and the fork point and HEAD do not have the same TREE.** See
+  "Review findings" below — each clause closes a way the record would
+  have been WORSE than the `@{upstream}` it displaces, and three of them
+  were false-greens found only by review.
 - **What is handed downstream is the verified fork COMMIT**, not the
   branch name: equality has just proven the two resolve to the same
   object, and an OID cannot be moved by a concurrent session in the
@@ -3674,9 +3675,10 @@ checkout's HEAD into the same field.
   record is git-excluded, so it can never arrive there by checkout).
 - Disclosure runs BOTH ways, because half of this entry was that
   staleness must be visible: a winning record is named together with
-  the `@{upstream}` ref it displaced (`run-gate: <record> records
-  base_ref '<ref>' — using it instead of merge-base HEAD @{upstream}
-  (<sha>)`, plus `(from ciu.worktree-instance.json base_ref)` on the
+  the `@{upstream}` ref it displaced (`run-gate: <record> pins this
+  tree's fork point at <sha> (its base_ref still resolves there) —
+  using that COMMIT instead of merge-base HEAD @{upstream} (<sha>)`,
+  plus `(from ciu.worktree-instance.json fork point)` on the
   comparison-base line), and a record that is found and REJECTED prints
   `run-gate: ignoring <record>: <why>`. A silently ignored record would
   be the same silence this entry objects to, in a new place.
@@ -3709,6 +3711,59 @@ The lesson worth carrying: for a change that picks a comparison BASE,
 answer still leave the branch's real work to judge" is. And when three
 successive rounds find the same class, the premise is the suspect, not
 the predicate.
+
+#### Round 5 — reviewing round 4's own fixes; no fifth false-green, two real defects
+
+A fresh reviewer, spanning both projects, took round 4's fixes as its
+surface — the classic place a regression hides. It swept every path
+reaching `_finish_allocation` (four interrupt points, reproduced against
+real temp repos), confirmed no create path leaves the field permanently
+absent and no path captures without the reset, and ran 15 graph shapes
+(criss-cross, octopus, sibling-merge, base rewound, HEAD rewound,
+ambiguous tag/branch, `branch: null`, detached HEAD, …) through the real
+function with an oracle asserting no branch-unique commit is an ancestor
+of the returned base. Every acceptance held. **No fifth false green** —
+and the structural reason is worth writing down: the function returns the
+verified merge-base, which by construction cannot contain a commit unique
+to the branch, so an accepted record is exactly `--base <base_ref>`
+evaluated at check time and pinned to an OID. It can never be NARROWER.
+
+Two real defects, both reproduced before being accepted:
+
+- **A graph clause is not the same question as "is there work".** Every
+  clause here asks the commit graph something. A branch that committed
+  work and then REVERTED it has a real fork point, an unmoved merge-base
+  and ancestry in neither direction — all clauses pass — and still
+  produces an EMPTY diff, which `tools/coverage_gate.py` scores as
+  `0/0 = 100%`. Nothing ESCAPES the judge (there is none to escape), so
+  this is not the false-green class the other clauses exist for; it is
+  another inlet into RG-53. Closed with `git diff --quiet <fork> HEAD`,
+  fail-closed, for the cost of falling back to a base that has something
+  to judge. It logically subsumes the containment clause (containment
+  implies identical trees, never the converse — checked against the real
+  functions, not derived); containment is kept, and kept first, because it
+  names a far more common cause and answers from the graph.
+- **ciu `adopt()` could leave a record that destroys work on resume.** It
+  wrote the instance record and then called `_write_worktree_overlay`
+  unguarded, while `ensure()` reads `recovery_status in (None,
+  "checkout-incomplete")` as "needs a checkout" — so a failed overlay
+  write left a record whose resume ran `git reset --hard <the adopted
+  HEAD>` in the operator's own worktree, discarding every commit made
+  there since, and stamped a `fork_point_sha` onto an adopt-shaped record
+  the docs promise never carries one. Pre-existing in its destructive
+  half; CIU-106 made the second half visible. Wrapped and marked
+  (red-proven: pre-fix, the resume really does lose the commit). The
+  structural half no `try`/`except` can reach — a SIGKILL between the
+  record write and the marker — is filed as ciu **CIU-107**.
+
+Also corrected from the same round: stale quotes of the pre-round-3
+disclosure message in this entry and in the `rev 40` comment; a docstring
+still saying RG-52 "is NOT fixed here"; a CONSUMERS.md claim that a
+recorded ref "self-updates" and that assay applies merge-base to whatever
+it is handed (both false since round 3 and RG-54 respectively); clause
+numbering that ran 1,2,3,5,4,6; and clause 2's rationale, which is now
+defence-in-depth (the function returns a COMMIT, so a recorded string can
+no longer reach shell text) plus two live concerns of its own.
 
 #### Round 4 — no fourth false-green; two real SHOULD-FIXes, both reproduced
 

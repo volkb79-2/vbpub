@@ -603,6 +603,50 @@ class TestForkPointProvenance:
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
         assert "fork_point_sha" not in stored
 
+    def test_a_partial_ADOPT_never_resumes_into_a_checkout(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """Regression (round-5 review): `adopt` wrote its record and THEN
+        called `_write_worktree_overlay` unguarded. `ensure` decides
+        `checkout_required` from `recovery_status in (None,
+        "checkout-incomplete")`, and that record carries `None` — so a failed
+        overlay write left a record whose resume did `git reset --hard <the
+        adopted HEAD>` in the operator's own checkout, DESTROYING anything
+        committed there since, and (CIU-106) stamped a `fork_point_sha` onto
+        an adopt-shaped record the docs promise never carries one."""
+        wt_path = tmp_repo.parent / "adopted"
+        assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        adopted_head = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
+
+        def boom(*args, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", boom)
+        with pytest.raises(OSError):
+            worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+
+        partial = worktree.find_instance_record(tmp_repo, "adopted-one")
+        assert partial is not None
+        assert partial.recovery_status == "env-generation-failed"
+        assert partial.fork_point_sha is None
+
+        # The operator keeps working in their own checkout before resuming.
+        (wt_path / "mine.txt").write_text("do not lose this\n", encoding="utf-8")
+        assert _git(["add", "-A"], wt_path).returncode == 0
+        assert _git(["commit", "-m", "operator work"], wt_path).returncode == 0
+        work = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
+        assert work != adopted_head
+
+        resumed = worktree.ensure(tmp_repo, "adopted-one")
+        assert resumed.state == "ready"
+        # not reset back to the adopted HEAD, and still no fork point
+        assert _git(["rev-parse", "HEAD"], wt_path).stdout.strip() == work
+        assert (wt_path / "mine.txt").exists()
+        assert resumed.fork_point_sha is None
+        stored = json.loads(resumed.record_path.read_text(encoding="utf-8"))
+        assert "fork_point_sha" not in stored
+
     def test_a_record_without_the_field_stays_readable(self, tmp_path):
         """Every record written before CIU-106 lacks the key. Absence is
         legal — this is why the field needed no schema_version bump."""
@@ -761,6 +805,102 @@ class TestForkPointProvenance:
         resumed = worktree.ensure(tmp_repo, "logical-one", base="main")
         assert resumed.state == "ready"
         assert resumed.fork_point_sha == head      # survived the replace() chain
+
+
+class TestRunGateReadsTheRealRecord:
+    """The seam itself, run for real ONCE rather than trusted.
+
+    `ciu.worktree-instance.json` is consumed by vbpub's `run-gate.py` as a
+    loose FILE-FORMAT contract — by well-known filename, with stdlib `json`,
+    deliberately never by importing `ciu` (separate projects; that launcher
+    must run on a fresh clone with zero installs). The cost of that choice is
+    that BOTH sides' unit tests use hand-written fixtures of the other side's
+    output, which is exactly the drift TESTING-METHODOLOGY's "no drifted
+    fixtures at a seam" row warns about: run-gate's suite writes records by
+    hand and this suite reads them by hand, and neither would notice if
+    `to_dict()` and the reader stopped agreeing.
+
+    So: produce a record with the REAL `worktree.create()`, and feed it to
+    the REAL reader, loaded by path (run-gate.py is stdlib-only, so this
+    costs an exec and nothing else). Skipped when the counterpart is not
+    present, which is every checkout of ciu outside this monorepo.
+    """
+
+    @staticmethod
+    def _run_gate():
+        import importlib.util
+
+        script = Path(__file__).resolve().parents[2] / "run-gate.py"
+        if not script.is_file():
+            pytest.skip("run-gate.py is not present beside this checkout")
+        spec = importlib.util.spec_from_file_location("_rg_seam", script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_real_ciu_record_is_ACCEPTED_by_run_gates_real_reader(
+        self, tmp_repo, fake_generate_env
+    ):
+        rg = self._run_gate()
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        tree = record.git_worktree_path
+        # A worktree with no commits of its own is refused on purpose (base
+        # contains HEAD => nothing to judge), so give it real work first.
+        (tree / "feature.txt").write_text("work\n", encoding="utf-8")
+        assert _git(["add", "-A"], tree).returncode == 0
+        assert _git(["commit", "-m", "branch work"], tree).returncode == 0
+
+        base, found, why = rg.recorded_worktree_base(tree, tree, record.ciu_root)
+        assert why == ""
+        assert found == record.record_path
+        # What comes back is the verified fork COMMIT, not the branch name.
+        assert base == record.fork_point_sha
+        assert rg.FULL_SHA_RE.fullmatch(base)
+
+    def test_a_real_ciu_record_is_REFUSED_once_main_absorbs_the_branch(
+        self, tmp_repo, fake_generate_env
+    ):
+        """The false-green three review rounds kept re-finding, end to end."""
+        rg = self._run_gate()
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        tree = record.git_worktree_path
+        (tree / "feature.txt").write_text("work\n", encoding="utf-8")
+        assert _git(["add", "-A"], tree).returncode == 0
+        assert _git(["commit", "-m", "branch work"], tree).returncode == 0
+        assert _git(["merge", "--no-ff", "-m", "merge", record.branch],
+                    tmp_repo).returncode == 0
+        (tree / "after.txt").write_text("more\n", encoding="utf-8")
+        assert _git(["add", "-A"], tree).returncode == 0
+        assert _git(["commit", "-m", "one more"], tree).returncode == 0
+
+        base, found, why = rg.recorded_worktree_base(tree, tree, record.ciu_root)
+        assert base is None
+        assert found == record.record_path
+        assert "MOVED since the record was written" in why
+
+    def test_an_adopt_record_is_refused_by_the_real_reader(
+        self, tmp_repo, fake_generate_env
+    ):
+        """`adopt()` records no fork point AND a frozen commit id as
+        `base_ref`, and the real reader refuses on the latter first — the
+        must-be-a-LOCAL-BRANCH clause, which is precisely the split the
+        run-gate side documents (round 1's false green is caught there, not
+        by the fork-point or containment clauses). Pinning WHICH clause
+        fires matters: if the ordering ever changed so that adopt fell
+        through to a later clause, this would go red rather than silently
+        relying on a guard that no longer runs first."""
+        rg = self._run_gate()
+        wt_path = tmp_repo.parent / "adopted"
+        assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+        assert record.fork_point_sha is None
+        base, found, why = rg.recorded_worktree_base(
+            record.git_worktree_path, record.git_worktree_path, record.ciu_root
+        )
+        assert base is None
+        assert found == record.record_path
+        assert "does not name a local branch" in why
 
 
 class TestManagedRecordValidation:
