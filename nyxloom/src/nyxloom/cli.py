@@ -2386,50 +2386,58 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                  help="Force the adapter instead of auto-detecting from the path")
     extract_parser.add_argument("--json", action="store_true",
                                  help="JSON output instead of delimited text")
-    extract_parser.add_argument("--profile", choices=sorted(PROFILES),
-                                 help="Named preset for the selection-aggressiveness knobs "
-                                      "(--checkpoints/--long-threshold/--max-lifecycle-markers) "
-                                      "-- see session_extract/config.py's PROFILES. --max-words "
-                                      "is a SEPARATE axis: a profile only supplies its own "
-                                      "sensible default for it, still freely overridden by "
-                                      "--max-words. Any individual flag below, if also passed, "
-                                      "overrides that one knob from the chosen profile.")
-    extract_parser.add_argument("--checkpoints", type=int, default=None,
-                                 help="How many recent checkpoints to anchor on (default 5, or "
-                                      "the --profile's value). STOP CONDITION 1 of 3 -- see "
-                                      "--max-words and --max-lifecycle-markers below: the "
-                                      "backward walk halts the instant ANY ONE of these three "
-                                      "trips, whichever comes first. -1 = this condition never "
-                                      "trips (the other two, or the true start of the log, still "
-                                      "bound the walk)")
-    extract_parser.add_argument("--long-threshold", type=int, default=None,
-                                 help="Char threshold for keeping a non-checkpoint comment "
-                                      "(default 180, or the --profile's value); a 'concrete-"
-                                      "finding' comment survives regardless of length -- meaning "
-                                      "classifier.has_finding_signal() matches it (reports a bug, "
-                                      "a fix, or a concrete decision, as opposed to plain "
-                                      "narration like 'Now let's fix the detection'; see "
-                                      "session_extract/classifier.py for the exact patterns)")
-    extract_parser.add_argument("--max-words", type=int, default=None,
-                                 help="Hard output word budget -- target length, independent of "
-                                      "--profile (default 10000, or the --profile's own default "
-                                      "if --profile is set and this isn't). STOP CONDITION 2 of "
-                                      "3 -- see --checkpoints above and --max-lifecycle-markers "
-                                      "below: the backward walk halts the instant ANY ONE of "
-                                      "these three trips, whichever comes first. -1 = this "
-                                      "condition never trips")
-    extract_parser.add_argument("--include-thinking", action="store_true",
-                                 help="Also emit assistant thinking/reasoning content where the "
-                                      "adapter can recover it")
-    extract_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
-                                 help="How many real compaction/[/compact]/[/clear] boundaries "
-                                      "the walk may pass before stopping at one (default 0, or "
-                                      "the --profile's value -- stop at the first). STOP "
-                                      "CONDITION 3 of 3 -- see --checkpoints and --max-words "
-                                      "above: the backward walk halts the instant ANY ONE of "
-                                      "these three trips, whichever comes first. -1 = this "
-                                      "condition never trips (only --max-words/--checkpoints, or "
-                                      "the true start of the log, still bound the walk)")
+
+    selection_group = extract_parser.add_argument_group(
+        "content selection",
+        "What counts as worth keeping, independent of how much survives or where the walk stops "
+        "(see 'stop conditions' below). See session_extract/config.py's ExtractConfig and "
+        "classifier.py for the underlying knobs.")
+    selection_group.add_argument("--profile", choices=sorted(PROFILES),
+                                  help="Named preset for the selection-aggressiveness knobs "
+                                       "(--long-threshold here, --checkpoints/"
+                                       "--max-lifecycle-markers under 'stop conditions' below) "
+                                       "-- see session_extract/config.py's PROFILES. --max-words "
+                                       "is a SEPARATE axis: a profile only supplies its own "
+                                       "sensible default for it, still freely overridden by "
+                                       "--max-words. Any individual flag, if also passed, "
+                                       "overrides that one knob from the chosen profile.")
+    selection_group.add_argument("--long-threshold", type=int, default=None,
+                                  help="Char threshold for keeping a non-checkpoint comment "
+                                       "(default 180, or the --profile's value); a 'concrete-"
+                                       "finding' comment survives regardless of length -- "
+                                       "meaning classifier.has_finding_signal() matches it "
+                                       "(reports a bug, a fix, or a concrete decision, as "
+                                       "opposed to plain narration like 'Now let's fix the "
+                                       "detection'; see session_extract/classifier.py for the "
+                                       "exact patterns)")
+    selection_group.add_argument("--include-thinking", action="store_true",
+                                  help="Also emit assistant thinking/reasoning content where "
+                                       "the adapter can recover it")
+    selection_group.add_argument("--show-api-errors", action="store_true",
+                                  help="Include upstream API-transport noise (429/rate-limit/"
+                                       "overloaded_error) in the output. Off by default -- "
+                                       "these are dropped from selection entirely, not just "
+                                       "length-filtered, since they're a fact about the "
+                                       "harness's API connection, not about session content.")
+
+    stop_group = extract_parser.add_argument_group(
+        "stop conditions (whichever hits first)",
+        "The backward walk (select.py) halts the instant ANY ONE of these three trips, scanning "
+        "from the newest event backward toward the start of the log. Each accepts -1 to mean "
+        "this condition alone never trips (the other two, or reaching the true start of the "
+        "log, still bound the walk).")
+    stop_group.add_argument("--checkpoints", type=int, default=None,
+                             help="How many recent checkpoints to anchor on (default 5, or the "
+                                  "--profile's value)")
+    stop_group.add_argument("--max-words", type=int, default=None,
+                             help="Hard output word budget -- target length, independent of "
+                                  "--profile (default 10000, or the --profile's own default if "
+                                  "--profile is set and this isn't)")
+    stop_group.add_argument("--max-lifecycle-markers", type=int, default=None,
+                             help="How many real compaction/[/compact]/[/clear] boundaries the "
+                                  "walk may pass before stopping at one (default 0, or the "
+                                  "--profile's value -- stop at the first)")
+
     since_group = extract_parser.add_mutually_exclusive_group()
     since_group.add_argument("--since",
                               help="Resume marker from a prior run's last_marker -- only "
@@ -2456,58 +2464,49 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                       "e.g. `--since M1 --until M2` reproduces the exact same "
                                       "extraction on every run instead of drifting as the "
                                       "session grows")
-    extract_parser.add_argument("--ledger", action="store_true",
-                                 help="Append a mechanically-extracted files-touched/commits/"
-                                      "branches/tests line after each kept boundary (E-012, "
-                                      "session_extract/ledger.py). Errors (not silently ignored) "
-                                      "if combined with --json (no JSON equivalent yet) or a "
-                                      "non-Claude-Code format")
-    extract_parser.add_argument("--show-api-errors", action="store_true",
-                                 help="Include upstream API-transport noise (429/rate-limit/"
-                                      "overloaded_error) in the output. Off by default -- these "
-                                      "are dropped from selection entirely, not just length-"
-                                      "filtered, since they're a fact about the harness's API "
-                                      "connection, not about session content.")
-    extract_parser.add_argument("--insert-blank-lines", type=int, default=None,
-                                 help="Blank lines padded around each '---' block separator in "
-                                      "text output (default 1, this package's long-standing "
-                                      "behavior). 1 = one blank line each side (today's default: "
-                                      "'block\\n\\n---\\n\\nblock'). 0 = tight, --- on its own "
-                                      "line, no blank line ('block\\n---\\nblock'). -1 = fused, "
-                                      "--- shares the end of the preceding block's own last line "
-                                      "('block ---\\nblock'). N>1 = N blank lines each side, a "
-                                      "plain generalization of 1. Text mode only -- errors "
-                                      "combined with --json")
-    extract_parser.add_argument("--gap-marker",
-                                 choices=["full", "inline", "inline2", "inline-short", "none"],
-                                 default=None,
-                                 help="How a dropped-content gap is surfaced in text output "
-                                      "(default 'full', this package's long-standing behavior; "
-                                      "unaffected by JSON output, which always reports the true "
-                                      "gap count as a typed field regardless of this setting). "
-                                      "'full': its own standalone block, '[gap: N records "
-                                      "omitted]', separated like any other block (today's "
-                                      "default). 'inline': same text, folded into the separator "
-                                      "instead of its own block -- '--- [gap: N records omitted] "
-                                      "---'. 'inline2': terser count, '--- ... Nx ... ---'. "
-                                      "'inline-short': no count at all, just '--- ... ---' (a gap "
-                                      "happened, magnitude not stated). 'none': suppressed "
-                                      "entirely in text output -- a reader cannot tell a gap "
-                                      "happened. Text mode only -- errors combined with --json")
-    extract_parser.add_argument("--min-gap-records", type=int, default=None,
-                                 help="Smallest raw-record gap between two kept events worth "
-                                      "surfacing via --gap-marker (default 3, or the --profile's "
-                                      "value); below this, nothing is rendered regardless of "
-                                      "--gap-marker's mode. JSON output is unaffected -- it "
-                                      "always reports the true gap_after count. Text mode only "
-                                      "-- errors combined with --json")
-    extract_parser.add_argument("--show-gap-source", action="store_true",
-                                 help="Append the adapter's own opaque marker token to each gap "
-                                      "note ('...raw log continues after marker <marker>') -- "
-                                      "the exact same token --since/--until resolve, a 'go look "
-                                      "it up yourself' pointer into the raw log. Off by default. "
-                                      "No effect under --gap-marker=none. Text mode only -- "
-                                      "errors combined with --json")
+    render_group = extract_parser.add_argument_group(
+        "rendering",
+        "Text-mode output shape only -- JSON output is unaffected, always reporting "
+        "full-fidelity data as typed fields regardless of these. Each errors if combined with "
+        "--json rather than silently having no effect.")
+    render_group.add_argument("--ledger", action="store_true",
+                               help="Append a mechanically-extracted files-touched/commits/"
+                                    "branches/tests line after each kept boundary (E-012, "
+                                    "session_extract/ledger.py). Claude Code only -- errors on "
+                                    "any other format")
+    render_group.add_argument("--insert-blank-lines", type=int, default=None,
+                               help="Blank lines padded around each '---' block separator "
+                                    "(default 1, this package's long-standing behavior). 1 = "
+                                    "one blank line each side (today's default: "
+                                    "'block\\n\\n---\\n\\nblock'). 0 = tight, --- on its own "
+                                    "line, no blank line ('block\\n---\\nblock'). -1 = fused, "
+                                    "--- shares the end of the preceding block's own last line "
+                                    "('block ---\\nblock'). N>1 = N blank lines each side, a "
+                                    "plain generalization of 1")
+    render_group.add_argument("--gap-marker",
+                               choices=["full", "inline", "inline2", "inline-short", "none"],
+                               default=None,
+                               help="How a dropped-content gap is surfaced (default 'full', "
+                                    "this package's long-standing behavior). 'full': its own "
+                                    "standalone block, '[gap: N records omitted]', separated "
+                                    "like any other block (today's default). 'inline': same "
+                                    "text, folded into the separator instead of its own block "
+                                    "-- '--- [gap: N records omitted] ---'. 'inline2': terser "
+                                    "count, '--- ... Nx ... ---'. 'inline-short': no count at "
+                                    "all, just '--- ... ---' (a gap happened, magnitude not "
+                                    "stated). 'none': suppressed entirely -- a reader cannot "
+                                    "tell a gap happened")
+    render_group.add_argument("--min-gap-records", type=int, default=None,
+                               help="Smallest raw-record gap between two kept events worth "
+                                    "surfacing via --gap-marker (default 3, or the --profile's "
+                                    "value); below this, nothing is rendered regardless of "
+                                    "--gap-marker's mode")
+    render_group.add_argument("--show-gap-source", action="store_true",
+                               help="Append the adapter's own opaque marker token to each gap "
+                                    "note ('...raw log continues after marker <marker>') -- the "
+                                    "exact same token --since/--until resolve, a 'go look it up "
+                                    "yourself' pointer into the raw log. Off by default. No "
+                                    "effect under --gap-marker=none")
 
     # extract-lossless
     extract_lossless_parser = subparsers.add_parser(
