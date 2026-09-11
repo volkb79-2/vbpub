@@ -222,12 +222,14 @@ constrained the interface or turned up a real bug:
   answers in mind."`). `_split_qa_pairs`/`_format_qa_pairs` re-split that
   string back into per-question `(question, answer)` pairs — anchored on
   each question's own verbatim text from `tool_use.input.questions`, not
-  the varying boilerplate — and render each as the question text, every
-  declared option as a bullet list, a blank line, then
+  the varying boilerplate — and render each as an `INTERVIEW: <question
+  text>` line, every declared option as a bullet list, a blank line, then
   `OPERATOR: <answer>`, one block per question with a blank line between
   blocks (operator-reported finding, 2026-09-10: the raw flattened string,
   including its "OPERATOR: The user answered: ..." framing, used to be
-  passed straight through as the rendered operator turn). Falls back to
+  passed straight through as the rendered operator turn; `INTERVIEW: `
+  question prefix added 2026-09-11, operator direction, so a question
+  reads as a labeled question at a glance). Falls back to
   the unmodified raw string the moment an expected marker isn't found — a
   harness rendering change this adapter hasn't seen yet.
   Real schema quirks found only by running against live files, not
@@ -354,8 +356,10 @@ chain two real hops and assert the second returns nothing, not a replay.
 
 ## Lossless dump
 
-`nyxloom extract --lossless` (Claude Code, Codex, and opencode today,
-`lossless.py`) bypasses classification/windowing entirely: it keeps every text/thinking
+`nyxloom extract-lossless` (Claude Code, Codex, and opencode today,
+`lossless.py`; a separate verb from `extract` since 2026-09-11 -- see `cli.py`'s
+`cmd_extract_lossless` docstring for why) bypasses classification/windowing
+entirely: it keeps every text/thinking
 content block verbatim and drops only `tool_use`/`tool_result` blocks and
 non-conversational bookkeeping records, with no `isMeta`/task-notification/
 AskUserQuestion-pairing logic at all. It's deliberately NOT the smart
@@ -448,7 +452,7 @@ extraction — which is precisely why it costs a real API round-trip
 this tool's own development session) instead of being free like this tool.
 
 A future design point, not yet implemented: on a genuine cold restart with
-no prefix-cache reuse worth preserving, hand an agent the `--lossless`
+no prefix-cache reuse worth preserving, hand an agent the `extract-lossless`
 dump for the segment being retired and ask it to describe, in its own
 words, what should be remembered from it — especially anything that exists
 ONLY in tool output — then prepend that agent-authored condensation before
@@ -488,7 +492,7 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   individually lack `ordinal`, is fixed and covered by regression tests
   (see "Delta extraction" above); only a hop that crosses the schema-version
   boundary mid-chain is the still-open gap.
-- `--lossless` and `session-stats` now both support Claude Code, Codex, and
+- `extract-lossless` and `session-stats` now both support Claude Code, Codex, and
   opencode (2026-09-10) -- see `stats.py`/`lossless.py`'s own module
   docstrings for the real per-format usage-ledger shape and gaps each
   found (incl. a correction to `adapters/codex.py`'s own claim about

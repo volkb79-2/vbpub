@@ -1,12 +1,16 @@
-"""CLI-level tests for `nyxloom extract`, exercising cli.main() end to end
-(argparse -> cmd_extract) rather than calling session_extract functions
-directly -- covers the --lossless/--until wiring cmd_extract itself owns.
+"""CLI-level tests for `nyxloom extract` and `nyxloom extract-lossless`,
+exercising cli.main() end to end (argparse -> cmd_extract/
+cmd_extract_lossless) rather than calling session_extract functions
+directly -- covers the --until wiring and the extract-lossless dispatch
+these two commands own.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pytest
 
 from nyxloom import cli
 
@@ -95,7 +99,7 @@ def _write_opencode_fixture(tmp_path: Path, n_sessions: int = 1) -> Path:
 
 def test_extract_lossless_dumps_prose_and_drops_tool_calls(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["extract", str(fp), "--lossless"])
+    exit_code = cli.main(["extract-lossless", str(fp)])
     out = capsys.readouterr().out
 
     assert exit_code == 0
@@ -108,27 +112,27 @@ def test_extract_lossless_dumps_prose_and_drops_tool_calls(tmp_path, capsys):
 
 
 def test_extract_lossless_works_for_codex_too(tmp_path, capsys):
-    # codex is now a supported --lossless format (was errored-out once);
-    # the genuinely-unsupported-format path is covered separately below.
+    # codex is now a supported extract-lossless format (was errored-out
+    # once); the genuinely-unsupported-format path is covered separately
+    # below.
     fp = _write_codex_fixture(tmp_path)
-    exit_code = cli.main(["extract", str(fp), "--lossless"])
+    exit_code = cli.main(["extract-lossless", str(fp)])
     out = capsys.readouterr().out
 
     assert exit_code == 0
     assert "hi" in out
 
 
-def test_extract_format_flag_rejects_an_unregistered_adapter_name(tmp_path, capsys):
+def test_extract_lossless_format_flag_rejects_an_unregistered_adapter_name(tmp_path, capsys):
     # --format's argparse choices are exactly the three registered
-    # adapters -- an unregistered name is rejected before cmd_extract (or
-    # its --lossless dispatch) ever runs, whether --lossless is passed or
-    # not; the "unsupported format" branch inside cmd_extract's --lossless
-    # dispatch itself is therefore reachable only via a future 4th adapter
-    # that gets auto-DETECTED without also being added to --format's
-    # choices/the lossless dispatch -- not exercisable against today's
-    # registered adapter set.
+    # adapters -- an unregistered name is rejected before cmd_extract_lossless
+    # ever runs; the "unsupported format" branch inside cmd_extract_lossless
+    # itself is therefore reachable only via a future 4th adapter that gets
+    # auto-DETECTED without also being added to --format's choices/the
+    # lossless dispatch -- not exercisable against today's registered
+    # adapter set.
     fp = _write_codex_fixture(tmp_path)
-    exit_code = cli.main(["extract", str(fp), "--lossless", "--format", "does-not-exist"])
+    exit_code = cli.main(["extract-lossless", str(fp), "--format", "does-not-exist"])
     assert exit_code == 2
     assert "invalid choice" in capsys.readouterr().err
 
@@ -205,6 +209,97 @@ def test_extract_ledger_rejects_non_claude_code_format(tmp_path, capsys):
     exit_code = cli.main(["extract", str(fp), "--ledger"])
     assert exit_code == 1
     assert "--ledger does not support 'codex'" in capsys.readouterr().err
+
+
+# --- --insert-blank-lines / --gap-marker / --min-gap-records / ------------
+# --- --show-gap-source CLI wiring (2026-09-11 operator direction) ---------
+
+def _write_gap_fixture(tmp_path: Path) -> Path:
+    # A checkpoint, then several short/no-finding-signal records dropped by
+    # the default long_comment_chars bar, then a second checkpoint -- forces
+    # a real gap_after annotation between the two kept checkpoints.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "please look into this"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "## Status\n\nDone -- everything landed, main clean at `abc123`."
+             )}]}),
+    ]
+    for i in range(5):
+        records.append(_rec(type="assistant", uuid=f"drop{i}", timestamp=f"2026-01-01T00:00:{2+i:02d}Z",
+                             message={"role": "assistant", "content": [{"type": "text", "text": "ok"}]}))
+    records.append(_rec(type="assistant", uuid="a2", timestamp="2026-01-01T00:00:10Z",
+                         message={"role": "assistant", "content": [{"type": "text", "text": (
+                             "## Second status\n\nAlso done -- second checkpoint clean at `def456`."
+                         )}]}))
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_extract_gap_marker_inline_folds_gap_into_the_separator(tmp_path, capsys):
+    fp = _write_gap_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--gap-marker", "inline"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "--- [gap:" in out
+
+
+def test_extract_insert_blank_lines_zero_is_tight(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--insert-blank-lines", "0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\n\n---\n\n" not in out
+    assert "\n---\n" in out
+
+
+def test_extract_min_gap_records_lowers_the_threshold(tmp_path, capsys):
+    fp = _write_gap_fixture(tmp_path)
+    # default threshold (3) would already catch this fixture's 5-record gap;
+    # confirm the flag reaches ExtractConfig by using a wider gate and a
+    # threshold high enough to suppress it, then lowering the threshold back
+    exit_code = cli.main(["extract", str(fp), "--min-gap-records", "100"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "[gap:" not in out
+
+    exit_code = cli.main(["extract", str(fp), "--min-gap-records", "1"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "[gap:" in out
+
+
+def test_extract_show_gap_source_names_the_marker(tmp_path, capsys):
+    fp = _write_gap_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--show-gap-source"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "raw log continues after marker" in out
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--insert-blank-lines", "0"),
+    ("--gap-marker", "inline"),
+    ("--min-gap-records", "1"),
+])
+def test_extract_render_only_flags_reject_json(tmp_path, capsys, flag, value):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--json", flag, value])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "only affect" in err
+    assert flag in err
+
+
+def test_extract_show_gap_source_rejects_json(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--json", "--show-gap-source"])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "--show-gap-source" in err
+    assert "only affect" in err
 
 
 def test_extract_debug_shows_dropped_content_as_a_gap_note(tmp_path, capsys):
@@ -465,7 +560,7 @@ def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
 
 def test_extract_lossless_opencode_single_session_needs_no_session_flag(tmp_path, capsys):
     db = _write_opencode_fixture(tmp_path, n_sessions=1)
-    exit_code = cli.main(["extract", str(db), "--lossless"])
+    exit_code = cli.main(["extract-lossless", str(db)])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
@@ -474,11 +569,11 @@ def test_extract_lossless_opencode_single_session_needs_no_session_flag(tmp_path
 
 def test_extract_lossless_opencode_multi_session_requires_session_flag(tmp_path, capsys):
     db = _write_opencode_fixture(tmp_path, n_sessions=2)
-    exit_code = cli.main(["extract", str(db), "--lossless"])
+    exit_code = cli.main(["extract-lossless", str(db)])
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["extract", str(db), "--lossless", "--session", "s0"])
+    exit_code = cli.main(["extract-lossless", str(db), "--session", "s0"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out

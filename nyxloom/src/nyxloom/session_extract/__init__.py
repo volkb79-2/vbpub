@@ -35,6 +35,8 @@ class ExtractResult:
         return render.render_text(
             self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker,
             ledger=self._ledger,
+            insert_blank_lines=self._insert_blank_lines,
+            gap_marker_mode=self._gap_marker_mode,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -42,6 +44,8 @@ class ExtractResult:
     _checkpoint_threshold: float = 3.0
     _min_gap_to_annotate: int = 3
     _gap_note_show_marker: bool = False
+    _insert_blank_lines: int = 1
+    _gap_marker_mode: str = "full"
     # E-012 (ledger.py) -- opt-in, built and attached by cli.py's cmd_extract
     # when --ledger is passed; None means "not requested," skipped entirely.
     _ledger: dict[str, Ledger] | None = None
@@ -109,4 +113,6 @@ def extract(
     result._checkpoint_threshold = config.checkpoint_score_threshold
     result._min_gap_to_annotate = config.min_gap_to_annotate
     result._gap_note_show_marker = config.gap_note_show_marker
+    result._insert_blank_lines = config.insert_blank_lines
+    result._gap_marker_mode = config.gap_marker_mode
     return result

@@ -30,7 +30,14 @@ from dataclasses import dataclass
 
 @dataclass
 class ExtractConfig:
+    # --- Three independent walk-stop conditions (max_checkpoints, max_words,
+    # max_lifecycle_markers below): select.py's backward walk halts the
+    # instant ANY ONE of them trips, whichever comes first. Each accepts -1
+    # to mean "never trips due to this condition" -- setting all three to
+    # their permissive extreme walks the entire log unconditionally.
+
     # How many of the most-recent detected checkpoints to anchor on.
+    # -1 = never stop due to checkpoint count (see the group note above).
     max_checkpoints: int = 5
 
     # classifier.py score (see CheckpointClassifier.WEIGHTS) an ASSISTANT_TEXT
@@ -58,6 +65,7 @@ class ExtractConfig:
     # Hard output budget. Selection walks backward from the end and stops
     # accepting older material once this is exceeded -- the trim always
     # happens at the OLD end, never by truncating something already kept.
+    # -1 = never stop due to word count (see the group note above).
     max_words: int = 10_000
 
     # THINKING events are dropped at parse time unless this is set.
@@ -76,10 +84,11 @@ class ExtractConfig:
     # withhold from normal use.
     until_marker: str | None = None
 
-    # How many LIFECYCLE_MARKER events (a real compaction boundary, or an
-    # operator /compact//clear) the backward walk is allowed to walk PAST
-    # before finally hard-stopping at one, instead of stopping at the very
-    # first one it meets.
+    # The third of the three independent walk-stop conditions (see the group
+    # note above max_checkpoints). How many LIFECYCLE_MARKER events (a real
+    # compaction boundary, or an operator /compact//clear) the backward walk
+    # is allowed to walk PAST before finally hard-stopping at one, instead of
+    # stopping at the very first one it meets.
     #   0  -- current/default behavior: stop at (and keep) the first marker
     #         encountered. Every marker's own label text ("[compact
     #         boundary]", "[compact summary]", "[/compact] ...") is kept
@@ -129,6 +138,45 @@ class ExtractConfig:
     # default (see render.py's module docstring): most readers most of the
     # time only need to know a gap existed, not recover it.
     gap_note_show_marker: bool = False
+
+    # Text rendering only (2026-09-11, operator direction): how many blank
+    # lines render.py pads around each "---" block separator.
+    #    1  -- default, this package's long-standing behavior: one blank
+    #          line on each side ("block\n\n---\n\nblock").
+    #    0  -- tight: "---" gets its own line, no blank line either side
+    #          ("block\n---\nblock").
+    #   -1  -- fused: "---" (and any embedded gap text -- see
+    #          gap_marker_mode below) shares the END of the preceding
+    #          block's last line, separated by one space, no blank line
+    #          ("block ---\nblock").
+    #    N>1 -- N blank lines on each side, a plain generalization of 1.
+    insert_blank_lines: int = 1
+
+    # Text rendering only (2026-09-11, operator direction): how a kept
+    # event's gap_after annotation (select.py's own meta field -- a raw-
+    # record gap to the next-newer kept event, at/above min_gap_to_annotate
+    # above) is surfaced.
+    #   "full"        -- default, this package's long-standing behavior: a
+    #                    STANDALONE block of its own ("[gap: N records
+    #                    omitted]"), separated from its neighbors by the
+    #                    same insert_blank_lines-controlled separator as
+    #                    everything else.
+    #   "inline"      -- embedded directly in the separator's dashes
+    #                    instead of its own block: "--- [gap: N records
+    #                    omitted] ---".
+    #   "inline2"     -- same placement, terser count notation: "--- ... Nx
+    #                    ... ---".
+    #   "inline-short" -- same placement, no count at all, just "--- ... ---"
+    #                    (a gap happened, magnitude not stated).
+    #   "none"        -- suppressed entirely -- a reader cannot tell a gap
+    #                    happened at all from the rendered text (JSON
+    #                    rendering is unaffected either way -- it always
+    #                    reports the true gap_after count, per
+    #                    min_gap_to_annotate's own comment above).
+    # gap_note_show_marker above still applies to "full"/the three inline
+    # variants (appending the adapter's own marker token) but is a no-op
+    # under "none".
+    gap_marker_mode: str = "full"
 
     # Upstream API-transport noise (429/rate-limit/overloaded_error --
     # adapters/claude_code.py's own "[API ERROR: ...]" tag,

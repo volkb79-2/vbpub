@@ -153,14 +153,18 @@ def _split_qa_pairs(text: str, questions: list[Any]) -> list[tuple[str, str]] | 
 
 
 def _format_qa_pairs(text: str, questions: list[Any]) -> str:
-    """Render an AskUserQuestion tool_result as, per question: the question
-    text, every declared option as a bullet list, a blank line, then
-    `OPERATOR: <the actual answer>` -- a batch answering several questions
-    at once gets one such block per question, blank line between blocks
-    (operator-reported, 2026-09-10: the harness's own verbatim
-    '"Q"="A"'-joined string was unreadable). Falls back to the raw string
-    unmodified if re-splitting doesn't line up (see _split_qa_pairs) --
-    never raises, never silently drops content it couldn't parse.
+    """Render an AskUserQuestion tool_result as, per question: an
+    `INTERVIEW: <question text>` line, every declared option as a bullet
+    list, a blank line, then `OPERATOR: <the actual answer>` -- a batch
+    answering several questions at once gets one such block per question,
+    blank line between blocks (operator-reported, 2026-09-10: the harness's
+    own verbatim '"Q"="A"'-joined string was unreadable; INTERVIEW: prefix
+    added 2026-09-11, operator direction, so a question line reads as a
+    labeled question at a glance, distinct from the OPERATOR: answer below
+    it and from unprefixed prose elsewhere in the render). Falls back to
+    the raw string unmodified if re-splitting doesn't line up (see
+    _split_qa_pairs) -- never raises, never silently drops content it
+    couldn't parse.
     """
     if not questions:
         return text
@@ -170,7 +174,7 @@ def _format_qa_pairs(text: str, questions: list[Any]) -> str:
     blocks = []
     for (qtext, answer), q in zip(pairs, questions):
         options = q.get("options") if isinstance(q, dict) else None
-        lines = [qtext]
+        lines = [f"INTERVIEW: {qtext}"]
         if isinstance(options, list):
             for opt in options:
                 label = opt.get("label") if isinstance(opt, dict) else None

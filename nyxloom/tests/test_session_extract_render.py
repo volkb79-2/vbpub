@@ -237,6 +237,115 @@ def test_render_text_stop_reason_show_marker_off_by_default():
     assert "op-uuid-000" not in text
 
 
+# --- insert_blank_lines / gap_marker_mode (2026-09-11 operator direction) --
+
+def test_render_text_insert_blank_lines_default_matches_long_standing_behavior():
+    events = [_ev(EventKind.OPERATOR_TEXT, "a", marker="op0"), _ev(EventKind.OPERATOR_TEXT, "b", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None)
+    assert "OPERATOR: a\n\n---\n\nOPERATOR: b\n" == text
+
+
+def test_render_text_insert_blank_lines_zero_is_tight_no_blank_line():
+    events = [_ev(EventKind.OPERATOR_TEXT, "a", marker="op0"), _ev(EventKind.OPERATOR_TEXT, "b", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None, insert_blank_lines=0)
+    assert "OPERATOR: a\n---\nOPERATOR: b\n" == text
+
+
+def test_render_text_insert_blank_lines_negative_one_fuses_onto_prior_line():
+    events = [_ev(EventKind.OPERATOR_TEXT, "a", marker="op0"), _ev(EventKind.OPERATOR_TEXT, "b", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None, insert_blank_lines=-1)
+    assert "OPERATOR: a ---\nOPERATOR: b\n" == text
+
+
+def test_render_text_insert_blank_lines_generalizes_above_one():
+    events = [_ev(EventKind.OPERATOR_TEXT, "a", marker="op0"), _ev(EventKind.OPERATOR_TEXT, "b", marker="op1")]
+    text = render_text(events, fmt="claude-code", last_marker=None, insert_blank_lines=2)
+    assert "OPERATOR: a\n\n\n---\n\n\nOPERATOR: b\n" == text
+
+
+def test_render_text_gap_marker_full_is_the_default_standalone_block():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None)
+    assert "older\n\n---\n\n[gap: 8 records omitted]\n\n---\n\nnewer\n" == text
+
+
+def test_render_text_gap_marker_inline_folds_into_the_separator():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline")
+    assert "older\n\n--- [gap: 8 records omitted] ---\n\nnewer\n" == text
+    # no standalone gap block -- exactly one "---" pair, not two
+    assert text.count("---") == 2
+
+
+def test_render_text_gap_marker_inline2_uses_terse_count_notation():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline2")
+    assert "--- ... 8x ... ---" in text
+    assert "records" not in text
+
+
+def test_render_text_gap_marker_inline_short_states_no_count():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline-short")
+    assert "older\n\n--- ... ---\n\nnewer\n" == text
+
+
+def test_render_text_gap_marker_none_suppresses_the_gap_entirely():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="none")
+    assert "older\n\n---\n\nnewer\n" == text
+    assert "8" not in text
+
+
+def test_render_text_gap_marker_inline_respects_min_gap_to_annotate():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "2"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text([older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline")
+    assert "gap" not in text
+    assert "older\n\n---\n\nnewer\n" == text
+
+
+def test_render_text_gap_marker_inline_combined_with_show_gap_marker():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op-uuid-123")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text(
+        [older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline", show_gap_marker=True
+    )
+    assert "--- [gap: 8 records omitted] -- raw log continues after marker op-uuid-123 ---" in text
+
+
+def test_render_text_gap_marker_inline_combined_with_tight_blank_lines():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text(
+        [older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline", insert_blank_lines=0
+    )
+    assert "older\n--- [gap: 8 records omitted] ---\nnewer\n" == text
+
+
+def test_render_text_gap_marker_inline_combined_with_fused_blank_lines():
+    older = _ev(EventKind.ASSISTANT_TEXT, "older", marker="op0")
+    older.meta["gap_after"] = "8"
+    newer = _ev(EventKind.ASSISTANT_TEXT, "newer", marker="op1")
+    text = render_text(
+        [older, newer], fmt="claude-code", last_marker=None, gap_marker_mode="inline", insert_blank_lines=-1
+    )
+    assert "older --- [gap: 8 records omitted] ---\nnewer\n" == text
+
+
 # --- ledger param (E-012) -------------------------------------------------
 
 def test_render_text_ledger_none_by_default_inserts_nothing():

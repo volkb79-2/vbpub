@@ -105,6 +105,7 @@ _LEDGER_BOUNDARY_KINDS = (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.
 
 
 def _gap_note(ev: NormalizedEvent, min_gap_to_annotate: int, show_marker: bool) -> str | None:
+    """"full" gap_marker_mode's own STANDALONE block -- see render_text."""
     raw = ev.meta.get("gap_after")
     if not raw or int(raw) < min_gap_to_annotate:
         return None
@@ -114,6 +115,43 @@ def _gap_note(ev: NormalizedEvent, min_gap_to_annotate: int, show_marker: bool) 
     return f"[gap: {raw} {unit} omitted]"
 
 
+# The three gap_marker_mode values embedded IN the block separator's dashes
+# (config.py's own gap_marker_mode comment has the full picture) -- "full"
+# and "none" don't use this table: "full" builds its own standalone block
+# via _gap_note above, "none" suppresses the gap entirely.
+_GAP_INLINE_TEXT = {
+    "inline": lambda raw, unit: f"[gap: {raw} {unit} omitted]",
+    "inline2": lambda raw, unit: f"... {raw}x ...",
+    "inline-short": lambda raw, unit: "...",
+}
+
+
+def _gap_inline_text(ev: NormalizedEvent, min_gap_to_annotate: int, gap_marker_mode: str, show_marker: bool) -> str | None:
+    if gap_marker_mode not in _GAP_INLINE_TEXT:
+        return None
+    raw = ev.meta.get("gap_after")
+    if not raw or int(raw) < min_gap_to_annotate:
+        return None
+    unit = "record" if raw == "1" else "records"
+    text = _GAP_INLINE_TEXT[gap_marker_mode](raw, unit)
+    if show_marker:
+        text = f"{text} -- raw log continues after marker {ev.marker}"
+    return text
+
+
+def _separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
+    """The block-join separator -- see config.py's insert_blank_lines
+    comment for the -1/0/N>=1 semantics. inline_text, when given, is
+    embedded between the marker's two dash groups ("--- <text> ---")
+    instead of a bare "---" -- gap_marker_mode's inline/inline2/inline-short
+    modes (see _gap_inline_text above)."""
+    marker = f"--- {inline_text} ---" if inline_text else "---"
+    if insert_blank_lines == -1:
+        return f" {marker}\n"
+    pad = "\n" * (insert_blank_lines + 1)
+    return f"{pad}{marker}{pad}"
+
+
 def render_text(
     events: list[NormalizedEvent],
     fmt: str,
@@ -121,8 +159,23 @@ def render_text(
     min_gap_to_annotate: int = 3,
     show_gap_marker: bool = False,
     ledger: dict[str, Ledger] | None = None,
+    insert_blank_lines: int = 1,
+    gap_marker_mode: str = "full",
 ) -> str:
-    blocks = []
+    plain_sep = _separator(insert_blank_lines)
+    parts: list[str] = []
+    seps: list[str] = []
+    pending_sep: str | None = None  # a gap-embedding separator queued by the
+    # PREVIOUS block, consumed by the next _add() call (or left unused if
+    # there is no next block -- harmless, nothing left to separate).
+
+    def _add(text: str) -> None:
+        nonlocal pending_sep
+        if parts:
+            seps.append(pending_sep if pending_sep is not None else plain_sep)
+        pending_sep = None
+        parts.append(text)
+
     if events:
         stop_reason = events[0].meta.get("walk_stopped_because")
         if stop_reason:
@@ -130,18 +183,27 @@ def render_text(
             note = f"[older session content exists but was not included -- {explanation}]"
             if show_gap_marker:
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
-            blocks.append(note)
+            _add(note)
     for ev in events:
         prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
-        blocks.append(f"{prefix}{ev.text}")
+        _add(f"{prefix}{ev.text}")
         if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():
-                blocks.append(entry.render())
-        gap = _gap_note(ev, min_gap_to_annotate, show_gap_marker)
-        if gap:
-            blocks.append(gap)
-    body = "\n\n---\n\n".join(blocks) + "\n"
+                _add(entry.render())
+        if gap_marker_mode == "full":
+            gap = _gap_note(ev, min_gap_to_annotate, show_gap_marker)
+            if gap:
+                _add(gap)
+        elif gap_marker_mode != "none":
+            inline_text = _gap_inline_text(ev, min_gap_to_annotate, gap_marker_mode, show_gap_marker)
+            if inline_text:
+                pending_sep = _separator(insert_blank_lines, inline_text)
+
+    body = parts[0] if parts else ""
+    for text, sep in zip(parts[1:], seps):
+        body += sep + text
+    body += "\n"
     if last_marker is None:
         return body
     return body + f"\n<!-- nyxloom-extract: format={fmt} marker={last_marker} -->\n"

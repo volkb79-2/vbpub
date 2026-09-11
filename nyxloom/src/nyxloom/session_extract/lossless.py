@@ -53,9 +53,10 @@ adapters/codex.py rather than re-deriving them: `_TOP_LEVEL_TYPES` (the
 event_msg/compacted top-level-type filter that defines codex.py's OWN
 ordinal-fallback marker space -- diverging from it here would silently
 break --since/--until chaining between `nyxloom extract --format codex` and
-`--lossless --format codex`, exactly the reproducible-comparison use case
-point 1 above names) and `_item_text` (a pure content-block-text extractor,
-not a classification decision). Everything about WHAT counts as prose to
+`nyxloom extract-lossless --format codex`, exactly the reproducible-
+comparison use case point 1 above names) and `_item_text` (a pure
+content-block-text extractor, not a classification decision). Everything
+about WHAT counts as prose to
 keep is independently re-derived here, same as `dump_claude_code`.
 
 `dump_codex` also found the same real-data surprise `stats.py`'s own

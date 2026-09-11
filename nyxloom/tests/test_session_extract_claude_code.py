@@ -104,7 +104,7 @@ def test_parse_shapes(tmp_path):
     # own flattened '"Q"="A"' string verbatim (operator-reported, 2026-09-10)
     qa = next(e for e in events if e.marker == "u4")
     assert qa.kind is EventKind.QA_PAIR
-    assert qa.text == "Which host?\n- A\n\nOPERATOR: A"
+    assert qa.text == "INTERVIEW: Which host?\n- A\n\nOPERATOR: A"
     # /compact is promoted to a lifecycle marker, not plain operator text
     compact_ev = next(e for e in events if e.marker == "u6")
     assert compact_ev.kind is EventKind.LIFECYCLE_MARKER
@@ -667,13 +667,13 @@ def test_format_qa_pairs_single_question_read_carefully_boilerplate():
             "request clarification, changes, or that you not proceed -- and follow what "
             "they actually say.")
     out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B", "C")])
-    assert out == "Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
+    assert out == "INTERVIEW: Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
 
 
 def test_format_qa_pairs_single_question_continue_boilerplate():
     text = 'Your questions have been answered: "Pick one?"="B". You can now continue with these answers in mind.'
     out = claude_code._format_qa_pairs(text, [_q("Pick one?", "A", "B", "C")])
-    assert out == "Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
+    assert out == "INTERVIEW: Pick one?\n- A\n- B\n- C\n\nOPERATOR: B"
 
 
 def test_format_qa_pairs_multi_question_batch_gets_one_block_each():
@@ -682,9 +682,9 @@ def test_format_qa_pairs_multi_question_batch_gets_one_block_each():
             "that you not proceed -- and follow what they actually say.")
     out = claude_code._format_qa_pairs(text, [_q("First?", "yes", "no"), _q("Second?", "x", "y")])
     assert out == (
-        "First?\n- yes\n- no\n\nOPERATOR: yes"
+        "INTERVIEW: First?\n- yes\n- no\n\nOPERATOR: yes"
         "\n\n"
-        "Second?\n- x\n- y\n\nOPERATOR: custom free text here"
+        "INTERVIEW: Second?\n- x\n- y\n\nOPERATOR: custom free text here"
     )
 
 
@@ -755,7 +755,7 @@ def test_format_qa_pairs_skips_a_question_whose_options_is_not_a_list():
     text = 'The user answered: "Pick one?"="A".'
     malformed = {"question": "Pick one?", "header": "h", "multiSelect": False, "options": None}
     out = claude_code._format_qa_pairs(text, [malformed])
-    assert out == "Pick one?\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_skips_an_option_with_no_label():
@@ -763,7 +763,7 @@ def test_format_qa_pairs_skips_an_option_with_no_label():
     q = {"question": "Pick one?", "header": "h", "multiSelect": False,
          "options": [{"description": "no label here"}, {"label": "A", "description": "d"}]}
     out = claude_code._format_qa_pairs(text, [q])
-    assert out == "Pick one?\n- A\n\nOPERATOR: A"
+    assert out == "INTERVIEW: Pick one?\n- A\n\nOPERATOR: A"
 
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():

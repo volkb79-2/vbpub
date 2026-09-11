@@ -40,8 +40,17 @@ Windowing contract:
     is allowed to pass before it finally stops at one -- see config.py;
   - once max_checkpoints have been found, the walk stops immediately
     (the window never reaches further back than the oldest of the target
-    checkpoints);
-  - once the cumulative word count exceeds max_words, the walk stops.
+    checkpoints) -- max_checkpoints=-1 disables this condition entirely;
+  - once the cumulative word count exceeds max_words, the walk stops --
+    max_words=-1 disables this condition entirely.
+
+These three (max_checkpoints, max_words, max_lifecycle_markers) are
+independent stop conditions checked every iteration -- the walk halts the
+instant ANY ONE of them trips, whichever comes first scanning backward from
+the newest event. Each accepts -1 to mean "never trips due to this
+condition"; with all three at their permissive extreme (max_checkpoints=-1,
+max_words=-1, max_lifecycle_markers=-1) the walk only stops at the true
+start of the log.
 
 Two annotations, purely additive via NormalizedEvent.meta (never the return
 type or an event's own .text -- so this changes nothing about equality
@@ -129,7 +138,7 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
                 checkpoints_found += 1
                 _keep(ev)
                 word_count += len(ev.text.split())
-                if checkpoints_found >= config.max_checkpoints:
+                if config.max_checkpoints != -1 and checkpoints_found >= config.max_checkpoints:
                     if kept:
                         kept[-1].meta["walk_stopped_because"] = "max_checkpoints"
                     break
@@ -137,7 +146,7 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
                 _keep(ev)
                 word_count += len(ev.text.split())
 
-        if word_count > config.max_words:
+        if config.max_words != -1 and word_count > config.max_words:
             if kept:
                 kept[-1].meta["walk_stopped_because"] = "max_words"
             break

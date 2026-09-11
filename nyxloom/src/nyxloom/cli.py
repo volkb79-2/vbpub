@@ -660,11 +660,34 @@ def cmd_render(args) -> int:
     return 0
 
 
+def _resolve_since_marker(args) -> tuple[str | None, int | None]:
+    """Resolve --since/--since-file (shared by `extract` and
+    `extract-lossless`) into an opaque marker. Returns (marker, None) on
+    success, or (None, exit_code) after printing an error -- --since-file's
+    embedded (format, marker) is cross-checked against --format/the
+    auto-detected one, since a marker minted by one adapter is meaningless
+    fed into another.
+    """
+    from pathlib import Path
+
+    from .session_extract import read_since_marker
+
+    since_marker = args.since
+    if args.since_file:
+        since_format, since_marker = read_since_marker(Path(args.since_file))
+        if args.format and args.format != since_format:
+            print(f"error: --since-file was produced by the {since_format!r} adapter, "
+                  f"but --format={args.format!r} was requested", file=sys.stderr)
+            return None, 1
+    return since_marker, None
+
+
 def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
     [--max-lifecycle-markers N] [--since MARKER | --since-file PATH]
-    [--until MARKER] [--lossless] [--show-api-errors]
+    [--until MARKER] [--ledger] [--show-api-errors] [--insert-blank-lines N]
+    [--gap-marker MODE] [--min-gap-records N] [--show-gap-source]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -672,6 +695,10 @@ def cmd_extract(args) -> int:
     Codex CLI JSONL file, or an opencode SQLite store); --format overrides
     when detection is ambiguous or wrong. Prints the resumable brief to
     stdout: delimited text by default, or --json for a second-stage tool.
+    For a raw, unclassified verbatim dump instead of this command's
+    classification/windowing, see `extract-lossless` -- a separate verb
+    (split off 2026-09-11, operator direction) because none of this
+    command's selection-aggressiveness flags below ever applied there.
 
     --profile picks a named PROFILES preset (session_extract/config.py) for
     the selection-aggressiveness knobs. --max-words (target length) is a
@@ -694,67 +721,47 @@ def cmd_extract(args) -> int:
     historical span (e.g. reproducing a run against a fixed hand-curated
     reference) rather than everyday resumption.
 
-    --lossless bypasses classification/windowing entirely and dumps every
-    text/thinking content block verbatim (dropping only tool_use/tool_result
-    and harness bookkeeping records) -- see session_extract/lossless.py's
-    module docstring. Supports Claude Code, Codex, and opencode today (an
-    opencode store holding more than one session needs --session in this
-    mode too); --checkpoints/--long-threshold/--include-thinking/--json are
-    ignored in this mode.
-
     --ledger appends a mechanically-extracted `[files read: ...] [files
     edited: ...] [commits created: ...] [branches involved: ...] [tests:
     ...]` line after each kept boundary's own text (E-012, session_extract/
     ledger.py) -- zero LLM calls, same guarantee as the rest of this
-    package. Claude Code only today; --json and --lossless ignore it.
+    package. Claude Code only today (errors on any other format); --json
+    errors too (no JSON equivalent yet).
+
+    --insert-blank-lines/--gap-marker/--min-gap-records/--show-gap-source
+    (2026-09-11, operator direction) control ONLY the text-mode rendering of
+    the "---" block separator and the gap_after annotation (select.py's own
+    "N raw records were dropped here" fact) -- all four error combined with
+    --json rather than silently having no effect, since JSON output already
+    reports the true gap count as a typed field regardless. Defaults
+    reproduce this package's long-standing output byte-for-byte; see each
+    flag's own --help text for the full value space (config.py's
+    insert_blank_lines/gap_marker_mode comments have the complete picture).
     """
     from pathlib import Path
 
-    from .session_extract import ExtractConfig, extract, read_since_marker
-    from .session_extract.adapters import detect
+    from .session_extract import ExtractConfig, extract
     from .session_extract.config import PROFILES
     from .session_extract.events import EventKind
 
-    since_marker = args.since
-    if args.since_file:
-        since_format, since_marker = read_since_marker(Path(args.since_file))
-        if args.format and args.format != since_format:
-            print(f"error: --since-file was produced by the {since_format!r} adapter, "
-                  f"but --format={args.format!r} was requested", file=sys.stderr)
+    since_marker, err = _resolve_since_marker(args)
+    if err is not None:
+        return err
+
+    if args.json:
+        text_only = []
+        if args.insert_blank_lines is not None:
+            text_only.append("--insert-blank-lines")
+        if args.gap_marker is not None:
+            text_only.append("--gap-marker")
+        if args.min_gap_records is not None:
+            text_only.append("--min-gap-records")
+        if args.show_gap_source:
+            text_only.append("--show-gap-source")
+        if text_only:
+            print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
+                  f"effect combined with --json", file=sys.stderr)
             return 1
-
-    if args.lossless:
-        from .session_extract import lossless
-
-        path = Path(args.path)
-        fmt = args.format or detect(path).name
-        if fmt == "claude-code":
-            print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
-        elif fmt == "codex":
-            print(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
-        elif fmt == "opencode":
-            from .session_extract.adapters import opencode as opencode_adapter
-
-            resolved_session = args.session
-            if resolved_session is None:
-                sessions = opencode_adapter.list_sessions(path)
-                if len(sessions) == 1:
-                    resolved_session = sessions[0]
-                elif not sessions:
-                    raise ValueError(f"{path}: no opencode sessions found")
-                else:
-                    raise ValueError(
-                        f"{path} holds {len(sessions)} opencode sessions; pass --session "
-                        f"(e.g. {sessions[0]!r})"
-                    )
-            print(lossless.dump_opencode(
-                path, resolved_session, since_marker=since_marker, until_marker=args.until
-            ))
-        else:
-            print(f"error: --lossless does not support {fmt!r} -- see session_extract/lossless.py's "
-                  f"module docstring for what's implemented", file=sys.stderr)
-            return 1
-        return 0
 
     # --profile supplies defaults for the selection-aggressiveness knobs
     # (and its own default target length); any of --checkpoints/
@@ -775,6 +782,12 @@ def cmd_extract(args) -> int:
         ),
         output_format="json" if args.json else "text",
         hide_api_errors=not args.show_api_errors,
+        min_gap_to_annotate=args.min_gap_records if args.min_gap_records is not None else base.min_gap_to_annotate,
+        gap_note_show_marker=args.show_gap_source,
+        insert_blank_lines=(
+            args.insert_blank_lines if args.insert_blank_lines is not None else base.insert_blank_lines
+        ),
+        gap_marker_mode=args.gap_marker if args.gap_marker is not None else base.gap_marker_mode,
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
 
@@ -798,21 +811,86 @@ def cmd_extract(args) -> int:
     return 0
 
 
+def cmd_extract_lossless(args) -> int:
+    """extract-lossless <path> [--session ID] [--format FMT]
+    [--since MARKER | --since-file PATH] [--until MARKER]
+
+    A "dumb", independent lossless-prose dump -- deliberately NOT `extract`'s
+    classification/windowing path. Keeps every text/thinking content block
+    verbatim, dropping only tool_use/tool_result blocks and harness
+    bookkeeping records -- see session_extract/lossless.py's module
+    docstring for the two use cases this exists for (a ground-truth
+    superset for judging what `extract` selects, and raw material for a
+    future hybrid condensation design). Supports Claude Code, Codex, and
+    opencode (an opencode store holding more than one session needs
+    --session). --since/--since-file/--until work exactly as they do for
+    `extract` (same opaque per-adapter marker, same cross-check against
+    --format).
+
+    Was `extract --lossless` until 2026-09-11 (operator direction): split
+    into its own verb because NONE of extract's selection-aggressiveness
+    flags (--profile/--checkpoints/--long-threshold/--max-words/
+    --include-thinking/--max-lifecycle-markers/--json/--ledger/
+    --show-api-errors) ever applied in lossless mode -- sharing one verb
+    made every one of them a silently-ignored trap. See `extract-debug` to
+    compare this dump against what `extract` would actually keep from it.
+    """
+    from pathlib import Path
+
+    from .session_extract import lossless
+    from .session_extract.adapters import detect
+
+    since_marker, err = _resolve_since_marker(args)
+    if err is not None:
+        return err
+
+    path = Path(args.path)
+    fmt = args.format or detect(path).name
+    if fmt == "claude-code":
+        print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+    elif fmt == "codex":
+        print(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
+    elif fmt == "opencode":
+        from .session_extract.adapters import opencode as opencode_adapter
+
+        resolved_session = args.session
+        if resolved_session is None:
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                resolved_session = sessions[0]
+            elif not sessions:
+                raise ValueError(f"{path}: no opencode sessions found")
+            else:
+                raise ValueError(
+                    f"{path} holds {len(sessions)} opencode sessions; pass --session "
+                    f"(e.g. {sessions[0]!r})"
+                )
+        print(lossless.dump_opencode(
+            path, resolved_session, since_marker=since_marker, until_marker=args.until
+        ))
+    else:
+        print(f"error: extract-lossless does not support {fmt!r} -- see "
+              f"session_extract/lossless.py's module docstring for what's implemented",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_extract_debug(args) -> int:
     """extract-debug <path> [--session ID] [--format FMT] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
     [--max-lifecycle-markers N] [--show-api-errors] [--color | --no-color]
 
-    A colored diff between the full lossless base (lossless.py's own dump)
-    and what `extract` -- called with these SAME flags -- would actually
-    keep: white = kept verbatim, grey = dropped (wrapped in a cyan `>>> ...
-    <<<` gap note), cyan = a nyxloom-authored note (gap/stop-reason) with no
+    A colored diff between `extract-lossless`'s full lossless base and what
+    `extract` -- called with these SAME flags -- would actually keep: white
+    = kept verbatim, grey = dropped (wrapped in a cyan `>>> ... <<<` gap
+    note), cyan = a nyxloom-authored note (gap/stop-reason) with no
     lossless counterpart, green = an E-012 ledger line. See
     session_extract/debug_diff.py's module docstring for the full color-
     scheme rationale. Always compares the FULL session (--since/--until/
-    --json/--lossless don't apply here -- this verb only makes sense
-    against the complete lossless base). --color/--no-color override the
-    isatty() auto-detection (color off when piped to a file by default).
+    --json don't apply here -- this verb only makes sense against the
+    complete lossless base). --color/--no-color override the isatty()
+    auto-detection (color off when piped to a file by default).
     """
     from pathlib import Path
 
@@ -2121,7 +2199,8 @@ _VERB_GROUPS: dict[str, list[str]] = {
         "reject", "resume", "resync", "status", "tick",
     ],
     "content & extraction tooling": [
-        "digest", "events", "extract", "extract-debug", "render", "session-stats",
+        "digest", "events", "extract", "extract-debug", "extract-lossless", "render",
+        "session-stats",
     ],
     "intake & onboarding": [
         "init", "intake", "intake-bridge", "onboard",
@@ -2317,53 +2396,149 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                       "overrides that one knob from the chosen profile.")
     extract_parser.add_argument("--checkpoints", type=int, default=None,
                                  help="How many recent checkpoints to anchor on (default 5, or "
-                                      "the --profile's value)")
+                                      "the --profile's value). STOP CONDITION 1 of 3 -- see "
+                                      "--max-words and --max-lifecycle-markers below: the "
+                                      "backward walk halts the instant ANY ONE of these three "
+                                      "trips, whichever comes first. -1 = this condition never "
+                                      "trips (the other two, or the true start of the log, still "
+                                      "bound the walk)")
     extract_parser.add_argument("--long-threshold", type=int, default=None,
                                  help="Char threshold for keeping a non-checkpoint comment "
-                                      "(default 180, or the --profile's value; a concrete-"
-                                      "finding comment survives regardless of length)")
+                                      "(default 180, or the --profile's value); a 'concrete-"
+                                      "finding' comment survives regardless of length -- meaning "
+                                      "classifier.has_finding_signal() matches it (reports a bug, "
+                                      "a fix, or a concrete decision, as opposed to plain "
+                                      "narration like 'Now let's fix the detection'; see "
+                                      "session_extract/classifier.py for the exact patterns)")
     extract_parser.add_argument("--max-words", type=int, default=None,
                                  help="Hard output word budget -- target length, independent of "
                                       "--profile (default 10000, or the --profile's own default "
-                                      "if --profile is set and this isn't)")
+                                      "if --profile is set and this isn't). STOP CONDITION 2 of "
+                                      "3 -- see --checkpoints above and --max-lifecycle-markers "
+                                      "below: the backward walk halts the instant ANY ONE of "
+                                      "these three trips, whichever comes first. -1 = this "
+                                      "condition never trips")
     extract_parser.add_argument("--include-thinking", action="store_true",
                                  help="Also emit assistant thinking/reasoning content where the "
                                       "adapter can recover it")
     extract_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
                                  help="How many real compaction/[/compact]/[/clear] boundaries "
                                       "the walk may pass before stopping at one (default 0, or "
-                                      "the --profile's value -- stop at the first). -1 = never "
-                                      "stop at a marker (only --max-words/--checkpoints bound "
-                                      "the walk)")
+                                      "the --profile's value -- stop at the first). STOP "
+                                      "CONDITION 3 of 3 -- see --checkpoints and --max-words "
+                                      "above: the backward walk halts the instant ANY ONE of "
+                                      "these three trips, whichever comes first. -1 = this "
+                                      "condition never trips (only --max-words/--checkpoints, or "
+                                      "the true start of the log, still bound the walk)")
     since_group = extract_parser.add_mutually_exclusive_group()
     since_group.add_argument("--since",
                               help="Resume marker from a prior run's last_marker -- only "
-                                   "events after it are considered")
+                                   "events after it are considered. The marker is an opaque, "
+                                   "adapter-specific token (a Claude Code record uuid, a Codex "
+                                   "ordinal, an opencode message-table row id) -- not a "
+                                   "timestamp. Copy it from the trailing HTML comment a prior "
+                                   "run's own output ends with: `<!-- nyxloom-extract: "
+                                   "format=... marker=... -->`. In practice --since-file below "
+                                   "is almost always easier than hand-copying this")
     since_group.add_argument("--since-file",
                               help="Path to a prior extract run's saved output (text or json); "
                                    "its embedded marker is read back and used as --since, so you "
-                                   "don't have to hunt down or hand-copy the raw marker string")
+                                   "don't have to hunt down or hand-copy the raw marker string. "
+                                   "Typical delta-extraction usage: `nyxloom extract log.jsonl "
+                                   "> run1.txt`, more session activity happens, then `nyxloom "
+                                   "extract log.jsonl --since-file run1.txt > run2.txt` picks up "
+                                   "exactly where run1.txt left off. Mutually exclusive with "
+                                   "--since (enforced by argparse)")
     extract_parser.add_argument("--until",
-                                 help="Stop at this marker (inclusive) -- symmetric with --since, "
-                                      "for pinning a run to a fixed historical span")
-    extract_parser.add_argument("--lossless", action="store_true",
-                                 help="Bypass classification/windowing: dump every text/thinking "
-                                      "block verbatim (Claude Code, Codex, and opencode). See "
-                                      "session_extract/lossless.py")
+                                 help="Stop at this marker (inclusive) -- symmetric with --since "
+                                      "above (same opaque marker format, same trailing-comment "
+                                      "source), for pinning a run to a fixed historical span, "
+                                      "e.g. `--since M1 --until M2` reproduces the exact same "
+                                      "extraction on every run instead of drifting as the "
+                                      "session grows")
     extract_parser.add_argument("--ledger", action="store_true",
                                  help="Append a mechanically-extracted files-touched/commits/"
                                       "branches/tests line after each kept boundary (E-012, "
-                                      "session_extract/ledger.py). Claude Code only; text mode only")
+                                      "session_extract/ledger.py). Errors (not silently ignored) "
+                                      "if combined with --json (no JSON equivalent yet) or a "
+                                      "non-Claude-Code format")
     extract_parser.add_argument("--show-api-errors", action="store_true",
                                  help="Include upstream API-transport noise (429/rate-limit/"
                                       "overloaded_error) in the output. Off by default -- these "
                                       "are dropped from selection entirely, not just length-"
                                       "filtered, since they're a fact about the harness's API "
                                       "connection, not about session content.")
+    extract_parser.add_argument("--insert-blank-lines", type=int, default=None,
+                                 help="Blank lines padded around each '---' block separator in "
+                                      "text output (default 1, this package's long-standing "
+                                      "behavior). 1 = one blank line each side (today's default: "
+                                      "'block\\n\\n---\\n\\nblock'). 0 = tight, --- on its own "
+                                      "line, no blank line ('block\\n---\\nblock'). -1 = fused, "
+                                      "--- shares the end of the preceding block's own last line "
+                                      "('block ---\\nblock'). N>1 = N blank lines each side, a "
+                                      "plain generalization of 1. Text mode only -- errors "
+                                      "combined with --json")
+    extract_parser.add_argument("--gap-marker",
+                                 choices=["full", "inline", "inline2", "inline-short", "none"],
+                                 default=None,
+                                 help="How a dropped-content gap is surfaced in text output "
+                                      "(default 'full', this package's long-standing behavior; "
+                                      "unaffected by JSON output, which always reports the true "
+                                      "gap count as a typed field regardless of this setting). "
+                                      "'full': its own standalone block, '[gap: N records "
+                                      "omitted]', separated like any other block (today's "
+                                      "default). 'inline': same text, folded into the separator "
+                                      "instead of its own block -- '--- [gap: N records omitted] "
+                                      "---'. 'inline2': terser count, '--- ... Nx ... ---'. "
+                                      "'inline-short': no count at all, just '--- ... ---' (a gap "
+                                      "happened, magnitude not stated). 'none': suppressed "
+                                      "entirely in text output -- a reader cannot tell a gap "
+                                      "happened. Text mode only -- errors combined with --json")
+    extract_parser.add_argument("--min-gap-records", type=int, default=None,
+                                 help="Smallest raw-record gap between two kept events worth "
+                                      "surfacing via --gap-marker (default 3, or the --profile's "
+                                      "value); below this, nothing is rendered regardless of "
+                                      "--gap-marker's mode. JSON output is unaffected -- it "
+                                      "always reports the true gap_after count. Text mode only "
+                                      "-- errors combined with --json")
+    extract_parser.add_argument("--show-gap-source", action="store_true",
+                                 help="Append the adapter's own opaque marker token to each gap "
+                                      "note ('...raw log continues after marker <marker>') -- "
+                                      "the exact same token --since/--until resolve, a 'go look "
+                                      "it up yourself' pointer into the raw log. Off by default. "
+                                      "No effect under --gap-marker=none. Text mode only -- "
+                                      "errors combined with --json")
+
+    # extract-lossless
+    extract_lossless_parser = subparsers.add_parser(
+        "extract-lossless",
+        help="Raw verbatim text/thinking dump -- no classification or windowing")
+    extract_lossless_parser.add_argument(
+        "path", help="Session log path (a file for Claude Code/Codex; a file or directory for "
+                      "opencode's SQLite store)")
+    extract_lossless_parser.add_argument("--session",
+                                          help="Session id, required when the store holds more "
+                                               "than one (e.g. opencode)")
+    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                          help="Force the adapter instead of auto-detecting from "
+                                               "the path")
+    lossless_since_group = extract_lossless_parser.add_mutually_exclusive_group()
+    lossless_since_group.add_argument("--since",
+                                       help="Same meaning as extract's --since -- an opaque, "
+                                            "adapter-specific resume marker (not a timestamp), "
+                                            "read from a prior run's own trailing `<!-- "
+                                            "nyxloom-extract: format=... marker=... -->` comment")
+    lossless_since_group.add_argument("--since-file",
+                                       help="Same meaning as extract's --since-file -- point it "
+                                            "at a prior run's saved output and its embedded "
+                                            "marker is read back and used as --since")
+    extract_lossless_parser.add_argument("--until",
+                                          help="Same meaning as extract's --until -- stop at this "
+                                               "marker (inclusive), symmetric with --since")
 
     # extract-debug
     extract_debug_parser = subparsers.add_parser(
-        "extract-debug", help="Colored diff: lossless base vs what extract would keep")
+        "extract-debug", help="Colored diff: extract-lossless output vs what extract would keep")
     extract_debug_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
                                                      "a file or directory for opencode's SQLite store)")
     extract_debug_parser.add_argument("--session",
@@ -2773,6 +2948,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_render(args)
         elif args.cmd == "extract":
             return cmd_extract(args)
+        elif args.cmd == "extract-lossless":
+            return cmd_extract_lossless(args)
         elif args.cmd == "extract-debug":
             return cmd_extract_debug(args)
         elif args.cmd == "session-stats":
