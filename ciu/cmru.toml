@@ -32,9 +32,9 @@ bump = "conventional"
 # follow-up edit every time, same as cmru's own project.
 [[project.tool_dependencies]]
 project = "assay"
-version = "6.1.0"
-path    = "tools/assay/assay-6.1.0.pyz"
-sha256  = "80ce1a5412a32a56adf21fd757f41c2ab96f609ad536567dfb47fbbb3496bcda"
+version = "6.1.1"
+path    = "tools/assay/assay-6.1.1.pyz"
+sha256  = "3798a5f74908ec6c60d9089dd1a5015151314a07ce2f84379d117327fd519f6f"
 
 [project.release]
 git_tag = true

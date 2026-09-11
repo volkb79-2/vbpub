@@ -18,18 +18,18 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.0.pyz"]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.1.pyz"]
 budget = "20m"
 
-# Re-pinned 6.0.0 -> 6.1.0 on 2026-09-09 via `cmru tool-deps --refresh assay`
-# (assay B074/B077/B078: additive, no schema change -- byte-identical for
-# this project's native R0 lane, which declares neither result_report nor
-# allow_test_path_targets). KI-27: --refresh does not itself rewrite this
+# Re-pinned 6.1.0 -> 6.1.1 on 2026-09-11 via `cmru tool-deps --refresh assay`
+# (assay B088: --resume no longer replays a stale mutation verdict after a
+# test-only fix -- additive, no schema change, byte-identical for this
+# project's native R0 lane). KI-27: --refresh does not itself rewrite this
 # file's own pin/argv -- manual follow-up here, same recurring gap.
-# GitHub asset digest verified against tools/assay/assay-6.1.0.pyz.sha256.
+# GitHub asset digest verified against tools/assay/assay-6.1.1.pyz.sha256.
 [lanes.assay.pins.assay]
-version = "6.1.0"
-sha256 = "tools/assay/assay-6.1.0.pyz.sha256"
+version = "6.1.1"
+sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 
 [lanes.assay.resources]
 memory = "1g"
@@ -58,7 +58,7 @@ memory_swap = "16g"
 [lanes.mutation]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-6.1.0.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-6.1.1.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 

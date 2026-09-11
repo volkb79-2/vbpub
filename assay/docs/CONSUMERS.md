@@ -40,9 +40,9 @@ Stated as MEASURED rather than as intended, because the two have differed:
 
 | consumer | how it gets assay |
 |---|---|
-| `ciu` | vendored pinned zipapp, `tools/assay/assay-6.1.0.pyz` + `.sha256`, invoked through `run-gate.toml`'s `assay_command` |
-| `cmru` | vendored pinned zipapp, `tools/assay/assay-6.1.0.pyz` (also its `[orchestration]` release-order pin) |
-| `nyxloom` | vendored pinned zipapp, `tools/assay/assay-6.1.0.pyz` |
+| `ciu` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` + `.sha256`, invoked through `run-gate.toml`'s `assay_command` |
+| `cmru` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` (also its `[orchestration]` release-order pin) |
+| `nyxloom` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` |
 | `dstdns` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
 | `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
 
