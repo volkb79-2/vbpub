@@ -3502,6 +3502,29 @@ def _finish_allocation(
                 f"{record.base_ref!r} failed: {(checkout.stderr or checkout.stdout).strip()}. "
                 f"Resume with `ciu worktree ensure {record.logical_name}`."
             )
+        # CIU-106: the fork point is captured HERE, and nowhere earlier.
+        #
+        # It is THIS `reset --hard <base_ref>` that decides the new branch's
+        # tip — not `git worktree add` — and it re-resolves `base_ref` afresh,
+        # after the record and the overlay have already been written. Reading
+        # `base_ref` in repo_root before that left a window in which another
+        # session committing to the shared `main` checkout (which this
+        # estate's own workflow expects) produced a record that was born
+        # SPENT: the consumer would refuse it forever and blame `main` for
+        # absorbing work it never absorbed. `ensure()` resuming a partial
+        # allocation hit the same skew with no race at all.
+        #
+        # Taken from the worktree's own HEAD, immediately after the reset, it
+        # is the branch tip by construction — no window, and no question
+        # about how an annotated tag or any other `base_ref` spelling peels.
+        head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                    record.git_worktree_path)
+        candidate = head.stdout.strip() if head.returncode == 0 else ""
+        # Degrades to leaving it unset rather than failing the allocation:
+        # provenance is a nice-to-have for a downstream gate, and consumers
+        # fail closed on absence anyway.
+        if _FULL_SHA_RE.fullmatch(candidate):
+            record = replace(record, fork_point_sha=candidate)
 
     rc = _generate_env_in(record.ciu_root, identity_only=True)
     if rc != 0:
@@ -3698,27 +3721,13 @@ def create(
                 f"{(res.stderr or res.stdout).strip()}"
             )
 
-        # CIU-106: capture WHERE `base` pointed, now. This is the one moment
-        # the fork commit is knowable without ambiguity — the new branch has
-        # no commits of its own yet, so `merge-base(base, <new branch>)` and
-        # `base` itself are the same commit, and nothing a consumer can
-        # compute later distinguishes "base absorbed my work" from "I forked
-        # here" once that stops being true. Resolved in `repo_root`, not the
-        # new tree: `git worktree add` does not move `base`, and repo_root is
-        # where it was just resolved from.
-        #
-        # A failure here degrades to `None` rather than failing the create:
-        # provenance is a nice-to-have for a downstream gate, and a worktree
-        # the operator asked for must not be refused because an extra
-        # `rev-parse` did not answer. Consumers fail closed on absence.
-        fork_point_sha: str | None = None
-        resolved = _git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
-                        repo_root)
-        if resolved.returncode == 0:
-            candidate = resolved.stdout.strip()
-            if _FULL_SHA_RE.fullmatch(candidate):
-                fork_point_sha = candidate
-
+        # CIU-106: `fork_point_sha` is deliberately NOT set here. The branch
+        # tip is decided by `_finish_allocation`'s `reset --hard <base_ref>`,
+        # which happens after this record is written and re-resolves
+        # `base_ref` afresh — so capturing `base` now would leave a window
+        # for it to disagree with the tree that actually gets checked out.
+        # An interrupted create therefore leaves a record with no fork point,
+        # which consumers already fail closed on.
         record = WorktreeInstanceRecord(
             logical_name=logical_name,
             display_name=candidate_display,
@@ -3728,7 +3737,6 @@ def create(
             created_at_utc=instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             base_ref=base,
             state="allocating",
-            fork_point_sha=fork_point_sha,
         )
         _write_instance_record(record)
         try:

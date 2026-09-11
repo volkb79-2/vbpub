@@ -91,10 +91,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
   A tag and a `refs/remotes/…` ref are refused too — the latter because a
   remote-tracking ref is the very thing RG-51 exists to stop defaulting to.
-  The allow-list on the recorded ref does NOT close the pre-existing
-  inner-shell substitution hole on `--base`/`{base}` (now filed as RG-52);
-  it exists so that RG-51 does not widen that hole from an operator's own
-  command line to a git-excluded JSON file.
+  The allow-list on the recorded ref exists so that RG-51 does not widen the
+  pre-existing inner-shell substitution hole from an operator's own command
+  line to a git-excluded JSON file; that hole itself is closed separately, on
+  the `--base`/`{base}` path, by RG-52 above — one regex, two consumers.
 
   Every failure mode — absent, unreadable, permission-denied, a FIFO or
   device that would block or explode on read, not JSON, not an object,
@@ -106,9 +106,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   record is printed together with the `@{upstream}` ref it displaced, and a
   record that is found and rejected prints `run-gate: ignoring <record>:
   <why>` (the refusal names it too). One deliberate widening — a tree with a
-  usable record but no upstream now resolves instead of refusing. Only the
-  base STRING changes; assay's own `resolve_base` still computes
-  `merge-base(base, HEAD)` over it. SPEC.md `R-35a`.
+  usable record but no upstream now resolves instead of refusing.
+
+  Two limits worth knowing before relying on this. **It goes inert when the
+  worktree is kept current:** merging the base INTO the branch, or rebasing
+  onto it, moves the merge-base as surely as merging the other way, spends
+  the record, and drops back to `@{upstream}` — a loss of benefit, not a new
+  hazard, since the fallback errs WIDE. And **it is sound at run-gate's own
+  boundary only:** only the base STRING changes here, and what the judge does
+  with it is the judge's contract — assay's `resolve_base` returns HEAD's
+  FIRST PARENT and discards the supplied base entirely when HEAD is a merge
+  commit (assay B008), which predates this change and behaves identically
+  under `--base`. Filed as RG-54. SPEC.md `R-35a`.
+
+  **Consumer note:** the new default is inert until worktrees are recreated.
+  Every worktree record that exists today predates `fork_point_sha`, so all
+  of them fail closed and keep the old `@{upstream}` behaviour (saying so on
+  stdout). Requires ciu with CIU-106; older ciu is fine, it just never
+  arms the new path.
 
 <!-- cleared 2026-09-09: the RG-41 write-up that was here (log-stream
      command-lane liveness, LogStreamWatch, three review-round fixes) is

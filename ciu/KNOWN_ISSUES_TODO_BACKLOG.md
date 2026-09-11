@@ -4068,13 +4068,29 @@ and its meaning are the whole interface.
 ### Status — FIXED 2026-09-11, as proposed above
 
 `WorktreeInstanceRecord` gained `fork_point_sha: str | None = None`.
-`create()` resolves `git rev-parse --verify <base>^{commit}` in
-`repo_root` immediately after `git worktree add` succeeds — the one
-moment the fork commit is unambiguous, because the new branch has no
-commits of its own yet, so `base` and `merge-base(base, <new branch>)`
-are the same commit. `adopt()` leaves it `None`: an adopted checkout has
-no knowable fork commit, and `None` is the honest answer rather than a
+`_finish_allocation` resolves the new worktree's own
+`git rev-parse --verify HEAD^{commit}` immediately after the
+`git reset --hard <base_ref>` that checks it out — the one moment the
+fork commit is unambiguous, because the new branch has no commits of its
+own yet, so its tip and `merge-base(base, <new branch>)` are the same
+commit. `adopt()` leaves it `None`: it reaches `_finish_allocation` with
+`checkout_required=False`, no reset runs, and an adopted checkout has no
+knowable fork commit — `None` is the honest answer rather than a
 plausible-looking wrong one.
+
+**The capture POINT was corrected by round-4 review, and the difference
+is real.** The first cut resolved `git rev-parse <base>^{commit}` in
+`repo_root` right after `git worktree add --no-checkout` returned. That
+reads as equivalent and is not: `git worktree add --no-checkout` does not
+set the branch tip to anything the record then keeps, and it is the later
+`reset --hard record.base_ref` that both sets it and re-resolves the ref.
+A commit landing on the base branch inside that window — this estate runs
+several sessions concurrently, which is exactly why the record exists —
+recorded a SHA the worktree never forked from, and a consumer testing it
+for equality would then refuse a healthy record forever. The regression
+test races a real commit onto `main` from inside a patched
+`_write_worktree_overlay` and pins that the recorded value is the
+CHECKED-OUT tip, not the base as it stood at entry.
 
 Decisions worth recording, because each one had an alternative:
 

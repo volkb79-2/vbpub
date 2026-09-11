@@ -658,20 +658,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     good one.
   - **A recorded ref is used only when ALL of the following hold.** Each
     clause closes a way the record would be worse than the `@{upstream}` it
-    displaces; the last two are false-greens found by adversarial review of
+    displaces; three of them are false-greens found by adversarial review of
     this very rule, not hypotheticals.
-    - **It is plain ref text** — `[A-Za-z0-9._/+@-]+`, checked BEFORE git is
-      asked. This is narrower than git's own ref grammar, which permits `;`,
-      backticks, `$`, `|` and quotes: a resolved base is substituted into a
-      conjunction lane's inner `bash -c` through `{base}` (`R-25`), where
-      `shlex.join` quotes the outer element but the element IS the script the
-      inner shell re-parses. `git branch 'main;touch$IFS/tmp/PWNED'` is a
-      legal branch that executes. That hole predates this rule and is NOT
-      closed here (`RG-52`); the allow-list exists so that this rule does not
-      WIDEN it from an operator's own command line to a git-excluded JSON
-      file `git status` never shows — the same reasoning as
-      `check_worktree_charset` (`RG-5`). It also keeps NUL bytes and lone
-      surrogates, which raise out of `subprocess` itself, away from git.
+    - **It is gate-safe ref text** — `GATE_SAFE_BASE_RE`, the same allow-list
+      `R-35b` applies to `--base`, checked BEFORE git is asked. This is
+      narrower than git's own ref grammar, which permits `;`, backticks, `$`,
+      `|` and quotes: a resolved base is substituted into a conjunction
+      lane's inner `bash -c` through `{base}` (`R-25`), where `shlex.join`
+      quotes the outer element but the element IS the script the inner shell
+      re-parses. `git branch 'main;touch$IFS/tmp/PWNED'` is a legal branch
+      that executes. That hole predates this rule; `R-35b` closes it on the
+      `--base` path, and this clause is what stops this rule from WIDENING
+      it from an operator's own command line to a git-excluded JSON file
+      `git status` never shows — the same reasoning as
+      `check_worktree_charset` (`RG-5`). The two share one regex and differ
+      only in consequence: `--base` is REFUSED (exit 2), a recorded ref
+      merely degrades to the fallback, because a file must never abort a
+      gate run. It also keeps NUL bytes and lone surrogates, which raise out
+      of `subprocess` itself, away from git.
     - **git resolves it, IN THE JUDGED TREE, to a LOCAL branch**
       (`refs/heads/…`). `ciu worktree adopt` records the adopted checkout's
       **HEAD** — a frozen commit id; a tag is frozen the same way; a deleted
@@ -731,20 +735,31 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     between this check and the judge's own `merge-base` minutes later
     (container start, pin verification, suite run). Every other source on
     this path already yields an immutable commit.
+  - **This rule is sound at run-gate's OWN boundary only.** It guarantees
+    the STRING handed over is the real fork commit. What the judge then does
+    with it is the judge's contract: assay's `resolve_base` does NOT always
+    compute a merge-base — when HEAD is a merge commit it returns HEAD's
+    first parent and discards the supplied base entirely (assay B008,
+    `base_resolution_mode`). A worktree that merged a SIBLING branch in can
+    therefore still have most of its work escape the judge. That predates
+    this rule and happens identically under `--base` and `@{upstream}`; see
+    `RG-54`.
   - **Scope.** `--base` still wins outright; a non-delegating lane never
     reads the record; a plain checkout is unaffected (`ciu worktree adopt`
     refuses the primary worktree and the record is git-excluded, so it
     cannot arrive there by checkout). Only the base STRING changes — assay's
-    own `resolve_base` still computes `merge-base(base, HEAD)` over it.
+    own `resolve_base` resolves it under its own documented rules (see the
+    boundary note above — those rules are not always a merge-base).
   - **Deliberate widening.** A tree that HAS a usable record but no upstream
     resolves instead of refusing. Nothing is guessed: the ref is one ciu
     wrote down at creation and git has just resolved to a live branch.
   - **Disclosure (`R-05`), both ways.** When the record wins, before
-    execution: `run-gate: <record path> records base_ref '<REF>' — using it
+    execution: `run-gate: <record path> pins this tree's fork point at
+    <SHA> (its base_ref still resolves there) — using that COMMIT
     instead of merge-base HEAD @{upstream} (<sha>)` — naming the ref NOT
     taken is how origin drift becomes visible — or `… (merge-base HEAD
     @{upstream} yields nothing here …)` in the widening case; `R-35`'s line
-    then names the source as `ciu.worktree-instance.json base_ref`. When a
+    then names the source as `ciu.worktree-instance.json fork point`. When a
     record is found and REJECTED: `run-gate: ignoring <record path>: <why>`.
     A silently ignored record is the same silence RG-51 exists to remove, in
     a new place, so `R-35`'s refusal names it too when there is also no
@@ -765,7 +780,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **Disclosure (`R-05`).** Before execution, live AND dry:
     `run-gate: comparison base <REF> (from <source>) → --request-base` (or
     `→ {base} in the lane argv`), where `<source>` is one of `--base`,
-    `ciu.worktree-instance.json base_ref` (`R-35a`) or `merge-base HEAD
+    `ciu.worktree-instance.json fork point` (`R-35a`) or `merge-base HEAD
     @{upstream}`; the printed docker argv carries the appended flag.
 
 - `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project

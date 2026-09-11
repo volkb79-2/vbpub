@@ -348,14 +348,14 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
 # run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
 ```
 
-**In a `ciu worktree` the default is the ref that worktree FORKED from**
+**In a `ciu worktree` the default is the COMMIT that worktree forked from**
 (RG-51). `ciu worktree create|add` records that ref as `base_ref` in
 `ciu.worktree-instance.json`, and run-gate prefers it over `@{upstream}`:
 
 ```bash
 ./run-gate.py cursor          # no --base, inside a ciu-managed worktree
-# run-gate: /w/proj/ciu.worktree-instance.json records base_ref 'main' — using it instead of merge-base HEAD @{upstream} (4c6eb2b6…)
-# run-gate: comparison base main (from ciu.worktree-instance.json base_ref) → --request-base
+# run-gate: /w/proj/ciu.worktree-instance.json pins this tree's fork point at 9f2c1ab… (its base_ref still resolves there) — using that COMMIT instead of merge-base HEAD @{upstream} (4c6eb2b6…)
+# run-gate: comparison base 9f2c1ab… (from ciu.worktree-instance.json fork point) → --request-base
 ```
 
 Why this is the better default: `@{upstream}` is a REMOTE-tracking ref, so
@@ -383,10 +383,15 @@ recorded at creation, and that branch does not already contain the tree's
 HEAD. Anything else is ignored with a reason on stdout:
 
 ```bash
-# run-gate: ignoring /w/proj/ciu.worktree-instance.json: its base_ref 'main' (refs/heads/main) already contains this tree's HEAD, so merge-base would be HEAD and the lane would judge NOTHING — a merged-but-not-torn-down worktree, or a base that is this tree's own branch
+# run-gate: ignoring /w/proj/ciu.worktree-instance.json: the shared history of 'main' and this tree has MOVED since the record was written: merge-base is now 388737cc2461, the recorded fork point is 9f2c1ab0de34. Whichever way it moved — 'main' absorbed this branch (a merge or a fast-forward), or this branch took 'main' in (a merge or a rebase), or the record describes a different tree — judging against the new merge-base could silently drop work this branch really did, so the record is spent
 ```
 
-Those rules are load-bearing, not fussiness — both were found by adversarial
+The message names the possible causes without asserting one: the SAME
+inequality is produced by merging the base in or rebasing onto it, and
+telling an operator to tear down a worktree for a reason that did not happen
+is its own defect.
+
+Those rules are load-bearing, not fussiness — each was found by adversarial
 review as ways this feature could pass a lane that should have failed:
 
 - `ciu worktree adopt` records the adopted checkout's **HEAD**, and
@@ -397,6 +402,13 @@ review as ways this feature could pass a lane that should have failed:
   collapse, and it was true of 4 of the 7 real ciu worktrees in this estate
   when the check was added.
 
+- **Keeping a long-lived worktree current spends the record.** Merging the
+  base INTO the branch, or rebasing onto it, moves the shared history just as
+  surely as merging the other way — so the gate falls back to `@{upstream}`
+  exactly where an operator was being diligent. The fallback is safe (it errs
+  WIDE), but the feature goes inert until the worktree is recreated. Nothing
+  here can distinguish those from a base that absorbed the branch; that is
+  the same missing fact CIU-106 exists to supply, one level up.
 - A worktree whose base has since absorbed its work and which then got one
   more commit looks healthy to every other check — `merge-base` has quietly
   moved to the pre-merge branch tip. Only comparing against the recorded

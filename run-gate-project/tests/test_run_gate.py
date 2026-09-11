@@ -5280,8 +5280,14 @@ class TestRecordedWorktreeBase:
 
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
         assert ref is None
-        assert "has MOVED relative to this tree" in why
-        assert "absorbed this branch's work" in why
+        assert "has MOVED since the record was written" in why
+        # the message names the possible causes without ASSERTING one: the
+        # same inequality is produced by merging the base IN, or rebasing
+        # onto it, and telling an operator to tear down a worktree for a
+        # reason that did not happen is its own defect (round-4 finding)
+        assert "absorbed this branch" in why
+        assert "this branch took" in why
+        assert "the record is spent" in why
 
     def test_a_fast_forwarded_base_that_moved_on_is_refused(self, tmp_path):
         """The variant with no merge commit at all, where `merge-base` alone
@@ -5293,7 +5299,7 @@ class TestRecordedWorktreeBase:
         commit_all(repo, "follow-up after the fast-forward")
         assert run_gate.base_already_contains_head(repo, "main") is False
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
-        assert ref is None and "has MOVED relative to this tree" in why
+        assert ref is None and "has MOVED since the record was written" in why
 
     def test_unrelated_commits_on_the_base_do_NOT_spend_the_record(
             self, tmp_path):
@@ -5325,10 +5331,16 @@ class TestRecordedWorktreeBase:
 
     @pytest.mark.parametrize("bad", ["", "   ", "not-a-sha", 42, [], {}, True,
                                      "0123456789ABCDEF0123456789ABCDEF01234567",
-                                     "0123456789abcdef0123456789abcdef0123456"])
+                                     "0123456789abcdef0123456789abcdef0123456",
+                                     "0123456789abcdef0123456789abcdef01234567junk",
+                                     "0123456789abcdef0123456789abcdef01234567 x",
+                                     " 0123456789abcdef0123456789abcdef01234567"])
     def test_a_malformed_fork_point_is_refused(self, tmp_path, bad):
-        """Every shape another process's JSON could put here, including the
-        40-vs-39 length boundary and an upper-case spelling git never emits."""
+        """Every shape another process's JSON could put here: the 40-vs-39
+        length boundary, an upper-case spelling git never emits, and a valid
+        40-hex PREFIX carrying a tail — the last three pin `fullmatch`
+        specifically, which `match` would wave through and which the claim
+        that this value is always gate-safe rests on."""
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="main", fork_point_sha=bad)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
@@ -5341,7 +5353,38 @@ class TestRecordedWorktreeBase:
         write_instance_record(repo, base_ref="main",
                               fork_point_sha="0" * 40)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
-        assert ref is None and "has MOVED relative to this tree" in why
+        assert ref is None and "has MOVED since the record was written" in why
+
+    def test_merging_the_base_IN_also_spends_the_record(self, tmp_path):
+        """The usability cliff, pinned so it is a documented behaviour rather
+        than a surprise: keeping a long-lived worktree current by merging the
+        base INTO the branch moves the shared history just as surely as
+        merging the other way, so the record is spent and the gate falls back
+        to `@{upstream}`. Safe (wider), but the feature goes inert exactly
+        where an operator was being diligent."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        git(repo, "merge", "-q", "--no-ff", "-m", "take main in", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED since the record was written" in why
+
+    def test_rebasing_onto_the_base_also_spends_the_record(self, tmp_path):
+        """Same cliff by the other routine route."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        git(repo, "rebase", "-q", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED since the record was written" in why
 
     def test_no_common_history_with_the_base_is_refused(self, tmp_path):
         """`git merge-base` exits 1 with no output for unrelated histories.

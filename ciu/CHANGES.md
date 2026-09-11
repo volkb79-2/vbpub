@@ -26,9 +26,20 @@ restatement of the technical detail below it.
 ### Added
 - **CIU-106 — the worktree instance record now carries `fork_point_sha`.**
   `WorktreeInstanceRecord` gained an optional `fork_point_sha`;
-  `ciu worktree create|add` resolves `git rev-parse <base>^{commit}` right
-  after `git worktree add` succeeds and stores it. `adopt()` leaves it
-  `None` — an adopted checkout has no knowable fork commit.
+  `ciu worktree create|add` records the new worktree's own
+  `HEAD^{commit}` immediately after `_finish_allocation`'s
+  `git reset --hard <base_ref>` checks it out. `adopt()` leaves it `None` —
+  an adopted checkout has no knowable fork commit.
+
+  The capture point is load-bearing and was corrected by review: resolving
+  `<base>` in the repo root right after `git worktree add --no-checkout`
+  looks equivalent but is not, because it is that LATER `reset --hard` which
+  sets the new branch's tip and re-resolves `base_ref`. A commit landing on
+  the base branch in between — this estate runs several sessions at once —
+  would make the recorded SHA differ from the commit the worktree really
+  forked from, and a consumer checking the two for equality would then
+  reject a perfectly healthy record. Reading the worktree's own HEAD after
+  checkout has no such window.
 
   Why it exists: `base_ref` is a branch NAME, and the branch keeps moving.
   Once it has ABSORBED the worktree's own work (a `--no-ff` merge, or a

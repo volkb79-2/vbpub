@@ -648,7 +648,7 @@ class TestForkPointProvenance:
         with pytest.raises(worktree.WorktreeError, match="unknown"):
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
-    def test_create_degrades_to_none_when_the_base_cannot_be_resolved(
+    def test_create_degrades_to_none_when_the_head_cannot_be_resolved(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         """Provenance is a nice-to-have for a downstream gate; a worktree the
@@ -669,7 +669,8 @@ class TestForkPointProvenance:
     @pytest.mark.parametrize(
         "output", ["", "   \n", "not-a-sha", "deadbeef",
                    "0123456789ABCDEF0123456789ABCDEF01234567",
-                   "0123456789abcdef0123456789abcdef01234567 extra"],
+                   "0123456789abcdef0123456789abcdef01234567 extra",
+                   "0123456789abcdef0123456789abcdef01234567junk"],
     )
     def test_create_degrades_when_rev_parse_succeeds_with_a_non_sha(
         self, tmp_repo, fake_generate_env, monkeypatch, output
@@ -678,7 +679,10 @@ class TestForkPointProvenance:
         `rev-parse --verify --quiet` exits 0 while printing something else in
         more than one situation, and a stored value that could never equal a
         real `merge-base` would make the consumer distrust the record forever
-        instead of reporting a problem."""
+        instead of reporting a problem.
+
+        The last two cases are a valid 40-hex PREFIX with a tail: they pin
+        `fullmatch` specifically, which `match` would wave through."""
         real = worktree._git
 
         def odd(args, cwd, **kwargs):
@@ -693,6 +697,70 @@ class TestForkPointProvenance:
         assert "fork_point_sha" not in json.loads(
             record.record_path.read_text(encoding="utf-8")
         )
+
+    def test_the_fork_point_is_the_CHECKED_OUT_tip_not_base_at_entry(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """Regression: the capture used to read `base` in repo_root BEFORE
+        `_finish_allocation`'s `reset --hard <base_ref>`, which is what
+        actually sets the branch tip and re-resolves `base_ref` afresh.
+
+        Another session committing to the shared `main` checkout in that
+        window — which this estate's workflow explicitly expects — produced a
+        record that was born SPENT: the consumer refused it forever and
+        blamed `main` for absorbing work it never absorbed. Simulated by
+        moving `main` from inside the overlay write, i.e. exactly between the
+        old capture point and the checkout.
+        """
+        before = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        real_overlay = worktree._write_worktree_overlay
+
+        def racing_overlay(*args, **kwargs):
+            (tmp_repo / "raced.txt").write_text("another session\n", encoding="utf-8")
+            assert _git(["add", "-A"], tmp_repo).returncode == 0
+            assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
+            return real_overlay(*args, **kwargs)
+
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", racing_overlay)
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        after = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert after != before                       # the race really happened
+        head = _git(["rev-parse", "HEAD"], record.git_worktree_path).stdout.strip()
+        # the recorded fork point is the tree that actually got checked out
+        assert record.fork_point_sha == head
+        # ... and the record is therefore LIVE, not born spent
+        assert _git(["merge-base", "main", "HEAD"],
+                    record.git_worktree_path).stdout.strip() == record.fork_point_sha
+
+    def test_a_partial_allocation_already_carries_it_and_ensure_keeps_it(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """Capturing at the CHECKOUT rather than at entry also fixes the
+        resume path, with no race involved: the checkout is the first thing
+        `_finish_allocation` does, so even a record left behind by a create
+        that died later already carries the right fork point — and the
+        `ensure` that completes it (checkout_required=False for
+        env-generation-failed) must carry it through, not drop it."""
+        real_generate = worktree._generate_env_in
+        calls = {"n": 0}
+
+        def fail_once(*args, **kwargs):
+            calls["n"] += 1
+            return 1 if calls["n"] == 1 else real_generate(*args, **kwargs)
+
+        monkeypatch.setattr(worktree, "_generate_env_in", fail_once)
+        with pytest.raises(worktree.WorktreeError):
+            worktree.create(tmp_repo, "logical-one", base="main")
+        partial = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert partial is not None
+        head = _git(["rev-parse", "HEAD"], partial.git_worktree_path).stdout.strip()
+        assert partial.fork_point_sha == head
+        assert partial.recovery_status == "env-generation-failed"
+
+        monkeypatch.setattr(worktree, "_generate_env_in", real_generate)
+        resumed = worktree.ensure(tmp_repo, "logical-one", base="main")
+        assert resumed.state == "ready"
+        assert resumed.fork_point_sha == head      # survived the replace() chain
 
 
 class TestManagedRecordValidation:

@@ -3651,12 +3651,17 @@ checkout's HEAD into the same field.
   are checked, in that order: ciu writes the record at the CIU root,
   "which can be below the Git worktree root in a monorepo" — i.e. at
   `<worktree>/<project>/`, the shape every vbpub consumer has.
-- **The recorded ref is used only when it is plain ref text, the
+- **The recorded ref is used only when it is gate-safe ref text, the
   record's `branch` still matches the tree, git resolves it to a LOCAL
-  branch there, and that branch does NOT already contain the tree's
+  branch there, `merge-base(base, HEAD)` still equals the recorded
+  `fork_point_sha`, and that branch does NOT already contain the tree's
   HEAD.** See "Review findings" below — each clause closes a way the
   record would have been WORSE than the `@{upstream}` it displaces, and
-  two of them were false-greens found only by review.
+  three of them were false-greens found only by review.
+- **What is handed downstream is the verified fork COMMIT**, not the
+  branch name: equality has just proven the two resolve to the same
+  object, and an OID cannot be moved by a concurrent session in the
+  window between this check and the judge's own `merge-base`.
 - Every failure mode degrades to the pre-existing `@{upstream}` path:
   absent, unreadable, permission-denied, a non-regular file (a FIFO
   would block the read forever), not JSON, not an object,
@@ -3677,9 +3682,19 @@ checkout's HEAD into the same field.
   be the same silence this entry objects to, in a new place.
 - One deliberate widening: a tree with a USABLE record but NO upstream
   now resolves instead of refusing. Nothing is guessed — the ref is one
-  ciu wrote down at creation and git has just resolved to a live
-  branch, and assay still computes `merge-base(base, HEAD)` over it.
-  Only the base STRING changes here.
+  ciu wrote down at creation, git has just resolved it to a live
+  branch, and its merge-base with HEAD has been proven unmoved since.
+  Only the base STRING changes here; what the judge does with it is the
+  judge's own contract (see RG-54 for where that contract is weaker
+  than this rule).
+- **Usability cliff, accepted knowingly:** merging the base INTO the
+  branch, or rebasing onto it, moves the merge-base and therefore spends
+  the record — the feature goes inert (falls back to `@{upstream}`)
+  exactly where an operator was keeping a long-lived worktree current.
+  The fallback errs WIDE, so this is a loss of benefit, not a new
+  hazard; distinguishing it from a base that absorbed the branch needs
+  another recorded fact, one level up in ciu again. Documented in
+  CONSUMERS.md rather than worked around.
 
 ### Review findings — all THREE cuts of this fix were false-greens
 
@@ -3694,6 +3709,35 @@ The lesson worth carrying: for a change that picks a comparison BASE,
 answer still leave the branch's real work to judge" is. And when three
 successive rounds find the same class, the premise is the suspect, not
 the predicate.
+
+#### Round 4 — no fourth false-green; two real SHOULD-FIXes, both reproduced
+
+The first round to clear. A fresh reviewer spanning both projects
+derived the four-clause chain independently, then mutation-tested it
+(10 run-gate mutants, 11 ciu mutants) and confirmed 0 missing lines and
+0 missing branches in both new regions. No BLOCKING defect.
+
+Two SHOULD-FIXes, each reproduced against the real code before being
+accepted:
+
+- **The fork point was captured in the wrong place.** `create()`
+  resolved `git rev-parse <base>` in `repo_root` right after
+  `git worktree add --no-checkout`. But it is the later
+  `git reset --hard record.base_ref` inside `_finish_allocation` that
+  actually sets the new branch's tip — and it re-resolves `base_ref`
+  then. A commit landing on `main` in between (another session; this
+  estate runs several) makes the recorded SHA differ from the tip the
+  worktree really forked from, and run-gate's equality clause then
+  refuses a perfectly healthy record. Capture moved into
+  `_finish_allocation`, immediately after that reset, reading the
+  worktree's own `HEAD^{commit}`. Regression test races a real commit
+  onto `main` from inside a patched `_write_worktree_overlay`.
+- **The "has MOVED" refusal asserted a cause that may not have
+  happened.** The same inequality is produced by the base absorbing the
+  branch, by the branch merging the base in, by a rebase, or by a record
+  describing a different tree. Telling an operator to tear down a
+  worktree for a reason that did not occur is its own defect; the
+  message now enumerates the possibilities instead.
 
 #### Round 3 — the guard is exact-containment only; ONE follow-up commit re-opens it
 
@@ -3893,11 +3937,12 @@ metacharacter into their own flag has other ways to run the same command.
 RG-51 was reviewed specifically for whether it WIDENS this, because a
 `ciu.worktree-instance.json` is a git-excluded file `git status` never
 shows and could travel with a copied worktree. It does not: RG-51's
-reader applies a conservative allow-list (`RECORDED_BASE_CHARSET`,
+reader applies a conservative allow-list (`GATE_SAFE_BASE_RE`,
 `[A-Za-z0-9._/+@-]`) to the recorded ref BEFORE git is asked, and a
 branch legally named `main;touch$IFS/tmp/PWNED` — git accepts that name —
-is refused with `is not plain ref text`. `check_worktree_charset` (RG-5)
-is the same precedent for `--worktree` paths.
+is refused with `is not gate-safe ref text`. `check_worktree_charset`
+(RG-5) is the same precedent for `--worktree` paths; the fix below makes
+that one regex serve the `--base` path too.
 
 ### Status — FIXED 2026-09-11 (rev 40), first direction taken
 
@@ -3982,3 +4027,45 @@ Directions, not picked here:
   than reporting `0/0 ≥ 100.0% floor` as a pass. assay's own
   `check_base_is_head`/`BASE_IS_HEAD` (`measurability.py`) is the
   precedent; the vendored thin gate has no equivalent.
+
+## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
+
+run-gate's whole comparison-base path — `--base`, the RG-51 recorded fork
+point, `@{upstream}` — decides one thing: which ref string to hand the
+judge. What the judge does with it is assay's contract, and assay's
+`resolve_base` (`assay/src/assay/git.py`, `base_resolution_mode`, B008)
+does NOT always compute `merge-base(base, HEAD)`. When HEAD is a merge
+commit it returns HEAD's **first parent** and discards the supplied base
+entirely.
+
+The consequence is the same class RG-51 exists to close, one layer
+further down: a branch that merged a sibling branch in and then ran the
+gate on that merge commit has the whole second parent's contribution
+outside the judged diff, no matter how correct the base run-gate picked.
+`tools/coverage_gate.py`'s own `_resolve_base` has the identical
+first-parent rule, so the vendored thin gate behaves the same way.
+
+Found 2026-09-11 by RG-51's round-4 review, as a BOUNDARY note rather
+than a defect in that change: it predates RG-51, is unaffected by it,
+and reproduces identically under `--base` and under `@{upstream}`. RG-51
+therefore documents its rule as "sound at run-gate's OWN boundary only"
+(`SPEC.md` R-35a) rather than claiming an end-to-end guarantee it cannot
+make.
+
+### Status — OPEN
+
+Not obviously run-gate's to fix, which is why it is filed and not
+folded:
+
+- The first-parent rule is deliberate in assay (B008) — for a merge that
+  only brings in an already-judged upstream, first-parent is the RIGHT
+  base, and merge-base would judge nothing.
+- The bad case is specifically a merge of a SIBLING topic branch whose
+  work has never been judged. Distinguishing the two needs a fact about
+  the second parent's provenance that neither tool currently records.
+- A cheap partial: run-gate could DISCLOSE, when it has resolved a base
+  and HEAD is a merge commit, that the judge may ignore it — the same
+  "make the staleness visible" half that RG-51 insisted on. That is
+  run-gate's to do and does not touch assay's semantics.
+- The real fix, if there is one, belongs in assay's backlog next to
+  B008; file it there before implementing anything here.
