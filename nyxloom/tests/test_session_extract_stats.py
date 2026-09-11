@@ -445,6 +445,73 @@ def test_coalesce_compaction_cluster_keeps_the_real_post_compaction_work_visible
     assert "Bash×1" in text
 
 
+def _write_auto_compaction_swallowed_ask_fixture(tmp_path: Path) -> Path:
+    # Real dstdns shape (2026-09-11, operator direction): an ORDINARY
+    # multi-part ask ("check if you have in your standing guidelines...")
+    # with ZERO response before an AUTO compaction fires -- unlike the
+    # fixture above, u1 is NOT itself a `/compact` dispatch, it is a real
+    # instruction that just happened to land right as the context limit hit.
+    # The compact boundary/summary follow immediately, then the real work
+    # that directly acts on u1's own ask.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user",
+                      "content": "check if you have in your standing guidelines..."}),
+        _rec(type="system", subtype="compact_boundary", uuid="lc1", timestamp="2026-01-01T00:02:48Z",
+             compactMetadata={"trigger": "auto", "preTokens": 628386, "postTokens": 10301,
+                               "durationMs": 168091}),
+        _rec(type="user", uuid="lcs1", timestamp="2026-01-01T00:02:49Z", isCompactSummary=True,
+             message={"role": "user", "content": "Summary of prior work."}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:02:52Z",
+             message={"role": "assistant", "model": "claude-sonnet-5",
+                       "usage": _usage(cache_read=48255),
+                       "content": [{"type": "text",
+                                     "text": "Let me check current state directly."}]}),
+        _rec(type="user", uuid="u2", timestamp="2026-01-01T00:05:00Z",
+             message={"role": "user", "content": "great, what's next"}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_auto_compaction_swallowed_ask_attributes_real_response_to_the_real_trigger(tmp_path):
+    fp = _write_auto_compaction_swallowed_ask_fixture(tmp_path)
+    rows = stats.build_call_rows(fp)
+    blocks = stats.build_blocks(rows)
+    a1 = next(r for r in rows if r.marker == "a1")
+
+    # u1 is fully absorbed into the merged block -- two blocks, not three:
+    # the ordinary zero-response ask, and the compaction cluster that
+    # follows it, collapse into one.
+    assert len(blocks) == 2
+    merged = blocks[0]
+    # The real trigger is u1's own kind/text, NOT "compaction" -- that is
+    # what actually influenced the session; the compaction is real cost,
+    # folded in as a suffix rather than replacing the identity.
+    assert merged.trigger_kind == "operator"
+    assert merged.trigger_text_preview.startswith("check if you have in your standing guidelines")
+    assert "[Auto, LLM-Endpoint, 628,386→10,301 tok, 168.1s]" in merged.trigger_text_preview
+    assert merged.trigger_timestamp == "2026-01-01T00:00:00Z"
+    assert merged.contains_real_lifecycle_marker is True
+    assert merged.compact_trigger == "auto"
+    assert merged.compact_pre_tokens == 628386
+    assert merged.compact_post_tokens == 10301
+    # No zero-value row anywhere -- the real response's own tokens are
+    # right there on the SAME row the operator's ask is labeled on.
+    assert merged.has_response is True
+    assert merged.first_response_cache_read_tokens == a1.cache_read_tokens
+
+    assert blocks[1].trigger_text_preview.startswith("great, what's next")
+
+    text = stats.render_condensed(blocks)
+    # A single row carries both the real ask and the real compaction cost --
+    # no separate zero-stat row exists to be misread as "dropped."
+    assert "check if you have in your standing guidelines" in text
+    assert "[Auto, LLM-Endpoint, 628,386→10,301 tok, 168.1s]" in text
+    assert text.count("check if you have in your standing guidelines") == 1
+
+
 def test_coalesce_compaction_clusters_leaves_a_run_with_no_real_member_untouched():
     # _coalesce_compaction_clusters's own docstring: a lifecycle-kind
     # cluster run where NEITHER member carries a real compaction "shouldn't

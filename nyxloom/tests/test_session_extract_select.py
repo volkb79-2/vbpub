@@ -96,26 +96,6 @@ def test_lifecycle_marker_hard_stops_the_walk():
     assert "op0" not in markers
 
 
-def test_operator_immediately_before_a_lifecycle_marker_is_flagged_swallowed():
-    # Real dstdns shape (2026-09-10): an operator turn with zero
-    # ASSISTANT_TEXT/THINKING before the next LIFECYCLE_MARKER.
-    op = _op(0, text="check if you have in your standing guidelines...")
-    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
-    events = [op, marker, _cp(2)]
-    select(events, ExtractConfig(max_checkpoints=5))
-    assert op.meta.get("swallowed_by_compaction") == "1"
-
-
-def test_operator_followed_by_a_real_response_is_not_flagged_swallowed():
-    op = _op(0)
-    responded = NormalizedEvent(1, "resp1", _TS, EventKind.ASSISTANT_TEXT,
-                                 "Let me check current state directly.", checkpoint_score=0.0)
-    marker = NormalizedEvent(2, "lc2", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
-    events = [op, responded, marker, _cp(3)]
-    select(events, ExtractConfig(max_checkpoints=5))
-    assert "swallowed_by_compaction" not in op.meta
-
-
 def test_max_lifecycle_markers_zero_is_the_default_hard_stop():
     marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
     events = [_op(0), marker, _cp(2)]
