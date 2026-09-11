@@ -9134,12 +9134,73 @@ in B021 (silently re-execute, not `MutationStateError`) — it is a routine
 
 ### Acceptance
 
-- [ ] a record from a run against test suite A, loaded by a `--resume` run
+- [x] a record from a run against test suite A, loaded by a `--resume` run
       against test suite B (same mutant, same source bytes, different test
       file content), is NOT trusted — the candidate re-executes;
-- [ ] a record from a run against the SAME test suite content resumes exactly
+- [x] a record from a run against the SAME test suite content resumes exactly
       as today (no regression to the documented B066/RG-38 resume behavior);
-- [ ] `CONSUMERS.md`'s resume/state-dir paragraph documents that resume
+- [x] `CONSUMERS.md`'s resume/state-dir paragraph documents that resume
       identity now includes the judging suite, and what "the judging suite"
       is computed from (argv vs. file contents vs. both).
+
+**Status: FIXED 2026-09-11.** A record now carries `judge_sha256` alongside
+the existing identity fields: a digest of the **content of the whole
+materialized tree** (`isolation._manifest_sha256` — every leaf's path, file
+mode and Git object id, plus the declared unsafe-symlink omissions) together
+with the **resolved `argv`, environment, `cwd`, project prefix and declared
+`link_paths`** (`mutation.judge_sha256`). `_load_validated_state_record`
+checks it LAST, after every identity-vs-filename check, so a routine test
+edit can never launder a hand-edited state file into a silent rerun; a
+mismatch — and an absent field, which is what every pre-B088 record looks
+like — is a cache miss that silently re-executes, exactly B021's disposition
+for the other field not folded into the candidate id, never a lane failure.
+
+Answering the filing's own open question ("argv vs. file contents vs.
+both"): **both, and more than the test paths.** The narrower reading —
+digest only the test paths named in the lane's argv — was rejected as
+unsound: a suite is also judged by its `conftest.py`, its fixtures, its
+helper modules and every non-mutated source file it imports, none of which
+need appear in argv, and several real lanes in this estate spell their argv
+`bash -c '...'` and name no path at all (a regression test pins exactly that
+shape). Digesting the whole judged tree has no such blind spot, at the
+deliberate cost of being conservative the other way: a commit that touched
+any file in the judged tree re-executes every candidate. Resume is therefore
+per-TREE, not per-commit — identical trees at different commits still resume
+each other (also pinned by a test, because a commit id would have been the
+cheap identity and would have silently broken that) — and every use
+`--state-dir` exists for (several worktrees of one commit, budget-capped
+retries, `--shard` fan-out) judges the same tree with the same command and is
+unaffected.
+
+`MUTATION_STATE_SCHEMA_VERSION` was deliberately NOT bumped: the field is
+additive with a safe absence, and that one constant is also the SHARD SUMMARY
+document's version, which `merge_mutation_shards` refuses outright on any
+other value — bumping it would have hard-failed every consumer's existing
+shard merge.
+
+Evidence: 39 new tests in `tests/test_mutation_judge_identity.py` (plus
+`..._properties.py`, three Hypothesis properties with inline
+`derandomize=True, database=None`), five of which fail against the pre-fix
+reader — including two REAL repositories where a strengthened test file flips
+a candidate from `survived` to `killed` across a `--resume` with the mutated
+source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
+
+**Residuals, filed here rather than silently widened into the fix:**
+
+1. **`budget_per_candidate` is not part of the judge identity.** Raising a
+   per-candidate budget and resuming still replays a stale
+   `budget_exceeded` — the same "the ground moved, the verdict did not"
+   family as B088 itself, and arguably its next instance. Not folded in
+   because it is not the *judging suite*, and widening the change past its
+   own acceptance criteria is how a fix stops being reviewable.
+2. **`MUTATION_STATE_SCHEMA_VERSION` versions two unrelated documents** —
+   the per-candidate state record and the shard summary. Today that makes a
+   routine record-format bump a breaking change for shard merges, which is
+   why B088 declined the bump. They want separate constants.
+3. **A `link_paths` directory's CONTENT is outside the identity.** Its
+   DECLARATION is folded in, but a linked `node_modules`/cache closure is
+   untracked by construction, so there is no commit-addressed digest to
+   fold. This does not widen an existing guarantee — CONSUMERS.md already
+   states a lane declaring `link_paths` is only as reproducible as the
+   linked directory — but it is a real blind spot for such lanes.
 
