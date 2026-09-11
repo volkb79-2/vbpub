@@ -666,6 +666,34 @@ class TestForkPointProvenance:
         assert record.fork_point_sha is None
         assert record.state == "ready"          # the create still succeeded
 
+    @pytest.mark.parametrize(
+        "output", ["", "   \n", "not-a-sha", "deadbeef",
+                   "0123456789ABCDEF0123456789ABCDEF01234567",
+                   "0123456789abcdef0123456789abcdef01234567 extra"],
+    )
+    def test_create_degrades_when_rev_parse_succeeds_with_a_non_sha(
+        self, tmp_repo, fake_generate_env, monkeypatch, output
+    ):
+        """Exit 0 is not the test — the OUTPUT has to be a real object name.
+        `rev-parse --verify --quiet` exits 0 while printing something else in
+        more than one situation, and a stored value that could never equal a
+        real `merge-base` would make the consumer distrust the record forever
+        instead of reporting a problem."""
+        real = worktree._git
+
+        def odd(args, cwd, **kwargs):
+            if args[:2] == ["rev-parse", "--verify"]:
+                return subprocess.CompletedProcess(args, 0, output, "")
+            return real(args, cwd, **kwargs)
+
+        monkeypatch.setattr(worktree, "_git", odd)
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        assert record.fork_point_sha is None
+        assert record.state == "ready"
+        assert "fork_point_sha" not in json.loads(
+            record.record_path.read_text(encoding="utf-8")
+        )
+
 
 class TestManagedRecordValidation:
     @staticmethod
