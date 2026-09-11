@@ -756,6 +756,10 @@ def render_global_chain(
     # later layer that corrects an earlier bad value is honored, and an
     # overlay-set value is covered too.
     _validate_deploy_landscape_id(merged)
+    # CIU-105: same timing/reasoning as the landscape_id check immediately
+    # above -- once, on the FINAL merged config, so an instance overlay can
+    # set or correct it.
+    _validate_deploy_protected(merged)
     # S3.13 (V8-PREP-1): same timing/reasoning as S3.11 immediately above —
     # once, on the FINAL merged config, so a later layer (or the worktree
     # overlay) can correct an earlier layer's declaration.
@@ -805,6 +809,39 @@ def _validate_deploy_landscape_id(merged: dict) -> None:
         raise ValueError(
             f"[S3.11] [deploy].landscape_id must match '^[a-z][a-z0-9-]{{0,62}}$' "
             f"(a DNS-label-safe slug); got {landscape_id!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# CIU-105 – [deploy].protected validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_deploy_protected(merged: dict) -> None:
+    """CIU-105 — validate ``[deploy].protected`` on the FINAL merged global config.
+
+    The key is consumer-opt-in: absence is legal (and treated as ``False`` by
+    every reader). When present it MUST be a plain ``bool`` — a stack/project
+    author's declared "this instance is important, guard --stop/--clean"
+    flag, read by ``deploy.py``'s ``_refuse_if_protected`` to require
+    ``--i-understand-this-is-protected`` in addition to ``-y``.
+
+    Runs once, on the fully merged config (including the instance overlay),
+    same timing/reasoning as :func:`_validate_deploy_landscape_id` — an
+    overlay-set value must be honored and covered.
+
+    Raises ValueError naming the key and the expected type on violation.
+    """
+    deploy = merged.get("deploy")
+    if not isinstance(deploy, dict):
+        return
+    if "protected" not in deploy:
+        return
+    protected = deploy["protected"]
+    if not isinstance(protected, bool):
+        raise ValueError(
+            f"[CIU-105] [deploy].protected must be a boolean (true/false); "
+            f"got {protected!r}."
         )
 
 
