@@ -348,6 +348,32 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
 # run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
 ```
 
+**In a `ciu worktree` the default is the ref the worktree FORKED from**
+(RG-51). `ciu worktree create|add` records that ref as `base_ref` in
+`ciu.worktree-instance.json` at the worktree's CIU root, and run-gate prefers
+it over `@{upstream}`:
+
+```bash
+./run-gate.py cursor          # no --base, inside a ciu-managed worktree
+# run-gate: /w/proj/ciu.worktree-instance.json records base_ref 'main' — using it instead of merge-base HEAD @{upstream}
+# run-gate: comparison base main (from ciu.worktree-instance.json base_ref) → --request-base
+```
+
+Why this is the better default: `@{upstream}` is a REMOTE-tracking ref, so
+any workflow that batches commits locally before pushing lets it drift behind
+local work with nobody changing a line of config — and every changed-line
+judgment against it silently widens from "this change's diff" to "everything
+since the drift began" (assay's own README, "Pitfall: a `judge.base` literal
+pointing at a remote-tracking ref rots silently"). The recorded `base_ref` is
+normally a LOCAL branch, so it self-updates by the same `merge-base(base,
+HEAD)` resolution assay applies to whatever string it is handed.
+
+Nothing to configure and nothing to opt out of: `--base` still wins outright,
+and a record that is absent, unreadable, not JSON, not an object, or has no
+usable `base_ref` degrades silently to the `@{upstream}` line above. A plain
+checkout never has this file at all. run-gate reads the filename, never
+imports `ciu`.
+
 There is **no `run-gate.toml` key** for this — run-gate DERIVES it by asking
 the judge (`assay lanes --json`), so the fact has exactly one spelling. What
 that costs you: an assay lane invocation now issues one short read-only
@@ -357,7 +383,7 @@ Refusals, all exit 2 and all naming the lane:
 
 | situation | what happens |
 |---|---|
-| delegating lane, no `--base`, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
+| delegating lane, no `--base`, no worktree record, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
 | `--base` on a lane whose `base_source` is not `"request"` | refused, naming the value assay declared (assay would refuse it anyway; this refuses earlier and clearer) |
 | `--base` on a command lane with no `{base}` token | refused — the ref could only be silently dropped |
 | `--base` with a judge too old to answer (`assay lanes --json` missing) | refused, naming assay **3.2.0** (B044) as the version that carries the inventory |
@@ -375,9 +401,9 @@ argv = ["bash", "-c",
          ./run-gate.py --worktree {worktree} unit"]
 ```
 
-A lane carrying `{base}` resolves its ref by the same rules above, so
-`./run-gate.py gate` on a tree with no upstream refuses instead of
-substituting an empty string.
+A lane carrying `{base}` resolves its ref by the same rules above — recorded
+worktree fork point included — so `./run-gate.py gate` on a tree with neither
+refuses instead of substituting an empty string.
 
 ### Worked example — run-gate × assay, end to end
 

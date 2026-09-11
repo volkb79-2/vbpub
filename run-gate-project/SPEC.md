@@ -611,11 +611,50 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     when `--base` is given — it is short, read-only (`assay lanes` executes
     nothing) and shares `R-34`'s single builder.
   - **Resolution.** For a delegating lane the ref is `--base` when given,
-    else the judged worktree's `git merge-base HEAD @{upstream}`. No
-    upstream → exit 2, `lane 'x' delegates its comparison base; pass --base
-    REF (worktree has no upstream)`. There is no fallback to `HEAD` or to a
-    default branch name: a changed-line judgment whose base was guessed is
-    not a changed-line judgment.
+    else the `base_ref` a ciu-managed worktree RECORDED as its own fork
+    point (`R-35a`), else the judged worktree's `git merge-base HEAD
+    @{upstream}`. No record and no upstream → exit 2, `lane 'x' delegates
+    its comparison base; pass --base REF (worktree has no upstream)`. There
+    is no fallback to `HEAD` or to a default branch name: a changed-line
+    judgment whose base was guessed is not a changed-line judgment.
+
+- `R-35a` **Recorded worktree fork point (RG-51).** `@{upstream}` is a
+  REMOTE-tracking ref, so under a "batch commits locally, push later" policy
+  `R-35`'s default drifted behind local work with nobody touching config —
+  silently reproducing the `judge.base = "origin/main"` staleness hazard that
+  `base_source = "request"` exists to escape, relocated out of `assay.toml`
+  into run-gate's own fallback. Before that fallback, run-gate reads
+  `ciu.worktree-instance.json`.
+  - **A file format, never an import.** `ciu worktree create|add|adopt`
+    writes that well-known filename at a managed worktree's CIU root; its
+    top-level string `base_ref` is the ref the worktree was forked from
+    (`create`/`add`) or the adopted checkout's HEAD (`adopt`). run-gate
+    `json.loads`es it with the stdlib. There is **no dependency on `ciu`**:
+    the two are separate projects and this launcher must run on a fresh
+    clone with zero installs.
+  - **Two candidate directories, in order:** the judged worktree root, then
+    the effective project dir inside it (`R-15`) — ciu writes the record at
+    the CIU root, which sits BELOW the git worktree root in a monorepo.
+  - **Every unusable record is indistinguishable from an absent one** and
+    falls through to `R-35`'s `@{upstream}` path: missing, unreadable,
+    permission-denied, not JSON, not a JSON object, or a missing,
+    non-string or blank/whitespace-only `base_ref`. Nothing this read does
+    can raise: it is a better DEFAULT, never a requirement, and a malformed
+    record must not be able to abort a gate run. `schema_version`, `state`
+    and `lease` are NOT inspected — validating fields run-gate does not use
+    would turn a forward-compatible read into a new drift surface.
+  - **Scope.** `--base` still wins outright; a non-delegating lane never
+    reads the record; a plain checkout is unaffected (`ciu worktree adopt`
+    refuses the primary worktree and the record is git-excluded, so it
+    cannot arrive there by checkout). Only the base STRING changes — assay's
+    own `resolve_base` still computes `merge-base(base, HEAD)` over it.
+  - **Deliberate widening.** A tree that HAS a record but no upstream
+    resolves instead of refusing. Nothing is guessed: the ref is one ciu
+    wrote down at creation.
+  - **Disclosure (`R-05`).** When the record wins, before execution:
+    `run-gate: <record path> records base_ref '<REF>' — using it instead of
+    merge-base HEAD @{upstream}`, and `R-35`'s own line names the source as
+    `ciu.worktree-instance.json base_ref`.
   - **Refusals (all exit 2, all naming the lane).** A lane that does NOT
     delegate, invoked with `--base`: an assay lane whose inventory reports a
     different `base_source` (naming the value assay declared), or a command
@@ -630,9 +669,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     lane resolves its ref by the same policy above, so it refuses rather than
     substituting an empty string.
   - **Disclosure (`R-05`).** Before execution, live AND dry:
-    `run-gate: comparison base <REF> (from --base | merge-base HEAD
-    @{upstream}) → --request-base` (or `→ {base} in the lane argv`); the
-    printed docker argv carries the appended flag.
+    `run-gate: comparison base <REF> (from <source>) → --request-base` (or
+    `→ {base} in the lane argv`), where `<source>` is one of `--base`,
+    `ciu.worktree-instance.json base_ref` (`R-35a`) or `merge-base HEAD
+    @{upstream}`; the printed docker argv carries the appended flag.
 
 - `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
   declares at least one `environment = "host"` lane AND the judged tree is a

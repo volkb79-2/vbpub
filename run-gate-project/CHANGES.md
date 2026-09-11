@@ -9,6 +9,40 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-51 — a delegating lane's DEFAULT comparison base was a REMOTE-tracking
+  ref** (`__revision__` 39 → 40). A lane that delegates its base
+  (`judge.base_source = "request"`, or a `{base}` token in a command lane's
+  argv) invoked without `--base` fell straight through to `merge-base HEAD
+  @{upstream}`. Under a "batch commits locally, push later" policy that ref
+  drifts behind local work with nobody touching config (measured at 85 and 88
+  commits behind in two different projects' lanes in one week), so the default
+  silently reproduced the `judge.base = "origin/main"` staleness hazard
+  `base_source = "request"` exists to escape — just relocated from a project's
+  `assay.toml` into run-gate's own fallback.
+
+  `resolve_comparison_base` now consults, BETWEEN the winning `--base` flag
+  and that unchanged `@{upstream}` fallback, the `base_ref` string `ciu
+  worktree create|add|adopt` records in `ciu.worktree-instance.json` at a
+  managed worktree's CIU root — the ref the tree actually forked from,
+  normally a LOCAL branch. Read as a FILE FORMAT (stdlib `json`, well-known
+  filename), never a Python import from `ciu`: separate projects, and this
+  launcher must run on a fresh clone with zero installs. Both the worktree
+  root and the effective project dir inside it are checked, in that order,
+  because ciu writes the record at the CIU root, which sits below the git
+  worktree root in a monorepo.
+
+  Every failure mode — absent, unreadable, permission-denied, not JSON, not an
+  object, missing/non-string/blank `base_ref` — degrades silently to the
+  pre-existing `@{upstream}` path. `--base` still wins outright and a plain
+  checkout is unaffected. The winning source is disclosed before execution
+  (`run-gate: <record> records base_ref '<ref>' …`, plus `(from
+  ciu.worktree-instance.json base_ref)` on the comparison-base line): half of
+  RG-51 was that staleness must be visible, not silent. One deliberate
+  widening — a tree with a record but no upstream now resolves instead of
+  refusing. Only the base STRING changes; assay's own `resolve_base` still
+  computes `merge-base(base, HEAD)` over it. SPEC.md `R-35a`.
+
 <!-- cleared 2026-09-09: the RG-41 write-up that was here (log-stream
      command-lane liveness, LogStreamWatch, three review-round fixes) is
      already shipped -- see [23.6.0]/[23.6.1] below and

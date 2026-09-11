@@ -3595,10 +3595,45 @@ delegation without also building an always-inject-`--base` wrapper
 not itself vbpub's to adopt wholesale, but the shape of what closes this
 gap).
 
-### Status — OPEN, not yet fixed
+### Status — FIXED 2026-09-11 (rev 40), third direction taken
 
-No fix implemented. Candidate directions (need a design decision, not
-picked here):
+The third candidate below turned out to need no new plumbing at all: the
+provenance IS recorded today. `ciu worktree create|add` writes
+`ciu.worktree-instance.json` at the managed worktree's CIU root, and its
+top-level `base_ref` string is the exact `--base` ref the worktree was
+forked from (default `main`); `ciu worktree adopt` writes the adopted
+checkout's HEAD into the same field.
+
+`resolve_comparison_base` now consults that record BETWEEN the winning
+`--base` flag and the unchanged `@{upstream}` fallback:
+
+- Read as a FILE FORMAT — stdlib `json`, well-known filename — never a
+  Python import from `ciu`. The two are separate projects and this
+  launcher must run on a fresh clone with zero installs.
+- Both the judged worktree root and the effective project dir inside it
+  are checked, in that order: ciu writes the record at the CIU root,
+  "which can be below the Git worktree root in a monorepo" — i.e. at
+  `<worktree>/<project>/`, the shape every vbpub consumer has.
+- Every failure mode degrades SILENTLY to the pre-existing `@{upstream}`
+  path: absent, unreadable, permission-denied, not JSON, not an object,
+  missing/non-string/blank `base_ref`. A better default, never a
+  requirement — a malformed record must not abort a gate run.
+- `--base` still wins outright, and the primary checkout is bit-for-bit
+  unchanged (`adopt` structurally refuses the primary worktree, and the
+  record is git-excluded, so it can never arrive there by checkout).
+- The winning source is DISCLOSED before anything runs — a `run-gate:
+  <record> records base_ref '<ref>' …` line, plus `(from
+  ciu.worktree-instance.json base_ref)` in the existing comparison-base
+  line — because half of this entry was that staleness must be visible.
+- One deliberate widening: a tree with a record but NO upstream now
+  resolves instead of refusing. Nothing is guessed — the ref is one ciu
+  wrote down at creation, and assay still computes `merge-base(base,
+  HEAD)` over it. Only the base STRING changes here.
+
+The other two directions stay unimplemented and are NOT superseded; they
+address a case this fix does not (a non-ciu worktree, or a plain checkout
+whose `@{upstream}` has rotted):
+
 - Warn loudly (stderr, not just the existing `run-gate: comparison base
   {ref} (from {source})` line) when the DEFAULT path fires and the
   resolved base is more than some threshold of commits behind the
@@ -3616,4 +3651,4 @@ picked here):
   `@{upstream}` — closer to "what this worktree actually forked from"
   without needing a per-invocation flag, but needs that provenance to
   actually be recorded and recoverable at gate time, which is not
-  confirmed to exist today.
+  confirmed to exist today. **← taken; the provenance does exist.**
