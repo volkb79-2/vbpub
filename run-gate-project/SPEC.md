@@ -681,6 +681,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       same stale ref with a better disclosure line. Note a raw commit id
       exits 0 with EMPTY output under `--symbolic-full-name`, so the
       returncode alone is not the test.
+    - **`merge-base(base_ref, HEAD)`, computed fresh, EQUALS the record's
+      `fork_point_sha`** (ciu CIU-106). This is the clause that makes the
+      whole rule sound, and it needs a fact `base_ref` alone cannot supply:
+      once the base branch has ABSORBED this worktree's work (a `--no-ff`
+      merge, or a fast-forward), `merge-base` stops being the fork point and
+      becomes this tree's own pre-merge tip, so judging against it silently
+      drops everything committed before that point. In the fast-forward case
+      no local signal distinguishes that from a healthy fork. EQUALITY, not
+      "has the base moved": a base that gains UNRELATED commits leaves
+      `merge-base` exactly where it was, which is precisely the long-lived
+      worktree this feature exists to serve. **Fail closed** on a missing or
+      malformed `fork_point_sha` (`adopt` never records one, and neither did
+      any ciu before CIU-106) and on a base with no common history.
     - **That branch does not already contain the tree's HEAD**
       (`git merge-base --is-ancestor HEAD <base>`, FAIL-CLOSED: any error
       refuses). Being a live branch is NECESSARY but NOT SUFFICIENT — a
@@ -689,12 +702,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       judges NOTHING: an assay lane reaches assay's own `BASE_IS_HEAD`
       refusal three layers down, and a `kind = "command"` lane has no such
       guard while its diff-coverage judge scores `0/0` as 100% — a silent
-      false green. This clause covers the own-branch and literal-`HEAD`
-      collapses; the frozen-id (`adopt`) case is caught by the previous
-      clause instead, since such a SHA is an ANCESTOR of HEAD once any
-      commit follows the adopt. Neither clause covers a base that absorbed
-      this branch before the branch moved on again — see RG-51's round-3
-      finding in the backlog.
+      false green. It neither subsumes the fork-point clause above nor is
+      subsumed by it: a worktree that has committed nothing of its own has
+      `fork == merge-base == HEAD`, which PASSES equality and is caught only
+      here — verified against the real function rather than derived. The
+      frozen-id (`adopt`) case is caught by the local-branch clause, since
+      such a SHA is an ANCESTOR of HEAD once any commit follows the adopt.
   - **A record whose `branch` disagrees with the tree's checked-out branch
     is refused**, the way ciu's own reader refuses it: that is the reused-
     worktree case, where a stale record would widen the judged diff to
@@ -712,6 +725,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     able to abort a gate run. `schema_version`, `state` and `lease` are NOT
     inspected — validating fields run-gate does not use would turn a
     forward-compatible read into a new drift surface.
+  - **What is handed downstream is the verified FORK COMMIT**, not the
+    branch name. Equality has just established that both spellings resolve
+    to the same commit, and an OID cannot be moved by another session
+    between this check and the judge's own `merge-base` minutes later
+    (container start, pin verification, suite run). Every other source on
+    this path already yields an immutable commit.
   - **Scope.** `--base` still wins outright; a non-delegating lane never
     reads the record; a plain checkout is unaffected (`ciu worktree adopt`
     refuses the primary worktree and the record is git-excluded, so it

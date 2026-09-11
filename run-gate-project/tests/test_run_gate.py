@@ -4790,6 +4790,23 @@ class TestComparisonBasePassthrough:
             ["/w/x", "--base", "{base}"]
 
 
+def git_head(directory: Path, ref: str = "HEAD") -> str:
+    return subprocess.run(["git", "-C", str(directory), "rev-parse", ref],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def fork_sha(directory: Path, base: str = "main") -> str | None:
+    """`git merge-base <base> HEAD` in `directory`, or None outside a repo —
+    i.e. what ciu's `fork_point_sha` holds for a healthy worktree."""
+    try:
+        proc = subprocess.run(["git", "merge-base", "--end-of-options", base,
+                               "HEAD"], cwd=str(directory),
+                              capture_output=True, text=True)
+    except (OSError, ValueError):      # a hostile base_ref fixture
+        return None
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
+
+
 def write_instance_record(directory: Path, **over) -> Path:
     """A `ciu.worktree-instance.json` shaped exactly like the real one ciu
     writes (schema v1, the shape shipped today), with per-test overrides.
@@ -4806,6 +4823,16 @@ def write_instance_record(directory: Path, **over) -> Path:
            "runtime": {"instance_id": "a4b81d", "network": "wt-a4b81d-network"},
            "recovery_status": None}
     doc.update(over)
+    # CIU-106's fork point defaults to the HEALTHY value — the commit
+    # `base_ref` and HEAD actually share right now — so a test that says
+    # nothing about it gets a record that is live rather than spent. Tests
+    # about a MOVED base override it, or write the record before moving.
+    if "fork_point_sha" not in over:
+        live = (fork_sha(directory, doc["base_ref"].strip())
+                if isinstance(doc.get("base_ref"), str) and doc["base_ref"].strip()
+                else None)
+        if live is not None:
+            doc["fork_point_sha"] = live
     path = directory / run_gate.WORKTREE_INSTANCE_RECORD
     path.write_text(json.dumps(doc, indent=2))
     return path
@@ -4836,6 +4863,15 @@ def make_feature_repo(tmp_path: Path) -> Path:
     i.e. the shape `ciu worktree create --base main` produces: HEAD is on a
     branch that is NOT the base, and the base branch really exists."""
     repo = make_repo(tmp_path)
+    # ciu git-excludes the record (`_ensure_record_is_excluded`), so a real
+    # judged tree never has it in the index. Mirroring that here is not
+    # cosmetic: without it a test's own `git add -A` would COMMIT the record
+    # onto whichever branch it ran on, and a later `git checkout` would then
+    # delete it out from under the reader.
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as handle:
+        handle.write(f"\n{run_gate.WORKTREE_INSTANCE_RECORD}\n")
     git(repo, "checkout", "-q", "-b", "feature")
     (repo / "feature.txt").write_text("work\n")
     commit_all(repo, "feature work")
@@ -4858,8 +4894,11 @@ class TestRecordedWorktreeBase:
     def test_a_recorded_branch_is_used(self, tmp_path):
         repo = make_feature_repo(tmp_path)
         record = write_instance_record(repo, base_ref="main")
+        # The resolved base is the verified FORK COMMIT, not the branch name:
+        # an OID cannot be moved by another session between this check and
+        # the judge's own merge-base minutes later.
         assert run_gate.recorded_worktree_base(repo, repo) == \
-            ("main", record, "")
+            (fork_sha(repo), record, "")
 
     def test_no_record_anywhere_is_silent(self, tmp_path):
         """(None, None, "") — the plain-checkout case says nothing at all."""
@@ -4886,7 +4925,7 @@ class TestRecordedWorktreeBase:
         proj.mkdir()
         record = write_instance_record(proj, base_ref="main")
         assert run_gate.recorded_worktree_base(repo, repo, proj) == \
-            ("main", record, "")
+            (fork_sha(repo), record, "")
 
     def test_the_first_candidate_wins_over_a_later_one(self, tmp_path):
         repo = make_feature_repo(tmp_path)
@@ -4896,7 +4935,7 @@ class TestRecordedWorktreeBase:
         outer = write_instance_record(repo, base_ref="main")
         write_instance_record(proj, base_ref="other")
         assert run_gate.recorded_worktree_base(repo, repo, proj) == \
-            ("main", outer, "")
+            (fork_sha(repo, "main"), outer, "")
 
     def test_an_unusable_record_does_not_stop_the_search(self, tmp_path):
         """"Unusable" means "keep looking" — a broken record at the worktree
@@ -4907,7 +4946,7 @@ class TestRecordedWorktreeBase:
         (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text("{{{")
         record = write_instance_record(proj, base_ref="main")
         assert run_gate.recorded_worktree_base(repo, repo, proj) == \
-            ("main", record, "")
+            (fork_sha(repo), record, "")
 
     def test_the_FIRST_rejection_is_the_one_reported(self, tmp_path):
         """With no usable record anywhere, the caller must be told about the
@@ -5048,7 +5087,7 @@ class TestRecordedWorktreeBase:
     def test_surrounding_whitespace_is_stripped(self, tmp_path):
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="  main\n")
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
 
     # --- the record must still describe THIS tree ---------------------------
 
@@ -5080,7 +5119,7 @@ class TestRecordedWorktreeBase:
         stays forward-compatible with any schema that drops the field."""
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, branch=value, base_ref="main")
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
 
     # --- base_ref must name a branch OTHER than this tree's own -------------
 
@@ -5194,7 +5233,7 @@ class TestRecordedWorktreeBase:
         commit_all(repo, "unrelated main work")
         git(repo, "checkout", "-q", "feature")
         write_instance_record(repo, base_ref="main")
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
 
     def test_base_already_contains_head_fails_closed(self, tmp_path,
                                                      monkeypatch):
@@ -5211,6 +5250,138 @@ class TestRecordedWorktreeBase:
         """git exits 128, not 1 — "could not tell" is not "divergent"."""
         repo = make_feature_repo(tmp_path)
         assert run_gate.base_already_contains_head(repo, "no-such-ref") is True
+
+    # --- CIU-106: the recorded fork point must still be the merge-base ------
+
+    def test_a_base_that_absorbed_the_branch_then_moved_on_is_refused(
+            self, tmp_path):
+        """THE round-3 case, and the reason `base_already_contains_head` was
+        not enough on its own.
+
+        Fork, commit, merge back into `main` with --no-ff, commit again. The
+        containment guard stops firing (the base no longer contains HEAD),
+        but `merge-base` now sits on the PRE-MERGE branch tip, so judging
+        against it silently drops everything the branch did before the merge.
+        Only comparing against the RECORDED fork point tells the two apart —
+        in the fast-forward variant below, nothing else can.
+        """
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        fork = json.loads(record.read_text())["fork_point_sha"]
+        git(repo, "checkout", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        git(repo, "checkout", "-q", "feature")
+        (repo / "after.txt").write_text("follow-up\n")
+        commit_all(repo, "follow-up after the merge")
+
+        # the two guards disagree — which is exactly why both are needed
+        assert run_gate.base_already_contains_head(repo, "main") is False
+        assert run_gate.merge_base_of(repo, "main") != fork
+
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED relative to this tree" in why
+        assert "absorbed this branch's work" in why
+
+    def test_a_fast_forwarded_base_that_moved_on_is_refused(self, tmp_path):
+        """The variant with no merge commit at all, where `merge-base` alone
+        carries no signal whatsoever."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("follow-up\n")
+        commit_all(repo, "follow-up after the fast-forward")
+        assert run_gate.base_already_contains_head(repo, "main") is False
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "has MOVED relative to this tree" in why
+
+    def test_unrelated_commits_on_the_base_do_NOT_spend_the_record(
+            self, tmp_path):
+        """The complement, and the reason the check is EQUALITY rather than
+        "has the base moved at all": `main` gaining commits that are not this
+        branch's leaves `merge-base` exactly where it was, so a healthy
+        long-lived worktree keeps working."""
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        fork = json.loads(record.read_text())["fork_point_sha"]
+        before = git_head(repo, "main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        assert git_head(repo, "main") != before          # main really moved
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork
+
+    def test_a_record_with_no_fork_point_is_refused(self, tmp_path):
+        """`adopt` never records one, and neither did any ciu before CIU-106.
+        FAIL CLOSED: without it a moved base cannot be told from a live one,
+        and guessing is what three review rounds each got wrong."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", fork_point_sha=None)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "records no usable 'fork_point_sha'" in why
+        assert "CIU-106" in why
+
+    @pytest.mark.parametrize("bad", ["", "   ", "not-a-sha", 42, [], {}, True,
+                                     "0123456789ABCDEF0123456789ABCDEF01234567",
+                                     "0123456789abcdef0123456789abcdef0123456"])
+    def test_a_malformed_fork_point_is_refused(self, tmp_path, bad):
+        """Every shape another process's JSON could put here, including the
+        40-vs-39 length boundary and an upper-case spelling git never emits."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", fork_point_sha=bad)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "fork_point_sha" in why
+
+    def test_a_stale_fork_point_from_another_repo_is_refused(self, tmp_path):
+        """A record that travelled (a copied tree, a restored backup) names a
+        commit this repo may not even have."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main",
+                              fork_point_sha="0" * 40)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "has MOVED relative to this tree" in why
+
+    def test_no_common_history_with_the_base_is_refused(self, tmp_path):
+        """`git merge-base` exits 1 with no output for unrelated histories.
+        Treating that as "divergent, therefore usable" would hand the judge a
+        base it cannot resolve — a hard error downstream instead of this
+        tree's working `@{upstream}` fallback."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "--orphan", "unrelated")
+        (repo / "orphan.txt").write_text("no shared history\n")
+        commit_all(repo, "orphan root")
+        git(repo, "checkout", "-q", "feature")
+        write_instance_record(repo, base_ref="unrelated",
+                              fork_point_sha="0" * 40)
+        assert run_gate.merge_base_of(repo, "unrelated") is None
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "could not be computed" in why
+
+    def test_merge_base_of_never_raises(self, tmp_path, monkeypatch):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.merge_base_of(repo, "main") == fork_sha(repo)
+        assert run_gate.merge_base_of(repo, "no-such-ref") is None
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.merge_base_of(repo, "main") is None
+
+    def test_a_fresh_worktree_with_no_commits_is_still_refused(self, tmp_path):
+        """Proof that the fork-point check does NOT subsume the containment
+        one, checked rather than reasoned: a just-created worktree has
+        merge-base == fork == HEAD, so equality PASSES and only
+        `base_already_contains_head` catches it. Judging it would compare
+        HEAD with HEAD — zero changed lines, `0/0 = 100%`, a silent pass."""
+        repo = make_repo(tmp_path)
+        git(repo, "checkout", "-q", "-b", "feature")      # no commits of its own
+        write_instance_record(repo, base_ref="main")
+        assert run_gate.merge_base_of(repo, "main") == \
+            json.loads((repo / run_gate.WORKTREE_INSTANCE_RECORD)
+                       .read_text())["fork_point_sha"]
+        assert run_gate.base_already_contains_head(repo, "main") is True
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
 
     # --- shell metacharacters: git's ref grammar is wider than ours ---------
 
@@ -5279,7 +5450,8 @@ class TestRecordedWorktreeBase:
         repo = make_feature_repo(tmp_path)
         git(repo, "branch", legal, "main")
         write_instance_record(repo, base_ref=legal)
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == legal
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == \
+            fork_sha(repo, legal)
 
     def test_an_unknown_schema_version_still_reads(self, tmp_path):
         """`base_ref` is present and identical in every schema ciu has
@@ -5288,13 +5460,19 @@ class TestRecordedWorktreeBase:
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref="main", schema_version=99,
                               lease=None, some_future_key={"a": 1})
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
 
-    def test_a_record_with_only_base_ref_still_reads(self, tmp_path):
+    def test_a_record_carrying_only_base_ref_is_refused(self, tmp_path):
+        """Before CIU-106 this was enough. It no longer is: without a
+        recorded fork point a moved base cannot be told from a live one, and
+        this reader fails CLOSED rather than guessing."""
         repo = make_feature_repo(tmp_path)
         (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
             '{"base_ref": "main"}')
-        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "records no usable 'fork_point_sha'" in why
+        assert "CIU-106" in why
 
     # --- the git primitives, pinned directly --------------------------------
 
@@ -5521,19 +5699,22 @@ class TestWorktreeRecordedComparisonBase:
         repo, _proj = self._project(tmp_path, monkeypatch)
         upstream_sha = self._upstream(repo)
         record = write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
         inner = lane_runs(log)[0][-1]
-        assert "--request-base main" in inner
+        # the verified FORK COMMIT, not the branch name (no re-resolution
+        # window between this check and the judge's own merge-base)
+        assert f"--request-base {fork}" in inner
         assert f"--request-base {upstream_sha}" not in inner
         out = capsys.readouterr().out
         # R-05: which source won is DISCLOSED, naming the record — and so is
         # the ref NOT taken, which is how origin drift becomes visible.
-        assert f"run-gate: {record} records base_ref 'main'" in out
+        assert f"run-gate: {record} pins this tree's fork point at {fork}" in out
         assert f"instead of merge-base HEAD @{{upstream}} ({upstream_sha})" in out
-        assert "comparison base main (from ciu.worktree-instance.json " \
-               "base_ref) → --request-base" in out
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point) → --request-base" in out
 
     def test_a_record_at_the_project_dir_is_found(
             self, tmp_path, monkeypatch, capsys):
@@ -5542,12 +5723,13 @@ class TestWorktreeRecordedComparisonBase:
         this script actually has."""
         _repo, proj = self._project(tmp_path, monkeypatch)
         write_instance_record(proj, base_ref="main")
+        fork = fork_sha(proj)
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
-        assert "--request-base main" in lane_runs(log)[0][-1]
-        assert "comparison base main (from ciu.worktree-instance.json " \
-               "base_ref)" in capsys.readouterr().out
+        assert f"--request-base {fork}" in lane_runs(log)[0][-1]
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point)" in capsys.readouterr().out
 
     def test_the_worktree_root_is_searched_before_the_project_dir(
             self, tmp_path, monkeypatch, capsys):
@@ -5556,16 +5738,23 @@ class TestWorktreeRecordedComparisonBase:
         record in each location. With only one record planted, either order
         would pass."""
         repo, proj = self._project(tmp_path, monkeypatch)
-        git(repo, "branch", "inner-base", "main")
+        # `inner-base` shares MORE history with HEAD than `main` does, so the
+        # two candidates resolve to genuinely DIFFERENT fork commits — with
+        # both resolving to the same commit the test could not tell the two
+        # orders apart, which is the trap this test exists to avoid.
+        git(repo, "branch", "inner-base", "HEAD")
+        (repo / "later.txt").write_text("after inner-base\n")
+        commit_all(repo, "commit after inner-base")
         outer = write_instance_record(repo, base_ref="main")
         write_instance_record(proj, base_ref="inner-base")
+        assert fork_sha(repo, "main") != fork_sha(repo, "inner-base")
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
         inner = lane_runs(log)[0][-1]
-        assert "--request-base main" in inner
-        assert "--request-base inner-base" not in inner
-        assert f"{outer} records base_ref 'main'" in capsys.readouterr().out
+        assert f"--request-base {fork_sha(repo, 'main')}" in inner
+        assert f"--request-base {fork_sha(repo, 'inner-base')}" not in inner
+        assert f"{outer} pins this tree's fork point" in capsys.readouterr().out
 
     def test_explicit_base_still_wins_over_a_record(
             self, tmp_path, monkeypatch, capsys):
@@ -5579,8 +5768,7 @@ class TestWorktreeRecordedComparisonBase:
         assert "--request-base deadbeef" in lane_runs(log)[0][-1]
         out = capsys.readouterr().out
         assert "comparison base deadbeef (from --base)" in out
-        assert "records base_ref" not in out
-        assert "ignoring" not in out
+        assert "fork point" not in out and "ignoring" not in out
 
     def test_without_a_record_the_upstream_path_is_unchanged_and_silent(
             self, tmp_path, monkeypatch, capsys):
@@ -5595,8 +5783,7 @@ class TestWorktreeRecordedComparisonBase:
         assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
         out = capsys.readouterr().out
         assert "comparison base" in out and "merge-base HEAD @{upstream}" in out
-        assert "records base_ref" not in out
-        assert "ignoring" not in out
+        assert "fork point" not in out and "ignoring" not in out
 
     def test_a_malformed_record_degrades_to_the_upstream_and_SAYS_SO(
             self, tmp_path, monkeypatch, capsys):
@@ -5645,11 +5832,12 @@ class TestWorktreeRecordedComparisonBase:
         down at creation and git has just resolved to a live branch."""
         repo, _proj = self._project(tmp_path, monkeypatch)
         write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
         captured = capsys.readouterr()
-        assert "--request-base main" in lane_runs(log)[0][-1]
+        assert f"--request-base {fork}" in lane_runs(log)[0][-1]
         assert "delegates its comparison base" not in captured.err
         # and the disclosure does NOT claim an @{upstream} it does not have
         assert "merge-base HEAD @{upstream} yields nothing here" in captured.out
@@ -5686,11 +5874,12 @@ class TestWorktreeRecordedComparisonBase:
         """
         repo, _proj = self._project(tmp_path, monkeypatch, cfg)
         write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
         assert run_gate.main(["gate"]) == 0
         out = capfd.readouterr().out
-        assert out.count("./run-gate.py --base main") == 2
-        assert "comparison base main (from ciu.worktree-instance.json " \
-               "base_ref) → {base} in the lane argv" in out
+        assert out.count(f"./run-gate.py --base {fork}") == 2
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point) → {{base}} in the lane argv" in out
 
     def test_a_non_delegating_lane_never_reads_a_record(
             self, tmp_path, monkeypatch, capsys):
@@ -5704,7 +5893,7 @@ class TestWorktreeRecordedComparisonBase:
         assert run_gate.main(["ui-unit"]) == 0
         assert "--request-base" not in lane_runs(log)[0][-1]
         out = capsys.readouterr().out
-        assert "records base_ref" not in out and "ignoring" not in out
+        assert "fork point" not in out and "ignoring" not in out
 
 
 def _has_module(name: str) -> bool:

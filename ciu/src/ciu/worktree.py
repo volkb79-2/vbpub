@@ -67,6 +67,8 @@ WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
 WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+#: CIU-106: the only shape `fork_point_sha` may take when present.
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
 WORKTREE_LEASE_KEYS = frozenset(
     {"holder", "acquired_at_utc", "renewed_at_utc", "expires_at_utc", "mode"}
@@ -165,6 +167,24 @@ class WorktreeInstanceRecord:
     recovery_status: str | None = None
     lease: WorktreeLease | None = None
     schema_version: int = WORKTREE_INSTANCE_BASE_SCHEMA_VERSION
+    #: CIU-106 — the commit ``base_ref`` POINTED AT when this worktree was
+    #: created, captured once and never updated. ``base_ref`` alone cannot
+    #: answer "what did this tree fork from?", because the branch it names
+    #: keeps moving: once that branch has ABSORBED this worktree's work (a
+    #: ``--no-ff`` merge, or a fast-forward), ``merge-base(base_ref, HEAD)``
+    #: stops being the fork point and becomes this tree's own pre-merge tip.
+    #: In the fast-forward case NO local signal separates those two states,
+    #: which is why the fork commit has to be written down rather than
+    #: derived. A consumer compares it against a freshly computed
+    #: ``merge-base``: equal means the record still describes this tree,
+    #: anything else means it is spent.
+    #:
+    #: ``None`` is a legitimate, permanent value, not a migration gap:
+    #: ``adopt()`` has no meaningful fork commit to record, and every record
+    #: written before this field existed simply lacks it. Consumers must
+    #: FAIL CLOSED on absence — treat it as "cannot vouch for this record"
+    #: — never as "no constraint".
+    fork_point_sha: str | None = None
 
     @property
     def ciu_root(self) -> Path:
@@ -197,6 +217,16 @@ class WorktreeInstanceRecord:
         # accidentally emit until a lease operation has set schema_version.
         if self.schema_version >= 2:
             doc["lease"] = self.lease.to_dict() if self.lease is not None else None
+        # CIU-106: emitted ONLY when there is one, for the same reason `lease`
+        # is emitted only from v2 — a record that has nothing to say about its
+        # fork point stays byte-identical to what this version always wrote,
+        # so `adopt`'s output and every pre-CIU-106 record share one shape
+        # instead of sprouting an explicit `null` that readers would have to
+        # tell apart from absence. No schema_version bump: the key is
+        # OPTIONAL on read (see `_record_from_dict`), so a record with it and
+        # a record without it are both valid v1 (and both valid v2).
+        if self.fork_point_sha is not None:
+            doc["fork_point_sha"] = self.fork_point_sha
         return doc
 
 
@@ -286,9 +316,15 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     declared_version = raw.get("schema_version")
     if declared_version == 2:
         required = required | {"lease"}
-    if set(raw) != required:
+    # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
+    # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
+    # every record written before it. Both shapes are valid, which is why
+    # this needed no schema_version bump; the strict key-set check below is
+    # kept exactly as strict for everything else.
+    optional = {"fork_point_sha"}
+    if set(raw) - optional != required:
         missing = sorted(required - set(raw))
-        unknown = sorted(set(raw) - required)
+        unknown = sorted(set(raw) - required - optional)
         raise WorktreeError(
             f"[S16] malformed {path} (schema_version {declared_version!r}): "
             f"missing={missing}, unknown={unknown}"
@@ -333,6 +369,18 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     git_path = Path(raw["git_worktree_path"])
     if not git_path.is_absolute():
         raise WorktreeError(f"[S16] git_worktree_path is not absolute in {path}")
+    fork_point = raw.get("fork_point_sha")
+    # Absent is legal; PRESENT-but-not-a-real-object-name is malformed. A
+    # consumer's whole use of this field is an equality test against a fresh
+    # `merge-base`, so a value that could never be one is worse than no value
+    # — it would silently never match and look like a spent record.
+    if fork_point is not None and not _FULL_SHA_RE.fullmatch(
+        fork_point if isinstance(fork_point, str) else ""
+    ):
+        raise WorktreeError(
+            f"[S16] fork_point_sha in {path} is not a full 40-hex object "
+            f"name: {fork_point!r}"
+        )
     return WorktreeInstanceRecord(
         logical_name=raw["logical_name"], display_name=raw["display_name"],
         branch=raw["branch"], git_worktree_path=git_path,
@@ -341,6 +389,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         instance_id=runtime["instance_id"], network=runtime["network"],
         recovery_status=recovery, lease=lease,
         schema_version=declared_version,
+        fork_point_sha=fork_point,
     )
 
 
@@ -3649,6 +3698,27 @@ def create(
                 f"{(res.stderr or res.stdout).strip()}"
             )
 
+        # CIU-106: capture WHERE `base` pointed, now. This is the one moment
+        # the fork commit is knowable without ambiguity — the new branch has
+        # no commits of its own yet, so `merge-base(base, <new branch>)` and
+        # `base` itself are the same commit, and nothing a consumer can
+        # compute later distinguishes "base absorbed my work" from "I forked
+        # here" once that stops being true. Resolved in `repo_root`, not the
+        # new tree: `git worktree add` does not move `base`, and repo_root is
+        # where it was just resolved from.
+        #
+        # A failure here degrades to `None` rather than failing the create:
+        # provenance is a nice-to-have for a downstream gate, and a worktree
+        # the operator asked for must not be refused because an extra
+        # `rev-parse` did not answer. Consumers fail closed on absence.
+        fork_point_sha: str | None = None
+        resolved = _git(["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+                        repo_root)
+        if resolved.returncode == 0:
+            candidate = resolved.stdout.strip()
+            if _FULL_SHA_RE.fullmatch(candidate):
+                fork_point_sha = candidate
+
         record = WorktreeInstanceRecord(
             logical_name=logical_name,
             display_name=candidate_display,
@@ -3658,6 +3728,7 @@ def create(
             created_at_utc=instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             base_ref=base,
             state="allocating",
+            fork_point_sha=fork_point_sha,
         )
         _write_instance_record(record)
         try:

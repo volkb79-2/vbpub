@@ -4065,4 +4065,52 @@ Consumers read this file as a loose FILE-FORMAT contract by well-known
 filename — run-gate deliberately does not import `ciu` — so the key name
 and its meaning are the whole interface.
 
-### Status — OPEN, filed from vbpub run-gate RG-51 (not yet implemented)
+### Status — FIXED 2026-09-11, as proposed above
+
+`WorktreeInstanceRecord` gained `fork_point_sha: str | None = None`.
+`create()` resolves `git rev-parse --verify <base>^{commit}` in
+`repo_root` immediately after `git worktree add` succeeds — the one
+moment the fork commit is unambiguous, because the new branch has no
+commits of its own yet, so `base` and `merge-base(base, <new branch>)`
+are the same commit. `adopt()` leaves it `None`: an adopted checkout has
+no knowable fork commit, and `None` is the honest answer rather than a
+plausible-looking wrong one.
+
+Decisions worth recording, because each one had an alternative:
+
+- **No `schema_version` bump.** The key is OPTIONAL on read, so a record
+  with it and a record without it are both valid v1 (and both valid v2).
+  `_record_from_dict`'s closed-key-set check is otherwise untouched —
+  `optional = {"fork_point_sha"}` widens it by exactly one name, and an
+  invented key is still refused. Bumping would have forced a migration
+  for a field whose absence is already a legitimate, permanent state
+  (`adopt`, and every record written before today).
+- **Emitted only when non-`None`**, like `lease` is emitted only from
+  v2. An `adopt` record and a pre-CIU-106 record therefore share ONE
+  serialized shape, instead of a reader having to tell `"fork_point_sha":
+  null` apart from absence. `to_dict()` for a record without one is
+  byte-identical to what this version always wrote.
+- **Present-but-malformed is a REFUSAL**, absent is not. A consumer's
+  whole use of this field is an equality test against a fresh
+  `merge-base`, so a value that could never match would masquerade as a
+  spent record forever; `_FULL_SHA_RE` requires the full 40-hex lower-case
+  object name git actually emits.
+- **A failed `rev-parse` degrades to `None`, it does not fail the
+  create.** Provenance is a nice-to-have for a downstream gate; a
+  worktree the operator asked for must not be refused because an extra
+  git call did not answer. Consumers fail closed on absence anyway.
+
+**Downgrade note:** an older `ciu` reading a record written by this
+version will refuse it (`unknown=['fork_point_sha']`), because the
+closed-key-set check is strict in that direction. Forward compatibility
+(new ciu, old records) is what this change buys; backward compatibility
+(old ciu, new records) is not, and was not before either.
+
+Consumer side: vbpub `run-gate` (RG-51) uses it as
+`merge-base(base_ref, HEAD) == fork_point_sha`, failing closed on
+absence, and then hands the verified fork COMMIT downstream rather than
+the branch name. See that entry for why equality — and not "has the base
+moved" — is the right test, and for the one case it does NOT cover (a
+worktree with no commits of its own, where fork == merge-base == HEAD;
+that needs the separate "base already contains HEAD" guard, verified
+empirically rather than derived).

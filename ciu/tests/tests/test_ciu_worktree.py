@@ -522,6 +522,151 @@ class TestManagedIdentityLifecycle:
         assert failed is not None and failed.recovery_status == "runtime-collision"
 
 
+class TestForkPointProvenance:
+    """CIU-106: `create()` records WHERE `base_ref` pointed at creation.
+
+    `base_ref` is a branch NAME and the branch keeps moving. Once it has
+    absorbed this worktree's work, `merge-base(base_ref, HEAD)` stops being
+    the fork point and becomes this tree's own pre-merge tip — and in the
+    fast-forward case nothing local separates that from a healthy fork. The
+    fork commit therefore has to be written down at the one moment it is
+    unambiguous.
+    """
+
+    def test_create_records_where_base_pointed(self, tmp_repo, fake_generate_env):
+        expected = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        assert record.fork_point_sha == expected
+        stored = json.loads(record.record_path.read_text(encoding="utf-8"))
+        assert stored["fork_point_sha"] == expected
+
+    def test_the_recorded_fork_point_survives_a_reread(
+        self, tmp_repo, fake_generate_env
+    ):
+        """It is only useful to a consumer that reads it back off disk."""
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        again = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert again.fork_point_sha == record.fork_point_sha
+
+    def test_a_later_base_commit_does_not_change_the_record(
+        self, tmp_repo, fake_generate_env
+    ):
+        """The whole point: the record is a SNAPSHOT. `main` moving on is
+        exactly the situation the field exists to survive."""
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        fork = record.fork_point_sha
+        (tmp_repo / "later.txt").write_text("after the fork\n", encoding="utf-8")
+        assert _git(["add", "-A"], tmp_repo).returncode == 0
+        assert _git(["commit", "-m", "unrelated main work"], tmp_repo).returncode == 0
+        assert _git(["rev-parse", "main"], tmp_repo).stdout.strip() != fork
+        again = worktree.find_instance_record(tmp_repo, "logical-one")
+        assert again.fork_point_sha == fork
+
+    def test_a_merge_back_into_base_is_detectable_only_with_this_field(
+        self, tmp_repo, fake_generate_env
+    ):
+        """The real repro, end to end — the scenario three run-gate review
+        rounds each failed to detect from `base_ref` alone.
+
+        Fork, commit on the branch, merge it back into `main` --no-ff, commit
+        again. `merge-base(main, HEAD)` is now the PRE-MERGE branch tip, not
+        the fork; only comparing it against the recorded fork point tells the
+        two apart.
+        """
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        fork, wt = record.fork_point_sha, record.git_worktree_path
+        assert _git(["checkout", record.branch], wt).returncode == 0
+        (wt / "work.txt").write_text("branch work\n", encoding="utf-8")
+        assert _git(["add", "-A"], wt).returncode == 0
+        assert _git(["commit", "-m", "branch work"], wt).returncode == 0
+
+        # healthy: merge-base is still exactly the recorded fork point
+        assert _git(["merge-base", "main", "HEAD"], wt).stdout.strip() == fork
+
+        assert _git(["merge", "--no-ff", "-m", "merge", record.branch],
+                    tmp_repo).returncode == 0
+        (wt / "after.txt").write_text("follow-up\n", encoding="utf-8")
+        assert _git(["add", "-A"], wt).returncode == 0
+        assert _git(["commit", "-m", "follow-up"], wt).returncode == 0
+
+        # spent: merge-base has moved past the fork, and says so
+        assert _git(["merge-base", "main", "HEAD"], wt).stdout.strip() != fork
+
+    def test_adopt_records_no_fork_point(self, tmp_repo, fake_generate_env):
+        """An adopted checkout has no knowable fork commit — `None` is the
+        honest answer, and `None` is what a consumer must fail closed on."""
+        wt_path = tmp_repo.parent / "adopted"
+        assert _git(["worktree", "add", "-b", "adopted", str(wt_path), "main"],
+                    tmp_repo).returncode == 0
+        record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+        assert record.fork_point_sha is None
+        stored = json.loads(record.record_path.read_text(encoding="utf-8"))
+        assert "fork_point_sha" not in stored
+
+    def test_a_record_without_the_field_stays_readable(self, tmp_path):
+        """Every record written before CIU-106 lacks the key. Absence is
+        legal — this is why the field needed no schema_version bump."""
+        raw = TestManagedRecordValidation.raw(tmp_path)
+        assert "fork_point_sha" not in raw
+        loaded = worktree._record_from_dict(raw, tmp_path / "r.json")
+        assert loaded.fork_point_sha is None
+
+    def test_a_record_with_the_field_round_trips(self, tmp_path):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        raw = {**TestManagedRecordValidation.raw(tmp_path), "fork_point_sha": sha}
+        loaded = worktree._record_from_dict(raw, tmp_path / "r.json")
+        assert loaded.fork_point_sha == sha
+        assert loaded.to_dict()["fork_point_sha"] == sha
+
+    def test_a_none_fork_point_is_omitted_from_the_serialized_shape(self, tmp_path):
+        """Not `"fork_point_sha": null` — absence, so that a pre-CIU-106
+        record and an `adopt` record share one shape a reader need not tell
+        apart."""
+        raw = TestManagedRecordValidation.raw(tmp_path)
+        assert "fork_point_sha" not in worktree._record_from_dict(
+            raw, tmp_path / "r.json"
+        ).to_dict()
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["", "not-a-sha", "0123456789ABCDEF0123456789ABCDEF01234567",
+         "0123456789abcdef0123456789abcdef0123456", 42, [], {}, True],
+    )
+    def test_a_present_but_malformed_fork_point_is_refused(self, tmp_path, bad):
+        """Absent is legal; present-and-unusable is not. A consumer's whole
+        use of this field is an equality test against a fresh `merge-base`,
+        so a value that can never match would masquerade as a spent record
+        forever instead of being reported."""
+        raw = {**TestManagedRecordValidation.raw(tmp_path), "fork_point_sha": bad}
+        with pytest.raises(worktree.WorktreeError, match="fork_point_sha"):
+            worktree._record_from_dict(raw, tmp_path / "r.json")
+
+    def test_an_unknown_key_is_still_refused(self, tmp_path):
+        """The optional key widened the schema by exactly one name — the
+        closed-key-set check is otherwise untouched."""
+        raw = {**TestManagedRecordValidation.raw(tmp_path), "invented": 1}
+        with pytest.raises(worktree.WorktreeError, match="unknown"):
+            worktree._record_from_dict(raw, tmp_path / "r.json")
+
+    def test_create_degrades_to_none_when_the_base_cannot_be_resolved(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """Provenance is a nice-to-have for a downstream gate; a worktree the
+        operator asked for must not be refused because an extra `rev-parse`
+        did not answer."""
+        real = worktree._git
+
+        def flaky(args, cwd, **kwargs):
+            if args[:2] == ["rev-parse", "--verify"]:
+                return subprocess.CompletedProcess(args, 128, "", "boom")
+            return real(args, cwd, **kwargs)
+
+        monkeypatch.setattr(worktree, "_git", flaky)
+        record = worktree.create(tmp_repo, "logical-one", base="main")
+        assert record.fork_point_sha is None
+        assert record.state == "ready"          # the create still succeeded
+
+
 class TestManagedRecordValidation:
     @staticmethod
     def raw(tmp_path: Path) -> dict:

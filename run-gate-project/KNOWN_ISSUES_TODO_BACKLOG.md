@@ -3607,16 +3607,30 @@ delegation without also building an always-inject-`--base` wrapper
 not itself vbpub's to adopt wholesale, but the shape of what closes this
 gap).
 
-### Status — NOT FIXED. Implemented, gate-green, and NOT MERGED.
+### Status — FIXED 2026-09-11 (rev 40), third direction, with ciu CIU-106
 
-**Blocked on a defect in the chosen direction itself, found by a third
-adversarial review round. Do not merge this without reading "Round 3"
-below.** The implementation described here is complete and lives on
-branch `rg51-worktree-base-fallback`; it is held back because the
-default it installs can silently judge NOTHING, which is worse than the
-too-wide judgment RG-51 set out to fix. Everything below describes what
-was built; the round-3 section says why it is not enough and what would
-make it sound.
+Round 3's residual is closed. It could not be closed inside run-gate
+alone: reconstructing a fork point from `base_ref` is impossible once the
+base has absorbed the branch, so **ciu CIU-106** now records
+`fork_point_sha` at `worktree create` time and run-gate requires
+`merge-base(base_ref, HEAD)` to still EQUAL it.
+
+Why equality rather than the "refuse when merge-base is a strict
+descendant of the fork" this entry originally proposed: a base that gains
+UNRELATED commits leaves `merge-base` exactly where it was, so equality
+already admits the healthy long-lived worktree, and any inequality — in
+either direction — means shared history moved and the record is spent.
+Simpler, and with no ordering assumption to get wrong.
+
+Equality does NOT subsume the "base already contains HEAD" clause, which
+was checked against the real function rather than derived: a worktree
+that has committed nothing of its own has `fork == merge-base == HEAD`,
+which passes equality and would judge zero lines. Both clauses ship.
+
+run-gate also now hands the judge the verified fork COMMIT rather than
+the branch name, which closes round 3's remaining SHOULD-FIX (a
+re-resolution window between run-gate's check and the judge's own
+`merge-base` minutes later).
 
 ### What was built (third direction)
 
@@ -3721,20 +3735,24 @@ commit shared by base and HEAD in both situations, and ciu's record does
 not carry the fork commit. A rule that separates them needs a fact that
 is not written down today.
 
-**What would make this sound.** `ciu worktree create|add` knows the fork
-commit at creation time and could record its OID alongside `base_ref`;
-run-gate could then refuse whenever `merge-base(base_ref, HEAD)` is a
-strict descendant of that recorded fork — the only rule that actually
-distinguishes a spent record from a healthy one. Filed against ciu as
-**CIU-106** (`vbpub/ciu/KNOWN_ISSUES_TODO_BACKLOG.md`), with all three
-rounds' findings as its provenance. Until that lands, this stays OPEN.
+**What made this sound — DONE.** `ciu worktree create|add` knows the fork
+commit at creation and now records its OID alongside `base_ref`
+(**CIU-106**, implemented in the same change as this fix). run-gate
+requires `merge-base(base_ref, HEAD)` to still EQUAL it — equality, not
+the "strict descendant" test this paragraph originally proposed, because
+a base gaining UNRELATED commits leaves `merge-base` unmoved and so
+equality already admits the healthy case with no ordering assumption to
+get wrong. Fail-closed on a missing or malformed `fork_point_sha`
+(`adopt` never records one, nor did any ciu before CIU-106), so an
+existing worktree keeps its old `@{upstream}` behaviour and SAYS so until
+it is recreated.
 
-**Interim mitigation worth doing regardless**, and not yet implemented:
-disclose the resulting RANGE (`records base_ref 'main' → merge-base
-<sha>, N commits / M files to judge`) so a collapse is visible rather
-than silent. That is RG-51's own stated second half, and it would have
-made all three of these rounds' defects self-evident at the first real
-run.
+**Still worth doing, and not implemented:** disclose the resulting RANGE
+(`… → N commits / M files to judge`) so a near-empty judgment is visible
+rather than merely refused. Every collapse this entry describes is now
+REFUSED with a reason, so this is no longer a correctness gap — but it
+would have made all three rounds' defects self-evident at the first real
+run, which is worth something on its own.
 
 Round 3 also found, and these ARE fixed on the branch: the FIFO alarm
 guard sat on the test that no longer reaches `read_instance_record`'s
@@ -3744,11 +3762,12 @@ frozen-SHA `adopt` case when in fact clause 4 catches it (the same
 false-security-property pattern round 2 found in five other places); a
 leading `-` was inside the recorded-ref charset; and the option-like-ref
 test attributed its refusal to `--end-of-options` when `--verify` is
-what actually refuses. Still open from round 3 and NOT addressed:
-handing the base downstream as a mutable branch NAME rather than a
-resolved OID, which leaves a re-resolution window between run-gate's
-check and the judge's own `merge-base` (and makes a no-common-history
-base a hard error in both consumers instead of a fallback).
+what actually refuses. Round 3's remaining SHOULD-FIX is
+also closed: run-gate hands the judge the verified fork COMMIT rather
+than a mutable branch name, so there is no re-resolution window between
+its check and the judge's own `merge-base` minutes later, and a
+no-common-history base now falls back here instead of hard-erroring in
+both downstream consumers.
 
 #### Round 2 — a live branch is NECESSARY but NOT SUFFICIENT
 

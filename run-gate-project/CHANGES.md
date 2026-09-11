@@ -57,12 +57,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
   **A recorded ref is used only when it is gate-safe ref text, the record's
   `branch` still matches the tree, git resolves it to a LOCAL branch there,
-  and that branch does not already contain the tree's HEAD.** These are the
-  safety property, not formalities — two of the four clauses exist because
+  `merge-base(base_ref, HEAD)` still EQUALS the `fork_point_sha` ciu recorded
+  at creation (ciu CIU-106), and that branch does not already contain the
+  tree's HEAD.** These are the safety property, not formalities — THREE
   successive adversarial review rounds each found a FALSE GREEN in the
-  preceding cut of this change (a THIRD such finding is open — see the
-  RG-51 backlog entry's round-3 section; this item is NOT shippable until
-  it is resolved):
+  preceding cut of this change, every one of them narrowing the judged diff:
   - `ciu worktree adopt` records the adopted checkout's HEAD, and
     `merge-base` against an ancestor of HEAD collapses to that commit — run
     the gate right after an adopt and it would judge zero changed lines.
@@ -72,6 +71,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     HEAD <base>` now refuses it, fail-closed, and also covers the
     own-branch and literal-`HEAD` cases (the frozen-id `adopt` case is
     caught by the must-be-a-local-branch clause instead).
+  - That same worktree with ONE more commit passes every check above:
+    containment stops firing while `merge-base` has quietly moved to the
+    pre-merge branch tip, and in the fast-forward variant nothing derivable
+    from `base_ref` distinguishes it from a healthy fork. **ciu now records
+    the fork commit** (CIU-106) and run-gate requires `merge-base` to still
+    equal it. Equality, not an ordering test: a base gaining UNRELATED
+    commits leaves `merge-base` unmoved and so already passes. Fail-closed
+    on a missing or malformed fork point, so a worktree created by an older
+    ciu — or by `adopt` — keeps its previous `@{upstream}` behaviour, and
+    says so, until it is recreated. The two guards do NOT subsume each other,
+    verified against the real function: a worktree with no commits of its own
+    has `fork == merge-base == HEAD`, passes equality, and is caught only by
+    containment.
+
+  What run-gate hands the judge is now that verified fork COMMIT rather than
+  the branch name, so nothing can move it between run-gate's check and the
+  judge's own `merge-base` minutes later.
 
   A tag and a `refs/remotes/…` ref are refused too — the latter because a
   remote-tracking ref is the very thing RG-51 exists to stop defaulting to.

@@ -376,10 +376,11 @@ single project (`ciu_root_offset = "run-gate-project"`) covers that project
 only — a gate run for a sibling project in the same worktree finds no record
 and falls through to `@{upstream}` exactly as before.
 
-**When a record is present but NOT used.** run-gate uses `base_ref` only when
-the record's `branch` still matches the tree, git resolves the ref to a LOCAL
-branch there, and that branch does not already contain the tree's HEAD.
-Anything else is ignored with a reason on stdout:
+**When a record is present but NOT used.** run-gate uses the record only when
+its `branch` still matches the tree, git resolves `base_ref` to a LOCAL branch
+there, `merge-base(base_ref, HEAD)` still equals the `fork_point_sha` ciu
+recorded at creation, and that branch does not already contain the tree's
+HEAD. Anything else is ignored with a reason on stdout:
 
 ```bash
 # run-gate: ignoring /w/proj/ciu.worktree-instance.json: its base_ref 'main' (refs/heads/main) already contains this tree's HEAD, so merge-base would be HEAD and the lane would judge NOTHING — a merged-but-not-torn-down worktree, or a base that is this tree's own branch
@@ -396,10 +397,23 @@ review as ways this feature could pass a lane that should have failed:
   collapse, and it was true of 4 of the 7 real ciu worktrees in this estate
   when the check was added.
 
+- A worktree whose base has since absorbed its work and which then got one
+  more commit looks healthy to every other check — `merge-base` has quietly
+  moved to the pre-merge branch tip. Only comparing against the recorded
+  fork point catches it.
+
 A frozen id, a tag, a remote-tracking ref, a deleted branch and the tree's own
 branch all fail one of the clauses, so none of them displaces `@{upstream}`.
 Note this is a **safe** failure: falling back is exactly the pre-RG-51
 behaviour.
+
+**Requires ciu CIU-106.** `fork_point_sha` is recorded by `ciu worktree
+create|add` only since that change, and `ciu worktree adopt` never records
+one. run-gate fails CLOSED without it — a worktree created by an older ciu
+keeps its previous `@{upstream}` behaviour until it is recreated, and says so
+rather than guessing. What run-gate then hands the judge is the fork COMMIT
+itself, not the branch name, so nothing can move it between the check and the
+judge's own `merge-base`.
 
 Nothing to configure and nothing to opt out of: `--base` still wins outright,
 and an absent, unreadable, non-JSON or otherwise unusable record degrades to

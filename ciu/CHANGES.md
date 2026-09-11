@@ -21,6 +21,44 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- **CIU-106 — the worktree instance record now carries `fork_point_sha`.**
+  `WorktreeInstanceRecord` gained an optional `fork_point_sha`;
+  `ciu worktree create|add` resolves `git rev-parse <base>^{commit}` right
+  after `git worktree add` succeeds and stores it. `adopt()` leaves it
+  `None` — an adopted checkout has no knowable fork commit.
+
+  Why it exists: `base_ref` is a branch NAME, and the branch keeps moving.
+  Once it has ABSORBED the worktree's own work (a `--no-ff` merge, or a
+  fast-forward), `merge-base(base_ref, HEAD)` stops being the fork point and
+  becomes that worktree's own pre-merge tip — and in the fast-forward case
+  NO local signal separates the two states. The fork commit therefore has to
+  be written down at the one moment it is unambiguous, which is creation.
+  Found by three successive adversarial review rounds of vbpub run-gate's
+  RG-51, each of which tried and failed to reconstruct the fork point from
+  `base_ref` alone; 4 of the 7 real ciu worktrees in that estate were in the
+  triggering state at the time.
+
+  **Additive, no `schema_version` bump.** The key is optional on read, so a
+  record with it and one without it are both valid v1 (and v2), and it is
+  emitted only when non-`None` — so `adopt` records and every record written
+  before this change keep exactly the serialized shape they had. The
+  closed-key-set check is otherwise unchanged: an invented key is still
+  refused, and a PRESENT-but-malformed `fork_point_sha` (anything but a full
+  40-hex lower-case object name) is a refusal, because a value that could
+  never match a real `merge-base` is worse than no value at all.
+
+  **Adoption / migration notes.** Nothing to do: existing worktrees keep
+  working and simply lack the field. A consumer that relies on it (run-gate
+  RG-51) fails CLOSED on absence — it declines to use the record rather than
+  guessing — so existing worktrees fall back to their previous behaviour
+  until they are recreated. One caveat in the other direction: an OLDER ciu
+  reading a record written by this version will refuse it
+  (`unknown=['fork_point_sha']`); do not downgrade ciu against worktrees
+  created with this version.
+
 ## [7.12.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=412c99eda22fecb10dba95cc03726582c85fdd23 -->
