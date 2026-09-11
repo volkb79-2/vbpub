@@ -348,6 +348,105 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
 # run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
 ```
 
+**In a `ciu worktree` the default is the COMMIT that worktree forked from**
+(RG-51). `ciu worktree create|add` records that ref as `base_ref` in
+`ciu.worktree-instance.json`, and run-gate prefers it over `@{upstream}`:
+
+```bash
+./run-gate.py cursor          # no --base, inside a ciu-managed worktree
+# run-gate: /w/proj/ciu.worktree-instance.json pins this tree's fork point at 9f2c1ab… (its base_ref still resolves there) — using that COMMIT instead of merge-base HEAD @{upstream} (4c6eb2b6…)
+# run-gate: comparison base 9f2c1ab… (from ciu.worktree-instance.json fork point) → --request-base
+```
+
+Why this is the better default: `@{upstream}` is a REMOTE-tracking ref, so
+any workflow that batches commits locally before pushing lets it drift behind
+local work with nobody changing a line of config — and every changed-line
+judgment against it silently widens from "this change's diff" to "everything
+since the drift began" (assay's own README, "Pitfall: a `judge.base` literal
+pointing at a remote-tracking ref rots silently"). The recorded `base_ref` is
+normally a LOCAL branch, which does not drift that way — and what run-gate
+hands the judge is not that name but the COMMIT it has just verified the
+branch still forks from, so nothing can move it in between. Both the commit
+taken and the `@{upstream}` ref it displaced are printed, so you can SEE the
+drift.
+
+One boundary this cannot cross: run-gate chooses the base, the judge decides
+what to do with it, and assay's `resolve_base` does NOT always compute
+`merge-base(base, HEAD)` — when HEAD is a merge commit it returns HEAD's
+first parent and discards the supplied base entirely (assay B008). A gate run
+on a merge of a sibling topic branch can therefore still judge less than you
+expect, under any base, including `--base`. Tracked as `RG-54`.
+
+**Which projects it covers in a monorepo.** run-gate looks in the judged
+worktree root and then in the project dir inside it, because ciu writes the
+record at that worktree's CIU root. A worktree created with
+`ciu_root_offset = "."` therefore covers every project in it; one rooted at a
+single project (`ciu_root_offset = "run-gate-project"`) covers that project
+only — a gate run for a sibling project in the same worktree finds no record
+and falls through to `@{upstream}` exactly as before.
+
+**When a record is present but NOT used.** run-gate uses the record only when
+its `branch` still matches the tree, git resolves `base_ref` to a LOCAL branch
+there, `merge-base(base_ref, HEAD)` still equals the `fork_point_sha` ciu
+recorded at creation, and that branch does not already contain the tree's
+HEAD. Anything else is ignored with a reason on stdout:
+
+```bash
+# run-gate: ignoring /w/proj/ciu.worktree-instance.json: the shared history of 'main' and this tree has MOVED since the record was written: merge-base is now 388737cc2461, the recorded fork point is 9f2c1ab0de34. Whichever way it moved — 'main' absorbed this branch (a merge or a fast-forward), or this branch took 'main' in (a merge or a rebase), or the record describes a different tree — judging against the new merge-base could silently drop work this branch really did, so the record is spent
+```
+
+The message names the possible causes without asserting one: the SAME
+inequality is produced by merging the base in or rebasing onto it, and
+telling an operator to tear down a worktree for a reason that did not happen
+is its own defect.
+
+Those rules are load-bearing, not fussiness — each was found by adversarial
+review as ways this feature could pass a lane that should have failed:
+
+- `ciu worktree adopt` records the adopted checkout's **HEAD**, and
+  `merge-base` against an ancestor of HEAD collapses to that commit. Run the
+  gate right after an adopt and it would judge *zero* changed lines.
+- A worktree whose work has been merged into its base and not torn down has a
+  real, live `base_ref = "main"` that `main` has since absorbed — same
+  collapse, and it was true of 4 of the 7 real ciu worktrees in this estate
+  when the check was added.
+- A worktree whose base has since absorbed its work and which then got one
+  more commit looks healthy to every other check — `merge-base` has quietly
+  moved to the pre-merge branch tip. Only comparing against the recorded
+  fork point catches it.
+- A branch that committed work and then REVERTED it passes every check about
+  the commit graph and still produces an empty diff, which a changed-line
+  floor scores as `0/0 = 100%`. No work escapes the judge there — there is
+  none — but a pass on nothing reads exactly like a pass on something, so
+  the record loses to a base that has something to judge.
+
+**What it costs you.** Keeping a long-lived worktree current SPENDS the
+record: merging the base INTO the branch, or rebasing onto it, moves the
+shared history just as surely as merging the other way, so the gate falls
+back to `@{upstream}` precisely where an operator was being diligent. That
+is a loss of benefit rather than a new hazard — the fallback errs WIDE — but
+it means the feature goes inert until the worktree is recreated. Nothing
+available locally distinguishes that from a base that absorbed the branch;
+it is the same missing fact CIU-106 exists to supply, one level further up.
+
+A frozen id, a tag, a remote-tracking ref, a deleted branch and the tree's own
+branch all fail one of the clauses, so none of them displaces `@{upstream}`.
+Note this is a **safe** failure: falling back is exactly the pre-RG-51
+behaviour.
+
+**Requires ciu CIU-106.** `fork_point_sha` is recorded by `ciu worktree
+create|add` only since that change, and `ciu worktree adopt` never records
+one. run-gate fails CLOSED without it — a worktree created by an older ciu
+keeps its previous `@{upstream}` behaviour until it is recreated, and says so
+rather than guessing. What run-gate then hands the judge is the fork COMMIT
+itself, not the branch name, so nothing can move it between the check and the
+judge's own `merge-base`.
+
+Nothing to configure and nothing to opt out of: `--base` still wins outright,
+and an absent, unreadable, non-JSON or otherwise unusable record degrades to
+the `@{upstream}` line above. A plain checkout never has this file at all.
+run-gate reads the filename, never imports `ciu`.
+
 There is **no `run-gate.toml` key** for this — run-gate DERIVES it by asking
 the judge (`assay lanes --json`), so the fact has exactly one spelling. What
 that costs you: an assay lane invocation now issues one short read-only
@@ -357,7 +456,7 @@ Refusals, all exit 2 and all naming the lane:
 
 | situation | what happens |
 |---|---|
-| delegating lane, no `--base`, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
+| delegating lane, no `--base`, no worktree record, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
 | `--base` on a lane whose `base_source` is not `"request"` | refused, naming the value assay declared (assay would refuse it anyway; this refuses earlier and clearer) |
 | `--base` on a command lane with no `{base}` token | refused — the ref could only be silently dropped |
 | `--base` with a judge too old to answer (`assay lanes --json` missing) | refused, naming assay **3.2.0** (B044) as the version that carries the inventory |
@@ -375,9 +474,9 @@ argv = ["bash", "-c",
          ./run-gate.py --worktree {worktree} unit"]
 ```
 
-A lane carrying `{base}` resolves its ref by the same rules above, so
-`./run-gate.py gate` on a tree with no upstream refuses instead of
-substituting an empty string.
+A lane carrying `{base}` resolves its ref by the same rules above — recorded
+worktree fork point included — so `./run-gate.py gate` on a tree with neither
+refuses instead of substituting an empty string.
 
 ### Worked example — run-gate × assay, end to end
 

@@ -3607,10 +3607,341 @@ delegation without also building an always-inject-`--base` wrapper
 not itself vbpub's to adopt wholesale, but the shape of what closes this
 gap).
 
-### Status — OPEN, not yet fixed
+### Status — FIXED 2026-09-11 (rev 40), third direction, with ciu CIU-106
 
-No fix implemented. Candidate directions (need a design decision, not
-picked here):
+Round 3's residual is closed. It could not be closed inside run-gate
+alone: reconstructing a fork point from `base_ref` is impossible once the
+base has absorbed the branch, so **ciu CIU-106** now records
+`fork_point_sha` at `worktree create` time and run-gate requires
+`merge-base(base_ref, HEAD)` to still EQUAL it.
+
+Why equality rather than the "refuse when merge-base is a strict
+descendant of the fork" this entry originally proposed: a base that gains
+UNRELATED commits leaves `merge-base` exactly where it was, so equality
+already admits the healthy long-lived worktree, and any inequality — in
+either direction — means shared history moved and the record is spent.
+Simpler, and with no ordering assumption to get wrong.
+
+Equality does NOT subsume the "base already contains HEAD" clause, which
+was checked against the real function rather than derived: a worktree
+that has committed nothing of its own has `fork == merge-base == HEAD`,
+which passes equality and would judge zero lines. Both clauses ship.
+
+run-gate also now hands the judge the verified fork COMMIT rather than
+the branch name, which closes round 3's remaining SHOULD-FIX (a
+re-resolution window between run-gate's check and the judge's own
+`merge-base` minutes later).
+
+### What was built (third direction)
+
+The third candidate below turned out to need no new plumbing at all: the
+provenance IS recorded today. `ciu worktree create|add` writes
+`ciu.worktree-instance.json` at the managed worktree's CIU root, and its
+top-level `base_ref` string is the exact `--base` ref the worktree was
+forked from (default `main`); `ciu worktree adopt` writes the adopted
+checkout's HEAD into the same field.
+
+`resolve_comparison_base` now consults that record BETWEEN the winning
+`--base` flag and the unchanged `@{upstream}` fallback:
+
+- Read as a FILE FORMAT — stdlib `json`, well-known filename — never a
+  Python import from `ciu`. The two are separate projects and this
+  launcher must run on a fresh clone with zero installs.
+- Both the judged worktree root and the effective project dir inside it
+  are checked, in that order: ciu writes the record at the CIU root,
+  "which can be below the Git worktree root in a monorepo" — i.e. at
+  `<worktree>/<project>/`, the shape every vbpub consumer has.
+- **The recorded ref is used only when it is gate-safe ref text, the
+  record's `branch` still matches the tree, git resolves it to a LOCAL
+  branch there, `merge-base(base, HEAD)` still equals the recorded
+  `fork_point_sha`, that branch does NOT already contain the tree's
+  HEAD, and the fork point and HEAD do not have the same TREE.** See
+  "Review findings" below — each clause closes a way the record would
+  have been WORSE than the `@{upstream}` it displaces, and three of them
+  were false-greens found only by review.
+- **What is handed downstream is the verified fork COMMIT**, not the
+  branch name: equality has just proven the two resolve to the same
+  object, and an OID cannot be moved by a concurrent session in the
+  window between this check and the judge's own `merge-base`.
+- Every failure mode degrades to the pre-existing `@{upstream}` path:
+  absent, unreadable, permission-denied, a non-regular file (a FIFO
+  would block the read forever), not JSON, not an object,
+  `RecursionError` from deeply nested JSON (a `RuntimeError`, NOT a
+  `ValueError`), missing/non-string/blank `base_ref`, and every
+  rejection above. A better default, never a requirement — a malformed
+  record must not abort a gate run.
+- `--base` still wins outright, and the primary checkout is bit-for-bit
+  unchanged (`adopt` structurally refuses the primary worktree, and the
+  record is git-excluded, so it can never arrive there by checkout).
+- Disclosure runs BOTH ways, because half of this entry was that
+  staleness must be visible: a winning record is named together with
+  the `@{upstream}` ref it displaced (`run-gate: <record> pins this
+  tree's fork point at <sha> (its base_ref still resolves there) —
+  using that COMMIT instead of merge-base HEAD @{upstream} (<sha>)`,
+  plus `(from ciu.worktree-instance.json fork point)` on the
+  comparison-base line), and a record that is found and REJECTED prints
+  `run-gate: ignoring <record>: <why>`. A silently ignored record would
+  be the same silence this entry objects to, in a new place.
+- One deliberate widening: a tree with a USABLE record but NO upstream
+  now resolves instead of refusing. Nothing is guessed — the ref is one
+  ciu wrote down at creation, git has just resolved it to a live
+  branch, and its merge-base with HEAD has been proven unmoved since.
+  Only the base STRING changes here; what the judge does with it is the
+  judge's own contract (see RG-54 for where that contract is weaker
+  than this rule).
+- **Usability cliff, accepted knowingly:** merging the base INTO the
+  branch, or rebasing onto it, moves the merge-base and therefore spends
+  the record — the feature goes inert (falls back to `@{upstream}`)
+  exactly where an operator was keeping a long-lived worktree current.
+  The fallback errs WIDE, so this is a loss of benefit, not a new
+  hazard; distinguishing it from a base that absorbed the branch needs
+  another recorded fact, one level up in ciu again. Documented in
+  CONSUMERS.md rather than worked around.
+
+### Review findings — all THREE cuts of this fix were false-greens
+
+Three independent adversarial review rounds, each a fresh agent, each
+finding one BLOCKING defect IN THE FIX. All three were in the same
+direction — narrowing the judged diff, the direction that PASSES — and
+none was visible from the tests the previous cut shipped with. Each fix
+moved the collapse one step further out rather than removing it.
+
+The lesson worth carrying: for a change that picks a comparison BASE,
+"does it produce an answer" is not the property to test; "does the
+answer still leave the branch's real work to judge" is. And when three
+successive rounds find the same class, the premise is the suspect, not
+the predicate.
+
+#### Round 5 — reviewing round 4's own fixes; no fifth false-green, two real defects
+
+A fresh reviewer, spanning both projects, took round 4's fixes as its
+surface — the classic place a regression hides. It swept every path
+reaching `_finish_allocation` (four interrupt points, reproduced against
+real temp repos), confirmed no create path leaves the field permanently
+absent and no path captures without the reset, and ran 15 graph shapes
+(criss-cross, octopus, sibling-merge, base rewound, HEAD rewound,
+ambiguous tag/branch, `branch: null`, detached HEAD, …) through the real
+function with an oracle asserting no branch-unique commit is an ancestor
+of the returned base. Every acceptance held. **No fifth false green** —
+and the structural reason is worth writing down: the function returns the
+verified merge-base, which by construction cannot contain a commit unique
+to the branch, so an accepted record is exactly `--base <base_ref>`
+evaluated at check time and pinned to an OID. It can never be NARROWER.
+
+Two real defects, both reproduced before being accepted:
+
+- **A graph clause is not the same question as "is there work".** Every
+  clause here asks the commit graph something. A branch that committed
+  work and then REVERTED it has a real fork point, an unmoved merge-base
+  and ancestry in neither direction — all clauses pass — and still
+  produces an EMPTY diff, which `tools/coverage_gate.py` scores as
+  `0/0 = 100%`. Nothing ESCAPES the judge (there is none to escape), so
+  this is not the false-green class the other clauses exist for; it is
+  another inlet into RG-53. Closed with `git diff --quiet <fork> HEAD`,
+  fail-closed, for the cost of falling back to a base that has something
+  to judge. It logically subsumes the containment clause (containment
+  implies identical trees, never the converse — checked against the real
+  functions, not derived); containment is kept, and kept first, because it
+  names a far more common cause and answers from the graph.
+- **ciu `adopt()` could leave a record that destroys work on resume.** It
+  wrote the instance record and then called `_write_worktree_overlay`
+  unguarded, while `ensure()` reads `recovery_status in (None,
+  "checkout-incomplete")` as "needs a checkout" — so a failed overlay
+  write left a record whose resume ran `git reset --hard <the adopted
+  HEAD>` in the operator's own worktree, discarding every commit made
+  there since, and stamped a `fork_point_sha` onto an adopt-shaped record
+  the docs promise never carries one. Pre-existing in its destructive
+  half; CIU-106 made the second half visible. Wrapped and marked
+  (red-proven: pre-fix, the resume really does lose the commit). The
+  structural half no `try`/`except` can reach — a SIGKILL between the
+  record write and the marker — is filed as ciu **CIU-107**.
+
+Also corrected from the same round: stale quotes of the pre-round-3
+disclosure message in this entry and in the `rev 40` comment; a docstring
+still saying RG-52 "is NOT fixed here"; a CONSUMERS.md claim that a
+recorded ref "self-updates" and that assay applies merge-base to whatever
+it is handed (both false since round 3 and RG-54 respectively); clause
+numbering that ran 1,2,3,5,4,6; and clause 2's rationale, which is now
+defence-in-depth (the function returns a COMMIT, so a recorded string can
+no longer reach shell text) plus two live concerns of its own.
+
+#### Round 4 — no fourth false-green; two real SHOULD-FIXes, both reproduced
+
+The first round to clear. A fresh reviewer spanning both projects
+derived the four-clause chain independently, then mutation-tested it
+(10 run-gate mutants, 11 ciu mutants) and confirmed 0 missing lines and
+0 missing branches in both new regions. No BLOCKING defect.
+
+Two SHOULD-FIXes, each reproduced against the real code before being
+accepted:
+
+- **The fork point was captured in the wrong place.** `create()`
+  resolved `git rev-parse <base>` in `repo_root` right after
+  `git worktree add --no-checkout`. But it is the later
+  `git reset --hard record.base_ref` inside `_finish_allocation` that
+  actually sets the new branch's tip — and it re-resolves `base_ref`
+  then. A commit landing on `main` in between (another session; this
+  estate runs several) makes the recorded SHA differ from the tip the
+  worktree really forked from, and run-gate's equality clause then
+  refuses a perfectly healthy record. Capture moved into
+  `_finish_allocation`, immediately after that reset, reading the
+  worktree's own `HEAD^{commit}`. Regression test races a real commit
+  onto `main` from inside a patched `_write_worktree_overlay`.
+- **The "has MOVED" refusal asserted a cause that may not have
+  happened.** The same inequality is produced by the base absorbing the
+  branch, by the branch merging the base in, by a rebase, or by a record
+  describing a different tree. Telling an operator to tear down a
+  worktree for a reason that did not occur is its own defect; the
+  message now enumerates the possibilities instead.
+
+#### Round 3 — the guard is exact-containment only; ONE follow-up commit re-opens it
+
+`git merge-base --is-ancestor HEAD <base>` answers "is the diff empty
+RIGHT NOW", not "does this base still leave the branch's work to judge".
+It fires only at the instant `merge-base(base, HEAD) == HEAD`. Add one
+commit to a merged-but-not-torn-down worktree and the guard reports
+"genuinely divergent — usable", while `merge-base` sits on the PRE-MERGE
+BRANCH TIP: everything the branch did before the merge silently leaves
+the changed-line set.
+
+Reproduced independently against the real `recorded_worktree_base`
+(branch off `main`, 3 lines of work, `--no-ff` merge into `main`, then
+one follow-up commit):
+
+```
+STATE 1 (merged, nothing new)      -> rejected, "already contains this tree's HEAD"
+STATE 2 (merged + ONE more commit) -> ACCEPTED 'main', no warning
+   merge-base(main, HEAD) = the old branch tip, not the fork
+   judged diff for the branch's own file vs recorded base : (empty)
+   judged diff for the branch's own file vs TRUE fork     : 3 insertions
+```
+
+Reachability is not hypothetical: three of the seven real ciu worktrees
+here (`hypothesis-followups`, `mattermost-stale-test-fix`,
+`render-qa-prefix-fix`) are merged-and-not-torn-down with
+`base_ref = "main"` and zero commits since — i.e. each is exactly ONE
+commit away from state 2, with 5-9 files of branch work that would
+vanish. Adding a follow-up commit is the natural next act in a worktree
+you deliberately kept. Neither consumer catches it: assay's
+`check_base_is_head` only refuses when the resolved base EQUALS HEAD,
+and both assay and `tools/coverage_gate.py` score a zero denominator as
+100% (RG-53).
+
+**Why this is not fixable with another predicate.** In the
+fast-forward-merge case there is NO local signal distinguishing "the
+base absorbed my work" from "I forked here": `merge-base` is the maximal
+commit shared by base and HEAD in both situations, and ciu's record does
+not carry the fork commit. A rule that separates them needs a fact that
+is not written down today.
+
+**What made this sound — DONE.** `ciu worktree create|add` knows the fork
+commit at creation and now records its OID alongside `base_ref`
+(**CIU-106**, implemented in the same change as this fix). run-gate
+requires `merge-base(base_ref, HEAD)` to still EQUAL it — equality, not
+the "strict descendant" test this paragraph originally proposed, because
+a base gaining UNRELATED commits leaves `merge-base` unmoved and so
+equality already admits the healthy case with no ordering assumption to
+get wrong. Fail-closed on a missing or malformed `fork_point_sha`
+(`adopt` never records one, nor did any ciu before CIU-106), so an
+existing worktree keeps its old `@{upstream}` behaviour and SAYS so until
+it is recreated.
+
+**Still worth doing, and not implemented:** disclose the resulting RANGE
+(`… → N commits / M files to judge`) so a near-empty judgment is visible
+rather than merely refused. Every collapse this entry describes is now
+REFUSED with a reason, so this is no longer a correctness gap — but it
+would have made all three rounds' defects self-evident at the first real
+run, which is worth something on its own.
+
+Round 3 also found, and these ARE fixed on the branch: the FIFO alarm
+guard sat on the test that no longer reaches `read_instance_record`'s
+`is_file()` check rather than the one that does, so a regression hung
+instead of failing; four documents claimed clause 5 subsumes the
+frozen-SHA `adopt` case when in fact clause 4 catches it (the same
+false-security-property pattern round 2 found in five other places); a
+leading `-` was inside the recorded-ref charset; and the option-like-ref
+test attributed its refusal to `--end-of-options` when `--verify` is
+what actually refuses. Round 3's remaining SHOULD-FIX is
+also closed: run-gate hands the judge the verified fork COMMIT rather
+than a mutable branch name, so there is no re-resolution window between
+its check and the judge's own `merge-base` minutes later, and a
+no-common-history base now falls back here instead of hard-erroring in
+both downstream consumers.
+
+#### Round 2 — a live branch is NECESSARY but NOT SUFFICIENT
+
+The round-1 fix accepted any `base_ref` resolving to a branch other than
+the tree's own. That still collapses whenever **HEAD is an ancestor of
+the base**: a worktree whose work has been merged into `main` (or fast-
+forwarded onto it) and not torn down has a perfectly real `base_ref =
+"main"` that local `main` has since absorbed, so `merge-base(main,
+HEAD) == HEAD` and there is nothing left to judge. This was not
+hypothetical — **4 of the 7 real ciu worktrees in this estate were in
+exactly that state** when the check was written (`hypothesis-followups`,
+`mattermost-stale-test-fix`, `render-qa-prefix-fix`,
+`session-extract-gate`), i.e. the majority.
+
+Downstream an assay lane would hit assay's own `BASE_IS_HEAD` refusal
+(`measurability.py`) three layers down, naming neither the record nor
+the remedy; a `kind = "command"` lane has NO such guard, and
+`tools/coverage_gate.py` scores zero changed lines as `0/0 = 100%` —
+a silent pass (see RG-53). Fixed with `base_already_contains_head`
+(`git merge-base --is-ancestor HEAD <base>`, FAIL-CLOSED on any error),
+which also subsumes the round-1 own-branch and literal-`HEAD` cases.
+dstdns's `scripts/gate-base.sh` case 3 is the estate's prior art for
+this exact refusal.
+
+Same round, also fixed: `current_branch_ref` had no `try/except` at all,
+so a non-UTF-8 branch name (git permits one) or a missing `git` raised
+straight out of it and aborted the gate run — breaking the "nothing here
+raises" contract the code and SPEC both asserted; `refs/remotes/` was
+accepted, which contradicted the entry's own rationale (a remote-tracking
+ref is precisely what RG-51 exists to stop defaulting to) and is now
+refused; the "requiring git to resolve it disposes of every injection
+hazard" claim was FALSE — git ref names legally permit `;`, backticks,
+`$` and more, and `git branch 'main;touch$IFS/tmp/PWNED'` is accepted and
+executes through `{base}`, so the reader now applies a conservative
+allow-list before asking git and the pre-existing hole is filed as
+**RG-52**; and the "report the FIRST rejection" branch was the one
+uncovered branch in the change, which the selftest lane could not see —
+filed as **RG-53**.
+
+#### Round 1 — the first cut was a false-green
+
+Independent adversarial review of the first implementation (which used
+`base_ref` verbatim whenever it was a non-blank string) found a BLOCKING
+defect, reproduced from a scratch repo:
+
+`ciu worktree adopt` writes `base_ref = git rev-parse HEAD` of the
+ADOPTED CHECKOUT — the tip of the work already on that branch, not a
+fork point (`ciu/src/ciu/worktree.py`, `adopt()`). Because that commit
+is an ANCESTOR of HEAD, `merge-base(base_ref, HEAD)` resolves to the
+commit itself, so every line committed BEFORE the adopt leaves the
+changed-line set. Branch off `main`(A), commit B and C, adopt at C,
+commit D: the old path judged 3 changed lines, the first cut judged 1 —
+and running the gate immediately after the adopt makes the base HEAD
+itself, i.e. **zero changed lines and a trivially passing lane**. The
+recorded SHA is always a descendant of (or equal to) the old fork
+point, so the judged set was always narrower or equal, never wider:
+strictly the false-green direction, and strictly worse than the
+`@{upstream}` it displaced. The backlog's own "a frozen SHA … is at
+best a stopgap, not a fix" applied to the fix itself.
+
+Fixed by requiring git to resolve `base_ref` to a branch, which also
+disposes of a tag or deleted/renamed ref (frozen or absent the same
+way) and the literal `HEAD`. Also fixed from the same review:
+`RecursionError` escaping the `(OSError, ValueError)` guard on deeply
+nested JSON, a FIFO at the record path blocking `read_text` forever
+with nothing disclosed, a stale record from a REUSED worktree (`git
+checkout -B other origin/release-1` leaves a record naming the first
+task's base) now refused on the `branch` cross-check ciu's own reader
+already performs, and the silent-rejection gap above. Round 2 then
+found that "a branch" was still not enough.
+
+The other two directions stay unimplemented and are NOT superseded; they
+address a case this fix does not (a non-ciu worktree, or a plain checkout
+whose `@{upstream}` has rotted):
+
 - Warn loudly (stderr, not just the existing `run-gate: comparison base
   {ref} (from {source})` line) when the DEFAULT path fires and the
   resolved base is more than some threshold of commits behind the
@@ -3628,4 +3959,192 @@ picked here):
   `@{upstream}` — closer to "what this worktree actually forked from"
   without needing a per-invocation flag, but needs that provenance to
   actually be recorded and recoverable at gate time, which is not
-  confirmed to exist today.
+  confirmed to exist today. **← taken; the provenance does exist.**
+
+## RG-52 — a comparison base is substituted into a conjunction lane's inner `bash -c` as UNQUOTED SHELL TEXT
+
+A `kind = "command"` lane declares base propagation with a `{base}`
+token in its own argv (`R-25`/`R-35`), e.g.
+
+```toml
+argv = ["bash", "-c", "./run-gate.py --base {base} cursor && ./run-gate.py unit"]
+```
+
+`substitute_worktree` replaces the token inside that STRING, and
+`build_command_inner`'s `shlex.join` then quotes the whole element for
+the OUTER shell — but the element **is** the script the inner `bash -c`
+re-parses, so metacharacters inside the substituted ref are interpreted
+there. A base of `main;touch /tmp/PWNED` yields
+
+```
+bash -c './run-gate.py --base main;touch /tmp/PWNED cursor && ...'
+```
+
+and on a `bare-host` lane that executes on the real host. Demonstrated
+against the real functions during RG-51's round-2 review, with both a
+`;` and a backtick payload.
+
+### Provenance and scope
+
+Predates RG-51: the reachable source today is `--base` on the operator's
+own command line (RG-26), which is low-severity — an operator who types a
+metacharacter into their own flag has other ways to run the same command.
+RG-51 was reviewed specifically for whether it WIDENS this, because a
+`ciu.worktree-instance.json` is a git-excluded file `git status` never
+shows and could travel with a copied worktree. It does not: RG-51's
+reader applies a conservative allow-list (`GATE_SAFE_BASE_RE`,
+`[A-Za-z0-9._/+@-]`) to the recorded ref BEFORE git is asked, and a
+branch legally named `main;touch$IFS/tmp/PWNED` — git accepts that name —
+is refused with `is not gate-safe ref text`. `check_worktree_charset`
+(RG-5) is the same precedent for `--worktree` paths; the fix below makes
+that one regex serve the `--base` path too.
+
+### Status — FIXED 2026-09-11 (rev 40), first direction taken
+
+`check_base_charset` refuses any comparison base outside
+`GATE_SAFE_BASE_RE` (`[A-Za-z0-9._/+@]` then `[A-Za-z0-9._/+@-]*`) before
+it can reach `substitute_worktree`, `{base}`, `--request-base` or any
+inner shell. It is the exact counterpart of `check_worktree_charset`
+(`R-5`) for the other value consumer pointers embed into shell strings,
+and it is deliberately NARROWER than git's own ref grammar: git accepts
+`;`, backticks, `$`, `|`, `&` and quotes in a ref name, this gate does
+not.
+
+Two asymmetries, both deliberate:
+- **`--base` REFUSES (exit 2); a `ciu.worktree-instance.json` `base_ref`
+  DEGRADES** to the `@{upstream}` fallback with a disclosure line. An
+  operator's explicit argument that cannot be honoured safely is a
+  refusal; a file must never be able to abort a gate run (RG-51).
+  Both share the one regex, so the two paths cannot drift apart.
+- **A leading `-` is refused on POSITION grounds**, with its own
+  message: `-` is legal later in a ref, so listing it as an "offending
+  character" would misdescribe the problem. `R-5` makes the identical
+  distinction for `{worktree}`, and the hazard is the same — a
+  sub-invoked `./run-gate.py --base -weird` parses it as an option.
+
+Why this direction over the other candidate (substituting with
+`shlex.quote` when the token appears inside a `bash -c`-style element):
+"which argv element is a script" is not something run-gate can know in
+general — a lane author can put `{base}` inside single quotes, inside a
+heredoc, or in an element that is never re-parsed at all — so quoting
+would be right in some lanes and visibly wrong in others. The charset
+refusal is decidable without knowing the lane's shape, costs nothing at
+runtime, and matches a precedent this project already ships. The
+narrower rule also means no real base shape is affected: branch names,
+remote-tracking refs, tags, slashed and dotted names and raw SHAs all
+pass unchanged.
+
+Not closed by this, and deliberately out of scope: a lane author can
+still write a `{base}`-carrying argv whose quoting is wrong for some
+OTHER reason. The charset guarantees the substituted VALUE is inert, not
+that the surrounding script is well written.
+
+### Provenance of the fix
+
+Filed from RG-51's round-2 review, then folded in before RG-51's own
+release on an explicit operator size call (RG-53, the other finding from
+that round, was judged too large — it changes `coverage_gate.py`'s
+pass/fail semantics for every `--cov-branch` lane in the estate — and
+stays OPEN for its own cycle).
+
+## RG-53 — `tools/coverage_gate.py` never reads `missing_branches`, so the selftest lane's `--cov-branch` is decorative for the DIFF judge
+
+`run-gate.toml`'s `selftest` lane runs pytest with `--cov-branch` and
+this project's own README/backlog describe the enforced floor as
+"changed-line coverage (line+branch)". The judge does not implement the
+second half: `_verdict` reads only `executed_lines` and `missing_lines`
+from the coverage JSON (`tools/coverage_gate.py`, around the
+`_validate_cov_record` call) and never looks at `missing_branches`. A
+changed line whose `if` has an untaken arm therefore scores as fully
+covered.
+
+Found 2026-09-11 by RG-51's round-2 review, which located a real uncovered
+BRANCH in that change (`recorded_worktree_base`'s "report the FIRST
+rejection" arm — the `if rejected is None:` false path) that the lane
+reported as 100% clean. The branch was then covered by a new test, but
+the judge gap remains: the same class would slip through again.
+
+Related, same file: `pct = 100.0 if total_changed_exec == 0 else …` — the
+0/0-is-100% trap (assay A-026/A-035, and TESTING-METHODOLOGY's first
+"Definition of done" line). It is correct for a diff that genuinely
+changes no executable line, but it is also exactly what turns a
+degenerate comparison base into a SILENT green (see RG-51's round-2
+finding, where a merged-but-not-torn-down worktree produced
+`merge-base == HEAD`, hence zero changed lines, hence `0/0 OK`).
+
+### Status — OPEN
+
+Directions, not picked here:
+- Read `missing_branches` and count a changed line as uncovered when it
+  has an untaken arm; this is what the lane's own flag already pays for.
+- Separately: refuse (or at minimum warn loudly) when
+  `total_changed_exec == 0`, rather than reporting `0/0 ≥ 100.0% floor`
+  as a pass. assay's own `check_base_is_head`/`BASE_IS_HEAD`
+  (`measurability.py`) is the precedent; the vendored thin gate has no
+  equivalent. Note the trigger is NOT only "base equals HEAD" — RG-51's
+  own merge commit reached `0/0` with a base that was neither HEAD nor
+  stale (first-parent resolution of a merge, RG-54), and round 5 found a
+  third route (a branch whose work was reverted). The condition worth
+  acting on is the zero itself.
+
+## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
+
+run-gate's whole comparison-base path — `--base`, the RG-51 recorded fork
+point, `@{upstream}` — decides one thing: which ref string to hand the
+judge. What the judge does with it is assay's contract, and assay's
+`resolve_base` (`assay/src/assay/git.py`, `base_resolution_mode`, B008)
+does NOT always compute `merge-base(base, HEAD)`. When HEAD is a merge
+commit it returns HEAD's **first parent** and discards the supplied base
+entirely.
+
+The consequence is the same class RG-51 exists to close, one layer
+further down: a branch that merged a sibling branch in and then ran the
+gate on that merge commit has the whole second parent's contribution
+outside the judged diff, no matter how correct the base run-gate picked.
+`tools/coverage_gate.py`'s own `_resolve_base` has the identical
+first-parent rule, so the vendored thin gate behaves the same way.
+
+**Observed in an artifact, not only derived.** RG-51's own pre-merge
+`main`-into-branch merge produced exactly this, on both projects' gates,
+in the same minute it was filed:
+
+```json
+"resolved": {"base": "d8b6f70a…", "base_resolution": "first-parent"}
+"coverage": {"covered": 0, "executable": 0, "branches_total": 0, "pct": 100.0}
+```
+
+`ciu`'s lane reported `PASS` having judged nothing, and run-gate's own
+`selftest` printed `diff-coverage OK: 0/0 changed executable lines
+covered (100.0% ≥ 100.0% floor)` on the same commit. Nothing was wrong
+with either change — the merge genuinely brought in no work of its own on
+those paths — but the two verdicts are indistinguishable, in the
+artifact, from a merge that brought in a great deal. That is the whole
+item: `base_resolution` names the behaviour honestly and a reader who
+does not look at that field cannot tell the cases apart. The meaningful
+measurements for that change were the ones on its last NON-merge commit
+(124/124 and 26/26 lines, 8/8 branches).
+
+Found 2026-09-11 by RG-51's round-4 review, as a BOUNDARY note rather
+than a defect in that change: it predates RG-51, is unaffected by it,
+and reproduces identically under `--base` and under `@{upstream}`. RG-51
+therefore documents its rule as "sound at run-gate's OWN boundary only"
+(`SPEC.md` R-35a) rather than claiming an end-to-end guarantee it cannot
+make.
+
+### Status — OPEN
+
+Not obviously run-gate's to fix, which is why it is filed and not
+folded:
+
+- The first-parent rule is deliberate in assay (B008) — for a merge that
+  only brings in an already-judged upstream, first-parent is the RIGHT
+  base, and merge-base would judge nothing.
+- The bad case is specifically a merge of a SIBLING topic branch whose
+  work has never been judged. Distinguishing the two needs a fact about
+  the second parent's provenance that neither tool currently records.
+- A cheap partial: run-gate could DISCLOSE, when it has resolved a base
+  and HEAD is a merge commit, that the judge may ignore it — the same
+  "make the staleness visible" half that RG-51 insisted on. That is
+  run-gate's to do and does not touch assay's semantics.
+- The real fix, if there is one, belongs in assay's backlog next to
+  B008; file it there before implementing anything here.

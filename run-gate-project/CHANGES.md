@@ -9,6 +9,129 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-52 — a comparison base reached a conjunction lane's inner `bash -c` as
+  unquoted shell text.** A `kind = "command"` lane propagates its base with a
+  `{base}` token in its own argv; `shlex.join` quotes the argv ELEMENT, but
+  that element *is* the script the inner `bash -c` re-parses, so
+  `--base 'main;touch /tmp/PWNED'` ran `touch` — on a `bare-host` lane, on the
+  real host. Git's own ref grammar permits `;`, backticks, `$`, `|`, `&` and
+  quotes, so this was reachable from a genuine branch name too.
+
+  `check_base_charset` now refuses any base outside `GATE_SAFE_BASE_RE`
+  before it can reach substitution, `--request-base`, or any shell — the
+  exact counterpart of `check_worktree_charset` (`R-5`) for the other value
+  consumer pointers embed into shell strings. A leading `-` is refused
+  separately, on position grounds, because a sub-invoked
+  `./run-gate.py --base -weird` would parse it as an option. `--base`
+  refuses (exit 2); a `ciu.worktree-instance.json` `base_ref` degrades to
+  the `@{upstream}` fallback instead, since a file must never abort a gate
+  run — both share the one regex. No real base shape is affected: branch
+  names, remote-tracking refs, tags, slashed/dotted names and raw SHAs all
+  pass. Found by adversarial review of RG-51; folded in here on an operator
+  size call. (RG-53, from the same review, stays OPEN — it changes
+  `coverage_gate.py`'s pass/fail semantics estate-wide and needs its own
+  cycle.)
+
+- **RG-51 — a delegating lane's DEFAULT comparison base was a REMOTE-tracking
+  ref** (`__revision__` 39 → 40). A lane that delegates its base
+  (`judge.base_source = "request"`, or a `{base}` token in a command lane's
+  argv) invoked without `--base` fell straight through to `merge-base HEAD
+  @{upstream}`. Under a "batch commits locally, push later" policy that ref
+  drifts behind local work with nobody touching config (measured at 85 and 88
+  commits behind in two different projects' lanes in one week), so the default
+  silently reproduced the `judge.base = "origin/main"` staleness hazard
+  `base_source = "request"` exists to escape — just relocated from a project's
+  `assay.toml` into run-gate's own fallback.
+
+  `resolve_comparison_base` now consults, BETWEEN the winning `--base` flag
+  and that unchanged `@{upstream}` fallback, the `base_ref` string `ciu
+  worktree create|add|adopt` records in `ciu.worktree-instance.json` at a
+  managed worktree's CIU root — the ref the tree actually forked from,
+  normally a LOCAL branch. Read as a FILE FORMAT (stdlib `json`, well-known
+  filename), never a Python import from `ciu`: separate projects, and this
+  launcher must run on a fresh clone with zero installs. Both the worktree
+  root and the effective project dir inside it are checked, in that order,
+  because ciu writes the record at the CIU root, which sits below the git
+  worktree root in a monorepo.
+
+  **A recorded ref is used only when it is gate-safe ref text, the record's
+  `branch` still matches the tree, git resolves it to a LOCAL branch there,
+  `merge-base(base_ref, HEAD)` still EQUALS the `fork_point_sha` ciu recorded
+  at creation (ciu CIU-106), and that branch does not already contain the
+  tree's HEAD.** These are the safety property, not formalities — THREE
+  successive adversarial review rounds each found a FALSE GREEN in the
+  preceding cut of this change, every one of them narrowing the judged diff:
+  - `ciu worktree adopt` records the adopted checkout's HEAD, and
+    `merge-base` against an ancestor of HEAD collapses to that commit — run
+    the gate right after an adopt and it would judge zero changed lines.
+  - A merged-but-not-torn-down worktree has a real, live `base_ref = "main"`
+    that `main` has since absorbed: same collapse, and it was true of 4 of
+    the 7 real ciu worktrees in this estate. `git merge-base --is-ancestor
+    HEAD <base>` now refuses it, fail-closed, and also covers the
+    own-branch and literal-`HEAD` cases (the frozen-id `adopt` case is
+    caught by the must-be-a-local-branch clause instead).
+  - That same worktree with ONE more commit passes every check above:
+    containment stops firing while `merge-base` has quietly moved to the
+    pre-merge branch tip, and in the fast-forward variant nothing derivable
+    from `base_ref` distinguishes it from a healthy fork. **ciu now records
+    the fork commit** (CIU-106) and run-gate requires `merge-base` to still
+    equal it. Equality, not an ordering test: a base gaining UNRELATED
+    commits leaves `merge-base` unmoved and so already passes. Fail-closed
+    on a missing or malformed fork point, so a worktree created by an older
+    ciu — or by `adopt` — keeps its previous `@{upstream}` behaviour, and
+    says so, until it is recreated. The two guards do NOT subsume each other,
+    verified against the real function: a worktree with no commits of its own
+    has `fork == merge-base == HEAD`, passes equality, and is caught only by
+    containment.
+  - A fifth round added one more, found by asking a different question: every
+    clause above is about the commit GRAPH, and a branch that committed work
+    and then REVERTED it satisfies all of them while producing an EMPTY diff
+    — `0/0 = 100%` again. Nothing escapes the judge there (there is no work),
+    so it is not the same class; it is another inlet into RG-53, and
+    `git diff --quiet <fork> HEAD` closes it for the cost of falling back to
+    a base that has something to judge.
+
+  What run-gate hands the judge is now that verified fork COMMIT rather than
+  the branch name, so nothing can move it between run-gate's check and the
+  judge's own `merge-base` minutes later.
+
+  A tag and a `refs/remotes/…` ref are refused too — the latter because a
+  remote-tracking ref is the very thing RG-51 exists to stop defaulting to.
+  The allow-list on the recorded ref exists so that RG-51 does not widen the
+  pre-existing inner-shell substitution hole from an operator's own command
+  line to a git-excluded JSON file; that hole itself is closed separately, on
+  the `--base`/`{base}` path, by RG-52 above — one regex, two consumers.
+
+  Every failure mode — absent, unreadable, permission-denied, a FIFO or
+  device that would block or explode on read, not JSON, not an object,
+  `RecursionError` from deeply nested JSON (a `RuntimeError`, not a
+  `ValueError`), missing/non-string/blank `base_ref`, and every rejection
+  above — degrades to the pre-existing `@{upstream}` path. `--base` still
+  wins outright and a plain checkout is unaffected. Disclosure runs both
+  ways, because half of RG-51 was that staleness must be visible: a winning
+  record is printed together with the `@{upstream}` ref it displaced, and a
+  record that is found and rejected prints `run-gate: ignoring <record>:
+  <why>` (the refusal names it too). One deliberate widening — a tree with a
+  usable record but no upstream now resolves instead of refusing.
+
+  Two limits worth knowing before relying on this. **It goes inert when the
+  worktree is kept current:** merging the base INTO the branch, or rebasing
+  onto it, moves the merge-base as surely as merging the other way, spends
+  the record, and drops back to `@{upstream}` — a loss of benefit, not a new
+  hazard, since the fallback errs WIDE. And **it is sound at run-gate's own
+  boundary only:** only the base STRING changes here, and what the judge does
+  with it is the judge's contract — assay's `resolve_base` returns HEAD's
+  FIRST PARENT and discards the supplied base entirely when HEAD is a merge
+  commit (assay B008), which predates this change and behaves identically
+  under `--base`. Filed as RG-54. SPEC.md `R-35a`.
+
+  **Consumer note:** the new default is inert until worktrees are recreated.
+  Every worktree record that exists today predates `fork_point_sha`, so all
+  of them fail closed and keep the old `@{upstream}` behaviour (saying so on
+  stdout). Requires ciu with CIU-106; older ciu is fine, it just never
+  arms the new path.
+
 <!-- cleared 2026-09-09: the RG-41 write-up that was here (log-stream
      command-lane liveness, LogStreamWatch, three review-round fixes) is
      already shipped -- see [23.6.0]/[23.6.1] below and

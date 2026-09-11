@@ -7,12 +7,14 @@ Every argv assertion compares the LIST, never a joined string.
 
 import atexit
 import calendar
+import contextlib
 import fcntl
 import json
 import os
 import queue
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -4786,6 +4788,1229 @@ class TestComparisonBasePassthrough:
         assert run_gate.substitute_worktree(["{worktree}/x", "--base", "{base}"],
                                             Path("/w")) == \
             ["/w/x", "--base", "{base}"]
+
+
+def git_head(directory: Path, ref: str = "HEAD") -> str:
+    return subprocess.run(["git", "-C", str(directory), "rev-parse", ref],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def fork_sha(directory: Path, base: str = "main") -> str | None:
+    """`git merge-base <base> HEAD` in `directory`, or None outside a repo —
+    i.e. what ciu's `fork_point_sha` holds for a healthy worktree."""
+    try:
+        proc = subprocess.run(["git", "merge-base", "--end-of-options", base,
+                               "HEAD"], cwd=str(directory),
+                              capture_output=True, text=True)
+    except (OSError, ValueError):      # a hostile base_ref fixture
+        return None
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
+
+
+def write_instance_record(directory: Path, **over) -> Path:
+    """A `ciu.worktree-instance.json` shaped exactly like the real one ciu
+    writes (schema v1, the shape shipped today), with per-test overrides.
+
+    Written UNTRACKED on purpose: ciu git-excludes this file
+    (`_ensure_record_is_excluded`), so a real judged tree never has it in the
+    index and a test that committed it would be testing a shape that cannot
+    occur.
+    """
+    doc = {"schema_version": 1, "logical_name": "wt", "display_name": "wt",
+           "branch": "feature", "git_worktree_path": str(directory),
+           "ciu_root_offset": ".", "created_at_utc": "2026-09-11T02:14:04Z",
+           "base_ref": "main", "state": "ready",
+           "runtime": {"instance_id": "a4b81d", "network": "wt-a4b81d-network"},
+           "recovery_status": None}
+    doc.update(over)
+    # CIU-106's fork point defaults to the HEALTHY value — the commit
+    # `base_ref` and HEAD actually share right now — so a test that says
+    # nothing about it gets a record that is live rather than spent. Tests
+    # about a MOVED base override it, or write the record before moving.
+    if "fork_point_sha" not in over:
+        live = (fork_sha(directory, doc["base_ref"].strip())
+                if isinstance(doc.get("base_ref"), str) and doc["base_ref"].strip()
+                else None)
+        if live is not None:
+            doc["fork_point_sha"] = live
+    path = directory / run_gate.WORKTREE_INSTANCE_RECORD
+    path.write_text(json.dumps(doc, indent=2))
+    return path
+
+
+@contextlib.contextmanager
+def alarm_guard(message: str, seconds: int = 20):
+    """Fail a test that BLOCKS instead of letting it hang the lane.
+
+    Used around every read that a regression could turn into an unbounded
+    wait (a FIFO at the record path). A hung selftest run sits there until
+    its budget kills it and produces no verdict at all, which is harder to
+    diagnose than a red one.
+    """
+    def _blocked(*_args):
+        raise AssertionError(message)
+    previous = signal.signal(signal.SIGALRM, _blocked)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def make_feature_repo(tmp_path: Path) -> Path:
+    """`make_repo` plus a second commit on a checked-out branch `feature`,
+    i.e. the shape `ciu worktree create --base main` produces: HEAD is on a
+    branch that is NOT the base, and the base branch really exists."""
+    repo = make_repo(tmp_path)
+    # ciu git-excludes the record (`_ensure_record_is_excluded`), so a real
+    # judged tree never has it in the index. Mirroring that here is not
+    # cosmetic: without it a test's own `git add -A` would COMMIT the record
+    # onto whichever branch it ran on, and a later `git checkout` would then
+    # delete it out from under the reader.
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a") as handle:
+        handle.write(f"\n{run_gate.WORKTREE_INSTANCE_RECORD}\n")
+    git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "feature.txt").write_text("work\n")
+    commit_all(repo, "feature work")
+    return repo
+
+
+class TestRecordedWorktreeBase:
+    """RG-51 unit level: `recorded_worktree_base` reads ANOTHER project's
+    serialized output, so every documented shape and every degenerate one is
+    enumerated here rather than assumed (TESTING-METHODOLOGY "Boundary values
+    named, not assumed").
+
+    Two contracts, both absolute: NOTHING it reads can raise or block, and a
+    recorded ref is used ONLY when it is genuinely better than the
+    `@{upstream}` fallback it displaces — which means it must name a real
+    branch, other than this tree's own, in a record that still describes this
+    tree.
+    """
+
+    def test_a_recorded_branch_is_used(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        # The resolved base is the verified FORK COMMIT, not the branch name:
+        # an OID cannot be moved by another session between this check and
+        # the judge's own merge-base minutes later.
+        assert run_gate.recorded_worktree_base(repo, repo) == \
+            (fork_sha(repo), record, "")
+
+    def test_no_record_anywhere_is_silent(self, tmp_path):
+        """(None, None, "") — the plain-checkout case says nothing at all."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            (None, None, "")
+
+    def test_no_candidates_at_all_is_silent(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.recorded_worktree_base(repo) == (None, None, "")
+
+    def test_nonexistent_candidate_directory_is_silent(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.recorded_worktree_base(repo, repo / "gone") == \
+            (None, None, "")
+
+    def test_a_record_at_a_later_candidate_is_found(self, tmp_path):
+        """The monorepo shape ciu documents: the record sits at the CIU root,
+        BELOW the git worktree root."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        record = write_instance_record(proj, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            (fork_sha(repo), record, "")
+
+    def test_the_first_candidate_wins_over_a_later_one(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", "other", "main")
+        proj = repo / "proj"
+        proj.mkdir()
+        outer = write_instance_record(repo, base_ref="main")
+        write_instance_record(proj, base_ref="other")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            (fork_sha(repo, "main"), outer, "")
+
+    def test_an_unusable_record_does_not_stop_the_search(self, tmp_path):
+        """"Unusable" means "keep looking" — a broken record at the worktree
+        root must not mask a good one at the CIU root."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text("{{{")
+        record = write_instance_record(proj, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            (fork_sha(repo), record, "")
+
+    def test_the_FIRST_rejection_is_the_one_reported(self, tmp_path):
+        """With no usable record anywhere, the caller must be told about the
+        candidate it would have used, not the last one looked at. Nothing
+        pinned this until round-2 review: inverting it left the whole suite
+        green, and it was the only uncovered BRANCH in the RG-51 region."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        outer = write_instance_record(repo, base_ref="")          # rejectable
+        write_instance_record(proj, base_ref="also-not-a-branch")  # rejectable
+        ref, record, why = run_gate.recorded_worktree_base(repo, repo, proj)
+        assert ref is None
+        assert record == outer
+        assert why == "its 'base_ref' is missing, blank, or not a string"
+
+    def test_a_repeated_candidate_is_probed_once(self, tmp_path, monkeypatch):
+        """The two candidates COINCIDE whenever the project IS the repo root
+        (every non-monorepo consumer), and each probe costs git subprocesses.
+        The record here is REJECTABLE on purpose: a usable one returns on the
+        first candidate and would never reach the second iteration at all.
+        """
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="")
+        reads = []
+        real = run_gate.read_instance_record
+        monkeypatch.setattr(run_gate, "read_instance_record",
+                            lambda p: (reads.append(p), real(p))[1])
+        ref, seen_record, why = run_gate.recorded_worktree_base(
+            repo, repo, repo)
+        assert (ref, seen_record) == (None, record)
+        assert why == "its 'base_ref' is missing, blank, or not a string"
+        assert reads == [record]
+
+    # --- unreadable / unparseable: report the file, never raise -------------
+
+    @pytest.mark.parametrize("payload, label", [
+        ("this is not json\n", "prose"),
+        ('{"base_ref": "main"', "truncated"),
+        ("", "empty"),
+        ("[]", "array"),
+        ('"main"', "bare string"),
+        ("3", "number"),
+        ("null", "null"),
+        ("true", "boolean"),
+    ])
+    def test_content_that_is_not_a_json_object_is_reported(
+            self, tmp_path, payload, label):
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(payload)
+        ref, record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert (ref, record.name) == (None, run_gate.WORKTREE_INSTANCE_RECORD)
+        assert why == "it is not readable as a JSON object", label
+
+    def test_undecodable_bytes_are_reported(self, tmp_path):
+        """UnicodeDecodeError IS a ValueError, so one guard covers it — pinned
+        because that inheritance is easy to break by widening the read to
+        bytes or narrowing the except to JSONDecodeError."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_bytes(b"\xff\xfe\x00")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and why == "it is not readable as a JSON object"
+
+    def test_deeply_nested_json_does_not_raise(self, tmp_path):
+        """RecursionError is a RuntimeError, NOT a ValueError — the one
+        escape route a plain `(OSError, ValueError)` guard leaves open, and
+        it would abort the whole gate run before any lane started."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+            "[" * 200_000 + "]" * 200_000)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_directory_in_place_of_the_record_is_silent(self, tmp_path):
+        """Not a regular file, so `is_file()` skips it before any read."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).mkdir()
+        assert run_gate.recorded_worktree_base(repo, repo) == (None, None, "")
+
+    def test_a_fifo_in_place_of_the_record_does_not_block(self, tmp_path):
+        """A `read_text` on a FIFO blocks FOREVER with nothing disclosed —
+        worse than raising, because there is no traceback to diagnose from.
+        The `is_file()` guard is what makes this test terminate at all.
+
+        The alarm is not decoration: without it a regression here HANGS the
+        selftest lane until its budget kills it, and a hung gate is worse to
+        diagnose than a red one."""
+        repo = make_feature_repo(tmp_path)
+        os.mkfifo(repo / run_gate.WORKTREE_INSTANCE_RECORD)
+        with alarm_guard("recorded_worktree_base blocked on a FIFO"):
+            assert run_gate.recorded_worktree_base(repo, repo) == \
+                (None, None, "")
+
+    @pytest.mark.skipif(os.geteuid() == 0,
+                        reason="root reads a 0o000 file regardless")
+    def test_an_unreadable_record_is_reported(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo)
+        record.chmod(0o000)
+        try:
+            ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+            assert ref is None
+            assert why == "it is not readable as a JSON object"
+        finally:
+            record.chmod(0o644)
+
+    # --- base_ref that is not a usable string -------------------------------
+
+    def test_a_missing_base_ref_key_is_reported(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+            json.dumps({"schema_version": 1, "branch": "feature"}))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
+
+    @pytest.mark.parametrize("blank", ["", " ", "\t", "\n", "   \n  "])
+    def test_a_blank_base_ref_is_reported(self, tmp_path, blank):
+        """The empty-string boundary and every whitespace-only neighbour."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=blank)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
+
+    @pytest.mark.parametrize("value", [None, 0, 1, -1, 3.5, True, False, [],
+                                       {}, ["main"], {"ref": "main"}])
+    def test_a_non_string_base_ref_is_reported(self, tmp_path, value):
+        """Every JSON scalar and container a `base_ref` could degrade into,
+        including the 0/1/-1 numeric boundaries and both booleans — `bool` is
+        a subclass of `int`, not of `str`, so a truthiness test would split
+        these three different ways where `isinstance` does not."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
+
+    def test_surrounding_whitespace_is_stripped(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="  main\n")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    # --- the record must still describe THIS tree ---------------------------
+
+    def test_a_record_naming_another_branch_is_reported(self, tmp_path):
+        """The reuse case ciu's own reader refuses outright: an operator
+        re-points a ciu worktree at a second task, leaving a record that
+        still names the FIRST task's base. Using it would widen the judged
+        diff to everything since that other branch diverged."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, branch="some-other-task", base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "it describes branch 'some-other-task'" in why
+        assert "refs/heads/feature" in why
+
+    def test_a_detached_head_reports_the_mismatch(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "--detach")
+        write_instance_record(repo, branch="feature", base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "a detached HEAD" in why
+
+    @pytest.mark.parametrize("value", [None, 0, "", "   ", [], {"a": 1}])
+    def test_an_unusable_branch_field_is_not_treated_as_a_mismatch(
+            self, tmp_path, value):
+        """`branch` is a cross-check, not a requirement: a record that does
+        not state one usably is still judged on its `base_ref` alone, so this
+        stays forward-compatible with any schema that drops the field."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, branch=value, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    # --- base_ref must name a branch OTHER than this tree's own -------------
+
+    def test_a_frozen_commit_id_is_refused(self, tmp_path):
+        """`ciu worktree adopt` records the adopted checkout's HEAD, not a
+        fork point. `merge-base(<that commit>, HEAD)` collapses to the commit
+        itself, so every line committed BEFORE the adopt silently leaves the
+        changed-line set — the false-green direction, strictly worse than the
+        `@{upstream}` this would have displaced."""
+        repo = make_feature_repo(tmp_path)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True).stdout.strip()
+        write_instance_record(repo, base_ref=sha, state="allocating")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+        assert "ciu worktree adopt" in why
+
+    def test_an_abbreviated_commit_id_is_refused(self, tmp_path):
+        """`git rev-parse --symbolic-full-name` exits 0 with EMPTY output for
+        a commit id, so the returncode alone is not the test."""
+        repo = make_feature_repo(tmp_path)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short",
+                              "HEAD"], capture_output=True,
+                             text=True).stdout.strip()
+        write_instance_record(repo, base_ref=sha)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_tag_is_refused(self, tmp_path):
+        """A tag is frozen exactly like a commit id — it cannot self-update,
+        which is the entire premise of preferring the record."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "v1.0.0", "main")
+        write_instance_record(repo, base_ref="v1.0.0")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_deleted_branch_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="branch-that-was-deleted")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a local branch in this tree" in why
+
+    def test_a_remote_tracking_branch_is_refused(self, tmp_path):
+        """A remote-tracking ref is the very thing RG-51 exists to stop
+        defaulting to. Preferring one over `@{upstream}` and announcing it as
+        an improvement would be the same stale ref with a better disclosure
+        line, so `refs/remotes/` is outside the accepted namespace."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        write_instance_record(repo, base_ref="origin/main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "a remote-tracking ref" in why
+
+    # --- a live branch is NECESSARY but NOT SUFFICIENT ----------------------
+
+    def test_this_trees_own_branch_is_refused(self, tmp_path):
+        """merge-base(own branch, HEAD) is HEAD: zero changed lines, lane
+        passes trivially."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="feature")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+
+    def test_the_literal_HEAD_is_refused(self, tmp_path):
+        """`HEAD` resolves through `--symbolic-full-name` to the current
+        branch's own full name, so it reaches the same collapse by a
+        different spelling."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="HEAD")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_base_branch_that_has_absorbed_head_is_refused(self, tmp_path):
+        """The case that makes "a live branch" insufficient, and the one that
+        was live on 4 of the 7 real ciu worktrees in this estate when it was
+        found: the worktree's work has been MERGED into its base and the tree
+        was not torn down. `base_ref = "main"` is still true, still a branch,
+        still not this tree's branch — and `merge-base` is now HEAD.
+
+        An assay lane would reach assay's own BASE_IS_HEAD refusal three
+        layers down, naming neither the record nor the remedy; a `{base}`
+        command lane has no such guard at all, and a diff-coverage judge
+        scores zero changed lines as 0/0 = 100%. That is a SILENT FALSE
+        GREEN, so the record must lose to `@{upstream}` here.
+        """
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        git(repo, "checkout", "-q", "feature")
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+        assert "judge NOTHING" in why
+
+    def test_a_fast_forwarded_base_is_refused(self, tmp_path):
+        """The same collapse without a merge commit."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", "-f", "main", "feature")
+        write_instance_record(repo, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    # --- and a graph clause is not the same question as "is there work" ----
+
+    def test_a_branch_whose_work_was_REVERTED_is_refused(self, tmp_path):
+        """Found by round-5 review, reproduced here before being believed.
+
+        Every GRAPH clause passes: a real fork point, a merge-base that has
+        not moved, and ancestry in neither direction. But the diff is EMPTY,
+        and `tools/coverage_gate.py` scores zero changed executable lines as
+        `0/0 = 100%` — a PASS on a lane that examined nothing. No work
+        ESCAPES the judge (there is none), so this is not the false-green
+        class the other clauses exist for; it is another inlet into RG-53,
+        and refusing costs only a fall back to a base that HAS something to
+        judge.
+        """
+        repo = make_feature_repo(tmp_path)
+        git(repo, "revert", "--no-edit", "HEAD")
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "SAME CONTENT" in why
+        assert "0/0" in why
+        # the graph clauses really did all pass — this is not a duplicate of
+        # the containment case, which is what makes the extra clause earn its
+        # place rather than restate one already there
+        assert "already contains this tree's HEAD" not in why
+        assert "MOVED since the record was written" not in why
+
+    def test_a_branch_of_only_empty_commits_is_refused(self, tmp_path):
+        """The same emptiness reached without a revert: a branch that really
+        is AHEAD of its base (so the containment clause does not fire) but
+        whose commits change no file."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "reset", "-q", "--hard", "main")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "SAME CONTENT" in why
+        assert "already contains this tree's HEAD" not in why
+
+    def test_real_work_still_passes_the_emptiness_clause(self, tmp_path):
+        """The clause must not refuse the ordinary healthy case it sits in
+        front of — a one-line guard that refuses everything is green in
+        exactly the same way."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert why == ""
+        assert ref is not None
+
+    @pytest.mark.parametrize("returncode", [0, 2, 128, -9])
+    def test_the_emptiness_check_fails_CLOSED_on_a_git_error(
+        self, tmp_path, monkeypatch, returncode
+    ):
+        """`git diff --quiet` answers 1 for "there are differences" and 0 for
+        "there are none"; ANY other exit is git failing to answer, and a base
+        this reader cannot speak about is not one it should hand a judge.
+        Exit 0 is in the list because it is the refusing answer too."""
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], returncode, "", ""))
+        assert run_gate.judged_diff_is_empty(repo, "main") is True
+
+    def test_the_emptiness_check_never_raises(self, tmp_path, monkeypatch):
+        """Same rule as every other reader on this path: a broken environment
+        must degrade, never abort a gate run."""
+        def explode(*a, **k):
+            raise OSError("git is not on PATH")
+
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setattr(run_gate.subprocess, "run", explode)
+        assert run_gate.judged_diff_is_empty(repo, "main") is True
+
+    def test_a_diverged_base_branch_is_accepted(self, tmp_path):
+        """The complement: `main` moved on too, but HEAD is not contained in
+        it, so there is a real fork point and a real diff to judge."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "main")
+        (repo / "other.txt").write_text("elsewhere\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        write_instance_record(repo, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    def test_base_already_contains_head_fails_closed(self, tmp_path,
+                                                     monkeypatch):
+        """It cannot ask git, so it refuses. A base that cannot be SHOWN to
+        leave something to judge must not displace `@{upstream}` — falling
+        back is always the pre-RG-51 behaviour."""
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.base_already_contains_head(repo, "main") is False
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.base_already_contains_head(repo, "main") is True
+
+    def test_base_already_contains_head_refuses_an_unresolvable_ref(
+            self, tmp_path):
+        """git exits 128, not 1 — "could not tell" is not "divergent"."""
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.base_already_contains_head(repo, "no-such-ref") is True
+
+    # --- CIU-106: the recorded fork point must still be the merge-base ------
+
+    def test_a_base_that_absorbed_the_branch_then_moved_on_is_refused(
+            self, tmp_path):
+        """THE round-3 case, and the reason `base_already_contains_head` was
+        not enough on its own.
+
+        Fork, commit, merge back into `main` with --no-ff, commit again. The
+        containment guard stops firing (the base no longer contains HEAD),
+        but `merge-base` now sits on the PRE-MERGE branch tip, so judging
+        against it silently drops everything the branch did before the merge.
+        Only comparing against the RECORDED fork point tells the two apart —
+        in the fast-forward variant below, nothing else can.
+        """
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        fork = json.loads(record.read_text())["fork_point_sha"]
+        git(repo, "checkout", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        git(repo, "checkout", "-q", "feature")
+        (repo / "after.txt").write_text("follow-up\n")
+        commit_all(repo, "follow-up after the merge")
+
+        # the two guards disagree — which is exactly why both are needed
+        assert run_gate.base_already_contains_head(repo, "main") is False
+        assert run_gate.merge_base_of(repo, "main") != fork
+
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED since the record was written" in why
+        # the message names the possible causes without ASSERTING one: the
+        # same inequality is produced by merging the base IN, or rebasing
+        # onto it, and telling an operator to tear down a worktree for a
+        # reason that did not happen is its own defect (round-4 finding)
+        assert "absorbed this branch" in why
+        assert "this branch took" in why
+        assert "the record is spent" in why
+
+    def test_a_fast_forwarded_base_that_moved_on_is_refused(self, tmp_path):
+        """The variant with no merge commit at all, where `merge-base` alone
+        carries no signal whatsoever."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "branch", "-f", "main", "feature")
+        (repo / "after.txt").write_text("follow-up\n")
+        commit_all(repo, "follow-up after the fast-forward")
+        assert run_gate.base_already_contains_head(repo, "main") is False
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "has MOVED since the record was written" in why
+
+    def test_unrelated_commits_on_the_base_do_NOT_spend_the_record(
+            self, tmp_path):
+        """The complement, and the reason the check is EQUALITY rather than
+        "has the base moved at all": `main` gaining commits that are not this
+        branch's leaves `merge-base` exactly where it was, so a healthy
+        long-lived worktree keeps working."""
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        fork = json.loads(record.read_text())["fork_point_sha"]
+        before = git_head(repo, "main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        assert git_head(repo, "main") != before          # main really moved
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork
+
+    def test_a_record_with_no_fork_point_is_refused(self, tmp_path):
+        """`adopt` never records one, and neither did any ciu before CIU-106.
+        FAIL CLOSED: without it a moved base cannot be told from a live one,
+        and guessing is what three review rounds each got wrong."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", fork_point_sha=None)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "records no usable 'fork_point_sha'" in why
+        assert "CIU-106" in why
+
+    @pytest.mark.parametrize("bad", ["", "   ", "not-a-sha", 42, [], {}, True,
+                                     "0123456789ABCDEF0123456789ABCDEF01234567",
+                                     "0123456789abcdef0123456789abcdef0123456",
+                                     "0123456789abcdef0123456789abcdef01234567junk",
+                                     "0123456789abcdef0123456789abcdef01234567 x",
+                                     " 0123456789abcdef0123456789abcdef01234567"])
+    def test_a_malformed_fork_point_is_refused(self, tmp_path, bad):
+        """Every shape another process's JSON could put here: the 40-vs-39
+        length boundary, an upper-case spelling git never emits, and a valid
+        40-hex PREFIX carrying a tail — the last three pin `fullmatch`
+        specifically, which `match` would wave through and which the claim
+        that this value is always gate-safe rests on."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", fork_point_sha=bad)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "fork_point_sha" in why
+
+    def test_a_stale_fork_point_from_another_repo_is_refused(self, tmp_path):
+        """A record that travelled (a copied tree, a restored backup) names a
+        commit this repo may not even have."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main",
+                              fork_point_sha="0" * 40)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "has MOVED since the record was written" in why
+
+    def test_merging_the_base_IN_also_spends_the_record(self, tmp_path):
+        """The usability cliff, pinned so it is a documented behaviour rather
+        than a surprise: keeping a long-lived worktree current by merging the
+        base INTO the branch moves the shared history just as surely as
+        merging the other way, so the record is spent and the gate falls back
+        to `@{upstream}`. Safe (wider), but the feature goes inert exactly
+        where an operator was being diligent."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        git(repo, "merge", "-q", "--no-ff", "-m", "take main in", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED since the record was written" in why
+
+    def test_rebasing_onto_the_base_also_spends_the_record(self, tmp_path):
+        """Same cliff by the other routine route."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main")
+        git(repo, "checkout", "-q", "main")
+        (repo / "elsewhere.txt").write_text("unrelated\n")
+        commit_all(repo, "unrelated main work")
+        git(repo, "checkout", "-q", "feature")
+        git(repo, "rebase", "-q", "main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "has MOVED since the record was written" in why
+
+    def test_no_common_history_with_the_base_is_refused(self, tmp_path):
+        """`git merge-base` exits 1 with no output for unrelated histories.
+        Treating that as "divergent, therefore usable" would hand the judge a
+        base it cannot resolve — a hard error downstream instead of this
+        tree's working `@{upstream}` fallback."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "--orphan", "unrelated")
+        (repo / "orphan.txt").write_text("no shared history\n")
+        commit_all(repo, "orphan root")
+        git(repo, "checkout", "-q", "feature")
+        write_instance_record(repo, base_ref="unrelated",
+                              fork_point_sha="0" * 40)
+        assert run_gate.merge_base_of(repo, "unrelated") is None
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "could not be computed" in why
+
+    def test_merge_base_of_never_raises(self, tmp_path, monkeypatch):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.merge_base_of(repo, "main") == fork_sha(repo)
+        assert run_gate.merge_base_of(repo, "no-such-ref") is None
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.merge_base_of(repo, "main") is None
+
+    def test_a_fresh_worktree_with_no_commits_is_still_refused(self, tmp_path):
+        """Proof that the fork-point check does NOT subsume the containment
+        one, checked rather than reasoned: a just-created worktree has
+        merge-base == fork == HEAD, so equality PASSES and only
+        `base_already_contains_head` catches it. Judging it would compare
+        HEAD with HEAD — zero changed lines, `0/0 = 100%`, a silent pass."""
+        repo = make_repo(tmp_path)
+        git(repo, "checkout", "-q", "-b", "feature")      # no commits of its own
+        write_instance_record(repo, base_ref="main")
+        assert run_gate.merge_base_of(repo, "main") == \
+            json.loads((repo / run_gate.WORKTREE_INSTANCE_RECORD)
+                       .read_text())["fork_point_sha"]
+        assert run_gate.base_already_contains_head(repo, "main") is True
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "already contains this tree's HEAD" in why
+
+    # --- shell metacharacters: git's ref grammar is wider than ours ---------
+
+    def test_a_real_branch_carrying_shell_metacharacters_is_refused(
+            self, tmp_path):
+        """Git ref names legally permit `;`, backtick, `$`, `|`, `&` and
+        quotes, and a resolved ref is substituted into a conjunction lane's
+        inner `bash -c` through `{base}` (R-25), where `shlex.join` quotes the
+        OUTER element but the element IS the script the inner shell re-parses.
+        `git branch 'main;touch$IFS/tmp/…'` is accepted by git and executes.
+
+        That hole predates RG-51 (`--base` carries it too — backlog RG-52)
+        and is NOT fixed here; what must not happen is RG-51 WIDENING it from
+        an operator's own command line to a git-excluded JSON file `git
+        status` never shows. So this case is a REAL, resolvable branch — the
+        one the allow-list, not git, has to stop."""
+        repo = make_feature_repo(tmp_path)
+        payload = "main;touch$IFS/tmp/RG51_PWNED"
+        git(repo, "branch", payload, "main")
+        assert run_gate.local_branch_ref_name(repo, payload) == \
+            f"refs/heads/{payload}"          # git resolves it perfectly well
+        write_instance_record(repo, base_ref=payload)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "is not gate-safe ref text" in why and "RG-52" in why
+        assert not Path("/tmp/RG51_PWNED").exists()
+
+    @pytest.mark.parametrize("hostile", [
+        "main; touch /tmp/RG51_PWNED",
+        "main && touch /tmp/RG51_PWNED",
+        "$(touch /tmp/RG51_PWNED)",
+        "`touch /tmp/RG51_PWNED`",
+        "main | tee /tmp/RG51_PWNED",
+        "main 'quoted'",
+        "main\nmain",
+        "main\x00",
+        "\ud800",
+    ])
+    def test_a_hostile_base_ref_is_refused_and_never_raises(
+            self, tmp_path, hostile):
+        """The allow-list rejects these before git is asked at all, which is
+        also what keeps the NUL byte and the lone surrogate — both of which
+        raise out of `subprocess` itself — away from it."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=hostile)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "is not gate-safe ref text" in why
+        assert not Path("/tmp/RG51_PWNED").exists()
+
+    @pytest.mark.parametrize("option_like", ["--all", "-n", "--not-a-ref"])
+    def test_an_option_like_base_ref_is_refused(self, tmp_path, option_like):
+        """`--end-of-options` keeps git from reading these as its own flags;
+        they then simply fail to resolve."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=option_like)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "is not gate-safe ref text" in why    # leading '-', by POSITION
+
+    @pytest.mark.parametrize("legal", ["base/sub-task", "release-1.2.3",
+                                       "v2_x", "a.b+c@d"])
+    def test_every_real_ref_shape_passes_the_allow_list(self, tmp_path, legal):
+        """The allow-list is a mitigation, not a new refusal surface: every
+        branch shape this estate actually uses — slashes, dots, dashes,
+        underscores, `+` and `@` — must still reach git."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", legal, "main")
+        write_instance_record(repo, base_ref=legal)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == \
+            fork_sha(repo, legal)
+
+    def test_an_unknown_schema_version_still_reads(self, tmp_path):
+        """`base_ref` is present and identical in every schema ciu has
+        shipped, and nothing here validates a field it does not use — so a
+        future v3 with new keys must NOT start falling back."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", schema_version=99,
+                              lease=None, some_future_key={"a": 1})
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == fork_sha(repo)
+
+    def test_a_record_carrying_only_base_ref_is_refused(self, tmp_path):
+        """Before CIU-106 this was enough. It no longer is: without a
+        recorded fork point a moved base cannot be told from a live one, and
+        this reader fails CLOSED rather than guessing."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+            '{"base_ref": "main"}')
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "records no usable 'fork_point_sha'" in why
+        assert "CIU-106" in why
+
+    # --- the git primitives, pinned directly --------------------------------
+
+    def test_local_branch_ref_name_resolves_only_local_branches(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "v1.0.0", "main")
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        assert run_gate.local_branch_ref_name(repo, "main") == "refs/heads/main"
+        assert run_gate.local_branch_ref_name(repo, "origin/main") is None
+        assert run_gate.local_branch_ref_name(repo, "v1.0.0") is None
+        assert run_gate.local_branch_ref_name(repo, "nope") is None
+
+    def test_local_branch_ref_name_outside_a_repo_is_none(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert run_gate.local_branch_ref_name(plain, "main") is None
+
+    def test_local_branch_ref_name_without_git_on_path_is_none(
+            self, tmp_path, monkeypatch):
+        """OSError from `subprocess` itself — this helper may never raise."""
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.local_branch_ref_name(repo, "main") is None
+
+    def test_current_branch_ref_reports_the_branch_then_the_detachment(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.current_branch_ref(repo) == "refs/heads/feature"
+        git(repo, "checkout", "-q", "--detach")
+        assert run_gate.current_branch_ref(repo) is None
+
+    def test_current_branch_ref_without_git_on_path_is_none(
+            self, tmp_path, monkeypatch):
+        """It had no guard at all until round-2 review: a branch name that is
+        not valid UTF-8 (git permits one) or a missing `git` raised straight
+        out of this call and aborted the gate run with a traceback, breaking
+        the module's own "nothing here raises" contract."""
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.current_branch_ref(repo) is None
+
+    def test_read_instance_record_returns_the_object(self, tmp_path):
+        record = write_instance_record(tmp_path, base_ref="main")
+        assert run_gate.read_instance_record(record)["base_ref"] == "main"
+
+    def test_read_instance_record_guards_non_regular_files_itself(
+            self, tmp_path):
+        """`recorded_worktree_base` now decides "is there a record here" up
+        front, so this guard is no longer reached through it — it stays
+        because the guard, not the caller, is what keeps a FIFO from blocking
+        the read, and the next caller must inherit that.
+
+        Carries the same SIGALRM as its sibling: this is the test that
+        actually reaches the guard, so without an alarm a regression HANGS
+        the selftest lane here until its budget kills it instead of failing
+        (round-3 review found the alarm on the sibling and missing here)."""
+        missing = tmp_path / run_gate.WORKTREE_INSTANCE_RECORD
+        assert run_gate.read_instance_record(missing) is None
+        os.mkfifo(missing)
+        with alarm_guard("read_instance_record blocked on a FIFO"):
+            assert run_gate.read_instance_record(missing) is None
+
+
+class TestComparisonBaseCharset:
+    """RG-52: a comparison base is substituted into a conjunction lane's inner
+    `bash -c` through `{base}` (R-25), where `shlex.join` quotes the OUTER
+    argv element but that element IS the script the inner shell re-parses. A
+    base carrying `;` or a backtick therefore EXECUTES — on a `bare-host`
+    lane, on the real host.
+
+    Closed the way RG-5 closed the identical hole for `{worktree}`: an
+    allow-list refusal before the value can reach substitution. Git's own ref
+    grammar permits these characters, so `git branch 'main;touch /tmp/x'` is
+    a legal branch; this gate still refuses it.
+    """
+
+    _judge = staticmethod(TestComparisonBasePassthrough._judge)
+    _project = TestComparisonBasePassthrough._project
+
+    INJECTIONS = ["main; touch /tmp/RG52_PWNED",
+                  "main && touch /tmp/RG52_PWNED",
+                  "`touch /tmp/RG52_PWNED`",
+                  "$(touch /tmp/RG52_PWNED)",
+                  "main | tee /tmp/RG52_PWNED",
+                  "main > /tmp/RG52_PWNED",
+                  "main 'quoted'",
+                  'main "quoted"',
+                  "main\nmain",
+                  "main main"]
+
+    @pytest.mark.parametrize("payload", INJECTIONS)
+    def test_an_injecting_base_flag_is_refused_before_any_lane_runs(
+            self, tmp_path, monkeypatch, capsys, payload):
+        """The REAL end-to-end path: `--base` on a conjunction lane whose argv
+        carries `{base}`. Before RG-52 this reached `bash -c` verbatim."""
+        cfg = """\
+            schema_version = 1
+            [lanes.gate]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "echo ./run-gate.py --base {base} a"]
+            clean_tree = false
+        """
+        marker = Path("/tmp/RG52_PWNED")
+        assert not marker.exists(), "stale marker from an earlier run"
+        self._project(tmp_path, monkeypatch, cfg)
+        assert run_gate.main(["gate", "--base", payload]) == 2
+        err = capsys.readouterr().err
+        assert "is not gate-safe" in err
+        assert "RG-52" in err
+        assert not marker.exists()
+
+    def test_an_assay_lane_refuses_the_same_base(
+            self, tmp_path, monkeypatch, capsys):
+        """Not only the `{base}` path: the ref also reaches `--request-base`
+        in an argv the container re-parses, so the refusal is on the base, not
+        on one lane kind."""
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "main; id"]) == 2
+        assert "is not gate-safe" in capsys.readouterr().err
+        assert lane_runs(log) == []          # refused BEFORE the judged run
+
+    def test_a_leading_dash_is_refused_on_POSITION_grounds(
+            self, tmp_path, monkeypatch, capsys):
+        """'-' is legal LATER in a ref, so naming it an offending CHARACTER
+        would misdescribe the problem — RG-5 made the same distinction for
+        `{worktree}`."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base=-weird"]) == 2
+        err = capsys.readouterr().err
+        assert "starts with '-'" in err
+        assert "option prefix" in err
+
+    def test_the_refusal_names_every_offending_character(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "a;b|c d"]) == 2
+        err = capsys.readouterr().err
+        for char in ("';'", "'|'", "' '"):
+            assert char in err
+
+    @pytest.mark.parametrize("legal", ["main", "origin/main", "release-1.2.3",
+                                       "feat/x_y", "a.b+c@d",
+                                       "0123456789abcdef0123456789abcdef01234567"])
+    def test_every_real_base_shape_is_still_accepted(
+            self, tmp_path, monkeypatch, capsys, legal):
+        """The allow-list must not become a new refusal surface: branch names,
+        remote-tracking refs, tags and raw SHAs all still pass. A `--base`
+        that names a ref this tree does not have is assay's business, not
+        this check's."""
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", legal]) == 0
+        assert f"--request-base {legal}" in lane_runs(log)[0][-1]
+        assert "not gate-safe" not in capsys.readouterr().err
+
+    def test_check_base_charset_accepts_and_refuses_directly(self):
+        """The predicate itself, so the two callers cannot drift from it."""
+        assert run_gate.check_base_charset("main") is None
+        with pytest.raises(run_gate.GateError):
+            run_gate.check_base_charset("main;id")
+        with pytest.raises(run_gate.GateError):
+            run_gate.check_base_charset("-lead")
+
+    def test_the_derived_upstream_sha_is_always_gate_safe(self, tmp_path,
+                                                          monkeypatch):
+        """The third source of a base is `merge-base HEAD @{upstream}`, whose
+        output is a 40-hex OID — inside the charset by construction. Pinned so
+        that a future change to that path cannot quietly introduce a
+        non-OID."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", "-f", "origin-main", "main")
+        git(repo, "branch", "--set-upstream-to=origin-main", "feature")
+        derived = run_gate.derive_upstream_base(repo)
+        assert run_gate.GATE_SAFE_BASE_RE.match(derived)
+
+
+class TestWorktreeRecordedComparisonBase:
+    """RG-51 integration level: a DELEGATING lane invoked without `--base` now
+    prefers the fork point ciu recorded for this worktree over `merge-base
+    HEAD @{upstream}`.
+
+    The hazard being closed: `@{upstream}` is a REMOTE-tracking ref, so under
+    a "batch commits locally, push later" policy the default silently widened
+    every changed-line judgment to "everything since the drift began" — the
+    exact `judge.base = "origin/main"` pitfall `base_source = "request"`
+    exists to escape, relocated into run-gate's own fallback.
+    """
+
+    _judge = staticmethod(TestComparisonBasePassthrough._judge)
+
+    def _project(self, tmp_path, monkeypatch, cfg=ASSAY_LANE_CFG):
+        """TestComparisonBasePassthrough._project's fixture, on a repo that is
+        checked out on a BRANCH forked from `main` — the shape `ciu worktree
+        create --base main` produces, and the only shape in which a recorded
+        `base_ref` is usable at all."""
+        repo = make_feature_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        return repo, proj
+
+    @staticmethod
+    def _upstream(repo):
+        """Give the judged tree a real (and DIFFERENT) upstream, so a test
+        that resolves to the record proves a choice, not an absence."""
+        git(repo, "branch", "-f", "origin-main", "HEAD")
+        git(repo, "branch", "--set-upstream-to=origin-main", "feature")
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_recorded_base_ref_beats_the_upstream_merge_base(
+            self, tmp_path, monkeypatch, capsys):
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        upstream_sha = self._upstream(repo)
+        record = write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        inner = lane_runs(log)[0][-1]
+        # the verified FORK COMMIT, not the branch name (no re-resolution
+        # window between this check and the judge's own merge-base)
+        assert f"--request-base {fork}" in inner
+        assert f"--request-base {upstream_sha}" not in inner
+        out = capsys.readouterr().out
+        # R-05: which source won is DISCLOSED, naming the record — and so is
+        # the ref NOT taken, which is how origin drift becomes visible.
+        assert f"run-gate: {record} pins this tree's fork point at {fork}" in out
+        assert f"instead of merge-base HEAD @{{upstream}} ({upstream_sha})" in out
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point) → --request-base" in out
+
+    def test_a_record_at_the_project_dir_is_found(
+            self, tmp_path, monkeypatch, capsys):
+        """ciu writes the record at the CIU ROOT, which in a monorepo is a
+        subdirectory of the git worktree — the shape every vbpub consumer of
+        this script actually has."""
+        _repo, proj = self._project(tmp_path, monkeypatch)
+        write_instance_record(proj, base_ref="main")
+        fork = fork_sha(proj)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        assert f"--request-base {fork}" in lane_runs(log)[0][-1]
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point)" in capsys.readouterr().out
+
+    def test_the_worktree_root_is_searched_before_the_project_dir(
+            self, tmp_path, monkeypatch, capsys):
+        """The candidate ORDER is a load-bearing claim (SPEC R-35a), so it is
+        pinned where it is actually decided — the caller — with a DIFFERENT
+        record in each location. With only one record planted, either order
+        would pass."""
+        repo, proj = self._project(tmp_path, monkeypatch)
+        # `inner-base` shares MORE history with HEAD than `main` does, so the
+        # two candidates resolve to genuinely DIFFERENT fork commits — with
+        # both resolving to the same commit the test could not tell the two
+        # orders apart, which is the trap this test exists to avoid.
+        git(repo, "branch", "inner-base", "HEAD")
+        (repo / "later.txt").write_text("after inner-base\n")
+        commit_all(repo, "commit after inner-base")
+        outer = write_instance_record(repo, base_ref="main")
+        write_instance_record(proj, base_ref="inner-base")
+        assert fork_sha(repo, "main") != fork_sha(repo, "inner-base")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        inner = lane_runs(log)[0][-1]
+        assert f"--request-base {fork_sha(repo, 'main')}" in inner
+        assert f"--request-base {fork_sha(repo, 'inner-base')}" not in inner
+        assert f"{outer} pins this tree's fork point" in capsys.readouterr().out
+
+    def test_explicit_base_still_wins_over_a_record(
+            self, tmp_path, monkeypatch, capsys):
+        """The flag path is untouched: an operator who names a base is never
+        overridden by a file, and the record is not even consulted."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        write_instance_record(repo, base_ref="main")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        assert "--request-base deadbeef" in lane_runs(log)[0][-1]
+        out = capsys.readouterr().out
+        assert "comparison base deadbeef (from --base)" in out
+        assert "fork point" not in out and "ignoring" not in out
+
+    def test_without_a_record_the_upstream_path_is_unchanged_and_silent(
+            self, tmp_path, monkeypatch, capsys):
+        """The no-op guarantee for every existing consumer — above all the
+        primary checkout, which ciu structurally never writes a record into.
+        Nothing new is printed, either."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        upstream_sha = self._upstream(repo)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
+        out = capsys.readouterr().out
+        assert "comparison base" in out and "merge-base HEAD @{upstream}" in out
+        assert "fork point" not in out and "ignoring" not in out
+
+    def test_a_malformed_record_degrades_to_the_upstream_and_SAYS_SO(
+            self, tmp_path, monkeypatch, capsys):
+        """A broken record cannot take a gate run down — and cannot slip past
+        unmentioned either: a silently-ignored record is the same silence
+        RG-51 exists to remove, in a new place."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        upstream_sha = self._upstream(repo)
+        record = repo / run_gate.WORKTREE_INSTANCE_RECORD
+        record.write_text("not json")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
+        captured = capsys.readouterr()
+        assert f"run-gate: ignoring {record}: it is not readable as a JSON " \
+               f"object" in captured.out
+        assert "merge-base HEAD @{upstream}" in captured.out
+        assert "Traceback" not in captured.err
+
+    def test_an_adopt_style_frozen_sha_degrades_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        """The false-green case, end to end: `ciu worktree adopt` records the
+        adopted checkout's HEAD, which would narrow the judged diff to
+        nothing. The gate must fall back to `@{upstream}` and name the
+        reason."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        upstream_sha = self._upstream(repo)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        write_instance_record(repo, base_ref=head, state="allocating")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
+        out = capsys.readouterr().out
+        assert "run-gate: ignoring" in out
+        assert "does not name a local branch in this tree" in out
+
+    def test_a_record_resolves_a_tree_that_has_no_upstream_at_all(
+            self, tmp_path, monkeypatch, capsys):
+        """Deliberate widening: without a record this tree REFUSES (no
+        upstream to derive from). A ciu worktree branched off `main` and never
+        pushed is exactly that tree, and it now has a real, recorded answer
+        rather than a refusal. Nothing is guessed — the ref is one ciu wrote
+        down at creation and git has just resolved to a live branch."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        captured = capsys.readouterr()
+        assert f"--request-base {fork}" in lane_runs(log)[0][-1]
+        assert "delegates its comparison base" not in captured.err
+        # and the disclosure does NOT claim an @{upstream} it does not have
+        assert "merge-base HEAD @{upstream} yields nothing here" in captured.out
+        assert "instead of merge-base" not in captured.out
+
+    def test_an_unusable_record_and_no_upstream_refuses_naming_the_record(
+            self, tmp_path, monkeypatch, capsys):
+        """The refusal keeps its existing wording (consumers match on it) and
+        gains the reason the record next to it was not used — otherwise an
+        operator staring at a ciu worktree is told only "no upstream"."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        record = write_instance_record(repo, base_ref="branch-gone")
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 2
+        err = capsys.readouterr().err
+        assert "lane 'ui-unit' delegates its comparison base" in err
+        assert "pass --base REF (worktree has no upstream)" in err
+        assert f"{record} was found but ignored" in err
+        assert "does not name a local branch in this tree" in err
+
+    def test_conjunction_lane_propagates_the_recorded_base(
+            self, tmp_path, monkeypatch, capfd):
+        """A `{base}` command lane resolves through the SAME helper, so the
+        record reaches every sub-invocation RG-1 propagates to."""
+        cfg = """\
+            schema_version = 1
+            [lanes.gate]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c",
+                    "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
+            clean_tree = false
+        """
+        repo, _proj = self._project(tmp_path, monkeypatch, cfg)
+        write_instance_record(repo, base_ref="main")
+        fork = fork_sha(repo)
+        assert run_gate.main(["gate"]) == 0
+        out = capfd.readouterr().out
+        assert out.count(f"./run-gate.py --base {fork}") == 2
+        assert f"comparison base {fork} (from ciu.worktree-instance.json " \
+               f"fork point) → {{base}} in the lane argv" in out
+
+    def test_a_non_delegating_lane_never_reads_a_record(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-51 changes the DELEGATING path only: a lane that declares its
+        own base gets no `--request-base` and no disclosure line, record or
+        not."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        write_instance_record(repo, base_ref="main")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "declared")
+        assert run_gate.main(["ui-unit"]) == 0
+        assert "--request-base" not in lane_runs(log)[0][-1]
+        out = capsys.readouterr().out
+        assert "fork point" not in out and "ignoring" not in out
 
 
 def _has_module(name: str) -> bool:

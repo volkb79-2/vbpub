@@ -67,6 +67,8 @@ WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
 WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+#: CIU-106: the only shape `fork_point_sha` may take when present.
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
 WORKTREE_LEASE_KEYS = frozenset(
     {"holder", "acquired_at_utc", "renewed_at_utc", "expires_at_utc", "mode"}
@@ -165,6 +167,24 @@ class WorktreeInstanceRecord:
     recovery_status: str | None = None
     lease: WorktreeLease | None = None
     schema_version: int = WORKTREE_INSTANCE_BASE_SCHEMA_VERSION
+    #: CIU-106 — the commit ``base_ref`` POINTED AT when this worktree was
+    #: created, captured once and never updated. ``base_ref`` alone cannot
+    #: answer "what did this tree fork from?", because the branch it names
+    #: keeps moving: once that branch has ABSORBED this worktree's work (a
+    #: ``--no-ff`` merge, or a fast-forward), ``merge-base(base_ref, HEAD)``
+    #: stops being the fork point and becomes this tree's own pre-merge tip.
+    #: In the fast-forward case NO local signal separates those two states,
+    #: which is why the fork commit has to be written down rather than
+    #: derived. A consumer compares it against a freshly computed
+    #: ``merge-base``: equal means the record still describes this tree,
+    #: anything else means it is spent.
+    #:
+    #: ``None`` is a legitimate, permanent value, not a migration gap:
+    #: ``adopt()`` has no meaningful fork commit to record, and every record
+    #: written before this field existed simply lacks it. Consumers must
+    #: FAIL CLOSED on absence — treat it as "cannot vouch for this record"
+    #: — never as "no constraint".
+    fork_point_sha: str | None = None
 
     @property
     def ciu_root(self) -> Path:
@@ -197,6 +217,16 @@ class WorktreeInstanceRecord:
         # accidentally emit until a lease operation has set schema_version.
         if self.schema_version >= 2:
             doc["lease"] = self.lease.to_dict() if self.lease is not None else None
+        # CIU-106: emitted ONLY when there is one, for the same reason `lease`
+        # is emitted only from v2 — a record that has nothing to say about its
+        # fork point stays byte-identical to what this version always wrote,
+        # so `adopt`'s output and every pre-CIU-106 record share one shape
+        # instead of sprouting an explicit `null` that readers would have to
+        # tell apart from absence. No schema_version bump: the key is
+        # OPTIONAL on read (see `_record_from_dict`), so a record with it and
+        # a record without it are both valid v1 (and both valid v2).
+        if self.fork_point_sha is not None:
+            doc["fork_point_sha"] = self.fork_point_sha
         return doc
 
 
@@ -286,9 +316,15 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     declared_version = raw.get("schema_version")
     if declared_version == 2:
         required = required | {"lease"}
-    if set(raw) != required:
+    # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
+    # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
+    # every record written before it. Both shapes are valid, which is why
+    # this needed no schema_version bump; the strict key-set check below is
+    # kept exactly as strict for everything else.
+    optional = {"fork_point_sha"}
+    if set(raw) - optional != required:
         missing = sorted(required - set(raw))
-        unknown = sorted(set(raw) - required)
+        unknown = sorted(set(raw) - required - optional)
         raise WorktreeError(
             f"[S16] malformed {path} (schema_version {declared_version!r}): "
             f"missing={missing}, unknown={unknown}"
@@ -333,6 +369,18 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     git_path = Path(raw["git_worktree_path"])
     if not git_path.is_absolute():
         raise WorktreeError(f"[S16] git_worktree_path is not absolute in {path}")
+    fork_point = raw.get("fork_point_sha")
+    # Absent is legal; PRESENT-but-not-a-real-object-name is malformed. A
+    # consumer's whole use of this field is an equality test against a fresh
+    # `merge-base`, so a value that could never be one is worse than no value
+    # — it would silently never match and look like a spent record.
+    if fork_point is not None and not _FULL_SHA_RE.fullmatch(
+        fork_point if isinstance(fork_point, str) else ""
+    ):
+        raise WorktreeError(
+            f"[S16] fork_point_sha in {path} is not a full 40-hex object "
+            f"name: {fork_point!r}"
+        )
     return WorktreeInstanceRecord(
         logical_name=raw["logical_name"], display_name=raw["display_name"],
         branch=raw["branch"], git_worktree_path=git_path,
@@ -341,6 +389,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         instance_id=runtime["instance_id"], network=runtime["network"],
         recovery_status=recovery, lease=lease,
         schema_version=declared_version,
+        fork_point_sha=fork_point,
     )
 
 
@@ -3453,6 +3502,29 @@ def _finish_allocation(
                 f"{record.base_ref!r} failed: {(checkout.stderr or checkout.stdout).strip()}. "
                 f"Resume with `ciu worktree ensure {record.logical_name}`."
             )
+        # CIU-106: the fork point is captured HERE, and nowhere earlier.
+        #
+        # It is THIS `reset --hard <base_ref>` that decides the new branch's
+        # tip — not `git worktree add` — and it re-resolves `base_ref` afresh,
+        # after the record and the overlay have already been written. Reading
+        # `base_ref` in repo_root before that left a window in which another
+        # session committing to the shared `main` checkout (which this
+        # estate's own workflow expects) produced a record that was born
+        # SPENT: the consumer would refuse it forever and blame `main` for
+        # absorbing work it never absorbed. `ensure()` resuming a partial
+        # allocation hit the same skew with no race at all.
+        #
+        # Taken from the worktree's own HEAD, immediately after the reset, it
+        # is the branch tip by construction — no window, and no question
+        # about how an annotated tag or any other `base_ref` spelling peels.
+        head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                    record.git_worktree_path)
+        candidate = head.stdout.strip() if head.returncode == 0 else ""
+        # Degrades to leaving it unset rather than failing the allocation:
+        # provenance is a nice-to-have for a downstream gate, and consumers
+        # fail closed on absence anyway.
+        if _FULL_SHA_RE.fullmatch(candidate):
+            record = replace(record, fork_point_sha=candidate)
 
     rc = _generate_env_in(record.ciu_root, identity_only=True)
     if rc != 0:
@@ -3649,6 +3721,13 @@ def create(
                 f"{(res.stderr or res.stdout).strip()}"
             )
 
+        # CIU-106: `fork_point_sha` is deliberately NOT set here. The branch
+        # tip is decided by `_finish_allocation`'s `reset --hard <base_ref>`,
+        # which happens after this record is written and re-resolves
+        # `base_ref` afresh — so capturing `base` now would leave a window
+        # for it to disagree with the tree that actually gets checked out.
+        # An interrupted create therefore leaves a record with no fork point,
+        # which consumers already fail closed on.
         record = WorktreeInstanceRecord(
             logical_name=logical_name,
             display_name=candidate_display,
@@ -3799,7 +3878,26 @@ def adopt(
                 f"[S16] {record.ciu_root} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
-        _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        # An adopt record must never be resumed as if it needed a CHECKOUT.
+        # `ensure` decides that from `recovery_status` alone
+        # (`in (None, "checkout-incomplete")`), and the record written just
+        # above carries `None` — so an overlay write that raises used to leave
+        # behind a record whose resume would `git reset --hard <the adopted
+        # HEAD>` in the operator's own checkout, destroying anything committed
+        # there since, and (CIU-106) record a fork point on an adopt-shaped
+        # record. Marking it is what `create` does one level up for its own
+        # overlay write; the marker is the same one adopt's instance-override
+        # refusal below already uses, and it means exactly "resume WITHOUT a
+        # checkout, and tolerate the existing network" — adopt's own normal
+        # `_finish_allocation` shape. `OSError` is caught too because this
+        # writes a file: ENOSPC and a read-only mount are not `WorktreeError`.
+        # A HARD kill in the same window cannot be caught here at all and is
+        # the pre-existing lifecycle gap CIU-107 tracks.
+        try:
+            _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
+        except (WorktreeError, OSError):
+            _mark_recovery(record, "env-generation-failed")
+            raise
         return _finish_allocation(
             repo_root, record, checkout_required=False, allow_existing_network=True
         )

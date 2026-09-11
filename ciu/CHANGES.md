@@ -21,6 +21,71 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Added
+- **CIU-106 — the worktree instance record now carries `fork_point_sha`.**
+  `WorktreeInstanceRecord` gained an optional `fork_point_sha`;
+  `ciu worktree create|add` records the new worktree's own
+  `HEAD^{commit}` immediately after `_finish_allocation`'s
+  `git reset --hard <base_ref>` checks it out. `adopt()` leaves it `None` —
+  an adopted checkout has no knowable fork commit.
+
+  The capture point is load-bearing and was corrected by review: resolving
+  `<base>` in the repo root right after `git worktree add --no-checkout`
+  looks equivalent but is not, because it is that LATER `reset --hard` which
+  sets the new branch's tip and re-resolves `base_ref`. A commit landing on
+  the base branch in between — this estate runs several sessions at once —
+  would make the recorded SHA differ from the commit the worktree really
+  forked from, and a consumer checking the two for equality would then
+  reject a perfectly healthy record. Reading the worktree's own HEAD after
+  checkout has no such window.
+
+  Why it exists: `base_ref` is a branch NAME, and the branch keeps moving.
+  Once it has ABSORBED the worktree's own work (a `--no-ff` merge, or a
+  fast-forward), `merge-base(base_ref, HEAD)` stops being the fork point and
+  becomes that worktree's own pre-merge tip — and in the fast-forward case
+  NO local signal separates the two states. The fork commit therefore has to
+  be written down at the one moment it is unambiguous, which is creation.
+  Found by three successive adversarial review rounds of vbpub run-gate's
+  RG-51, each of which tried and failed to reconstruct the fork point from
+  `base_ref` alone; 4 of the 7 real ciu worktrees in that estate were in the
+  triggering state at the time.
+
+  **Additive, no `schema_version` bump.** The key is optional on read, so a
+  record with it and one without it are both valid v1 (and v2), and it is
+  emitted only when non-`None` — so `adopt` records and every record written
+  before this change keep exactly the serialized shape they had. The
+  closed-key-set check is otherwise unchanged: an invented key is still
+  refused, and a PRESENT-but-malformed `fork_point_sha` (anything but a full
+  40-hex lower-case object name) is a refusal, because a value that could
+  never match a real `merge-base` is worse than no value at all.
+
+  **Adoption / migration notes.** Nothing to do: existing worktrees keep
+  working and simply lack the field. A consumer that relies on it (run-gate
+  RG-51) fails CLOSED on absence — it declines to use the record rather than
+  guessing — so existing worktrees fall back to their previous behaviour
+  until they are recreated. One caveat in the other direction: an OLDER ciu
+  reading a record written by this version will refuse it
+  (`unknown=['fork_point_sha']`); do not downgrade ciu against worktrees
+  created with this version.
+
+### Fixed
+- **CIU-107 (partially) — a failed `adopt` no longer leaves a record whose
+  resume rewrites the operator's checkout.** `adopt()` wrote its instance
+  record and then called `_write_worktree_overlay` unguarded; `ensure()`
+  decides `checkout_required` from `recovery_status in (None,
+  "checkout-incomplete")`, so a record left behind with `None` resumed as if
+  it needed a checkout — running `git reset --hard <the adopted HEAD>` in the
+  operator's own worktree and **discarding every commit made there since**.
+  The call is now wrapped (`WorktreeError` and `OSError`, since it writes a
+  file) and marks `env-generation-failed`, which resumes with
+  `checkout_required=False` — adopt's own normal shape. Reproduced and
+  red-proven before fixing. The structural half, which no `try`/`except` can
+  reach (a SIGKILL between the record write and the marker), stays OPEN as
+  CIU-107; it needs a provenance fact in the record rather than a marker
+  written afterwards.
+
 ## [7.12.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=412c99eda22fecb10dba95cc03726582c85fdd23 -->

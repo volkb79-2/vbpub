@@ -4065,4 +4065,130 @@ Consumers read this file as a loose FILE-FORMAT contract by well-known
 filename — run-gate deliberately does not import `ciu` — so the key name
 and its meaning are the whole interface.
 
-### Status — OPEN, filed from vbpub run-gate RG-51 (not yet implemented)
+### Status — FIXED 2026-09-11, as proposed above
+
+`WorktreeInstanceRecord` gained `fork_point_sha: str | None = None`.
+`_finish_allocation` resolves the new worktree's own
+`git rev-parse --verify HEAD^{commit}` immediately after the
+`git reset --hard <base_ref>` that checks it out — the one moment the
+fork commit is unambiguous, because the new branch has no commits of its
+own yet, so its tip and `merge-base(base, <new branch>)` are the same
+commit. `adopt()` leaves it `None`: it reaches `_finish_allocation` with
+`checkout_required=False`, no reset runs, and an adopted checkout has no
+knowable fork commit — `None` is the honest answer rather than a
+plausible-looking wrong one.
+
+**The capture POINT was corrected by round-4 review, and the difference
+is real.** The first cut resolved `git rev-parse <base>^{commit}` in
+`repo_root` right after `git worktree add --no-checkout` returned. That
+reads as equivalent and is not: `--no-checkout` leaves the new branch at
+`<base>` as it stood THEN, and it is the later
+`reset --hard record.base_ref` — after the record and the overlay have
+already been written — that re-resolves `base_ref` and sets the tip the
+worktree actually carries. Those two resolutions are separated by real
+work, so they can disagree.
+A commit landing on the base branch inside that window — this estate runs
+several sessions concurrently, which is exactly why the record exists —
+recorded a SHA the worktree never forked from, and a consumer testing it
+for equality would then refuse a healthy record forever. The regression
+test races a real commit onto `main` from inside a patched
+`_write_worktree_overlay` and pins that the recorded value is the
+CHECKED-OUT tip, not the base as it stood at entry.
+
+Decisions worth recording, because each one had an alternative:
+
+- **No `schema_version` bump.** The key is OPTIONAL on read, so a record
+  with it and a record without it are both valid v1 (and both valid v2).
+  `_record_from_dict`'s closed-key-set check is otherwise untouched —
+  `optional = {"fork_point_sha"}` widens it by exactly one name, and an
+  invented key is still refused. Bumping would have forced a migration
+  for a field whose absence is already a legitimate, permanent state
+  (`adopt`, and every record written before today).
+- **Emitted only when non-`None`**, like `lease` is emitted only from
+  v2. An `adopt` record and a pre-CIU-106 record therefore share ONE
+  serialized shape, instead of a reader having to tell `"fork_point_sha":
+  null` apart from absence. `to_dict()` for a record without one is
+  byte-identical to what this version always wrote.
+- **Present-but-malformed is a REFUSAL**, absent is not. A consumer's
+  whole use of this field is an equality test against a fresh
+  `merge-base`, so a value that could never match would masquerade as a
+  spent record forever; `_FULL_SHA_RE` requires the full 40-hex lower-case
+  object name git actually emits.
+- **A failed `rev-parse` degrades to `None`, it does not fail the
+  create.** Provenance is a nice-to-have for a downstream gate; a
+  worktree the operator asked for must not be refused because an extra
+  git call did not answer. Consumers fail closed on absence anyway.
+
+**Downgrade note:** an older `ciu` reading a record written by this
+version will refuse it (`unknown=['fork_point_sha']`), because the
+closed-key-set check is strict in that direction. Forward compatibility
+(new ciu, old records) is what this change buys; backward compatibility
+(old ciu, new records) is not, and was not before either.
+
+Consumer side: vbpub `run-gate` (RG-51) uses it as
+`merge-base(base_ref, HEAD) == fork_point_sha`, failing closed on
+absence, and then hands the verified fork COMMIT downstream rather than
+the branch name. See that entry for why equality — and not "has the base
+moved" — is the right test, and for the one case it does NOT cover (a
+worktree with no commits of its own, where fork == merge-base == HEAD;
+that needs the separate "base already contains HEAD" guard, verified
+empirically rather than derived).
+
+## CIU-107 — a HARD-interrupted `adopt` leaves a record whose resume `git reset --hard`s the operator's own checkout, destroying commits made there
+
+`adopt()` writes the instance record (`state="allocating"`,
+`recovery_status=None`) and only then does the rest of its work.
+`ensure()` decides how to resume a partial allocation from
+`recovery_status` alone:
+
+```python
+checkout_required = record.recovery_status in (None, "checkout-incomplete")
+```
+
+so a record left behind with `None` resumes as if it still needed a
+CHECKOUT — and for an adopt record `base_ref` is the adopted checkout's
+HEAD *as it stood at adopt time*. `_finish_allocation` then runs
+`git reset --hard <that SHA>` inside the operator's own worktree,
+**discarding every commit made there since**. Nothing warns, and nothing
+in `ciu worktree ensure`'s own output suggests it is about to rewrite a
+checkout the operator has been working in.
+
+`create()` does not have this problem: its `base_ref` is the base branch,
+the worktree it resets is one ciu just made, and there is nothing there to
+lose.
+
+Found 2026-09-11 by round-5 adversarial review of CIU-106, and reproduced:
+a partial adopt, one real commit in the adopted checkout, then
+`ensure` — `HEAD` came back at the adopt-time SHA and the commit was gone.
+
+### Status — PARTIALLY MITIGATED 2026-09-11, root cause OPEN
+
+The reachable-by-exception half is closed as part of CIU-106: `adopt`'s
+`_write_worktree_overlay` call is now wrapped (`WorktreeError` and
+`OSError` — it writes a file, so ENOSPC and a read-only mount are real)
+and marks `env-generation-failed`, which resumes with
+`checkout_required=False`, adopt's own normal shape. A regression test
+covers it, red-proven against the unwrapped code.
+
+What remains OPEN is the structural half, which no `try`/`except` can
+reach: a SIGKILL, a power loss, or a `^C` at the wrong microsecond between
+`_write_instance_record` and the marker leaves exactly the same
+`None`-status adopt record. The fix has to be a fact IN the record rather
+than a marker written afterwards — the record already knows everything
+needed (an adopt record's `base_ref` is a raw object name, a create
+record's is a ref name), but inferring intent from the shape of a field is
+the kind of cleverness this file exists to avoid. Directions:
+
+- Give the record an explicit provenance field (`origin: "create" |
+  "adopt"`) and have `ensure` consult THAT, never `recovery_status`, for
+  the checkout decision. Additive and optional-on-read, the same shape
+  CIU-106 used.
+- Or refuse to reset at all when the resume would move HEAD: compare the
+  worktree's current HEAD against `base_ref` first and require the
+  operator to say so explicitly. Narrower, and it also protects the
+  `create` path against a future caller that gets `base_ref` wrong.
+
+Either way this is a worktree-lifecycle decision with its own blast
+radius (`ensure` is on the resume path of every managed worktree), not
+something to fold into a consumer-driven provenance change, which is why
+CIU-106 shipped the wrapper and filed the rest.

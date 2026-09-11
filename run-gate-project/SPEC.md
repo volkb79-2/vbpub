@@ -611,11 +611,174 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     when `--base` is given — it is short, read-only (`assay lanes` executes
     nothing) and shares `R-34`'s single builder.
   - **Resolution.** For a delegating lane the ref is `--base` when given,
-    else the judged worktree's `git merge-base HEAD @{upstream}`. No
-    upstream → exit 2, `lane 'x' delegates its comparison base; pass --base
-    REF (worktree has no upstream)`. There is no fallback to `HEAD` or to a
-    default branch name: a changed-line judgment whose base was guessed is
-    not a changed-line judgment.
+    else the `base_ref` a ciu-managed worktree RECORDED as its own fork
+    point (`R-35a`), else the judged worktree's `git merge-base HEAD
+    @{upstream}`. No record and no upstream → exit 2, `lane 'x' delegates
+    its comparison base; pass --base REF (worktree has no upstream)`. There
+    is no fallback to `HEAD` or to a default branch name: a changed-line
+    judgment whose base was guessed is not a changed-line judgment.
+
+- `R-35b` **Gate-safe comparison base (RG-52).** A comparison base, from ANY
+  source, must match `[A-Za-z0-9._/+@][A-Za-z0-9._/+@-]*` before it reaches
+  `{base}` substitution, `--request-base`, or any shell. This is narrower
+  than git's own ref grammar — git permits `;`, backticks, `$`, `|`, `&` and
+  quotes in a ref name — because a conjunction lane's `{base}` lands inside
+  an element that the inner `bash -c` re-parses, where `shlex.join`'s quoting
+  of the OUTER element does not protect it. The exact counterpart of `R-5`'s
+  `{worktree}` charset, and refused for the same reason.
+  - `--base` **refuses** (exit 2, naming the offending characters); a
+    `ciu.worktree-instance.json` `base_ref` **degrades** to `R-35`'s
+    `@{upstream}` fallback instead, because a file must never be able to
+    abort a gate run (`R-35a`). One shared expression, so the two cannot
+    drift.
+  - A **leading `-`** is refused separately and named as a POSITION problem:
+    `-` is legal later in a ref, and the hazard is that a sub-invoked
+    `./run-gate.py --base <ref>` parses it as an option.
+  - This makes the substituted VALUE inert. It does not make a lane author's
+    surrounding argv well-quoted, which remains their own.
+
+- `R-35a` **Recorded worktree fork point (RG-51).** `@{upstream}` is a
+  REMOTE-tracking ref, so under a "batch commits locally, push later" policy
+  `R-35`'s default drifted behind local work with nobody touching config —
+  silently reproducing the `judge.base = "origin/main"` staleness hazard that
+  `base_source = "request"` exists to escape, relocated out of `assay.toml`
+  into run-gate's own fallback. Before that fallback, run-gate reads
+  `ciu.worktree-instance.json`.
+  - **A file format, never an import.** `ciu worktree create|add|adopt`
+    writes that well-known filename at a managed worktree's CIU root; its
+    top-level string `base_ref` is the ref the worktree was forked from
+    (`create`/`add`) or the adopted checkout's HEAD (`adopt`). run-gate
+    `json.loads`es it with the stdlib. There is **no dependency on `ciu`**:
+    the two are separate projects and this launcher must run on a fresh
+    clone with zero installs.
+  - **Two candidate directories, in order:** the judged worktree root, then
+    the effective project dir inside it (`R-15`) — ciu writes the record at
+    the CIU root, which sits BELOW the git worktree root in a monorepo. An
+    unusable record does not end the search; a later candidate may hold a
+    good one.
+  - **A recorded ref is used only when ALL of the following hold.** Each
+    clause closes a way the record would be worse than the `@{upstream}` it
+    displaces; three of them are false-greens found by adversarial review of
+    this very rule, not hypotheticals.
+    - **It is gate-safe ref text** — `GATE_SAFE_BASE_RE`, the same allow-list
+      `R-35b` applies to `--base`, checked BEFORE git is asked. This is
+      narrower than git's own ref grammar, which permits `;`, backticks, `$`,
+      `|` and quotes: a resolved base is substituted into a conjunction
+      lane's inner `bash -c` through `{base}` (`R-25`), where `shlex.join`
+      quotes the outer element but the element IS the script the inner shell
+      re-parses. `git branch 'main;touch$IFS/tmp/PWNED'` is a legal branch
+      that executes. That hole predates this rule; `R-35b` closes it on the
+      `--base` path, and this clause is what stops this rule from WIDENING
+      it from an operator's own command line to a git-excluded JSON file
+      `git status` never shows — the same reasoning as
+      `check_worktree_charset` (`RG-5`). The two share one regex and differ
+      only in consequence: `--base` is REFUSED (exit 2), a recorded ref
+      merely degrades to the fallback, because a file must never abort a
+      gate run. It also keeps NUL bytes and lone surrogates, which raise out
+      of `subprocess` itself, away from git.
+    - **git resolves it, IN THE JUDGED TREE, to a LOCAL branch**
+      (`refs/heads/…`). `ciu worktree adopt` records the adopted checkout's
+      **HEAD** — a frozen commit id; a tag is frozen the same way; a deleted
+      or renamed ref resolves to nothing; and a `refs/remotes/…` ref is
+      precisely what RG-51 exists to stop defaulting to, so accepting one
+      and announcing it as an improvement over `@{upstream}` would be the
+      same stale ref with a better disclosure line. Note a raw commit id
+      exits 0 with EMPTY output under `--symbolic-full-name`, so the
+      returncode alone is not the test.
+    - **`merge-base(base_ref, HEAD)`, computed fresh, EQUALS the record's
+      `fork_point_sha`** (ciu CIU-106). This is the clause that makes the
+      whole rule sound, and it needs a fact `base_ref` alone cannot supply:
+      once the base branch has ABSORBED this worktree's work (a `--no-ff`
+      merge, or a fast-forward), `merge-base` stops being the fork point and
+      becomes this tree's own pre-merge tip, so judging against it silently
+      drops everything committed before that point. In the fast-forward case
+      no local signal distinguishes that from a healthy fork. EQUALITY, not
+      "has the base moved": a base that gains UNRELATED commits leaves
+      `merge-base` exactly where it was, which is precisely the long-lived
+      worktree this feature exists to serve. **Fail closed** on a missing or
+      malformed `fork_point_sha` (`adopt` never records one, and neither did
+      any ciu before CIU-106) and on a base with no common history.
+    - **That branch does not already contain the tree's HEAD**
+      (`git merge-base --is-ancestor HEAD <base>`, FAIL-CLOSED: any error
+      refuses). Being a live branch is NECESSARY but NOT SUFFICIENT — a
+      merged-but-not-torn-down worktree has a real `base_ref = "main"` that
+      local `main` has since absorbed, so `merge-base` is HEAD and the lane
+      judges NOTHING: an assay lane reaches assay's own `BASE_IS_HEAD`
+      refusal three layers down, and a `kind = "command"` lane has no such
+      guard while its diff-coverage judge scores `0/0` as 100% — a silent
+      false green. It neither subsumes the fork-point clause above nor is
+      subsumed by it: a worktree that has committed nothing of its own has
+      `fork == merge-base == HEAD`, which PASSES equality and is caught only
+      here — verified against the real function rather than derived. The
+      frozen-id (`adopt`) case is caught by the local-branch clause, since
+      such a SHA is an ANCESTOR of HEAD once any commit follows the adopt.
+    - **The fork point and HEAD do not have the same TREE**
+      (`git diff --quiet <fork> HEAD`, FAIL-CLOSED: any exit other than
+      "differences exist" refuses). The clause above asks the commit GRAPH a
+      question, which is not the same question as "is there anything to
+      judge": a branch that committed work and then REVERTED it has a real
+      fork point, an unmoved merge-base and ancestry in neither direction,
+      and still produces an empty diff that a changed-line floor scores as
+      `0/0 = 100%`. No work ESCAPES the judge there, so this is not the
+      false-green class the clauses above exist for; it is another inlet
+      into `RG-53`, and refusing costs only a fall back to a base that has
+      something to judge. This clause DOES subsume the one above
+      (containment implies identical trees, never the converse — verified
+      against the real functions); the containment clause is kept, and kept
+      first, because it names a different and far more common cause and
+      answers from the graph without diffing two trees.
+  - **A record whose `branch` disagrees with the tree's checked-out branch
+    is refused**, the way ciu's own reader refuses it: that is the reused-
+    worktree case, where a stale record would widen the judged diff to
+    everything since some other branch diverged. `git_worktree_path` is NOT
+    compared — path identity is unreliable across bind mounts and symlinks,
+    while `branch` is the field that decides the diff. A record that states
+    no usable `branch` is still judged on its `base_ref` alone.
+  - **Every unusable record falls through to `R-35`'s `@{upstream}` path:**
+    missing, unreadable, permission-denied, a non-regular file (a FIFO would
+    BLOCK the read forever, a device would read unbounded), not JSON, not a
+    JSON object, `RecursionError` from deeply nested JSON (a `RuntimeError`,
+    **not** a `ValueError`), a missing/non-string/blank `base_ref`, and each
+    rejection above. Nothing this read does can raise or block: it is a
+    better DEFAULT, never a requirement, and a malformed record must not be
+    able to abort a gate run. `schema_version`, `state` and `lease` are NOT
+    inspected — validating fields run-gate does not use would turn a
+    forward-compatible read into a new drift surface.
+  - **What is handed downstream is the verified FORK COMMIT**, not the
+    branch name. Equality has just established that both spellings resolve
+    to the same commit, and an OID cannot be moved by another session
+    between this check and the judge's own `merge-base` minutes later
+    (container start, pin verification, suite run). Every other source on
+    this path already yields an immutable commit.
+  - **This rule is sound at run-gate's OWN boundary only.** It guarantees
+    the STRING handed over is the real fork commit. What the judge then does
+    with it is the judge's contract: assay's `resolve_base` does NOT always
+    compute a merge-base — when HEAD is a merge commit it returns HEAD's
+    first parent and discards the supplied base entirely (assay B008,
+    `base_resolution_mode`). A worktree that merged a SIBLING branch in can
+    therefore still have most of its work escape the judge. That predates
+    this rule and happens identically under `--base` and `@{upstream}`; see
+    `RG-54`.
+  - **Scope.** `--base` still wins outright; a non-delegating lane never
+    reads the record; a plain checkout is unaffected (`ciu worktree adopt`
+    refuses the primary worktree and the record is git-excluded, so it
+    cannot arrive there by checkout). Only the base STRING changes — assay's
+    own `resolve_base` resolves it under its own documented rules (see the
+    boundary note above — those rules are not always a merge-base).
+  - **Deliberate widening.** A tree that HAS a usable record but no upstream
+    resolves instead of refusing. Nothing is guessed: the ref is one ciu
+    wrote down at creation and git has just resolved to a live branch.
+  - **Disclosure (`R-05`), both ways.** When the record wins, before
+    execution: `run-gate: <record path> pins this tree's fork point at
+    <SHA> (its base_ref still resolves there) — using that COMMIT
+    instead of merge-base HEAD @{upstream} (<sha>)` — naming the ref NOT
+    taken is how origin drift becomes visible — or `… (merge-base HEAD
+    @{upstream} yields nothing here …)` in the widening case; `R-35`'s line
+    then names the source as `ciu.worktree-instance.json fork point`. When a
+    record is found and REJECTED: `run-gate: ignoring <record path>: <why>`.
+    A silently ignored record is the same silence RG-51 exists to remove, in
+    a new place, so `R-35`'s refusal names it too when there is also no
+    upstream.
   - **Refusals (all exit 2, all naming the lane).** A lane that does NOT
     delegate, invoked with `--base`: an assay lane whose inventory reports a
     different `base_source` (naming the value assay declared), or a command
@@ -630,9 +793,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     lane resolves its ref by the same policy above, so it refuses rather than
     substituting an empty string.
   - **Disclosure (`R-05`).** Before execution, live AND dry:
-    `run-gate: comparison base <REF> (from --base | merge-base HEAD
-    @{upstream}) → --request-base` (or `→ {base} in the lane argv`); the
-    printed docker argv carries the appended flag.
+    `run-gate: comparison base <REF> (from <source>) → --request-base` (or
+    `→ {base} in the lane argv`), where `<source>` is one of `--base`,
+    `ciu.worktree-instance.json fork point` (`R-35a`) or `merge-base HEAD
+    @{upstream}`; the printed docker argv carries the appended flag.
 
 - `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
   declares at least one `environment = "host"` lane AND the judged tree is a
