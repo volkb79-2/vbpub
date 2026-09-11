@@ -4001,3 +4001,68 @@ archived handoffs/reports, and Git history rather than this active tracker.
 
 `CIU-COMMENT-ENV` is fixed under S3.2: environment expansion ignores TOML
 comments while preserving comment text.
+
+## CIU-106 — the worktree instance record stores `base_ref` (a mutable NAME) but never the FORK COMMIT, so no consumer can tell a spent record from a healthy one
+
+`ciu worktree create|add` writes `base_ref = <--base>` (default `"main"`)
+into `ciu.worktree-instance.json` (`src/ciu/worktree.py`,
+`WorktreeInstanceRecord.to_dict`, `create()`), and `adopt()` writes the
+adopted checkout's HEAD there instead. The record is never updated
+afterwards.
+
+`base_ref` alone cannot answer the question a downstream consumer
+actually has — *"what did this worktree fork from?"* — because the branch
+it names keeps moving. Once that branch has ABSORBED the worktree's own
+work (a `--no-ff` merge, or a fast-forward), `merge-base(base_ref, HEAD)`
+is no longer the fork point: it becomes the worktree's own pre-merge tip.
+There is then no local signal distinguishing "this base absorbed my work"
+from "I forked here" — in the fast-forward case, none exists even in
+principle — because the fork commit is the one fact that was never
+written down.
+
+### Provenance
+
+Found 2026-09-11 implementing vbpub `run-gate`'s RG-51, which set out to
+default a gate's changed-line comparison base to the worktree's own fork
+point by reading this record instead of `merge-base HEAD @{upstream}`
+(the remote-tracking default rots when origin lags local `main` — it was
+101 commits behind at the time). Three independent adversarial review
+rounds each found the same class of defect in successive attempts to make
+that safe with `base_ref` alone:
+
+1. an `adopt`-written SHA is an ancestor of HEAD, so the judged diff
+   collapses to post-adopt commits only;
+2. a merged-and-not-torn-down worktree's `base_ref = "main"` yields
+   `merge-base == HEAD` — **4 of the 7 real ciu worktrees in vbpub were in
+   exactly this state**;
+3. adding ONE follow-up commit to such a worktree makes the guard for (2)
+   stop firing while `merge-base` still sits on the pre-merge tip, so the
+   branch's earlier work silently leaves the judged set.
+
+All three narrow the judged diff, i.e. they make a gate PASS work it never
+examined. RG-51 is held OPEN and unmerged because of (3).
+
+### Proposed fix
+
+Record the fork commit OID at creation time, when ciu unambiguously knows
+it (`git rev-parse <base>` immediately before/at `git worktree add`), as a
+new key alongside `base_ref` — e.g. `base_commit`. `adopt()` can record the
+`merge-base` of the adopted branch with its base, or record nothing and
+say so, rather than writing HEAD into a field consumers read as a fork
+point.
+
+That single addition makes the consumer-side rule decidable: use the
+record only while `merge-base(base_ref, HEAD)` still equals the recorded
+`base_commit`; when it has moved past it, the record is spent — fall back
+and say so. Nothing else run-gate could compute locally distinguishes
+those two states.
+
+Schema note: this is additive, so it fits the existing
+`schema_version`/`WORKTREE_INSTANCE_BASE_SCHEMA_VERSION` mechanism, and a
+consumer that does not find the key can simply decline to use the record
+(which is what run-gate does today for every other unusable shape).
+Consumers read this file as a loose FILE-FORMAT contract by well-known
+filename — run-gate deliberately does not import `ciu` — so the key name
+and its meaning are the whole interface.
+
+### Status — OPEN, filed from vbpub run-gate RG-51 (not yet implemented)
