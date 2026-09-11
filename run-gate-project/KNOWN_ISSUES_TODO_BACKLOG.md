@@ -3424,6 +3424,18 @@ what an operator does to the container out-of-band after launch.
 **Found by:** dstdns-P175 implementer dispatch, 2026-09-09, worker-io
 `worker-execution-admission` R1 lane, first attempt.
 
+**Corroborated independently, 2026-09-11:** dstdns-P93's `run-gate gate`
+composite hit the identical failure on its `assay` lane (`p93-xfail-inventory-burndown-42f8ce-test-runner`,
+same "cannot create directory '/workspaces/dstdns/.run-gate'" message),
+cascading `assay` → `gate` exit 1. Not a one-off — the same `docker exec -u root
+mkdir -p /workspaces/dstdns/.run-gate && chown <uid>:<gid>` workaround
+(top-level `.run-gate` only, not the full `assay-state/<path>` tree — the
+app user can `mkdir -p` its own subdirs once the parent is writable) fixed
+it a second time, in a different worktree/container. Two independent hits
+in 3 days is enough to treat this as a standing Mode-B gate-reliability gap,
+not an edge case — worth prioritizing over the `--resume` cache-keying gap
+(B088) if only one gets picked up first.
+
 ### What's wrong
 
 RG-38's shipped fix (`run-gate-P05`, above) unconditionally appends
