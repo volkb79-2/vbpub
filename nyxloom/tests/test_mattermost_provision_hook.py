@@ -945,9 +945,14 @@ def test_rate_limit_keying_follows_the_exposure_branch():
     assert 'MM_RATELIMITSETTINGS_VARYBYHEADER: "X-Forwarded-For"' in _COMPOSE_TEXT
 
 
-def test_expose_public_stays_false_in_the_committed_defaults():
-    # nyxloom-P110 hardens and documents the flip; it does not perform it. The
-    # controller flips exposure live, per the README recipe.
+def test_expose_public_matches_its_committed_value():
+    # Originally pinned false -- "nyxloom-P110 hardens and documents the
+    # flip; it does not perform it." That was true when P110 was scoped, but
+    # 5b4d0457 ("P110 step 3") committed the flip directly into these
+    # defaults with measured evidence recorded alongside (see
+    # `expose_public` in ciu.defaults.toml.j2). Found stale 2026-09-10/11 by
+    # running the full suite, same class as this file's PAT-flag tests
+    # above -- re-pinned to the current deliberate value.
     #
     # Anchored to the START of a line: the file also mentions
     # "`expose_public = false`" inside a comment about the installer webhook's
@@ -958,7 +963,7 @@ def test_expose_public_stays_false_in_the_committed_defaults():
         for line in _DEFAULTS_TEXT.splitlines()
         if line.startswith("expose_public")
     ]
-    assert assignments == ["expose_public = false"]
+    assert assignments == ["expose_public = true"]
 
 
 def test_every_account_is_declared_with_admin_first():
@@ -1340,31 +1345,45 @@ def test_the_shipped_intake_account_is_scoped_and_not_an_admin(hook):
     assert not account.get("all_channels")
 
 
-def test_the_shipped_pat_flag_is_off_so_merging_cannot_widen_the_live_server(hook):
-    # Merging this package must not change live behaviour. The token entry is
-    # inert while this is false (_ensure_tokens returns early), so the
-    # account/channel/webhook provision on an ordinary `ciu up` and only the
-    # PAT waits on an explicit operator decision.
-    assert _render_shipped_defaults()["mattermost"]["enable_user_access_tokens"] is False
+def test_the_shipped_pat_flag_reflects_the_current_deliberate_decision(hook):
+    # Originally pinned False -- "merging package P109 must not itself widen
+    # the live server" (the token entry is inert while this is false;
+    # _ensure_tokens returns early). That guarantee was about P109's OWN
+    # diff specifically, not a forever invariant: d3188908 (P109) then
+    # a83a14d4 (P111 follow-up) deliberately turned this on with measured
+    # evidence recorded in ciu.defaults.toml.j2's own comments (see
+    # `enable_user_access_tokens` there). Found stale (still asserting the
+    # pre-P109-decision baseline) 2026-09-10/11 by actually running the full
+    # suite rather than trusting per-package green. Re-pinned to the current
+    # deliberate value so a FUTURE unrelated change flipping it back still
+    # gets caught -- the invariant this guards is "was this a deliberate,
+    # commented decision," not "is it false."
+    assert _render_shipped_defaults()["mattermost"]["enable_user_access_tokens"] is True
 
 
-def test_the_shipped_pat_flag_is_off_without_needing_jinja(hook):
+def test_the_shipped_pat_flag_matches_its_committed_value_without_needing_jinja(hook):
     """The same property as above, enforced UNCONDITIONALLY.
 
     Every other assertion in this section renders the template and so sits
     behind `importorskip("jinja2")` -- correct for shape assertions, wrong for
-    this one. "Merging cannot widen the live server" is the package's headline
-    safety claim, and a gate container without jinja2 would skip the only test
-    that checks it and still report green. This reads the shipped bytes
-    instead: no dependency, nothing to skip.
+    this one. Whatever the current deliberate value is, a gate container
+    without jinja2 must not skip the only test that pins it and still report
+    green. This reads the shipped bytes instead: no dependency, nothing to
+    skip.
     """
     src = (_HOOK_PATH.parents[1] / "ciu.defaults.toml.j2").read_text()
     assignments = re.findall(r"(?m)^enable_user_access_tokens\s*=\s*(\S+)\s*$", src)
-    assert assignments == ["false"], (
+    assert assignments == ["true"], (
         "ciu.defaults.toml.j2 must ship exactly one `enable_user_access_tokens` "
-        f"assignment and it must be false; found {assignments!r}")
+        f"assignment and it must be true (the current deliberate decision, "
+        f"d3188908/a83a14d4); found {assignments!r}")
 
 
-def test_this_package_did_not_touch_expose_public(hook):
-    # Explicitly out of scope for nyxloom-P109.
-    assert _render_shipped_defaults()["mattermost"]["expose_public"] is False
+def test_expose_public_matches_its_current_deliberate_decision(hook):
+    # Originally pinned False -- "explicitly out of scope for package P109."
+    # 5b4d0457 (P110 step 3) deliberately made it public with measured
+    # evidence recorded in ciu.defaults.toml.j2's own comments (see
+    # `expose_public` there). Same staleness class as the PAT-flag test
+    # above -- re-pinned to the current value, found by running the full
+    # suite rather than trusting per-package green.
+    assert _render_shipped_defaults()["mattermost"]["expose_public"] is True
