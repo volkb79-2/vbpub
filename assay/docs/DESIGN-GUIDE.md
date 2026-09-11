@@ -900,7 +900,22 @@ identity rather than sampling changed source with an old result. A stale
 `schema_version` is the one required field NOT folded into that digest, so it
 gets the opposite disposition (B021): treated as absent and silently rerun, a
 routine format bump never fails the whole lane the way a genuinely tampered
-record does. Shards assign by keyed digest of the candidate ID. Their merge is
+record does. **A record also carries `judge_sha256` (B088): the identity of
+what JUDGED the candidate** — the content digest of the judged commit's own
+tree, plus the resolved argv, the lane's declared `env` by value, the NAMES
+of whatever else the resolved environment carried (passthrough and
+infrastructure values are per-invocation by design and folding them by value
+would defeat a shared `--state-dir`), the cwd, the project prefix, the
+declared `link_paths` and assay's own version. The
+candidate digest answers "is this the same mutation", which is the right
+question for skipping re-generation and the wrong one for skipping
+re-execution; conflating them let a test-only fix land and `--resume` replay
+the stale `survived` verdict for a mutant the strengthened suite kills. It is
+deliberately not folded into the candidate digest — a record's filename must
+stay the mutation's identity so one shared `--state-dir` keeps working — and
+both its absence (a pre-B088 record) and a mismatch are cache misses, checked
+*after* every tamper check so a routine test edit cannot mask corruption.
+Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 

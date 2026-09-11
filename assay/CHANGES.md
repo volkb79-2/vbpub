@@ -5,242 +5,69 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-<!-- cleared 2026-09-03 after the 5.0.0 release, per the standing
-     housekeeping rule: cmru's generator produces the dated entry below
-     from the commit range but does not clear this hand-written block, so
-     leaving content here republishes shipped work as "unreleased". -->
-
-### Added
-
-- **A lane may hand R0 its test runner's own structured report instead of an
-  exit code (B078, checkpoint 1 of 3).** New opt-in
-  `[lanes.<name>.result_report]` table (`format`, `path`) with the first
-  reader, `vitest-json` — vitest's native `--reporter=json --outputFile=...`,
-  no plugin. The measured defect (run-gate RG-45, reproduced 5/5) is a test
-  framework's own internals setting the process exit code independent of
-  whether any test failed: vitest 3.2.7's worker↔orchestrator RPC heartbeat
-  (hardcoded 60s, no config path) trips under host CPU contention and sets
-  `process.exitCode = 1` *after* the reporter has written a complete,
-  all-green report. When a declared report is **verified complete** — it
-  parses, carries the format's own "run finished" marker, and reports more
-  than zero tests — its own failure count decides in BOTH directions: zero
-  failures is a `PASS` whatever the process exited with, one or more is a
-  `FAIL` whatever it exited with. Every other state (no declaration, no file,
-  a truncated write, the wrong shape, a zero-test report, an unsafe object at
-  the path) falls back to today's exit-code rule (A-073) **unchanged** — a
-  missing report is the signature of a genuine crash and can never be evidence
-  *for* a pass, so the fallback can only ever cost a `PASS`, never grant one.
-  The report is reserved and armed before the command runs, so a previous
-  run's report can never be read as this run's evidence. A lane that declares
-  nothing is byte-for-byte unaffected, structurally: the parameter defaults to
-  absent and only the lane's own R0 command passes it — on **every** lane
-  shape (an R0-only lane's direct run, and the baseline unit every lane
-  declaring R1, R2 or R3 runs inside its snapshot), and on nothing else.
-  Mutation candidates, R3's canary halves and the `environment_command` probe
-  all keep the old rule, and a sweep test pins that list so a future call site
-  cannot join it silently. `LANE_SCHEMA_VERSION` stays 2,
-  the verdict schema is untouched, `Outcome`/`EXIT_CODES` is untouched
-  (A-021), and there is no new `reason_code`: `COMMAND_FAILED` still means the
-  same thing, it just fires at different times. `pytest-json-report` and
-  `go test -json` readers are later checkpoints and are refused at load today
-  rather than silently ignored.
-
-- **The progress stream reaches every rigor tier, and ticks while a command
-  runs (B064).** `--progress PATH` had exactly one producer, four layers down
-  inside the mutation sweep, so an R0/R1 lane was handed an empty file and a
-  lane that looked hung for nine minutes stayed illegible. The stream is now
-  opened once for the whole lane and carries a closed phase vocabulary — `run`
-  → `snapshot_materialized` → `command_started` → `command_running` →
-  `command_finished` → `coverage_parsed` → `verdict_written` — the same names
-  at every tier, with a lane simply emitting fewer of them where it has fewer
-  phases. A phase that did not happen is never emitted: the direct R0-only
-  path takes no snapshot and says so by silence. New
-  **`--progress-heartbeat SECONDS`** (default 60, floor 5, refused by name
-  below it, no-op without `--progress`) emits a pure **time-based** tick while
-  the lane's own command runs — it never reads the child's output, counts its
-  bytes or knows which tool is running; that is B073, deliberately separate.
-  Stall detection remains entirely the CALLER's (run-gate RG-36). Diagnostic
-  only: `assay verify` is untouched and no verdict field derives from it.
-
-- **Every progress record carries time, bounds and outcome (B065).** Each
-  record gains `emitted_at` (UTC ISO 8601) and `elapsed_s` (monotonic seconds
-  since the `run` header), added centrally so a producer cannot forget them
-  and two producers cannot disagree about what they measure — which is what
-  lets a reader with ONLY the file compute rate, ETA and last-event age. The
-  `run` header names `lane`, `commit`, `rigor`, `budget_s` (`null` exactly
-  when the lane is unbounded — B067) and `budget_per_candidate_s`, so the
-  bounds travel with the artifact. A new `candidates` record carries
-  `candidate_total`/`selected_total`/`pending_total` the moment they are
-  known, and a new terminal `end` record carries the sweep's bucket counts, so
-  a finished run is distinguishable from a dead one without reading the
-  verdict. The per-candidate record — the one record that never named itself —
-  now carries `event: "candidate"`. **One part of this is not additive — see
-  "Changed" below.**
-
-- **`--state-dir PATH`: resume state that outlives its worktree (B066).**
-  Mutation resume records were fixed under
-  `<project_root>/.assay/mutation-state/`, so `--resume` was inert in exactly
-  the consumers that need it most — a fresh worktree per run carried its own
-  empty store away with it. The store's ROOT is now the consumer's choice
-  (default unchanged, byte-for-byte); the record's NAME is not, and still
-  folds the source file's exact bytes, span, replacement and operator, which
-  is what makes a SHARED store safe by construction: a record from another
-  worktree either matches its identity or is ignored, and an edited source
-  file's candidates get new identities and are re-executed. A `--state-dir`
-  inside the judged tree that git can see is refused **before any work**,
-  naming the `NO_MEASUREMENT`/`DIRTY_TREE` it would cause on the lane's next
-  run; a gitignored path inside the tree, or any path outside it, is fine.
-  What the records contain is unchanged, and `assay verify` does not read
-  them either way.
-
-- **`budget = "unbounded"` (B067).** A lane may now decline a lane-wide
-  deadline — but only where every unit of its work carries its own bound.
-  The one admissible shape is a **native R2 sweep**, which must declare
-  `judge.mutation.budget_per_candidate`; a lane also declaring R3 must
-  additionally declare the new `judge.canary.budget_per_attempt`, which bounds
-  one canary probe end to end (control materialisation, control run,
-  transformed run) and is re-derived fresh per declared target. An R0/R1 lane
-  — and an *ingested* R2 lane, which is likewise one command — is refused at
-  load **by name**, because its only liveness bound *is* `budget`, and
-  **declaring R3 does not change that**: `budget_per_attempt` bounds a canary
-  probe, never the lane's own top-level command.
-  `budget_per_attempt` also works under a numeric `budget`, where it simply
-  tightens it; a lane declaring neither per-unit bound is byte-unchanged. Note
-  that an expired per-attempt bound abandons every *later* target too, so that
-  a per-attempt expiry produces the same trailing-run shape `verify.py`
-  already enforces. Stall detection stays entirely with the CALLER (run-gate
-  RG-36): assay gains no stall threshold of its own. No verdict-schema change
-  — the lane's budget is a declaration, never wire evidence.
-
-- **A declared whole-target entry can name deployed library code that lives
-  under `tests/` (B074).** `judge.targets` is an explicit, reviewed, per-lane
-  declaration, but assay refused ANY entry its adapter called a test path —
-  including a file that matches only on the `tests/` *directory* segment. Any
-  project whose deployed helper libraries live under a test tree (harness
-  modules `COPY`-ed into a container image and run as a real service is the
-  reproduced case) could therefore not put them under a whole-target judge at
-  all, and the only remedies were to move the file or leave the code ungraded.
-  New **`judge.allow_test_path_targets = true`** (default `false`, legal only
-  on an R1 lane in `whole_target` mode) lets the lane assert "the paths I named
-  are library code despite their location". It relaxes exactly one gate and
-  only its directory half: the changed-line sweep's own test-path exclusion is
-  untouched and takes no such parameter; the other five target gates (symlink,
-  source-root containment, regular-file, excluded-directory,
-  adapter-recognised-source) still apply; and a target whose own FILENAME is a
-  test filename
-  (`test_foo.py`, `conftest.py`, `foo.test.ts`, `bar_test.go`) is still refused
-  *with* the flag set, in every registered adapter — grading a test file is the
-  vacuity whole-target mode exists to close.
-  **Both whole-target tiers honor it**: R1's coverage target resolution and
-  R2's mutation target resolution read one declared `judge.targets` list, so a
-  flag reaching only one would make a single declaration mean two things — and
-  would leave the motivating consumer coverage-gradeable but never
-  mutation-gradeable. There is no safety asymmetry to justify a split: mutation
-  runs in an ephemeral snapshot, never in the consumer's tree. R2's own refusal
-  now names the flag and the remedy, as R1's already did.
-  The effective policy is recorded as
-  `judgment.r1.allow_test_path_targets` — a DECLARATION, like `allow_excluded`
-  and `require_branch` beside it, so a lane that sets the flag and names no
-  test path still records `true` — and a reviewer can see from the artifact
-  alone that a graded target was one assay would otherwise have refused.
-  **No verdict-schema version bump**: the key is emitted only when true, so a
-  lane that did not opt in writes a byte-identical verdict, and no pre-B074
-  assay can emit it at all — its loader refuses `allow_test_path_targets` as a
-  surplus judge key, whatever the lane's targets. `assay verify` accepts the
-  new key and refuses it under `changed_lines` mode or spelled as an explicit
-  `false`.
-
-### Changed
-
-- **BREAKING (verdict schema v10 → v11): `judgment.r2.discarded` LISTS the
-  invalid mutants instead of counting them, and `assay verify` now re-derives
-  it (B070).** The field is an array of mutant records — the same shape the
-  five `mutation.*` buckets use — required possibly-empty under
-  `producer = "ingested"` and still forbidden under `"native"`, ascending and
-  unique by the mutant identity, and never carrying a `kill_signal` (nothing
-  refused a mutant that never ran).
-
-  *Why.* As an integer count the field could not be verified at all, and the
-  document said so in three places: under DA-D4's `listed` semantics a
-  discarded mutant is outside the document it would have to be derived from,
-  so `discarded = 9999` on a real 109-mutant ingested document verified clean
-  (A-437), and every upper bound that would have caught that — `discarded <=
-  total`, `<= candidate_count` — would equally have refused the honest
-  high-discard report the field exists to surface. Listing the mutants
-  supplies the missing quantity. `assay verify` now checks bucket
-  **disjointness**, the **line rule** against `lines_without_candidates`,
-  ordering and uniqueness, and the **fifth-disposition arithmetic**
-  `mutation.candidate_count - mutation.total == len(discarded)`. The
-  9999-entry forgery is refused by name; a truthful 40-discard verdict — a
-  real StrykerJS run with its TypeScript checker, frozen as
-  `carve-assets/W7/expected/high-discard-r2-v11-template.json` — is accepted
-  in full, which is the proof this is a re-derivation and not the clamp
-  DA-R26 rejected. What stays declared, not verified is the strictly smaller
-  **un-listed** half: candidates a tool drops before reporting them at all,
-  which no artifact assay receives can witness.
-
-  *One more field moves with it.* `mutation.candidate_count` on an INGESTED
-  payload is now `attempted + discarded` rather than `attempted`;
-  `mutation.total` is unchanged and is still exactly the bucket sum. So the
-  two may now legitimately differ on an ingested document, where the model
-  previously forbade it outside the native limit sentinel. Nothing about the
-  mutation SCORE changes: it has always been `killed / (killed + survived)`
-  over the buckets, and discarded mutants have never been in them.
-
-  *And one bound moved with it, in the permissive direction.* Since
-  `candidate_count` now counts an ingested report's discarded mutants too, the
-  ceiling on it had to stop being `judge.mutation.max_mutants + 1` (10,001) —
-  that number defends against a malicious *declared* cap, which an ingested
-  lane does not have. An ingested payload's `candidate_count`, and
-  `judgment.r2.discarded`'s own length, are bounded instead by the **document
-  ceiling of 100,000**, the most `assay` reads from one report. A truthful
-  report of 48 attempted and 9,954 invalid mutants therefore ingests; left
-  under the native ceiling it would have been refused for discarding too
-  much, which is the failure mode this whole item exists to end. A **native**
-  lane is unaffected: `max_mutants` is still `1..10,000` and a native payload
-  over `max_mutants + 1` is still refused by name.
-
-  *Read "refused by name" precisely:* the list is audited against the document
-  it sits in, not against the foreign tool's original report. A producer that
-  inflates `discarded` **and** moves `candidate_count` to match still passes —
-  the same declared-by-artifact tier every `Mutation` bucket has always sat
-  in. What ends is the case where `discarded` could contradict the payload
-  beside it with no check able to tell.
-
-  **Migration:** re-pin to this release and re-run the lane — a v10 document
-  is refused with one version-only diagnostic, never upgraded in place. In
-  consumer code, replace `judgment.r2.discarded` (an `int`) with
-  `len(judgment.r2.discarded)` (an array) wherever you read the quantity, and
-  re-check anything derived from `candidate_count` on an ingested document.
-  A lane that does not ingest a foreign mutation report needs no changes at
-  all: `assay.toml`'s `schema_version` stays **2**, `assay lanes --json`'s
-  `inventory_schema` stays **1**, and every native document is byte-identical
-  apart from its `schema_version`. Full notes: `docs/CONSUMERS.md`,
-  "Migration notes (v10 → v11)".
-
-- **BREAKING (progress artifact): the `run` header's `candidate_total` is now
-  always `null` (B065).** It used to carry the mutation sweep's real total.
-  The header is emitted at stream open — it has to be the first record in an
-  append-only file, since it is what attributes every later record to a run —
-  and the total cannot be known before a snapshot exists and the sites have
-  been collected. **Migration:** read `candidate_total` from the new
-  `candidates` record instead; it is also still on `baseline` and on every
-  per-candidate record, unchanged. `candidate_index` is unaffected. The
-  progress artifact is diagnostic, not evidence, so no verdict or `assay
-  verify` behaviour changes with it.
-
-- **`--progress` at a git-visible path inside the judged tree is now refused
-  before any work (B064/B066).** Because the stream now writes on every rigor
-  tier, a destination that git can see inside the work tree would make the
-  lane refuse `NO_MEASUREMENT`/`DIRTY_TREE` on its very first run — where
-  before this release an R0/R1 lane wrote nothing there and passed. Rather
-  than let that surface as a bare `DIRTY_TREE` with no mention of the flag
-  that caused it, `--progress` now gets the same named preflight
-  `--state-dir` has. A gitignored path inside the tree, or any path outside
-  it, is unaffected; the estate's own convention (run-gate RG-33/RG-13's
-  gitignore obligation) already keeps `.assay/` ignored.
+<!-- cleared 2026-09-11 after the 6.1.1 release. Found in that clearing: the
+     2026-09-03 clearing below never actually happened for real -- B021,
+     B064-B068, B070, B073, B074, B077 and B078 sat here, in full hand-written
+     prose, through FIVE subsequent releases (5.0.0 through 6.1.0) that had
+     already shipped every one of them under their own dated section. This is
+     the exact failure this comment already warned about; it just wasn't
+     caught. If you are adding a release and this comment is more than one
+     release old again, that is a recurrence -- check every B-number/A-number
+     mentioned below against the dated sections beneath `<!-- cmru: release
+     history -->` before trusting this block. -->
 
 ### Fixed
+
+- **`--resume` replayed a stale `survived` verdict after a test-only fix
+  (B088).** A persisted candidate record's identity was computed from the
+  mutant alone — path, source bytes, byte span, replacement, operator — and
+  from nothing that JUDGES the mutant. A mutant's source bytes are the same
+  bytes whether the suite about to run against them just gained the assertion
+  that kills them or not, so adding a test (zero bytes of the mutated source
+  touched) left the candidate id bit-identical and `--resume` replayed the old
+  `survived` instead of re-executing: a real fix landing, and a mutation gate
+  staying red — or, worse, a later run staying green — on a cached verdict the
+  current suite never produced. Measured twice in one week, in two
+  repositories (dstdns `worker-execution-admission-r2-flips`, 2026-09-09; this
+  repository's own nyxloom `session-extract` lane, 2026-09-10), each time
+  fixed only by deleting the state directory by hand.
+
+  A record now also carries `judge_sha256`: a digest of the **content of the
+  judged commit's tree** (every leaf's path, mode and Git object id, plus the
+  declared `unsafe_symlink_omissions` — so a changed `conftest.py`, fixture or
+  helper counts, and a touched-but-unchanged file does not) together with the
+  **resolved argv, the lane's declared `env` by value, the NAMES of whatever
+  else the resolved environment carried, cwd, the project prefix, the declared
+  `link_paths`, and assay's own version**. Passthrough and `infrastructure`
+  values are folded by name and never by value: they are per-invocation by
+  design (a worktree's own host path, a per-instance DSN, `TERM`), and folding
+  them by value would make resume impossible across exactly the
+  ephemeral-checkout case `--state-dir` was built for. A mismatch — and the
+  absence of the field, which is what a pre-B088 record looks like — is a cache
+  miss: the candidate is silently re-executed, never a lane failure, following
+  B021's own disposition for the other field not folded into the candidate id.
+  The check runs *after* every identity-vs-filename check, so a routine test
+  edit can never launder a hand-edited state file into a silent rerun.
+  `MUTATION_STATE_SCHEMA_VERSION` is deliberately **not** bumped: the field is
+  additive with a safe absence, and that one constant is also the shard-summary
+  document's version, which `merge_mutation_shards` refuses outright on any
+  other value — assay's own version is folded into `judge_sha256` instead, so
+  an upgrade that changes how a result is classified still invalidates records.
+
+  Resume is now per-**tree**, not per-commit: identical trees at different
+  commits still resume each other, and a commit that touched any file in the
+  judged tree re-executes every candidate. The uses `--state-dir` exists for —
+  several worktrees of one commit, budget-capped retries, `--shard` fan-out —
+  judge the same tree with the same command and keep resuming, including when
+  a per-instance passthrough value differs between the runs.
+
+- **`--resume` said nothing when it resumed nothing (B088, round-1 review).**
+  The `resume` progress event fired only on a successful resume, so a store
+  whose every record was refused emitted no event at all and was
+  indistinguishable from an empty one — a permanently cold cache with no
+  symptom anywhere in the progress stream or the verdict. The event now also
+  fires when records were REFUSED, and carries `rejected_total` alongside
+  `resumed_total`.
 
 - **`budget = "unbounded"` was voidable by declaring R3.** Both arms of the
   refusal were conditioned on the *absence* of R3, so an R0/R1+R3 lane — and
@@ -258,26 +85,27 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   both directions, and any of them saying "inside" refuses. Found by
   adversarial review.
 
-- **A `--state-dir`/`--progress` destination reached through a symlink inside
-  the judged tree surfaced git's raw stderr (B077).** Git refuses to resolve a
-  pathspec through a symlink at all — `fatal: pathspec '<path>' is beyond a
-  symbolic link`, exit 128 — so the ignore question has no answer in *either*
-  direction there. That fatal reached the operator verbatim as
-  `ERROR`/`GIT_FAILED`, a repository-failure shape for what is a
-  destination-configuration mistake, and one a consumer whose real location was
-  correctly gitignored could hit while doing everything right. It is now
-  refused before any work as `ERROR`/`BAD_LANE_CONFIG`, naming the symlink, its
-  target, and the real path to pass instead — the same diagnostic discipline
-  `_linked_worktree_gap()` (B068) and the round-1 pathspec-magic guard beside
-  it already established, and answered in the same place: before git is asked,
-  not by dressing up its error afterwards. The two already-correct outcomes are
-  unchanged: a destination genuinely outside the repository, and one reached
-  with no symlink involved. A symlink in the *final* position is a different
-  mistake and keeps its own older, earlier refusal (`--state-dir` requires a
-  directory, `--progress` an ordinary regular file). Filed by the
-  progress/resume wave's round-2 reviewer.
-
 <!-- cmru: release history -->
+
+## [6.1.1] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=53d841a84ae16545025921ff126ade7cc167dbe8 -->
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.0.0 -> 6.1.0 (assay-v6.1.0) (ec868f14)
+
+### Changed
+- mutation: fold the round-1 review's findings into B088's judge identity (fd50183e)
+- backlog(assay): B088 -- FIXED, with three residuals recorded (dd62d88b)
+- mutation: resume identity folds in the judging suite (B088) (fd08df8f)
+- README: document the judge.base origin-drift pitfall (B019 follow-up) (734a6763)
+- backlog(assay): B088 -- second independent hit in vbpub nyxloom session-extract lane (e5455b2b)
+- backlog(assay): B086+B087 -- Go mutation (R2) and JS canary (R3) registration; B073 corroborated live (0865b2e6)
+- backlog(assay): B080 addendum -- predicted latent tripwire fired live (dstdns D-433) (568d866b)
+
+### Documentation
+- docs(assay): B088 -- --resume's candidate identity omits the judging test suite, replaying a stale verdict after a test-only fix (2abcb2a3)
+- docs(assay): canonical rigor-level explanation + language support matrix (509c3b89)
 
 ## [6.1.0] - 2026-09-09
 <!-- cmru: generated -->
