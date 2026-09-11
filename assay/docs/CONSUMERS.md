@@ -526,6 +526,59 @@ contradicts the identity it is filed under still fails the lane
 `UNREADABLE_ARTIFACT`. Edit a source file and that file's candidates get new
 identities, so they are re-executed rather than resumed.
 
+### What a record has to match before its verdict is trusted
+
+A record is only replayed when **both** halves of its identity still hold:
+the mutation it describes, and **the judging suite that produced its
+verdict**. The second half is `judge_sha256`, and it is what makes
+`--resume` safe to use in the loop it exists for — mutant survives,
+strengthen the tests, run again. Without it, a test-only fix (new
+assertions, zero bytes of the mutated source touched) left the candidate id
+bit-identical, so `--resume` replayed the old `survived` verdict and the
+mutant was never re-executed against the assertion that kills it.
+
+`judge_sha256` is a digest of, precisely:
+
+* **the content of the whole judged tree** — every file the snapshot
+  materializes at the judged commit, each contributing its path, its file
+  mode and its Git object id. Content, never mtime: touching a file, or
+  rewriting it with identical bytes, changes nothing. Whole tree, not the
+  test paths named in the argv: a suite is also judged by its `conftest.py`,
+  its fixtures, its helper modules and every non-mutated source file it
+  imports, and a lane whose argv is `bash -c '...'` names no path at all;
+* **`argv` as it will actually run**, including any appended argv — a
+  narrowed selection (`-k`, a shorter test-file list) judges differently
+  with the same tree;
+* **the environment as resolved** — `env` plus whichever `env_passthrough`
+  names were really present, by value;
+* **`cwd` and the project prefix** — which decide what the relative paths in
+  `argv` resolve to.
+
+Two consequences worth planning around:
+
+* **Resume is per-tree, not per-commit.** Two commits with identical trees
+  (an amended message, a rebase that moved nothing) share one identity and
+  resume each other. A commit that changed *any* file in the judged tree
+  re-executes every candidate, including ones it cannot have affected. That
+  is deliberate: an unnecessary re-execution costs time, a wrongly trusted
+  verdict costs the whole point of running mutation testing. The uses
+  `--state-dir` exists for are unaffected — several worktrees of **one
+  commit**, budget-capped retries, and `--shard` fan-out all judge the same
+  tree with the same command.
+* **A moved environment re-executes.** A verdict produced under a different
+  `PYTHONPATH` — or a different `PATH`, and therefore possibly a different
+  interpreter — is not evidence about this run, so it is not reused.
+
+A judge mismatch is a **cache miss, not an error**: the candidate is
+re-executed silently and the lane is not failed. The same applies to a
+record written before `judge_sha256` existed — it recorded nothing about
+what judged it, so nothing can vouch for it, and it is re-executed. Neither
+case requires deleting a state directory by hand. This disposition is
+deliberately *not* the one a contradicted identity field gets (below): those
+still fail the lane, because they are evidence of a corrupted or hand-edited
+file, and that check runs **first**, so a routine test edit can never mask
+one.
+
 A `--state-dir` **inside the judged tree that git can see is refused before
 any work**, naming the reason: those records would be reported uncommitted and
 the lane's next run would refuse `NO_MEASUREMENT`/`DIRTY_TREE` — the same trap
@@ -571,10 +624,13 @@ it is filed under — a mismatched path, source hash, byte span, replacement,
 operator, or candidate id, every field folded into the id above — fails the
 whole lane as `ERROR`/`UNREADABLE_ARTIFACT` rather than being silently
 skipped; this is a signal of a corrupted or hand-edited state file, not an
-expected outcome of normal use. `schema_version` is the one required field
-NOT folded into the candidate id, so it alone gets the opposite disposition:
-a mismatch there is a routine format bump, not corruption, and is treated as
-an absent record — silently rerun, without failing the lane.
+expected outcome of normal use. `schema_version` and `judge_sha256` are the
+two fields NOT folded into the candidate id, so they get the opposite
+disposition: a mismatch is a routine event — a format bump, or a judging
+suite that moved — and is treated as an absent record, silently rerun,
+without failing the lane. `judge_sha256` is the second half of a record's
+identity (above): a candidate id says *which mutation*, `judge_sha256` says
+*what judged it*, and a verdict is only replayed when both still hold.
 
 A record whose `outcome_bucket` is `crashed` additionally carries
 `result_stdout_tail` and `result_stderr_tail`: the bounded final 64 KiB of

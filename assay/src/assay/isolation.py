@@ -33,6 +33,7 @@ false-PASS attack O4 is written against.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -265,6 +266,67 @@ class _Manifest:
         return {entry.path: entry for entry in self.entries}
 
 
+#: (B088) The serialization label for :func:`_manifest_sha256`. Folded into
+#: the digest itself so a future change of what the digest covers produces
+#: visibly different digests rather than silently comparable ones -- the
+#: digest is persisted in resume records, and two builds that disagree about
+#: what they hashed must never collide.
+_TREE_DIGEST_LABEL = "assay-snapshot-tree/1"
+
+
+def _manifest_sha256(manifest: _Manifest) -> str:
+    """(B088) A content digest of the whole frozen commit tree.
+
+    This is what the caller needs to answer "is the thing that will JUDGE a
+    mutant the same thing that judged it last time" -- the question
+    :func:`assay.mutation.candidate_id` deliberately does not answer, because
+    it is about the mutant, not its judge. Every file the snapshot will
+    materialize is here, so the digest changes when a *test* file's content
+    changes even though not one byte of the mutated source moved: exactly the
+    B088 case where ``--resume`` replayed a stale ``survived`` verdict
+    instead of re-executing against a strengthened suite.
+
+    **Content, never mtime.** Each leaf contributes its Git object id, which
+    is a digest of the blob's bytes: a touched-but-unchanged file has the
+    same ``oid`` and therefore the same tree digest, and a file whose bytes
+    changed has a different one even if its mtime did not move. Nothing
+    filesystem-derived (mtime, inode, ordering of a directory walk) reaches
+    this function at all -- the manifest is built from raw Git objects.
+
+    **Path is part of identity.** Two files with byte-identical content at
+    two different paths digest differently, and that is intended: the test
+    runner collects, imports and names tests BY PATH (a `conftest.py` applies
+    to its own directory; a pytest node id leads with the file path; a
+    `--deselect`/`-k` selection matches spellings), so relocating a file with
+    its bytes intact really can change what judges a mutant.
+
+    **Whole tree, not a guessed test subset.** The narrower reading -- digest
+    only the test paths named in the lane's argv -- is not sound: a suite is
+    also judged by its `conftest.py`, its fixtures, its helper modules and
+    every non-mutated source file it imports, none of which need appear in
+    argv, and a lane whose argv is ``bash -c '...'`` names no path at all.
+    Digesting what the snapshot actually materializes has no such blind spot.
+    It is deliberately conservative in the other direction: a change anywhere
+    in the judged tree re-executes candidates it could not have affected.
+    That trade is taken on purpose -- an unnecessary re-execution costs time,
+    a wrongly-trusted verdict costs the entire point of mutation testing.
+
+    Injective by construction: ``\\0`` cannot occur in a Git path, mode, oid
+    or symlink target, every record has a fixed arity of four, and each
+    section is preceded by its own length -- so no two different manifests
+    can serialize to the same bytes.
+    """
+    parts: list[str] = [_TREE_DIGEST_LABEL]
+    entries = sorted(manifest.entries, key=lambda entry: str(entry.path))
+    parts.append(str(len(entries)))
+    for entry in entries:
+        parts.extend((str(entry.path), entry.mode, entry.oid, entry.target or ""))
+    omitted = sorted(str(path) for path in manifest.omitted)
+    parts.append(str(len(omitted)))
+    parts.extend(omitted)
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
 def _prove_manifest_materialized(manifest: _Manifest, root: Path) -> None:
     """(B016) Prove every declared leaf matches the manifest, directly on
     disk -- independent of what Git's own status/tree comparison happens to
@@ -427,6 +489,22 @@ class SnapshotRepository:
     @property
     def spec(self) -> SnapshotSpec:
         return self._spec
+
+    @property
+    def tree_sha256(self) -> str:
+        """(B088) The content digest of the tree every materialization writes.
+
+        The SEED's identity, not any one materialization's: it is derived
+        from the frozen manifest this repository was prepared from, so every
+        snapshot it hands out carries the same answer and no caller has to
+        walk a materialized directory to ask the question.
+
+        :mod:`assay.mutation` folds this into each persisted resume record so
+        a verdict is only trusted while the thing that produced it -- the
+        judging suite, not merely the mutated source -- is byte-identical.
+        See :func:`_manifest_sha256` for exactly what is covered and why.
+        """
+        return _manifest_sha256(self._manifest)
 
     def _check_open(self) -> None:
         with self._lock:

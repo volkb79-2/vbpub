@@ -165,6 +165,10 @@ __all__ = [
     "byte_offset",
     "collect_mutation_sites",
     "candidate_id",
+    # (B088) The judge half of a resume record's identity -- public for the
+    # same reason `candidate_id` is: a consumer inspecting a state directory
+    # must be able to re-derive what it is looking at.
+    "judge_sha256",
     "judge_mutation",
     "line_for_offset",
     "merge_mutations",
@@ -189,7 +193,25 @@ UNSUPPORTED = "UNSUPPORTED"
 _CANDIDATE_ID_RE = re.compile(r"[0-9a-f]{64}")
 
 MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
+#: NOT bumped by B088, deliberately. `judge_sha256` is an ADDITIVE field
+#: whose absence already has the correct meaning -- "this record predates
+#: judge identity, so nothing can vouch for its verdict", which
+#: `_load_validated_state_record` answers by re-executing the candidate,
+#: exactly what a bump would have bought. The bump would have cost something
+#: real: this one constant is also the version of the SHARD SUMMARY document
+#: `merge_mutation_shards` accepts, a different schema that B088 does not
+#: touch, and it refuses any other value outright -- so bumping it here
+#: would have hard-failed every consumer's existing shard merge to buy a
+#: distinction ("missing is corruption") that does not hold for a field
+#: older writers legitimately never wrote. (That two unrelated documents
+#: share one version constant is itself a latent trap; noted as a residual
+#: on B088 rather than widened into this change.)
 MUTATION_STATE_SCHEMA_VERSION = 1
+
+#: (B088) The serialization label folded into :func:`judge_sha256`, so a
+#: future change to WHAT the judge identity covers yields visibly different
+#: digests instead of silently comparable ones.
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/1"
 
 #: (P34/§3.6) the equivalence artifact's own byte ceiling -- a schema dump
 #: is comparable measurement output to a coverage artifact, so this reuses
@@ -963,6 +985,82 @@ def candidate_id(job: MutantJob) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def judge_sha256(
+    *, tree_sha256: str, plan: "CommandPlan", link_paths: Sequence[str] = ()
+) -> str:
+    """(B088) Return the identity of what JUDGES a mutant.
+
+    :func:`candidate_id` answers "is this the same mutation" -- path, source
+    bytes, span, replacement, operator. That is the right question for
+    skipping re-GENERATION work, and B066 relies on it to make one shared
+    ``--state-dir`` safe across worktrees. It is the wrong question for
+    skipping re-EXECUTION, and conflating the two is B088: a mutant's source
+    bytes are the same bytes whether the suite that judges them just gained a
+    new assertion or not, so ``--resume`` replayed the prior ``survived``
+    verdict for a mutant a real, test-only fix had just killed -- precisely
+    the "looks tested, isn't" gap mutation testing exists to close, and the
+    tooling manufactured it.
+
+    This is the missing half of the identity. It folds:
+
+    * *tree_sha256* -- the content digest of the whole judged tree
+      (:func:`assay.isolation._manifest_sha256`), which is where a changed
+      test file, a changed ``conftest.py``, a changed fixture or a changed
+      non-mutated source module all show up. Content-addressed via Git object
+      ids, so a touched-but-unchanged file does NOT invalidate anything;
+    * ``plan.argv_effective`` -- the command as it will actually run,
+      including any appended argv. A lane that narrows its selection (``-k``,
+      a different test-file list) judges differently with the same tree;
+    * ``plan.env_effective`` -- the environment as resolved, ``env_declared``
+      plus whichever ``env_passthrough`` names were really present. A verdict
+      produced under a different ``PYTHONPATH`` (or a different ``PATH``, and
+      therefore possibly a different interpreter) is not evidence about this
+      run. Conservative on purpose: an ambient difference costs a
+      re-execution, never a wrongly-trusted kill;
+    * ``plan.cwd_declared`` and ``plan.project_prefix`` -- WHERE it runs,
+      which decides what relative paths in argv even resolve to;
+    * *link_paths* -- the lane's declared ``[isolation] link_paths``
+      (B041(b)). These name directories linked into the snapshot from the
+      invoking checkout, so declaring, dropping or re-pointing one changes
+      what judges the mutant just as surely as a changed test file does.
+
+    Two known residuals, named rather than left implicit:
+
+    * the CONTENT of a linked directory is outside this identity -- it is
+      untracked by construction (a `node_modules` closure, a mounted cache),
+      so there is no commit-addressed digest of it to fold in. This does not
+      widen an existing guarantee: CONSUMERS.md already states that a lane
+      declaring ``link_paths`` is only as reproducible as the linked
+      directory;
+    * the per-candidate budget is not folded in. Raising a budget and
+      resuming still replays a stale ``budget_exceeded``; that is a real,
+      separate defect of the same family, noted as a residual on B088 rather
+      than silently widened into this change.
+
+    The serialization is injective -- every section is length-prefixed and
+    joined with ``\\0``, which cannot occur in a hex digest, and the two
+    variable-length string sections (argv, env) carry their own counts, so
+    two different judges cannot serialize to the same bytes. Env names and
+    values MAY contain anything except ``\\0`` (the OS itself forbids it),
+    and pairs are sorted so a mapping's iteration order never reaches the
+    digest.
+    """
+    parts: list[str] = [_JUDGE_DIGEST_LABEL, tree_sha256]
+    argv = tuple(plan.argv_effective)
+    parts.append(str(len(argv)))
+    parts.extend(argv)
+    env = sorted(dict(plan.env_effective).items())
+    parts.append(str(len(env)))
+    for name, value in env:
+        parts.extend((name, value))
+    parts.append("" if plan.cwd_declared is None else str(plan.cwd_declared))
+    parts.append("" if plan.project_prefix is None else str(plan.project_prefix))
+    links = sorted(link_paths)
+    parts.append(str(len(links)))
+    parts.extend(links)
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
 def mutation_state_record_name(candidate: str) -> str:
     """Return one candidate's state-file NAME, with no directory at all.
 
@@ -1078,8 +1176,15 @@ def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -
 
 
 def _load_validated_state_record(
-    state_root: Path, job: MutantJob
+    state_root: Path, job: MutantJob, *, judge: str
 ) -> Mapping[str, Any] | None:
+    """Return the persisted verdict for *job*, or ``None`` to re-execute it.
+
+    *judge* is this run's :func:`judge_sha256` -- REQUIRED, never defaulted:
+    a caller that could omit it would silently get back the pre-B088
+    behaviour (trust any record filed under the candidate's identity), which
+    is the whole defect.
+    """
     identity = candidate_id(job)
     # (B066) `read_bounded_input` takes ANY root and needs no git repository
     # -- it is a descriptor walk, not a repository query -- so relocating
@@ -1136,6 +1241,34 @@ def _load_validated_state_record(
             f"mutation-state record {identity} has unknown outcome bucket "
             f"{payload['outcome_bucket']!r}"
         )
+    # (B088) LAST, and deliberately so. Everything above asks "is this record
+    # internally consistent with the identity it is filed under" -- a
+    # tampered or corrupted record must still be surfaced as corruption
+    # (B021's disposition) even when the judging suite ALSO moved, or a
+    # routine test edit would become a way to launder a hand-edited state
+    # file into a silent rerun. Only once the record is known well-formed
+    # does this ask the different question: is the verdict it carries still
+    # EVIDENCE about the current run?
+    #
+    # `judge_sha256` is not folded into `identity` (and must not be -- B066's
+    # shared `--state-dir` is safe precisely because a record's FILENAME is
+    # the mutation's identity, and one mutant must not scatter into a new
+    # file per judging suite). So both its absence and a mismatch are routine
+    # cache events, not corruption:
+    #
+    # * ABSENT -- the record predates B088; nothing recorded what judged it,
+    #   so nothing can vouch for it;
+    # * DIFFERENT -- the suite, argv, environment or working directory that
+    #   produced the verdict is not the one running now. A new assertion in a
+    #   test file lands here, which is the entire reason this exists: the
+    #   mutant that "survived" was never re-executed against the assertion
+    #   that would have killed it.
+    #
+    # Either way: treat as absent and re-execute. Never raise -- failing the
+    # lane every time someone strengthened a test would make the fix worse
+    # than the defect.
+    if payload.get("judge_sha256") != judge:
+        return None
     return payload
 
 
@@ -1749,11 +1882,30 @@ def run_mutation(
                 )
 
         selected_jobs = tuple(job_list[index] for index in selected_indices)
+        # (B088) ONE judge identity for this whole sweep, resolved once here
+        # and handed to BOTH sides -- the reader below and the writer inside
+        # `_execute_mutation_jobs`. Two independent derivations of the same
+        # digest is exactly how a reader and a writer drift apart, and a
+        # drifted judge identity fails in the safe direction (never resumes)
+        # loudly enough to look like a different bug entirely. Computed only
+        # when a store is in play: a sweep with no `state_root` neither reads
+        # nor writes a record, and hashing the whole judged tree for it would
+        # be pure cost.
+        judge = (
+            judge_sha256(
+                tree_sha256=prepared.tree_sha256,
+                plan=plan,
+                link_paths=prepared.spec.snapshot_policy.link_paths,
+            )
+            if state_root is not None
+            else None
+        )
         resumed_records: list[Mapping[str, Any]] = []
         if resume:
             assert isinstance(state_root, Path)
+            assert judge is not None
             for job in selected_jobs:
-                record = _load_validated_state_record(state_root, job)
+                record = _load_validated_state_record(state_root, job, judge=judge)
                 if record is not None:
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
@@ -1821,6 +1973,7 @@ def run_mutation(
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
             state_root=state_root,
+            judge=judge,
         )
 
         if resumed_records:
@@ -1889,6 +2042,12 @@ def _execute_mutation_jobs(
     total: int,
     candidate_count: int,
     state_root: Path | str | None = None,
+    #: (B088) This sweep's judge identity, resolved ONCE by the caller and
+    #: written onto every record. Required whenever *state_root* is set --
+    #: a record written without one would be indistinguishable from a
+    #: pre-B088 record on the next read, except that its `schema_version`
+    #: would claim it is new enough to be checkable.
+    judge: str | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -2074,6 +2233,16 @@ def _execute_mutation_jobs(
                         }
                     )
                 if state_root is not None:
+                    # (B088) A store in play without a judge identity would
+                    # write records that claim to be checkable and are not.
+                    # The caller resolves one whenever it passes a store, so
+                    # this cannot happen -- and if a future edit made it
+                    # possible, failing here is far better than persisting a
+                    # verdict nothing can ever invalidate.
+                    assert judge is not None, (
+                        "a mutation state record cannot be written without "
+                        "the sweep's judge identity"
+                    )
                     _write_mutation_state_record(
                         Path(state_root),
                         {
@@ -2083,6 +2252,7 @@ def _execute_mutation_jobs(
                                 job=job_list[position],
                             ),
                                 "schema_version": MUTATION_STATE_SCHEMA_VERSION,
+                                "judge_sha256": judge,
                                 "source_sha256": hashlib.sha256(
                                     job_list[position].original_text.encode("utf-8")
                                 ).hexdigest(),
