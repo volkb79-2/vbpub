@@ -3555,3 +3555,65 @@ re-sync there. (An earlier draft of this paragraph incorrectly `cp`'d over
 one of these symlinks' target file directly, momentarily dirtying an
 unrelated worktree's git state with a duplicate of this same fix — caught
 and reverted before it was ever committed anywhere.)
+
+## RG-51 — a delegating lane's DEFAULT comparison base (`--base` omitted) is `merge-base HEAD @{upstream}`, the identical stale-origin hazard `judge.base` literals have, just relocated into run-gate itself
+
+`resolve_comparison_base` (run-gate.py:2629) is explicit that a lane
+declaring `judge.base_source = "request"` and invoked WITHOUT `--base`
+falls back to `derive_upstream_base(worktree)` — `merge-base HEAD
+@{upstream}` — rather than refusing. The docstring frames this as
+deliberate ("otherwise the judged tree's own merge-base with its
+upstream. No fallback to HEAD or to a default branch name"), treating
+`@{upstream}` as a legitimate default rather than a guess.
+
+That's only true while `@{upstream}` (typically a remote-tracking ref
+like `origin/main`) stays in sync with local work. Under any workflow
+that batches commits locally before pushing — this estate's own standing
+"not pushed yet, flagged separately" policy, a long review cycle, a slow
+CI queue — `@{upstream}` drifts behind without anyone touching a single
+line of config, and the DEFAULT path silently reproduces the exact
+`judge.base = "origin/main"` staleness hazard (see assay's own README,
+"Pitfall: a `judge.base` literal pointing at a remote-tracking ref rots
+silently", added 2026-09-11) — just one layer removed, inside run-gate's
+own fallback instead of a project's `assay.toml`. A lane author who
+migrates to `base_source = "request"` specifically to escape that
+pitfall gets no protection unless every real invocation remembers to
+pass `--base` explicitly, every time, forever.
+
+### Provenance
+
+Found 2026-09-11 investigating why nyxloom's and ciu's `tester-unified`/
+`ciu` lanes' `judge.base = "origin/main"` had gone stale (85+ commits)
+under this exact policy — operator asked why a worktree/feature-branch
+gate run couldn't just compare against the local branch it forked from,
+which led to reading `resolve_base`'s merge-base semantics and this
+fallback path. Not itself the cause of that incident (neither lane
+declared `base_source = "request"`), but the same root hazard, one layer
+down, and next in line to bite the first lane that migrates to request-
+delegation without also building an always-inject-`--base` wrapper
+(dstdns's `scripts/gate-base.sh` is the one working precedent for this —
+not itself vbpub's to adopt wholesale, but the shape of what closes this
+gap).
+
+### Status — OPEN, not yet fixed
+
+No fix implemented. Candidate directions (need a design decision, not
+picked here):
+- Warn loudly (stderr, not just the existing `run-gate: comparison base
+  {ref} (from {source})` line) when the DEFAULT path fires and the
+  resolved base is more than some threshold of commits behind the
+  branch's own local upstream-of-record (e.g. `main`), so staleness is
+  visible the moment it happens rather than discovered later via an
+  unrelated `EXCLUDED_LINES` failure.
+- Or: require an explicit `--base` for every `base_source = "request"`
+  lane (remove the silent default entirely) — matches assay's own stated
+  philosophy ("a changed-line judgment whose base was guessed is not a
+  changed-line judgment") more literally, at the cost of breaking any
+  existing invocation that currently relies on the implicit
+  `@{upstream}` fallback.
+- Or: default to the worktree's own creating branch's fork point (`ciu
+  worktree add --base <ref>`'s own `<ref>`, if recoverable) instead of
+  `@{upstream}` — closer to "what this worktree actually forked from"
+  without needing a per-invocation flag, but needs that provenance to
+  actually be recorded and recoverable at gate time, which is not
+  confirmed to exist today.
