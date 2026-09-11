@@ -91,8 +91,10 @@ _SNIFF_SCAN_LINES = 10
 
 
 def sniff(path: Path) -> bool:
-    if path.suffix != ".jsonl":
-        return False
+    """Not gated on path.suffix == ".jsonl" (removed 2026-09-11, see
+    claude_code.py's sniff() docstring for the motivating case) -- the
+    session_meta + payload.cli_version content check below was already the
+    real discriminator for every .jsonl-suffixed file too."""
     try:
         with path.open("r", errors="ignore") as f:
             for i, line in enumerate(f):

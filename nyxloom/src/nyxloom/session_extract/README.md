@@ -147,6 +147,20 @@ revisited; the adapter deliberately keeps `NormalizedEvent.seq` as a
 plain integer index rather than a graph position so that a future
 tree-aware walk wouldn't require reshaping the core data model.
 
+**Correction, 2026-09-11 (operator-discovered against a real dispatched
+Agent-tool subagent's own transcript):** the above holds for a normal
+*interactive* session file, but a subagent's own dedicated transcript
+(`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl`) carries
+`isSidechain: true` on **every** record — sharing the parent session's own
+`sessionId`, flagged relative to it — even though it IS that file's main
+thread. Unconditionally dropping `isSidechain` records (as this adapter
+always did before this fix) silently returned zero events for such a file:
+`extract` exited 0 with empty output, no warning; `extract-lossless` was
+unaffected since `lossless.py` never filtered on `isSidechain` at all.
+`ExtractConfig.include_sidechain` (`--include-sidechain`) now makes this
+configurable instead of hardcoded — off by default (correct for a normal
+session), set it for a subagent's own transcript file.
+
 ### Why is `compact_boundary` a hard stop, not ignored?
 
 Content on the far side of a compaction boundary (automatic

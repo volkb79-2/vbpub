@@ -157,6 +157,49 @@ def test_extract_default_run_produces_delimited_text(tmp_path, capsys):
     assert "nyxloom-extract: format=claude-code" in out
 
 
+def _write_subagent_fixture(tmp_path: Path) -> Path:
+    # Mirrors a real dispatched Agent-tool subagent's own transcript: every
+    # record carries isSidechain=true (operator-verified against a live one).
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isSidechain=True,
+             message={"role": "user", "content": "research question dispatched by the controller"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z", isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "## Findings\n\nHere is the researched answer with real detail."
+             )}]}),
+    ]
+    fp = tmp_path / "agent-abc123.output"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_extract_on_a_subagent_transcript_is_empty_without_include_sidechain(tmp_path, capsys):
+    fp = _write_subagent_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert out.strip() == ""
+
+
+def test_extract_include_sidechain_recovers_a_subagent_transcript(tmp_path, capsys):
+    fp = _write_subagent_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--include-sidechain"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "research question dispatched by the controller" in out
+    assert "Findings" in out
+
+
+def test_extract_auto_detects_a_non_jsonl_suffixed_subagent_transcript(tmp_path, capsys):
+    # 2026-09-11 fix: format auto-detection no longer gates on the ".jsonl"
+    # suffix -- a real Agent-tool subagent's output_file ends in ".output".
+    fp = _write_subagent_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "research question dispatched by the controller" in out
+
+
 def _write_claude_code_ledger_fixture(tmp_path: Path) -> Path:
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",

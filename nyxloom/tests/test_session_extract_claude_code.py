@@ -212,9 +212,22 @@ def test_sniff_skips_malformed_json_lines_and_directories(tmp_path):
     assert not claude_code.sniff(a_dir)  # open() raises IsADirectoryError (an OSError) -> False
 
 
-def test_sniff_rejects_non_jsonl_suffix(tmp_path):
-    fp = tmp_path / "session.txt"
+def test_sniff_accepts_non_jsonl_suffix_when_content_matches(tmp_path):
+    # 2026-09-11 fix: a Claude Code Agent-tool subagent's own transcript is
+    # reachable via the Agent tool's `output_file` result, a symlink ending
+    # in `.output` -- genuinely this exact format, just not `.jsonl`-named.
+    # sniff() must not reject it on extension alone.
+    fp = tmp_path / "agent-abc123.output"
     fp.write_text(json.dumps(_rec(type="user", uuid="u1")) + "\n")
+    assert claude_code.sniff(fp)
+
+
+def test_sniff_rejects_content_that_doesnt_match_the_schema(tmp_path):
+    # The content check (sessionId + parentUuid), not the suffix, is the
+    # real discriminator -- confirm it still actually rejects a mismatch,
+    # `.jsonl` suffix or not.
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps({"foo": "bar"}) + "\n", encoding="utf-8")
     assert not claude_code.sniff(fp)
 
 
@@ -301,6 +314,32 @@ def test_thinking_block_included_only_when_configured(tmp_path):
     with_thinking = claude_code.parse(fp, str(fp), ExtractConfig(include_thinking=True))
     thinking_ev = next(e for e in with_thinking if e.kind is EventKind.THINKING)
     assert thinking_ev.text == "reasoning about the bug"
+
+
+def test_sidechain_records_included_only_when_configured(tmp_path):
+    # 2026-09-11 fix: a dispatched Agent-tool subagent's OWN transcript
+    # file carries isSidechain=true on every record (real, operator-
+    # verified against a live subagent transcript). The default (correct
+    # for a normal interactive session, where every real sidechain found
+    # was parallel tool-fan-out noise) must not silently return zero
+    # events for a WHOLLY-sidechain file without --include-sidechain.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isSidechain=True,
+             message={"role": "user", "content": "dispatch prompt"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z", isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "## Status\n\nDone -- everything landed, main clean at `abc123`."
+             )}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    default_events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert default_events == []
+
+    with_sidechain = claude_code.parse(fp, str(fp), ExtractConfig(include_sidechain=True))
+    assert any("dispatch prompt" in e.text for e in with_sidechain if e.kind is EventKind.OPERATOR_TEXT)
+    assert any("Status" in e.text for e in with_sidechain if e.kind is EventKind.ASSISTANT_TEXT)
 
 
 def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):

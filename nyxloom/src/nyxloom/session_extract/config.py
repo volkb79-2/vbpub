@@ -71,6 +71,24 @@ class ExtractConfig:
     # THINKING events are dropped at parse time unless this is set.
     include_thinking: bool = False
 
+    # Claude Code only (adapters/claude_code.py). isSidechain records are
+    # dropped at parse time unless this is set -- the default (False) is
+    # correct for a normal interactive session file, where every sidechain
+    # branch found in real data was parallel tool-call fan-out noise, never
+    # a genuine retry/edit-resubmit or a real narrative thread (see
+    # README's "Why ignore branching / sidechains?"). It is WRONG for a
+    # dispatched Agent-tool subagent's own dedicated transcript file
+    # (`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl`),
+    # where EVERY record carries isSidechain=true (sharing the PARENT
+    # session's own sessionId, flagged relative to it) even though, from
+    # that file's own perspective, it IS the main thread -- the default
+    # would silently drop the entire transcript (2026-09-11, operator-
+    # discovered: `extract` returned zero events, exit 0, no warning,
+    # against a real subagent transcript; `extract-lossless` was unaffected
+    # since lossless.py never filters on isSidechain at all). Set this for
+    # a subagent's own transcript file specifically.
+    include_sidechain: bool = False
+
     # Opaque marker (an event.marker from a prior extract() call) to resume
     # from -- only events strictly after it are considered. None = walk the
     # whole session (bounded by the nearest LIFECYCLE_MARKER regardless).

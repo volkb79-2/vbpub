@@ -95,10 +95,23 @@ def test_list_sessions_returns_the_one_synthetic_id(tmp_path):
     assert codex.list_sessions(fp) == [str(fp)]
 
 
-def test_sniff_rejects_non_jsonl_suffix(tmp_path):
+def test_sniff_rejects_non_matching_content_regardless_of_suffix(tmp_path):
     fp = tmp_path / "rollout.txt"
     fp.write_text("irrelevant\n")
     assert not codex.sniff(fp)
+
+
+def test_sniff_accepts_non_jsonl_suffix_when_content_matches(tmp_path):
+    # 2026-09-11 fix: the session_meta/cli_version content check is the
+    # real discriminator, not the suffix -- see claude_code.py's sniff()
+    # docstring for the motivating case (an Agent-tool subagent's `.output`
+    # transcript file).
+    fp = tmp_path / "rollout.output"
+    fp.write_text(
+        json.dumps({"timestamp": "t", "type": "session_meta", "payload": {"cli_version": "0.1.0"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert codex.sniff(fp)
 
 
 def test_sniff_skips_blank_and_malformed_lines(tmp_path):

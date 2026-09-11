@@ -193,9 +193,18 @@ def sniff(path: Path) -> bool:
     """The first line is often a housekeeping record (type "mode",
     "bridge-session", ...) that carries sessionId but no parentUuid --
     real user/assistant records normally appear within the first handful of
-    lines, so this scans forward rather than trusting line 1 alone."""
-    if path.suffix != ".jsonl":
-        return False
+    lines, so this scans forward rather than trusting line 1 alone.
+
+    Deliberately NOT gated on path.suffix == ".jsonl" (removed 2026-09-11,
+    operator-reported): a Claude Code Agent-tool subagent's own transcript
+    -- genuinely this exact format, `isSidechain: true` throughout -- is
+    reachable through the Agent tool's own `output_file` result, which is a
+    symlink ending in `.output`, not `.jsonl`; the extension gate rejected
+    it outright before this function's own content check (sessionId +
+    parentUuid, already adapter-specific enough on its own) ever ran. Since
+    that content check was already the REAL discriminator for every
+    .jsonl-suffixed file too, dropping the suffix gate only widens which
+    extensions are eligible for the same check -- it doesn't weaken it."""
     try:
         with path.open("r", errors="ignore") as f:
             for i, line in enumerate(f):
@@ -312,7 +321,7 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
 
     events: list[NormalizedEvent] = []
     for seq, (abs_i, rec) in enumerate(indexed):
-        if rec.get("isSidechain"):
+        if rec.get("isSidechain") and not config.include_sidechain:
             continue
 
         uuid = rec.get("uuid") or f"line{abs_i}"

@@ -685,9 +685,10 @@ def _resolve_since_marker(args) -> tuple[str | None, int | None]:
 def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
-    [--max-lifecycle-markers N] [--since MARKER | --since-file PATH]
-    [--until MARKER] [--ledger] [--show-api-errors] [--insert-blank-lines N]
-    [--gap-marker MODE] [--min-gap-records N] [--show-gap-source]
+    [--include-sidechain] [--max-lifecycle-markers N]
+    [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
+    [--show-api-errors] [--insert-blank-lines N] [--gap-marker MODE]
+    [--min-gap-records N] [--show-gap-source]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -707,6 +708,14 @@ def cmd_extract(args) -> int:
     to override that default regardless of --profile. Any other individual
     flag, if also passed, likewise overrides just that one knob from the
     chosen profile.
+
+    --include-sidechain (Claude Code only, 2026-09-11 operator-discovered
+    fix): a dispatched Agent-tool subagent's OWN transcript file
+    (.../subagents/agent-<id>.jsonl) carries isSidechain=true on EVERY
+    record, even though it IS that file's main thread -- the default (off,
+    correct for a normal interactive session where every real sidechain was
+    parallel tool-fan-out noise) silently returns zero events against one,
+    exit 0, no warning. Set this when path is a subagent's own transcript.
 
     --since-file is the delta-extraction UX: point it at a PRIOR run's saved
     output (text or json) and this run picks up exactly where that one left
@@ -774,6 +783,7 @@ def cmd_extract(args) -> int:
         long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
         max_words=args.max_words if args.max_words is not None else base.max_words,
         include_thinking=args.include_thinking,
+        include_sidechain=args.include_sidechain,
         since_marker=since_marker,
         until_marker=args.until,
         max_lifecycle_markers=(
@@ -933,6 +943,7 @@ def cmd_extract_debug(args) -> int:
         long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
         max_words=args.max_words if args.max_words is not None else base.max_words,
         include_thinking=args.include_thinking,
+        include_sidechain=args.include_sidechain,
         max_lifecycle_markers=(
             args.max_lifecycle_markers if args.max_lifecycle_markers is not None
             else base.max_lifecycle_markers
@@ -2413,6 +2424,16 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     selection_group.add_argument("--include-thinking", action="store_true",
                                   help="Also emit assistant thinking/reasoning content where "
                                        "the adapter can recover it")
+    selection_group.add_argument("--include-sidechain", action="store_true",
+                                  help="Claude Code only. Also consider isSidechain records "
+                                       "(off by default -- correct for a normal interactive "
+                                       "session, where every sidechain branch found in real "
+                                       "data was parallel tool-fan-out noise). Set this when "
+                                       "path is a dispatched Agent-tool subagent's OWN "
+                                       "dedicated transcript file (.../subagents/agent-"
+                                       "<id>.jsonl) -- there, EVERY record carries "
+                                       "isSidechain=true even though it IS that file's main "
+                                       "thread, and the default silently returns zero events")
     selection_group.add_argument("--show-api-errors", action="store_true",
                                   help="Include upstream API-transport noise (429/rate-limit/"
                                        "overloaded_error) in the output. Off by default -- "
@@ -2556,6 +2577,8 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                        help="Same as extract's --max-words")
     extract_debug_parser.add_argument("--include-thinking", action="store_true",
                                        help="Same as extract's --include-thinking")
+    extract_debug_parser.add_argument("--include-sidechain", action="store_true",
+                                       help="Same as extract's --include-sidechain")
     extract_debug_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
                                        help="Same as extract's --max-lifecycle-markers")
     extract_debug_parser.add_argument("--show-api-errors", action="store_true",
