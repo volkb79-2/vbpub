@@ -9134,12 +9134,130 @@ in B021 (silently re-execute, not `MutationStateError`) — it is a routine
 
 ### Acceptance
 
-- [ ] a record from a run against test suite A, loaded by a `--resume` run
+- [x] a record from a run against test suite A, loaded by a `--resume` run
       against test suite B (same mutant, same source bytes, different test
       file content), is NOT trusted — the candidate re-executes;
-- [ ] a record from a run against the SAME test suite content resumes exactly
+- [x] a record from a run against the SAME test suite content resumes exactly
       as today (no regression to the documented B066/RG-38 resume behavior);
-- [ ] `CONSUMERS.md`'s resume/state-dir paragraph documents that resume
+- [x] `CONSUMERS.md`'s resume/state-dir paragraph documents that resume
       identity now includes the judging suite, and what "the judging suite"
       is computed from (argv vs. file contents vs. both).
+
+**Status: FIXED 2026-09-11.** A record now carries `judge_sha256` alongside
+the existing identity fields: a digest of the **content of the judged
+commit's tree** (`isolation._manifest_sha256` — every leaf's path, file mode
+and Git object id, plus the declared unsafe-symlink omissions) together with
+the **resolved `argv`, the lane's declared `env` by value, the NAMES (never
+the values) of whatever else the resolved environment carried, `cwd`, the
+project prefix, the declared `link_paths` and assay's own version**
+(`mutation.judge_sha256`). `_load_validated_state_record`
+checks it LAST, after every identity-vs-filename check, so a routine test
+edit can never launder a hand-edited state file into a silent rerun; a
+mismatch — and an absent field, which is what every pre-B088 record looks
+like — is a cache miss that silently re-executes, exactly B021's disposition
+for the other field not folded into the candidate id, never a lane failure.
+
+Answering the filing's own open question ("argv vs. file contents vs.
+both"): **both, and more than the test paths.** The narrower reading —
+digest only the test paths named in the lane's argv — was rejected as
+unsound: a suite is also judged by its `conftest.py`, its fixtures, its
+helper modules and every non-mutated source file it imports, none of which
+need appear in argv, and several real lanes in this estate spell their argv
+`bash -c '...'` and name no path at all (a regression test pins exactly that
+shape). Digesting the whole judged tree has no such blind spot, at the
+deliberate cost of being conservative the other way: a commit that touched
+any file in the judged tree re-executes every candidate. Resume is therefore
+per-TREE, not per-commit — identical trees at different commits still resume
+each other (also pinned by a test, because a commit id would have been the
+cheap identity and would have silently broken that) — and the uses
+`--state-dir` exists for (several worktrees of one commit, budget-capped
+retries, `--shard` fan-out) judge the same tree with the same command and
+keep resuming, including when a per-instance passthrough value differs
+between the runs.
+
+**Round-1 independent adversarial review found four confirmed defects in the
+first cut; all four are fixed, and its two suspected findings were adopted
+too.** They are recorded because each is a lesson, not a typo:
+
+1. **The first version folded `env_effective` BY VALUE and silently killed
+   cross-instance resume** — reproduced by the reviewer with a real two-run
+   probe. `env_passthrough` and B013 `infrastructure` values are
+   per-invocation BY DESIGN (dstdns' `P165_PHYSICAL_REPO_ROOT` is the
+   worktree's own host path, `SCHEMA_GATE_DSN` is a per-instance DSN, and
+   this repository's own `session-extract` lane — the one B088's second
+   incident came from — passes `TERM`, whose mere presence differs between
+   an interactive run and a wrapped one). That is a regression to the exact
+   ephemeral-checkout case RG-38/B066 built `--state-dir` for, and four
+   documents asserted the opposite. Now: declared `env` by value, everything
+   else by NAME. Pinned by two end-to-end tests, because the pre-existing
+   two-worktree test shares one `os.environ` and structurally cannot see it.
+2. **A refused store emitted no signal at all** — the `resume` progress
+   event fired only on a successful resume, so "the cache is cold" and "the
+   cache is refused every single run" had one identical symptom: silence.
+   Now the event also fires on refusal and carries `rejected_total`;
+   `_load_validated_state_record` returns a distinct REJECTED sentinel so
+   the two cases are separable at the seam, not just at the edge.
+3. **The Hypothesis property asserted a FALSE invariant** — it deduped
+   generated paths on raw text while the manifest keys on `PurePosixPath`,
+   which normalizes (`""`/`"."`, `"a"`/`"a/"`, `"a/b"`/`"a//b"`). Green only
+   because `derandomize=True` never reached those inputs: a latent failure
+   that would one day have read as "the tree digest collides".
+4. **The tree serialization was not actually injective** — it joined fields
+   with `\0` and argued no field could contain one, which is wrong for a
+   symlink target (blob content decoded as UTF-8); the reviewer produced a
+   real collision. Every variable-length field is now netstring-encoded, and
+   the attack is generated by a property rather than pinned as one example.
+5. (Adopted from the reviewer's suspected findings) **assay's own version is
+   now folded in** — because the schema bump was declined, nothing else
+   would have invalidated records across an upgrade that changed
+   `_classify_mutant_result` or bucket semantics; and the fail-open
+   `payload.get(...) != judge` comparison (which trusts a judge-less record
+   when the caller's judge is `None`, since `None != None` is False) is now
+   an explicit `isinstance` check, because `assert` vanishes under `-O`.
+
+`MUTATION_STATE_SCHEMA_VERSION` was deliberately NOT bumped: the field is
+additive with a safe absence, and that one constant is also the SHARD SUMMARY
+document's version, which `merge_mutation_shards` refuses outright on any
+other value — bumping it would have hard-failed every consumer's existing
+shard merge.
+
+Evidence: 39 new tests in `tests/test_mutation_judge_identity.py` (plus
+`..._properties.py`, three Hypothesis properties with inline
+`derandomize=True, database=None`), five of which fail against the pre-fix
+reader — including two REAL repositories where a strengthened test file flips
+a candidate from `survived` to `killed` across a `--resume` with the mutated
+source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
+
+**Residuals, filed here rather than silently widened into the fix:**
+
+1. **`budget_per_candidate` is not part of the judge identity.** Raising a
+   per-candidate budget and resuming still replays a stale
+   `budget_exceeded` — the same "the ground moved, the verdict did not"
+   family as B088 itself, and arguably its next instance. Not folded in
+   because it is not the *judging suite*, and widening the change past its
+   own acceptance criteria is how a fix stops being reviewable.
+2. **`MUTATION_STATE_SCHEMA_VERSION` versions two unrelated documents** —
+   the per-candidate state record and the shard summary. Today that makes a
+   routine record-format bump a breaking change for shard merges, which is
+   why B088 declined the bump. They want separate constants.
+3. **A `link_paths` directory's CONTENT is outside the identity.** Its
+   DECLARATION is folded in, but a linked `node_modules`/cache closure is
+   untracked by construction, so there is no commit-addressed digest to
+   fold. This does not widen an existing guarantee — CONSUMERS.md already
+   states a lane declaring `link_paths` is only as reproducible as the
+   linked directory — but it is a real blind spot for such lanes.
+4. **The VALUES of passthrough/`infrastructure` names are not folded in**,
+   per round-1 finding 1 above. A lane whose judgment genuinely depends on a
+   passed-through value (a DSN pointing at a different database with
+   different fixture data) can still replay a verdict produced against the
+   other one. The declared-vs-ambient split is the best available line — a
+   lane that needs such a value in the identity should declare it in `env`
+   — but the residual is real and should be named rather than assumed away.
+5. **A shard summary carries no judge identity.** `_SHARD_REQUIRED_KEYS`
+   refuses unknown keys, so a fan-out merge still proves only lane + commit
+   + exact coverage: shards produced under different judging environments
+   merge into one R2 claim. Pre-existing, but B088's premise now applies
+   unevenly across the two documents, and adding the field meets the same
+   "cannot bump the shared constant" objection as residual 2. (Found by the
+   round-1 reviewer.)
 

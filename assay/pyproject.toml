@@ -28,7 +28,15 @@ dependencies = []
 # dependencies only, so a validator is legitimate here (A-056) — jsonschema is
 # what P01b's schema tests validate against, and hand-rolling one would prove
 # the hand-rolled checker rather than the schema.
-test = ["pytest>=8", "pytest-cov>=5", "jsonschema>=4"]
+#
+# `hypothesis` (B088) states the judge-identity invariants over generated
+# input rather than chosen examples — an identity that silently collides is
+# the one defect class chosen examples are worst at finding. It is a test
+# authoring tool, never imported by `assay` itself, and the one module that
+# uses it (`tests/test_mutation_judge_identity_properties.py`) skips cleanly
+# when it is absent, so this declaration widens the test closure without
+# widening the standalone claim A-005 is about.
+test = ["pytest>=8", "pytest-cov>=5", "jsonschema>=4", "hypothesis>=6.100"]
 
 [project.scripts]
 assay = "assay.cli:main"

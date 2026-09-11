@@ -242,6 +242,57 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 
+- **`--resume` replayed a stale `survived` verdict after a test-only fix
+  (B088).** A persisted candidate record's identity was computed from the
+  mutant alone — path, source bytes, byte span, replacement, operator — and
+  from nothing that JUDGES the mutant. A mutant's source bytes are the same
+  bytes whether the suite about to run against them just gained the assertion
+  that kills them or not, so adding a test (zero bytes of the mutated source
+  touched) left the candidate id bit-identical and `--resume` replayed the old
+  `survived` instead of re-executing: a real fix landing, and a mutation gate
+  staying red — or, worse, a later run staying green — on a cached verdict the
+  current suite never produced. Measured twice in one week, in two
+  repositories (dstdns `worker-execution-admission-r2-flips`, 2026-09-09; this
+  repository's own nyxloom `session-extract` lane, 2026-09-10), each time
+  fixed only by deleting the state directory by hand.
+
+  A record now also carries `judge_sha256`: a digest of the **content of the
+  judged commit's tree** (every leaf's path, mode and Git object id, plus the
+  declared `unsafe_symlink_omissions` — so a changed `conftest.py`, fixture or
+  helper counts, and a touched-but-unchanged file does not) together with the
+  **resolved argv, the lane's declared `env` by value, the NAMES of whatever
+  else the resolved environment carried, cwd, the project prefix, the declared
+  `link_paths`, and assay's own version**. Passthrough and `infrastructure`
+  values are folded by name and never by value: they are per-invocation by
+  design (a worktree's own host path, a per-instance DSN, `TERM`), and folding
+  them by value would make resume impossible across exactly the
+  ephemeral-checkout case `--state-dir` was built for. A mismatch — and the
+  absence of the field, which is what a pre-B088 record looks like — is a cache
+  miss: the candidate is silently re-executed, never a lane failure, following
+  B021's own disposition for the other field not folded into the candidate id.
+  The check runs *after* every identity-vs-filename check, so a routine test
+  edit can never launder a hand-edited state file into a silent rerun.
+  `MUTATION_STATE_SCHEMA_VERSION` is deliberately **not** bumped: the field is
+  additive with a safe absence, and that one constant is also the shard-summary
+  document's version, which `merge_mutation_shards` refuses outright on any
+  other value — assay's own version is folded into `judge_sha256` instead, so
+  an upgrade that changes how a result is classified still invalidates records.
+
+  Resume is now per-**tree**, not per-commit: identical trees at different
+  commits still resume each other, and a commit that touched any file in the
+  judged tree re-executes every candidate. The uses `--state-dir` exists for —
+  several worktrees of one commit, budget-capped retries, `--shard` fan-out —
+  judge the same tree with the same command and keep resuming, including when
+  a per-instance passthrough value differs between the runs.
+
+- **`--resume` said nothing when it resumed nothing (B088, round-1 review).**
+  The `resume` progress event fired only on a successful resume, so a store
+  whose every record was refused emitted no event at all and was
+  indistinguishable from an empty one — a permanently cold cache with no
+  symptom anywhere in the progress stream or the verdict. The event now also
+  fires when records were REFUSED, and carries `rejected_total` alongside
+  `resumed_total`.
+
 - **`budget = "unbounded"` was voidable by declaring R3.** Both arms of the
   refusal were conditioned on the *absence* of R3, so an R0/R1+R3 lane — and
   an ingested-R2+R3 lane, whose entire R2 evidence is that one command — was
