@@ -4078,10 +4078,14 @@ Directions, not picked here:
 - Read `missing_branches` and count a changed line as uncovered when it
   has an untaken arm; this is what the lane's own flag already pays for.
 - Separately: refuse (or at minimum warn loudly) when
-  `total_changed_exec == 0` AND the resolved base equals HEAD, rather
-  than reporting `0/0 ≥ 100.0% floor` as a pass. assay's own
-  `check_base_is_head`/`BASE_IS_HEAD` (`measurability.py`) is the
-  precedent; the vendored thin gate has no equivalent.
+  `total_changed_exec == 0`, rather than reporting `0/0 ≥ 100.0% floor`
+  as a pass. assay's own `check_base_is_head`/`BASE_IS_HEAD`
+  (`measurability.py`) is the precedent; the vendored thin gate has no
+  equivalent. Note the trigger is NOT only "base equals HEAD" — RG-51's
+  own merge commit reached `0/0` with a base that was neither HEAD nor
+  stale (first-parent resolution of a merge, RG-54), and round 5 found a
+  third route (a branch whose work was reverted). The condition worth
+  acting on is the zero itself.
 
 ## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
 
@@ -4099,6 +4103,26 @@ gate on that merge commit has the whole second parent's contribution
 outside the judged diff, no matter how correct the base run-gate picked.
 `tools/coverage_gate.py`'s own `_resolve_base` has the identical
 first-parent rule, so the vendored thin gate behaves the same way.
+
+**Observed in an artifact, not only derived.** RG-51's own pre-merge
+`main`-into-branch merge produced exactly this, on both projects' gates,
+in the same minute it was filed:
+
+```json
+"resolved": {"base": "d8b6f70a…", "base_resolution": "first-parent"}
+"coverage": {"covered": 0, "executable": 0, "branches_total": 0, "pct": 100.0}
+```
+
+`ciu`'s lane reported `PASS` having judged nothing, and run-gate's own
+`selftest` printed `diff-coverage OK: 0/0 changed executable lines
+covered (100.0% ≥ 100.0% floor)` on the same commit. Nothing was wrong
+with either change — the merge genuinely brought in no work of its own on
+those paths — but the two verdicts are indistinguishable, in the
+artifact, from a merge that brought in a great deal. That is the whole
+item: `base_resolution` names the behaviour honestly and a reader who
+does not look at that field cannot tell the cases apart. The meaningful
+measurements for that change were the ones on its last NON-merge commit
+(124/124 and 26/26 lines, 8/8 branches).
 
 Found 2026-09-11 by RG-51's round-4 review, as a BOUNDARY note rather
 than a defect in that change: it predates RG-51, is unaffected by it,
