@@ -56,13 +56,37 @@ unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
 ]
 
+# base = "main" (2026-09-11, corrected from "origin/main"): assay's own
+# resolve_base (assay/src/assay/git.py) always computes merge-base(base,
+# HEAD) -- "the fork point, ... rather than base's current tip" -- so this
+# was never "diff against origin/main's tip," it was "diff against wherever
+# HEAD forked from an ancestor of origin/main." That's only correct while
+# origin/main tracks local main closely. Under the standing "not pushed,
+# flagged separately" policy, origin/main silently drifted 85 commits
+# behind local main, so merge-base(origin/main, HEAD) resolved 85 commits
+# back and this lane judged that whole accumulated, already-verified diff
+# -- not the current worktree's own change. Identical failure already hit
+# session-extract's own authoring moment (61 commits of drift then); that
+# lane's fix was a one-time SHA pin (base = "edc55648", see run-gate.toml),
+# which itself goes stale and needs manual re-pinning (the same recurring
+# gap KI-27 already flags for this file's assay zipapp version). "main" is
+# strictly better: a worktree/feature branch (created via `ciu worktree add
+# --base main`) always forks from local main, so merge-base("main", HEAD)
+# is exactly that fork point, self-updating, no re-pin ever needed, and
+# behaves identically to "origin/main" whenever the two happen to be in
+# sync. Known consequence: running this lane directly against the PRIMARY
+# checkout (HEAD == local main) now yields an empty base..HEAD diff, since
+# every real gate invocation in this estate already goes through
+# `--worktree <path>` (never the primary checkout bare) -- see
+# AGENTS.md's worktree protocol -- this is not believed to be a live use
+# case, but is called out here in case that assumption ever changes.
 [lanes.tester-unified.judge]
 language = "python"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = false
-base = "origin/main"
+base = "main"
 
 [lanes.tester-unified.judge.coverage]
 format = "coverage-py-json"
