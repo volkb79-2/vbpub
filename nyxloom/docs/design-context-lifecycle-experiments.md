@@ -2340,3 +2340,302 @@ merged block for the whole session).
 
 **Status**: SHIPPED (`debug_diff.py`, wired into `nyxloom extract-debug`). `session_extract`
 package coverage: `debug_diff.py` 100%.
+
+## E-015 · 2026-09-11 · Agent-tool subagent transcript persistence/resumability, nested-subagent
+## file layout, and a generic (adapter-agnostic) sub-conversation targeting design
+
+**Motivating incident, reported by the operator**: after an interactive session was terminated (or
+the host rebooted), Claude Code told the operator that a running subagent was "not resumable, no
+session/state logs were available," and it would need to be restarted from scratch, losing any
+in-flight work/state (beyond artifacts already written to the filesystem). This session found a
+real subagent transcript file sitting on disk from an actually-dispatched Agent-tool subagent,
+which appeared to contradict that. Two `claude-code-guide` research agents (sourced from Claude
+Code's own `sub-agents.md`, `agent-view.md`, `sessions.md`, `worktrees.md` docs) plus this
+session's own direct filesystem inspection resolved the discrepancy:
+
+- **Subagent transcripts persist independently of the main session**, at
+  `~/.claude/projects/<project>/<sessionId>/subagents/agent-<agentId>.jsonl`, paired with an
+  `agent-<agentId>.meta.json` sidecar (agentType, isFork, description, toolUseId, spawnDepth).
+  This survives the DISPATCHING session's own compaction — it is a separate file, not a region of
+  the parent's own JSONL that compaction could touch.
+  **Verified exhaustively against every real transcript on the development machine**: 59/59
+  top-level interactive session files carry zero `isSidechain: true` records and zero `agentId`
+  values (dispatching a subagent leaves no trace in the parent file beyond the Agent
+  tool_use/tool_result pair that requested it); 358/358 dedicated subagent files carry
+  `isSidechain: true` on 100% of their records. No file ever mixed the two.
+- Per Claude Code's own docs (not independently re-verified against a real reboot in this
+  session — sourced from documentation, flagged as such): these transcripts are resumable via
+  `claude attach <id>` / `claude respawn <id>`, and survive a host reboot within roughly 48h.
+  Worktree-isolated subagents auto-clean only if they finished with **no** changes.
+  **So the operator's actual experience ("not resumable, no logs available") reflects Claude Code
+  itself not knowing about — or not surfacing — this persistence in that situation, not an actual
+  absence of the data.** Why the tool reported it that way (a different code path, a stale check, a
+  worktree-cleanup edge case, or a genuine gap in what triggers `attach`/`respawn` eligibility) was
+  not determined here — this is a real discrepancy between Claude Code's own documented mechanism
+  and at least one lived operator experience, worth escalating/filing upstream rather than treating
+  as resolved by "the docs say it should work."
+- **Nested subagents (a subagent that itself dispatches another subagent) get their own separate
+  file too** — verified directly on real data, not assumed. A depth-1 subagent's own file using
+  the Agent tool was found; the resulting depth-2 child file exists as a **flat sibling** under the
+  same top-level session's `subagents/` directory (no `subagents/.../subagents/...` path nesting).
+  The parent-child link lives **externally**, in the child's `.meta.json` — `spawnDepth` (1 =
+  dispatched directly from the interactive session, 2 = from within another subagent; one real
+  session's histogram was `{1: 34, 2: 3}`, confirming multi-level nesting actually occurs) and
+  `toolUseId`, cross-referenced against the Agent-tool `tool_use` block ids found inside the
+  presumed parent's own file (concretely confirmed: a depth-1 file's 4 Agent `tool_use` blocks, two
+  of which matched the `toolUseId` of two sibling depth-2 `.meta.json` files). **`isSidechain` does
+  NOT carry this signal** — it is uniformly `true` at every depth, so it identifies "this file is
+  someone's subagent" but never which one dispatched it or how deep. Lineage is a `.meta.json`-only
+  fact. This directly informed the targeting redesign below: no single file ever mixes content from
+  multiple distinct agents, at any depth, which is what makes path-based targeting (next section)
+  sufficient without needing an in-band "which agent" selector.
+
+**Generic sub-conversation targeting, operator design critique and redesign.** This session first
+shipped a Claude-Code-specific fix for a real bug (a subagent's own transcript file, being 100%
+`isSidechain: true`, was silently extracted to zero events by `nyxloom extract`) as a new
+`ExtractConfig.include_sidechain` field / `--include-sidechain` CLI flag. The operator's critique,
+same day: `nyxloom extract` is meant to be a shared, adapter-agnostic surface — "sidechain" is
+Claude-Code-only vocabulary that means nothing for Codex or opencode, and "adapters solve the CLI
+specifics," not the shared command. The concrete ask was "how to target it?" generically, given
+that the three CLIs' sub-agent mechanics are genuinely different shapes:
+
+- **Claude Code**: a "conversation" is a JSONL file. A subagent's own conversation is a *different
+  file* from its dispatcher's. Once `sniff()`'s suffix gate was removed (a subagent's `output_file`
+  handle is a `.output` symlink, not `.jsonl` — see E-009/E-011-era work and `sniff()`'s own
+  docstring), the ONLY remaining obstacle to `nyxloom extract <that file>` working was the
+  unconditional `isSidechain` drop. **Fixed by removing the flag entirely and auto-detecting inside
+  `claude_code.py`'s `parse()`**: whether the target file has any non-sidechain "primary" record at
+  all is computed from the file's own content. A file with none (a dedicated subagent transcript)
+  has nothing to distinguish sidechain content *from*, so it's kept; a file that does have a
+  primary thread keeps the original noise-dropping behavior for any interleaved sidechain records.
+  This is a strict improvement with no lost capability (the old default behavior for a normal
+  interactive file is reproduced exactly, since `has_primary_thread` is always true there) — and it
+  means targeting a specific Claude Code agent's own conversation needs **no flag at all**: it's
+  `path` alone, exactly like targeting any other adapter's session.
+- **opencode**: a "conversation" is a `session` table row; a forked/sub-agent session is *already*
+  just another row (`parent_id` column). The existing `--session <id>` mechanism already selects
+  any row, forked or not — `list_sessions()` has no `parent_id` filter, so forked sessions were
+  already listed and already selectable with **zero code change**. The only real gap is discovery
+  (nothing currently surfaces which listed id is a fork of which parent) — a "list children of this
+  parent" convenience, not a targeting primitive gap.
+- **Codex**: genuinely unresolved, left honest rather than guessed. Unlike the other two, Codex's
+  sub-agent activity (`CollabAgentToolCall` / `sub_agent_activity`, both currently dropped as noise)
+  was found, across 400+ real local rollout files, **only inline in the same rollout file** as the
+  dispatching conversation — no separate per-agent file or session id exists to target the way
+  Claude Code or opencode structure it. Building this would require parsing `CollabAgentToolCall`'s
+  payload (unverified whether it even carries the sub-agent's own turn content) against a real
+  rollout file with actual sub-agent activity, which was not available in this environment. Filed as
+  a known gap in `adapters/codex.py`'s own docstring rather than built speculatively.
+
+**The cross-tool orchestration case the operator raised** ("use Codex to tell the interactive
+session to spawn a fresh session based on `nyxloom extract` of one of its subagents") needs no
+special-casing under this design: whichever harness is doing the noticing-and-relaunching already
+has (or can discover) the terminated agent's own file path (Claude Code) or session id (opencode);
+the targeting mechanism is uniform — point `nyxloom extract` at that file/session directly. No
+adapter-specific flag is needed on the shared surface for any of the three CLIs.
+
+**Status**: SHIPPED (`claude_code.py`'s auto-detect; `--include-sidechain` removed from `cli.py`,
+`config.py`). Codex/opencode findings documented in their own adapter docstrings, not yet acted on
+(opencode's discovery-convenience gap and Codex's inline-only sub-agent activity are both real but
+smaller/separate follow-ups). `session_extract` test suite: all green after the redesign
+(`test_session_extract_claude_code.py`, `test_cli_extract.py`).
+
+**Correction, same day, from a live test — the Codex bullet above was WRONG.** "Only inline, no
+separate file" was inferred from 400+ *pre-existing* local rollout files that, it turns out, never
+actually contained a completed `spawn_agent` dispatch — an absence-of-evidence mistake, not a
+verified negative. A live test (`codex exec -m gpt-5.6-luna -s workspace-write`, prompted to
+delegate one of two independent file-writing tasks via its collab-agent tool) settled it directly:
+Codex creates a genuine **separate rollout file per spawned sub-agent** —
+`~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl`, `<thread_id>` given directly in the
+parent's own `CollabAgentToolCall` event (`item.receiver_thread_ids`, `item.receiver_agents[].
+agent_nickname` — sub-agents get human-readable codenames, "Feynman" in the test run). The child
+file is a fully normal, self-contained rollout (same top-level type histogram as any top-level
+session), and its own `session_meta.payload` carries a clean, direct discriminator —
+`thread_source: "subagent"` (vs `"user"` for a real top-level session) — plus `forked_from_id` and
+`source.subagent.thread_spawn.{parent_thread_id, depth, agent_nickname}`, `depth` being the exact
+analog of Claude Code's `.meta.json` `spawnDepth`. Verified end to end against the real files this
+test produced: `adapters/codex.py`'s existing `parse()`, **completely unchanged**, already extracts
+a sub-agent's own rollout file correctly — `nyxloom extract <that child rollout file>` worked
+immediately, no code change needed (its `UserMessage`/`AgentMessage`/`FileChange` records are
+schema-identical to a normal session's). So Codex's targeting story converges with Claude Code's
+and opencode's exactly as this entry's design section predicted it structurally could, once real
+data existed to check against: point `path` at the specific rollout file, no flag needed. The one
+gap that turns out to be real and shared across **all three** adapters, not just opencode, is
+discovery — nothing yet lists a session's family of files/rows and their lineage without already
+knowing a child id/thread id. `adapters/codex.py`'s docstring is updated in place with this
+correction (own conventions there: correct, don't silently delete the wrong claim).
+
+**This directly answers the operator's very next question** ("we need to know which sessions
+exist — session-stats? session-analysis? extract-report?"): the discovery gap is real and now
+confirmed identical in shape across all three adapters (walk siblings under one root id, surface
+parent/depth/nickname-or-description), which argues for ONE adapter-generic verb — not a
+per-format bolt-on, and not folded into `session-stats` (which is inherently single-session
+cost/timeline, requires already knowing the target) or an `extract-report` (which would report on
+one extraction's OUTPUT, a different question from "what exists to target"). Not yet built — this
+paragraph is the recommendation made, not a shipped verb.
+
+**SHIPPED same day, operator direction on naming**: `nyxloom extract-sessions <path>` (new verb;
+`session_extract/sessions.py`'s `SessionNode`/`list_agents()`/`render_tree()`, each adapter's own
+`list_agents(path)` doing the real per-CLI walk). `session-stats` renamed to `nyxloom extract-report`
+(behavior unchanged) for a consistent `extract-*` verb family alongside it — the naming asks
+("session-analysis? extract-report, should it also read a lossless dump?") resolved simpler than
+the open question implied: `extract-report` stays exactly what `session-stats` already was
+(cost/timeline on raw session content), and `extract-sessions` is the new, separate discovery
+verb; no verb reports on an extraction's OUTPUT (that idea is still just noted above, not built).
+
+Real-data verification while building it surfaced one more correction, this time to E-015's OWN
+Codex bullet above: the live `spawn_agent` test's rollout files, re-examined for this verb, show
+`session_meta.payload.source` is a **plain string** (`"exec"`) for a real top-level/root session
+and only an object (`{"subagent": {"thread_spawn": {...}}}`) for a real sub-agent's own file — not
+consistently one shape, caught by a real `AttributeError` when `list_agents()`'s first version
+assumed `.source` was always a dict. `adapters/codex.py`'s `list_agents()` guards this explicitly
+now (`isinstance(raw_source, dict)`), and its comment there is the load-bearing record of the fact,
+not just this doc entry.
+
+All three adapters' `list_agents()` verified end to end against real local data, not synthetic
+fixtures alone: Claude Code against the same real 36-subagent, 2-level-nested session used to
+validate the toolUseId cross-reference design above (output matched the hand-verified lineage
+exactly, both queried from the top-level file and from a leaf sub-agent file); Codex against the
+real family this entry's live test produced; opencode against the real local 935MB store (72
+sessions, 24 forked, real `title`/`agent` columns richer than this file's earlier opencode notes
+assumed — `adapters/opencode.py`'s module docstring is updated in place with the full real schema).
+`session_extract` test suite: green (`tests/test_cli_extract.py`'s new `extract-sessions`/renamed
+`extract-report` tests, `tests/test_cli_help.py`).
+
+**Same-day follow-up (2026-09-11, operator-reported real repro): `extract-sessions <path>` didn't
+support a DIRECTORY of many sessions.** Pointing it at a Claude Code project directory
+(`~/.claude/projects/<project>/`, holding one top-level `*.jsonl` per session -- exactly the
+natural "what's in this project" invocation the whole verb exists for) failed outright ("could not
+detect a session-log format" -- an error about ONE file's content, on a path that isn't one).
+Fixed in `sessions.py`'s `list_agents()`: a directory that isn't an opencode store (already
+handled) is now treated as a project/sessions root -- every top-level Claude Code `*.jsonl` found
+directly in it, or (if none) every Codex `rollout-*.jsonl` found anywhere under it, contributes its
+own family to one combined forest. Verified against real local data both ways: `~/.claude/projects/
+-workspaces-vbpub` (802 output lines, every top-level session plus its own subagent tree) and the
+exact literal path the operator's own repro used, `~/.claude/projects/-workspaces-dstdns` (and its
+trailing-slash variant). Also handles the one-level-too-high mistake the same repro made
+(`~/.claude/projects` itself, the parent of every project) with a real, cheap hint rather than a
+dead end: if nothing is found directly in the given directory but a subdirectory one level down
+has sessions, the error names up to three real candidates.
+
+**Same session, broader ask: a full-CLI text audit ("perspective of a 3rd party user"), not just
+this package.** Concrete trigger: the operator asked "what is `project`?" after `nyxloom events`
+demanded a positional `project` with no explanation -- a real, structural confusion this whole CLI
+invites, not a wording nit. nyxloom bundles two unrelated ID/path vocabularies behind one binary:
+a registered-project-id registry (`nyxloom project add <id> <root>`, used by the "project &
+workflow lifecycle"/"knowledge & backlog" verb groups) and, entirely separately, raw on-disk
+session-log files from a coding-agent CLI (the `extract-*` family's own `path`). Both "look like a
+thing you point a command at," so the same bare word/no-explanation pattern that broke down for
+`extract-sessions` (see E-015's main body above) was present -- worse, in fact -- across ~15 other
+verbs. Fixed CLI-wide: every session-log positional now carries an explicit `SESSION_LOG` metavar
+plus one shared, detailed help string (`_SESSION_LOG_HELP` in `cli.py`) explicitly saying what it
+is NOT ("NOT a nyxloom registered project id"); every project-id positional/flag now carries
+`PROJECT_ID` plus a shared cross-reference (`_PROJECT_ID_HELP`, "see `nyxloom project list`");
+`TASK_ID`/`DECISION_ID`/`INTAKE_ID`/`ENTRY_ID`/`INBOX_ID`/`PROJECT_ROOT`/`PROJECT_FOLDER`/
+`HANDOFF_FILE` similarly, each cross-referencing where that id actually comes from (verified
+against real command behavior, not guessed -- e.g. `lint`'s undocumented "omit path entirely to
+lint every registered project" default, `backlog`'s `--project` resolving via filesystem walk-up
+independent of the registry unlike every other verb, `doctor`/`status`/`tick`'s "--project omitted
+means every registered project"). Several previously help-less flags (`finding record`'s `--kind`/
+`--severity`/`--task-id`, `backlog new`'s type/severity/component/etc.) got real help text too.
+Along the way, caught and fixed a second, unrelated asymmetry while spot-checking real `--help`
+output: the per-subcommand version banner (`_sub.description = f"nyxloom {version}"`, 2026-09-10)
+only ever walked TOP-level verbs, so `nyxloom project add --help` / `nyxloom backlog new --help`
+and every other nested sub-subcommand silently never got it -- now applied recursively via each
+subparser's own private `_subparsers` attribute. `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-
+INVENTORY-2026-08-02.md`'s `cli.py` row re-measured (2,843 -> 3,225 lines) per that document's own
+convention. Full `tests/` suite green after the rewrite (two exact-string test fixes needed:
+`test_init_missing_project_folder_exits_2`, `test_subcommand_missing_required_arg_shows_only_its_
+own_error`, both now asserting the new uppercase metavars).
+
+## E-016 · 2026-09-11 · dstdns live evidence for §3's "children do not survive a process boundary"
+## — a WEDGED (not dead) Agent-tool child, and an extract-after-autocompact null result
+
+**Context, so this isn't read as reinventing `design-controller-checkpoint-reset.md`'s already-thorough
+work:** the dstdns operator, mid-session, proposed forcing an external checkpoint/resume cycle for a
+long-running agent via a literal `sleep 60; claude --resume <sid> < <prompt> &` — independently arriving
+at roughly Architecture B's shape (`design-controller-checkpoint-reset.md` §2). This entry does not
+re-derive A/A2/B/C or the V5.x plan; it adds two concrete, freshly-observed dstdns data points that
+sharpen two specific open edges of that existing design: the exact shape §3 calls "children do not
+survive a process boundary" takes when it's the CHILD's own turn that gets stuck (not the controller's),
+and a timing constraint on Architecture C (and any `nyxloom extract`-based checkpoint) that wasn't yet
+measured.
+
+**Finding 1 — a WEDGED child is a harder-to-detect failure than a DEAD one, and it's now been observed
+7 times.** §3 frames the child-survival problem as children dying with the parent process (F11: "not
+even addressable afterwards"). The dstdns pipeline (`docs/ai-dev/core-workflow-controller-2026-08`
+lineage, `feedback-subagent-monitor-on-own-gate-can-silently-never-fire.md` in dstdns's own Claude Code
+memory) has been hitting a related but distinct failure repeatedly: an Agent-tool CHILD backgrounds a
+long-running command **inside its own turn** (its `run-gate` gate invocation, via `Monitor` or `Bash
+run_in_background`), then ends its turn saying some variant of "I'll wait for the background
+notification." The child does **not** die — it's still a live, listed agent (`ListAgents` shows it,
+its transcript file exists and is well-formed) — but its own turn-loop is over, and the completion
+notification for the background task it started routes to the DISPATCHING session (the controller),
+never back into the child's own context, because nothing re-invokes a subagent's turn just because one
+of its background children finished; only an explicit `SendMessage` does. From the controller's side
+this reads as "still working" indefinitely — worse than F11's clean death, because there is no external
+signal (no exit, no crash) that anything is wrong; the only tell is the absence of new commits/output
+against elapsed wall-clock time, which requires the controller to actively suspect and go verify
+(`ps aux`, a log tail, the worktree's own `.assay/*.json` verdict timestamps) rather than being told.
+
+Documented incidents, all in dstdns's own controller memory (`feedback-subagent-monitor-on-own-gate-
+can-silently-never-fire.md`): 7 occurrences (P164, P169, P102, P93 ×2, P175, P183) across roughly three
+weeks, recovered each time only because the controller happened to check rather than trust the child's
+silence. The fix that finally held (P184, 2026-09-11, two consecutive dispatches — implementer and a
+fresh code reviewer — both clean, zero recurrence): the dispatch prompt must contain the **literal,
+standalone** sentence "run this as a single blocking foreground call … never background it and end your
+turn expecting a notification; nothing will wake you back up" — and critically, this can't be left to
+being *remembered*; the working fix was a **mechanical pre-dispatch check** (grep the drafted prompt
+text itself for "never background" before calling the Agent tool, add it if absent) after the same
+sentence, already present in memory across two prior incidents, still failed to make it into a dispatch
+prompt from memory alone under time pressure. This is the practical, load-bearing version of §3's
+Option 1 ("join before cutting") applied one level down — not the controller joining its own children
+before a checkpoint, but the CHILD itself never being allowed to create an unjoined background grandchild
+in the first place. **Simplest fix, and probably the right general rule for the whole B46 design**: a
+subagent has nothing else useful to do while its own gate runs anyway, so backgrounding buys it nothing
+and costs the whole remaining dispatch if it then stops — a single blocking foreground call inside the
+child's own turn sidesteps the entire "how does a child get woken up" problem for THIS class of
+long-running-command wait, without needing any external watchdog, `-p --resume`, or fork mechanism at
+all. Worth folding into whatever B46/nyxloomd dispatch-prompt template eventually exists: this is a
+checklist item at prompt-construction time, not a runtime mechanism.
+
+**Finding 2 — `nyxloom extract` immediately after a harness auto-compaction is a near-zero-value no-op,
+which bounds when an extract-based checkpoint (Architecture C, or any B46 "checkpoint on request"
+service) is worth invoking.** Live observation, same dstdns session: `nyxloom extract` run on the
+session's own transcript, requested mid-conversation, returned only ~10 lines — because the harness's
+own automatic compaction had already fired first and replaced almost the entire prior history with a
+single `[compact summary]` marker, leaving very little granular detail for `extract` to further
+condense. This is not a malfunction in either mechanism; it's the correct, expected composition: harness
+auto-compaction already did the heavy lifting, and `extract` only adds value against an UNCOMPACTED
+transcript — contrasted directly in the same session against `extract`'s first real use (P183's carve
+dispatch), run on a full pre-compaction narrative, which produced a genuinely useful 457-line
+orientation file.
+
+**Consequence for the design:** any external checkpoint trigger built around `nyxloom extract` (C's
+snapshot-fork chain, or a B46 "run compaction externally on request" service) only has something worth
+extracting if it fires **before** the harness's own auto-compact threshold destroys the fine-grained
+detail — i.e., proactively, at the agent's own semantic-boundary ARM point (dstdns `CLAUDE.md`'s
+"Long-running agent context discipline": ARM ~250k context/~110 tool calls, CUT at the next coherent
+boundary), not reactively once a session has already grown large enough that the harness stepped in on
+its own. A trigger that fires later than the harness's own threshold is strictly dominated by just
+letting the harness auto-compact for free. This argues for the external trigger being **event/threshold-
+driven off the same signals the in-session checkpoint rule already watches** (context size, tool-call
+count, or the coherent-boundary events named there: green gate, commit landed, LOG/REPORT written) —
+which is the same direction §4's V5.2 (`Stop` hook + `background_tasks`) and the existing "gate on
+`claude agents --json status: idle`" (F10, cited against A2/V5.6) already point, not a new primitive.
+It also directly answers the operator's specific proposed mechanism (`sleep 60; claude --resume … &`):
+a blind fixed-delay sleep is the wrong shape regardless of which architecture (A2/B/C) it's wired into,
+for two independent reasons already named elsewhere in this doc — it can't know if it's landing on a
+*coherent* boundary (the checkpoint rule's own "never mid-item, never on a red gate" constraint), and an
+external `-p --resume` racing a still-live session risks the exact corruption V5.6 already exists to
+test for. The mechanism the operator wants (external, discipline-enforcing, not dependent on the agent
+remembering) is sound and is already Architecture B/A2's whole premise; what needs to change from the
+raw shell one-liner is *only* the trigger condition — idle/boundary-gated, per F10/V5.2, never a bare
+`sleep N` guess.
+
+**Status:** both findings are evidence/analysis, not new code. Finding 1's fix (mechanical pre-dispatch
+grep for the "never background" sentence) is live practice in dstdns's controller workflow as of
+2026-09-11, not yet generalized into a nyxloomd/B46 dispatch-prompt template. Finding 2 changes no
+existing recommendation in `design-controller-checkpoint-reset.md` §5 — it adds a concrete "why the
+trigger must be proactive, not reactive" argument for the idle/boundary-gating that section (and V5.2/
+F10) already calls for.
