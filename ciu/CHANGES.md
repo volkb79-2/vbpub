@@ -21,6 +21,36 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.13.0] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=764f9c5a2e24b83d524969ce244775bc070412b8 -->
+
+### Added
+- feat(nyxloom): B9 -- feature-intake chat bridge over Mattermost (P109) (16c3e361)
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.1.0 -> 6.1.1 (assay-v6.1.1) (dd8b07f1)
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.0.0 -> 6.1.0 (assay-v6.1.0) (ec868f14)
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 5.2.0 -> 6.0.0 (assay-v6.0.0) (ec0bc47f)
+- fix(cmru,ciu,nyxloom): re-pin stale assay gate zipapps to 5.2.0, file KI-27 (583faad7)
+
+### Changed
+- Merge branch 'main' into rg51-worktree-base-fallback (9db35811)
+- RG-51/CIU-106 round-5: a graph clause is not "is there anything to judge" (d8b6f70a)
+- RG-51/CIU-106 round-4: capture the fork point at CHECKOUT, not at worktree add (3f5e8912)
+- ciu: cover the rev-parse-succeeded-but-not-a-SHA branch (CIU-106) (d9476b43)
+- ciu CIU-106 + run-gate RG-51: record the FORK COMMIT, and require it to still hold (d683f608)
+- backlog(ciu): CIU-106 -- worktree record stores base_ref but never the FORK COMMIT (508a81fd)
+- backlog: CIU-104/CIU-105 status updates -- partial fixes landed 2026-09-11 (a861f071)
+- ciu: [deploy] protected = true guards --stop/--clean (CIU-105) (98957a12)
+- ciu init: environment_tag default dev -> \$INSTANCE_ID (CIU-104 fix) (9ce4bd32)
+- assay.toml: ciu R1 base = origin/main -> main (35d603f9)
+- nyxloom: migrate environment_tag to $INSTANCE_ID; live mattermost cutover (CIU-104) (4037e4e0)
+- backlog(ciu): file CIU-105 -- no same-owner confirmation gate for `ciu down`/`ciu clean` against a flagged-important instance (7c517bd1)
+- backlog(ciu): amend CIU-104 -- $INSTANCE_ID environment_tag already solves this in v7, no v8 needed (1f59fd59)
+- backlog(ciu): file CIU-104 -- `ciu worktree create` doesn't protect against a worktree recreating a different checkout's live container by name (89d76585)
+- backlog(ciu): file CIU-103 -- `ciu up --dry-run` runs the real post_compose hook against the live stack; only `docker compose up` itself is skipped (f3c44b30)
+
 ## [Unreleased]
 
 ### Added
