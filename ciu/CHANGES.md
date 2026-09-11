@@ -21,6 +21,13 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+<!-- hand-written ahead of release; fold into its own dated section (never
+     leave here) the moment that release is cut, per the process note above.
+     Check every ID here against the dated sections below BEFORE trusting
+     this block is actually unreleased -- see 2026-09-11's entry under
+     7.12.0 for why. -->
+
 ## [7.13.0] - 2026-09-11
 <!-- cmru: generated -->
 <!-- cmru: source-end=764f9c5a2e24b83d524969ce244775bc070412b8 -->
@@ -51,9 +58,7 @@ restatement of the technical detail below it.
 - backlog(ciu): file CIU-104 -- `ciu worktree create` doesn't protect against a worktree recreating a different checkout's live container by name (89d76585)
 - backlog(ciu): file CIU-103 -- `ciu up --dry-run` runs the real post_compose hook against the live stack; only `docker compose up` itself is skipped (f3c44b30)
 
-## [Unreleased]
-
-### Added
+### Added (detail)
 - **CIU-104 (partially) — `ciu init`'s scaffold default for `environment_tag`
   is now `"$INSTANCE_ID"`, not the inert literal `"dev"`.** A worktree's
   container names are `f"{project}-{env_tag}-{service}"`
@@ -126,7 +131,7 @@ restatement of the technical detail below it.
   (`unknown=['fork_point_sha']`); do not downgrade ciu against worktrees
   created with this version.
 
-### Fixed
+### Fixed (detail)
 - **CIU-105 (partially) — `[deploy].protected = true` guards `ciu down`/`ciu
   clean` behind a second, explicit flag.** CIU-104's `owner_id` mitigation
   only answers "does this resource belong to the checkout invoking this
@@ -166,6 +171,36 @@ restatement of the technical detail below it.
   reach (a SIGKILL between the record write and the marker), stays OPEN as
   CIU-107; it needs a provenance fact in the record rather than a marker
   written afterwards.
+
+### Adoption / Migration Notes
+
+**Safe to ignore for almost everyone — every change here is either a
+new-repo-only default or opt-in.** Act only if one applies to you:
+
+1. **You have an EXISTING repo (scaffolded before this release) whose
+   `environment_tag` is a fixed literal shared by more than one checkout of
+   the same project** (CIU-104) — switch it to `"$INSTANCE_ID"` by hand.
+   Fresh `ciu init` already defaults to this; nothing to do for new repos.
+   Runtime protection (refusing/warning when a container name collision is
+   about to happen) is still OPEN — the default only closes the common case,
+   not the class of mistake.
+2. **You have a checkout you never want torn down by a stray `-y`** (a
+   shared dev instance, anything this estate would call "production") — add
+   `protected = true` under `[deploy]` (CIU-105). Everyone else: unaffected.
+   Note this is a config-time accident guard, not tamper-resistance — the
+   flag itself can be edited by anyone with repo access.
+3. **You run `ciu worktree create|add` and consume `run-gate`'s RG-51 base
+   resolution** — worktrees created from this version onward carry
+   `fork_point_sha` and get the safer default automatically; nothing to do.
+   Worktrees that ALREADY EXIST predate the field and keep their old
+   behavior until recreated — not broken, just not upgraded in place.
+4. **You run an OLDER ciu against a worktree created by THIS version** —
+   don't. It will refuse the record (`unknown=['fork_point_sha']`). Upgrade
+   the older ciu instead of downgrading against newer worktrees.
+5. Everyone using `ciu worktree adopt`: unaffected by CIU-104/106, and
+   CIU-105's fix means an interrupted adopt no longer risks discarding your
+   own commits on resume (CIU-107) — a pure robustness improvement, no
+   action needed.
 
 ## [7.12.0] - 2026-09-08
 <!-- cmru: generated -->
@@ -217,14 +252,19 @@ restatement of the technical detail below it.
 ### Testing
 - test(ciu): ciu-P50 -- close the changed-line coverage gaps the first gate run found (b57cc41c)
 
-## [Unreleased]
+<!-- Folded in 2026-09-11, three releases late: this hand-authored detail sat
+     under a `## [Unreleased]` heading that never got cleared at the 7.12.0
+     release (2026-09-08) and drifted down the file, unnoticed, through
+     7.13.0. The KI-23 check note that used to guard this ("the section below
+     it has a real dated heading, so nothing is stale") checks the WRONG
+     thing -- it confirms nothing stale sits BELOW, not that everything HERE
+     has already shipped ABOVE. Every ID below (CIU-93/94/95/96/99) is
+     already released, verbatim, in this same 7.12.0 section's terse form
+     above. Caught while auditing for the same class of bug this project's
+     own process note already names once (assay/CHANGES.md had an
+     independent, worse instance of it the same day). -->
 
-Checked before adding (cmru KI-23): the section below it is `## [7.11.0] -
-2026-09-02` — a real heading with a date, not a bare `- UNRELEASED`, so there
-is no stale hand-authored block to fold in first. Fold this section into its
-release heading at release time, per the process note above.
-
-### Added
+### Added (detail)
 - **feat(ciu): CIU-93 — `ciu host enroll`, remote host enrollment (SPEC
   S14.7, ciu-P52).** S14.1–S14.6 all assumed an inventory row that already
   worked; getting from a bare host to that row was 100% manual (`ssh-keygen`,
