@@ -3814,6 +3814,46 @@ def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]
     ]
 
 
+def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: str) -> Optional[int]:
+    """CIU-105 — refuse ``--stop``/``--clean`` against a ``[deploy] protected
+    = true`` instance unless ``--i-understand-this-is-protected`` is ALSO
+    given.
+
+    Ownership (whose checkout this even is) is a separate question this does
+    not answer — see the still-unbuilt v8 ``owner_id`` design
+    (``KNOWN_ISSUES_TODO_BACKLOG.md`` CIU-105). This guards the RIGHTFUL
+    owner's own accidental teardown instead: the "wrong tab, forgot which
+    checkout" slip that ordinary ``-y`` does nothing to prevent, because
+    verified by reading source (not assumed) the ONLY ``input()``-gated
+    confirmation anywhere in this CLI today is ``ciu secrets reset``
+    (``engine.py``) — ``--stop``/``--clean`` have never had one.
+
+    Reads ``[deploy].protected`` from *config* — the caller's own current
+    rendered tree, not a label stamped on the live container at deploy time
+    (CIU-105's proposed-fix point 3, deliberately deferred: closing THAT gap
+    needs a deploy-time label-stamping mechanism this checkout does not have
+    yet). This closes the common, high-frequency case (an operator standing
+    in the SAME checkout that declares itself protected) with zero new
+    infrastructure; it does not defend against a protected instance whose
+    local config was separately edited back to unprotected after deploy.
+
+    Returns 1 (having already printed the refusal) when protected and not
+    overridden; ``None`` when the caller should proceed exactly as before —
+    every non-protected instance's teardown is completely unchanged.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not isinstance(deploy_cfg, dict) or not deploy_cfg.get("protected"):
+        return None
+    if getattr(args, "i_understand_this_is_protected", False):
+        return None
+    error(
+        f"[CIU-105] refusing --{action_label}: this instance is marked "
+        f"[deploy] protected = true. Pass --i-understand-this-is-protected "
+        f"to proceed."
+    )
+    return 1
+
+
 def action_stop(config: dict) -> int:
     """--stop: stop all project containers (volumes preserved) — S7.8 / B4.
 
@@ -4750,6 +4790,7 @@ Examples:
   ciu-deploy --stop                         # stop project containers
   ciu-deploy --clean -y                     # remove containers/volumes/rendered
   ciu-deploy --clean --vanilla -y           # ...and reset ciu.env/global config
+  ciu-deploy --clean -y --i-understand-this-is-protected  # ...against a [deploy] protected = true instance (CIU-105)
   ciu-deploy --list-profiles                # show host profiles
   ciu-deploy --list-phases                  # show numbered phases
 """,
@@ -4784,6 +4825,11 @@ Examples:
                          help="Comma-separated phase numbers to restrict to (e.g. 1,2)")
     control.add_argument("-y", "--yes", action="store_true",
                          help="Non-interactive: auto-confirm prompts")
+    control.add_argument("--i-understand-this-is-protected",
+                         dest="i_understand_this_is_protected", action="store_true",
+                         help="Required IN ADDITION to -y for --stop/--clean against "
+                              "an instance whose [deploy] table declares "
+                              "protected = true (CIU-105); -y alone refuses")
     control.add_argument("--ignore-errors", dest="ignore_errors", action="store_true",
                          help="Continue past failures (final exit is still 1) (S7.3)")
     control.add_argument("--vanilla", action="store_true",
@@ -5058,9 +5104,11 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         elif action == "list_profiles":
             ac = action_list_profiles(profile.config)
         elif action == "stop":
-            ac = action_stop(profile.config)
+            refusal = _refuse_if_protected(profile.config, args, "stop")
+            ac = refusal if refusal is not None else action_stop(profile.config)
         elif action == "clean":
-            ac = action_clean(
+            refusal = _refuse_if_protected(profile.config, args, "clean")
+            ac = refusal if refusal is not None else action_clean(
                 repo_root, profile, selection,
                 ignore_errors=args.ignore_errors,
                 vanilla=getattr(args, "vanilla", False),

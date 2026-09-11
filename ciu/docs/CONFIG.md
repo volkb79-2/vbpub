@@ -263,6 +263,7 @@ validated even when the override is present.
 | `network_name` | Yes | S2.6 — typically `"$DOCKER_NETWORK_INTERNAL"` |
 | `log_level` | No | — |
 | `landscape_id` | No | S3.11 — DNS-label-safe slug; shared-landscape identity for consumer KV roots / mesh ACL tags |
+| `protected` | No | CIU-105 — `true` requires `--i-understand-this-is-protected` in addition to `-y` for `ciu down`/`ciu clean` |
 
 Subsections:
 
@@ -357,6 +358,20 @@ identity of one deployment landscape and render its Consul KV root
 (`dstdns/<landscape_id>/…`) and mesh ACL tags from it. When present it MUST
 match `^[a-z][a-z0-9-]{0,62}$` (a DNS-label-safe slug, lowercase first); a
 violating value fails the global render, naming the key and the pattern.
+
+`protected` is **opt-in** (CIU-105): declare `protected = true` for an
+instance you consider important — a live production deployment, anything
+whose teardown would be costly to redo. With it set, `ciu down`/`ciu clean`
+refuse under ordinary `-y` alone and require
+`--i-understand-this-is-protected` in addition, naming the missing flag
+rather than silently proceeding or silently refusing. This guards the
+RIGHTFUL owner's own accidental teardown (wrong terminal tab, muscle
+memory) — a different failure mode from cross-checkout ownership, which
+`protected` does not address. The check reads `[deploy].protected` from
+the invoking checkout's OWN rendered config, not a label recorded on the
+live container at deploy time — a protected instance whose local config is
+later edited back to `false` loses the guard; closing that gap needs a
+deploy-time label-stamping mechanism this repo does not have yet.
 
 Do not confuse it with the **configfile render context** name `instance_id`
 (`[<root>.<service>.configfile.<name>]`, [S5.1](SPEC.md#s5--config-file-mounts-own-apps) /
