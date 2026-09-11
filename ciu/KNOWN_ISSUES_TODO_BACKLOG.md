@@ -3829,6 +3829,27 @@ earlier `CIU-V8-TESTING-GATE-PROPOSAL.md` draft also carried a
 confirmation-on-teardown mechanism; it is no longer in the current file —
 superseded by the `owner_id` approach above, not merely forgotten.
 
+### Status — PARTIALLY FIXED, 2026-09-11
+
+Proposed-fix option 3 (re-weighted per the Correction above) landed:
+`scaffold.py`'s `ciu init` default is now `environment_tag =
+"$INSTANCE_ID"`, not the inert literal `"dev"` — every FRESH `ciu init`
+from this point forward is collision-proof by default, with zero extra
+author effort, unless the author deliberately opts out via
+`--environment-tag`. Gate-verified (R0+R1 PASS, 100% coverage).
+
+Options 1 and 2 (`ciu up`/`ciu worktree create-ensure` actively refusing
+or warning when a container name about to be recreated already exists,
+is RUNNING, and belongs to a different `repo_root`) remain **OPEN** — no
+runtime guard exists. This means: any EXISTING repo that already
+declares a fixed, non-`$INSTANCE_ID` `environment_tag` literal (as
+nyxloom/mattermost's own `"prod"` did, fixed by hand separately, not by
+this scaffold change), or any new repo whose author deliberately opts
+out of the new default, still has zero runtime protection against the
+exact live-incident scenario this entry documents. The scaffold-default
+fix prevents the hazard from being created by accident going forward; it
+does not detect or refuse it when it already exists.
+
 ## CIU-105 — no protection against the RIGHTFUL owner's own accidental `ciu down`/`ciu clean` against a flagged-important instance, in v7 or as currently designed for v8
 
 **Filed by:** nyxloom, 2026-09-10, same session as CIU-104, prompted by an
@@ -3922,6 +3943,35 @@ trivially easy to trigger (a wrong-tab mistake, not a rare cross-instance
 coincidence), and the mitigating design already existed once and was
 dropped without a replacement — this is a known, previously-solved gap
 reopening, not an undiscovered one.
+
+### Status — PARTIALLY FIXED, 2026-09-11
+
+Proposed-fix options 1+2 landed as a single mechanism: `[deploy].protected`
+(bool, opt-in, validated on the final merged config —
+`config_model._validate_deploy_protected`, mirroring CIU-36's
+`landscape_id`). `deploy.py`'s `_refuse_if_protected` gates the
+`--stop`/`--clean` dispatch — set `protected = true` and ordinary `-y`
+refuses, naming `--i-understand-this-is-protected` as the required
+additional step; an unprotected instance is completely unaffected. The
+Behavioral Oracle's spirit is met via mocked-docker unit tests proving
+teardown mechanics never run when refused (`test_ciu105_protected_
+teardown.py`), rather than a live-container fixture. Gate-verified
+(R0+R1 PASS, 100% coverage).
+
+Deliberately NOT covered, still open:
+- **Proposed-fix point 3** (label-based tamper-resistance): the check
+  reads `[deploy].protected` from the invoking checkout's own current
+  rendered config, not a label stamped on the live container at deploy
+  time. A protected instance whose local config is later (accidentally
+  or not) edited back to `false` loses the guard. Needs a deploy-time
+  label-stamping mechanism this repo does not have yet — which would
+  ALSO serve CIU-104's still-open repo_root-identity check (options 1/2
+  there), so building it once could close a slice of both entries
+  together.
+- **A `ciu up` that would force-recreate an already-running protected
+  service** (explicitly named in the original proposed fix as "arguably"
+  in scope, and it is the exact CIU-104 incident's own last step): not
+  gated by this fix at all. Only `--stop`/`--clean` are guarded.
 
 ## Compact resolved index
 
