@@ -7,9 +7,15 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
 
-### Fixed
+<!-- cmru: release history -->
+
+## [23.6.2] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=5c879d3fa9a67a59ae83a6c3869781ed0329f3ef -->
+
+### Fixed (detail)
 - **RG-52 — a comparison base reached a conjunction lane's inner `bash -c` as
   unquoted shell text.** A `kind = "command"` lane propagates its base with a
   `{base}` token in its own argv; `shlex.join` quotes the argv ELEMENT, but
@@ -141,12 +147,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
      housekeeping rule (clear this block by hand after every release,
      cmru's generator never does it) had been written down here before but
      not actually carried out. -->
-
-<!-- cmru: release history -->
-
-## [23.6.2] - 2026-09-11
-<!-- cmru: generated -->
-<!-- cmru: source-end=5c879d3fa9a67a59ae83a6c3869781ed0329f3ef -->
 
 ### Changed
 - backlog(run-gate): RG-54/RG-53 -- record the first-parent 0/0 seen in a real artifact (743869fe)
