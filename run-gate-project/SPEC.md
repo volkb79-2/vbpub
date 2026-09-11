@@ -618,6 +618,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     is no fallback to `HEAD` or to a default branch name: a changed-line
     judgment whose base was guessed is not a changed-line judgment.
 
+- `R-35b` **Gate-safe comparison base (RG-52).** A comparison base, from ANY
+  source, must match `[A-Za-z0-9._/+@][A-Za-z0-9._/+@-]*` before it reaches
+  `{base}` substitution, `--request-base`, or any shell. This is narrower
+  than git's own ref grammar — git permits `;`, backticks, `$`, `|`, `&` and
+  quotes in a ref name — because a conjunction lane's `{base}` lands inside
+  an element that the inner `bash -c` re-parses, where `shlex.join`'s quoting
+  of the OUTER element does not protect it. The exact counterpart of `R-5`'s
+  `{worktree}` charset, and refused for the same reason.
+  - `--base` **refuses** (exit 2, naming the offending characters); a
+    `ciu.worktree-instance.json` `base_ref` **degrades** to `R-35`'s
+    `@{upstream}` fallback instead, because a file must never be able to
+    abort a gate run (`R-35a`). One shared expression, so the two cannot
+    drift.
+  - A **leading `-`** is refused separately and named as a POSITION problem:
+    `-` is legal later in a ref, and the hazard is that a sub-invoked
+    `./run-gate.py --base <ref>` parses it as an option.
+  - This makes the substituted VALUE inert. It does not make a lane author's
+    surrounding argv well-quoted, which remains their own.
+
 - `R-35a` **Recorded worktree fork point (RG-51).** `@{upstream}` is a
   REMOTE-tracking ref, so under a "batch commits locally, push later" policy
   `R-35`'s default drifted behind local work with nobody touching config —
@@ -670,8 +689,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       judges NOTHING: an assay lane reaches assay's own `BASE_IS_HEAD`
       refusal three layers down, and a `kind = "command"` lane has no such
       guard while its diff-coverage judge scores `0/0` as 100% — a silent
-      false green. This clause subsumes the frozen-id, own-branch and
-      literal-`HEAD` collapses.
+      false green. This clause covers the own-branch and literal-`HEAD`
+      collapses; the frozen-id (`adopt`) case is caught by the previous
+      clause instead, since such a SHA is an ANCESTOR of HEAD once any
+      commit follows the adopt. Neither clause covers a base that absorbed
+      this branch before the branch moved on again — see RG-51's round-3
+      finding in the backlog.
   - **A record whose `branch` disagrees with the tree's checked-out branch
     is refused**, the way ciu's own reader refuses it: that is the reused-
     worktree case, where a stale record would widen the judged diff to

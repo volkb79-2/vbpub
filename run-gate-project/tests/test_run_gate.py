@@ -7,6 +7,7 @@ Every argv assertion compares the LIST, never a joined string.
 
 import atexit
 import calendar
+import contextlib
 import fcntl
 import json
 import os
@@ -4810,6 +4811,26 @@ def write_instance_record(directory: Path, **over) -> Path:
     return path
 
 
+@contextlib.contextmanager
+def alarm_guard(message: str, seconds: int = 20):
+    """Fail a test that BLOCKS instead of letting it hang the lane.
+
+    Used around every read that a regression could turn into an unbounded
+    wait (a FIFO at the record path). A hung selftest run sits there until
+    its budget kills it and produces no verdict at all, which is harder to
+    diagnose than a red one.
+    """
+    def _blocked(*_args):
+        raise AssertionError(message)
+    previous = signal.signal(signal.SIGALRM, _blocked)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def make_feature_repo(tmp_path: Path) -> Path:
     """`make_repo` plus a second commit on a checked-out branch `feature`,
     i.e. the shape `ciu worktree create --base main` produces: HEAD is on a
@@ -4975,17 +4996,9 @@ class TestRecordedWorktreeBase:
         diagnose than a red one."""
         repo = make_feature_repo(tmp_path)
         os.mkfifo(repo / run_gate.WORKTREE_INSTANCE_RECORD)
-        previous = signal.signal(
-            signal.SIGALRM,
-            lambda *_: (_ for _ in ()).throw(
-                AssertionError("recorded_worktree_base blocked on a FIFO")))
-        signal.alarm(20)
-        try:
+        with alarm_guard("recorded_worktree_base blocked on a FIFO"):
             assert run_gate.recorded_worktree_base(repo, repo) == \
                 (None, None, "")
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, previous)
 
     @pytest.mark.skipif(os.geteuid() == 0,
                         reason="root reads a 0o000 file regardless")
@@ -5222,7 +5235,7 @@ class TestRecordedWorktreeBase:
         write_instance_record(repo, base_ref=payload)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
         assert ref is None
-        assert "is not plain ref text" in why and "RG-52" in why
+        assert "is not gate-safe ref text" in why and "RG-52" in why
         assert not Path("/tmp/RG51_PWNED").exists()
 
     @pytest.mark.parametrize("hostile", [
@@ -5244,7 +5257,7 @@ class TestRecordedWorktreeBase:
         repo = make_feature_repo(tmp_path)
         write_instance_record(repo, base_ref=hostile)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
-        assert ref is None and "is not plain ref text" in why
+        assert ref is None and "is not gate-safe ref text" in why
         assert not Path("/tmp/RG51_PWNED").exists()
 
     @pytest.mark.parametrize("option_like", ["--all", "-n", "--not-a-ref"])
@@ -5255,7 +5268,7 @@ class TestRecordedWorktreeBase:
         write_instance_record(repo, base_ref=option_like)
         ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
         assert ref is None
-        assert "does not name a local branch in this tree" in why
+        assert "is not gate-safe ref text" in why    # leading '-', by POSITION
 
     @pytest.mark.parametrize("legal", ["base/sub-task", "release-1.2.3",
                                        "v2_x", "a.b+c@d"])
@@ -5332,11 +5345,138 @@ class TestRecordedWorktreeBase:
         """`recorded_worktree_base` now decides "is there a record here" up
         front, so this guard is no longer reached through it — it stays
         because the guard, not the caller, is what keeps a FIFO from blocking
-        the read, and the next caller must inherit that."""
+        the read, and the next caller must inherit that.
+
+        Carries the same SIGALRM as its sibling: this is the test that
+        actually reaches the guard, so without an alarm a regression HANGS
+        the selftest lane here until its budget kills it instead of failing
+        (round-3 review found the alarm on the sibling and missing here)."""
         missing = tmp_path / run_gate.WORKTREE_INSTANCE_RECORD
         assert run_gate.read_instance_record(missing) is None
         os.mkfifo(missing)
-        assert run_gate.read_instance_record(missing) is None
+        with alarm_guard("read_instance_record blocked on a FIFO"):
+            assert run_gate.read_instance_record(missing) is None
+
+
+class TestComparisonBaseCharset:
+    """RG-52: a comparison base is substituted into a conjunction lane's inner
+    `bash -c` through `{base}` (R-25), where `shlex.join` quotes the OUTER
+    argv element but that element IS the script the inner shell re-parses. A
+    base carrying `;` or a backtick therefore EXECUTES — on a `bare-host`
+    lane, on the real host.
+
+    Closed the way RG-5 closed the identical hole for `{worktree}`: an
+    allow-list refusal before the value can reach substitution. Git's own ref
+    grammar permits these characters, so `git branch 'main;touch /tmp/x'` is
+    a legal branch; this gate still refuses it.
+    """
+
+    _judge = staticmethod(TestComparisonBasePassthrough._judge)
+    _project = TestComparisonBasePassthrough._project
+
+    INJECTIONS = ["main; touch /tmp/RG52_PWNED",
+                  "main && touch /tmp/RG52_PWNED",
+                  "`touch /tmp/RG52_PWNED`",
+                  "$(touch /tmp/RG52_PWNED)",
+                  "main | tee /tmp/RG52_PWNED",
+                  "main > /tmp/RG52_PWNED",
+                  "main 'quoted'",
+                  'main "quoted"',
+                  "main\nmain",
+                  "main main"]
+
+    @pytest.mark.parametrize("payload", INJECTIONS)
+    def test_an_injecting_base_flag_is_refused_before_any_lane_runs(
+            self, tmp_path, monkeypatch, capsys, payload):
+        """The REAL end-to-end path: `--base` on a conjunction lane whose argv
+        carries `{base}`. Before RG-52 this reached `bash -c` verbatim."""
+        cfg = """\
+            schema_version = 1
+            [lanes.gate]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "echo ./run-gate.py --base {base} a"]
+            clean_tree = false
+        """
+        marker = Path("/tmp/RG52_PWNED")
+        assert not marker.exists(), "stale marker from an earlier run"
+        self._project(tmp_path, monkeypatch, cfg)
+        assert run_gate.main(["gate", "--base", payload]) == 2
+        err = capsys.readouterr().err
+        assert "is not gate-safe" in err
+        assert "RG-52" in err
+        assert not marker.exists()
+
+    def test_an_assay_lane_refuses_the_same_base(
+            self, tmp_path, monkeypatch, capsys):
+        """Not only the `{base}` path: the ref also reaches `--request-base`
+        in an argv the container re-parses, so the refusal is on the base, not
+        on one lane kind."""
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "main; id"]) == 2
+        assert "is not gate-safe" in capsys.readouterr().err
+        assert lane_runs(log) == []          # refused BEFORE the judged run
+
+    def test_a_leading_dash_is_refused_on_POSITION_grounds(
+            self, tmp_path, monkeypatch, capsys):
+        """'-' is legal LATER in a ref, so naming it an offending CHARACTER
+        would misdescribe the problem — RG-5 made the same distinction for
+        `{worktree}`."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base=-weird"]) == 2
+        err = capsys.readouterr().err
+        assert "starts with '-'" in err
+        assert "option prefix" in err
+
+    def test_the_refusal_names_every_offending_character(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "a;b|c d"]) == 2
+        err = capsys.readouterr().err
+        for char in ("';'", "'|'", "' '"):
+            assert char in err
+
+    @pytest.mark.parametrize("legal", ["main", "origin/main", "release-1.2.3",
+                                       "feat/x_y", "a.b+c@d",
+                                       "0123456789abcdef0123456789abcdef01234567"])
+    def test_every_real_base_shape_is_still_accepted(
+            self, tmp_path, monkeypatch, capsys, legal):
+        """The allow-list must not become a new refusal surface: branch names,
+        remote-tracking refs, tags and raw SHAs all still pass. A `--base`
+        that names a ref this tree does not have is assay's business, not
+        this check's."""
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", legal]) == 0
+        assert f"--request-base {legal}" in lane_runs(log)[0][-1]
+        assert "not gate-safe" not in capsys.readouterr().err
+
+    def test_check_base_charset_accepts_and_refuses_directly(self):
+        """The predicate itself, so the two callers cannot drift from it."""
+        assert run_gate.check_base_charset("main") is None
+        with pytest.raises(run_gate.GateError):
+            run_gate.check_base_charset("main;id")
+        with pytest.raises(run_gate.GateError):
+            run_gate.check_base_charset("-lead")
+
+    def test_the_derived_upstream_sha_is_always_gate_safe(self, tmp_path,
+                                                          monkeypatch):
+        """The third source of a base is `merge-base HEAD @{upstream}`, whose
+        output is a 40-hex OID — inside the charset by construction. Pinned so
+        that a future change to that path cannot quietly introduce a
+        non-OID."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", "-f", "origin-main", "main")
+        git(repo, "branch", "--set-upstream-to=origin-main", "feature")
+        derived = run_gate.derive_upstream_base(repo)
+        assert run_gate.GATE_SAFE_BASE_RE.match(derived)
 
 
 class TestWorktreeRecordedComparisonBase:

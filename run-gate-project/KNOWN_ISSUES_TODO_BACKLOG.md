@@ -3595,7 +3595,18 @@ delegation without also building an always-inject-`--base` wrapper
 not itself vbpub's to adopt wholesale, but the shape of what closes this
 gap).
 
-### Status — FIXED 2026-09-11 (rev 40), third direction taken
+### Status — NOT FIXED. Implemented, gate-green, and NOT MERGED.
+
+**Blocked on a defect in the chosen direction itself, found by a third
+adversarial review round. Do not merge this without reading "Round 3"
+below.** The implementation described here is complete and lives on
+branch `rg51-worktree-base-fallback`; it is held back because the
+default it installs can silently judge NOTHING, which is worse than the
+too-wide judgment RG-51 set out to fix. Everything below describes what
+was built; the round-3 section says why it is not enough and what would
+make it sound.
+
+### What was built (third direction)
 
 The third candidate below turned out to need no new plumbing at all: the
 provenance IS recorded today. `ciu worktree create|add` writes
@@ -3644,15 +3655,88 @@ checkout's HEAD into the same field.
   branch, and assay still computes `merge-base(base, HEAD)` over it.
   Only the base STRING changes here.
 
-### Review findings — the first two cuts of this fix were false-greens
+### Review findings — all THREE cuts of this fix were false-greens
 
-Two independent adversarial review rounds, each against a fresh agent,
-each finding one BLOCKING defect IN THE FIX. Both were in the same
-direction — narrowing the judged diff, the direction that passes — and
-neither was visible from the tests the previous cut shipped with. The
-lesson worth carrying: for a change that picks a comparison BASE, "does
-it produce an answer" is not the property to test; "does the answer
-still leave the real diff to judge" is.
+Three independent adversarial review rounds, each a fresh agent, each
+finding one BLOCKING defect IN THE FIX. All three were in the same
+direction — narrowing the judged diff, the direction that PASSES — and
+none was visible from the tests the previous cut shipped with. Each fix
+moved the collapse one step further out rather than removing it.
+
+The lesson worth carrying: for a change that picks a comparison BASE,
+"does it produce an answer" is not the property to test; "does the
+answer still leave the branch's real work to judge" is. And when three
+successive rounds find the same class, the premise is the suspect, not
+the predicate.
+
+#### Round 3 — the guard is exact-containment only; ONE follow-up commit re-opens it
+
+`git merge-base --is-ancestor HEAD <base>` answers "is the diff empty
+RIGHT NOW", not "does this base still leave the branch's work to judge".
+It fires only at the instant `merge-base(base, HEAD) == HEAD`. Add one
+commit to a merged-but-not-torn-down worktree and the guard reports
+"genuinely divergent — usable", while `merge-base` sits on the PRE-MERGE
+BRANCH TIP: everything the branch did before the merge silently leaves
+the changed-line set.
+
+Reproduced independently against the real `recorded_worktree_base`
+(branch off `main`, 3 lines of work, `--no-ff` merge into `main`, then
+one follow-up commit):
+
+```
+STATE 1 (merged, nothing new)      -> rejected, "already contains this tree's HEAD"
+STATE 2 (merged + ONE more commit) -> ACCEPTED 'main', no warning
+   merge-base(main, HEAD) = the old branch tip, not the fork
+   judged diff for the branch's own file vs recorded base : (empty)
+   judged diff for the branch's own file vs TRUE fork     : 3 insertions
+```
+
+Reachability is not hypothetical: three of the seven real ciu worktrees
+here (`hypothesis-followups`, `mattermost-stale-test-fix`,
+`render-qa-prefix-fix`) are merged-and-not-torn-down with
+`base_ref = "main"` and zero commits since — i.e. each is exactly ONE
+commit away from state 2, with 5-9 files of branch work that would
+vanish. Adding a follow-up commit is the natural next act in a worktree
+you deliberately kept. Neither consumer catches it: assay's
+`check_base_is_head` only refuses when the resolved base EQUALS HEAD,
+and both assay and `tools/coverage_gate.py` score a zero denominator as
+100% (RG-53).
+
+**Why this is not fixable with another predicate.** In the
+fast-forward-merge case there is NO local signal distinguishing "the
+base absorbed my work" from "I forked here": `merge-base` is the maximal
+commit shared by base and HEAD in both situations, and ciu's record does
+not carry the fork commit. A rule that separates them needs a fact that
+is not written down today.
+
+**What would make this sound.** `ciu worktree create|add` knows the fork
+commit at creation time and could record its OID alongside `base_ref`;
+run-gate could then refuse whenever `merge-base(base_ref, HEAD)` is a
+strict descendant of that recorded fork — the only rule that actually
+distinguishes a spent record from a healthy one. Filed against ciu as
+**CIU-106** (`vbpub/ciu/KNOWN_ISSUES_TODO_BACKLOG.md`), with all three
+rounds' findings as its provenance. Until that lands, this stays OPEN.
+
+**Interim mitigation worth doing regardless**, and not yet implemented:
+disclose the resulting RANGE (`records base_ref 'main' → merge-base
+<sha>, N commits / M files to judge`) so a collapse is visible rather
+than silent. That is RG-51's own stated second half, and it would have
+made all three of these rounds' defects self-evident at the first real
+run.
+
+Round 3 also found, and these ARE fixed on the branch: the FIFO alarm
+guard sat on the test that no longer reaches `read_instance_record`'s
+`is_file()` check rather than the one that does, so a regression hung
+instead of failing; four documents claimed clause 5 subsumes the
+frozen-SHA `adopt` case when in fact clause 4 catches it (the same
+false-security-property pattern round 2 found in five other places); a
+leading `-` was inside the recorded-ref charset; and the option-like-ref
+test attributed its refusal to `--end-of-options` when `--verify` is
+what actually refuses. Still open from round 3 and NOT addressed:
+handing the base downstream as a mutable branch NAME rather than a
+resolved OID, which leaves a re-resolution window between run-gate's
+check and the judge's own `merge-base` (and makes a no-common-history
+base a hard error in both consumers instead of a fallback).
 
 #### Round 2 — a live branch is NECESSARY but NOT SUFFICIENT
 
@@ -3784,19 +3868,53 @@ branch legally named `main;touch$IFS/tmp/PWNED` — git accepts that name —
 is refused with `is not plain ref text`. `check_worktree_charset` (RG-5)
 is the same precedent for `--worktree` paths.
 
-### Status — OPEN
+### Status — FIXED 2026-09-11 (rev 40), first direction taken
 
-The general fix belongs at the substitution site, not in each reader:
-either quote the substituted value for the inner shell, or apply the
-`R-5`-style charset refusal to `--base` as well. Note that a lane author
-can also place `{base}` inside single quotes in their own argv, which is
-not enforced anywhere. Candidate directions, not picked here:
-- Refuse a `--base` value outside a ref-name charset, mirroring
-  `check_worktree_charset`. Smallest change; would also have caught the
-  RG-51 case without a second allow-list.
-- Substitute with `shlex.quote` when the token appears inside a
-  `bash -c`-style element. More correct, but "which element is a script"
-  is not something run-gate can know in general.
+`check_base_charset` refuses any comparison base outside
+`GATE_SAFE_BASE_RE` (`[A-Za-z0-9._/+@]` then `[A-Za-z0-9._/+@-]*`) before
+it can reach `substitute_worktree`, `{base}`, `--request-base` or any
+inner shell. It is the exact counterpart of `check_worktree_charset`
+(`R-5`) for the other value consumer pointers embed into shell strings,
+and it is deliberately NARROWER than git's own ref grammar: git accepts
+`;`, backticks, `$`, `|`, `&` and quotes in a ref name, this gate does
+not.
+
+Two asymmetries, both deliberate:
+- **`--base` REFUSES (exit 2); a `ciu.worktree-instance.json` `base_ref`
+  DEGRADES** to the `@{upstream}` fallback with a disclosure line. An
+  operator's explicit argument that cannot be honoured safely is a
+  refusal; a file must never be able to abort a gate run (RG-51).
+  Both share the one regex, so the two paths cannot drift apart.
+- **A leading `-` is refused on POSITION grounds**, with its own
+  message: `-` is legal later in a ref, so listing it as an "offending
+  character" would misdescribe the problem. `R-5` makes the identical
+  distinction for `{worktree}`, and the hazard is the same — a
+  sub-invoked `./run-gate.py --base -weird` parses it as an option.
+
+Why this direction over the other candidate (substituting with
+`shlex.quote` when the token appears inside a `bash -c`-style element):
+"which argv element is a script" is not something run-gate can know in
+general — a lane author can put `{base}` inside single quotes, inside a
+heredoc, or in an element that is never re-parsed at all — so quoting
+would be right in some lanes and visibly wrong in others. The charset
+refusal is decidable without knowing the lane's shape, costs nothing at
+runtime, and matches a precedent this project already ships. The
+narrower rule also means no real base shape is affected: branch names,
+remote-tracking refs, tags, slashed and dotted names and raw SHAs all
+pass unchanged.
+
+Not closed by this, and deliberately out of scope: a lane author can
+still write a `{base}`-carrying argv whose quoting is wrong for some
+OTHER reason. The charset guarantees the substituted VALUE is inert, not
+that the surrounding script is well written.
+
+### Provenance of the fix
+
+Filed from RG-51's round-2 review, then folded in before RG-51's own
+release on an explicit operator size call (RG-53, the other finding from
+that round, was judged too large — it changes `coverage_gate.py`'s
+pass/fail semantics for every `--cov-branch` lane in the estate — and
+stays OPEN for its own cycle).
 
 ## RG-53 — `tools/coverage_gate.py` never reads `missing_branches`, so the selftest lane's `--cov-branch` is decorative for the DIFF judge
 

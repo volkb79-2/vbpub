@@ -10,6 +10,29 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Fixed
+- **RG-52 — a comparison base reached a conjunction lane's inner `bash -c` as
+  unquoted shell text.** A `kind = "command"` lane propagates its base with a
+  `{base}` token in its own argv; `shlex.join` quotes the argv ELEMENT, but
+  that element *is* the script the inner `bash -c` re-parses, so
+  `--base 'main;touch /tmp/PWNED'` ran `touch` — on a `bare-host` lane, on the
+  real host. Git's own ref grammar permits `;`, backticks, `$`, `|`, `&` and
+  quotes, so this was reachable from a genuine branch name too.
+
+  `check_base_charset` now refuses any base outside `GATE_SAFE_BASE_RE`
+  before it can reach substitution, `--request-base`, or any shell — the
+  exact counterpart of `check_worktree_charset` (`R-5`) for the other value
+  consumer pointers embed into shell strings. A leading `-` is refused
+  separately, on position grounds, because a sub-invoked
+  `./run-gate.py --base -weird` would parse it as an option. `--base`
+  refuses (exit 2); a `ciu.worktree-instance.json` `base_ref` degrades to
+  the `@{upstream}` fallback instead, since a file must never abort a gate
+  run — both share the one regex. No real base shape is affected: branch
+  names, remote-tracking refs, tags, slashed/dotted names and raw SHAs all
+  pass. Found by adversarial review of RG-51; folded in here on an operator
+  size call. (RG-53, from the same review, stays OPEN — it changes
+  `coverage_gate.py`'s pass/fail semantics estate-wide and needs its own
+  cycle.)
+
 - **RG-51 — a delegating lane's DEFAULT comparison base was a REMOTE-tracking
   ref** (`__revision__` 39 → 40). A lane that delegates its base
   (`judge.base_source = "request"`, or a `{base}` token in a command lane's
@@ -32,20 +55,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   because ciu writes the record at the CIU root, which sits below the git
   worktree root in a monorepo.
 
-  **A recorded ref is used only when it is plain ref text, the record's
+  **A recorded ref is used only when it is gate-safe ref text, the record's
   `branch` still matches the tree, git resolves it to a LOCAL branch there,
   and that branch does not already contain the tree's HEAD.** These are the
   safety property, not formalities — two of the four clauses exist because
-  two independent adversarial review rounds each found a FALSE GREEN in the
-  preceding cut of this change:
+  successive adversarial review rounds each found a FALSE GREEN in the
+  preceding cut of this change (a THIRD such finding is open — see the
+  RG-51 backlog entry's round-3 section; this item is NOT shippable until
+  it is resolved):
   - `ciu worktree adopt` records the adopted checkout's HEAD, and
     `merge-base` against an ancestor of HEAD collapses to that commit — run
     the gate right after an adopt and it would judge zero changed lines.
   - A merged-but-not-torn-down worktree has a real, live `base_ref = "main"`
     that `main` has since absorbed: same collapse, and it was true of 4 of
     the 7 real ciu worktrees in this estate. `git merge-base --is-ancestor
-    HEAD <base>` now refuses it, fail-closed, and subsumes the frozen-id,
-    own-branch and literal-`HEAD` cases.
+    HEAD <base>` now refuses it, fail-closed, and also covers the
+    own-branch and literal-`HEAD` cases (the frozen-id `adopt` case is
+    caught by the must-be-a-local-branch clause instead).
 
   A tag and a `refs/remotes/…` ref are refused too — the latter because a
   remote-tracking ref is the very thing RG-51 exists to stop defaulting to.
