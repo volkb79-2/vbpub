@@ -3614,21 +3614,69 @@ checkout's HEAD into the same field.
   are checked, in that order: ciu writes the record at the CIU root,
   "which can be below the Git worktree root in a monorepo" — i.e. at
   `<worktree>/<project>/`, the shape every vbpub consumer has.
-- Every failure mode degrades SILENTLY to the pre-existing `@{upstream}`
-  path: absent, unreadable, permission-denied, not JSON, not an object,
-  missing/non-string/blank `base_ref`. A better default, never a
-  requirement — a malformed record must not abort a gate run.
+- **The recorded ref is used only when git resolves it, in the judged
+  tree, to a branch other than that tree's own**, and only when the
+  record's `branch` still matches the tree. See "Review finding" below —
+  this is the difference between a fix and a new false-green.
+- Every failure mode degrades to the pre-existing `@{upstream}` path:
+  absent, unreadable, permission-denied, a non-regular file (a FIFO
+  would block the read forever), not JSON, not an object,
+  `RecursionError` from deeply nested JSON (a `RuntimeError`, NOT a
+  `ValueError`), missing/non-string/blank `base_ref`, and every
+  rejection above. A better default, never a requirement — a malformed
+  record must not abort a gate run.
 - `--base` still wins outright, and the primary checkout is bit-for-bit
   unchanged (`adopt` structurally refuses the primary worktree, and the
   record is git-excluded, so it can never arrive there by checkout).
-- The winning source is DISCLOSED before anything runs — a `run-gate:
-  <record> records base_ref '<ref>' …` line, plus `(from
-  ciu.worktree-instance.json base_ref)` in the existing comparison-base
-  line — because half of this entry was that staleness must be visible.
-- One deliberate widening: a tree with a record but NO upstream now
-  resolves instead of refusing. Nothing is guessed — the ref is one ciu
-  wrote down at creation, and assay still computes `merge-base(base,
-  HEAD)` over it. Only the base STRING changes here.
+- Disclosure runs BOTH ways, because half of this entry was that
+  staleness must be visible: a winning record is named together with
+  the `@{upstream}` ref it displaced (`run-gate: <record> records
+  base_ref '<ref>' — using it instead of merge-base HEAD @{upstream}
+  (<sha>)`, plus `(from ciu.worktree-instance.json base_ref)` on the
+  comparison-base line), and a record that is found and REJECTED prints
+  `run-gate: ignoring <record>: <why>`. A silently ignored record would
+  be the same silence this entry objects to, in a new place.
+- One deliberate widening: a tree with a USABLE record but NO upstream
+  now resolves instead of refusing. Nothing is guessed — the ref is one
+  ciu wrote down at creation and git has just resolved to a live
+  branch, and assay still computes `merge-base(base, HEAD)` over it.
+  Only the base STRING changes here.
+
+### Review finding — the first cut of this fix was a false-green
+
+Independent adversarial review of the first implementation (which used
+`base_ref` verbatim whenever it was a non-blank string) found a BLOCKING
+defect, reproduced from a scratch repo:
+
+`ciu worktree adopt` writes `base_ref = git rev-parse HEAD` of the
+ADOPTED CHECKOUT — the tip of the work already on that branch, not a
+fork point (`ciu/src/ciu/worktree.py`, `adopt()`). Because that commit
+is an ANCESTOR of HEAD, `merge-base(base_ref, HEAD)` resolves to the
+commit itself, so every line committed BEFORE the adopt leaves the
+changed-line set. Branch off `main`(A), commit B and C, adopt at C,
+commit D: the old path judged 3 changed lines, the first cut judged 1 —
+and running the gate immediately after the adopt makes the base HEAD
+itself, i.e. **zero changed lines and a trivially passing lane**. The
+recorded SHA is always a descendant of (or equal to) the old fork
+point, so the judged set was always narrower or equal, never wider:
+strictly the false-green direction, and strictly worse than the
+`@{upstream}` it displaced. The backlog's own "a frozen SHA … is at
+best a stopgap, not a fix" applied to the fix itself.
+
+Fixed by requiring git to resolve `base_ref` to a branch other than the
+tree's own, which also disposes of four further review findings at
+once: a tag or deleted/renamed ref (frozen or absent the same way), the
+literal `HEAD` (resolves to the tree's own branch), and every shell
+metacharacter / NUL byte / lone surrogate that a git-excluded JSON file
+could otherwise carry into a conjunction lane's inner `bash -c` through
+`{base}` — a quieter source than an operator's own command line, and
+one `git status` never shows. Also fixed from the same review:
+`RecursionError` escaping the `(OSError, ValueError)` guard on deeply
+nested JSON, a FIFO at the record path blocking `read_text` forever
+with nothing disclosed, a stale record from a REUSED worktree (`git
+checkout -B other origin/release-1` leaves a record naming the first
+task's base) now refused on the `branch` cross-check ciu's own reader
+already performs, and the silent-rejection gap above.
 
 The other two directions stay unimplemented and are NOT superseded; they
 address a case this fix does not (a non-ciu worktree, or a plain checkout

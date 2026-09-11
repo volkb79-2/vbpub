@@ -348,14 +348,13 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
 # run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
 ```
 
-**In a `ciu worktree` the default is the ref the worktree FORKED from**
+**In a `ciu worktree` the default is the ref that worktree FORKED from**
 (RG-51). `ciu worktree create|add` records that ref as `base_ref` in
-`ciu.worktree-instance.json` at the worktree's CIU root, and run-gate prefers
-it over `@{upstream}`:
+`ciu.worktree-instance.json`, and run-gate prefers it over `@{upstream}`:
 
 ```bash
 ./run-gate.py cursor          # no --base, inside a ciu-managed worktree
-# run-gate: /w/proj/ciu.worktree-instance.json records base_ref 'main' — using it instead of merge-base HEAD @{upstream}
+# run-gate: /w/proj/ciu.worktree-instance.json records base_ref 'main' — using it instead of merge-base HEAD @{upstream} (4c6eb2b6…)
 # run-gate: comparison base main (from ciu.worktree-instance.json base_ref) → --request-base
 ```
 
@@ -366,13 +365,37 @@ judgment against it silently widens from "this change's diff" to "everything
 since the drift began" (assay's own README, "Pitfall: a `judge.base` literal
 pointing at a remote-tracking ref rots silently"). The recorded `base_ref` is
 normally a LOCAL branch, so it self-updates by the same `merge-base(base,
-HEAD)` resolution assay applies to whatever string it is handed.
+HEAD)` resolution assay applies to whatever string it is handed. Both refs are
+printed so you can SEE the drift.
+
+**Which projects it covers in a monorepo.** run-gate looks in the judged
+worktree root and then in the project dir inside it, because ciu writes the
+record at that worktree's CIU root. A worktree created with
+`ciu_root_offset = "."` therefore covers every project in it; one rooted at a
+single project (`ciu_root_offset = "run-gate-project"`) covers that project
+only — a gate run for a sibling project in the same worktree finds no record
+and falls through to `@{upstream}` exactly as before.
+
+**When a record is present but NOT used.** run-gate uses `base_ref` only when
+git resolves it, in the judged tree, to a branch other than that tree's own,
+and only when the record's `branch` still matches the tree. Anything else is
+ignored with a reason on stdout:
+
+```bash
+# run-gate: ignoring /w/proj/ciu.worktree-instance.json: its base_ref '9f2c…' does not name a branch in this tree — a frozen commit id (what `ciu worktree adopt` records), a deleted or renamed ref, or not a ref at all; only a branch self-updates through merge-base
+```
+
+That rule is load-bearing, not fussiness: `ciu worktree adopt` records the
+adopted checkout's **HEAD**, and `merge-base` against an ancestor of HEAD
+collapses to that commit — run the gate right after an adopt and it would
+judge *zero* changed lines and pass trivially. A frozen id, a tag, a deleted
+branch and the tree's own branch all fail the same way, so none of them
+displaces `@{upstream}`.
 
 Nothing to configure and nothing to opt out of: `--base` still wins outright,
-and a record that is absent, unreadable, not JSON, not an object, or has no
-usable `base_ref` degrades silently to the `@{upstream}` line above. A plain
-checkout never has this file at all. run-gate reads the filename, never
-imports `ciu`.
+and an absent, unreadable, non-JSON or otherwise unusable record degrades to
+the `@{upstream}` line above. A plain checkout never has this file at all.
+run-gate reads the filename, never imports `ciu`.
 
 There is **no `run-gate.toml` key** for this — run-gate DERIVES it by asking
 the judge (`assay lanes --json`), so the fact has exactly one spelling. What

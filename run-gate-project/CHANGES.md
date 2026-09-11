@@ -32,16 +32,31 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   because ciu writes the record at the CIU root, which sits below the git
   worktree root in a monorepo.
 
-  Every failure mode — absent, unreadable, permission-denied, not JSON, not an
-  object, missing/non-string/blank `base_ref` — degrades silently to the
-  pre-existing `@{upstream}` path. `--base` still wins outright and a plain
-  checkout is unaffected. The winning source is disclosed before execution
-  (`run-gate: <record> records base_ref '<ref>' …`, plus `(from
-  ciu.worktree-instance.json base_ref)` on the comparison-base line): half of
-  RG-51 was that staleness must be visible, not silent. One deliberate
-  widening — a tree with a record but no upstream now resolves instead of
-  refusing. Only the base STRING changes; assay's own `resolve_base` still
-  computes `merge-base(base, HEAD)` over it. SPEC.md `R-35a`.
+  **A recorded ref is used only when git resolves it, in the judged tree, to
+  a branch other than that tree's own**, and only when the record's `branch`
+  still matches the tree. This is the safety property, not a formality:
+  `ciu worktree adopt` records the adopted checkout's HEAD, and `merge-base`
+  against an ancestor of HEAD collapses to that commit — run the gate right
+  after an adopt and it would judge zero changed lines and pass trivially
+  (found by adversarial review of the first cut of this change). A tag, a
+  deleted or renamed ref and the literal `HEAD` fail the same way. Requiring
+  git to resolve the string also keeps every shell metacharacter, NUL byte
+  and lone surrogate out of a conjunction lane's inner `bash -c` via
+  `{base}`.
+
+  Every failure mode — absent, unreadable, permission-denied, a FIFO or
+  device that would block or explode on read, not JSON, not an object,
+  `RecursionError` from deeply nested JSON (a `RuntimeError`, not a
+  `ValueError`), missing/non-string/blank `base_ref`, and every rejection
+  above — degrades to the pre-existing `@{upstream}` path. `--base` still
+  wins outright and a plain checkout is unaffected. Disclosure runs both
+  ways, because half of RG-51 was that staleness must be visible: a winning
+  record is printed together with the `@{upstream}` ref it displaced, and a
+  record that is found and rejected prints `run-gate: ignoring <record>:
+  <why>` (the refusal names it too). One deliberate widening — a tree with a
+  usable record but no upstream now resolves instead of refusing. Only the
+  base STRING changes; assay's own `resolve_base` still computes
+  `merge-base(base, HEAD)` over it. SPEC.md `R-35a`.
 
 <!-- cleared 2026-09-09: the RG-41 write-up that was here (log-stream
      command-lane liveness, LogStreamWatch, three review-round fixes) is

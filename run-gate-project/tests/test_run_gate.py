@@ -4809,150 +4809,355 @@ def write_instance_record(directory: Path, **over) -> Path:
     return path
 
 
-class TestWorktreeInstanceBase:
-    """RG-51 unit level: `worktree_instance_base` reads ANOTHER project's
+def make_feature_repo(tmp_path: Path) -> Path:
+    """`make_repo` plus a second commit on a checked-out branch `feature`,
+    i.e. the shape `ciu worktree create --base main` produces: HEAD is on a
+    branch that is NOT the base, and the base branch really exists."""
+    repo = make_repo(tmp_path)
+    git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "feature.txt").write_text("work\n")
+    commit_all(repo, "feature work")
+    return repo
+
+
+class TestRecordedWorktreeBase:
+    """RG-51 unit level: `recorded_worktree_base` reads ANOTHER project's
     serialized output, so every documented shape and every degenerate one is
     enumerated here rather than assumed (TESTING-METHODOLOGY "Boundary values
-    named, not assumed"). The contract it must hold is absolute: a record it
-    cannot use is indistinguishable from a record that is not there, and
-    NOTHING it reads can raise.
+    named, not assumed").
+
+    Two contracts, both absolute: NOTHING it reads can raise or block, and a
+    recorded ref is used ONLY when it is genuinely better than the
+    `@{upstream}` fallback it displaces — which means it must name a real
+    branch, other than this tree's own, in a record that still describes this
+    tree.
     """
 
-    def test_record_in_the_first_candidate_wins(self, tmp_path):
-        record = write_instance_record(tmp_path, base_ref="main")
-        assert run_gate.worktree_instance_base(tmp_path) == ("main", record)
+    def test_a_recorded_branch_is_used(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo) == \
+            ("main", record, "")
 
-    def test_record_in_a_later_candidate_is_found(self, tmp_path):
+    def test_no_record_anywhere_is_silent(self, tmp_path):
+        """(None, None, "") — the plain-checkout case says nothing at all."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
+        proj.mkdir()
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            (None, None, "")
+
+    def test_no_candidates_at_all_is_silent(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.recorded_worktree_base(repo) == (None, None, "")
+
+    def test_nonexistent_candidate_directory_is_silent(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.recorded_worktree_base(repo, repo / "gone") == \
+            (None, None, "")
+
+    def test_a_record_at_a_later_candidate_is_found(self, tmp_path):
         """The monorepo shape ciu documents: the record sits at the CIU root,
         BELOW the git worktree root."""
-        proj = tmp_path / "proj"
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
         proj.mkdir()
-        record = write_instance_record(proj, base_ref="develop")
-        assert run_gate.worktree_instance_base(tmp_path, proj) == \
-            ("develop", record)
+        record = write_instance_record(proj, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            ("main", record, "")
 
-    def test_first_candidate_wins_over_a_later_one(self, tmp_path):
-        proj = tmp_path / "proj"
+    def test_the_first_candidate_wins_over_a_later_one(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "branch", "other", "main")
+        proj = repo / "proj"
         proj.mkdir()
-        outer = write_instance_record(tmp_path, base_ref="outer")
-        write_instance_record(proj, base_ref="inner")
-        assert run_gate.worktree_instance_base(tmp_path, proj) == \
-            ("outer", outer)
+        outer = write_instance_record(repo, base_ref="main")
+        write_instance_record(proj, base_ref="other")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            ("main", outer, "")
 
-    def test_no_record_anywhere_is_none(self, tmp_path):
-        proj = tmp_path / "proj"
+    def test_an_unusable_record_does_not_stop_the_search(self, tmp_path):
+        """"Unusable" means "keep looking" — a broken record at the worktree
+        root must not mask a good one at the CIU root."""
+        repo = make_feature_repo(tmp_path)
+        proj = repo / "proj"
         proj.mkdir()
-        assert run_gate.worktree_instance_base(tmp_path, proj) is None
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text("{{{")
+        record = write_instance_record(proj, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo, proj) == \
+            ("main", record, "")
 
-    def test_no_candidates_at_all_is_none(self):
-        assert run_gate.worktree_instance_base() is None
+    # --- unreadable / unparseable: report the file, never raise -------------
 
-    def test_nonexistent_candidate_directory_is_none(self, tmp_path):
-        assert run_gate.worktree_instance_base(tmp_path / "gone") is None
+    @pytest.mark.parametrize("payload, label", [
+        ("this is not json\n", "prose"),
+        ('{"base_ref": "main"', "truncated"),
+        ("", "empty"),
+        ("[]", "array"),
+        ('"main"', "bare string"),
+        ("3", "number"),
+        ("null", "null"),
+        ("true", "boolean"),
+    ])
+    def test_content_that_is_not_a_json_object_is_reported(
+            self, tmp_path, payload, label):
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(payload)
+        ref, record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert (ref, record.name) == (None, run_gate.WORKTREE_INSTANCE_RECORD)
+        assert why == "it is not readable as a JSON object", label
 
-    def test_not_json_at_all_is_none(self, tmp_path):
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
-            "this is not json\n")
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    def test_undecodable_bytes_are_reported(self, tmp_path):
+        """UnicodeDecodeError IS a ValueError, so one guard covers it — pinned
+        because that inheritance is easy to break by widening the read to
+        bytes or narrowing the except to JSONDecodeError."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_bytes(b"\xff\xfe\x00")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and why == "it is not readable as a JSON object"
 
-    def test_truncated_json_is_none(self, tmp_path):
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
-            '{"base_ref": "main"')
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    def test_deeply_nested_json_does_not_raise(self, tmp_path):
+        """RecursionError is a RuntimeError, NOT a ValueError — the one
+        escape route a plain `(OSError, ValueError)` guard leaves open, and
+        it would abort the whole gate run before any lane started."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+            "[" * 200_000 + "]" * 200_000)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
 
-    def test_empty_file_is_none(self, tmp_path):
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text("")
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    def test_a_directory_in_place_of_the_record_is_silent(self, tmp_path):
+        """Not a regular file, so `is_file()` skips it before any read."""
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).mkdir()
+        assert run_gate.recorded_worktree_base(repo, repo) == (None, None, "")
 
-    def test_undecodable_bytes_are_none(self, tmp_path):
-        """UnicodeDecodeError IS a ValueError, so the same guard covers it —
-        pinned because that inheritance is easy to break by widening the read
-        to bytes or narrowing the except to JSONDecodeError."""
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_bytes(b"\xff\xfe\x00")
-        assert run_gate.worktree_instance_base(tmp_path) is None
-
-    @pytest.mark.parametrize("payload", ["[]", '"main"', "3", "null", "true"])
-    def test_json_that_is_not_an_object_is_none(self, tmp_path, payload):
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text(payload)
-        assert run_gate.worktree_instance_base(tmp_path) is None
-
-    def test_record_directory_instead_of_file_is_none(self, tmp_path):
-        """An OSError that is NOT "missing" — the read must still degrade."""
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).mkdir()
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    def test_a_fifo_in_place_of_the_record_does_not_block(self, tmp_path):
+        """A `read_text` on a FIFO blocks FOREVER with nothing disclosed —
+        worse than raising, because there is no traceback to diagnose from.
+        The `is_file()` guard is what makes this test terminate at all."""
+        repo = make_feature_repo(tmp_path)
+        os.mkfifo(repo / run_gate.WORKTREE_INSTANCE_RECORD)
+        assert run_gate.recorded_worktree_base(repo, repo) == (None, None, "")
 
     @pytest.mark.skipif(os.geteuid() == 0,
                         reason="root reads a 0o000 file regardless")
-    def test_unreadable_record_is_none(self, tmp_path):
-        record = write_instance_record(tmp_path)
+    def test_an_unreadable_record_is_reported(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        record = write_instance_record(repo)
         record.chmod(0o000)
         try:
-            assert run_gate.worktree_instance_base(tmp_path) is None
+            ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+            assert ref is None
+            assert why == "it is not readable as a JSON object"
         finally:
             record.chmod(0o644)
 
-    def test_missing_base_ref_key_is_none(self, tmp_path):
-        doc = {"schema_version": 1, "state": "ready"}
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
-            json.dumps(doc))
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    # --- base_ref that is not a usable string -------------------------------
+
+    def test_a_missing_base_ref_key_is_reported(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+            json.dumps({"schema_version": 1, "branch": "feature"}))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
 
     @pytest.mark.parametrize("blank", ["", " ", "\t", "\n", "   \n  "])
-    def test_blank_base_ref_is_none(self, tmp_path, blank):
-        """The empty-string boundary and every whitespace-only neighbour: a
-        ref made of whitespace would reach `git merge-base` as an argument
-        git cannot resolve, which is worse than the honest fallback."""
-        write_instance_record(tmp_path, base_ref=blank)
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    def test_a_blank_base_ref_is_reported(self, tmp_path, blank):
+        """The empty-string boundary and every whitespace-only neighbour."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=blank)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
 
-    @pytest.mark.parametrize("value", [None, 0, 1, -1, 3.5, True, [], {},
-                                       ["main"], {"ref": "main"}])
-    def test_non_string_base_ref_is_none(self, tmp_path, value):
-        """Every JSON scalar and container a `base_ref` could degrade into —
-        including the `0`/`1`/`-1`/`true` numeric boundaries, which a naive
-        truthiness test would split three different ways."""
-        write_instance_record(tmp_path, base_ref=value)
-        assert run_gate.worktree_instance_base(tmp_path) is None
+    @pytest.mark.parametrize("value", [None, 0, 1, -1, 3.5, True, False, [],
+                                       {}, ["main"], {"ref": "main"}])
+    def test_a_non_string_base_ref_is_reported(self, tmp_path, value):
+        """Every JSON scalar and container a `base_ref` could degrade into,
+        including the 0/1/-1 numeric boundaries and both booleans — `bool` is
+        a subclass of `int`, not of `str`, so a truthiness test would split
+        these three different ways where `isinstance` does not."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=value)
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert why == "its 'base_ref' is missing, blank, or not a string"
 
     def test_surrounding_whitespace_is_stripped(self, tmp_path):
-        record = write_instance_record(tmp_path, base_ref="  main\n")
-        assert run_gate.worktree_instance_base(tmp_path) == ("main", record)
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="  main\n")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
 
-    def test_a_bare_sha_base_ref_is_used_verbatim(self, tmp_path):
-        """`ciu worktree adopt` records the adopted checkout's HEAD instead of
-        a branch name. Both are legal `base_ref` values and both are only ever
-        handed on as a string — assay resolves `merge-base(base, HEAD)` over
-        whatever it gets."""
-        sha = "0123456789abcdef0123456789abcdef01234567"
-        record = write_instance_record(tmp_path, base_ref=sha, state="allocating")
-        assert run_gate.worktree_instance_base(tmp_path) == (sha, record)
+    # --- the record must still describe THIS tree ---------------------------
+
+    def test_a_record_naming_another_branch_is_reported(self, tmp_path):
+        """The reuse case ciu's own reader refuses outright: an operator
+        re-points a ciu worktree at a second task, leaving a record that
+        still names the FIRST task's base. Using it would widen the judged
+        diff to everything since that other branch diverged."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, branch="some-other-task", base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "it describes branch 'some-other-task'" in why
+        assert "refs/heads/feature" in why
+
+    def test_a_detached_head_reports_the_mismatch(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "checkout", "-q", "--detach")
+        write_instance_record(repo, branch="feature", base_ref="main")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "a detached HEAD" in why
+
+    @pytest.mark.parametrize("value", [None, 0, "", "   ", [], {"a": 1}])
+    def test_an_unusable_branch_field_is_not_treated_as_a_mismatch(
+            self, tmp_path, value):
+        """`branch` is a cross-check, not a requirement: a record that does
+        not state one usably is still judged on its `base_ref` alone, so this
+        stays forward-compatible with any schema that drops the field."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, branch=value, base_ref="main")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
+
+    # --- base_ref must name a branch OTHER than this tree's own -------------
+
+    def test_a_frozen_commit_id_is_refused(self, tmp_path):
+        """`ciu worktree adopt` records the adopted checkout's HEAD, not a
+        fork point. `merge-base(<that commit>, HEAD)` collapses to the commit
+        itself, so every line committed BEFORE the adopt silently leaves the
+        changed-line set — the false-green direction, strictly worse than the
+        `@{upstream}` this would have displaced."""
+        repo = make_feature_repo(tmp_path)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True).stdout.strip()
+        write_instance_record(repo, base_ref=sha, state="allocating")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "does not name a branch in this tree" in why
+        assert "ciu worktree adopt" in why
+
+    def test_an_abbreviated_commit_id_is_refused(self, tmp_path):
+        """`git rev-parse --symbolic-full-name` exits 0 with EMPTY output for
+        a commit id, so the returncode alone is not the test."""
+        repo = make_feature_repo(tmp_path)
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short",
+                              "HEAD"], capture_output=True,
+                             text=True).stdout.strip()
+        write_instance_record(repo, base_ref=sha)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_tag_is_refused(self, tmp_path):
+        """A tag is frozen exactly like a commit id — it cannot self-update,
+        which is the entire premise of preferring the record."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "v1.0.0", "main")
+        write_instance_record(repo, base_ref="v1.0.0")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_deleted_branch_is_refused(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="branch-that-was-deleted")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None and "does not name a branch in this tree" in why
+
+    def test_this_trees_own_branch_is_refused(self, tmp_path):
+        """merge-base(own branch, HEAD) is HEAD: zero changed lines, lane
+        passes trivially."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="feature")
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "resolves to this tree's OWN branch" in why
+
+    def test_the_literal_HEAD_is_refused(self, tmp_path):
+        """`HEAD` resolves through `--symbolic-full-name` to the current
+        branch's own full name, so it reaches the same collapse by a
+        different spelling."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="HEAD")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+
+    def test_a_remote_tracking_branch_is_accepted(self, tmp_path):
+        """An operator who explicitly recorded one gets it — no better than
+        `@{upstream}`, but chosen rather than inferred, and disclosed."""
+        repo = make_feature_repo(tmp_path)
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        write_instance_record(repo, base_ref="origin/main")
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == "origin/main"
+
+    @pytest.mark.parametrize("hostile", [
+        "main; touch /tmp/RG51_PWNED",
+        "main && touch /tmp/RG51_PWNED",
+        "$(touch /tmp/RG51_PWNED)",
+        "--all",
+        "-n",
+        "main\nmain",
+        "main\x00",
+        "\ud800",
+    ])
+    def test_a_hostile_base_ref_is_refused_and_never_raises(
+            self, tmp_path, hostile):
+        """The recorded ref is substituted into a conjunction lane's inner
+        `bash -c` (`{base}`, R-25), and a git-excluded JSON file is a quieter
+        source than an operator's own command line. Requiring git to resolve
+        it to a branch disposes of the whole class — including the NUL byte
+        and the lone surrogate, which raise out of `subprocess` itself."""
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref=hostile)
+        assert run_gate.recorded_worktree_base(repo, repo)[0] is None
+        assert not Path("/tmp/RG51_PWNED").exists()
 
     def test_an_unknown_schema_version_still_reads(self, tmp_path):
         """`base_ref` is present and identical in every schema ciu has
-        shipped, and this reader validates nothing it does not use — so a
+        shipped, and nothing here validates a field it does not use — so a
         future v3 with new keys must NOT start falling back."""
-        record = write_instance_record(tmp_path, base_ref="main",
-                                       schema_version=99, lease=None,
-                                       some_future_key={"a": 1})
-        assert run_gate.worktree_instance_base(tmp_path) == ("main", record)
+        repo = make_feature_repo(tmp_path)
+        write_instance_record(repo, base_ref="main", schema_version=99,
+                              lease=None, some_future_key={"a": 1})
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
 
     def test_a_record_with_only_base_ref_still_reads(self, tmp_path):
-        """The other direction: every key this reader ignores is genuinely
-        ignored, including ones ciu always writes."""
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
+        repo = make_feature_repo(tmp_path)
+        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text(
             '{"base_ref": "main"}')
-        assert run_gate.worktree_instance_base(tmp_path)[0] == "main"
+        assert run_gate.recorded_worktree_base(repo, repo)[0] == "main"
 
-    def test_an_unusable_record_does_not_stop_the_search(self, tmp_path):
-        """A malformed record in the worktree root must not mask a good one at
-        the CIU root — "unusable" means "as if absent", including for the
-        candidates after it."""
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        (tmp_path / run_gate.WORKTREE_INSTANCE_RECORD).write_text("{{{")
-        record = write_instance_record(proj, base_ref="main")
-        assert run_gate.worktree_instance_base(tmp_path, proj) == \
-            ("main", record)
+    # --- the git primitives, pinned directly --------------------------------
+
+    def test_branch_ref_name_resolves_only_branches(self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        git(repo, "tag", "v1.0.0", "main")
+        git(repo, "update-ref", "refs/remotes/origin/main", "main")
+        assert run_gate.branch_ref_name(repo, "main") == "refs/heads/main"
+        assert run_gate.branch_ref_name(repo, "origin/main") == \
+            "refs/remotes/origin/main"
+        assert run_gate.branch_ref_name(repo, "v1.0.0") is None
+        assert run_gate.branch_ref_name(repo, "nope") is None
+
+    def test_branch_ref_name_outside_a_repo_is_none(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert run_gate.branch_ref_name(plain, "main") is None
+
+    def test_branch_ref_name_without_git_on_path_is_none(
+            self, tmp_path, monkeypatch):
+        """OSError from `subprocess` itself — this helper may never raise."""
+        repo = make_feature_repo(tmp_path)
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        assert run_gate.branch_ref_name(repo, "main") is None
+
+    def test_current_branch_ref_reports_the_branch_then_the_detachment(
+            self, tmp_path):
+        repo = make_feature_repo(tmp_path)
+        assert run_gate.current_branch_ref(repo) == "refs/heads/feature"
+        git(repo, "checkout", "-q", "--detach")
+        assert run_gate.current_branch_ref(repo) is None
+
+    def test_read_instance_record_returns_the_object(self, tmp_path):
+        record = write_instance_record(tmp_path, base_ref="main")
+        assert run_gate.read_instance_record(record)["base_ref"] == "main"
 
 
 class TestWorktreeRecordedComparisonBase:
@@ -4967,18 +5172,28 @@ class TestWorktreeRecordedComparisonBase:
     exists to escape, relocated into run-gate's own fallback.
     """
 
-    # Same fixture shape as TestComparisonBasePassthrough._project: a repo
-    # whose PROJECT is a subdirectory, which is the monorepo layout every
-    # consumer of this shared script actually has.
-    _project = TestComparisonBasePassthrough._project
     _judge = staticmethod(TestComparisonBasePassthrough._judge)
+
+    def _project(self, tmp_path, monkeypatch, cfg=ASSAY_LANE_CFG):
+        """TestComparisonBasePassthrough._project's fixture, on a repo that is
+        checked out on a BRANCH forked from `main` — the shape `ciu worktree
+        create --base main` produces, and the only shape in which a recorded
+        `base_ref` is usable at all."""
+        repo = make_feature_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        return repo, proj
 
     @staticmethod
     def _upstream(repo):
         """Give the judged tree a real (and DIFFERENT) upstream, so a test
         that resolves to the record proves a choice, not an absence."""
         git(repo, "branch", "-f", "origin-main", "HEAD")
-        git(repo, "branch", "--set-upstream-to=origin-main", "main")
+        git(repo, "branch", "--set-upstream-to=origin-main", "feature")
         return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
 
@@ -4994,9 +5209,10 @@ class TestWorktreeRecordedComparisonBase:
         assert "--request-base main" in inner
         assert f"--request-base {upstream_sha}" not in inner
         out = capsys.readouterr().out
-        # R-05: which source won is DISCLOSED, naming the record itself.
+        # R-05: which source won is DISCLOSED, naming the record — and so is
+        # the ref NOT taken, which is how origin drift becomes visible.
         assert f"run-gate: {record} records base_ref 'main'" in out
-        assert "instead of merge-base HEAD @{upstream}" in out
+        assert f"instead of merge-base HEAD @{{upstream}} ({upstream_sha})" in out
         assert "comparison base main (from ciu.worktree-instance.json " \
                "base_ref) → --request-base" in out
 
@@ -5014,6 +5230,24 @@ class TestWorktreeRecordedComparisonBase:
         assert "comparison base main (from ciu.worktree-instance.json " \
                "base_ref)" in capsys.readouterr().out
 
+    def test_the_worktree_root_is_searched_before_the_project_dir(
+            self, tmp_path, monkeypatch, capsys):
+        """The candidate ORDER is a load-bearing claim (SPEC R-35a), so it is
+        pinned where it is actually decided — the caller — with a DIFFERENT
+        record in each location. With only one record planted, either order
+        would pass."""
+        repo, proj = self._project(tmp_path, monkeypatch)
+        git(repo, "branch", "inner-base", "main")
+        outer = write_instance_record(repo, base_ref="main")
+        write_instance_record(proj, base_ref="inner-base")
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        inner = lane_runs(log)[0][-1]
+        assert "--request-base main" in inner
+        assert "--request-base inner-base" not in inner
+        assert f"{outer} records base_ref 'main'" in capsys.readouterr().out
+
     def test_explicit_base_still_wins_over_a_record(
             self, tmp_path, monkeypatch, capsys):
         """The flag path is untouched: an operator who names a base is never
@@ -5027,11 +5261,13 @@ class TestWorktreeRecordedComparisonBase:
         out = capsys.readouterr().out
         assert "comparison base deadbeef (from --base)" in out
         assert "records base_ref" not in out
+        assert "ignoring" not in out
 
-    def test_without_a_record_the_upstream_path_is_byte_for_byte_unchanged(
+    def test_without_a_record_the_upstream_path_is_unchanged_and_silent(
             self, tmp_path, monkeypatch, capsys):
         """The no-op guarantee for every existing consumer — above all the
-        primary checkout, which ciu structurally never writes a record into."""
+        primary checkout, which ciu structurally never writes a record into.
+        Nothing new is printed, either."""
         repo, _proj = self._project(tmp_path, monkeypatch)
         upstream_sha = self._upstream(repo)
         log = fake_docker_executing(tmp_path, monkeypatch)
@@ -5039,34 +5275,47 @@ class TestWorktreeRecordedComparisonBase:
         assert run_gate.main(["ui-unit"]) == 0
         assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
         out = capsys.readouterr().out
-        assert "merge-base HEAD @{upstream}" in out
+        assert "comparison base" in out and "merge-base HEAD @{upstream}" in out
         assert "records base_ref" not in out
+        assert "ignoring" not in out
 
-    def test_a_malformed_record_degrades_to_the_upstream_merge_base(
+    def test_a_malformed_record_degrades_to_the_upstream_and_SAYS_SO(
             self, tmp_path, monkeypatch, capsys):
-        """Fail-before/pass-after's mirror image: the whole point of the
-        silent degrade is that a broken record cannot take a gate run down."""
+        """A broken record cannot take a gate run down — and cannot slip past
+        unmentioned either: a silently-ignored record is the same silence
+        RG-51 exists to remove, in a new place."""
         repo, _proj = self._project(tmp_path, monkeypatch)
         upstream_sha = self._upstream(repo)
-        (repo / run_gate.WORKTREE_INSTANCE_RECORD).write_text("not json")
+        record = repo / run_gate.WORKTREE_INSTANCE_RECORD
+        record.write_text("not json")
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
         assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
         captured = capsys.readouterr()
+        assert f"run-gate: ignoring {record}: it is not readable as a JSON " \
+               f"object" in captured.out
         assert "merge-base HEAD @{upstream}" in captured.out
         assert "Traceback" not in captured.err
 
-    def test_a_blank_base_ref_degrades_to_the_upstream_merge_base(
+    def test_an_adopt_style_frozen_sha_degrades_and_says_so(
             self, tmp_path, monkeypatch, capsys):
+        """The false-green case, end to end: `ciu worktree adopt` records the
+        adopted checkout's HEAD, which would narrow the judged diff to
+        nothing. The gate must fall back to `@{upstream}` and name the
+        reason."""
         repo, _proj = self._project(tmp_path, monkeypatch)
         upstream_sha = self._upstream(repo)
-        write_instance_record(repo, base_ref="")
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        write_instance_record(repo, base_ref=head, state="allocating")
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
         assert f"--request-base {upstream_sha}" in lane_runs(log)[0][-1]
-        assert "merge-base HEAD @{upstream}" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "run-gate: ignoring" in out
+        assert "does not name a branch in this tree" in out
 
     def test_a_record_resolves_a_tree_that_has_no_upstream_at_all(
             self, tmp_path, monkeypatch, capsys):
@@ -5074,14 +5323,34 @@ class TestWorktreeRecordedComparisonBase:
         upstream to derive from). A ciu worktree branched off `main` and never
         pushed is exactly that tree, and it now has a real, recorded answer
         rather than a refusal. Nothing is guessed — the ref is one ciu wrote
-        down at creation, and assay still resolves `merge-base` over it."""
+        down at creation and git has just resolved to a live branch."""
         repo, _proj = self._project(tmp_path, monkeypatch)
         write_instance_record(repo, base_ref="main")
         log = fake_docker_executing(tmp_path, monkeypatch)
         self._judge(monkeypatch, "request")
         assert run_gate.main(["ui-unit"]) == 0
+        captured = capsys.readouterr()
         assert "--request-base main" in lane_runs(log)[0][-1]
-        assert "delegates its comparison base" not in capsys.readouterr().err
+        assert "delegates its comparison base" not in captured.err
+        # and the disclosure does NOT claim an @{upstream} it does not have
+        assert "this tree has no @{upstream} to derive from" in captured.out
+        assert "instead of merge-base" not in captured.out
+
+    def test_an_unusable_record_and_no_upstream_refuses_naming_the_record(
+            self, tmp_path, monkeypatch, capsys):
+        """The refusal keeps its existing wording (consumers match on it) and
+        gains the reason the record next to it was not used — otherwise an
+        operator staring at a ciu worktree is told only "no upstream"."""
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        record = write_instance_record(repo, base_ref="branch-gone")
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 2
+        err = capsys.readouterr().err
+        assert "lane 'ui-unit' delegates its comparison base" in err
+        assert "pass --base REF (worktree has no upstream)" in err
+        assert f"{record} was found but ignored" in err
+        assert "does not name a branch in this tree" in err
 
     def test_conjunction_lane_propagates_the_recorded_base(
             self, tmp_path, monkeypatch, capfd):
@@ -5115,7 +5384,8 @@ class TestWorktreeRecordedComparisonBase:
         self._judge(monkeypatch, "declared")
         assert run_gate.main(["ui-unit"]) == 0
         assert "--request-base" not in lane_runs(log)[0][-1]
-        assert "records base_ref" not in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "records base_ref" not in out and "ignoring" not in out
 
 
 def _has_module(name: str) -> bool:

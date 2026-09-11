@@ -634,27 +634,63 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     clone with zero installs.
   - **Two candidate directories, in order:** the judged worktree root, then
     the effective project dir inside it (`R-15`) — ciu writes the record at
-    the CIU root, which sits BELOW the git worktree root in a monorepo.
-  - **Every unusable record is indistinguishable from an absent one** and
-    falls through to `R-35`'s `@{upstream}` path: missing, unreadable,
-    permission-denied, not JSON, not a JSON object, or a missing,
-    non-string or blank/whitespace-only `base_ref`. Nothing this read does
-    can raise: it is a better DEFAULT, never a requirement, and a malformed
-    record must not be able to abort a gate run. `schema_version`, `state`
-    and `lease` are NOT inspected — validating fields run-gate does not use
-    would turn a forward-compatible read into a new drift surface.
+    the CIU root, which sits BELOW the git worktree root in a monorepo. An
+    unusable record does not end the search; a later candidate may hold a
+    good one.
+  - **A recorded ref is used only when git resolves it, IN THE JUDGED TREE,
+    to a branch (`refs/heads/…` or `refs/remotes/…`) that is not that
+    tree's own.** This is what makes the preference safe rather than merely
+    convenient, and it is not a shape test:
+    - `ciu worktree adopt` records the adopted checkout's **HEAD** — a
+      frozen commit id that is an ANCESTOR of HEAD, so `merge-base(base,
+      HEAD)` collapses to that commit and every line committed before the
+      adopt leaves the changed-line set. Run the gate right after `adopt`
+      and the base IS HEAD: zero changed lines, lane passes trivially.
+      That is the FALSE-GREEN direction and is strictly worse than the
+      `@{upstream}` it would displace.
+    - A tag, a deleted or renamed ref, and anything that is not a ref
+      resolve to nothing. A ref equal to the tree's own branch — which the
+      literal `HEAD` resolves to — collapses the same way as a frozen id.
+    - Requiring git to resolve the string also disposes of every shell
+      metacharacter, NUL byte and lone surrogate a record could otherwise
+      carry into a conjunction lane's inner `bash -c` through `{base}`
+      (`R-25`) — a git-excluded JSON file is a quieter source than an
+      operator's own command line.
+  - **A record whose `branch` disagrees with the tree's checked-out branch
+    is refused**, the way ciu's own reader refuses it: that is the reused-
+    worktree case, where a stale record would widen the judged diff to
+    everything since some other branch diverged. `git_worktree_path` is NOT
+    compared — path identity is unreliable across bind mounts and symlinks,
+    while `branch` is the field that decides the diff. A record that states
+    no usable `branch` is still judged on its `base_ref` alone.
+  - **Every unusable record falls through to `R-35`'s `@{upstream}` path:**
+    missing, unreadable, permission-denied, a non-regular file (a FIFO would
+    BLOCK the read forever, a device would read unbounded), not JSON, not a
+    JSON object, `RecursionError` from deeply nested JSON (a `RuntimeError`,
+    **not** a `ValueError`), a missing/non-string/blank `base_ref`, and each
+    rejection above. Nothing this read does can raise or block: it is a
+    better DEFAULT, never a requirement, and a malformed record must not be
+    able to abort a gate run. `schema_version`, `state` and `lease` are NOT
+    inspected — validating fields run-gate does not use would turn a
+    forward-compatible read into a new drift surface.
   - **Scope.** `--base` still wins outright; a non-delegating lane never
     reads the record; a plain checkout is unaffected (`ciu worktree adopt`
     refuses the primary worktree and the record is git-excluded, so it
     cannot arrive there by checkout). Only the base STRING changes — assay's
     own `resolve_base` still computes `merge-base(base, HEAD)` over it.
-  - **Deliberate widening.** A tree that HAS a record but no upstream
+  - **Deliberate widening.** A tree that HAS a usable record but no upstream
     resolves instead of refusing. Nothing is guessed: the ref is one ciu
-    wrote down at creation.
-  - **Disclosure (`R-05`).** When the record wins, before execution:
-    `run-gate: <record path> records base_ref '<REF>' — using it instead of
-    merge-base HEAD @{upstream}`, and `R-35`'s own line names the source as
-    `ciu.worktree-instance.json base_ref`.
+    wrote down at creation and git has just resolved to a live branch.
+  - **Disclosure (`R-05`), both ways.** When the record wins, before
+    execution: `run-gate: <record path> records base_ref '<REF>' — using it
+    instead of merge-base HEAD @{upstream} (<sha>)` — naming the ref NOT
+    taken is how origin drift becomes visible — or `… (this tree has no
+    @{upstream} to derive from)` in the widening case; `R-35`'s own line
+    then names the source as `ciu.worktree-instance.json base_ref`. When a
+    record is found and REJECTED: `run-gate: ignoring <record path>: <why>`.
+    A silently ignored record is the same silence RG-51 exists to remove, in
+    a new place, so `R-35`'s refusal names it too when there is also no
+    upstream.
   - **Refusals (all exit 2, all naming the lane).** A lane that does NOT
     delegate, invoked with `--base`: an assay lane whose inventory reports a
     different `base_source` (naming the value assay declared), or a command
