@@ -3,20 +3,15 @@
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs. A marked `backfilled-after-release` entry was generated after its immutable tag already existed.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the instant that release is cut -- do not trust the "cleared" comment alone, verify against every dated section below `<!-- cmru: release history -->` first. Two independent instances of this exact staleness were found and fixed in this file and in run-gate-project's on 2026-09-11; the second one was caught only because a dispatched agent re-checked its own merged work after the fact. Verified empty as of 2026-09-11's 6.1.1 release. -->
 
-<!-- cleared 2026-09-11 after the 6.1.1 release. Found in that clearing: the
-     2026-09-03 clearing below never actually happened for real -- B021,
-     B064-B068, B070, B073, B074, B077 and B078 sat here, in full hand-written
-     prose, through FIVE subsequent releases (5.0.0 through 6.1.0) that had
-     already shipped every one of them under their own dated section. This is
-     the exact failure this comment already warned about; it just wasn't
-     caught. If you are adding a release and this comment is more than one
-     release old again, that is a recurrence -- check every B-number/A-number
-     mentioned below against the dated sections beneath `<!-- cmru: release
-     history -->` before trusting this block. -->
+<!-- cmru: release history -->
 
-### Fixed
+## [6.1.1] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=53d841a84ae16545025921ff126ade7cc167dbe8 -->
+
+### Fixed (detail)
 
 - **`--resume` replayed a stale `survived` verdict after a test-only fix
   (B088).** A persisted candidate record's identity was computed from the
@@ -84,12 +79,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the real work tree, leaving it dirty. Both namespaces are now checked, in
   both directions, and any of them saying "inside" refuses. Found by
   adversarial review.
-
-<!-- cmru: release history -->
-
-## [6.1.1] - 2026-09-11
-<!-- cmru: generated -->
-<!-- cmru: source-end=53d841a84ae16545025921ff126ade7cc167dbe8 -->
 
 ### Fixed
 - fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.0.0 -> 6.1.0 (assay-v6.1.0) (ec868f14)
