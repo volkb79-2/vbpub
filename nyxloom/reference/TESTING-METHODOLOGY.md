@@ -412,10 +412,41 @@ candidate re-runs the target suite once per candidate; a property test's
 `max_examples` multiplies directly into that per-candidate cost
 (`## Mutation testing`'s own `wall time ≈ mutants × median selected-test
 time / parallelism`). `LANE-AUTHORING.md` §4's framing: keep the `gate`
-profile's example count small and push a large count to a `nightly` profile
-on a separate, unbudgeted remote lane. Sizing the gate profile too large is
-the direct mechanism by which adding Hypothesis coverage can silently blow a
+profile's example count small (200; nyxloom's own P11 convention is smaller
+still, 20-50) and push a large count (5000) to a `nightly` profile on a
+separate, unbudgeted remote lane. Sizing the gate profile too large is the
+direct mechanism by which adding Hypothesis coverage can silently blow a
 mutation lane's `budget_per_candidate`.
+
+**Does a small `gate` example count actually cost finding power?** Yes, but
+not evenly, and the two knobs that produce the small count are not the same
+cost. `derandomize=True` costs nothing on its own — it only removes run-to-
+run randomness, it does not change how many examples get tried. Reducing
+`max_examples` itself does have a real cost, but Hypothesis's generation is
+not uniform-random: it deliberately front-loads exactly the boundary/edge
+values (`0`, `1`, `-1`, empty, type extremes) that this document's case
+study above is about — that is *why* `@given(index=st.integers())` finds
+`index=0` on the first try regardless of a small example budget. What a
+small budget actually trades away is power against rare, *deep
+combinatorial* interactions between several generated values that only
+surface after exploring many distinct combinations — that class of bug is
+specifically what the `nightly` profile's large count exists to catch
+instead, on a schedule where the cost doesn't multiply into a mutation
+budget. So: boundary-value bugs (this document's whole motivating case)
+stay well-covered even at a small `max_examples`; only the rarer,
+deeper class of bug is genuinely traded away on the fast gate path.
+
+**schemathesis — the other property-based tool already in this estate.**
+Built on Hypothesis itself, but generates against an OpenAPI/JSON-schema
+contract rather than a bare `@given` strategy — the property/state-machine
+row's technique applied specifically to an HTTP API surface. dstdns already
+floors it (`requirements.txt`) and already uses it for real
+(`tests/contract/test_openapi_contract.py`). It is not applicable to every
+project by default: it needs a real OpenAPI-described HTTP surface to
+generate against, so a pure CLI/orchestration tool with no HTTP API of its
+own (run-gate-project, ciu, cmru) has nothing for it to test — the same
+`gate`/`derandomize`/budget guidance above applies wherever it IS adopted,
+since it is Hypothesis underneath.
 
 **`.hypothesis/` under assay's snapshot isolation.** assay's own git-aware
 scratch-copy diffing already treats `.hypothesis/` as a self-ignoring cache
