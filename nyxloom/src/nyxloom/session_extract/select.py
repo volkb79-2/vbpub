@@ -8,6 +8,11 @@ means the OLDEST material is always what gets dropped first when max_words
 is tight -- nothing already accepted is ever un-accepted.
 
 Windowing contract:
+  - an ASSISTANT_TEXT event carrying classifier.is_api_error (upstream 429/
+    rate-limit/overloaded_error transport noise) is dropped unconditionally
+    when config.hide_api_errors is set (the default) -- before checkpoint
+    scoring or finding-signal rescue ever apply. `--show-api-errors`
+    disables this and restores the pre-2026-09-10 behavior below;
   - the last `max_checkpoints` ASSISTANT_TEXT events scoring at or above
     checkpoint_score_threshold are always kept in full;
   - a non-checkpoint ASSISTANT_TEXT/THINKING event survives if it's longer
@@ -80,6 +85,26 @@ from .events import EventKind, NormalizedEvent
 
 
 def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[NormalizedEvent]:
+    # An OPERATOR_TEXT/QA_PAIR turn immediately followed (in full,
+    # pre-selection chronological order) by a LIFECYCLE_MARKER -- no
+    # ASSISTANT_TEXT/THINKING event in between -- got zero response before
+    # the boundary. That's not a counting bug (stats.py's per-boundary
+    # aggregation is correct: nothing ran in that window), but shown alone
+    # it reads as "this instruction was dropped." A real dstdns session
+    # (2026-09-10) confirmed the operator's instruction was NOT dropped --
+    # the very next assistant turn after the compact summary acted on it
+    # directly. render.py surfaces this meta as a note pointing the reader
+    # at the next block instead of leaving a bare zero-stat-looking gap.
+    # Deliberately does NOT try to tell "compaction ate the turn and NOTHING
+    # ever followed" apart from the common case -- that's a real, rarer
+    # edge case left for later rather than risking OPERATOR_TEXT/QA_PAIR's
+    # existing always-kept guarantee below.
+    for i, ev in enumerate(events):
+        if (ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR)
+                and i + 1 < len(events)
+                and events[i + 1].kind is EventKind.LIFECYCLE_MARKER):
+            ev.meta["swallowed_by_compaction"] = "1"
+
     kept: list[NormalizedEvent] = []
     checkpoints_found = 0
     word_count = 0
@@ -109,6 +134,13 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             word_count += len(ev.text.split())
 
         elif ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
+            if (config.hide_api_errors and ev.kind is EventKind.ASSISTANT_TEXT
+                    and classifier.is_api_error(ev.text)):
+                # Dropped unconditionally -- not even considered for
+                # checkpoint/finding-signal rescue -- per config.py's
+                # hide_api_errors. Falls into the next-older kept event's
+                # gap_after exactly like any other rejected event.
+                continue
             is_checkpoint = (
                 ev.kind is EventKind.ASSISTANT_TEXT
                 and (ev.checkpoint_score or 0.0) >= config.checkpoint_score_threshold

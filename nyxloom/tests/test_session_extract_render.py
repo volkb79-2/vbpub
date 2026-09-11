@@ -127,6 +127,23 @@ def test_render_text_shows_gap_note_between_two_events():
     assert text.index("older text") < text.index("[gap: 5") < text.index("newer text")
 
 
+def test_render_text_shows_compaction_swallowed_note_after_operator_block():
+    op = _ev(EventKind.OPERATOR_TEXT, "check the standing guidelines...", marker="op0")
+    op.meta["swallowed_by_compaction"] = "1"
+    marker = _ev(EventKind.LIFECYCLE_MARKER, "[compact boundary]", marker="lc1")
+    text = render_text([op, marker], fmt="claude-code", last_marker=None)
+    assert "[response follows after compaction]" in text
+    assert (text.index("check the standing guidelines")
+            < text.index("[response follows after compaction]")
+            < text.index("[compact boundary]"))
+
+
+def test_render_text_no_compaction_note_when_meta_absent():
+    op = _ev(EventKind.OPERATOR_TEXT, "ordinary operator turn", marker="op0")
+    text = render_text([op], fmt="claude-code", last_marker=None)
+    assert "[response follows after compaction]" not in text
+
+
 def test_render_text_gap_note_singular_unit_for_one():
     ev = _ev(EventKind.OPERATOR_TEXT, "x")
     ev.meta["gap_after"] = "1"
