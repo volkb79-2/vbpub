@@ -97,14 +97,28 @@ _FILENAME_RE = re.compile(r"\b\w[\w-]*\.(py|sh|md|toml|json|jsonl|ya?ml|js|ts|cf
 # adapters/claude_code.py's own "[API ERROR: ...]" tag for an
 # isApiErrorMessage record (a real 429/overloaded_error the harness hit) --
 # a rate-limit notice is typically SHORT ("You've hit your session limit"),
-# exactly the shape the length filter otherwise drops, but the fact a
-# session actually stalled on a real API error is never noise.
+# exactly the shape the length filter otherwise drops. Exposed as its own
+# predicate (is_api_error, below) rather than folded silently into
+# has_finding_signal, because select.py needs to act on it BEFORE finding-
+# signal applies: config.py's hide_api_errors (default True, 2026-09-10
+# operator direction) drops these from selection entirely regardless of
+# finding signal -- upstream API-transport noise is irrelevant to the
+# session CONTENT this package summarizes, not evidence about it.
 _API_ERROR_RE = re.compile(r"^\[API ERROR\b")
+
+
+def is_api_error(text: str) -> bool:
+    """True for adapters/claude_code.py's own `[API ERROR: ...]` tag (an
+    isApiErrorMessage record -- a real 429/rate-limit/overloaded_error/etc
+    the harness hit). See config.py's hide_api_errors and select.py.
+    """
+    first_line = text.split("\n", 1)[0][:160]
+    return bool(_API_ERROR_RE.match(first_line))
 
 
 def has_finding_signal(text: str) -> bool:
     first_line = text.split("\n", 1)[0][:160]
-    if _FINDING_OPENER_RE.match(first_line) or _API_ERROR_RE.match(first_line):
+    if _FINDING_OPENER_RE.match(first_line) or is_api_error(text):
         return True
     return bool(_CODE_REFERENCE_RE.search(text) or _FILENAME_RE.search(text))
 

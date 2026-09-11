@@ -130,6 +130,18 @@ class ExtractConfig:
     # time only need to know a gap existed, not recover it.
     gap_note_show_marker: bool = False
 
+    # Upstream API-transport noise (429/rate-limit/overloaded_error --
+    # adapters/claude_code.py's own "[API ERROR: ...]" tag,
+    # classifier.is_api_error) is irrelevant to the SESSION CONTENT this
+    # package summarizes -- it's a fact about the harness's connection to
+    # the API, not about what happened in the session. Suppressed from
+    # selection entirely by default (2026-09-10 operator direction,
+    # reversing this package's earlier "never noise" stance): dropped even
+    # though classifier.has_finding_signal would otherwise rescue it past
+    # the length filter. `nyxloom extract --show-api-errors` restores the
+    # old behavior for a run where seeing API-transport stalls matters.
+    hide_api_errors: bool = True
+
 
 # Named presets bundling the "how aggressively should selection filter
 # content" knobs -- max_checkpoints, checkpoint_score_threshold,

@@ -664,7 +664,7 @@ def cmd_extract(args) -> int:
     """extract <path> [--session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
     [--max-lifecycle-markers N] [--since MARKER | --since-file PATH]
-    [--until MARKER] [--lossless]
+    [--until MARKER] [--lossless] [--show-api-errors]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
@@ -774,6 +774,7 @@ def cmd_extract(args) -> int:
             else base.max_lifecycle_markers
         ),
         output_format="json" if args.json else "text",
+        hide_api_errors=not args.show_api_errors,
     )
     result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
 
@@ -800,7 +801,7 @@ def cmd_extract(args) -> int:
 def cmd_extract_debug(args) -> int:
     """extract-debug <path> [--session ID] [--format FMT] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
-    [--max-lifecycle-markers N] [--color | --no-color]
+    [--max-lifecycle-markers N] [--show-api-errors] [--color | --no-color]
 
     A colored diff between the full lossless base (lossless.py's own dump)
     and what `extract` -- called with these SAME flags -- would actually
@@ -858,6 +859,7 @@ def cmd_extract_debug(args) -> int:
             args.max_lifecycle_markers if args.max_lifecycle_markers is not None
             else base.max_lifecycle_markers
         ),
+        hide_api_errors=not args.show_api_errors,
     )
     result = extract(path, config, fmt=fmt, session_id=args.session)
     use_color = sys.stdout.isatty() if args.color is None else args.color
@@ -2352,6 +2354,12 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                  help="Append a mechanically-extracted files-touched/commits/"
                                       "branches/tests line after each kept boundary (E-012, "
                                       "session_extract/ledger.py). Claude Code only; text mode only")
+    extract_parser.add_argument("--show-api-errors", action="store_true",
+                                 help="Include upstream API-transport noise (429/rate-limit/"
+                                      "overloaded_error) in the output. Off by default -- these "
+                                      "are dropped from selection entirely, not just length-"
+                                      "filtered, since they're a fact about the harness's API "
+                                      "connection, not about session content.")
 
     # extract-debug
     extract_debug_parser = subparsers.add_parser(
@@ -2376,6 +2384,8 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                        help="Same as extract's --include-thinking")
     extract_debug_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
                                        help="Same as extract's --max-lifecycle-markers")
+    extract_debug_parser.add_argument("--show-api-errors", action="store_true",
+                                       help="Same as extract's --show-api-errors")
     debug_color_group = extract_debug_parser.add_mutually_exclusive_group()
     debug_color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
                                     help="Force ANSI color even when stdout isn't a terminal")

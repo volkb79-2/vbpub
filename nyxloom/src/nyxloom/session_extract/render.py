@@ -64,6 +64,17 @@ prefixing the kind duplicated it onto the QUESTION line instead ("OPERATOR:
 <question>\n- opt\n...\n\nOPERATOR: <answer>") and couldn't express more
 than one label for a multi-question batch either way.
 
+An OPERATOR_TEXT/QA_PAIR block immediately followed by a LIFECYCLE_MARKER in
+select.py's own pre-selection pass (meta["swallowed_by_compaction"], set
+whenever no ASSISTANT_TEXT/THINKING event ran before the boundary) gets a
+`[response follows after compaction]` note right after its own text --
+without it, a reader sees an operator instruction followed immediately by a
+compaction marker and reasonably reads that as "this got dropped." A real
+dstdns session (2026-09-10) showed the opposite: the very next assistant
+turn after the compact summary acted on the instruction directly. The note
+only ever points forward to the next block; it does not (yet) try to tell
+apart the rarer case where nothing ever follows at all.
+
 Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
 marker -- when given, `render_text` inserts that boundary's rendered
 `[files read: ...] [files edited: ...] [commits created: ...] [branches
@@ -134,6 +145,8 @@ def render_text(
     for ev in events:
         prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
         blocks.append(f"{prefix}{ev.text}")
+        if ev.meta.get("swallowed_by_compaction"):
+            blocks.append("[response follows after compaction]")
         if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():

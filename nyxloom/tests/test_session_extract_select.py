@@ -96,6 +96,26 @@ def test_lifecycle_marker_hard_stops_the_walk():
     assert "op0" not in markers
 
 
+def test_operator_immediately_before_a_lifecycle_marker_is_flagged_swallowed():
+    # Real dstdns shape (2026-09-10): an operator turn with zero
+    # ASSISTANT_TEXT/THINKING before the next LIFECYCLE_MARKER.
+    op = _op(0, text="check if you have in your standing guidelines...")
+    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [op, marker, _cp(2)]
+    select(events, ExtractConfig(max_checkpoints=5))
+    assert op.meta.get("swallowed_by_compaction") == "1"
+
+
+def test_operator_followed_by_a_real_response_is_not_flagged_swallowed():
+    op = _op(0)
+    responded = NormalizedEvent(1, "resp1", _TS, EventKind.ASSISTANT_TEXT,
+                                 "Let me check current state directly.", checkpoint_score=0.0)
+    marker = NormalizedEvent(2, "lc2", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    events = [op, responded, marker, _cp(3)]
+    select(events, ExtractConfig(max_checkpoints=5))
+    assert "swallowed_by_compaction" not in op.meta
+
+
 def test_max_lifecycle_markers_zero_is_the_default_hard_stop():
     marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
     events = [_op(0), marker, _cp(2)]
@@ -162,6 +182,33 @@ def test_short_finding_kept_but_short_procedural_line_dropped():
     kept_markers = {e.marker for e in kept}
     assert "find0" in kept_markers
     assert "proc1" not in kept_markers
+
+
+def test_api_error_dropped_by_default_even_though_it_carries_finding_signal():
+    # An API-error line normally survives has_finding_signal's short-comment
+    # rescue (test_session_extract_classifier.py pins that) -- but
+    # hide_api_errors (default True, 2026-09-10) drops it BEFORE that rescue
+    # ever applies: upstream API-transport noise is irrelevant to session
+    # content, not evidence about it. Only 4 checkpoints against
+    # max_checkpoints=5 so the walk runs past them to actually reach and
+    # evaluate the api_error event, same shape as
+    # test_short_finding_kept_but_short_procedural_line_dropped above.
+    api_error = NormalizedEvent(0, "err0", _TS, EventKind.ASSISTANT_TEXT,
+                                 "[API ERROR: rate_limit, HTTP 429] You've hit your session limit",
+                                 checkpoint_score=0.0)
+    events = [api_error, _cp(1), _cp(2), _cp(3), _cp(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, long_comment_chars=180))
+    assert not any(e.marker == "err0" for e in kept)
+
+
+def test_api_error_kept_when_hide_api_errors_is_disabled():
+    api_error = NormalizedEvent(0, "err0", _TS, EventKind.ASSISTANT_TEXT,
+                                 "[API ERROR: rate_limit, HTTP 429] You've hit your session limit",
+                                 checkpoint_score=0.0)
+    events = [api_error, _cp(1), _cp(2), _cp(3), _cp(4)]
+    kept = select(events, ExtractConfig(max_checkpoints=5, long_comment_chars=180,
+                                         hide_api_errors=False))
+    assert any(e.marker == "err0" for e in kept)
 
 
 def test_word_budget_trims_the_oldest_end():
