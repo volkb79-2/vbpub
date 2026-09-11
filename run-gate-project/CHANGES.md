@@ -144,6 +144,32 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.6.2] - 2026-09-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=5c879d3fa9a67a59ae83a6c3869781ed0329f3ef -->
+
+### Changed
+- backlog(run-gate): RG-54/RG-53 -- record the first-parent 0/0 seen in a real artifact (743869fe)
+- RG-51/CIU-106 round-5: a graph clause is not "is there anything to judge" (d8b6f70a)
+- RG-51/CIU-106 round-4: capture the fork point at CHECKOUT, not at worktree add (3f5e8912)
+- ciu CIU-106 + run-gate RG-51: record the FORK COMMIT, and require it to still hold (d683f608)
+- Merge branch 'main' into rg51-worktree-base-fallback (0e339770)
+- run-gate: RG-52 gate-safe comparison base; RG-51 held OPEN on a third false-green (3e146571)
+- run-gate: RG-51 review round 2 -- a live branch is necessary, not sufficient (f69bda14)
+- run-gate: RG-51 review round 1 -- only a live branch may displace @{upstream} (1bcdc8a8)
+- run-gate: RG-51 -- default the comparison base to the worktree's recorded fork point (3a4d33cb)
+- backlog: RG-51 -- a delegating lane's default base falls back to stale @{upstream} (a1f3744d)
+- run-gate: correct RG-50's vendored-copies claim -- in-monorepo consumers are symlinks (977a4d70)
+- run-gate: RG-50 -- ProgressWatch's B065 own-clock branch divides by an index of 0 for the first real mutation candidate, crashing the gate (74b964d9)
+- Merge nyxloom-P109 -- B9 feature-intake chat bridge over Mattermost (f26aec22)
+- backlog(run-gate): file RG-47 -- run-gate.toml resolves relative to invoking CWD, not --worktree (94fe6d06)
+
+### Documentation
+- docs(run-gate): RG-49 corroborated by a second independent hit (dstdns-P93) (c4c75211)
+- docs(run-gate-project): RG-49 -- RG-38's --state-dir mkdir fails on a root-owned synthetic parent in Mode-B partial-bind-mount worktrees (04cfaac2)
+- docs(nyxloom): record the tip's gate PASS; add run-5 evidence to RG-48 (45cb78fc)
+- docs(nyxloom): record P109's gate verdict; file run-gate RG-48 (74cd60b2)
+
 ## [23.6.1] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=ec0bc47fc05f487c5518ed57ff9393745d83383b -->
