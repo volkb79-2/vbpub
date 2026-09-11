@@ -32,17 +32,27 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   because ciu writes the record at the CIU root, which sits below the git
   worktree root in a monorepo.
 
-  **A recorded ref is used only when git resolves it, in the judged tree, to
-  a branch other than that tree's own**, and only when the record's `branch`
-  still matches the tree. This is the safety property, not a formality:
-  `ciu worktree adopt` records the adopted checkout's HEAD, and `merge-base`
-  against an ancestor of HEAD collapses to that commit — run the gate right
-  after an adopt and it would judge zero changed lines and pass trivially
-  (found by adversarial review of the first cut of this change). A tag, a
-  deleted or renamed ref and the literal `HEAD` fail the same way. Requiring
-  git to resolve the string also keeps every shell metacharacter, NUL byte
-  and lone surrogate out of a conjunction lane's inner `bash -c` via
-  `{base}`.
+  **A recorded ref is used only when it is plain ref text, the record's
+  `branch` still matches the tree, git resolves it to a LOCAL branch there,
+  and that branch does not already contain the tree's HEAD.** These are the
+  safety property, not formalities — two of the four clauses exist because
+  two independent adversarial review rounds each found a FALSE GREEN in the
+  preceding cut of this change:
+  - `ciu worktree adopt` records the adopted checkout's HEAD, and
+    `merge-base` against an ancestor of HEAD collapses to that commit — run
+    the gate right after an adopt and it would judge zero changed lines.
+  - A merged-but-not-torn-down worktree has a real, live `base_ref = "main"`
+    that `main` has since absorbed: same collapse, and it was true of 4 of
+    the 7 real ciu worktrees in this estate. `git merge-base --is-ancestor
+    HEAD <base>` now refuses it, fail-closed, and subsumes the frozen-id,
+    own-branch and literal-`HEAD` cases.
+
+  A tag and a `refs/remotes/…` ref are refused too — the latter because a
+  remote-tracking ref is the very thing RG-51 exists to stop defaulting to.
+  The allow-list on the recorded ref does NOT close the pre-existing
+  inner-shell substitution hole on `--base`/`{base}` (now filed as RG-52);
+  it exists so that RG-51 does not widen that hole from an operator's own
+  command line to a git-excluded JSON file.
 
   Every failure mode — absent, unreadable, permission-denied, a FIFO or
   device that would block or explode on read, not JSON, not an object,

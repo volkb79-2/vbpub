@@ -377,20 +377,29 @@ only — a gate run for a sibling project in the same worktree finds no record
 and falls through to `@{upstream}` exactly as before.
 
 **When a record is present but NOT used.** run-gate uses `base_ref` only when
-git resolves it, in the judged tree, to a branch other than that tree's own,
-and only when the record's `branch` still matches the tree. Anything else is
-ignored with a reason on stdout:
+the record's `branch` still matches the tree, git resolves the ref to a LOCAL
+branch there, and that branch does not already contain the tree's HEAD.
+Anything else is ignored with a reason on stdout:
 
 ```bash
-# run-gate: ignoring /w/proj/ciu.worktree-instance.json: its base_ref '9f2c…' does not name a branch in this tree — a frozen commit id (what `ciu worktree adopt` records), a deleted or renamed ref, or not a ref at all; only a branch self-updates through merge-base
+# run-gate: ignoring /w/proj/ciu.worktree-instance.json: its base_ref 'main' (refs/heads/main) already contains this tree's HEAD, so merge-base would be HEAD and the lane would judge NOTHING — a merged-but-not-torn-down worktree, or a base that is this tree's own branch
 ```
 
-That rule is load-bearing, not fussiness: `ciu worktree adopt` records the
-adopted checkout's **HEAD**, and `merge-base` against an ancestor of HEAD
-collapses to that commit — run the gate right after an adopt and it would
-judge *zero* changed lines and pass trivially. A frozen id, a tag, a deleted
-branch and the tree's own branch all fail the same way, so none of them
-displaces `@{upstream}`.
+Those rules are load-bearing, not fussiness — both were found by adversarial
+review as ways this feature could pass a lane that should have failed:
+
+- `ciu worktree adopt` records the adopted checkout's **HEAD**, and
+  `merge-base` against an ancestor of HEAD collapses to that commit. Run the
+  gate right after an adopt and it would judge *zero* changed lines.
+- A worktree whose work has been merged into its base and not torn down has a
+  real, live `base_ref = "main"` that `main` has since absorbed — same
+  collapse, and it was true of 4 of the 7 real ciu worktrees in this estate
+  when the check was added.
+
+A frozen id, a tag, a remote-tracking ref, a deleted branch and the tree's own
+branch all fail one of the clauses, so none of them displaces `@{upstream}`.
+Note this is a **safe** failure: falling back is exactly the pre-RG-51
+behaviour.
 
 Nothing to configure and nothing to opt out of: `--base` still wins outright,
 and an absent, unreadable, non-JSON or otherwise unusable record degrades to

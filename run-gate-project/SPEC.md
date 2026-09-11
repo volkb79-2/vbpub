@@ -637,25 +637,41 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     the CIU root, which sits BELOW the git worktree root in a monorepo. An
     unusable record does not end the search; a later candidate may hold a
     good one.
-  - **A recorded ref is used only when git resolves it, IN THE JUDGED TREE,
-    to a branch (`refs/heads/…` or `refs/remotes/…`) that is not that
-    tree's own.** This is what makes the preference safe rather than merely
-    convenient, and it is not a shape test:
-    - `ciu worktree adopt` records the adopted checkout's **HEAD** — a
-      frozen commit id that is an ANCESTOR of HEAD, so `merge-base(base,
-      HEAD)` collapses to that commit and every line committed before the
-      adopt leaves the changed-line set. Run the gate right after `adopt`
-      and the base IS HEAD: zero changed lines, lane passes trivially.
-      That is the FALSE-GREEN direction and is strictly worse than the
-      `@{upstream}` it would displace.
-    - A tag, a deleted or renamed ref, and anything that is not a ref
-      resolve to nothing. A ref equal to the tree's own branch — which the
-      literal `HEAD` resolves to — collapses the same way as a frozen id.
-    - Requiring git to resolve the string also disposes of every shell
-      metacharacter, NUL byte and lone surrogate a record could otherwise
-      carry into a conjunction lane's inner `bash -c` through `{base}`
-      (`R-25`) — a git-excluded JSON file is a quieter source than an
-      operator's own command line.
+  - **A recorded ref is used only when ALL of the following hold.** Each
+    clause closes a way the record would be worse than the `@{upstream}` it
+    displaces; the last two are false-greens found by adversarial review of
+    this very rule, not hypotheticals.
+    - **It is plain ref text** — `[A-Za-z0-9._/+@-]+`, checked BEFORE git is
+      asked. This is narrower than git's own ref grammar, which permits `;`,
+      backticks, `$`, `|` and quotes: a resolved base is substituted into a
+      conjunction lane's inner `bash -c` through `{base}` (`R-25`), where
+      `shlex.join` quotes the outer element but the element IS the script the
+      inner shell re-parses. `git branch 'main;touch$IFS/tmp/PWNED'` is a
+      legal branch that executes. That hole predates this rule and is NOT
+      closed here (`RG-52`); the allow-list exists so that this rule does not
+      WIDEN it from an operator's own command line to a git-excluded JSON
+      file `git status` never shows — the same reasoning as
+      `check_worktree_charset` (`RG-5`). It also keeps NUL bytes and lone
+      surrogates, which raise out of `subprocess` itself, away from git.
+    - **git resolves it, IN THE JUDGED TREE, to a LOCAL branch**
+      (`refs/heads/…`). `ciu worktree adopt` records the adopted checkout's
+      **HEAD** — a frozen commit id; a tag is frozen the same way; a deleted
+      or renamed ref resolves to nothing; and a `refs/remotes/…` ref is
+      precisely what RG-51 exists to stop defaulting to, so accepting one
+      and announcing it as an improvement over `@{upstream}` would be the
+      same stale ref with a better disclosure line. Note a raw commit id
+      exits 0 with EMPTY output under `--symbolic-full-name`, so the
+      returncode alone is not the test.
+    - **That branch does not already contain the tree's HEAD**
+      (`git merge-base --is-ancestor HEAD <base>`, FAIL-CLOSED: any error
+      refuses). Being a live branch is NECESSARY but NOT SUFFICIENT — a
+      merged-but-not-torn-down worktree has a real `base_ref = "main"` that
+      local `main` has since absorbed, so `merge-base` is HEAD and the lane
+      judges NOTHING: an assay lane reaches assay's own `BASE_IS_HEAD`
+      refusal three layers down, and a `kind = "command"` lane has no such
+      guard while its diff-coverage judge scores `0/0` as 100% — a silent
+      false green. This clause subsumes the frozen-id, own-branch and
+      literal-`HEAD` collapses.
   - **A record whose `branch` disagrees with the tree's checked-out branch
     is refused**, the way ciu's own reader refuses it: that is the reused-
     worktree case, where a stale record would widen the judged diff to
@@ -684,8 +700,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **Disclosure (`R-05`), both ways.** When the record wins, before
     execution: `run-gate: <record path> records base_ref '<REF>' — using it
     instead of merge-base HEAD @{upstream} (<sha>)` — naming the ref NOT
-    taken is how origin drift becomes visible — or `… (this tree has no
-    @{upstream} to derive from)` in the widening case; `R-35`'s own line
+    taken is how origin drift becomes visible — or `… (merge-base HEAD
+    @{upstream} yields nothing here …)` in the widening case; `R-35`'s line
     then names the source as `ciu.worktree-instance.json base_ref`. When a
     record is found and REJECTED: `run-gate: ignoring <record path>: <why>`.
     A silently ignored record is the same silence RG-51 exists to remove, in

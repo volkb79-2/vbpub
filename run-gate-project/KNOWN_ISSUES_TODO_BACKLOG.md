@@ -3614,10 +3614,12 @@ checkout's HEAD into the same field.
   are checked, in that order: ciu writes the record at the CIU root,
   "which can be below the Git worktree root in a monorepo" — i.e. at
   `<worktree>/<project>/`, the shape every vbpub consumer has.
-- **The recorded ref is used only when git resolves it, in the judged
-  tree, to a branch other than that tree's own**, and only when the
-  record's `branch` still matches the tree. See "Review finding" below —
-  this is the difference between a fix and a new false-green.
+- **The recorded ref is used only when it is plain ref text, the
+  record's `branch` still matches the tree, git resolves it to a LOCAL
+  branch there, and that branch does NOT already contain the tree's
+  HEAD.** See "Review findings" below — each clause closes a way the
+  record would have been WORSE than the `@{upstream}` it displaces, and
+  two of them were false-greens found only by review.
 - Every failure mode degrades to the pre-existing `@{upstream}` path:
   absent, unreadable, permission-denied, a non-regular file (a FIFO
   would block the read forever), not JSON, not an object,
@@ -3642,7 +3644,55 @@ checkout's HEAD into the same field.
   branch, and assay still computes `merge-base(base, HEAD)` over it.
   Only the base STRING changes here.
 
-### Review finding — the first cut of this fix was a false-green
+### Review findings — the first two cuts of this fix were false-greens
+
+Two independent adversarial review rounds, each against a fresh agent,
+each finding one BLOCKING defect IN THE FIX. Both were in the same
+direction — narrowing the judged diff, the direction that passes — and
+neither was visible from the tests the previous cut shipped with. The
+lesson worth carrying: for a change that picks a comparison BASE, "does
+it produce an answer" is not the property to test; "does the answer
+still leave the real diff to judge" is.
+
+#### Round 2 — a live branch is NECESSARY but NOT SUFFICIENT
+
+The round-1 fix accepted any `base_ref` resolving to a branch other than
+the tree's own. That still collapses whenever **HEAD is an ancestor of
+the base**: a worktree whose work has been merged into `main` (or fast-
+forwarded onto it) and not torn down has a perfectly real `base_ref =
+"main"` that local `main` has since absorbed, so `merge-base(main,
+HEAD) == HEAD` and there is nothing left to judge. This was not
+hypothetical — **4 of the 7 real ciu worktrees in this estate were in
+exactly that state** when the check was written (`hypothesis-followups`,
+`mattermost-stale-test-fix`, `render-qa-prefix-fix`,
+`session-extract-gate`), i.e. the majority.
+
+Downstream an assay lane would hit assay's own `BASE_IS_HEAD` refusal
+(`measurability.py`) three layers down, naming neither the record nor
+the remedy; a `kind = "command"` lane has NO such guard, and
+`tools/coverage_gate.py` scores zero changed lines as `0/0 = 100%` —
+a silent pass (see RG-53). Fixed with `base_already_contains_head`
+(`git merge-base --is-ancestor HEAD <base>`, FAIL-CLOSED on any error),
+which also subsumes the round-1 own-branch and literal-`HEAD` cases.
+dstdns's `scripts/gate-base.sh` case 3 is the estate's prior art for
+this exact refusal.
+
+Same round, also fixed: `current_branch_ref` had no `try/except` at all,
+so a non-UTF-8 branch name (git permits one) or a missing `git` raised
+straight out of it and aborted the gate run — breaking the "nothing here
+raises" contract the code and SPEC both asserted; `refs/remotes/` was
+accepted, which contradicted the entry's own rationale (a remote-tracking
+ref is precisely what RG-51 exists to stop defaulting to) and is now
+refused; the "requiring git to resolve it disposes of every injection
+hazard" claim was FALSE — git ref names legally permit `;`, backticks,
+`$` and more, and `git branch 'main;touch$IFS/tmp/PWNED'` is accepted and
+executes through `{base}`, so the reader now applies a conservative
+allow-list before asking git and the pre-existing hole is filed as
+**RG-52**; and the "report the FIRST rejection" branch was the one
+uncovered branch in the change, which the selftest lane could not see —
+filed as **RG-53**.
+
+#### Round 1 — the first cut was a false-green
 
 Independent adversarial review of the first implementation (which used
 `base_ref` verbatim whenever it was a non-blank string) found a BLOCKING
@@ -3663,20 +3713,16 @@ strictly the false-green direction, and strictly worse than the
 `@{upstream}` it displaced. The backlog's own "a frozen SHA … is at
 best a stopgap, not a fix" applied to the fix itself.
 
-Fixed by requiring git to resolve `base_ref` to a branch other than the
-tree's own, which also disposes of four further review findings at
-once: a tag or deleted/renamed ref (frozen or absent the same way), the
-literal `HEAD` (resolves to the tree's own branch), and every shell
-metacharacter / NUL byte / lone surrogate that a git-excluded JSON file
-could otherwise carry into a conjunction lane's inner `bash -c` through
-`{base}` — a quieter source than an operator's own command line, and
-one `git status` never shows. Also fixed from the same review:
+Fixed by requiring git to resolve `base_ref` to a branch, which also
+disposes of a tag or deleted/renamed ref (frozen or absent the same
+way) and the literal `HEAD`. Also fixed from the same review:
 `RecursionError` escaping the `(OSError, ValueError)` guard on deeply
 nested JSON, a FIFO at the record path blocking `read_text` forever
 with nothing disclosed, a stale record from a REUSED worktree (`git
 checkout -B other origin/release-1` leaves a record naming the first
 task's base) now refused on the `branch` cross-check ciu's own reader
-already performs, and the silent-rejection gap above.
+already performs, and the silent-rejection gap above. Round 2 then
+found that "a branch" was still not enough.
 
 The other two directions stay unimplemented and are NOT superseded; they
 address a case this fix does not (a non-ciu worktree, or a plain checkout
@@ -3700,3 +3746,90 @@ whose `@{upstream}` has rotted):
   without needing a per-invocation flag, but needs that provenance to
   actually be recorded and recoverable at gate time, which is not
   confirmed to exist today. **← taken; the provenance does exist.**
+
+## RG-52 — a comparison base is substituted into a conjunction lane's inner `bash -c` as UNQUOTED SHELL TEXT
+
+A `kind = "command"` lane declares base propagation with a `{base}`
+token in its own argv (`R-25`/`R-35`), e.g.
+
+```toml
+argv = ["bash", "-c", "./run-gate.py --base {base} cursor && ./run-gate.py unit"]
+```
+
+`substitute_worktree` replaces the token inside that STRING, and
+`build_command_inner`'s `shlex.join` then quotes the whole element for
+the OUTER shell — but the element **is** the script the inner `bash -c`
+re-parses, so metacharacters inside the substituted ref are interpreted
+there. A base of `main;touch /tmp/PWNED` yields
+
+```
+bash -c './run-gate.py --base main;touch /tmp/PWNED cursor && ...'
+```
+
+and on a `bare-host` lane that executes on the real host. Demonstrated
+against the real functions during RG-51's round-2 review, with both a
+`;` and a backtick payload.
+
+### Provenance and scope
+
+Predates RG-51: the reachable source today is `--base` on the operator's
+own command line (RG-26), which is low-severity — an operator who types a
+metacharacter into their own flag has other ways to run the same command.
+RG-51 was reviewed specifically for whether it WIDENS this, because a
+`ciu.worktree-instance.json` is a git-excluded file `git status` never
+shows and could travel with a copied worktree. It does not: RG-51's
+reader applies a conservative allow-list (`RECORDED_BASE_CHARSET`,
+`[A-Za-z0-9._/+@-]`) to the recorded ref BEFORE git is asked, and a
+branch legally named `main;touch$IFS/tmp/PWNED` — git accepts that name —
+is refused with `is not plain ref text`. `check_worktree_charset` (RG-5)
+is the same precedent for `--worktree` paths.
+
+### Status — OPEN
+
+The general fix belongs at the substitution site, not in each reader:
+either quote the substituted value for the inner shell, or apply the
+`R-5`-style charset refusal to `--base` as well. Note that a lane author
+can also place `{base}` inside single quotes in their own argv, which is
+not enforced anywhere. Candidate directions, not picked here:
+- Refuse a `--base` value outside a ref-name charset, mirroring
+  `check_worktree_charset`. Smallest change; would also have caught the
+  RG-51 case without a second allow-list.
+- Substitute with `shlex.quote` when the token appears inside a
+  `bash -c`-style element. More correct, but "which element is a script"
+  is not something run-gate can know in general.
+
+## RG-53 — `tools/coverage_gate.py` never reads `missing_branches`, so the selftest lane's `--cov-branch` is decorative for the DIFF judge
+
+`run-gate.toml`'s `selftest` lane runs pytest with `--cov-branch` and
+this project's own README/backlog describe the enforced floor as
+"changed-line coverage (line+branch)". The judge does not implement the
+second half: `_verdict` reads only `executed_lines` and `missing_lines`
+from the coverage JSON (`tools/coverage_gate.py`, around the
+`_validate_cov_record` call) and never looks at `missing_branches`. A
+changed line whose `if` has an untaken arm therefore scores as fully
+covered.
+
+Found 2026-09-11 by RG-51's round-2 review, which located a real uncovered
+BRANCH in that change (`recorded_worktree_base`'s "report the FIRST
+rejection" arm — the `if rejected is None:` false path) that the lane
+reported as 100% clean. The branch was then covered by a new test, but
+the judge gap remains: the same class would slip through again.
+
+Related, same file: `pct = 100.0 if total_changed_exec == 0 else …` — the
+0/0-is-100% trap (assay A-026/A-035, and TESTING-METHODOLOGY's first
+"Definition of done" line). It is correct for a diff that genuinely
+changes no executable line, but it is also exactly what turns a
+degenerate comparison base into a SILENT green (see RG-51's round-2
+finding, where a merged-but-not-torn-down worktree produced
+`merge-base == HEAD`, hence zero changed lines, hence `0/0 OK`).
+
+### Status — OPEN
+
+Directions, not picked here:
+- Read `missing_branches` and count a changed line as uncovered when it
+  has an untaken arm; this is what the lane's own flag already pays for.
+- Separately: refuse (or at minimum warn loudly) when
+  `total_changed_exec == 0` AND the resolved base equals HEAD, rather
+  than reporting `0/0 ≥ 100.0% floor` as a pass. assay's own
+  `check_base_is_head`/`BASE_IS_HEAD` (`measurability.py`) is the
+  precedent; the vendored thin gate has no equivalent.
