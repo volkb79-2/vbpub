@@ -542,6 +542,38 @@ be configuration nothing reads. A delegating lane invoked with no
 `--request-base` refuses too; assay never falls back to `HEAD` or a default
 branch.
 
+**Pitfall: a `judge.base` literal pointing at a remote-tracking ref rots
+silently.** `resolve_base` always computes `merge-base(base, HEAD)`, never a
+diff against `base`'s current tip — so `judge.base = "origin/main"` is really
+"diff since wherever local history last touched origin/main." That's exactly
+right while origin stays in sync with local work, and exactly wrong the
+moment it doesn't: a workflow that batches commits locally before pushing
+(a deliberate "not pushed yet, flagged separately" policy, a long review
+cycle, a slow CI queue) lets `origin/main` drift dozens of commits behind
+without anyone changing a single line of config, and every lane judging
+against it silently widens from "this change's own diff" to "everything
+since the drift began" — including work already gate-verified through its
+own lane. Hit independently at least three times across this estate (a
+dstdns lane's frozen-SHA base, generalized repo-wide after a second
+incident; vbpub nyxloom's and ciu's `tester-unified`/`ciu` lanes, both
+still pointing at `origin/main` until 2026-09-11). Two real fixes, pick
+based on how the lane is actually invoked:
+- **A local branch ref instead of a remote-tracking one** (`base = "main"`)
+  when the lane is always run from a worktree that forks from that branch —
+  self-updating via the same merge-base resolution, no re-pin ever needed,
+  and no per-invocation flag to remember or forget.
+- **`judge.base_source = "request"`** (above) when the lane genuinely needs
+  a different base per invocation (e.g. `origin/main` for a pre-push
+  sanity check, a feature branch's own fork point for local dev) — but only
+  once whatever invokes the lane *always* supplies `--request-base`
+  itself. Without that, an omitted flag falls back to the invoking tool's
+  own default (commonly `merge-base HEAD @{upstream}`), which is the
+  identical stale-origin hazard this pitfall describes, just relocated
+  from `assay.toml` into the caller. A frozen SHA (the third option,
+  pinning `base` to one specific commit) fixes the drift once but rots
+  again the same way `origin/main` did, on its own schedule — it is at
+  best a stopgap, not a fix.
+
 **Every verdict may name the build that produced it (B018).** Beside
 `assay_version` — a string any process can print — an installed assay records
 `judge_provenance`: the distribution name, exact version, artifact kind
