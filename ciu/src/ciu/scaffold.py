@@ -150,8 +150,23 @@ def collect_plan(argv: list[str], root: Path) -> dict:
         raise SystemExit(f"init: --project-name must match {_PROJECT_NAME_RE.pattern}")
     if interactive:
         project_name = _prompt("Project name (lowercase slug)", project_name)
+    # CIU-104's correction (KNOWN_ISSUES_TODO_BACKLOG.md, 2026-09-10): a
+    # fixed literal here is inert against a real, already-working hazard --
+    # two checkouts of the same project (a primary and a worktree) whose
+    # environment_tag is the same literal (e.g. the old "dev" default)
+    # render the SAME container_name() and one worktree's `ciu up` can
+    # recreate the OTHER's already-running container under its name.
+    # "$INSTANCE_ID" is an existing S3.2 $VAR-expansion value, not new
+    # scaffold behavior -- dstdns's own ciu.global.defaults.toml.j2:75
+    # already uses it in production. A worktree's distinct physical path
+    # always derives a distinct INSTANCE_ID, so this default is
+    # collision-proof for the common case with zero extra author effort;
+    # a stack that genuinely wants a stable, non-instance-varying name
+    # (a public DNS name, hardcoded operator recipes) still opts out
+    # explicitly via --environment-tag, now a visible choice instead of
+    # the accidental default shape every fresh `ciu init` used to produce.
     environment_tag = flag("--environment-tag") or (
-        _prompt("Environment tag", "dev") if interactive else "dev"
+        _prompt("Environment tag", "$INSTANCE_ID") if interactive else "$INSTANCE_ID"
     )
     if not environment_tag.strip() or any(c in environment_tag for c in '"\n#'):
         raise SystemExit(

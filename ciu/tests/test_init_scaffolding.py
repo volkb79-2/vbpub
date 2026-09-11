@@ -263,8 +263,21 @@ def test_interactive_flow_prompts_name_env_stacks(monkeypatch, workdir):
         lambda p="": prompts.append(p) or next(answers))
     plan = scaffold.collect_plan([], workdir)
     assert plan["project_name"] == scaffold._slug(workdir.name)
-    assert plan["environment_tag"] == "dev"
+    # CIU-104's correction: the blessed default is now the collision-proof
+    # "$INSTANCE_ID" (an existing S3.2 $VAR-expansion value, not a new
+    # scaffold concept), not the inert literal "dev" a worktree's `ciu up`
+    # could collide on. See scaffold.py's own comment at this default.
+    assert plan["environment_tag"] == "$INSTANCE_ID"
     assert [s["stack_name"] for s in plan["stacks"]] == ["web"]
+
+
+def test_noninteractive_default_environment_tag_is_instance_id(workdir):
+    # Non-interactive path (any "--" flag present) takes the SAME default,
+    # not just the prompt fallback -- this is the common case (a scripted
+    # or CI `ciu init --project-name X`), so it needs its own pin separate
+    # from the interactive-prompt test above.
+    plan = scaffold.collect_plan(["--project-name", "demo"], workdir)
+    assert plan["environment_tag"] == "$INSTANCE_ID"
 
 
 @pytest.mark.parametrize("bad", ['has"quote', "a\nb", "a#b", "   "])
