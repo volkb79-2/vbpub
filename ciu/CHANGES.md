@@ -24,6 +24,32 @@ restatement of the technical detail below it.
 ## [Unreleased]
 
 ### Added
+- **CIU-104 (partially) — `ciu init`'s scaffold default for `environment_tag`
+  is now `"$INSTANCE_ID"`, not the inert literal `"dev"`.** A worktree's
+  container names are `f"{project}-{env_tag}-{service}"`
+  (`deploy.py::container_name()`); `ciu worktree create` already derives a
+  genuinely unique `INSTANCE_ID` per checkout but never touched
+  `environment_tag`, so two checkouts sharing the scaffold's `"dev"` default
+  collide on the exact same container names — a live incident (nyxloom's own
+  `mattermost` container was recreated under a worktree, zero data loss but a
+  real hijack). Every FRESH `ciu init` from this point forward is
+  collision-proof by default, zero extra author effort, unless the author
+  opts out with `--environment-tag`. Gate-verified (R0+R1 PASS, 100%
+  coverage).
+
+  **Adoption / migration notes.** New repos: nothing to do, the default is
+  already safe. **Existing repos with a fixed `environment_tag` literal**
+  (anything scaffolded before this release, or any repo that deliberately
+  opted out) are NOT retroactively fixed — this is a *default* change, not a
+  migration. Check your own `[deploy]` config; if `environment_tag` is a
+  literal string shared by more than one checkout of the same project,
+  switch it to `"$INSTANCE_ID"` by hand (nyxloom/mattermost did exactly this,
+  by hand, separately from this change, after hitting the live incident).
+  **Still OPEN, deliberately not this release:** no RUNTIME guard exists —
+  `ciu up`/`ciu worktree create-ensure` still silently recreates a
+  same-named container belonging to a different `repo_root` if one is
+  already running; only the *default* closes, not the class of mistake.
+
 - **CIU-106 — the worktree instance record now carries `fork_point_sha`.**
   `WorktreeInstanceRecord` gained an optional `fork_point_sha`;
   `ciu worktree create|add` records the new worktree's own
@@ -71,6 +97,31 @@ restatement of the technical detail below it.
   created with this version.
 
 ### Fixed
+- **CIU-105 (partially) — `[deploy].protected = true` guards `ciu down`/`ciu
+  clean` behind a second, explicit flag.** CIU-104's `owner_id` mitigation
+  only answers "does this resource belong to the checkout invoking this
+  command" — it does nothing for the RIGHTFUL owner's own accidental
+  `down`/`clean` against an instance they meant to leave alone (wrong
+  terminal tab, muscle memory). New opt-in `[deploy].protected` (bool,
+  validated on the final merged config, mirroring CIU-36's `landscape_id`)
+  makes `deploy.py::_refuse_if_protected` gate the `--stop`/`--clean`
+  dispatch: with it set, ordinary `-y` refuses and names
+  `--i-understand-this-is-protected` as the required extra step; an
+  unprotected instance is completely unaffected. Proven with mocked-docker
+  unit tests that teardown mechanics never run when refused
+  (`test_ciu105_protected_teardown.py`). Gate-verified (R0+R1 PASS, 100%
+  coverage).
+
+  **Adoption / migration notes.** Opt-in, additive: nothing changes for an
+  instance that does not set `protected = true`. If you have a checkout you
+  never want torn down by a stray `-y` (a shared dev instance, anything
+  standing in for "production" in this estate's own vocabulary), add
+  `protected = true` under `[deploy]` there. **Still OPEN, deliberately not
+  this release:** proposed-fix point 3 (label-based tamper-resistance — the
+  config-file flag itself can be edited or removed by whoever wants past it)
+  is not covered; `protected` is a config-time guard against accidents, not a
+  security boundary against a deliberate bypass.
+
 - **CIU-107 (partially) — a failed `adopt` no longer leaves a record whose
   resume rewrites the operator's checkout.** `adopt()` wrote its instance
   record and then called `_write_worktree_overlay` unguarded; `ensure()`
