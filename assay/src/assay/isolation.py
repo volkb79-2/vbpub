@@ -271,7 +271,24 @@ class _Manifest:
 #: visibly different digests rather than silently comparable ones -- the
 #: digest is persisted in resume records, and two builds that disagree about
 #: what they hashed must never collide.
-_TREE_DIGEST_LABEL = "assay-snapshot-tree/1"
+_TREE_DIGEST_LABEL = "assay-snapshot-tree/2"
+
+
+def netstring(value: str) -> str:
+    """Encode one field so a concatenation of them is unambiguous.
+
+    (B088, round-1 review finding 4) The first version of this serialization
+    joined fields with ``\\0`` and argued that ``\\0`` cannot occur in any of
+    them. That argument was WRONG about one field: a symlink's target is blob
+    content decoded as UTF-8, so it can contain ``\\0``, and the reviewer
+    produced a real two-manifest collision through it. "No field can contain
+    the separator" is exactly the assumption a separator-based encoding
+    should never be asked to carry -- so the length goes in front and the
+    question stops being asked. ``len()`` is in CHARACTERS, matching the
+    ``str`` that is measured and encoded, so the prefix and the payload can
+    never disagree about what they are counting.
+    """
+    return f"{len(value)}:{value}"
 
 
 def _manifest_sha256(manifest: _Manifest) -> str:
@@ -305,25 +322,39 @@ def _manifest_sha256(manifest: _Manifest) -> str:
     also judged by its `conftest.py`, its fixtures, its helper modules and
     every non-mutated source file it imports, none of which need appear in
     argv, and a lane whose argv is ``bash -c '...'`` names no path at all.
-    Digesting what the snapshot actually materializes has no such blind spot.
-    It is deliberately conservative in the other direction: a change anywhere
-    in the judged tree re-executes candidates it could not have affected.
-    That trade is taken on purpose -- an unnecessary re-execution costs time,
-    a wrongly-trusted verdict costs the entire point of mutation testing.
+    Digesting the whole commit removes that blind spot. It is deliberately
+    conservative in the other direction: a change anywhere in the judged tree
+    re-executes candidates it could not have affected. That trade is taken on
+    purpose -- an unnecessary re-execution costs time, a wrongly-trusted
+    verdict costs the entire point of mutation testing.
 
-    Injective by construction: ``\\0`` cannot occur in a Git path, mode, oid
-    or symlink target, every record has a fixed arity of four, and each
-    section is preceded by its own length -- so no two different manifests
-    can serialize to the same bytes.
+    **What this is NOT.** It is the digest of the COMMIT's tree, which is not
+    quite the same set as what ends up on disk, in two directions, both
+    named rather than glossed (round-1 review finding 7):
+
+    * a declared omission is covered here but deliberately NOT materialized;
+    * a ``link_paths`` directory (B041(b)) IS materialized and is not covered
+      -- it is untracked by construction, so there is no commit-addressed
+      digest of it to fold. Its DECLARATION reaches the identity through
+      :func:`assay.mutation.judge_sha256`; its content does not, which is the
+      same limit CONSUMERS.md already states for such a lane.
+
+    Injective unconditionally: every field is netstring-encoded
+    (:func:`netstring`), so no field's content -- including a symlink target,
+    which is blob bytes and CAN contain ``\\0`` -- can impersonate a
+    separator or a neighbouring field.
     """
     parts: list[str] = [_TREE_DIGEST_LABEL]
     entries = sorted(manifest.entries, key=lambda entry: str(entry.path))
     parts.append(str(len(entries)))
     for entry in entries:
-        parts.extend((str(entry.path), entry.mode, entry.oid, entry.target or ""))
+        parts.extend(
+            netstring(field)
+            for field in (str(entry.path), entry.mode, entry.oid, entry.target or "")
+        )
     omitted = sorted(str(path) for path in manifest.omitted)
     parts.append(str(len(omitted)))
-    parts.extend(omitted)
+    parts.extend(netstring(path) for path in omitted)
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 

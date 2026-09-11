@@ -229,12 +229,89 @@ def test_an_empty_argv_is_accepted_and_distinct():
     assert empty != judge_sha256(tree_sha256="a" * 64, plan=_plan(argv=("",)))
 
 
-def test_a_different_environment_is_a_different_judge():
-    """A verdict produced under a different `PYTHONPATH` is not evidence
-    about this run -- it may not even have imported the same package."""
+def test_a_different_declared_environment_is_a_different_judge():
+    """A verdict produced under a different DECLARED `PYTHONPATH` is not
+    evidence about this run -- it may not even have imported the same
+    package. Declared values are committed lane configuration, so folding
+    them by value is both sound and reproducible."""
     assert judge_sha256(
         tree_sha256="a" * 64, plan=_plan(env={"PYTHONPATH": "src"})
     ) != judge_sha256(tree_sha256="a" * 64, plan=_plan(env={"PYTHONPATH": "lib"}))
+
+
+def test_a_passthrough_value_that_differs_between_invocations_still_resumes():
+    """Round-1 review finding 1, the confirmed regression, pinned.
+
+    The first version of this function folded `env_effective` by VALUE, which
+    includes every `env_passthrough` name that was present and every B013
+    infrastructure fact. Those values are per-invocation BY DESIGN -- dstdns'
+    `P165_PHYSICAL_REPO_ROOT` is literally the worktree's host path,
+    `SCHEMA_GATE_DSN` is a per-instance DSN -- so the identity changed
+    between two runs that judged byte-identically, and resume became
+    impossible across exactly the ephemeral-checkout case B066/RG-38 built
+    `--state-dir` for. Silently, and forever.
+    """
+    first = _plan(passthrough=("P165_PHYSICAL_REPO_ROOT",))
+    second = make_plan(
+        make_lane(argv=("pytest", "tests"), env={}, env_passthrough=("P165_PHYSICAL_REPO_ROOT",)),
+        passthrough_source={"P165_PHYSICAL_REPO_ROOT": "/a/completely/different/worktree"},
+    )
+    assert first.env_effective != second.env_effective, "the fixture must differ by value"
+    assert judge_sha256(tree_sha256="a" * 64, plan=first) == judge_sha256(
+        tree_sha256="a" * 64, plan=second
+    )
+
+
+def test_a_passthrough_name_appearing_or_vanishing_is_a_different_judge():
+    """The name set is still part of the identity, and must be: a lane that
+    starts (or stops) passing something through has changed what it declares,
+    and `resolve_command_plan` drops a passthrough name that is absent from
+    the source -- so presence alone is a real difference."""
+    present = make_plan(
+        make_lane(argv=("pytest",), env={}, env_passthrough=("TERM",)),
+        passthrough_source={"TERM": "xterm"},
+    )
+    absent = make_plan(
+        make_lane(argv=("pytest",), env={}, env_passthrough=("TERM",)),
+        passthrough_source={},
+    )
+    assert judge_sha256(tree_sha256="a" * 64, plan=present) != judge_sha256(
+        tree_sha256="a" * 64, plan=absent
+    )
+
+
+def test_a_declared_name_and_a_passthrough_name_are_not_interchangeable():
+    """The two env sections are folded differently, so the serialization must
+    keep them apart -- a declared `A=` must not digest like a passed-through
+    `A`."""
+    declared = _plan(env={"A": ""})
+    passed = make_plan(
+        make_lane(argv=("pytest", "tests"), env={}, env_passthrough=("A",)),
+        passthrough_source={"A": ""},
+    )
+    assert judge_sha256(tree_sha256="a" * 64, plan=declared) != judge_sha256(
+        tree_sha256="a" * 64, plan=passed
+    )
+
+
+def test_assays_own_version_is_part_of_the_judge_identity():
+    """Round-1 review finding 6. The code that CLASSIFIES a result is as much
+    the judge as the suite is, and because B088 deliberately does not bump
+    `MUTATION_STATE_SCHEMA_VERSION` there would otherwise be NO lever that
+    invalidates records across an assay upgrade changing bucket semantics."""
+    plan = _plan()
+    assert judge_sha256(
+        tree_sha256="a" * 64, plan=plan, tool_version="6.1.0"
+    ) != judge_sha256(tree_sha256="a" * 64, plan=plan, tool_version="6.2.0")
+
+
+def test_the_real_sweep_folds_the_real_assay_version():
+    """The seam, not just the parameter: whatever `run_mutation` passes must
+    be assay's actual version, or the dimension above is decorative."""
+    from assay import __version__
+
+    assert mutation._tool_version() == __version__
+    assert isinstance(mutation._tool_version(), str)
 
 
 def test_an_empty_environment_is_accepted_and_distinct():
@@ -365,17 +442,25 @@ def test_a_matching_judge_resumes_the_record(tmp_path: Path):
     assert loaded is not None and loaded["outcome_bucket"] == "survived"
 
 
-def test_a_different_judge_is_treated_as_absent_not_as_tampering(tmp_path: Path):
+def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
     """B088's headline disposition, and the B021 precedent it follows: the
-    ground moved, so re-execute -- silently, without failing the lane. A
+    ground moved, so re-execute -- without failing the lane. A
     `MutationStateError` here would make every strengthened test a lane
-    outage."""
+    outage.
+
+    REJECTED, not `None`: a refused record is a different fact from an
+    absent one, and the counter that difference feeds is the only way an
+    operator can tell "the cache is cold" from "the cache is refused every
+    run" (round-1 review finding 2)."""
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64))
-    assert mutation._load_validated_state_record(root, job, judge="k" * 64) is None
+    assert (
+        mutation._load_validated_state_record(root, job, judge="k" * 64)
+        is mutation._RECORD_REJECTED
+    )
 
 
-def test_a_pre_b088_record_with_no_judge_at_all_is_treated_as_absent(tmp_path: Path):
+def test_a_pre_b088_record_with_no_judge_at_all_is_rejected(tmp_path: Path):
     """Upgrade path. Records written before this change recorded nothing
     about what judged them, so nothing can vouch for them -- and a consumer
     must not have to hand-delete a state directory to upgrade."""
@@ -383,6 +468,38 @@ def test_a_pre_b088_record_with_no_judge_at_all_is_treated_as_absent(tmp_path: P
     payload = _record(job, judge="j" * 64)
     del payload["judge_sha256"]
     root = _store(tmp_path, job, payload)
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_a_non_string_judge_field_is_rejected_even_against_a_none_judge(tmp_path: Path):
+    """Fail-CLOSED, pinned (round-1 review finding 8).
+
+    `payload.get("judge_sha256") != judge` alone trusts a judge-less record
+    whenever the caller's own judge is `None`, because `None != None` is
+    False. That is unreachable through `run_mutation` and guarded by two
+    asserts -- which vanish under `python -O`. For the one code path whose
+    whole bug class is a cache that trusts too much, the type check is the
+    guarantee and this is the test that keeps it.
+    """
+    job = _job()
+    payload = _record(job, judge="j" * 64)
+    payload["judge_sha256"] = None
+    root = _store(tmp_path, job, payload)
+    assert (
+        mutation._load_validated_state_record(root, job, judge=None)  # type: ignore[arg-type]
+        is mutation._RECORD_REJECTED
+    )
+
+
+def test_an_absent_record_is_absent_not_rejected(tmp_path: Path):
+    """The other half of the three-way outcome: a cold cache really is
+    `None`, so the rejection counter counts refusals and not first runs."""
+    job = _job()
+    root = tmp_path / "empty-state"
+    root.mkdir()
     assert mutation._load_validated_state_record(root, job, judge="j" * 64) is None
 
 
@@ -399,14 +516,18 @@ def test_a_corrupt_record_still_raises_even_when_the_judge_also_moved(tmp_path: 
         mutation._load_validated_state_record(root, job, judge="k" * 64)
 
 
-def test_a_stale_schema_version_is_still_treated_as_absent(tmp_path: Path):
-    """B021's disposition is untouched by B088 -- pinned here because this
-    change deliberately did NOT bump `MUTATION_STATE_SCHEMA_VERSION` (that
-    constant is also the shard-summary document's version, which
-    `merge_mutation_shards` refuses outright on any other value)."""
+def test_a_stale_schema_version_is_still_rerun_and_not_a_lane_failure(tmp_path: Path):
+    """B021's disposition is untouched by B088 -- still a silent rerun, never
+    a `MutationStateError`. Pinned here because this change deliberately did
+    NOT bump `MUTATION_STATE_SCHEMA_VERSION` (that constant is also the
+    shard-summary document's version, which `merge_mutation_shards` refuses
+    outright on any other value)."""
     job = _job()
     root = _store(tmp_path, job, _record(job, judge="j" * 64, schema_version=99))
-    assert mutation._load_validated_state_record(root, job, judge="j" * 64) is None
+    assert (
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+        is mutation._RECORD_REJECTED
+    )
 
 
 def test_the_shard_summary_schema_version_is_unchanged():
@@ -679,6 +800,86 @@ def test_two_worktrees_of_one_commit_still_share_one_state_dir(
     events = _run(GitRepo(path=second_tree), state_dir, tmp_path / "second.jsonl")
     assert _resumed(events) == 1
     assert _candidates(events) == []
+
+
+_INSTANCE_LANE = _LANE.replace(
+    'env_passthrough = ["PATH"]',
+    'env_passthrough = ["PATH", "INSTANCE_ROOT"]',
+)
+
+
+def test_two_instances_with_different_passthrough_values_still_resume(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    """Round-1 review finding 1 and 11, end to end.
+
+    `test_two_worktrees_of_one_commit_still_share_one_state_dir` cannot see
+    this: both its runs share one `os.environ`. This one varies a real
+    passed-through value BETWEEN the two runs, which is precisely what two
+    ciu worktrees or two Mode-B instances do -- dstdns'
+    `P165_PHYSICAL_REPO_ROOT` is the worktree's own host path. Under the
+    by-value folding this test fails with nothing resumed, and the feature
+    `--state-dir` exists for is dead with no diagnostic.
+    """
+    _seed(git_repo, _BLIND_JUDGE)
+    git_repo.write("assay.toml", _INSTANCE_LANE)
+    git_repo.commit_all("pass an instance-scoped fact through")
+    state_dir = tmp_path / "state"
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-b")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    assert _resumed(second) == 1, "a per-instance passthrough VALUE must not break resume"
+    assert _candidates(second) == []
+
+
+def test_dropping_a_passthrough_declaration_re_executes(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    """The other side of the same coin: the lane's declared name SET is part
+    of the identity, so a lane that stops passing something through is a
+    different judge and does not resume."""
+    _seed(git_repo, _BLIND_JUDGE)
+    git_repo.write("assay.toml", _INSTANCE_LANE)
+    git_repo.commit_all("pass an instance-scoped fact through")
+    state_dir = tmp_path / "state"
+
+    monkeypatch.setenv("INSTANCE_ROOT", "/workspaces/instance-a")
+    _run(git_repo, state_dir, tmp_path / "first.jsonl")
+
+    monkeypatch.delenv("INSTANCE_ROOT")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    assert _resumed(second) == 0
+    assert len(_candidates(second)) == 1
+
+
+def test_a_rejected_store_says_so_in_the_progress_stream(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """Round-1 review finding 2. A store whose every record is refused used
+    to emit NOTHING -- the `resume` event fired only on a successful resume,
+    so "the cache is cold" and "the cache is refused every single run" had
+    one identical symptom: silence. `--resume` is a performance feature whose
+    failure is invisible by construction unless it is counted."""
+    _seed(git_repo, _BLIND_JUDGE)
+    state_dir = tmp_path / "state"
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert [event for event in first if event.get("event") == "resume"] == [], (
+        "a genuinely cold cache must stay silent -- the counter reports "
+        "refusals, not first runs"
+    )
+
+    git_repo.write("tests/judge.sh", _STRICT_JUDGE)
+    git_repo.commit_all("strengthen the suite")
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+
+    resume_events = [event for event in second if event.get("event") == "resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0]["resumed_total"] == 0
+    assert resume_events[0]["rejected_total"] == 1
 
 
 def test_the_worst_case_record_still_fits_the_readers_own_limit():

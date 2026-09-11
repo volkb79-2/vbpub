@@ -57,16 +57,27 @@ _ENTRIES = strategies.lists(strategies.tuples(_PATHS, _OIDS), max_size=6)
 
 
 def _dedupe(pairs):
-    """One path names one leaf: a real tree cannot carry the same path twice,
-    so generated pairs are collapsed the way a real walk would yield them."""
-    return sorted({path: oid for path, oid in pairs}.items())
+    """One path names one leaf, keyed the way the manifest itself keys it.
+
+    (Round-1 review finding 3) This used to key on the generated RAW TEXT
+    while `_manifest` keyed on `PurePosixPath(text)`, which normalizes --
+    ``""`` and ``"."``, ``"a"`` and ``"a/"``, ``"a/b"`` and ``"a//b"`` are
+    each one path but were two keys. The "identical content iff identical
+    digest" property was therefore FALSE as stated, and green only because
+    `derandomize=True` plus the default alphabet never reached those inputs:
+    a latent failure that, when a Hypothesis upgrade found it, would have
+    read as "the tree digest collides" and sent someone hunting a bug that
+    does not exist. Normalizing here states the property over what is
+    actually hashed.
+    """
+    return sorted({PurePosixPath(path): oid for path, oid in pairs}.items())
 
 
 def _manifest(pairs):
     return isolation._Manifest(
         entries=tuple(
             isolation._Entry(
-                path=PurePosixPath(path),
+                path=path,
                 mode=isolation._MODE_REGULAR,
                 oid=oid,
                 size=1,
@@ -108,6 +119,45 @@ def test_the_tree_digest_ignores_traversal_order(pairs):
     assert isolation._manifest_sha256(
         isolation._Manifest(entries=entries, directories=(), omitted=())
     ) == isolation._manifest_sha256(shuffled)
+
+
+@given(
+    target=strategies.text(max_size=10),
+    omitted=strategies.lists(strategies.text(max_size=10), max_size=3),
+)
+@_SETTINGS
+def test_a_symlink_target_cannot_impersonate_another_manifest(target, omitted):
+    """Round-1 review finding 4, generalized into a property.
+
+    The first serialization joined fields with `\\0` and argued no field
+    could contain one. That was wrong about exactly one field: a symlink
+    target is blob content decoded as UTF-8, so it CAN contain `\\0` -- and
+    the reviewer built two different manifests with one identical digest
+    through it. Netstring encoding removes the assumption rather than
+    restating it, and this generates the attack rather than pinning the one
+    example that was found.
+    """
+    def build(symlink_target, omitted_paths):
+        return isolation._Manifest(
+            entries=(
+                isolation._Entry(
+                    path=PurePosixPath("link"),
+                    mode=isolation._MODE_SYMLINK,
+                    oid="a" * 40,
+                    size=1,
+                    target=symlink_target,
+                ),
+            ),
+            directories=(),
+            omitted=tuple(PurePosixPath(path) for path in omitted_paths),
+        )
+
+    reference = build("q", ())
+    candidate = build(target, omitted)
+    same = (target, sorted(str(PurePosixPath(p)) for p in omitted)) == ("q", [])
+    assert (
+        isolation._manifest_sha256(candidate) == isolation._manifest_sha256(reference)
+    ) is same
 
 
 @given(

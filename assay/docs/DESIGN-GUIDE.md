@@ -901,8 +901,12 @@ identity rather than sampling changed source with an old result. A stale
 gets the opposite disposition (B021): treated as absent and silently rerun, a
 routine format bump never fails the whole lane the way a genuinely tampered
 record does. **A record also carries `judge_sha256` (B088): the identity of
-what JUDGED the candidate** — the content digest of the whole materialized
-tree, plus the resolved argv, environment, cwd and project prefix. The
+what JUDGED the candidate** — the content digest of the judged commit's own
+tree, plus the resolved argv, the lane's declared `env` by value, the NAMES
+of whatever else the resolved environment carried (passthrough and
+infrastructure values are per-invocation by design and folding them by value
+would defeat a shared `--state-dir`), the cwd, the project prefix, the
+declared `link_paths` and assay's own version. The
 candidate digest answers "is this the same mutation", which is the right
 question for skipping re-generation and the wrong one for skipping
 re-execution; conflating them let a test-only fix land and `--resume` replay

@@ -539,22 +539,37 @@ mutant was never re-executed against the assertion that kills it.
 
 `judge_sha256` is a digest of, precisely:
 
-* **the content of the whole judged tree** — every file the snapshot
-  materializes at the judged commit, each contributing its path, its file
-  mode and its Git object id. Content, never mtime: touching a file, or
-  rewriting it with identical bytes, changes nothing. Whole tree, not the
-  test paths named in the argv: a suite is also judged by its `conftest.py`,
-  its fixtures, its helper modules and every non-mutated source file it
-  imports, and a lane whose argv is `bash -c '...'` names no path at all;
+* **the content of the judged commit's tree** — every leaf of the commit
+  being judged, each contributing its path, its file mode and its Git object
+  id, plus the lane's declared `unsafe_symlink_omissions`. Content, never
+  mtime: touching a file, or rewriting it with identical bytes, changes
+  nothing. Whole tree, not the test paths named in the argv: a suite is also
+  judged by its `conftest.py`, its fixtures, its helper modules and every
+  non-mutated source file it imports, and a lane whose argv is
+  `bash -c '...'` names no path at all;
 * **`argv` as it will actually run**, including any appended argv — a
   narrowed selection (`-k`, a shorter test-file list) judges differently
   with the same tree;
-* **the environment as resolved** — `env` plus whichever `env_passthrough`
-  names were really present, by value;
+* **the lane's declared `env`, by name and value** — committed
+  configuration, so a different declared `PYTHONPATH` really is a different
+  judge, and the value is the same on every invocation;
+* **the NAMES — never the values — of everything else in the resolved
+  environment**: the `env_passthrough` names that were actually present, and
+  any `infrastructure` fact injected at plan resolution. Those values are
+  per-invocation by design (a worktree's own host path, a per-instance DSN,
+  `TERM`), so folding them by value would make resume impossible across
+  exactly the ephemeral-checkout case `--state-dir` exists for. If a
+  passed-through value genuinely must be part of the identity, declare it in
+  `env` instead;
 * **`cwd` and the project prefix** — which decide what the relative paths in
-  `argv` resolve to.
+  `argv` resolve to;
+* **the declared `link_paths`** — declaring, dropping or re-pointing one
+  changes what judges the mutant;
+* **assay's own version** — the code that classifies a result is part of the
+  judge, so an assay upgrade re-executes rather than replaying verdicts
+  produced by different classification logic.
 
-Two consequences worth planning around:
+Three consequences worth planning around:
 
 * **Resume is per-tree, not per-commit.** Two commits with identical trees
   (an amended message, a rebase that moved nothing) share one identity and
@@ -564,10 +579,19 @@ Two consequences worth planning around:
   verdict costs the whole point of running mutation testing. The uses
   `--state-dir` exists for are unaffected — several worktrees of **one
   commit**, budget-capped retries, and `--shard` fan-out all judge the same
-  tree with the same command.
-* **A moved environment re-executes.** A verdict produced under a different
-  `PYTHONPATH` — or a different `PATH`, and therefore possibly a different
-  interpreter — is not evidence about this run, so it is not reused.
+  tree with the same command, and a per-instance passthrough value does not
+  break them.
+* **An assay upgrade re-executes.** Records produced by an earlier version
+  are not replayed by a later one.
+* **A `link_paths` directory's contents are still outside the identity.**
+  Only its declaration is folded in. This is the same limit already stated
+  above: a lane declaring `link_paths` is only as reproducible as the linked
+  directory, and that now applies to its resume records too.
+
+**When nothing resumes, the run says so.** The `resume` progress event
+carries `rejected_total` alongside `resumed_total` and is emitted whenever
+records were found *or refused* — so a store that is being rejected on every
+run is visible, rather than looking exactly like an empty one.
 
 A judge mismatch is a **cache miss, not an error**: the candidate is
 re-executed silently and the lane is not failed. The same applies to a
@@ -2116,7 +2140,7 @@ never says `coverage_parsed`.
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
-| `shard` / `resume` | a shard was selected / records were resumed | `selected_total` / `resumed_total` |
+| `shard` / `resume` | a shard was selected / records were resumed **or refused** | `selected_total` / `resumed_total` + `rejected_total` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket`, `elapsed_seconds` |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts), `reason` |

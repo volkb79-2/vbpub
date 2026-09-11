@@ -120,7 +120,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Ma
 from . import git, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
-from .isolation import SnapshotRepository
+from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
 from .verdict import (
     MUTATION_BUCKETS,
@@ -211,7 +211,17 @@ MUTATION_STATE_SCHEMA_VERSION = 1
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/1"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/2"
+
+#: (B088) Returned by :func:`_load_validated_state_record` when a record was
+#: FOUND, is well-formed, and is still not evidence about this run -- its
+#: `schema_version` or its `judge_sha256` says it was produced by something
+#: else. Distinct from ``None`` (no record at all) for one reason: an
+#: operator has to be able to tell "the cache is cold" from "the cache is
+#: being rejected every single run", and before this existed both looked
+#: identical -- a silent, permanent cache miss with nothing in the progress
+#: stream or the verdict to explain it (round-1 review finding 2).
+_RECORD_REJECTED = "REJECTED"
 
 #: (P34/§3.6) the equivalence artifact's own byte ceiling -- a schema dump
 #: is comparable measurement output to a coverage artifact, so this reuses
@@ -985,8 +995,27 @@ def candidate_id(job: MutantJob) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def _tool_version() -> str:
+    """(B088) assay's own version, for :func:`judge_sha256`.
+
+    Imported lazily and defensively: ``assay.__init__`` resolves it through
+    ``importlib.metadata`` and already falls back to ``"0+unknown"`` when the
+    distribution is not installed, but this function must never be the reason
+    a mutation sweep fails. A version that cannot be determined degrades to
+    the empty string, which is a stable value -- so records stay mutually
+    comparable within such a build rather than each becoming unique.
+    """
+    from . import __version__
+
+    return __version__ if isinstance(__version__, str) else ""
+
+
 def judge_sha256(
-    *, tree_sha256: str, plan: "CommandPlan", link_paths: Sequence[str] = ()
+    *,
+    tree_sha256: str,
+    plan: "CommandPlan",
+    link_paths: Sequence[str] = (),
+    tool_version: str | None = None,
 ) -> str:
     """(B088) Return the identity of what JUDGES a mutant.
 
@@ -1011,20 +1040,39 @@ def judge_sha256(
     * ``plan.argv_effective`` -- the command as it will actually run,
       including any appended argv. A lane that narrows its selection (``-k``,
       a different test-file list) judges differently with the same tree;
-    * ``plan.env_effective`` -- the environment as resolved, ``env_declared``
-      plus whichever ``env_passthrough`` names were really present. A verdict
-      produced under a different ``PYTHONPATH`` (or a different ``PATH``, and
-      therefore possibly a different interpreter) is not evidence about this
-      run. Conservative on purpose: an ambient difference costs a
-      re-execution, never a wrongly-trusted kill;
+    * ``plan.env_declared`` -- the lane's OWN ``env`` table, by name AND
+      value. It is committed configuration, so a verdict produced under a
+      different declared ``PYTHONPATH`` really is evidence about a different
+      judge, and the value is reproducible across invocations;
+    * the NAMES, but never the values, of everything else in
+      ``plan.env_effective`` -- the ``env_passthrough`` names that were
+      actually present, and any B013 infrastructure fact injected at plan
+      resolution. Folding those VALUES was the first version of this
+      function and it was wrong (round-1 review finding 1, reproduced with a
+      real two-run probe): those values are per-invocation by design --
+      dstdns' ``P165_PHYSICAL_REPO_ROOT`` is literally the worktree's host
+      path, ``SCHEMA_GATE_DSN`` is a per-instance DSN, and nyxloom's
+      ``session-extract`` passes ``TERM``, whose mere presence differs
+      between an interactive run and a wrapped one. Folding them by value
+      made resume IMPOSSIBLE across exactly the ephemeral-checkout case
+      B066/RG-38 built ``--state-dir`` for, silently and permanently. The
+      name set still moves when a lane starts or stops passing something
+      through, which is the part a lane actually declares;
     * ``plan.cwd_declared`` and ``plan.project_prefix`` -- WHERE it runs,
       which decides what relative paths in argv even resolve to;
     * *link_paths* -- the lane's declared ``[isolation] link_paths``
       (B041(b)). These name directories linked into the snapshot from the
       invoking checkout, so declaring, dropping or re-pointing one changes
-      what judges the mutant just as surely as a changed test file does.
+      what judges the mutant just as surely as a changed test file does;
+    * *tool_version* -- assay's own version. The code that CLASSIFIES a
+      result is as much a part of the judge as the suite is, and since B088
+      deliberately does not bump ``MUTATION_STATE_SCHEMA_VERSION`` there
+      would otherwise be NO lever that invalidates records across an assay
+      upgrade that changed ``_classify_mutant_result`` or bucket semantics
+      (round-1 review finding 6). Consumers pin a released zipapp, so this
+      moves on upgrade and not otherwise.
 
-    Two known residuals, named rather than left implicit:
+    Three known residuals, named rather than left implicit:
 
     * the CONTENT of a linked directory is outside this identity -- it is
       untracked by construction (a `node_modules` closure, a mounted cache),
@@ -1032,32 +1080,40 @@ def judge_sha256(
       widen an existing guarantee: CONSUMERS.md already states that a lane
       declaring ``link_paths`` is only as reproducible as the linked
       directory;
+    * the VALUES of passthrough/infrastructure names, per the above -- a
+      lane that genuinely needs a passed-through value to be part of the
+      identity should declare it in ``env`` instead, where it is folded;
     * the per-candidate budget is not folded in. Raising a budget and
       resuming still replays a stale ``budget_exceeded``; that is a real,
       separate defect of the same family, noted as a residual on B088 rather
       than silently widened into this change.
 
-    The serialization is injective -- every section is length-prefixed and
-    joined with ``\\0``, which cannot occur in a hex digest, and the two
-    variable-length string sections (argv, env) carry their own counts, so
-    two different judges cannot serialize to the same bytes. Env names and
-    values MAY contain anything except ``\\0`` (the OS itself forbids it),
-    and pairs are sorted so a mapping's iteration order never reaches the
-    digest.
+    Injective unconditionally: every variable-length field is
+    netstring-encoded (:func:`assay.isolation.netstring`) and every section
+    carries its own count, so nothing a caller can put in an argv element, an
+    environment value or a path can impersonate a separator or a neighbouring
+    field. Pairs and lists are sorted, so a mapping's iteration order never
+    reaches the digest.
     """
     parts: list[str] = [_JUDGE_DIGEST_LABEL, tree_sha256]
+    parts.append(netstring("" if tool_version is None else tool_version))
     argv = tuple(plan.argv_effective)
     parts.append(str(len(argv)))
-    parts.extend(argv)
-    env = sorted(dict(plan.env_effective).items())
-    parts.append(str(len(env)))
-    for name, value in env:
-        parts.extend((name, value))
-    parts.append("" if plan.cwd_declared is None else str(plan.cwd_declared))
-    parts.append("" if plan.project_prefix is None else str(plan.project_prefix))
+    parts.extend(netstring(element) for element in argv)
+    declared = sorted(dict(plan.env_declared).items())
+    parts.append(str(len(declared)))
+    for name, value in declared:
+        parts.extend((netstring(name), netstring(value)))
+    ambient = sorted(set(plan.env_effective) - set(plan.env_declared))
+    parts.append(str(len(ambient)))
+    parts.extend(netstring(name) for name in ambient)
+    parts.append(netstring("" if plan.cwd_declared is None else str(plan.cwd_declared)))
+    parts.append(
+        netstring("" if plan.project_prefix is None else str(plan.project_prefix))
+    )
     links = sorted(link_paths)
     parts.append(str(len(links)))
-    parts.extend(links)
+    parts.extend(netstring(path) for path in links)
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -1177,8 +1233,20 @@ def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -
 
 def _load_validated_state_record(
     state_root: Path, job: MutantJob, *, judge: str
-) -> Mapping[str, Any] | None:
-    """Return the persisted verdict for *job*, or ``None`` to re-execute it.
+) -> Mapping[str, Any] | str | None:
+    """Return the persisted verdict for *job*, or why it cannot be used.
+
+    Three outcomes, deliberately three and not two:
+
+    * a mapping -- the record is trustworthy and the candidate resumes;
+    * ``None`` -- there is no record at all (a cold cache, the ordinary
+      first-run case);
+    * :data:`_RECORD_REJECTED` -- a record EXISTS and was refused, because
+      its `schema_version` or its `judge_sha256` says it was produced by
+      something that is not this run. Re-executed exactly like an absent
+      record, but counted and reported separately, so "the cache is cold"
+      and "the cache is rejected every single run" stop looking identical
+      from the outside (round-1 review finding 2).
 
     *judge* is this run's :func:`judge_sha256` -- REQUIRED, never defaulted:
     a caller that could omit it would silently get back the pre-B088
@@ -1224,7 +1292,12 @@ def _load_validated_state_record(
             # rerun) instead of failing the whole lane means an old-format
             # cache is a cache miss, not an outage, for every consumer's
             # next `--resume` after an upgrade.
-            return None
+            #
+            # (B088) Reported as REJECTED rather than absent: the record
+            # exists and was refused, which is a different fact from "there
+            # was nothing here", and the operator-visible counter is the
+            # only place that difference ever shows up.
+            return _RECORD_REJECTED
         # Every OTHER key (candidate_id, path, operator, replacement_sha256,
         # source_sha256) IS folded into `identity`, and therefore into this
         # record's own filename -- a mismatch here means the record on disk
@@ -1267,8 +1340,18 @@ def _load_validated_state_record(
     # Either way: treat as absent and re-execute. Never raise -- failing the
     # lane every time someone strengthened a test would make the fix worse
     # than the defect.
-    if payload.get("judge_sha256") != judge:
-        return None
+    #
+    # The `isinstance` is not belt-and-braces (round-1 review finding 8).
+    # `payload.get(...) != judge` alone is fail-OPEN in the one shape that
+    # matters: a record with no judge, read by a caller whose own judge is
+    # `None`, compares equal and is TRUSTED. That is unreachable today and
+    # asserted against twice -- but `assert` disappears under `python -O`,
+    # and for the one code path whose entire bug class is a cache that
+    # trusts too much, "unreachable" is not the bar. A stored judge that is
+    # not a string is not this run's judge, whatever `judge` happens to be.
+    stored = payload.get("judge_sha256")
+    if not isinstance(stored, str) or stored != judge:
+        return _RECORD_REJECTED
     return payload
 
 
@@ -1896,28 +1979,42 @@ def run_mutation(
                 tree_sha256=prepared.tree_sha256,
                 plan=plan,
                 link_paths=prepared.spec.snapshot_policy.link_paths,
+                tool_version=_tool_version(),
             )
             if state_root is not None
             else None
         )
         resumed_records: list[Mapping[str, Any]] = []
+        rejected_total = 0
         if resume:
             assert isinstance(state_root, Path)
             assert judge is not None
             for job in selected_jobs:
                 record = _load_validated_state_record(state_root, job, judge=judge)
-                if record is not None:
+                if record is _RECORD_REJECTED:
+                    rejected_total += 1
+                elif record is not None:
+                    assert not isinstance(record, str)
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
             )
-            if write_progress is not None and resumed_records:
+            # (B088) Emitted when anything was resumed OR anything was
+            # REFUSED. Before, this fired only on a successful resume, so a
+            # store whose every record was rejected -- the judging suite
+            # moved, or the lane's own identity did -- produced no event at
+            # all, and was indistinguishable from an empty store. That is
+            # the shape an operator most needs named: "I passed --resume and
+            # nothing ever resumes" has two completely different causes and
+            # used to have one (absent) symptom.
+            if write_progress is not None and (resumed_records or rejected_total):
                 write_progress(
                     {
                         "candidate_total": total,
                         "event": "resume",
                         "resumed_total": len(resumed_records),
+                        "rejected_total": rejected_total,
                     }
                 )
         else:
