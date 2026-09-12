@@ -93,12 +93,18 @@ language = "python"
 source_roots = ["."]
 base_source = "request"
 
-# Operators, jobs and max_mutants exactly as scripts/cgroup-profiler/
-# assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families,
-# jobs = 1 (serial, HOST LOAD §6: this lane is bare-host, 8 cores shared
-# with a production game server, no headroom for parallel mutant workers).
+# Operators and max_mutants exactly as scripts/cgroup-profiler/
+# assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families.
+# jobs = 2 (RW-25, close-out): the wave controller's own measurement of
+# this lane's REAL per-candidate cost (~130s/candidate, the whole ~950-test
+# suite re-run per mutant) put the original jobs=1 serial plan at ~9h for
+# 256 candidates -- RW-25 raised it to 2 for the FINAL close-out run only,
+# still bare-host, still HOST LOAD §6 (8 cores shared with a production
+# game server, ≤ 2 gate containers estate-wide): each candidate runs in
+# its own assay scratch snapshot with its own pytest basetemp, so two
+# candidates do not share state and jobs=2 leaves 6 cores of headroom.
 [lanes.r2.judge.mutation]
-jobs = 1
+jobs = 2
 max_mutants = 1500
 operators = [
   "python:compare-swap",
