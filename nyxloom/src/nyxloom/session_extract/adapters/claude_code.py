@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,14 @@ from ..config import ExtractConfig
 from ..events import EventKind, NormalizedEvent
 
 name = "claude-code"
+
+# The only top-level record types that can carry conversation content --
+# everything else in this file's long tail (mode, bridge-session,
+# attachment, file-history-*, ...) is harness bookkeeping. Named here
+# because both the whole-file loader below and follow.py's incremental
+# tailer must agree exactly on what counts as a record, or their record
+# numbering (and therefore a uuid-less record's fallback marker) drifts.
+_CONVERSATION_TYPES = ("user", "assistant", "system")
 
 _COMMAND_NAME_RE = re.compile(r"<command-name>([^<]*)</command-name>", re.IGNORECASE)
 _LEADING_CAVEAT_RE = re.compile(r"\A\s*<local-command-caveat>.*?</local-command-caveat>\s*", re.IGNORECASE | re.DOTALL)
@@ -423,6 +432,13 @@ def _command_name(text: str) -> str | None:
     return m.group(1).strip().lstrip("/").lower()
 
 
+def is_conversation_record(rec: dict[str, Any]) -> bool:
+    """Whether this raw record is one parse() would even look at -- see
+    _CONVERSATION_TYPES. Public because follow.py's tailer decides the same
+    thing about each newly-arrived line."""
+    return rec.get("type") in _CONVERSATION_TYPES
+
+
 def _load_records(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     with path.open("r", errors="ignore") as f:
@@ -434,9 +450,204 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") in ("user", "assistant", "system"):
+            if is_conversation_record(obj):
                 records.append(obj)
     return records
+
+
+def has_primary_thread(path: Path) -> bool:
+    """Whether this file has any non-sidechain record -- the auto-detected
+    signal parse() uses to decide whether isSidechain records are noise to
+    drop or ARE the conversation (a dispatched sub-agent's own transcript,
+    where every record is isSidechain=true). See parse()'s own comment for
+    the exhaustive 59/59 + 358/358 real-data verification behind it.
+
+    Exposed for follow.py, which has to know this before the first tailed
+    record arrives: it is a property of the whole file, unanswerable from
+    one newly-appended line.
+    """
+    return any(not r.get("isSidechain") for r in _load_records(path))
+
+
+@dataclass
+class StreamState:
+    """The only cross-record state parse_record() needs, so a forward
+    stream can carry it the way parse()'s own whole-file pre-passes do.
+
+    `askuserquestion_inputs` accumulates as AskUserQuestion tool_use blocks
+    arrive; a real answer always arrives LATER as a tool_result naming the
+    same id, so registering forward is enough (parse() keeps its own
+    pre-pass as well -- the registration is idempotent).
+    """
+
+    has_primary_thread: bool = True
+    askuserquestion_inputs: dict[str, list[Any]] = field(default_factory=dict)
+
+
+def parse_record(
+    rec: dict[str, Any], seq: int, fallback_marker: str, config: ExtractConfig, state: StreamState
+) -> list[NormalizedEvent]:
+    """One raw record -> the NormalizedEvents it yields (0, 1, or -- for an
+    assistant turn with several text/thinking blocks -- more than one).
+
+    Factored out of parse()'s own loop (2026-09-12) so follow.py's
+    incremental tailer applies literally the same per-record rules to a
+    newly-appended line as a full parse does; duplicating them would let
+    "what counts as an event" drift between a one-shot brief and a live
+    stream. `fallback_marker` is the marker to use when the record has no
+    uuid of its own -- parse() passes its absolute pre-slice position (see
+    its own comment on why that must be pre-slice), follow.py passes a
+    stream-local token.
+    """
+    if rec.get("isSidechain") and state.has_primary_thread:
+        return []
+
+    uuid = rec.get("uuid") or fallback_marker
+    ts = rec.get("timestamp", "")
+    rtype = rec.get("type")
+    events: list[NormalizedEvent] = []
+
+    if rtype == "system":
+        if rec.get("subtype") == "compact_boundary":
+            # Unconditional, regardless of hide_compaction_content: the
+            # record's own `content` field is always just the fixed literal
+            # "Conversation compacted" (never the real retained-context
+            # summary -- see _compaction_boundary_label's docstring), so
+            # there is no verbatim "content" for that flag to hide here in
+            # the first place -- only the trigger/token metadata that flag
+            # has no reason to gate, a strict improvement over the old bare
+            # "[compact boundary]" text either way.
+            events.append(NormalizedEvent(
+                seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec)))
+        return events
+
+    if rtype == "assistant":
+        content = rec.get("message", {}).get("content", []) or []
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and block.get("name") == "AskUserQuestion" and block.get("id")):
+                questions = block.get("input", {}).get("questions")
+                state.askuserquestion_inputs[block["id"]] = questions if isinstance(questions, list) else []
+
+        if rec.get("isApiErrorMessage"):
+            # A real API-level failure (429 rate limit, overloaded_error,
+            # etc.) -- Claude Code injects it as an ordinary "assistant"
+            # record with model="<synthetic>", so without this check it
+            # renders indistinguishably from genuine model prose despite
+            # being harness/API-injected notification text, and (being
+            # typically short) is exactly the shape select()'s length
+            # filter silently drops -- the session-relevant fact that a
+            # rate limit was actually HIT would vanish. Tagged
+            # ASSISTANT_TEXT still (it IS on the assistant channel, just
+            # not model-generated), with the error identity in the text
+            # itself so classifier.has_finding_signal keeps it regardless
+            # of length.
+            text_blocks = [
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            body = "\n".join(t for t in text_blocks if t)
+            label_parts = [p for p in (rec.get("error"), rec.get("apiErrorStatus")) if p is not None]
+            label = ", ".join(
+                str(p) if not isinstance(p, int) else f"HTTP {p}" for p in label_parts
+            )
+            prefix = f"[API ERROR: {label}]" if label else "[API ERROR]"
+            events.append(NormalizedEvent(
+                seq, uuid, ts, EventKind.ASSISTANT_TEXT,
+                f"{prefix} {body}".rstrip() if body else prefix,
+            ))
+            return events
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text", "")
+                if text:
+                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
+            elif btype == "thinking" and config.include_thinking:
+                text = block.get("thinking", "")
+                if text:
+                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.THINKING, text))
+        return events
+
+    if rtype == "user":
+        if rec.get("isCompactSummary"):
+            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]"))
+            return events
+
+        if rec.get("interruptedMessageId"):
+            # Claude Code's OWN synthetic "[Request interrupted by user]"
+            # record, injected when Ctrl+C cuts off a running response --
+            # not real operator intent (operator-reported, 2026-09-10: it
+            # was rendering as an ordinary all-zero OPERATOR_TEXT row,
+            # indistinguishable from real content). interruptedMessageId
+            # is a structural field the harness sets specifically for this
+            # record, not a text-match on the message body, so this can't
+            # misfire on a real prompt that happens to contain that phrase.
+            return events
+
+        content = rec.get("message", {}).get("content")
+
+        if isinstance(content, list):
+            # A tool_result block for some OTHER tool call can share a
+            # content list with a genuine text block (e.g. an operator
+            # follow-up typed alongside residual tool output) -- the
+            # tool_result is still noise, but a real text block sitting
+            # next to it must not be discarded along with it.
+            qa_text = None
+            qa_tool_id = None
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if (block.get("type") == "tool_result"
+                        and block.get("tool_use_id") in state.askuserquestion_inputs):
+                    c = block.get("content")
+                    qa_text = c if isinstance(c, str) else json.dumps(c)
+                    qa_tool_id = block.get("tool_use_id")
+            if qa_text is not None:
+                formatted = _format_qa_pairs(qa_text, state.askuserquestion_inputs.get(qa_tool_id, []))
+                events.append(NormalizedEvent(seq, uuid, ts, EventKind.QA_PAIR, formatted))
+                return events
+            text_blocks = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            if not text_blocks:
+                return events
+            raw_text = "\n".join(text_blocks)
+        elif isinstance(content, str):
+            raw_text = content
+        else:
+            return events
+
+        if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
+            return events
+
+        cmd = _command_name(raw_text)
+        cleaned = _strip_harness_tags(raw_text)
+        if cmd in _LIFECYCLE_COMMANDS:
+            # An operator-issued `/compact <prompt>` dispatch's own argument
+            # text is hint-only by default (2026-09-11, operator direction --
+            # see _compaction_boundary_label's docstring): it almost always
+            # just re-quotes a "compaction prompt" the model already produced
+            # as ordinary ASSISTANT_TEXT moments earlier (unaffected by this
+            # -- kept in full there, classifier.py's meta_compact scoring
+            # sees to that), so repeating it here in full is exactly the
+            # redundancy the operator flagged. /clear carries no such risk
+            # (no KEEP-block-style argument in practice) and is left as-is.
+            # --show-compaction-content (hide_compaction_content=False)
+            # restores the pre-2026-09-11 verbatim behavior for either
+            # command.
+            if cmd == "compact" and config.hide_compaction_content:
+                label = "[compaction: steered dispatched]"
+            else:
+                label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
+            events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label))
+            return events
+        if not cleaned:
+            return events
+        events.append(NormalizedEvent(seq, uuid, ts, EventKind.OPERATOR_TEXT, cleaned))
+
+    return events
 
 
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:
@@ -492,7 +703,6 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 if tid:
                     questions = block.get("input", {}).get("questions")
                     askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
-    askuserquestion_ids = set(askuserquestion_inputs)
 
     # isSidechain targeting is auto-detected from the file's OWN content, not
     # a CLI flag (an earlier --include-sidechain flag was removed 2026-09-11,
@@ -519,147 +729,12 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
     # own docstring for the nested-subagent (subagent-spawns-subagent) case.
     has_primary_thread = any(not r.get("isSidechain") for _, r in indexed)
 
+    state = StreamState(
+        has_primary_thread=has_primary_thread, askuserquestion_inputs=askuserquestion_inputs
+    )
     events: list[NormalizedEvent] = []
     for seq, (abs_i, rec) in enumerate(indexed):
-        if rec.get("isSidechain") and has_primary_thread:
-            continue
-
-        uuid = rec.get("uuid") or f"line{abs_i}"
-        ts = rec.get("timestamp", "")
-        rtype = rec.get("type")
-
-        if rtype == "system":
-            if rec.get("subtype") == "compact_boundary":
-                # Unconditional, regardless of hide_compaction_content: the
-                # record's own `content` field is always just the fixed
-                # literal "Conversation compacted" (never the real
-                # retained-context summary -- see _compaction_boundary_
-                # label's docstring), so there is no verbatim "content" for
-                # that flag to hide here in the first place -- only the
-                # trigger/token metadata that flag has no reason to gate,
-                # a strict improvement over the old bare "[compact
-                # boundary]" text either way.
-                events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec)))
-            continue
-
-        if rtype == "assistant":
-            if rec.get("isApiErrorMessage"):
-                # A real API-level failure (429 rate limit, overloaded_error,
-                # etc.) -- Claude Code injects it as an ordinary "assistant"
-                # record with model="<synthetic>", so without this check it
-                # renders indistinguishably from genuine model prose despite
-                # being harness/API-injected notification text, and (being
-                # typically short) is exactly the shape select()'s length
-                # filter silently drops -- the session-relevant fact that a
-                # rate limit was actually HIT would vanish. Tagged
-                # ASSISTANT_TEXT still (it IS on the assistant channel, just
-                # not model-generated), with the error identity in the text
-                # itself so classifier.has_finding_signal keeps it regardless
-                # of length.
-                text_blocks = [
-                    b.get("text", "") for b in rec.get("message", {}).get("content", []) or []
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                body = "\n".join(t for t in text_blocks if t)
-                label_parts = [p for p in (rec.get("error"), rec.get("apiErrorStatus")) if p is not None]
-                label = ", ".join(
-                    str(p) if not isinstance(p, int) else f"HTTP {p}" for p in label_parts
-                )
-                prefix = f"[API ERROR: {label}]" if label else "[API ERROR]"
-                events.append(NormalizedEvent(
-                    seq, uuid, ts, EventKind.ASSISTANT_TEXT,
-                    f"{prefix} {body}".rstrip() if body else prefix,
-                ))
-                continue
-            content = rec.get("message", {}).get("content", []) or []
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                btype = block.get("type")
-                if btype == "text":
-                    text = block.get("text", "")
-                    if text:
-                        events.append(NormalizedEvent(seq, uuid, ts, EventKind.ASSISTANT_TEXT, text))
-                elif btype == "thinking" and config.include_thinking:
-                    text = block.get("thinking", "")
-                    if text:
-                        events.append(NormalizedEvent(seq, uuid, ts, EventKind.THINKING, text))
-            continue
-
-        if rtype == "user":
-            if rec.get("isCompactSummary"):
-                events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact summary]"))
-                continue
-
-            if rec.get("interruptedMessageId"):
-                # Claude Code's OWN synthetic "[Request interrupted by user]"
-                # record, injected when Ctrl+C cuts off a running response --
-                # not real operator intent (operator-reported, 2026-09-10: it
-                # was rendering as an ordinary all-zero OPERATOR_TEXT row,
-                # indistinguishable from real content). interruptedMessageId
-                # is a structural field the harness sets specifically for
-                # this record, not a text-match on the message body, so this
-                # can't misfire on a real prompt that happens to contain that
-                # phrase.
-                continue
-
-            content = rec.get("message", {}).get("content")
-
-            if isinstance(content, list):
-                # A tool_result block for some OTHER tool call can share a
-                # content list with a genuine text block (e.g. an operator
-                # follow-up typed alongside residual tool output) -- the
-                # tool_result is still noise, but a real text block sitting
-                # next to it must not be discarded along with it.
-                qa_text = None
-                qa_tool_id = None
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_result" and block.get("tool_use_id") in askuserquestion_ids:
-                        c = block.get("content")
-                        qa_text = c if isinstance(c, str) else json.dumps(c)
-                        qa_tool_id = block.get("tool_use_id")
-                if qa_text is not None:
-                    formatted = _format_qa_pairs(qa_text, askuserquestion_inputs.get(qa_tool_id, []))
-                    events.append(NormalizedEvent(seq, uuid, ts, EventKind.QA_PAIR, formatted))
-                    continue
-                text_blocks = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-                if not text_blocks:
-                    continue
-                raw_text = "\n".join(text_blocks)
-            elif isinstance(content, str):
-                raw_text = content
-            else:
-                continue
-
-            if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
-                continue
-
-            cmd = _command_name(raw_text)
-            cleaned = _strip_harness_tags(raw_text)
-            if cmd in _LIFECYCLE_COMMANDS:
-                # An operator-issued `/compact <prompt>` dispatch's own
-                # argument text is hint-only by default (2026-09-11,
-                # operator direction -- see _compaction_boundary_label's
-                # docstring): it almost always just re-quotes a "compaction
-                # prompt" the model already produced as ordinary
-                # ASSISTANT_TEXT moments earlier (unaffected by this --
-                # kept in full there, classifier.py's meta_compact scoring
-                # sees to that), so repeating it here in full is exactly
-                # the redundancy the operator flagged. /clear carries no
-                # such risk (no KEEP-block-style argument in practice) and
-                # is left as-is. --show-compaction-content
-                # (hide_compaction_content=False) restores the pre-
-                # 2026-09-11 verbatim behavior for either command.
-                if cmd == "compact" and config.hide_compaction_content:
-                    label = "[compaction: steered dispatched]"
-                else:
-                    label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
-                events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label))
-                continue
-            if not cleaned:
-                continue
-            events.append(NormalizedEvent(seq, uuid, ts, EventKind.OPERATOR_TEXT, cleaned))
+        events += parse_record(rec, seq, f"line{abs_i}", config, state)
 
     return events
+

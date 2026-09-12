@@ -900,3 +900,75 @@ def test_format_qa_pairs_skips_an_option_with_no_label():
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
     assert claude_code._format_qa_pairs("anything", []) == "anything"
+
+
+def test_parse_record_is_the_same_per_record_rule_parse_itself_uses(tmp_path):
+    # The seam --follow tails through (follow.py) must not be a second
+    # implementation: feeding parse()'s own record list through parse_record
+    # one at a time has to reproduce parse()'s output exactly.
+    fp = _write_fixture(tmp_path)
+    config = ExtractConfig()
+    expected = claude_code.parse(fp, str(fp), config)
+
+    records = claude_code._load_records(fp)
+    state = claude_code.StreamState(has_primary_thread=claude_code.has_primary_thread(fp))
+    streamed = []
+    for seq, rec in enumerate(records):
+        streamed += claude_code.parse_record(rec, seq, f"line{seq}", config, state)
+
+    assert [(e.kind, e.text, e.marker) for e in streamed] == [
+        (e.kind, e.text, e.marker) for e in expected
+    ]
+
+
+def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
+    # Forward-only state: the tool_use always precedes its tool_result in
+    # real file order, so a stream can pair them without a whole-file
+    # pre-pass. The answer record alone (empty state) must NOT become a
+    # QA_PAIR.
+    config = ExtractConfig()
+    question = _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+                     message={"role": "assistant", "content": [
+                         {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+                          "input": {"questions": [{"question": "Ship it?", "options": [{"label": "yes"}]}]}},
+                     ]})
+    answer = _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:01Z",
+                   message={"role": "user", "content": [
+                       {"type": "tool_result", "tool_use_id": "tu1", "content": '"Ship it?"="yes"'},
+                   ]})
+
+    cold = claude_code.StreamState()
+    assert claude_code.parse_record(answer, 0, "line0", config, cold) == []
+
+    state = claude_code.StreamState()
+    assert claude_code.parse_record(question, 0, "line0", config, state) == []
+    assert "tu1" in state.askuserquestion_inputs
+    events = claude_code.parse_record(answer, 1, "line1", config, state)
+    assert [e.kind for e in events] == [EventKind.QA_PAIR]
+    assert "INTERVIEW: Ship it?" in events[0].text
+    assert "OPERATOR: yes" in events[0].text
+
+
+def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():
+    config = ExtractConfig()
+    with_uuid = _rec(type="user", uuid="u9", timestamp="t",
+                      message={"role": "user", "content": "hello"})
+    without = _rec(type="user", timestamp="t", message={"role": "user", "content": "hello"})
+    assert claude_code.parse_record(with_uuid, 0, "FALLBACK", config, claude_code.StreamState())[0].marker == "u9"
+    assert claude_code.parse_record(without, 0, "FALLBACK", config, claude_code.StreamState())[0].marker == "FALLBACK"
+
+
+def test_has_primary_thread_distinguishes_a_subagent_transcript(tmp_path):
+    # The signal parse() auto-detects and follow.py must know up front: an
+    # all-sidechain file IS someone's subagent conversation, not noise.
+    normal = _write_fixture(tmp_path)
+    assert claude_code.has_primary_thread(normal) is True
+
+    sub = tmp_path / "agent-a36c6ff1d3cc69767.jsonl"
+    sub.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="s1", isSidechain=True, timestamp="t",
+             message={"role": "user", "content": "do the delegated thing"}),
+        _rec(type="assistant", uuid="s2", isSidechain=True, timestamp="t",
+             message={"role": "assistant", "content": [{"type": "text", "text": "Done."}]}),
+    ]) + "\n", encoding="utf-8")
+    assert claude_code.has_primary_thread(sub) is False

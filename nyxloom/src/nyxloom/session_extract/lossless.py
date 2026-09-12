@@ -49,7 +49,7 @@ human's own hand-picked "what should have survived" judgment the way
 Claude Code's dump was.
 
 `dump_codex` reuses two small, already-tested pieces of plumbing from
-adapters/codex.py rather than re-deriving them: `_TOP_LEVEL_TYPES` (the
+adapters/codex.py rather than re-deriving them: `is_top_level_record` (the
 event_msg/compacted top-level-type filter that defines codex.py's OWN
 ordinal-fallback marker space -- diverging from it here would silently
 break --since/--until chaining between `nyxloom extract --format codex` and
@@ -58,6 +58,12 @@ comparison use case point 1 above names) and `_item_text` (a pure
 content-block-text extractor, not a classification decision). Everything
 about WHAT counts as prose to
 keep is independently re-derived here, same as `dump_claude_code`.
+
+The per-record block functions (`claude_code_blocks`, `codex_blocks`,
+`opencode_blocks` -- see `LosslessBlock`) are the whole-file dumpers' own
+loop bodies, factored out 2026-09-12 so `extract-lossless --follow` can
+apply them to a newly-appended record. That sharing is WITHIN this module,
+so it does not weaken the independence-from-adapters point above.
 
 `dump_codex` also found the same real-data surprise `stats.py`'s own
 `_build_call_rows_codex` documents in full: the NEW generation's
@@ -72,6 +78,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +88,153 @@ _BOOKKEEPING_TYPES = {
     "file-history-delta", "atis-latch", "last-prompt", "ai-title",
     "queue-operation", "cost-state",
 }
+
+
+@dataclass(frozen=True)
+class LosslessBlock:
+    """One dumped block: its `===[marker | ts | TAG]===` header and the
+    verbatim prose under it, kept apart so a caller can use either half.
+
+    The per-record functions below (`claude_code_blocks`, `codex_blocks`,
+    `opencode_blocks`) were factored out of the whole-file dumpers'
+    respective loops (2026-09-12) so `extract-lossless --follow` streams
+    newly-appended records through exactly the same rules a one-shot dump
+    applies, rather than a second implementation of "what counts as prose"
+    that could drift from it. The dumpers now consume them.
+
+    `text` separately (not just `render()`) because follow.py's attention
+    detection scores the PROSE, and the header -- nyxloom's own framing --
+    would otherwise pollute that.
+    """
+
+    header: str
+    text: str
+
+    def render(self) -> str:
+        return f"{self.header}\n{self.text}"
+
+
+def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
+    """Every text/thinking block one raw Claude Code record contributes,
+    with the flag tags the header carries -- see dump_claude_code's docstring
+    for what each tag means and why all four are surfaced."""
+    rtype = rec.get("type")
+    ts = rec.get("timestamp", "")
+    marker = rec.get("uuid") or fallback_marker
+
+    if rtype == "system" and rec.get("subtype") == "compact_boundary":
+        return [LosslessBlock(
+            f"===[{marker} | {ts} | SYSTEM compact_boundary]===", str(rec.get("content", ""))
+        )]
+
+    if rtype not in ("user", "assistant"):
+        # bookkeeping or unrecognized record type -- no prose to lose.
+        return []
+
+    msg = rec.get("message") or {}
+    content = msg.get("content")
+    role = (msg.get("role") or rtype).upper()
+    flags = "".join(
+        f" {name}" for name, present in (
+            ("isMeta", rec.get("isMeta")),
+            ("isVisibleInTranscriptOnly", rec.get("isVisibleInTranscriptOnly")),
+            ("interruptedMessageId", rec.get("interruptedMessageId")),
+            ("isSidechain", rec.get("isSidechain")),
+        ) if present
+    )
+    tag = f"{role}{flags}"
+
+    if isinstance(content, str):
+        if content.strip():
+            return [LosslessBlock(f"===[{marker} | {ts} | {tag}]===", content)]
+        return []
+
+    blocks: list[LosslessBlock] = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") not in _KEEP_BLOCK_TYPES:
+                continue
+            text = block.get("text", "")
+            if text.strip():
+                blocks.append(LosslessBlock(f"===[{marker} | {ts} | {tag} {block['type']}]===", text))
+    return blocks
+
+
+def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
+    """Every prose block one raw Codex rollout record contributes, both
+    schema generations -- see dump_codex's docstring."""
+    from .adapters.codex import _item_text
+
+    ts = rec.get("timestamp", "")
+    payload = rec.get("payload", {}) or {}
+    ptype = payload.get("type")
+
+    if rec.get("type") == "compacted":
+        # See this module's own docstring / stats.py's fuller writeup:
+        # payload.message is empty for the large majority of real
+        # compactions (the real content is encrypted) -- same fallback
+        # adapters/codex.py's own parse() already uses.
+        text = payload.get("message", "") or "[compacted]"
+        return [LosslessBlock(f"===[{marker} | {ts} | LIFECYCLE compacted]===", text)]
+    if ptype == "user_message":  # OLD generation
+        text = payload.get("message", "")
+        return [LosslessBlock(f"===[{marker} | {ts} | USER]===", text)] if text else []
+    if ptype == "agent_message":  # OLD generation
+        text = payload.get("message", "")
+        return [LosslessBlock(f"===[{marker} | {ts} | ASSISTANT]===", text)] if text else []
+    if ptype == "context_compacted":  # OLD generation, content-free
+        return [LosslessBlock(
+            f"===[{marker} | {ts} | LIFECYCLE context_compacted]===", "[context_compacted]"
+        )]
+    if ptype == "item_completed":  # NEW generation
+        item = payload.get("item") or {}
+        itype = item.get("type")
+        if itype == "UserMessage":
+            text = _item_text(item, "text")
+            return [LosslessBlock(f"===[{marker} | {ts} | USER]===", text)] if text else []
+        if itype == "AgentMessage":
+            text = _item_text(item, "text")
+            return [LosslessBlock(f"===[{marker} | {ts} | ASSISTANT]===", text)] if text else []
+        if itype == "Reasoning":
+            text = "\n".join(item.get("raw_content") or [])
+            return [LosslessBlock(f"===[{marker} | {ts} | THINKING]===", text)] if text else []
+        # else: CommandExecution/CollabAgentToolCall/FileChange/
+        # ContextCompaction -- machine/tool noise, no prose to lose.
+    # else: task_started/token_count/web_search_end/task_complete/
+    # patch_apply_end/turn_aborted/... -- noise, no prose to lose.
+    return []
+
+
+def opencode_blocks(
+    conn: sqlite3.Connection, msg_id: str, time_created: int, data_json: str
+) -> list[LosslessBlock]:
+    """The one block a `message` row contributes, its `part` rows' text
+    fragments joined -- see dump_opencode's docstring. Takes the open
+    connection because the parts are a second query, not part of the row."""
+    try:
+        data = json.loads(data_json)
+    except json.JSONDecodeError:
+        data = {}
+    role = data.get("role")
+    if role not in ("user", "assistant"):
+        # a non-user/assistant role (if any exists) -- no prose to lose.
+        return []
+
+    part_rows = conn.execute(
+        "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
+    ).fetchall()
+    texts = []
+    for (part_json,) in part_rows:
+        try:
+            part = json.loads(part_json)
+        except json.JSONDecodeError:
+            continue
+        if part.get("type") == "text" and part.get("text"):
+            texts.append(part["text"])
+    if not texts:
+        return []
+    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
+    return [LosslessBlock(f"===[{msg_id} | {ts} | {role.upper()}]===", "\n".join(texts))]
 
 
 def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: str | None = None) -> str:
@@ -133,36 +287,7 @@ def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: 
                     in_span = True
                 continue
 
-            rtype = rec.get("type")
-            ts = rec.get("timestamp", "")
-
-            marker = uuid or f"L{i}"
-            if rtype == "system" and rec.get("subtype") == "compact_boundary":
-                blocks.append(f"===[{marker} | {ts} | SYSTEM compact_boundary]===\n{rec.get('content', '')}")
-            elif rtype in ("user", "assistant"):
-                msg = rec.get("message") or {}
-                content = msg.get("content")
-                role = (msg.get("role") or rtype).upper()
-                flags = "".join(
-                    f" {name}" for name, present in (
-                        ("isMeta", rec.get("isMeta")),
-                        ("isVisibleInTranscriptOnly", rec.get("isVisibleInTranscriptOnly")),
-                        ("interruptedMessageId", rec.get("interruptedMessageId")),
-                        ("isSidechain", rec.get("isSidechain")),
-                    ) if present
-                )
-                tag = f"{role}{flags}"
-                if isinstance(content, str):
-                    if content.strip():
-                        blocks.append(f"===[{marker} | {ts} | {tag}]===\n{content}")
-                elif isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict) or block.get("type") not in _KEEP_BLOCK_TYPES:
-                            continue
-                        text = block.get("text", "")
-                        if text.strip():
-                            blocks.append(f"===[{marker} | {ts} | {tag} {block['type']}]===\n{text}")
-            # else: bookkeeping or unrecognized record type -- no prose to lose.
+            blocks += [b.render() for b in claude_code_blocks(rec, f"L{i}")]
 
             if until_marker is not None and uuid == until_marker:
                 found_until = True
@@ -200,7 +325,7 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
     means lossless, `ExtractConfig.include_thinking` plays no part in
     either dumper.
     """
-    from .adapters.codex import _TOP_LEVEL_TYPES, _item_text
+    from .adapters.codex import is_top_level_record
 
     filtered: list[dict] = []
     with Path(path).open("r", errors="ignore") as f:
@@ -212,7 +337,7 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("type") in _TOP_LEVEL_TYPES:
+            if is_top_level_record(rec):
                 filtered.append(rec)
 
     blocks: list[str] = []
@@ -226,46 +351,7 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
                 in_span = True
             continue
 
-        ts = rec.get("timestamp", "")
-        payload = rec.get("payload", {}) or {}
-        ptype = payload.get("type")
-
-        if rec.get("type") == "compacted":
-            # See this module's own docstring / stats.py's fuller writeup:
-            # payload.message is empty for the large majority of real
-            # compactions (the real content is encrypted) -- same fallback
-            # adapters/codex.py's own parse() already uses.
-            text = payload.get("message", "") or "[compacted]"
-            blocks.append(f"===[{marker} | {ts} | LIFECYCLE compacted]===\n{text}")
-        elif ptype == "user_message":  # OLD generation
-            text = payload.get("message", "")
-            if text:
-                blocks.append(f"===[{marker} | {ts} | USER]===\n{text}")
-        elif ptype == "agent_message":  # OLD generation
-            text = payload.get("message", "")
-            if text:
-                blocks.append(f"===[{marker} | {ts} | ASSISTANT]===\n{text}")
-        elif ptype == "context_compacted":  # OLD generation, content-free
-            blocks.append(f"===[{marker} | {ts} | LIFECYCLE context_compacted]===\n[context_compacted]")
-        elif ptype == "item_completed":  # NEW generation
-            item = payload.get("item") or {}
-            itype = item.get("type")
-            if itype == "UserMessage":
-                text = _item_text(item, "text")
-                if text:
-                    blocks.append(f"===[{marker} | {ts} | USER]===\n{text}")
-            elif itype == "AgentMessage":
-                text = _item_text(item, "text")
-                if text:
-                    blocks.append(f"===[{marker} | {ts} | ASSISTANT]===\n{text}")
-            elif itype == "Reasoning":
-                text = "\n".join(item.get("raw_content") or [])
-                if text:
-                    blocks.append(f"===[{marker} | {ts} | THINKING]===\n{text}")
-            # else: CommandExecution/CollabAgentToolCall/FileChange/
-            # ContextCompaction -- machine/tool noise, no prose to lose.
-        # else: task_started/token_count/web_search_end/task_complete/
-        # patch_apply_end/turn_aborted/... -- noise, no prose to lose.
+        blocks += [b.render() for b in codex_blocks(rec, marker)]
 
         if until_marker is not None and marker == until_marker:
             found_until = True
@@ -324,28 +410,7 @@ def dump_opencode(
                     in_span = True
                 continue
 
-            try:
-                data = json.loads(data_json)
-            except json.JSONDecodeError:
-                data = {}
-            role = data.get("role")
-
-            if role in ("user", "assistant"):
-                part_rows = conn.execute(
-                    "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
-                ).fetchall()
-                texts = []
-                for (part_json,) in part_rows:
-                    try:
-                        part = json.loads(part_json)
-                    except json.JSONDecodeError:
-                        continue
-                    if part.get("type") == "text" and part.get("text"):
-                        texts.append(part["text"])
-                if texts:
-                    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
-                    blocks.append(f"===[{msg_id} | {ts} | {role.upper()}]===\n" + "\n".join(texts))
-            # else: a non-user/assistant role (if any exists) -- no prose to lose.
+            blocks += [b.render() for b in opencode_blocks(conn, msg_id, time_created, data_json)]
 
             if until_marker is not None and msg_id == until_marker:
                 found_until = True

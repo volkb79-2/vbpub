@@ -91,13 +91,69 @@ reads .text):
 Both are a property of THIS render's own walk over its own span, computed
 fresh every call -- nothing already emitted by a prior --since run is ever
 retroactively edited (config.py's append-only / cache-stable principle).
+
+`decide()` below is the PER-EVENT half of that contract, factored out of
+the walk (2026-09-12) so `--follow`'s forward stream (follow.py) can apply
+the identical rule to a newly-arrived event instead of reimplementing it.
+Only the per-event half generalizes: the three aggregate stop conditions
+(max_checkpoints / max_words / max_lifecycle_markers) are statements about
+a fixed, already-known span and mean nothing against an unbounded stream,
+so they stay here in the walk. The split is behavior-preserving -- select()
+now consumes decide() rather than repeating it.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from . import classifier
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
+
+
+@dataclass(frozen=True)
+class EventDecision:
+    """What the per-event rule says about one event, with the two facts the
+    walk's aggregate bookkeeping additionally needs: whether the kept event
+    counts toward max_checkpoints, and whether it is the LIFECYCLE_MARKER
+    kind that is kept unconditionally and can hard-stop the walk."""
+
+    keep: bool
+    is_checkpoint: bool = False
+    is_lifecycle_marker: bool = False
+
+
+def decide(ev: NormalizedEvent, config: ExtractConfig) -> EventDecision:
+    """The windowing contract's per-event half, with no reference to how
+    much has already been kept -- see this module's docstring for the rules
+    and the real-data evidence behind each, and follow.py for the forward-
+    stream caller this was factored out for.
+
+    An ASSISTANT_TEXT's `checkpoint_score` must already be set (extract()
+    runs classifier.score_events over the full parse first; follow.py
+    computes it per event, which is why its own one-event-delay buffer
+    exists -- see that module).
+    """
+    if ev.kind is EventKind.LIFECYCLE_MARKER:
+        return EventDecision(keep=True, is_lifecycle_marker=True)
+
+    if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
+        return EventDecision(keep=True)
+
+    if ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
+        if (config.hide_api_errors and ev.kind is EventKind.ASSISTANT_TEXT
+                and classifier.is_api_error(ev.text)):
+            # Dropped unconditionally -- not even considered for
+            # checkpoint/finding-signal rescue -- per config.py's
+            # hide_api_errors.
+            return EventDecision(keep=False)
+        if (ev.kind is EventKind.ASSISTANT_TEXT
+                and (ev.checkpoint_score or 0.0) >= config.checkpoint_score_threshold):
+            return EventDecision(keep=True, is_checkpoint=True)
+        if len(ev.text) > config.long_comment_chars or classifier.has_finding_signal(ev.text):
+            return EventDecision(keep=True)
+
+    return EventDecision(keep=False)
 
 
 def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[NormalizedEvent]:
@@ -117,54 +173,40 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
         last_kept_seq = ev.seq
 
     for ev in reversed(events):
-        if ev.kind is EventKind.LIFECYCLE_MARKER:
+        # A rejected event is not skipped silently -- it falls into the
+        # next-older kept event's own gap_after count, exactly like a raw
+        # record that never became a NormalizedEvent at all.
+        verdict = decide(ev, config)
+
+        if verdict.is_lifecycle_marker:
             _keep(ev)
-            # A marker's own text now counts toward the budget too
-            # (2026-09-11 bug fix -- previously never added at all, so a
-            # large marker body, e.g. an operator's uncounted /compact
-            # <prompt> dispatch under --show-compaction-content, silently
-            # blew straight through --max-words without ever tripping the
-            # stop-check below). A marker is still NEVER rejected for its
-            # own length -- LIFECYCLE_MARKER is unconditionally kept
-            # regardless of budget, same as before -- this only makes the
-            # RUNNING TOTAL honest, so OLDER content past this point is
-            # correctly trimmed once the budget the marker itself helped
-            # exhaust is actually exceeded. Falls through (no `continue`)
-            # to the shared max_words check at the bottom of the loop,
-            # exactly like every other kept event already does.
+            # A marker's own text counts toward the budget too (2026-09-11
+            # bug fix -- previously never added at all, so a large marker
+            # body, e.g. an operator's uncounted /compact <prompt> dispatch
+            # under --show-compaction-content, silently blew straight
+            # through --max-words without ever tripping the stop-check
+            # below). A marker is still NEVER rejected for its own length --
+            # LIFECYCLE_MARKER is unconditionally kept regardless of budget
+            # -- this only makes the RUNNING TOTAL honest, so OLDER content
+            # past this point is correctly trimmed once the budget the
+            # marker itself helped exhaust is actually exceeded. Falls
+            # through (no `continue`) to the shared max_words check at the
+            # bottom of the loop, exactly like every other kept event.
             word_count += len(ev.text.split())
             may_pass = config.max_lifecycle_markers == -1 or markers_passed < config.max_lifecycle_markers
             if not may_pass:
                 break
             markers_passed += 1
 
-        if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
+        elif verdict.keep:
             _keep(ev)
             word_count += len(ev.text.split())
-
-        elif ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
-            if (config.hide_api_errors and ev.kind is EventKind.ASSISTANT_TEXT
-                    and classifier.is_api_error(ev.text)):
-                # Dropped unconditionally -- not even considered for
-                # checkpoint/finding-signal rescue -- per config.py's
-                # hide_api_errors. Falls into the next-older kept event's
-                # gap_after exactly like any other rejected event.
-                continue
-            is_checkpoint = (
-                ev.kind is EventKind.ASSISTANT_TEXT
-                and (ev.checkpoint_score or 0.0) >= config.checkpoint_score_threshold
-            )
-            if is_checkpoint:
+            if verdict.is_checkpoint:
                 checkpoints_found += 1
-                _keep(ev)
-                word_count += len(ev.text.split())
                 if config.max_checkpoints != -1 and checkpoints_found >= config.max_checkpoints:
                     if kept:
                         kept[-1].meta["walk_stopped_because"] = "max_checkpoints"
                     break
-            elif len(ev.text) > config.long_comment_chars or classifier.has_finding_signal(ev.text):
-                _keep(ev)
-                word_count += len(ev.text.split())
 
         if config.max_words != -1 and word_count > config.max_words:
             if kept:

@@ -272,3 +272,43 @@ def test_parse_skips_blank_and_malformed_lines(tmp_path):
     assert len(events) == 1
     assert events[0].kind is EventKind.OPERATOR_TEXT
     assert events[0].text == "hi"
+
+
+def test_parse_record_is_the_same_per_record_rule_parse_itself_uses(tmp_path):
+    # Same seam contract as the Claude Code adapter's: follow.py tails
+    # through parse_record, so streaming parse()'s own record list through it
+    # one record at a time must reproduce parse()'s output exactly.
+    fp = _write_fixture(tmp_path)
+    config = ExtractConfig(include_thinking=True)
+    expected = codex.parse(fp, str(fp), config)
+
+    raw = [
+        rec for rec in (json.loads(line) for line in fp.read_text().splitlines() if line.strip())
+        if codex.is_top_level_record(rec)
+    ]
+    streamed = []
+    for seq, rec in enumerate(raw):
+        streamed += codex.parse_record(rec, seq, str(seq), config)
+
+    assert [(e.kind, e.text, e.marker) for e in streamed] == [
+        (e.kind, e.text, e.marker) for e in expected
+    ]
+
+
+def test_parse_record_falls_back_to_the_given_marker_without_an_ordinal():
+    # Real pre-2026-08 rollout files carry no `ordinal` at all -- see the
+    # adapter's own module docstring.
+    config = ExtractConfig()
+    with_ordinal = {"timestamp": "t", "ordinal": 42, "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "hi"}}
+    without = {"timestamp": "t", "type": "event_msg",
+               "payload": {"type": "user_message", "message": "hi"}}
+    assert codex.parse_record(with_ordinal, 0, "FALLBACK", config)[0].marker == "42"
+    assert codex.parse_record(without, 0, "FALLBACK", config)[0].marker == "FALLBACK"
+
+
+def test_is_top_level_record_rejects_the_layers_parse_ignores():
+    assert codex.is_top_level_record({"type": "event_msg"})
+    assert codex.is_top_level_record({"type": "compacted"})
+    assert not codex.is_top_level_record({"type": "response_item"})
+    assert not codex.is_top_level_record({"type": "session_meta"})

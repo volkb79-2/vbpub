@@ -304,3 +304,45 @@ def test_walk_stopped_because_absent_when_a_lifecycle_marker_is_the_stop():
     kept = select(events, ExtractConfig(max_checkpoints=5, max_lifecycle_markers=0))
     by_marker = {e.marker: e for e in kept}
     assert "walk_stopped_because" not in by_marker["lc1"].meta
+
+
+def test_decide_matches_the_walk_when_no_stop_condition_can_trip():
+    # The refactor's own contract: decide() is select()'s per-event half,
+    # nothing more. With all three aggregate stop conditions disabled, the
+    # walk must keep EXACTLY the events decide() approves, in order.
+    from nyxloom.session_extract.select import decide
+
+    events = [
+        _op(0), _cp(1), _short(2), _long(3), _cp(4, score=0.0),
+        NormalizedEvent(5, "qa5", _TS, EventKind.QA_PAIR, "Q?\n\nOPERATOR: A"),
+        NormalizedEvent(6, "api6", _TS, EventKind.ASSISTANT_TEXT,
+                         "[API ERROR: rate_limit, HTTP 429] slow down", checkpoint_score=0.0),
+        NormalizedEvent(7, "th7", _TS, EventKind.THINKING, "y" * 300),
+        NormalizedEvent(8, "lc8", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]"),
+        _cp(9),
+    ]
+    config = ExtractConfig(max_checkpoints=-1, max_words=-1, max_lifecycle_markers=-1,
+                            include_thinking=True)
+    kept = select(events, config)
+    assert [e.marker for e in kept] == [e.marker for e in events if decide(e, config).keep]
+
+
+def test_decide_reports_checkpoint_and_marker_kinds_separately():
+    from nyxloom.session_extract.select import EventDecision, decide
+
+    config = ExtractConfig()
+    assert decide(_cp(0), config) == EventDecision(keep=True, is_checkpoint=True)
+    marker = NormalizedEvent(1, "lc1", _TS, EventKind.LIFECYCLE_MARKER, "[compact boundary]")
+    assert decide(marker, config) == EventDecision(keep=True, is_lifecycle_marker=True)
+    # a kept-for-length event is neither a checkpoint nor a marker
+    assert decide(_long(2), config) == EventDecision(keep=True)
+
+
+def test_decide_drops_an_api_error_before_any_rescue_applies():
+    from nyxloom.session_extract.select import decide
+
+    api = NormalizedEvent(0, "api0", _TS, EventKind.ASSISTANT_TEXT,
+                           "[API ERROR: rate_limit, HTTP 429] " + "x" * 500, checkpoint_score=9.0)
+    # long AND a finding signal AND above the checkpoint threshold -- still dropped
+    assert not decide(api, ExtractConfig()).keep
+    assert decide(api, ExtractConfig(hide_api_errors=False)).keep

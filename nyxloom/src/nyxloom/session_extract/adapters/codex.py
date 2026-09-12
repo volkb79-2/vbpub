@@ -283,6 +283,74 @@ def _item_text(item: dict, block_type: str) -> str:
     )
 
 
+def is_top_level_record(rec: dict) -> bool:
+    """Whether this raw record is one parse() would even look at -- the
+    {event_msg, compacted} universe that also defines this adapter's own
+    ordinal-fallback marker space. Public because follow.py's tailer decides
+    the same thing about each newly-arrived line, and because a disagreement
+    there would silently shift every fallback marker."""
+    return rec.get("type") in _TOP_LEVEL_TYPES
+
+
+def parse_record(
+    rec: dict, seq: int, fallback_marker: str, config: ExtractConfig
+) -> list[NormalizedEvent]:
+    """One raw record -> the NormalizedEvents it yields (0 or 1 today).
+
+    Factored out of parse()'s own loop (2026-09-12) so follow.py's
+    incremental tailer applies literally the same per-record rules to a
+    newly-appended line as a full parse does. `fallback_marker` is the
+    marker for a record with no `ordinal` of its own (real pre-2026-08
+    rollout files have none -- see the module docstring): parse() passes its
+    absolute pre-slice position, follow.py a stream-local token. Needs no
+    cross-record state at all, unlike claude_code.parse_record.
+    """
+    ordinal = str(rec.get("ordinal", fallback_marker))
+    ts = rec.get("timestamp", "")
+    payload = rec.get("payload", {}) or {}
+    ptype = payload.get("type")
+
+    if rec.get("type") == "compacted":
+        # NEW generation's top-level compaction record -- carries Codex's own
+        # real compaction summary text, unlike the OLD generation's
+        # content-free "context_compacted" event_msg.
+        text = payload.get("message", "") or "[compacted]"
+        return [NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, text)]
+
+    if ptype == "user_message":  # OLD generation
+        text = payload.get("message", "")
+        if text:
+            return [NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text)]
+    elif ptype == "agent_message":  # OLD generation
+        text = payload.get("message", "")
+        if text:
+            return [NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text)]
+    elif ptype == "context_compacted":  # OLD generation
+        return [NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, "[context_compacted]")]
+    elif ptype == "item_completed":  # NEW generation
+        item = payload.get("item") or {}
+        itype = item.get("type")
+        if itype == "UserMessage":
+            text = _item_text(item, "text")
+            if text:
+                return [NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text)]
+        elif itype == "AgentMessage":
+            text = _item_text(item, "text")
+            if text:
+                return [NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text)]
+        elif itype == "Reasoning" and config.include_thinking:
+            text = "\n".join(item.get("raw_content") or [])
+            if text:
+                return [NormalizedEvent(seq, ordinal, ts, EventKind.THINKING, text)]
+        # else: itype in _SKIPPED_ITEM_TYPES, or an unrecognized future item
+        # type -- either way, machine/tool noise, not emitted.
+        # CollabAgentToolCall (sub-agent dispatch) included: the spawned
+        # sub-agent's OWN conversation is NOT here -- it lives in its own
+        # separate rollout file (item.receiver_thread_ids names it) -- see the
+        # module docstring's "Sub-agent targeting" note.
+    return []
+
+
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:
     raw: list[dict] = []
     with path.open("r", errors="ignore") as f:
@@ -294,7 +362,7 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") in _TOP_LEVEL_TYPES:
+            if is_top_level_record(obj):
                 raw.append(obj)
 
     # Tag every record with its absolute position in the full (unsliced)
@@ -329,49 +397,6 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
 
     events: list[NormalizedEvent] = []
     for seq, (abs_i, rec) in enumerate(indexed):
-        ordinal = str(rec.get("ordinal", abs_i))
-        ts = rec.get("timestamp", "")
-        payload = rec.get("payload", {}) or {}
-        ptype = payload.get("type")
-
-        if rec.get("type") == "compacted":
-            # NEW generation's top-level compaction record -- carries
-            # Codex's own real compaction summary text, unlike the OLD
-            # generation's content-free "context_compacted" event_msg.
-            text = payload.get("message", "") or "[compacted]"
-            events.append(NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, text))
-            continue
-
-        if ptype == "user_message":  # OLD generation
-            text = payload.get("message", "")
-            if text:
-                events.append(NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text))
-        elif ptype == "agent_message":  # OLD generation
-            text = payload.get("message", "")
-            if text:
-                events.append(NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text))
-        elif ptype == "context_compacted":  # OLD generation
-            events.append(NormalizedEvent(seq, ordinal, ts, EventKind.LIFECYCLE_MARKER, "[context_compacted]"))
-        elif ptype == "item_completed":  # NEW generation
-            item = payload.get("item") or {}
-            itype = item.get("type")
-            if itype == "UserMessage":
-                text = _item_text(item, "text")
-                if text:
-                    events.append(NormalizedEvent(seq, ordinal, ts, EventKind.OPERATOR_TEXT, text))
-            elif itype == "AgentMessage":
-                text = _item_text(item, "text")
-                if text:
-                    events.append(NormalizedEvent(seq, ordinal, ts, EventKind.ASSISTANT_TEXT, text))
-            elif itype == "Reasoning" and config.include_thinking:
-                text = "\n".join(item.get("raw_content") or [])
-                if text:
-                    events.append(NormalizedEvent(seq, ordinal, ts, EventKind.THINKING, text))
-            # else: itype in _SKIPPED_ITEM_TYPES, or an unrecognized future
-            # item type -- either way, machine/tool noise, not emitted.
-            # CollabAgentToolCall (sub-agent dispatch) included: the spawned
-            # sub-agent's OWN conversation is NOT here -- it lives in its own
-            # separate rollout file (item.receiver_thread_ids names it) --
-            # see module docstring's "Sub-agent targeting" note.
+        events += parse_record(rec, seq, str(abs_i), config)
 
     return events

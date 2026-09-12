@@ -118,3 +118,42 @@ def test_skips_blank_and_malformed_lines(tmp_path):
     )
     out = lossless.dump_claude_code(fp)
     assert "survives" in out
+
+
+def test_claude_code_blocks_is_the_dumps_own_per_record_rule():
+    # The seam `extract-lossless --follow` streams through: header and prose
+    # kept apart (follow.py's attention detection scores the PROSE, never
+    # nyxloom's own header framing).
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "assistant", "content": [
+               {"type": "text", "text": "Done."},
+               {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+               {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+           ]}}
+    blocks = claude_code_blocks(rec, "L7")
+    # NOTE: the `thinking` block contributes NOTHING here, because this
+    # dumper reads `block["text"]` for both kept block types while a real
+    # thinking block's prose lives under `block["thinking"]` (the adapter's
+    # own parse() reads that field). That is a real pre-existing bug, kept
+    # pinned as-is by this refactor-equivalence test and fixed in its own
+    # commit -- see test_thinking_blocks_are_dumped_from_their_own_field.
+    assert [b.text for b in blocks] == ["Done."]
+    assert blocks[0].header == "===[a1 | 2026-01-01T00:00:00Z | ASSISTANT text]==="
+    assert blocks[0].render() == blocks[0].header + "\nDone."
+    # bookkeeping records contribute nothing
+    assert claude_code_blocks({"type": "mode", "mode": "normal"}, "L8") == []
+    # a uuid-less record falls back to the caller's marker
+    assert claude_code_blocks(
+        {"type": "user", "timestamp": "t", "message": {"role": "user", "content": "hi"}}, "L9"
+    )[0].header.startswith("===[L9 |")
+
+
+def test_claude_code_blocks_surfaces_every_drop_reason_flag():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "user", "uuid": "u1", "timestamp": "t", "isMeta": True, "isSidechain": True,
+           "message": {"role": "user", "content": "framing"}}
+    header = claude_code_blocks(rec, "L0")[0].header
+    assert "isMeta" in header and "isSidechain" in header
