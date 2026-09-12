@@ -242,7 +242,7 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
     if name in (HOST_ENV, BARE_HOST_ENV):
         fail(f"{where}: '{name}' is a built-in environment and cannot be redefined")
     _check_keys(table, {"image", "cgroup_slice", "mode", "container_name",
-                        "forward_env"},
+                        "forward_env", "resources"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     if not isinstance(image, str) or not image.strip():
@@ -268,6 +268,21 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
              f"environment-variable names")
     if len(set(forward_env)) != len(forward_env):
         fail(f"{where} [environments.{name}]: 'forward_env' contains duplicates")
+    if "resources" in table:
+        # RG-48/R-29: the environment-level fallback for `cpus` — a lane
+        # with no `resources.cpus` of its own inherits its ENVIRONMENT's
+        # declared cap (the lane still wins when both declare one,
+        # `run_container_lane`'s own read order). No other resources key is
+        # accepted here: `memory`/`memory_swap`/`cpu_weight`/`io_weight`/
+        # `shared` are per-INVOCATION facts (RAM budget, shared-infra
+        # collision) that belong to the lane, not to an environment shared
+        # by many lanes with different footprints.
+        res = table["resources"]
+        if not isinstance(res, dict):
+            fail(f"{where} [environments.{name}]: 'resources' must be a table")
+        _check_keys(res, {"cpus"}, f"{where} [environments.{name}.resources]")
+        if "cpus" in res:
+            _validate_cpus(res["cpus"], f"{where} [environments.{name}.resources]")
 
 
 # The lane table's own keys, in ONE place: `_validate_lane` checks a lane
@@ -295,6 +310,19 @@ def budget_seconds(value: str) -> int:
 def _validate_memory(value: object, where: str) -> None:
     if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
         fail(f"{where}: 'memory' must look like '536870912', '512m' or '4g' (got {value!r})")
+
+
+_CPUS_RE = re.compile(r"\d+(\.\d+)?")
+
+
+def _validate_cpus(value: object, where: str) -> None:
+    """RG-48/R-29: `docker run --cpus`'s own grammar — a decimal string,
+    strictly positive (`--cpus 0` is not "no limit", it is a Docker refusal;
+    catching it here names the lane instead of a `docker run` stderr tail)."""
+    if not isinstance(value, str) or not _CPUS_RE.fullmatch(value) \
+            or float(value) <= 0:
+        fail(f"{where}: 'cpus' must be a positive decimal string like '2' "
+             f"or '1.5' (docker's own --cpus grammar; got {value!r})")
 
 
 def _validate_lane(name: str, table: dict, where: str) -> None:
@@ -350,8 +378,10 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
         _check_keys(res, {"memory", "memory_swap", "cpu_weight", "io_weight",
-                          "shared"},
+                          "shared", "cpus"},
                     f"{where} [lanes.{name}.resources]")
+        if "cpus" in res:
+            _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
         if "memory" in res and table.get("memory"):
             fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
                  f"and 'resources.memory' are the same knob; use 'resources.memory'")
@@ -4458,6 +4488,44 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                f"{len(argv_lanes)} container command lane(s): every argv[0] "
                f"is {{worktree}}-anchored, absolute, or a bare command name")
 
+    # 2c. RG-48/R-29: a container lane whose argv spawns workers BY NAME
+    # ('-n auto'/'--workers auto', pytest-xdist's own flags) picks its
+    # worker count from whatever `nproc` reads INSIDE the container — and
+    # 'resources.cpus' (lane, or its environment as a fallback) is the only
+    # thing that actually caps what `nproc` sees there. Undeclared, the
+    # worker count and the real CPU budget are decided in two places that
+    # can silently disagree (RG-48's own motivating case: an environment
+    # with no default cap, a lane whose argv assumes one exists). Scoped to
+    # EPHEMERAL container lanes only — exec lanes get no `--cpus` at all
+    # (naming-only, R-29's rule), so the same undeclared state there is not
+    # a defect this check can name a fix for.
+    worker_flag_re = re.compile(r"(?:^|\s)(-n auto|--workers auto)(?:\s|$)")
+    checked, cpu_flagged = [], []
+    for name in argv_lanes:
+        lane = lanes[name]
+        env, _env_src = env_cache.get(lane_environment_name(lane), (None, None))
+        if not env or env.get("mode") == "exec":
+            continue  # exec/bare-host: no --cpus to declare (naming-only)
+        if not worker_flag_re.search(" ".join(lane["argv"])):
+            continue
+        checked.append(name)
+        cpus = lane.get("resources", {}).get("cpus") \
+            or env.get("resources", {}).get("cpus")
+        if cpus:
+            continue
+        cpu_flagged.append(name)
+        record("WARN", f"lane {name!r} worker count vs CPU cap (RG-48)",
+               f"argv spawns workers by '-n auto'/'--workers auto' but "
+               f"neither the lane's own 'resources.cpus' nor its "
+               f"environment's declares a CPU cap — the worker count and "
+               f"the container's real CPU budget are decided in two places "
+               f"that can silently disagree; declare 'resources.cpus' on "
+               f"the lane or on '[environments.{lane_environment_name(lane)}]'")
+    if checked and not cpu_flagged:
+        record("OK", "lane worker count vs CPU cap (RG-48)",
+               f"{len(checked)} lane(s) spawning workers by name: every one "
+               f"declares 'resources.cpus' (lane or environment)")
+
     # 3. physical-path derivability + git health
     try:
         repo, worktree, _, worktree_scope = resolve_worktree_scope(
@@ -5923,6 +5991,16 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
         # without OOM-killing the lane mid-campaign.
         argv += ["--memory-swap", lane["resources"]["memory_swap"]]
+    # RG-48/R-29: lane wins over environment (the same precedence
+    # `resources.memory` already has over nothing — there is no
+    # environment-level memory fallback, only cpus has one, because a
+    # worker-count / CPU-cap contradiction is a fact about the ENVIRONMENT's
+    # own default toolchain invocation (RG-48's own motivating case: `-n
+    # auto` with no cap at all), not about one lane's RAM budget).
+    cpus = lane.get("resources", {}).get("cpus") \
+        or env.get("resources", {}).get("cpus")
+    if cpus:
+        argv += ["--cpus", cpus]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
@@ -6347,6 +6425,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
             bits.append(f"memory={mem}")
         res = lane.get("resources", {})
         res_bits = []
+        if res.get("cpus"):
+            res_bits.append(f"cpus={res['cpus']}")
         if res.get("memory_swap"):
             res_bits.append(f"swap={res['memory_swap']}")
         for key in ("cpu_weight", "io_weight"):
@@ -6732,10 +6812,15 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     slice_src = (f"no cgroup_slice declared and no "
                                  f"${CGROUP_ENV_VAR}")
-            if lane.get("resources") or lane.get("memory"):
+            if lane.get("resources") or lane.get("memory") \
+                    or env.get("resources"):
+                # RG-48: naming-only, same rule as `cgroup_slice` above —
+                # `docker exec` can neither place nor cap work, so a
+                # declared `resources.cpus` (lane OR environment) is exactly
+                # as inert here as `resources.memory` already was.
                 print(f"run-gate: WARNING: lane {args.lane!r} declares "
                       f"resources/memory but its environment is exec-mode — "
-                      f"resource admission and --memory caps apply to "
+                      f"resource admission and --memory/--cpus caps apply to "
                       f"ephemeral container lanes only", flush=True)
         elif env:
             slice_name, slice_src = resolve_slice(env, env_source)

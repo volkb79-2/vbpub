@@ -3521,6 +3521,319 @@ class TestResourceAdmission:
 
 
 # ---------------------------------------------------------------------------
+# RG-48 — `resources.cpus` (lane, or its environment as a fallback) -> a
+# real `docker run --cpus` cap on ephemeral container lanes; naming-only on
+# exec lanes (docker exec can neither place nor cap work); a `doctor` check
+# names a lane that spawns workers by count ('-n auto'/'--workers auto')
+# with no cap declared anywhere.
+# ---------------------------------------------------------------------------
+
+class TestResourcesCpusValidation:
+    """Pure config-layer checks, called directly (no subprocess) so the new
+    branches in `_validate_lane`/`_validate_environment`/`_validate_cpus`
+    show up in `selftest`'s diff-coverage — a `run_tool()` subprocess is
+    invisible to coverage.py (see this file's own established rule)."""
+
+    def _lane_cfg(self, snippet: str) -> str:
+        return ("schema_version = 1\n"
+                "[environments.e]\n"
+                'image = "img:1"\n'
+                "[lanes.suite]\n"
+                'kind = "command"\n'
+                'environment = "e"\n'
+                'argv = ["true"]\n'
+                "clean_tree = false\n"
+                "[lanes.suite.resources]\n"
+                f"{snippet}\n")
+
+    def _load(self, tmp_path: Path, text: str):
+        path = tmp_path / "run-gate.toml"
+        path.write_text(textwrap.dedent(text))
+        return run_gate._validate_config(run_gate._read_toml(path), path,
+                                         central=False)
+
+    @pytest.mark.parametrize("cpus", ["2", "1.5", "0.5", "16"])
+    def test_valid_lane_cpus_accepted(self, tmp_path, cpus):
+        cfg = self._load(tmp_path, self._lane_cfg(f'cpus = "{cpus}"'))
+        assert cfg["lanes"]["suite"]["resources"]["cpus"] == cpus
+
+    @pytest.mark.parametrize("cpus", ['"0"', '"-1"', '"abc"', '"2 "', "2",
+                                      "true"])
+    def test_invalid_lane_cpus_rejected(self, tmp_path, cpus):
+        with pytest.raises(run_gate.GateError, match="cpus"):
+            self._load(tmp_path, self._lane_cfg(f"cpus = {cpus}"))
+
+    def test_valid_environment_cpus_accepted(self, tmp_path):
+        cfg = self._load(tmp_path, """\
+            schema_version = 1
+            [environments.e]
+            image = "img:1"
+            [environments.e.resources]
+            cpus = "3"
+            [lanes.suite]
+            kind = "command"
+            environment = "e"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        assert cfg["environments"]["e"]["resources"]["cpus"] == "3"
+
+    def test_invalid_environment_cpus_rejected(self, tmp_path):
+        with pytest.raises(run_gate.GateError, match="cpus"):
+            self._load(tmp_path, """\
+                schema_version = 1
+                [environments.e]
+                image = "img:1"
+                [environments.e.resources]
+                cpus = "0"
+                [lanes.suite]
+                kind = "command"
+                environment = "e"
+                argv = ["true"]
+                clean_tree = false
+            """)
+
+    def test_environment_resources_rejects_unknown_key(self, tmp_path):
+        with pytest.raises(run_gate.GateError, match="unknown key"):
+            self._load(tmp_path, """\
+                schema_version = 1
+                [environments.e]
+                image = "img:1"
+                [environments.e.resources]
+                memory = "1g"
+                [lanes.suite]
+                kind = "command"
+                environment = "e"
+                argv = ["true"]
+                clean_tree = false
+            """)
+
+    def test_environment_resources_must_be_a_table(self, tmp_path):
+        with pytest.raises(run_gate.GateError, match="must be a table"):
+            self._load(tmp_path, """\
+                schema_version = 1
+                [environments.e]
+                image = "img:1"
+                resources = "nope"
+                [lanes.suite]
+                kind = "command"
+                environment = "e"
+                argv = ["true"]
+                clean_tree = false
+            """)
+
+    def test_environment_resources_empty_table_is_legal(self, tmp_path):
+        """The `'cpus' in res` branch's FALSE arm: a declared but empty
+        `[environments.e.resources]` is legal (nothing to validate)."""
+        cfg = self._load(tmp_path, """\
+            schema_version = 1
+            [environments.e]
+            image = "img:1"
+            [environments.e.resources]
+            [lanes.suite]
+            kind = "command"
+            environment = "e"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        assert cfg["environments"]["e"]["resources"] == {}
+
+    def test_usage_documents_lane_cpus(self):
+        """`usage()` is a pure function of `lanes` — no subprocess, no
+        config file needed to exercise its new 'cpus=' resources bit."""
+        out = run_gate.usage({"suite": {"kind": "command", "environment": "e",
+                                        "resources": {"cpus": "2"}}})
+        assert "resources: cpus=2" in out
+
+    def test_usage_omits_cpus_bit_when_undeclared(self):
+        out = run_gate.usage({"suite": {"kind": "command", "environment": "e"}})
+        assert "cpus=" not in out
+
+
+class TestResourcesCpusArgv:
+    """RG-48 run path: `--cpus` on ephemeral container lanes, lane wins over
+    environment. In-process (`run_gate.main()`) — a real `docker run --cpus`
+    argv element is a NEW line this diff adds."""
+
+    def _cfg(self, lane_cpus: str | None, env_cpus: str | None) -> str:
+        env_res = (f'[environments.e.resources]\ncpus = "{env_cpus}"\n'
+                  if env_cpus else "")
+        lane_res = (f'[lanes.suite.resources]\ncpus = "{lane_cpus}"\n'
+                   if lane_cpus else "")
+        return ("schema_version = 1\n"
+                "[environments.e]\n"
+                'image = "img:1"\n'
+                f"{env_res}"
+                "[lanes.suite]\n"
+                'kind = "command"\n'
+                'environment = "e"\n'
+                'argv = ["true"]\n'
+                "clean_tree = false\n"
+                f"{lane_res}")
+
+    def _run(self, tmp_path, monkeypatch, lane_cpus, env_cpus):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg(lane_cpus, env_cpus))
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        code = run_gate.main(["suite"])
+        assert code == 0
+        return docker_runs(log)[0]
+
+    def test_lane_cpus_sets_the_flag(self, tmp_path, monkeypatch):
+        run_call = self._run(tmp_path, monkeypatch, "2", None)
+        assert run_call[run_call.index("--cpus") + 1] == "2"
+
+    def test_environment_cpus_is_the_fallback(self, tmp_path, monkeypatch):
+        run_call = self._run(tmp_path, monkeypatch, None, "3")
+        assert run_call[run_call.index("--cpus") + 1] == "3"
+
+    def test_lane_cpus_wins_over_environment(self, tmp_path, monkeypatch):
+        run_call = self._run(tmp_path, monkeypatch, "1.5", "4")
+        assert run_call[run_call.index("--cpus") + 1] == "1.5"
+
+    def test_neither_declared_means_no_flag(self, tmp_path, monkeypatch):
+        run_call = self._run(tmp_path, monkeypatch, None, None)
+        assert "--cpus" not in run_call
+
+
+class TestResourcesCpusExecWarning:
+    """RG-48/R-29 exec-mode half: naming-only, like `memory` — the WARNING
+    already covers `resources` generically (it fires on ANY truthy
+    `lane.resources`/`lane.memory`); this proves it also fires for a
+    resources table that declares ONLY `cpus`, and for the environment-level
+    fallback the pre-existing check never read at all before this package."""
+
+    def test_lane_cpus_on_exec_environment_warns_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.e]
+            image = "img:1"
+            mode = "exec"
+            container_name = "runner"
+            [lanes.suite]
+            kind = "command"
+            environment = "e"
+            argv = ["true"]
+            clean_tree = false
+            [lanes.suite.resources]
+            cpus = "2"
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text(shim.read_text().replace(
+            'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        run_gate.main(["suite"])
+        out = capsys.readouterr().out
+        assert "resources/memory but its environment is exec-mode" in out
+        assert "--memory/--cpus caps apply to ephemeral container lanes only" in out
+
+    def test_environment_only_cpus_on_exec_also_warns(
+            self, tmp_path, monkeypatch, capsys):
+        """The lane itself declares nothing — only its ENVIRONMENT declares
+        `resources.cpus` — still naming-only on an exec runner."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.e]
+            image = "img:1"
+            mode = "exec"
+            container_name = "runner"
+            [environments.e.resources]
+            cpus = "2"
+            [lanes.suite]
+            kind = "command"
+            environment = "e"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text(shim.read_text().replace(
+            'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        run_gate.main(["suite"])
+        out = capsys.readouterr().out
+        assert "resources/memory but its environment is exec-mode" in out
+
+
+class TestDoctorWorkerCountVsCpuCap:
+    """RG-48 doctor check: a container lane whose argv spawns workers by
+    count ('-n auto'/'--workers auto') with no `resources.cpus` anywhere."""
+
+    def _cfg(self, argv_extra: str, lane_cpus: str | None = None,
+            env_cpus: str | None = None, mode: str | None = None) -> str:
+        env_res = (f'[environments.tester-unified.resources]\ncpus = "{env_cpus}"\n'
+                  if env_cpus else "")
+        lane_res = (f'[lanes.suite.resources]\ncpus = "{lane_cpus}"\n'
+                   if lane_cpus else "")
+        mode_line = f'mode = "{mode}"\n' if mode else ""
+        container_name = 'container_name = "runner"\n' if mode == "exec" else ""
+        return ("schema_version = 1\n"
+                "[environments.tester-unified]\n"
+                'image = "tester-unified:local"\n'
+                f"{mode_line}{container_name}{env_res}"
+                "[lanes.suite]\n"
+                'kind = "command"\n'
+                'environment = "tester-unified"\n'
+                f'argv = ["pytest", "{argv_extra}"]\n'
+                "clean_tree = false\n"
+                f"{lane_res}")
+
+    def _doctor(self, tmp_path, monkeypatch, cfg, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        if 'mode = "exec"' in cfg:
+            shim = shim_dir_of(monkeypatch) / "docker"
+            shim.write_text(shim.read_text().replace(
+                'case "$1" in', 'case "$1" in\n  ps) echo "runner" ;;'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    @pytest.mark.parametrize("flag", ["-n auto", "--workers auto"])
+    def test_undeclared_cpus_warns_by_name(self, tmp_path, monkeypatch,
+                                           capsys, flag):
+        code, out = self._doctor(tmp_path, monkeypatch, self._cfg(flag),
+                                 capsys)
+        assert "[WARN] lane 'suite' worker count vs CPU cap (RG-48)" in out
+        assert "neither the lane's own 'resources.cpus'" in out
+        assert code == 0
+
+    def test_lane_cpus_declared_records_ok(self, tmp_path, monkeypatch,
+                                           capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, self._cfg("-n auto", lane_cpus="2"), capsys)
+        assert "worker count vs CPU cap (RG-48)" not in out.replace(
+            "[OK] lane worker count vs CPU cap (RG-48)", "")
+        assert "[OK] lane worker count vs CPU cap (RG-48): 1 lane(s)" in out
+
+    def test_environment_cpus_declared_records_ok(self, tmp_path, monkeypatch,
+                                                  capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, self._cfg("-n auto", env_cpus="4"), capsys)
+        assert "[OK] lane worker count vs CPU cap (RG-48)" in out
+
+    def test_no_worker_flag_means_no_check_at_all(self, tmp_path, monkeypatch,
+                                                   capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, self._cfg("-k something"), capsys)
+        assert "RG-48" not in out
+
+    def test_exec_mode_lane_is_not_checked(self, tmp_path, monkeypatch,
+                                           capsys):
+        """Exec lanes never get `--cpus` at all (naming-only, R-29) — the
+        same undeclared state there is not a defect this check can fix."""
+        code, out = self._doctor(
+            tmp_path, monkeypatch, self._cfg("-n auto", mode="exec"), capsys)
+        assert "RG-48" not in out
+
+
+# ---------------------------------------------------------------------------
 # RG-39 — exec-mode internal mutex: a SECOND lock on top of RG-20's shared-
 # infra locks, keyed on the resolved container identity, acquired only after
 # every shared-infra lock the lane declares is already held.
