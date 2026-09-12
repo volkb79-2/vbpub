@@ -482,7 +482,7 @@ def deliver(att: AttentionEvent, config: FollowConfig, bell_out) -> None:
         }
         try:
             ok, detail = notify_mod.send(config.notify, note)
-        except Exception as e:  # census: advisory-degradation (nyxloom-P123)
+        except Exception as e:  # census: advisory-degradation (nyxloom-P115)
             # Matches notify.py's own classification of a delivery failure: a
             # notification that does not arrive can only ever REDUCE what
             # happens, never authorize anything, and a follow loop that dies
