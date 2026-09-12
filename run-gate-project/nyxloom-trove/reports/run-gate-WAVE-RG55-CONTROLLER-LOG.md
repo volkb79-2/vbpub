@@ -395,12 +395,49 @@ never a silent edit to the contract file.
   "exec carrier only"); the daemon (P6) re-asserts owner/mode at start as
   belt and braces. Round 3 stays in reserve.
 
+- **RW-33 (P7 checkpoint BRIEF-1 — liveness mechanism decided for A2–A4;
+  fresh successor dispatched):** P7 session 1 shipped A1 (`de32bb91`:
+  `budget_per_candidate = "auto"` default, `"none"` opt-out, `plan`
+  progress event, `judgment.r2.budget_per_candidate_derived_s`) and cut at
+  `723c431d` with the architectural findings: assay runs every command via
+  the blocking `default_process_runner` on the lane's own argv; baseline
+  and candidates share one `CommandPlan`; the candidate subprocess runs in
+  the PROJECT's interpreter (assay is often a pyz, not importable there).
+  Ruling — ONE mechanism, two parts, R2 candidates only:
+  (1) **materialized plugin**: assay writes a stdlib-only pytest plugin
+  file into `.assay/liveness/` (content-hashed) and injects it into the
+  shared plan via `-p <module>` + `PYTHONPATH` prepend ONLY when the lane
+  argv literally invokes pytest (`pytest`, `…/pytest`, `-m pytest`);
+  otherwise liveness is off with one WARN and D-23 budgets remain the only
+  bound (documented requirement). The plugin emits `test` events (nodeid,
+  outcome, duration) and a `session_finish` event (exitstatus) to a side
+  file named by `ASSAY_LIVENESS_EVENTS`, and calls `os._exit(exitstatus)`
+  from `pytest_unconfigure(trylast)` — after the terminal summary, after
+  pytest-cov's sessionfinish write — ONLY when `ASSAY_LIVENESS_EXIT=1`,
+  which assay sets for candidates and never for R0/R1 (coverage atexit
+  writers stay intact). (2) **`LivenessRunner`** replaces the runner for
+  the R2 candidate path only (`_execute_mutation_jobs._run_one`):
+  `Popen(start_new_session=True)`, stdio to files, 1 s loop; `hung` when
+  no `test` event (or, plugin-less, no stdout growth) for
+  `expect_next_event_within_s = max(3 × slowest_test_s, 15 s)` AND the
+  process tree's CPU time grew < 1 s over the last 30 s, or when
+  `session_finish` was seen and the process is still alive 30 s later →
+  `killpg(SIGKILL)`; CPU-spinning mutants are NOT hung — they hit the
+  budget ceiling (`budget_exceeded`). `hung` is a new bucket scored like
+  `budget_exceeded` (outside the killed/(killed+survived) denominator),
+  reported separately, additive schema (no v12 cut). `test` events reach
+  the progress stream for the BASELINE only; candidate events gain
+  `tests_completed`; the `plan` event gains `slowest_test_s` +
+  `expect_next_event_within_s` (A4). A5 `--rejudge` per the handoff sketch.
+  Successor: fresh Sonnet seeded with BRIEF-1; the checkpoint clause is
+  HARD this time (session 1 ran 370 calls before cutting).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
-| P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29) |
+| P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 dispatched ~15:05Z (RW-33) for A2–A6 |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 folded (RW-32), round 2 pending; operator installs on the host |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |
