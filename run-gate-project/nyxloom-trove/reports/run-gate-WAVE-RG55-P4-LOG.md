@@ -605,7 +605,12 @@ lines do).
   returncode, empty stdout, and — the one no existing test naturally hit,
   since every daemon-path test mocks the whole function away — the REAL
   success return.
-- `TestBareHostProfilingWiring` (+9 tests): `start_bare_host_profiling`'s
+- `TestBareHostProfilingWiring` (+9 tests) [S5 correction, round-1 review
+  + RW-46/session 5: this was a miscount even at the time — the real
+  increment was +7 (7 -> 14); RG-61's own item 8 audit already caught and
+  corrected this, and the class has grown further since (17 as of the
+  RW-46/S5 tip) — see `KNOWN_ISSUES_TODO_BACKLOG.md`'s RG-57 entry for
+  the current count]: `start_bare_host_profiling`'s
   three failure guards (each still degrades to a valid `rusage` profile,
   never fatal — proven via `shutil.which` / `set_cgprofile_plan` fault
   injection through the full `main()` path, matching the class's existing
@@ -990,3 +995,77 @@ Verification (all green, PSI `full avg10` 0.56–2.56%, serial):
 - `python3 -m pytest tests/test_run_gate.py -k "History or Footprint or footprint or history" -q` → 177 passed
 - `python3 -m pytest tests/test_run_gate.py -k "BareHost or Rusage or rusage or Profil or profil or Doctor" -q` → 211 passed
 - `python3 -m pytest tests/test_run_gate.py -k "BareHost or Rusage or rusage or SelfRss or Footprint or footprint or History or history or Doctor or Lock or Mutex or ResourceAdmission" -q` → 292 passed
+
+### Commit 3 — S1-S5 (round-1 non-blocking findings)
+
+S1 (rusage caveat on the live `footprint` line + `history`) was already
+folded into Commit 2 above (designed together with RW-46b's own
+disclosure additions to the same call sites).
+
+- **S2/RG-59** — `_stderr_names_daemon_not_running` narrowed from a bare
+  substring match ("no such container"/"is not running", case-folded,
+  anywhere in stderr) to docker's own exec failure signature: one of
+  docker's reserved exit codes (125/126/127) OR a stderr line PREFIXED
+  with `docker:`/`Error response from daemon:`. New `returncode` parameter
+  (the ONE call site now passes `proc.returncode`). Fixes the false
+  positive S2 found live: a RUNNING, reachable daemon whose own
+  `cgprofile` process raised `cgprofile.errors.TargetError: ... is not
+  running` (ordinary Python exit 1, non-empty stdout) used to be
+  misreported as "not running (start it: ciu up)" — exactly backwards.
+  3 tests: docker's own stderr-prefix branch, docker's own reserved-
+  exit-code branch (no recognizable stderr wording at all — proves the
+  exit code alone is sufficient), and the false-positive regression
+  (falls through to "produced unparsable stdout" instead, a defect class
+  never claiming the wrong cause). One pre-existing test
+  (`test_no_such_container_also_names_the_real_cause`) rewritten as the
+  stderr-prefix-branch test (its old "Error: No such container:" fixture
+  matched neither the new exit-code nor the new prefix rule — an ad hoc
+  guess that never reflected real docker wording, replaced with a
+  realistic `docker:`-prefixed message).
+- **S3** — `TestExecLaneInflightRecord::test_killed_client_leaves_the_
+  record_on_disk` was circular (hand-wrote a payload with `write_inflight_
+  record()`, read it straight back with `load_inflight_record()`, never
+  called `run_exec_lane` — stayed green with RG-60 fully reverted).
+  Rewritten to mirror `TestReattachAcrossADeadClient`'s own real-
+  subprocess precedent: a real client (`_TOOL_INVOKE`) against a real
+  shimmed exec-mode project (`fake_docker_executing`, lane argv `sleep
+  30` so the exec call blocks long enough to guarantee the kill lands
+  first), `client.kill()`ed mid-exec, record read back from OUTSIDE that
+  process. **Proven non-circular directly**: temporarily replaced the
+  `write_inflight_record(...)` call in `run_exec_lane` (`run-gate.py:7640`)
+  with `pass`, re-ran this ONE test — RED (`AssertionError: the record
+  must exist before the exec finishes`) — then restored the file
+  byte-for-byte (`git diff --stat` confirmed zero unintended change) and
+  re-ran the whole `TestExecLaneInflightRecord` class — GREEN (4 passed).
+  An orphaned `sleep 30` grandchild process from the RED-run's killed
+  client was cleaned up by hand (`kill -9`) — the same class of test-
+  harness leak `TestReattachAcrossADeadClient`'s own `.hang`-file pattern
+  already accepts elsewhere in this file, not a new hazard.
+- **S4** — the stale comment near `run-gate.py:8136` ("even though a
+  bare-host lane never uses the token: RG-57 makes bare-host categorically
+  unprofiled") stated the OPPOSITE of RG-57's actual behavior (bare-host
+  lanes ARE profiled, and the daemon path DOES use this token — injected
+  into the child's environment, just not via a `docker -e` argv). Rewritten
+  to state the real mechanism. Confirmed no test pins the stale wording
+  (`grep -n "categorically unprofiled\|never uses the token"
+  tests/test_run_gate.py` — no hits).
+- **S5** — recounted at the CURRENT tip (`awk`-bounded per-class `def
+  test_` counts, not read off backlog prose): `TestBareHostStallTimeoutWarning`
+  = 3 (unchanged since RG-61's own correction), `TestBareHostProfilingWiring`
+  = 17 (was 7 at RG-61's correction tip `c37b6e94`; B1/RW-43 and RW-46b
+  each added more since), `TestExecLaneInflightRecord` = 4 (was 3 at
+  review time; B2/RW-43 added the daemon-path `profile_session` compare
+  test), `TestResolveSelfContainerIdDirectBranches` = 6 (unchanged).
+  `KNOWN_ISSUES_TODO_BACKLOG.md`'s RG-57/RG-58/RG-60 entries corrected to
+  these counts; RG-61's own item-8 self-correction paragraph annotated
+  ("true AT c37b6e94, not at any later tip") rather than silently
+  overwritten, so the historical record stays honest about when each
+  number was accurate. This LOG's own session-2/3 entry (`TestBareHost
+  ProfilingWiring (+9 tests)`) annotated the same way — the real
+  increment at that commit was +7, a miscount at the time, not merely
+  later drift (RG-61's item 8 already caught this specific mismatch; this
+  note just makes it findable from the LOG itself).
+
+Verification (all green):
+- `python3 -m pytest tests/test_run_gate.py::TestExecLaneInflightRecord::test_killed_client_leaves_the_record_on_disk -q` → RED with the write reverted (`pass`), PASS restored
+- `python3 -m pytest tests/test_run_gate.py -k "ProfilerClient or ExecLaneInflightRecord or BareHost or ResolveSelfContainerId" -q` → 60 passed

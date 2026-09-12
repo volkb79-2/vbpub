@@ -13108,11 +13108,11 @@ class TestProfilerClient:
         assert "ciu up" in reason
         assert "unparsable" not in reason
 
-    def test_no_such_container_also_names_the_real_cause(self, tmp_path,
-                                                          monkeypatch):
+    def test_docker_own_stderr_prefix_names_the_real_cause(self, tmp_path,
+                                                           monkeypatch):
         class _FakeCompleted:
             stdout = ""
-            stderr = "Error: No such container: cgprofile-host-daemon"
+            stderr = "docker: Error response from daemon: container is not running.\n"
             returncode = 1
         monkeypatch.setattr(run_gate.subprocess, "run",
                             lambda *a, **k: _FakeCompleted())
@@ -13120,6 +13120,51 @@ class TestProfilerClient:
         doc, reason = client.version()
         assert doc is None
         assert "not running" in reason
+
+    def test_docker_reserved_exit_code_names_the_real_cause_even_with_no_recognizable_prefix(
+            self, tmp_path, monkeypatch):
+        """S2's OTHER branch: docker's own reserved exit codes (125/126/127)
+        must be sufficient on their own -- docker CLI wording varies across
+        versions/hosts, so the exit code, not a specific string, is the
+        unambiguous signal for "this docker exec never reached
+        cgprofile"."""
+        class _FakeCompleted:
+            stdout = ""
+            stderr = "OCI runtime exec failed: exec failed: no such file or directory"
+            returncode = 126
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "not running" in reason
+        assert "ciu up" in reason
+
+    def test_a_running_daemons_own_crash_is_never_misreported_as_not_running(
+            self, tmp_path, monkeypatch):
+        """S2's own attack-surface find, reproduced directly: a daemon
+        container that IS running and IS reachable, whose own `cgprofile`
+        process raised an application-level exception mentioning "is not
+        running" in ITS OWN text (`cgprofile.errors.TargetError`) -- exit
+        code 1 (an ordinary Python traceback exit, not one of docker's
+        reserved codes) and stdout carrying the traceback (docker itself
+        never failed). The OLD substring match would misreport this as
+        "daemon not running, start it" -- exactly backwards. Must fall
+        through to the generic "produced unparsable stdout" reason
+        instead, which names a REAL daemon problem (a crashing process),
+        never "not deployed at all"."""
+        class _FakeCompleted:
+            stdout = "Traceback (most recent call last):\n"
+            stderr = ("cgprofile.errors.TargetError: target container 9f01 "
+                     "is not running")
+            returncode = 1
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "produced unparsable stdout" in reason
+        assert "ciu up" not in reason
 
     def test_malformed_stdout_from_a_running_daemon_keeps_the_wording(
             self, tmp_path, monkeypatch):
@@ -15662,27 +15707,55 @@ class TestExecLaneInflightRecord:
 
     def test_killed_client_leaves_the_record_on_disk(self, tmp_path,
                                                       monkeypatch):
-        # Simulated: a client that dies mid-run never reaches its own
-        # `finally`, so `clear_inflight_record` never runs -- a record
-        # written with no matching clear is exactly what survives, proven
-        # directly (the most literal way to exercise "the client died").
+        """S3 (round-1 review): the ORIGINAL shape here hand-wrote a
+        payload with `write_inflight_record()` and read it straight back
+        with `load_inflight_record()` -- it never called `run_exec_lane`
+        at all, so it stayed green even with RG-60 fully reverted (proving
+        nothing about run_exec_lane's own behavior). Mirrors the container
+        lane's own real precedent
+        (`TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_
+        container_the_next_run_re_attaches_to`): a REAL client subprocess
+        is spawned against a REAL (shimmed) exec-mode project, killed
+        mid-exec (the shim's `docker exec` actually runs `sleep 30`, wide
+        enough to guarantee the kill lands before it finishes), and the
+        record is read back from OUTSIDE that process -- proof it demonstrably
+        survives a client that never reaches its own `finally`, not merely
+        that the record functions can round-trip a dict."""
         repo = make_repo(tmp_path)
         (repo / ".gitignore").write_text(".run-gate/\n")
-        payload = {"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite",
-                  "container": "the-runner", "container_id": RG55_CONTAINER_ID,
-                  "started_at": "2026-09-12T10:00:00Z", "started_epoch": 1.0,
-                  "owner_pid": 999999, "owner_start": 1, "boot_id": "b",
-                  "pid_ns": "ns", "commit": None, "worktree": str(repo),
-                  "project_dir": str(repo), "verdict": None, "progress": None,
-                  "revision": run_gate.__revision__,
-                  "profile_token": "tok123",
-                  "profile_daemon": run_gate.PROFILE_DAEMON_DEFAULT}
-        assert run_gate.write_inflight_record(repo, repo, "suite", payload)
-        recovered = run_gate.load_inflight_record(
-            run_gate.inflight_path(repo, "suite"))
+        cfg = self._cfg().replace('argv = ["true"]',
+                                  'argv = ["bash", "-c", "sleep 30"]')
+        proj = make_project(repo, cfg)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        client = subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
+                                  cwd=proj, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        record_path = proj / ".run-gate" / "inflight" / "suite.json"
+        deadline = time.monotonic() + 15
+        while not record_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert record_path.exists(), \
+            "the record must exist before the exec finishes (sleep 30 " \
+            "guarantees this branch is not just lucky timing)"
+        client.kill()
+        client.wait(timeout=30)
+        # RG-60's own scope: the record existing to be FOUND, not
+        # reconciliation (unlike a container lane, there is no re-attach
+        # here) -- it must still be there, untouched, after the client
+        # died mid-exec without ever reaching its `finally`.
+        recovered = run_gate.load_inflight_record(record_path)
         assert recovered is not None
-        assert recovered["profile_token"] == "tok123"
         assert recovered["container"] == "the-runner"
+        assert recovered["lane"] == "suite"
 
     def test_record_written_even_when_profiling_disabled(self, tmp_path,
                                                           monkeypatch):

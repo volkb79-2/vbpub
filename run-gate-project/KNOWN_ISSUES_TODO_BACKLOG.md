@@ -4425,7 +4425,9 @@ only when it is `"rusage-maxrss"`. Live acceptance: this project's own
 `footprint --write` (all five lanes bare-host) stopped refusing after one
 real profiled run (see `CONSUMERS.md` "The footprint manifest" for the
 transcript). Tests: `tests/test_run_gate.py` `TestBareHostProfilingWiring`
-(rewritten, 9 tests total incl. both R-36h exception plants) +
+(rewritten, incl. both R-36h exception plants; recounted at the RW-46/S5
+tip: 17 — B1/RW-43's rusage rewrite and RW-46b's floor_bytes wiring each
+added more since RG-61's own "actually 7" correction) +
 `TestFootprintVerbCLI.test_bare_host_rusage_run_makes_write_stop_refusing`.
 
 ## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
@@ -4484,7 +4486,8 @@ matching `doctor` WARN (new "2d" per-lane check), both from the SAME
 shared `bare_host_stall_timeout_inert_reason()` so the two surfaces cannot
 drift apart. Config still loads; exit code unchanged; container/exec
 lanes untouched. Tests: `tests/test_run_gate.py`
-`TestBareHostStallTimeoutWarning` (4 tests).
+`TestBareHostStallTimeoutWarning` (3 tests — recounted at the RW-46/S5
+tip; unchanged since RG-61's own "actually 3" correction).
 
 ## RG-59 — the live-run daemon-absent warning names the wrong cause ("produced unparsable stdout" instead of "container ... is not running")
 
@@ -4591,9 +4594,18 @@ begins, cleared in the same `finally` that finishes profiling —
 unconditionally, profiled or not (RW-1's own rule: a client can die
 mid-run either way). Not wired into `resolve_inflight`/re-attach — RG-60's
 own scope is the record existing to be FOUND, not a new re-attach design.
-Tests: `tests/test_run_gate.py` `TestExecLaneInflightRecord` (3 tests:
-record-exists-at-exec-time via a `Popen` spy, killed-client survival via a
-planted record, and profiling-disabled coverage).
+Tests: `tests/test_run_gate.py` `TestExecLaneInflightRecord` (4 tests as
+of the RW-46/S5 tip: record-exists-at-exec-time via a `Popen` spy, the
+daemon-path-only `profile_session` compare (added by B2/RW-43), killed-
+client survival, and profiling-disabled coverage). **S3 (round-1
+review):** the killed-client test originally hand-wrote a payload with
+`write_inflight_record()` and read it straight back — it never called
+`run_exec_lane` at all, so it stayed green with this whole feature fully
+reverted. Rewritten to mirror the container lane's own precedent
+(`TestReattachAcrossADeadClient`): a REAL client subprocess against a
+real (shimmed) exec-mode project, killed mid-`docker exec`, the record
+read back from OUTSIDE that process — proven to fail when the write is
+reverted.
 
 ## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
 
@@ -4678,4 +4690,11 @@ FIXED entries (RG-57/58/59/60/61) got commit hashes above, and its own
 LOG file's test-count claims were audited and TWO real mismatches were
 found and corrected (`TestBareHostStallTimeoutWarning`: claimed 4,
 actually 3; `TestBareHostProfilingWiring`: claimed 9, actually 7) — this
-entry's own "physician heal thyself" invitation, taken literally.
+entry's own "physician heal thyself" invitation, taken literally. **These
+two counts were true AT `c37b6e94`, not at any later tip** — round-1
+review's own S5 caught this drift again (B2/RW-43's rusage rewrite and
+RW-46b's floor_bytes wiring each added more `TestBareHostProfilingWiring`
+tests after this correction was written); see the RG-57/RG-58/RG-60
+entries above for the counts recounted at the RW-46/S5 tip. A test count
+in prose rots the moment the next commit touches that class — treat every
+number above as "true when written," not a live invariant.

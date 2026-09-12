@@ -151,13 +151,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   "produced unparsable stdout" for two structurally different causes: a
   daemon container absent/stopped (`docker exec` itself fails before
   `cgprofile` ever runs, stdout is empty) and a RUNNING daemon returning
-  genuinely malformed stdout. Now matches docker's own `stderr_tail`
-  against "no such container"/"is not running" (case-folded) to tell them
-  apart; the daemon-absent case gets a new shared
+  genuinely malformed stdout. Matches docker's own exec failure via
   `daemon_not_running_reason()` — the ONE place both `doctor`'s "profiler
   daemon" WARN and this live-run reason get their text from, so the two
   surfaces cannot drift apart again. The genuinely-malformed-response case
-  keeps "produced unparsable stdout".
+  keeps "produced unparsable stdout". **Round-1 review (S2):** the first
+  cut matched any stderr line CONTAINING "no such container"/"is not
+  running" (case-folded) — which also matched a RUNNING, reachable daemon
+  whose own `cgprofile` process crashed with an application-level
+  exception mentioning those same words
+  (`cgprofile.errors.TargetError: ... is not running`), misreporting a
+  crashing daemon as "not deployed at all". Narrowed to docker's own exec
+  failure signature specifically: one of docker's reserved exit codes
+  (125/126/127) OR a stderr line PREFIXED (not merely containing) with
+  `docker:`/`Error response from daemon:` — never a bare substring match
+  against text a daemon's own application code might have produced.
 - **RG-58 — bare-host `stall_timeout` gets a load-time WARNING + a
   matching `doctor` WARN, never a refusal (RW-27a).** A `stall_timeout`
   declared on a `bare-host` lane was silently inert (`run_bare_host_lane`

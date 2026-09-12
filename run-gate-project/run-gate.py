@@ -1108,12 +1108,32 @@ def _last_successful(values) -> object:
 # malformed stdout" -- the two used to collapse into the SAME generic
 # "produced unparsable stdout" reason, naming the wrong cause in the far
 # more common case (no daemon deployed at all).
-_DAEMON_NOT_RUNNING_STDERR_SIGNALS = ("no such container", "is not running")
+#
+# S2 (round-1 review): the FIRST cut of this matched any stderr line
+# CONTAINING "is not running"/"no such container" (case-folded) -- which
+# also matches a daemon container that IS running and IS reachable, but
+# whose own `cgprofile` process crashed with an application-level
+# exception that happens to mention those same words (e.g.
+# `cgprofile.errors.TargetError: target container 9f01 is not running`,
+# with stdout carrying the traceback and an ordinary Python exit code of
+# 1) -- reporting "daemon not running, start it" for a daemon that is
+# demonstrably running is the opposite of RG-59's own goal. Narrowed to
+# docker's own exec failure signature specifically: `docker exec` itself
+# never reaching `cgprofile` returns one of docker's own reserved exit
+# codes (125 = the docker CLI/daemon could not even start the command,
+# 126 = container command not executable, 127 = not found) OR prints a
+# line prefixed with docker's own "docker:"/"Error response from
+# daemon:" wording -- never a bare substring match against arbitrary
+# stderr content a daemon's OWN application code might have produced.
+_DOCKER_EXEC_FAILURE_EXIT_CODES = (125, 126, 127)
+_DOCKER_EXEC_FAILURE_STDERR_PREFIXES = ("docker:", "Error response from daemon:")
 
 
-def _stderr_names_daemon_not_running(stderr_tail: str) -> bool:
-    lowered = stderr_tail.lower()
-    return any(sig in lowered for sig in _DAEMON_NOT_RUNNING_STDERR_SIGNALS)
+def _stderr_names_daemon_not_running(stderr_tail: str,
+                                     returncode: int | None = None) -> bool:
+    if returncode in _DOCKER_EXEC_FAILURE_EXIT_CODES:
+        return True
+    return stderr_tail.strip().startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES)
 
 
 def daemon_not_running_reason(daemon_name: str) -> str:
@@ -1193,7 +1213,7 @@ class ProfilerClient:
             # named explicitly here rather than folded into the generic
             # "unparsable stdout" reason, which stays reserved for an
             # ACTUALLY malformed response from a daemon that IS running.
-            if _stderr_names_daemon_not_running(stderr_tail):
+            if _stderr_names_daemon_not_running(stderr_tail, proc.returncode):
                 return None, daemon_not_running_reason(self.daemon)
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
                           f"(exit {proc.returncode}); stderr: {stderr_tail}")
@@ -8384,9 +8404,13 @@ def main(argv: list[str] | None = None) -> int:
         # is generated regardless of `--dry-run` (RG-8: a dry run's argv IS
         # what the live run would execute, token included) but is `None`
         # when profiling is not enabled — contract Sec 4 obligation 8's "no
-        # token" — and this same plan is handed to `run_bare_host_lane` too,
-        # even though a bare-host lane never uses the token: RG-57 makes
-        # bare-host categorically unprofiled regardless of `[profile]`.
+        # token" — and this same plan is handed to `run_bare_host_lane` too
+        # (S4, round-1 review): a bare-host lane IS profiled since RG-57
+        # (RW-27b), including using this SAME token on its own daemon path
+        # (injected into the child's environment, not a docker `-e` argv —
+        # there is no `docker run`/`docker exec` for a bare-host lane to
+        # pass it through) — it is only the rusage (daemon-absent)
+        # sub-path that starts no session for the token to identify.
         profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
                                                 central_path)
         profile_plan["token"] = (generate_profile_token()
