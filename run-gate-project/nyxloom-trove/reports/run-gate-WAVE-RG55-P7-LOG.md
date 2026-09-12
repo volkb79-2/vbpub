@@ -813,3 +813,41 @@ exists, in a small follow-up entry-only commit).
   reason to abort an already-running sweep (the back-off rule gates
   STARTING new heavy work, not an in-flight one) — no new heavy command
   was started while `full avg10` was above 5.
+
+### `b3f31506` — A6 gate finding fix: W7's locked v11 schema copy re-synced (session 7)
+
+- The real registered gate (`./run-gate.py tester-unified`), launched
+  after docs/backlog/sweep were committed, PSI checked (`full avg10`
+  3.85, under 5.0), **FAILED, exit 1** on its first run:
+  `nyxloom-trove/carve-assets/W7/test_acceptance_v11.py` (2 failed, 108
+  passed). A real, previously-shipped gap: A1's `budget_per_candidate_
+  derived_s`/`liveness` fields and A3's `hung` bucket each moved
+  `src/assay/schemas/verdict.schema.json` without moving W7's own locked
+  byte-identical copy (`nyxloom-trove/carve-assets/W7/verdict.schema.
+  v11.json`) in the same commit — the discipline that file's own test
+  docstring names explicitly ("the guard this project has been bitten by
+  TWICE").
+- Fix: `cp src/assay/schemas/verdict.schema.json` over the W7 asset.
+  Verified locally first (`test_acceptance_v11.py` alone: 110 passed)
+  before committing, since the gate builds from an exact-OID clone of
+  HEAD (`clean_tree = false` in `run-gate.toml`, with that reason stated)
+  — an uncommitted fix would not be picked up by a re-run.
+- Checked W1/W2/W4/W5/W6/P33's own locked schema copies (v4-v10): each is
+  a historical snapshot of ITS OWN, older schema version, not a
+  live-tracking copy of the current v11 schema — confirmed unaffected,
+  not touched.
+- Tests-first: n/a (a documentation/fixture-asset fix responding to a
+  real gate failure, not new production behavior).
+- Gate: relaunched after this commit (PSI re-checked, `full avg10` 1.07).
+  W7's own suite now passes inside the gate (110 passed, confirmed live
+  in the gate's own output at `ASSAY_GATE_PHASE=verdict-v11-successors-
+  verified`). Full gate verdict pending — see BRIEF-7 (this session ran
+  past its own call budget waiting on the self-hosted container phase's
+  wall time, which the checkpoint clause does not count against the call
+  budget itself, but the WAITING/polling calls do).
+- HOST LOAD: PSI checked before each of the two gate launches (3.85, then
+  1.07 — both under the 5.0 threshold). `docker update --cpus=3` applied
+  to the gate's own container (`flamboyant_nobel`) immediately after it
+  appeared in `docker ps`. Gate containers estate-wide at the time: 2
+  (`flamboyant_nobel` + P1's own long-running `run-gate-vbpub-r2-680904-
+  ...`) — at, not over, the `<= 2` limit.

@@ -634,22 +634,187 @@ tests.
 the three liveness files, confirming A4's own work is undisturbed by
 A5's changes to the shared `run_mutation`/`run_lane` call chains).
 
-## Not done yet — A6
+## A6 (session 7) — close-out: docs, backlog, regression sweep, the real gate
 
-- A6 (close-out: docs, `CHANGES.md`, backlog rows, the real gate) —
-  untouched; unblocked now that A4 and A5 are both done.
-  `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4), A3(session 5),
-  A4 AND A5 in one pass — never touched for any of the five. **New item
-  for A6, from the controller mid-session (not in the original
-  handoff)**: file backlog row **B092** — "`--resume` identity (B088,
-  per-tree) is invalidated by commits to non-judged paths" (RG-55 wave,
-  RW-41, 2026-09-12) — row only, do not implement. **Also new, from this
-  session's own A5 work** (optional for A6, call-budget permitting): a
-  possible follow-up backlog row on `MutantOutcome.identity` vs.
-  `candidate_id()`'s digest being two different, easily-confused
-  identities for the same candidate, with no verdict-level field exposing
-  the digest a consumer would need to build a `--rejudge <id>`
-  invocation from a prior verdict alone — see the "real discovery" note
-  above for the full account; not filed as a backlog row itself this
-  session (A6's own judgment call whether this rises to a filed row or a
-  documentation-only caveat in CONSUMERS.md's `--rejudge` section).
+**Scope, per BRIEF-6:** one pass over ALL FIVE prior deliverables (A2, A3
+session 4, A3 session 5, A4, A5) for `CHANGES.md`/`CONSUMERS.md`/
+`README.md`/`docs/DESIGN-GUIDE.md`; `assay/nyxloom-trove/4-backlog.md`
+(B091 → FIXED, B090 → mitigated note, file B092); the deferred full
+regression sweep; the real registered gate, once, verdict read separately.
+No new production feature work — A6 is a writing/verification pass over
+design decisions A1–A5 already made and recorded.
+
+### Docs disposition table
+
+| Doc | Action | Why |
+| --- | --- | --- |
+| `docs/CONSUMERS.md` | Edited (135 lines added) | Progress-stream table was stale across four sessions (A2/A3/A4/A5 each added fields without updating it) — caught up in one pass. New "Liveness for a native R2 python/pytest lane" section (policy table, `argv_invokes_pytest` rule, the `hung` bucket's two detection branches). New "`--rejudge`/`--rejudge-outcome`" section (union semantics, the `"error"`→`"crashed"` alias, the unknown-id refusal, the `candidate_id()`-vs-`MutantOutcome.identity` documentation caveat). |
+| `CHANGES.md` `[Unreleased]` | Edited (52 lines added) | A1/A2/RW-36 entries were already present (checked first, per instruction); added A3 (hung bucket + active monitoring, incl. the `judge_mutation` precedence gap found and fixed), A4 (progress-stream test events), A5 (`--rejudge`/`--rejudge-outcome`). |
+| `README.md` | Edited (16 lines added) | Documents lane-level flags/policy (the `--progress`/heartbeat section) and names B073 (general per-test progress, deferred) as still-open — B091 delivered a SCOPED instance of exactly that for one case (native R2 python/pytest); noted the distinction so a reader doesn't mistake B091 for B073's resolution. |
+| `docs/DESIGN-GUIDE.md` | **No edit — verified already current** | Its "Six outcomes" vocabulary table already carries the `BUDGET_EXCEEDED`/`CANDIDATE_HUNG` row, added by session 4's `44dd12ca`. No other vocabulary table in this file duplicates progress-stream/rejudge/liveness-policy content (that's `CONSUMERS.md`'s job), so nothing else was in scope for this file per the handoff's own "vocabulary tables" framing. |
+
+### Backlog disposition
+
+- **B091 → FIXED 2026-09-12.** All 5 contract items, with commit hashes
+  per item (see the backlog entry itself for the full list). Cross-
+  references this REPORT/LOG for the oracle → test mapping rather than
+  duplicating it.
+- **B090 → mitigated-by-B091 note appended**, walking through how each of
+  the incident's two original observations (no default bound; a
+  SIGKILLed candidate's classification / re-judging) is now addressed by
+  which specific B091 item (item 1's `"auto"` default; item 3's `os._exit`
+  wrapper turning the hang into an honest `survived`; item 4's active
+  monitoring/`hung` bucket for the residual stall case; item 5's
+  `--rejudge` for re-judging after a test fix).
+- **B092 filed** (new entry, end of the backlog file), reconstructed from
+  RW-41's own text on `main`'s CONTROLLER-LOG plus BRIEF-6's own summary:
+  `--resume`'s per-tree identity (B088) is invalidated by a commit to a
+  path the lane never judges. Includes the live incident (P2's 174
+  rejected records from one records-only LOG commit, `647a2cc6`), the
+  companion P1 instance (`5ce232d1`, a legitimate identity-affecting
+  change for contrast), a proposed `judge.mutation.identity_exclude`
+  mechanism (opt-in path-glob exclusion from the tree-content hash only),
+  oracles, and a medium severity rating. **Row only, not implemented**,
+  per the handoff's own instruction.
+- **`MutantOutcome.identity`-vs-`candidate_id()` follow-up**: resolved as
+  a `CONSUMERS.md` documentation caveat (in the new `--rejudge` section),
+  not a new backlog row — A5's own REPORT section left this as A6's
+  judgment call; the caveat is discoverable exactly where a consumer
+  building a `--rejudge <id>` invocation would look, which is where the
+  real cost of the gap lands.
+
+### Regression sweep (deferred across sessions 4–6, run here)
+
+`tests/test_mutation*.py`, `tests/test_runner*.py`, `tests/test_verdict*.py`,
+`tests/test_verify*.py`, `tests/test_cli*.py` — 68 files (a superset of
+session 4's own 2107-test sweep: this glob includes every `test_cli*.py`
+file, not only `test_cli_run.py`). Serial, `nice -n 19 ionice -c 3`, single
+invocation (launched backgrounded — exceeded the 120s foreground limit —
+with a cheap watcher; result read in a separate step, never a pipe tail).
+
+**Result: 2077 passed, 1 warning, 403.63s.** The warning is a pre-existing
+third-party (`schemathesis`/`jsonschema`) deprecation notice, unrelated to
+this package. Nothing red; nothing to fix.
+
+### The real registered gate
+
+Read `assay/run-gate.toml`/`assay/cmru.toml`/`assay/assay.toml` first, per
+the handoff's own instruction (no session in this package had opened any
+of the three before this one). **Finding: assay registers exactly ONE
+lane for itself, `tester-unified`, R0-only by PERMANENT design
+(`assay.toml`'s own comment cites A-046/A-133: "this file stays R0-only
+PERMANENTLY... assay's own gate never mechanically applies R1+ rigor to
+its own diff... judging OTHER projects' changes, not its own").** There is
+no R2/mutation lane for assay-on-itself, no R1 lane, no R3 lane — the
+handoff's own "assay-judged R1/R2/R3 lanes if it has them" qualifier
+resolves to "it does not." The `assay-r1`/`assay-r2`/`assay-r3` lane names
+that appear in sibling packages' own controller-log entries (P2, P4) belong
+to a DIFFERENT project's own `run-gate.toml` (run-gate-project judging
+`run-gate.py` itself, using assay as the judge) — not this package's gate,
+and not touched here.
+
+Invocation: `cd assay && ./run-gate.py tester-unified` (confirmed against
+`run-gate-project/nyxloom-trove/reports/run-gate-E5-BUILDKITE-REVIEW-round2.md`'s
+own recorded CI command for this exact lane). `clean_tree = false`
+WITH a stated reason in `run-gate.toml`: the driver builds from an
+exact-OID clone of HEAD, so it needs every fix committed first — this is
+why docs/backlog/sweep were committed as their own boundary before this
+gate was ever launched, per the checkpoint clause's own ordering.
+
+**First run (launched after the docs+backlog+sweep commits, PSI checked
+`full avg10` 3.85, under the 5.0 threshold): FAILED, exit 1**, on
+`nyxloom-trove/carve-assets/W7/test_acceptance_v11.py` (2 failed, 108
+passed) — a real, previously-shipped gap, not a flake:
+
+- `test_shipped_schema_is_byte_identical_to_the_locked_v11_asset` — W7's
+  own locked byte-identical copy of `src/assay/schemas/verdict.schema.json`
+  (`nyxloom-trove/carve-assets/W7/verdict.schema.v11.json`) had drifted:
+  A1's `budget_per_candidate_derived_s`/`liveness` fields and A3's `hung`
+  bucket + its schema description each moved the shipped schema without
+  moving this locked copy in the same commit — the exact discipline the
+  test's own docstring names ("the guard this project has been bitten by
+  TWICE").
+- `test_the_two_layers_agree_about_the_new_codes` — a direct consequence:
+  `assay.errors.REASON_CODES[BUDGET_EXCEEDED]` includes `CANDIDATE_HUNG`
+  (added by A3), but the stale locked schema's own `reason_codes.
+  BUDGET_EXCEEDED.enum` did not.
+
+**Fixed** (`b3f31506`): `cp src/assay/schemas/verdict.schema.json` over the
+W7 locked copy. Re-ran `test_acceptance_v11.py` alone first (110 passed),
+then confirmed W1/W2/W4/W5/W6/P33's own locked schema copies are
+historical snapshots of THEIR OWN, older schema versions (v4–v10) — not
+live-tracking copies of the current v11 schema — and are unaffected by
+this fix; not touched.
+
+**Second run** (relaunched after the fix commit `b3f31506`, PSI re-checked
+`full avg10` 1.07): progressed cleanly through every phase this session
+observed — `wheel-installed` (25 passed), `attestation-hardened` (13
+passed), `verdict-v5-accepted` (17 passed), `lane-schema-v2-successors-
+verified` (34 frozen templates), `verdict-v6-v7-v8-v9-v10-hard-cut-
+verified`, and **`verdict-v11-successors-verified` (110 passed — W7's own
+suite, confirming the fix)**. At that point the gate entered its
+self-hosted container phase (`docker ps`: `flamboyant_nobel`, image
+`tester-unified:local` — the exact-OID clone + hash-pinned build closure +
+two-venv install + detached run described in `tools/tester-unified-
+gate.sh`'s own header comment, running assay's own full `pytest tests -q
+--ignore=tests/test_self_hosting.py` suite against the just-built wheel),
+which is the single longest phase and had not completed after ~20 minutes
+of this session's own wall-clock observation — checkpoint clause invoked
+(see BRIEF-7): the container was left running, capped (`docker update
+--cpus=3`), with this REPORT/LOG updated and everything else committed, so
+a successor (or this session's own continuation) reads the verdict in a
+separate step the moment it lands, never a pipe tail. **No failure
+observed in any phase this session watched.**
+
+### Survivor table
+
+**N/A — no R2/mutation lane exists in this package's own gate to produce
+survivors.** `assay.toml [lanes.tester-unified]` is R0-only permanently
+(A-046/A-133): assay's own self-hosted gate runs its OWN test suite
+against a built wheel, and never mutation-tests its own source. The B091
+feature this whole package implements (mutation-candidate liveness) is
+covered by its own unit/e2e test suite (tabulated in each of A1–A5's own
+REPORT sections above, incl. the ≥3-planted-mutant table A3 session 5
+built specifically to prove the `hung` classification against real
+mutants of a FIXTURE project, not of assay itself) — RW-20/RW-22's
+survivor-triage instruction, written for a package whose OWN gate runs an
+R2 lane, does not have an object to apply to here.
+
+### E-002 telemetry — tool-call counts per session
+
+| Session | Deliverable(s) | Tool-call count | Source |
+| --- | --- | --- | --- |
+| 1 | A1 | 370 (checkpoint clause violated; "explicitly called out as unacceptable") | BRIEF-2/BRIEF-3 |
+| 2 | A2 (spike + plugin + v1 runner) | ~80 | BRIEF-2 ("this session used roughly 80 tool calls"), BRIEF-3 |
+| 3 | RW-36 gating + verify.py fix | "well over 60" (exact count not recorded) | BRIEF-3 |
+| 4 | A3 (active runner + `hung` bucket) | 252 (checkpoint clause violated, flagged) | CONTROLLER-LOG RW dispatch table; BRIEF-4 ("meaningfully past 90") |
+| 5 | A3 remainder (e2e tests + mutant table) | past guideline (exact count not recorded) | BRIEF-5 |
+| 6 | A4 + A5 | 275 (checkpoint clause violated again) | CONTROLLER-LOG RW dispatch table |
+| 7 (this session) | A6 close-out | see this REPORT's own return message (counted by the dispatching controller from this session's own transcript, not self-tallied here — this session did not instrument a running counter) | — |
+
+Every session from 1 onward ran past the ~60-call ARM guideline at least
+once; sessions 1, 4, and 6 explicitly exceeded even the ~90-call hard
+ceiling and were flagged rather than silently absorbed. This session's own
+work (docs/backlog rewrite touching 4 files, a 68-file/2077-test
+regression sweep, two full gate launches with wait/verify cycles) is the
+same shape of "large, hard-to-interrupt unit" BRIEF-6 itself predicted
+("budget generously for it... fundamentally a writing/verification pass").
+
+### What a reviewer should attack first
+
+Two things, in order of leverage: **(1) the `LivenessRunner`'s two hung-
+detection branches and their interaction with `os._exit`** — this is the
+mechanism with the most moving parts (Popen/killpg/process-tree CPU
+sampling/side-file NDJSON parsing) and the one place a subtle timing bug
+would be silent rather than loud (a false-`hung` kill of a legitimately
+slow candidate, or a false-negative that lets a real hang through) — A3's
+own REPORT section above has the full oracle table, but a reviewer should
+independently construct a candidate that is slow-but-genuinely-progressing
+near the `expect_next_event_within_s` boundary and confirm it survives.
+**(2) The A6 gate finding itself is worth a second look, not just the
+fix**: this session found ONE stale locked-schema copy (W7) by actually
+running the real gate for the first time in the package's life — a
+reviewer should ask whether there are OTHER places (not just `nyxloom-
+trove/carve-assets/`) that hand-mirror schema/vocabulary content B091
+touched and were never gate-checked this session because they sit outside
+both the regression-sweep glob AND the one gate lane this package has.
