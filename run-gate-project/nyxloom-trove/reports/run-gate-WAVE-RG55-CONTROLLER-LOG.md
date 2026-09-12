@@ -726,6 +726,23 @@ never a silent edit to the contract file.
   (`exit_code: 0`, 1343.5 s) — its log was overwritten by the duplicate
   launch, so the "4686 passed" figure is from the voided run.
 
+- **RW-50 (P2 r2: controller terminated one CPU-bound runaway candidate
+  at 20:22Z):** candidate 105 (`run-gate.py:128`, `Eq->NotEq`) ran pytest
+  at ~83 % CPU for 30 min with no end in sight; the `186461de` tree has NO
+  `budget_per_candidate` (that key arrives with P4's C5 on the follow-up
+  branch), so only the 4 h lane budget would have stopped it — at 21:02Z,
+  voiding the whole run again (RW-40). Ruling: the controller sent
+  SIGKILL to that candidate's pytest process only (pid 3534322); assay
+  recorded the candidate at 1844.6 s and proceeded (jobs = 2 resumed
+  immediately). The intervention is disclosed here and in P2's REPORT;
+  at triage P2 states how assay classified candidate 105 (signal death →
+  `killed` in 6.1.1's classifier is the expected reading — a never-
+  terminating mutant IS detected; if assay put it elsewhere, it is
+  triaged like any survivor). Lesson (already ruled RW-28): every r2
+  lane sets `budget_per_candidate`; P2's base tree predates the ruling
+  and cannot be edited without invalidating its records (RW-41); the
+  follow-up release (P4, 23.8.0) carries the key.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
