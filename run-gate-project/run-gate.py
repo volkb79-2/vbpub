@@ -5581,10 +5581,17 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         if ps.returncode != 0 or daemon_name not in ps.stdout.split():
             # RG-59: the SAME wording ProfilerClient._ctl's live-run warning
             # now uses (daemon_not_running_reason) -- one function, so this
-            # site and that one can never drift apart again.
+            # site and that one can never drift apart again. B4 (round-1
+            # review, RW-43): RG-57 gave bare-host lanes a SECOND fallback
+            # (coarse rusage accounting, never a BasicSampler, RW-27b) --
+            # this project's own five lanes are all bare-host, so the old
+            # "every lane falls back to basic (in-lane) sampling" wording
+            # told the operator, on THIS project, the one thing guaranteed
+            # NOT to happen.
             record("WARN", "profiler daemon",
-                   f"{daemon_not_running_reason(daemon_name)} — every lane "
-                   f"falls back to basic (in-lane) sampling")
+                   f"{daemon_not_running_reason(daemon_name)} — container/"
+                   f"exec lanes fall back to basic (in-lane) sampling, "
+                   f"bare-host lanes to coarse rusage accounting (R-43i)")
         else:
             client = ProfilerClient(docker, daemon_name)
             version_doc, reason = client.version()

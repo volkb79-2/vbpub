@@ -13190,6 +13190,14 @@ class TestDoctorProfilerCheck:
                                  daemon_running=False)
         assert "[WARN] profiler daemon" in out
         assert "not running" in out and "ciu up" in out
+        # B4 (round-1 review, RW-43): the WARN must name BOTH fallbacks --
+        # RG-57 gave bare-host lanes a fallback (coarse rusage) that is
+        # NOT the basic-sampler wording this line used to state
+        # unconditionally, which told an operator on an all-bare-host
+        # project (this one) the one thing guaranteed not to happen.
+        assert ("container/exec lanes fall back to basic (in-lane) "
+               "sampling, bare-host lanes to coarse rusage accounting"
+               ) in out
         assert code == 0
 
     def test_daemon_running_but_ctl_version_fails_warns_by_name(
