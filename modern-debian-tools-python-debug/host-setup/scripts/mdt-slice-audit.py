@@ -8,10 +8,13 @@
 # (unset) zeroes everything below it, regardless of what a deeper cgroup
 # declares. This is NOT hypothetical on a host running this project's own
 # shipped dev-tier config: dev.slice sets no MemoryMin/MemoryLow at all, and
-# dev-background.slice sets neither either — so any memory.min/low set
-# anywhere under either tier is currently a complete no-op. See
-# ciu/docs/DESIGN-NOTES.md D1/D3/D4/D6 for the cross-project design
-# discussion that identified this and led to this script.
+# dev-background.slice/dev-gates.slice set neither either — so any
+# memory.min/low set anywhere under any of these tiers is currently a
+# complete no-op. Behaviour needs no change for the new tier: this script
+# scans CG/dev.slice recursively, so dev-gates.slice (and any future
+# sibling) is covered automatically — only this comment named the tiers
+# explicitly. See ciu/docs/DESIGN-NOTES.md D1/D3/D4/D6 for the cross-project
+# design discussion that identified this and led to this script.
 #
 # Companion to mdt-apply-dev-caps.sh, which APPLIES caps; this script only
 # AUDITS and logs — it never writes anything to any cgroup or unit. Run by

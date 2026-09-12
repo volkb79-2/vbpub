@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # mdt host-setup installer — prepares a host for tiered devcontainer/test work
 # (dev.slice root ceiling + dev-interactive.slice + dev-background.slice +
+# dev-gates.slice + dev-memory_min_guaranteed.slice +
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
@@ -90,6 +91,23 @@ fi
 # shellcheck disable=SC1091
 . /etc/mdt/host-setup.env
 
+# A config that predates a key added to host-setup.env.example since has NO
+# line for it at all (not even empty) -- render()'s own "empty/unset =
+# directive dropped" rule then silently removes every directive that uses
+# it from the rendered unit(s), which for e.g. dev-gates.slice means an
+# UNBOUNDED admission capacity object with no mechanical signal at all
+# (RG-55 P8 review round 1, B3). Compares NAME presence only (`^KEY=`), not
+# values: several keys are intentionally shipped empty in the example
+# itself (DEV_MEMORY_MIN_GUARANTEED_CEILING, DEV_BUILDKITD_CPU_QUOTA,
+# IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
+MISSING_KEYS=""
+while IFS= read -r key; do
+  grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
+done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
+if [ -n "$MISSING_KEYS" ]; then
+  echo "WARN: your /etc/mdt/host-setup.env predates these keys:${MISSING_KEYS} — the rendered unit(s) using them will be unbounded (directive dropped, not defaulted). Add them from host-setup.env.example (see README.md \"Upgrading a host that already runs mdt host-setup\" for the additive sequence), then re-run this script. (--force/--wizard also pick them up, but re-render/reactivate the WHOLE estate from the example's numbers live — see the same README section before using either on an already-tuned host.)"
+fi
+
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
 if [ -z "${IO_DEV_PATH:-}" ]; then
@@ -135,6 +153,8 @@ DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITE
 DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_IO_WEIGHT DEV_BACKGROUND_OOM_PRESSURE_LIMIT \
 DEV_MEMORY_MIN_GUARANTEED_CEILING \
+DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
+DEV_GATES_CPU_WEIGHT DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
 DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
@@ -157,6 +177,7 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
+render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
@@ -176,6 +197,27 @@ render "$HERE/units/docker-scope-default-limits.conf.in" \
 mkdir -p /etc/systemd/system/docker.socket.d
 install -m 0644 "$HERE/units/docker-api-socket.conf" \
   /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
+
+# /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
+# templates/devcontainer.json bind-mounts to reach the cgroup-profiler
+# daemon's control socket. No template variables, installed directly like
+# docker-api-socket.conf above — see units/mdt-cgprofile.conf for the
+# full reasoning. Named with the mdt- prefix (round-2 review S15(r2)),
+# matching every other mdt-owned drop-in on this host
+# (/etc/modules-load.d/mdt-bfq.conf, docker.socket.d's own
+# 50-mdt-dedicated-api-socket.conf above) rather than the unprefixed
+# "cgprofile.conf" the daemon package's own future deployment would also
+# plausibly want to ship into the same directory -- an unprefixed name
+# invites two independent packages fighting over one file, silently, with
+# whichever installs last winning. `systemd-tmpfiles --create` applies it
+# immediately (idempotent — a directory that already has the right
+# mode/owner is a no-op) rather than waiting for the next boot's automatic
+# systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
+# exist" requirement is satisfied the moment this script finishes, not
+# after a reboot.
+install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
+  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
@@ -243,7 +285,8 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
-systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-buildkitd.slice 2>/dev/null || true
+systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
+  dev-gates.slice dev-buildkitd.slice 2>/dev/null || true
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
 systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker

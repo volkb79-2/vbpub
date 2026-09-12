@@ -3,9 +3,10 @@
 # static slice units can't express:
 #   - dev.slice (the shared root) IO*Max at DEV_IO_CAP_PCT% of the MEASURED
 #     device ceilings (io-baseline.env) — replaces the deliberately tight
-#     unit-file statics for BOTH dev-interactive.slice and
-#     dev-background.slice combined (host dev-tier cgroup governance
-#     rollout: one absolute ceiling on the shared parent, not one per child)
+#     unit-file statics for EVERY child combined (dev-interactive.slice,
+#     dev-background.slice, dev-gates.slice, ... — host dev-tier cgroup
+#     governance rollout: one absolute ceiling on the shared parent, not one
+#     per child)
 #   - dev-interactive.slice memory.zswap.writeback (raw-write fallback for
 #     systemd < 256 where the MemoryZSwapWriteback= directive doesn't exist;
 #     harmless double-set on newer hosts)
@@ -145,7 +146,7 @@ if [ -f "$IO_BASELINE_ENV" ]; then
     elif systemctl set-property --runtime dev.slice \
          "IOReadBandwidthMax=$IO_DEV_PATH $DEV_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $DEV_WBPS" \
          "IOReadIOPSMax=$IO_DEV_PATH $DEV_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $DEV_WIOPS" 2>/tmp/mdt-cg-err; then
-      log "dev.slice: io.max=${DEV_RIOPS}r/${DEV_WIOPS}w IOPS $((DEV_RBPS/1048576))/$((DEV_WBPS/1048576))MB/s r/w (${DEV_IO_CAP_PCT}% of baseline — covers dev-interactive.slice + dev-background.slice combined)"
+      log "dev.slice: io.max=${DEV_RIOPS}r/${DEV_WIOPS}w IOPS $((DEV_RBPS/1048576))/$((DEV_WBPS/1048576))MB/s r/w (${DEV_IO_CAP_PCT}% of baseline — covers every dev.slice child combined)"
     else
       log "WARN: dev.slice set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null)) — unit-file statics remain in force"
     fi

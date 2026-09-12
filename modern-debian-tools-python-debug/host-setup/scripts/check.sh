@@ -9,6 +9,7 @@ FAIL=0; WARN=0
 ok(){   printf '  OK   %s\n' "$*"; }
 warn(){ printf '  WARN %s\n' "$*"; WARN=$((WARN+1)); }
 fail(){ printf '  FAIL %s\n' "$*"; FAIL=$((FAIL+1)); }
+info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure only, not counted
 
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
@@ -22,7 +23,7 @@ case "$OPTS" in
 esac
 
 echo "== slice units =="
-for s in dev dev-interactive dev-background; do
+for s in dev dev-interactive dev-background dev-gates; do
   st=$(systemctl show "$s.slice" -p ActiveState --value 2>/dev/null)
   fp=$(systemctl show "$s.slice" -p FragmentPath --value 2>/dev/null)
   if [ -z "$fp" ]; then
@@ -50,7 +51,7 @@ else
   warn "dev-interactive.slice cgroup absent (no member started yet)"
 fi
 
-echo "== dev.slice IO caps (shared by dev-interactive + dev-background) =="
+echo "== dev.slice IO caps (shared by every dev.slice child) =="
 if [ -d "$CG/dev.slice" ]; then
   iom=$(cat "$CG/dev.slice/io.max" 2>/dev/null)
   [ -n "$iom" ] && echo "  io.max: $iom" \
@@ -58,6 +59,79 @@ if [ -d "$CG/dev.slice" ]; then
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$CG/dev.slice/io.bfq.weight" 2>/dev/null)"
 else
   warn "dev.slice cgroup absent (no member started yet)"
+fi
+
+echo "== dev-gates.slice effective values (gate/lane containers, the admission capacity object, RG-55 D-19) =="
+# Bytes-suffix parser for the memory.max/memory.high mismatch check below --
+# systemd resource-control K/M/G/T suffixes are base-1024, same as
+# install.sh's own render-time helper (withdrawn with dev-infra.slice, so
+# re-declared locally here rather than sourced from anywhere).
+#
+# round-2 review B7: bash integer arithmetic (the original implementation)
+# is a syntax error on any legal-systemd non-integer mantissa ("4.5G" --
+# and mdt's own wizard, kib_to_size_str(), rounds to the nearest half-GiB
+# and emits exactly this form routinely), and a percentage ("50%", also
+# legal systemd MemoryMax/MemoryHigh syntax) fell through unparsed and was
+# then compared verbatim against a byte count -- both cases hard-FAILed a
+# CORRECTLY configured host. Replaced with an awk parser (awk does floating
+# point natively, no bash arithmetic involved) that is TOTAL: every input
+# either resolves to a byte count, passes "" / "max" through verbatim, or
+# -- for anything not byte-comparable, i.e. not \d+(\.\d+)?[KMGT]?i?B?$
+# (percentages, "infinity", garbage) -- returns the literal string "?".
+# The call site below treats "?" as "cannot check this form" (a `warn`
+# naming it), never as a byte value to compare (never a `fail`) --
+# "not byte-comparable" and "byte-comparable but does not match" are
+# different findings and must not share an exit path.
+_bytes_of() { # _bytes_of "6G"|"4.5G"|""|"max"|"50%" -> byte count, "", "max"
+              # verbatim, or "?" for anything not byte-comparable
+  local v="${1:-}"
+  case "$v" in
+    ""|max) printf '%s' "$v"; return ;;
+  esac
+  awk -v v="$v" 'BEGIN{
+    if (v !~ /^[0-9]+(\.[0-9]+)?[KMGT]?i?B?$/) { print "?"; exit }
+    m = 1
+    if (v ~ /K/) m = 1024; else if (v ~ /M/) m = 1024^2
+    else if (v ~ /G/) m = 1024^3; else if (v ~ /T/) m = 1024^4
+    printf "%d", (v + 0) * m
+  }'
+}
+if [ -d "$CG/dev-gates.slice" ]; then
+  for f in memory.high memory.max memory.swap.max cpu.weight io.weight io.bfq.weight; do
+    printf '  %-14s %s\n' "$f" "$(cat "$CG/dev-gates.slice/$f" 2>/dev/null)"
+  done
+  # B3 (RG-55 P8 review round 1): a config that predates DEV_GATES_MEMORY_MAX/
+  # _HIGH renders the directive DROPPED (render()'s own rule), so the slice
+  # exists and is active -- everything above still prints happily -- while
+  # memory.max is the kernel default "max" (unbounded). This directory's own
+  # convention for a fail-open invariant is a hard `fail`, not a printout
+  # (see the MemoryMin ancestor-chain check below); the same convention now
+  # applies here. A genuinely-unset $CONF value is a `warn`, not a `fail` --
+  # only "config sets it, kernel does not have it" is a `fail`.
+  for prop_label in "memory.max:DEV_GATES_MEMORY_MAX" "memory.high:DEV_GATES_MEMORY_HIGH"; do
+    prop="${prop_label%%:*}"; var="${prop_label#*:}"
+    eff="$(cat "$CG/dev-gates.slice/$prop" 2>/dev/null)"
+    cfg="${!var:-}"
+    if [ -z "$cfg" ]; then
+      warn "$var not set in $CONF -- dev-gates.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
+    else
+      cfg_bytes="$(_bytes_of "$cfg")"
+      if [ "$cfg_bytes" = "?" ]; then
+        # round-2 review B7: not byte-comparable (a percentage, "infinity",
+        # or anything else outside \d+(\.\d+)?[KMGT]?i?B?$) is a DIFFERENT
+        # finding from "byte-comparable but does not match" -- warn naming
+        # the form, never fail, since we genuinely cannot tell whether this
+        # is correct or not from here.
+        warn "$var=$cfg is not byte-comparable (percentage or non-size form) -- effective $prop=$eff not checked"
+      elif [ "$eff" = "$cfg_bytes" ]; then
+        ok "dev-gates.slice $prop=$eff matches $var=$cfg"
+      else
+        fail "dev-gates.slice $prop=$eff but $var=$cfg (${cfg_bytes} bytes) -- config says bounded, the kernel's effective value differs (a stale unit, a partial install, or \$CONF predating this key, B3). Re-run install.sh."
+      fi
+    fi
+  done
+else
+  warn "dev-gates.slice cgroup absent (no member started yet — expected until a gate/lane container is created with --cgroup-parent=dev-gates.slice)"
 fi
 
 echo "== dev-memory_min_guaranteed.slice (opt-in memory.min tier) =="
@@ -108,6 +182,35 @@ else
   fi
 fi
 
+echo "== cgprofile socket carrier (/run/cgprofile, RG-55 A2/D-30, M5) =="
+# The devcontainer template bind-mounts this directory (Docker --mount,
+# which refuses a missing source) to reach the profiler daemon's control
+# socket. install.sh installs + applies units/mdt-cgprofile.conf; this
+# is this directory's own fail-open invariant, so like MemoryMin above it
+# gets a hard `fail`, not a printout.
+CGPROFILE_DIR=/run/cgprofile
+if [ -d "$CGPROFILE_DIR" ]; then
+  cg_mode=$(stat -c '%a' "$CGPROFILE_DIR" 2>/dev/null)
+  cg_owner=$(stat -c '%U:%G' "$CGPROFILE_DIR" 2>/dev/null)
+  if [ "$cg_mode" = "770" ] && [ "$cg_owner" = "root:docker" ]; then
+    ok "$CGPROFILE_DIR exists, mode 0770, owner root:docker"
+  else
+    fail "$CGPROFILE_DIR exists but mode=${cg_mode:-?} owner=${cg_owner:-?} (expected 770 root:docker) -- /etc/tmpfiles.d/mdt-cgprofile.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' or install.sh"
+  fi
+  # Disclosure only (INFO, not WARN/FAIL): the daemon owns the socket's own
+  # lifecycle (a separate package, out of this project's scope) -- its
+  # absence here is expected and fine on a host without cgroup-profiler
+  # installed, or one whose daemon predates the socket listener. exec stays
+  # the permanent fallback transport either way (design doc A2).
+  if [ -S "$CGPROFILE_DIR/ctl.sock" ]; then
+    info "socket carrier available ($CGPROFILE_DIR/ctl.sock)"
+  else
+    info "exec carrier only (daemon socket absent) -- docker exec still works; the daemon may not be installed, may predate the listener, or has not started it yet"
+  fi
+else
+  fail "$CGPROFILE_DIR does not exist -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
+fi
+
 echo "== docker-.scope.d default-limits backstop (D-G8) =="
 if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then
   ok "backstop drop-in installed"
@@ -147,10 +250,10 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     p=$(docker inspect -f '{{.HostConfig.CgroupParent}}' "$n" 2>/dev/null)
     printf '  %-45s %s\n' "$n" "${p:-<daemon default>}"
   done
-  echo "  (devcontainers should show dev-interactive.slice; test/build/gate stacks"
+  echo "  (devcontainers should show dev-interactive.slice; long-running dev stacks"
   echo "   dev-background.slice (explicitly, or <daemon default> if the daemon.json"
-  echo "   cgroup-parent applies); placement is CREATE-time only — recreate a"
-  echo "   container to move it)"
+  echo "   cgroup-parent applies); gate/lane containers should show dev-gates.slice;"
+  echo "   placement is CREATE-time only — recreate a container to move it)"
 else
   warn "docker unavailable — skipped placement listing"
 fi

@@ -391,9 +391,12 @@ def propose_memory_tiers(total_kib: int, avail_kib: int, swap_kib: int) -> dict[
     # The three MemoryHigh fractions (interactive/background/buildkitd) are
     # deliberately kept BELOW 100% combined (30+30+25=85%, not e.g. 35+35+30)
     # -- step e's leftover-after-step-d suggestion divides MemAvailable minus
-    # those three figures, so if they summed to 100% the "leftover" would be
-    # degenerate (always ~0, on every host) rather than a real, host-varying
-    # number.
+    # those three figures (PLUS dev-gates.slice's own fixed MemoryHigh, added
+    # separately in main() since this wizard does not host-scale that tier --
+    # round-1 review S2), so if the three below alone summed to 100% the
+    # "leftover" would already be degenerate (always ~0, on every host)
+    # before dev-gates.slice's own claim even enters the sum, let alone a
+    # real, host-varying number after it.
     return {
         "DEV_INTERACTIVE_MEMORY_MIN": frac(total_kib, 3, min_mib=128),
         "DEV_INTERACTIVE_MEMORY_LOW": frac(avail_kib, 15),
@@ -414,21 +417,47 @@ def propose_memory_min_guaranteed_suggestion(
     """Pure function backing Work step 4e's 'suggestion grounded in THIS
     host's own numbers'. Returns (leftover_kib, suggestion_kib, formula_text).
 
-    Sums step d's three MemoryHigh figures (the realistic 'expected
-    concurrent' load — MemoryMax already assumes swap is absorbing overflow,
-    so summing Max figures would understate what's actually free day to
-    day), subtracts that from MemAvailable, and proposes a SMALL, explicitly
-    conservative 5% of whatever's left over. This is advisory text only —
-    see step_memory_min_guaranteed(): the prompt's actual DEFAULT stays
-    whatever's already configured or empty, never this suggestion, so
-    leaving the ceiling unset is never the awkward path.
+    Sums every MemoryHigh figure passed in `tier_high_values` (the realistic
+    'expected concurrent' load — MemoryMax already assumes swap is absorbing
+    overflow, so summing Max figures would understate what's actually free
+    day to day), subtracts that from MemAvailable, and proposes a SMALL,
+    explicitly conservative 5% of whatever's left over. Callers pass ALL
+    FOUR tiers' MemoryHigh as of RG-55 P8 (round-1 review S2): step d's
+    three host-scaled figures (interactive/background/buildkitd) plus
+    dev-gates.slice's own fixed one, added by the caller since this wizard
+    does not host-scale that tier interactively — omitting the fourth would
+    systematically OVERSTATE the leftover (leaking protection to
+    dev-interactive.slice/dev-background.slice, the exact failure direction
+    CGROUP-NOTES.md warns about). This is advisory text only — see
+    step_memory_min_guaranteed(): the prompt's actual DEFAULT stays whatever
+    is already configured or empty, never this suggestion, so leaving the
+    ceiling unset is never the awkward path.
+
+    Doctest (round-1 review S2's "before/after" ask, an illustrative 8 GiB
+    host, not this repo's own shipped example figures): BEFORE the fix
+    (step d's three tiers only, dev-gates.slice's own claim missing from the
+    sum) the leftover and suggested ceiling were both overstated; AFTER
+    (main() now adds dev-gates.slice's own MemoryHigh to the same dict) they
+    shrink to reflect what's actually earmarked:
+
+    >>> avail_kib = 8 * 1024 * 1024  # 8 GiB
+    >>> before = {"DEV_INTERACTIVE_MEMORY_HIGH": "2G", "DEV_BACKGROUND_MEMORY_HIGH": "2G", "DEV_BUILDKITD_MEMORY_HIGH": "1G"}
+    >>> propose_memory_min_guaranteed_suggestion(avail_kib, before)
+    (3145728, 157286, "MemAvailable (8G) - 3 tiers' MemoryHigh figures (5G combined) = 3G left over; 5% of that leftover = 150M")
+    >>> after = dict(before, DEV_GATES_MEMORY_HIGH="4G")
+    >>> propose_memory_min_guaranteed_suggestion(avail_kib, after)
+    (0, 0, "MemAvailable (8G) - 4 tiers' MemoryHigh figures (9G combined) = 0 left over; 5% of that leftover = 0")
     """
     earmarked_kib = sum(parse_size_to_kib(v) for v in tier_high_values.values())
     leftover_kib = max(0, avail_kib - earmarked_kib)
     suggestion_kib = leftover_kib * 5 // 100
+    # "N tiers'" rather than a hardcoded "three" (round-1 review S2): the
+    # caller passes step d's three PLUS dev-gates.slice's own fixed figure
+    # as of RG-55 P8, and a hardcoded count would go stale again the next
+    # time a tier is added.
     formula = (
-        f"MemAvailable ({kib_to_size_str(avail_kib)}) - step d's three MemoryHigh "
-        f"figures ({kib_to_size_str(earmarked_kib)} combined) = "
+        f"MemAvailable ({kib_to_size_str(avail_kib)}) - {len(tier_high_values)} "
+        f"tiers' MemoryHigh figures ({kib_to_size_str(earmarked_kib)} combined) = "
         f"{kib_to_size_str(leftover_kib)} left over; 5% of that leftover = "
         f"{kib_to_size_str(suggestion_kib)}"
     )
@@ -1268,6 +1297,23 @@ def main(argv: list[str] | None = None) -> int:
     walked.update(tier_values)
 
     high_values = {k: v for k, v in tier_values.items() if k.endswith("_MEMORY_HIGH")}
+    # dev-gates.slice (RG-55 P8, round-1 review S2) is a FOURTH tier that also
+    # claims a MemoryHigh, but this wizard does not walk it interactively
+    # (D-19's sizing is fixed, not host-scaled the way step d's three are) --
+    # so its value never appears in tier_values above. Without adding it here
+    # too, the leftover this earmark sum computes is systematically
+    # OVERSTATED by whatever dev-gates.slice actually claims, and an
+    # overstated leftover is the failure direction CGROUP-NOTES.md warns
+    # about (a too-generous suggested ceiling leaks protection to
+    # dev-interactive.slice/dev-background.slice). Resolved through the SAME
+    # rule every other walked key uses (resolve_default: an already-
+    # configured host's own value wins, else the shipped example's) even
+    # though this key is not itself walked/rewritten here -- the wizard's own
+    # key-surgery write path (`text = example_text` + `apply_value()` on
+    # `walked` only) already carries DEV_GATES_* through verbatim regardless.
+    high_values["DEV_GATES_MEMORY_HIGH"] = resolve_default(
+        "DEV_GATES_MEMORY_HIGH", cfg_current, example_defaults, None
+    )
     avail_kib = meminfo.get("MemAvailable", meminfo.get("MemTotal", 0))
     walked["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = step_memory_min_guaranteed(
         avail_kib, high_values, cfg_current, example_defaults
