@@ -391,3 +391,208 @@ no code left uncommitted, LOG/REPORT/BRIEF written) rather than pushing
 into writing `assay.toml`/`run-gate.toml` lane tables that would encode an
 undecided design choice. See `run-gate-WAVE-RG55-P2-BRIEF-2.md` for the
 successor's continuation brief.
+
+## Session 3 (fresh successor) — orientation
+
+Read (in order): `BRIEF-2.md` in full; the handoff
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-HANDOFF.md`
+(read from the MAIN checkout — it does not exist in the worktree, exactly
+as its own header warns); `RG55-INTERFACE-CONTRACT.md` in full (all 7
+sections); `fixtures/rg55/README.md` in full. Orientation call count: 6
+(the BRIEF-2/handoff/contract/README reads, plus a `git status`/`ls`
+sanity pair confirming the worktree path and HEAD). Nothing from the
+read-list was wrong; BRIEF-2's "still NOT read" list (`cmru/tools/
+coverage_canary.py`, `scripts/cgroup-profiler/tools/canary-run.sh`) was
+resolved by the CURRENT dispatch prompt itself, which names
+`tools/canary-run.sh` directly — the canary-shape decision BRIEF-2 flagged
+as open was already made above this session, by the controller, before
+dispatch (RW-8's own text plus the dispatch prompt's explicit "tools/
+canary-run.sh R3 canary lane" instruction). `scripts/cgroup-profiler/
+tools/canary-run.sh` was read anyway (as the shape template) — see below.
+
+**RW-8 quoted verbatim** (from the dispatch prompt, itself quoting the
+controller log): "Use `judge.source_roots = ["."]` for both `[lanes.r1]`
+and `[lanes.r2]` with `base_source = "request"`; `tests/` is excluded by
+assay's own `is_test_path` rule; `tools/` IS judged, deliberately: a
+changed line in `tools/coverage_gate.py` must be covered by
+`tests/test_coverage_gate.py` — that is exactly what "100% on every
+changed line" means for this project, and the coverage command already
+measures it (`--cov=.`). Do NOT restructure `run-gate.py` into a
+subdirectory. Vendored `tools/assay/*.pyz` and `tests/fixtures/` are not
+`.py` source under a non-test path, so they cannot enter the judged set;
+if assay's python adapter nevertheless trips on the `run_gate.py →
+run-gate.py` symlink or on the fixtures, apply the NARROWEST exclusion
+assay 6.1.1 supports and record it — never widen to excluding `tools/`."
+This settles BRIEF-2's decision ask outright (a THIRD option this session
+had not itself considered: `source_roots = ["."]`, broader than either of
+BRIEF-2's two options — not "measure tools/ via a second `--cov` flag on
+an otherwise-narrow judge" but "judge everything, narrowly EXCLUDE only if
+forced"). No re-litigation needed; proceeded straight to writing the
+config.
+
+**RW-9 quoted verbatim**: "A decision ask never stops the package: record
+it in the REPORT and the return message, pick the reading the handoff/
+contract/fixtures imply, mark it clearly, and continue with every
+deliverable that does not depend on it. Your predecessor stopped on the
+C2 ask with C3–C8 untouched; do not repeat that." Applied literally below
+(the assay-r3 "run the r1 lane there" reading is a decision ask handled
+exactly this way — see the REPORT's Decision asks section).
+
+## Commit 3 — C2 completion (RW-8 config, canary, run-gate.toml wiring)
+
+`assay.toml` (new): `[lanes.r1]` (R0+R1, `source_roots = ["."]`,
+`base_source = "request"`, `fail_under = 100.0`, `allow_excluded = false`,
+`require_branch = true`, `isolation.snapshot_selection =
+"repository-minus-unsafe-symlinks"` with the SAME three topos fixture
+omissions `cmru/assay.toml`/`scripts/cgroup-profiler/assay.toml` already
+declare — confirmed necessary and sufficient empirically, see "Proving the
+config" below, not just copied on faith); `[lanes.r2]` (R0+R2 mutation,
+same isolation, `jobs = 1` (HOST LOAD §6 — bare-host, no headroom for
+parallel workers), `max_mutants = 1500`, the same four `python:*` operators
+as `scripts/cgroup-profiler/assay.toml`).
+
+`tools/canary-run.sh` (new, executable): ported the harness SHAPE from
+`scripts/cgroup-profiler/tools/canary-run.sh` (tar-copy to a `mktemp -d`
+scratch dir, a python here-doc for the sed-free find/replace, a `canary()`
+function callable by name or run-all) with exactly ONE canary declared —
+see the REPORT's Decision asks section for the "run the r1 lane there"
+reading applied (a narrow pytest selector, not the full r1 argv against
+830+ tests). Target: `duration_stats`'s median→mean flip (the exact text
+block containing the odd-length-branch ternary), asserted against
+`tests/test_run_gate.py::TestHistoryRollingSeries::
+test_one_slow_outlier_does_not_become_the_typical_cost` (located by
+grepping the RG-27 outlier-trap tests the handoff's own read-list names at
+`test_run_gate.py` ~6387). Verified standalone before wiring into
+`run-gate.toml`: `nice -n 19 ionice -c 3 ./tools/canary-run.sh` →
+`median-not-mean  ok (assay-r1 would reject it)` / `canary: 1 rejected, 0
+survived`, exit 0.
+
+`run-gate.toml`: `[lanes.assay-r1]` (kind=assay, bare-host, pinned
+6.1.1, `clean_tree = true`, budget 30m), `[lanes.assay-r2]` (same pin,
+`stall_timeout = "20m"`, budget 4h), `[lanes.assay-r3]` (kind=command,
+bare-host, `tools/canary-run.sh`, budget 15m), `[lanes.gate-full]`
+(selftest + assay-r1 + assay-r3, r2 excluded — invoked separately
+pre-merge per the handoff). `cmru.toml` gained a comment explaining why
+the release gate stays `selftest` alone (r2's 4h bound). `README.md`
+gained a "Gate and evidence" section naming all five lanes (selftest +
+the four new ones).
+
+### Proving the config (RW-8's own required step, BEFORE wiring into run-gate.toml)
+
+```
+$ python3 tools/assay/assay-6.1.1.pyz lanes --json --file assay.toml
+```
+Produced a clean `inventory_schema: 1` document with both lanes
+(`r1`: rigor R0/R1, `snapshot_selection: repository-minus-unsafe-symlinks`,
+`coverage.artifact: coverage.json`; `r2`: rigor R0/R2, `mutation.jobs: 1`,
+`max_mutants: 1500`, the four operators) — no load error, confirming
+`source_roots = ["."]` + `base_source = "request"` + the isolation table
+is legal assay 6.1.1 schema. Full JSON quoted in the REPORT.
+
+RW-8 also asked for "one `assay plan r1 --request-base <merge-base of
+main and HEAD>` (read-only)" — **substituted `plan r2`**: `assay plan
+--help` (read before running it blind) documents `plan` as taking "the
+mutation lane name to inspect" and refuses any lane not declaring R2 —
+confirmed empirically, `plan r1` refused with `ERROR/BAD_LANE_CONFIG:
+lane 'r1' does not declare an R2 mutation judge` before a single flag was
+retried. `r2` is the only lane in this file `plan` can inspect at all, so
+it is the only faithful way to exercise RW-8's actual intent (prove
+`base_source = "request"` resolves against a real merge-base without
+running anything) with the tooling that exists. `assay plan r2 --file
+assay.toml --request-base "$(git merge-base main HEAD)"` → `"status":
+"ok"`, 15 real mutation candidates, ALL in
+`run-gate-project/tools/coverage_gate.py` (proving `tools/` really is in
+the judged set, not just declared), `jobs: 1`, `max_mutants: 1500`,
+`estimated_serial_seconds: 900.0`. Full JSON quoted in the REPORT.
+
+Neither probe exercises the `run_gate.py`/`run-gate.py` symlink-duplicate
+risk RW-8 flagged (the 6-commit diff since merge-base never touches
+`run-gate.py` itself, only `tools/coverage_gate.py` and this package's own
+new config/doc files, none of which are `.py` source under `source_roots`
+except the two already-proven-fine ones) — **left as a documented,
+unexercised edge for whichever future commit first changes `run-gate.py`
+under these lanes** (assay.toml's own header comment names the RW-8 fallback:
+apply the narrowest exclusion assay 6.1.1 supports, never widen to
+excluding `tools/`, if that day comes).
+
+`doctor`: `run-gate.py doctor` → 8 checks, 5 OK, 1 WARN (the pre-existing,
+unrelated linked-worktree host-lane git-view note), 0 FAIL, 2 SKIP (the
+documented "bare-host — its PATH is this machine's" skip for both new
+assay lanes' toolchain-fitness check). No new failures from C2's lanes.
+
+`selftest` after C2's commit: 830 passed, 3 skipped, diff-coverage
+SKIPPED (no run-gate.py lines in the 5-commit diff), exit 0.
+
+Commit: `42fc2d71` — `feat(rg55-p2): C2 -- assay-r1/r2/r3 + gate-full lanes for run-gate-project`.
+
+## Commit 4 — a real finding from the FIRST live assay-r1 run
+
+Per handoff §4, ran `./run-gate.py --base main assay-r1` (first attempt
+with no `--base` refused correctly: "lane 'assay-r1' delegates its
+comparison base; pass --base REF" — the delegating-lane-with-no-flag
+refusal RG-26/R-35 documents, confirming the wiring is live). With
+`--base main`: **FAIL/UNCOVERED_LINES, 86.9% (112/131)**. This is the
+exact scenario RW-8 exists to catch, not a config bug: `tools/
+coverage_gate.py`'s own C1/C1-rework changes (this session's OWN prior
+work, and the prior session's) were NEVER judged by `selftest` (scoped to
+`--source run-gate.py` only, `coverage_gate.py` deliberately outside its
+own enforced scope) — real gaps existed in the newly-added
+branch-arc-validation and FAIL-rendering code, invisible until a REAL,
+independent judge with a DIFFERENT changed-line detector (assay's own git
+diff, not `coverage_gate.py`'s homegrown one) looked at it.
+
+`.assay/verdict-r1.json`'s `missing_lines`/`missing_branch_lines` named
+exactly four gaps: 170-173 (`_validate_cov_record`'s non-list
+`missing_branches`/`executed_branches` guard), 396-401 (`_is_ancestor`'s
+real-git-failure branch, `returncode > 1`), 511-514 (`main()`'s own
+`except CoverageGateError` around a failing `_base_relation` call), and
+536-546 (the FAIL branch's entire uncovered-lines rendering loop, incl.
+the `[file unmeasured]`/`(branch)` tags — never exercised because every
+existing FAIL-shaped test in `test_coverage_gate.py` calls `evaluate()`
+directly, never `main()`, so the CLI's own print loop had zero coverage).
+
+Four new tests added to `tests/test_coverage_gate.py`:
+- `test_validate_cov_record_rejects_non_list_branch_key` — a coverage
+  record with `missing_branches: "not-a-list"` (present, wrong TYPE
+  entirely, the sibling case to the existing malformed-arc-shape test).
+- `test_is_ancestor_raises_on_real_git_failure` — real git (no mocking),
+  `git merge-base --is-ancestor <a fake 40-hex sha> HEAD` → exit 128
+  (`fatal: Not a valid commit name`), verified live in a scratch repo
+  before writing the test; `_is_ancestor` must raise `CoverageGateError`.
+- `test_main_reports_error_when_base_relation_fails` — `monkeypatch.
+  setattr(coverage_gate, "_base_relation", _boom)` (patches the module
+  global `main()`'s own `__globals__` resolves, confirmed this works for
+  a plain unqualified call, not just an attribute-qualified one) → `main()`
+  must map the raise to exit 2 with the standard `diff-coverage ERROR:`
+  shape, not a traceback.
+- `test_main_reports_fail_with_uncovered_and_unmeasured_files` — an
+  end-to-end `main()` FAIL: `pkg/a.py` (existing file, one line ran but
+  left a branch untaken → rendered `3(branch)`) plus `pkg/newb.py` (a
+  brand-new file, `git add`ed but NOT `git commit`ed, entirely absent from
+  `coverage.json` → rendered `[file unmeasured] [1, 2]`). Verified the
+  "new but uncommitted file still appears in a single-ref `git diff`"
+  mechanic live in a scratch repo (`git add` without `git commit` is
+  sufficient — `git diff <base_rev>` diffs the commit against the
+  INDEX+working-tree, not against HEAD) before trusting it in the test.
+
+`tests/test_coverage_gate.py`: 27 passed (was 23). Whole-suite `selftest
+--allow-dirty`: 834 passed (was 830), 3 skipped, diff-coverage SKIPPED
+(unchanged — no `run-gate.py` lines touched), exit 0. Independently
+verified via a bare `pytest tests/test_coverage_gate.py tests/
+test_run_gate.py --cov=. --cov-branch --cov-report=json:/tmp/cov_check.json`
+that all four previously-flagged line ranges (170-173, 398-401, 512-514,
+536-546) are GONE from `tools/coverage_gate.py`'s own `missing_lines`/
+`missing_branches` — the remaining entries (100, 124-126, 139, 145, 155,
+279, 341, 350, 377-378, 381, 499-501, 505-507) were cross-checked against
+`git diff e499a168..HEAD --unified=0 -- tools/coverage_gate.py`'s own hunk
+headers and confirmed to fall OUTSIDE every changed range — pre-existing
+code untouched by this branch's diff, so outside assay-r1's judged set
+regardless.
+
+Commit: `45f2aa5a` — `fix(rg55-p2): close tools/coverage_gate.py's own
+diff-coverage gaps found by assay-r1`.
+
+Re-ran `./run-gate.py --base main assay-r1` after this commit — verdict
+recorded in the REPORT once the second run's log is read back (started
+before this LOG entry was written; a separate step per SPEC's own "read
+the verdict in a SEPARATE step" rule).
