@@ -136,6 +136,49 @@ def test_idle_with_flat_cpu_is_hung(tmp_path: Path) -> None:
     assert clock.t >= 30.0
 
 
+def test_idle_threshold_is_inclusive_at_the_exact_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(P7 session 5 -- a real mutant-table gap this test closes) The test
+    above only pins a LOWER bound (`clock.t >= 30.0`), because with the
+    default 30s CPU-growth window and a 15s `expect_next_event_within_s`,
+    `idle_for` is always already far past its own threshold (30 > 15) by
+    the time `cpu_growing` first becomes decidable -- so a `>=` -> `>`
+    off-by-one on `idle_for >= self._expect_next_event_within_s` is
+    INVISIBLE to that test: it would still fire one tick later and still
+    satisfy `clock.t >= 30.0`. Planted (P7 REPORT's mutant table) and
+    confirmed silently uncaught by the whole `test_liveness*` suite before
+    this test was added.
+
+    This test shrinks `_HUNG_CPU_WINDOW_S` (monkeypatched, module-level)
+    below `expect_next_event_within_s` so the CPU-growth condition resolves
+    FIRST, making the idle threshold itself the last-satisfied, genuinely
+    boundary-determining condition -- then pins hung firing at EXACTLY the
+    tick `idle_for` first reaches the threshold, not one tick later. A
+    strict `>` mutant fires at `clock.t == 6.0` instead; this test would
+    then fail on the `== 5.0` assertion.
+    """
+    monkeypatch.setattr(liveness, "_HUNG_CPU_WINDOW_S", 2.0)
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4244)  # never finishes on its own.
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: 3.0,  # constant -- never grows.
+        expect_next_event_within_s=5.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert proc.waited
+    # `idle_for` reaches exactly 5.0 at tick t=5 (poll_interval_s=1.0,
+    # `last_progress_at` pinned at the start); `cpu_growing` is already
+    # decidable (False, flat CPU) from t=2 onward (the shrunk 2.0s window)
+    # -- so `idle_for`'s own threshold is the one still being crossed right
+    # at t=5.0, and a correct `>=` fires on that exact tick.
+    assert clock.t == 5.0
+
+
 def test_cpu_growing_prevents_hung_even_when_idle(tmp_path: Path) -> None:
     """(BRIEF-1's own lesson, the OTHER optional parameter at its default.)
     Same idle (no `test`/stdout progress) shape as the test above, but the
@@ -162,6 +205,50 @@ def test_cpu_growing_prevents_hung_even_when_idle(tmp_path: Path) -> None:
     with pytest.raises(subprocess.TimeoutExpired) as excinfo:
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=45.0)
     assert type(excinfo.value) is subprocess.TimeoutExpired  # NOT the Hung subclass.
+    assert proc.waited
+
+
+def test_cpu_growth_floor_is_inclusive_at_the_exact_boundary(tmp_path: Path) -> None:
+    """(P7 session 5 -- a second real mutant-table gap this test closes)
+    Neither test above pins the `_HUNG_CPU_GROWTH_FLOOR_S` (1.0) boundary
+    EXACTLY: the flat-CPU test uses a delta of 0.0 (well under the floor
+    either way) and the growing-CPU test uses a delta of 2.0 per sample
+    (well over). A `>=` -> `>` off-by-one on `cpu_growing = (cpu_now -
+    baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S` is invisible to both.
+    Planted (P7 REPORT's mutant table) and confirmed silently uncaught by
+    the whole `test_liveness*` suite before this test was added.
+
+    `cpu_reader` holds the tree-CPU reading flat at `0.0` for the first 30
+    calls (samples `t=0..29`), then steps to exactly `1.0` from the 31st
+    call onward (`t=30` and later) -- so at `t=30..34` the loop's own
+    30s-trailing baseline is still a `0.0` sample (from `t=0..4`) while
+    `cpu_now` is `1.0`: a delta of EXACTLY `1.0`, the floor itself. Under
+    the correct `>=`, that delta counts as "growing" (`cpu_growing=True`),
+    so `hung` never fires and the loop runs out its ordinary elapsed
+    budget instead -- a plain `subprocess.TimeoutExpired`, NOT the `hung`
+    subclass, at exactly `clock.t == 35.0`. A strict `>` mutant reads the
+    same `1.0` delta as "flat" and raises `LivenessHungExpired` at
+    `clock.t == 30.0` instead.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4245)  # never finishes on its own.
+    calls = {"n": 0}
+
+    def stepped_cpu_reader(pid: int) -> float:
+        calls["n"] += 1
+        return 0.0 if calls["n"] <= 30 else 1.0
+
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=stepped_cpu_reader,
+        expect_next_event_within_s=15.0,
+    )
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=35.0)
+    assert type(excinfo.value) is subprocess.TimeoutExpired  # NOT the Hung subclass.
+    assert clock.t == 35.0
     assert proc.waited
 
 
