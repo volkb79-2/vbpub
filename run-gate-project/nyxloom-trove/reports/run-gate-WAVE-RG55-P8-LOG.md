@@ -657,3 +657,49 @@ with zero `INFRA` residue.
 Verify: `python3 -c "..."` (JSONC-strip + `json.loads`, script content in
 this LOG entry's own commit message) confirms valid JSON and mount
 presence; `grep -n cgprofile templates/devcontainer.json`.
+
+### C10 — mdt-host-setup-wizard.py: earmark-sum fourth tier fix (round-1 review S2) (hash: see next entry)
+
+`propose_memory_min_guaranteed_suggestion()`'s formula summed only step
+d's THREE host-scaled MemoryHigh tiers (interactive/background/
+buildkitd); `main()` never added dev-gates.slice's own fixed MemoryHigh
+to the same dict before passing it in, so the wizard's leftover-and-
+suggested-ceiling advisory text was systematically OVERSTATED by whatever
+dev-gates.slice claims -- the exact wrong-direction failure
+CGROUP-NOTES.md warns about (an over-generous suggested ceiling leaks
+protection away from dev-interactive.slice/dev-background.slice). Fixed
+in `main()`: `high_values["DEV_GATES_MEMORY_HIGH"]` is now populated via
+the same `resolve_default()` rule every other walked key already uses
+(configured host value wins, else the shipped example's) even though
+this key is not itself walked/rewritten by this wizard -- confirmed this
+is safe because the wizard's actual on-disk write path
+(`text = example_text` + `apply_value()` on `walked` only) already
+carries `DEV_GATES_*` keys through verbatim regardless of what
+`high_values` contains; this dict feeds ONLY the advisory suggestion
+text, never a write. Generalized the formula's hardcoded "three" to
+`f"{len(tier_high_values)} tiers'"` so a future fifth tier does not go
+stale the same way. Fixed a stale "30+30+25=85%" comment in
+`propose_memory_tiers()` that no longer accounted for dev-gates.slice's
+own claim.
+
+Proof (S2's own "before/after" ask): added a doctest on
+`propose_memory_min_guaranteed_suggestion()`'s docstring using an
+illustrative 8 GiB host (not this repo's shipped example figures) --
+BEFORE (three tiers only, 5G combined) leftover=3G/suggestion=150M;
+AFTER (same dict + DEV_GATES_MEMORY_HIGH=4G, 9G combined) leftover=0/
+suggestion=0, i.e. mechanically demonstrating the overstatement the
+fourth tier's omission caused and its correction.
+
+Verify: `python3 -m py_compile mdt-host-setup-wizard.py` (clean);
+`python3 -m doctest mdt-host-setup-wizard.py -v 2>&1 | tail -5` shows
+"5 tests in mdt-host-setup-wizard.propose_memory_min_guaranteed_suggestion
+... 5 passed. Test passed." -- both re-run just before this commit.
+
+---
+
+All ten round-1-repair commits (C1-C10) now land. Remaining before
+return: one full `bash tests/test-render.sh` re-run covering every
+change together (flagged pending since C1), the registered gate
+(`nice -n 19 ionice -c 3 python3 run-gate.py smoke`) with its verdict
+read in a SEPARATE step, and the REPORT rewrite (refreshed Tip,
+Round-1-repairs table, M5 section, "Operator: add to TODO.md" line).
