@@ -472,7 +472,7 @@ MiB), `profile_error: null`. Committed separately (`38089fe6`) so the
 finding and its fix are each their own reviewable unit; assay-r1/r3 re-run
 clean against it.
 
-### Test-only escape hatch (flagged for controller review, not in the contract)
+### Test-only escape hatch (flagged for controller review, not in the contract) — RESOLVED by RW-17, see the C4-session's own section below
 
 `[profile] enabled` defaults `true` (contract §4.7) with NO project config
 declaring `[profile]` at all in ~800 of this suite's pre-existing tests —
@@ -524,6 +524,119 @@ operator feature — naming it there would imply otherwise).
    to manage in real use; this one was this session's own fixture).
 3. **`footprint --write`** — NOT run. `footprint` is C5 territory (the
    verb does not exist yet); deferred with C5 to the next session.
+
+## RW-17 — RUN_GATE_PROFILE ambient override (session 6, commit `b7771be1`)
+
+Ruling (controller log): the `RUN_GATE_TEST_DISABLE_PROFILING` kill switch
+flagged as a decision ask in the C3 section above is replaced by
+`RUN_GATE_PROFILE` (`PROFILE_AMBIENT_ENV_VAR`), a documented operator-facing
+`'on'|'off'` override, the same class of knob as
+`RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`. `resolve_profile_settings`
+checks it before any config table: absent means config decides; `'off'`
+forces `enabled = False` unconditionally and now carries a
+`disabled_reason` (`"disabled (RUN_GATE_PROFILE=off)"`) that flows all the
+way to the record's `profile_error`; `'on'` forces `enabled = True` even
+over a lane's own `profile = false`; any other value is refused by name at
+exit 2. The autouse `profiling_off_by_default` fixture (renamed class
+`TestProfileAmbientOverride`) now sets `'off'` instead of the old `'1'`.
+
+Two real findings surfaced while wiring the disclosure requirement
+("`--dry-run` and `doctor` disclose it") through to the actual CLI paths,
+both fixed this session:
+- `run_container_lane`/`run_exec_lane`'s `--dry-run` branches only called
+  `print_profile_plan_dry_run` when `profiling` was already `True` — even
+  though that function's own disabled-path branch exists specifically to
+  print the disabled message. Gating the CALL on `profiling` made that
+  branch dead code in production: a disabled lane's `--dry-run` never
+  named why, in EVERY prior invocation shape, not just the new
+  `RUN_GATE_PROFILE=off` one. Both call sites now call it unconditionally.
+- the two inline `{"mode": "disabled", ...}` shortcuts (built directly in
+  `run_container_lane`/`run_exec_lane` to skip `start_lane_profiling`'s
+  extra `docker inspect`/daemon probe when `not profiling`) did not carry
+  a `disabled_reason`, so a disabled record's `profile_error` fell back to
+  the bare `"disabled"` even when `RUN_GATE_PROFILE=off` was the real
+  cause. Both now thread `profile_plan.get("disabled_reason", "disabled")`
+  through.
+
+`print_profile_plan_dry_run`'s disabled-path message now names the
+resolved `source` directly instead of a hardcoded two-case string — more
+accurate (names the REAL source: env override, `[profile]` table, or a
+lane's own `profile = false`) and adds no new branch.
+
+Documented now in run-gate.py's top-of-file comment and `usage()`'s
+"environment contract" section. Full SPEC `R-43g`/README config-section
+prose deferred to C8 by design (C8's own scope already names
+`RUN_GATE_PROFILE` under its "config" sub-clause, and writing it twice —
+once now, once rewritten in C8's full a-h pass — would be pure rework);
+`doctor`'s disclosure of the effective override lands with C7's new
+"profiler" check, since `doctor` has no profiling-aware check yet to
+extend.
+
+Tests: `TestProfileTestKillSwitch` renamed `TestProfileAmbientOverride`
+with 3 tests (was 1) — `'off'` forces disabled with the qualified reason,
+`'on'` forces enabled over a lane's `profile = false`, an invalid value is
+refused by name — plus a new end-to-end `--dry-run` disclosure test and
+updates to two pre-existing exact-equality assertions the new
+`disabled_reason` key would otherwise have broken. 943 passed, 3 skipped
+(was 940/3). selftest diff-coverage 533/533 lines (100.0%), 200/200
+branches.
+
+## C4 — history schema 2, `series_stats`, resource columns (R-36 amended, session 6, commit `d17f9899`)
+
+`HISTORY_SCHEMA` bumped 1 → 2. `_apply_record` stamps `store["schema"] =
+HISTORY_SCHEMA` on every write regardless of what was loaded — the
+store-level migration the contract describes verbatim ("schema-1 stores
+are read as-is, written back as schema 2 on the next write"); entries a
+given write does not touch stay byte-for-byte as they were, proven with a
+hand-written schema-1 fixture store (one old entry, no `resources` key at
+all) → one new record written → the STORE's `schema` field flips to 2, the
+old entry is unchanged, and reading it back through `lane_history_report`
+does not raise and contributes 0 to every new resource series (never
+coerced to a false 0).
+
+`series_stats(entries, getter)` generalizes `duration_stats` (median never
+mean, `count` alongside, a `None` from `getter` excluded from the series
+rather than coerced to 0). `_resource_field(entry, *path)` walks
+`entry["resources"][...]` with `.get` at every step. `RESOURCE_SERIES_
+GETTERS` maps the five contract Sec 4 obligation 4 keys to where they
+actually live in the Sec 3 Summary — one correction against the handoff's
+own shorthand ("pull each from `resources['memory'/'cpu'/'host']`"):
+`hot_set_p90_bytes` lives under `resources.damon.hot_bytes.p90`, not under
+memory/cpu/host, because DAMON's hot/warm/cold/idle classification is its
+own top-level object in the Summary schema, verified against the contract
+JSON directly rather than the handoff's paraphrase. `lane_history_report`'s
+`stats.passes`/`stats.completed` gain all five automatically (`_lane_
+stats`); `history --json` inherits them with no separate JSON-path code.
+Human `history` table gains a PEAK/+BASE/HOT p90/CORES/STALL line under
+each of the existing passes/completed lines (`_fmt_mib`, `_fmt_cores`,
+`_fmt_resource_stats`; `-` for any null stat).
+
+RG-27 traps re-proven for the generalization (one test each, per the
+handoff's own instruction that the mechanism is identical): a 10× outlier
+in `memory_peak_bytes` (and, same test, `hot_set_p90_bytes`) does not move
+the median while staying visible as max; a dirty (`history_eligible:
+false`) run's resources never overwrite a committed entry's — only
+`latest` reflects it, proven directly against `_apply_record` since the
+gate is the SAME `history_eligible` check duration already used, not a new
+one to re-derive.
+
+Two pre-existing tests needed updating for the schema bump itself (`payload
+["schema"] == 1` → `2` in `TestHistoryQueryVerb`; two `load_history_store`
+empty/malformed-store assertions in `TestHistoryStoreSafety`) and one
+exact-dict-equality assertion on `stats["passes"]` in
+`TestHistoryRollingSeries` was narrowed to the duration keys it actually
+tests (the new keys are proven by the new test class instead) — the new
+keys would otherwise have broken all three by construction, not by defect.
+
+New in-process test (`run_gate.main(["history", "suite"])`) proves
+`_print_lane_history` actually calls the new formatters in production, not
+only at the unit level — the `run_tool()`-subprocess coverage blind spot
+this session's own LOG (C3 section) already flagged for exec-lane tests
+applies identically here.
+
+Tests: 952 passed, 3 skipped (was 943/3, +9: `TestHistoryResourceSeries`
+×5, `TestHistorySchema2Migration` ×1, `TestHistoryTableResourceColumns`
+×3). selftest diff-coverage 568/568 lines (100.0%), 208/208 branches.
 
 ## Decision asks
 
@@ -670,12 +783,18 @@ visibility rather than as a blocking ask:
   this session fixed (see "A real finding" above). `footprint --write`'s
   refusal-then-write probe (handoff §4.3) deferred to C5, since the verb
   does not exist yet.
-- **C4 (history schema 2, R-36)**, **C5 (`footprint` verb, R-44)**, **C6
-  (RG-48, `resources.cpus`)**, **C7 (`doctor` profiler check)**, **C8
-  (docs/spec/backlog/revision sweep, `__revision__ = 41`)** — not started.
-  C3's schema/constants they depend on now exist and are wired; nothing
-  further blocks starting C4. See `BRIEF-5.md` for the concrete
-  continuation state.
+- **C4 (history schema 2, R-36) — COMPLETE** (commit `d17f9899`, session 6):
+  `HISTORY_SCHEMA = 2`, `_apply_record` stamps it on every write (schema-1
+  store migration proven end to end), `series_stats`/`_resource_field`/
+  `RESOURCE_SERIES_GETTERS` generalize `duration_stats` for the five new
+  keys, `lane_history_report`/`history --json`/the human table all gain
+  them, RG-27 traps re-proven for the generalization. See the "C4" section
+  below for the full evidence.
+- **C5 (`footprint` verb, R-44)**, **C6 (RG-48, `resources.cpus`)**, **C7
+  (`doctor` profiler check)**, **C8 (docs/spec/backlog/revision sweep,
+  `__revision__ = 41`)** — not started. C4's schema/stats they depend on
+  now exist; nothing further blocks starting C5. See `BRIEF-6.md` for the
+  concrete continuation state.
 - RG-56 (admission control) and RG-57 (bare-host attribution) remain filed,
   untouched, per the handoff's explicit instruction not to re-file or
   design them in this package (RG-57's own text is now CITED, verbatim, in
@@ -748,7 +867,20 @@ session, commit `38089fe6`):
 - `run-gate-project/run-gate.py`
 - `run-gate-project/tests/test_run_gate.py`
 
-Records only (this session, committed with this checkpoint):
+Records only (session 5, committed with that checkpoint):
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-5.md` (new)
+
+RW-17 (session 6, commit `b7771be1`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+C4 (session 6, commit `d17f9899`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+Records only (session 6, committed with this checkpoint):
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-6.md` (new)

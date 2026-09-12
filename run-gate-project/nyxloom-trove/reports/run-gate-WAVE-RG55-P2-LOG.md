@@ -945,7 +945,7 @@ orchestration, ephemeral+exec flows, re-attach/promote profiling rules`;
 `38089fe6` — `fix(rg55-p2): basic-path final sample must not record a
 total docker-exec failure as data`.
 
-## Checkpoint
+## Checkpoint (session 5)
 
 C3 is now fully DONE (config+client+accumulator+sampler from commit
 `4d684920`, wiring from `d8003d36`, the live-probe-found fix from
@@ -958,3 +958,99 @@ C4 (history schema 2) through C8 (docs/spec/backlog/revision,
 concrete starting point (C4's `HISTORY_SCHEMA`/`series_stats` design,
 current `history`-related line numbers, the deferred footprint disclosure
 line C4/C5 need to complete together).
+
+## Session 6 — RW-17, C4
+
+Orientation: read `BRIEF-5.md` in full, the handoff's §2 C4-C8 bullets,
+the contract §3 (Summary schema) and §4 (obligations 4/5/6), and the
+controller log's RW-17/RW-18 rulings, before touching code. 3 tool-call
+orientation reads (brief, handoff, contract) plus targeted greps — nothing
+in the read list was wrong; the handoff's own line-number anchors had
+drifted (RW-17 added ~35 lines before `HISTORY_SCHEMA`) but `grep -n` for
+each symbol before editing, as instructed, caught this with no wasted
+edits.
+
+### Commit 1 — RW-17 (`b7771be1`)
+
+`PROFILE_TEST_DISABLE_ENV_VAR` (`RUN_GATE_TEST_DISABLE_PROFILING`) replaced
+by `PROFILE_AMBIENT_ENV_VAR` (`RUN_GATE_PROFILE`, `'on'|'off'`) per the
+controller's RW-17 ruling, quoted here: *"no test-only switch in
+production code. The `RUN_GATE_TEST_DISABLE_PROFILING` kill switch becomes
+a documented, operator-facing ambient override `RUN_GATE_PROFILE`
+(`on`|`off`; absent → config decides; other values refused by name), the
+same class of knob as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT` (a CI
+runner without `docker exec` rights). `off` → no token, no calls,
+`resources: null`, `profile_error: "disabled (RUN_GATE_PROFILE=off)"`;
+disclosed by `--dry-run` and `doctor`; the test suite's autouse fixture
+uses it."*
+
+Applied: `resolve_profile_settings` checks the var before any config
+table; `'off'` short-circuits with a `disabled_reason` naming itself;
+`'on'` applies AFTER config/lane resolution so it overrides even a lane's
+`profile = false`; any other value `fail()`s (exit 2) by name. Two real
+findings while making the disclosure half of the ruling true in
+production (not just at the unit level where the function was already
+correct): both `--dry-run` call sites gated `print_profile_plan_dry_run`
+on `profiling`, making its own disabled-branch dead code; both inline
+`{"mode": "disabled", ...}` shortcuts were missing `disabled_reason`.
+Both fixed same commit. Full narrative in REPORT's own "RW-17" section.
+
+Doctor's disclosure of the ambient override is DEFERRED to C7 by
+necessity, not oversight — `cmd_doctor` has no profiling-aware check yet
+to extend; noted so the controller/reviewer does not read RW-17 as
+partially unapplied.
+
+Gate: targeted `pytest -k "TestProfileAmbientOverride or
+TestEphemeralProfilingWiring or ProfileConfigValidation or ..."` (47
+passed) while iterating (one round-trip: the full end-to-end
+`test_disabled_lane_...` test failed first pass because the inline
+disabled-shortcuts lacked `disabled_reason` — found and fixed before
+moving to the whole-suite run, not left for review to catch). Whole suite:
+943 passed, 3 skipped (was 940/3). `selftest --allow-dirty`: diff-coverage
+**OK 533/533 (100.0%) lines, 200/200 (100.0%) branches**, exit 0, read in
+a separate step from the captured log.
+
+### Commit 2 — C4 (`d17f9899`)
+
+`HISTORY_SCHEMA` 1 → 2; `_apply_record` now stamps the store's `schema`
+field on every write (the actual migration mechanism — `load_history_
+store`'s pre-existing `setdefault` only fills an ABSENT key, it does not
+upgrade an existing `1`, so without this the store would never actually
+migrate). `series_stats`/`_resource_field`/`RESOURCE_SERIES_GETTERS` per
+the handoff, with one correction: `hot_set_p90_bytes` reads
+`resources.damon.hot_bytes.p90`, not `resources['memory'/'cpu'/'host']` as
+the handoff's own shorthand suggested — checked against the contract's
+literal Sec 3 JSON rather than trusting the paraphrase, since DAMON's
+hot/warm/cold/idle bytes are their own top-level Summary object.
+`lane_history_report`/`history --json`/table all updated;
+`_fmt_mib`/`_fmt_cores`/`_fmt_resource_stats` new formatters.
+
+RG-27 traps re-proven once each for the generalization (10× outlier
+resistance on `memory_peak_bytes`+`hot_set_p90_bytes` in one test; dirty-
+run non-contamination against `_apply_record` directly). Schema migration
+proven end to end with a hand-written schema-1 fixture store. Three
+pre-existing tests needed updates purely because of the schema-2/new-key
+shape change (`payload["schema"]`, two empty-store assertions, one
+narrowed exact-dict-equality) — named individually in REPORT so a
+reviewer can tell "broken by construction" from "broken by defect" at a
+glance.
+
+Gate: targeted `pytest -k "TestHistoryResourceSeries or
+TestHistorySchema2Migration or TestHistoryTableResourceColumns or ..."`
+(61 passed; one arithmetic mistake in my own first test draft — miscounted
+which entries contribute to `hot_set_p90_bytes` given a `{"damon": null}`
+shaped resources dict — found and fixed before the whole-suite run).
+Whole suite: 952 passed, 3 skipped (was 943/3, +9). `selftest
+--allow-dirty`: diff-coverage **OK 568/568 (100.0%) lines, 208/208
+(100.0%) branches**, exit 0, read in a separate step.
+
+## Checkpoint (session 6, end)
+
+RW-17 and C4 both DONE and gate-verified (green selftest after each of
+the two commits above, green whole suite, both read in separate steps
+from the captured log per the binding rule). C5 (`footprint` verb) through
+C8 (docs/spec/backlog/revision, `__revision__ = 41`) and the assay-r2
+mutation lane remain — this is the sanctioned "C4 done, before C5"
+checkpoint the handoff/BRIEF-5 both name explicitly. See `BRIEF-6.md` for
+the concrete continuation state (C5's manifest shape, the still-unprinted
+footprint disclosure line, current line-number anchors).
