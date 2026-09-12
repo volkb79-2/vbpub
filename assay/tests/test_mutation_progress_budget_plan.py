@@ -358,6 +358,103 @@ def test_candidate_progress_event_gains_tests_completed_from_its_own_events_file
     assert set(by_bucket.values()) == {2, 1}
 
 
+def test_tests_completed_is_read_from_the_resolved_run_cwd_on_a_lane_declaring_cwd(
+    tmp_path,
+):
+    """(B091 round-1 blocker B3) The regression the sibling test above is
+    structurally incapable of seeing: it uses a lane with no `cwd`, where
+    the writer's key (`resolve_run_cwd(project_root, plan)`, what
+    `execute_plan` hands `LivenessRunner`) and the reader's old key
+    (`snapshot.project_root`) coincide by accident.
+
+    With `cwd = "sub"` declared they are two different directories. Before
+    the fix the reader looked for a file the writer never wrote, and
+    `count_test_events` returned `0` for EVERY candidate -- the one value
+    `run_mutation`'s own contract and CONSUMERS' `candidate` row define as
+    the opposite fact ("the plugin ran and genuinely saw no test"), so the
+    defect reported a measurement it had not made.
+
+    The fake `process_runner` writes to `liveness.candidate_events_path(
+    events_dir, Path(cwd))` -- the SAME free function, fed the SAME `cwd`
+    a real `LivenessRunner` is handed -- so this asserts reader/writer
+    path AGREEMENT, not merely that some counter counted.
+    """
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    # Repo-top-relative, exactly like `MutationTarget.path` -- independent
+    # of `cwd_declared`, which only moves where the COMMAND runs.
+    repo.write("sub/pkg/flags.py", _TEXT)
+    repo.commit_all("add flags under sub/")
+    targets = (
+        MutationTarget(path="sub/pkg/flags.py", text=_TEXT, lines=frozenset({2, 3})),
+    )
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    events_dir = tmp_path / "liveness-candidates"
+    seen_cwds: list[Path] = []
+
+    def decide(argv, *, env, cwd, timeout):
+        seen_cwds.append(Path(cwd))
+        if Path(cwd) == repo.path / "sub":
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        killed = "a = False" in text
+        events_path = liveness.candidate_events_path(events_dir, Path(cwd))
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        with events_path.open("w", encoding="utf-8") as stream:
+            for index in range(2 if killed else 1):
+                stream.write(
+                    json.dumps(
+                        {
+                            "event": "test",
+                            "nodeid": f"pkg/test_flags.py::test_{index}",
+                            "outcome": "failed" if killed else "passed",
+                            "duration_s": 0.1,
+                        }
+                    )
+                    + "\n"
+                )
+            stream.write(json.dumps({"event": "session_finish", "exitstatus": 0}) + "\n")
+        return subprocess.CompletedProcess(list(argv), returncode=1 if killed else 0)
+
+    lane = make_lane(argv=("pytest", "-q"), cwd="sub")
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=targets,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_events_dir=events_dir,
+        )
+    assert result is not None and not isinstance(result, str)
+    # The lane really did run one directory down, for the baseline and for
+    # every candidate -- otherwise this test would pass for the wrong reason.
+    assert all(path.name == "sub" for path in seen_cwds)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    candidate_events = [event for event in events if event["event"] == "candidate"]
+    assert len(candidate_events) == 2
+    by_bucket = {
+        event["outcome_bucket"]: event["tests_completed"] for event in candidate_events
+    }
+    assert by_bucket == {"killed": 2, "survived": 1}
+
+
 def test_progress_writer_refuses_a_directory_destination_with_output_write_failed(
     tmp_path,
 ):

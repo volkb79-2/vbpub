@@ -2130,7 +2130,13 @@ def run_mutation(
                     liveness_baseline_events_path
                 ):
                     write_progress({"event": "test", "phase": "baseline", **test_event})
-        from .runner import execute_plan
+        # (B091 round-1 B3) `resolve_run_cwd` travels the SAME lazy-import-
+        # then-parameter path `execute_plan` already does (a module-level
+        # `from .runner import ...` is circular -- `runner` imports
+        # `mutation` at module level), so `_run_one` can re-root the
+        # candidate's `cwd` through THE one join rather than a seventh
+        # hand-rederivation of `project_root / lane.cwd` (A-367).
+        from .runner import execute_plan, resolve_run_cwd
 
         collected = collect_mutation_sites(
             targets, adapter=adapter, operators=operators, limit=max_mutants + 1
@@ -2331,6 +2337,7 @@ def run_mutation(
             baseline_equivalence=baseline_equivalence,
             budget_per_candidate_seconds=budget_per_candidate_seconds,
             execute_plan=execute_plan,
+            resolve_run_cwd=resolve_run_cwd,
             write_progress=write_progress,
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
@@ -2415,6 +2422,18 @@ def _execute_mutation_jobs(
     budget_per_candidate_seconds: float | None = None,
     write_progress: ProgressWriter | None,
     execute_plan: Callable[..., CommandResult],
+    #: (B091 round-1 B3) `runner.resolve_run_cwd` -- THE one join from a
+    #: project root plus a `CommandPlan` to the directory that plan actually
+    #: runs in (B043/A-367). Threaded in as a parameter for the same reason
+    #: *execute_plan* is: `runner` imports this module at module level, so
+    #: the reverse import can only be lazy, and the lazy import belongs at
+    #: the ONE `run_mutation` seam rather than inside this per-candidate
+    #: hot path. `_run_one` uses it to name the events side file the
+    #: candidate's own `LivenessRunner` wrote, which is keyed on the
+    #: RESOLVED `cwd` `execute_plan` hands the runner -- not on the
+    #: pre-resolution `snapshot.project_root`, which is a different
+    #: directory for every lane declaring `cwd`.
+    resolve_run_cwd: Callable[[Path, CommandPlan], Path],
     total: int,
     candidate_count: int,
     state_root: Path | str | None = None,
@@ -2481,17 +2500,32 @@ def _execute_mutation_jobs(
                 clock=clock,
             )
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
-            # (B091/D-23, P7 A4) Read back HERE, while `snapshot.
-            # project_root` is still this candidate's own real execution
-            # `cwd` -- the events file lives at the lane's PERSISTENT
-            # `liveness_events_dir`, so it would still be readable after
-            # this `with` block exits, but the *path* to it is keyed by
-            # `cwd`, which only this scope still has.
+            # (B091/D-23, P7 A4) Read back HERE, while this candidate's own
+            # snapshot root is still in scope -- the events file lives at
+            # the lane's PERSISTENT `liveness_events_dir`, so it would
+            # still be readable after this `with` block exits, but the
+            # *path* to it is keyed by the execution `cwd`, which only this
+            # scope still has.
+            #
+            # (B091 round-1 B3) That key is the RESOLVED run cwd -- what
+            # `execute_plan` hands `LivenessRunner` (the writer) one line
+            # above, i.e. `resolve_run_cwd(snapshot.project_root, plan)`,
+            # NOT `snapshot.project_root` itself. The two coincide only
+            # when the lane declares no `cwd`; on a lane that declares one
+            # they are different directories, the reader missed the file
+            # the writer wrote, and `count_test_events` returned `0` --
+            # precisely the value this field's own contract (below, and
+            # CONSUMERS' `candidate` row) defines as "the plugin ran and
+            # genuinely saw no test". Routed through THE one join for the
+            # same reason `runner.py`'s two other re-rootings are (A-367:
+            # "agrees today" is not a property an edit to either side
+            # preserves).
             tests_completed: int | None = None
             if liveness_events_dir is not None:
                 tests_completed = liveness.count_test_events(
                     liveness.candidate_events_path(
-                        liveness_events_dir, snapshot.project_root
+                        liveness_events_dir,
+                        resolve_run_cwd(snapshot.project_root, plan),
                     )
                 )
             try:
