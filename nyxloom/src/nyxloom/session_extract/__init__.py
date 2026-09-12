@@ -10,6 +10,7 @@ read_since_marker(path) for delta-extraction (see its own docstring).
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +54,7 @@ class ExtractResult:
             ledger=self._ledger,
             insert_blank_lines=self._insert_blank_lines,
             gap_marker_mode=self._gap_marker_mode,
+            block_render=self._block_render,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -65,6 +67,11 @@ class ExtractResult:
     # E-012 (ledger.py) -- opt-in, built and attached by cli.py's cmd_extract
     # when --ledger is passed; None means "not requested," skipped entirely.
     _ledger: dict[str, Ledger] | None = None
+    # Per-block prose render hook (render.py's own block_render param) --
+    # attached by cli.py for --render-markdown/--highlight. A rendering
+    # concern, not a selection one, so it lives here rather than in
+    # ExtractConfig, same as _output_format above.
+    _block_render: Callable[[str], str] | None = None
 
 
 def read_since_marker(path: Path) -> tuple[str, str]:

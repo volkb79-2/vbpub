@@ -401,6 +401,29 @@ Claude Code uuid, a real sub-agent `agentId`, a real Codex rollout uuid, and
 a real `ses_...` id against the real 935 MB opencode store all resolve;
 a nonexistent uuid errors.
 
+## Render modes
+
+The default text output is unchanged and stays the paste-into-a-fresh-agent
+format. `extract --render-markdown` is the *reading* mode: each kept block's
+prose goes through `rich`'s markdown renderer, so headers, bold, tables and
+fenced code render the way the CLI that wrote them showed you live (verified
+by eye against a real session: real tables, real code-block backgrounds).
+
+Scope is deliberately narrow — kept blocks' **own prose only**. The `---`
+separators, the bracketed gap/stop-reason notes this package authors itself,
+the E-012 ledger line and the trailing
+`<!-- nyxloom-extract: format=... marker=... -->` footer never pass through a
+renderer. Piping the whole output through one would mangle exactly that
+scaffolding (a `---` line *is* a horizontal rule; an HTML comment disappears),
+and the footer is machine-read back by `--since-file`, so it has to stay
+byte-exact. `render.py` therefore takes an opaque per-block `block_render`
+callable and imports neither rendering library itself.
+
+`--color`/`--no-color` override the `isatty()` default, exactly as on
+`extract-debug`, and error if no render mode is active. `--render-markdown`
+errors combined with `--json` (a rendering flag, not a data one — the same
+rule already applied to `--insert-blank-lines` and friends).
+
 ## Delta extraction
 
 Two ways to resume from a known point instead of re-walking a whole

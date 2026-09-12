@@ -64,6 +64,19 @@ prefixing the kind duplicated it onto the QUESTION line instead ("OPERATOR:
 <question>\n- opt\n...\n\nOPERATOR: <answer>") and couldn't express more
 than one label for a multi-question batch either way.
 
+Optional `block_render` param (2026-09-12): a per-block text->text hook
+applied to each kept event's OWN PROSE only, before blocks are joined. This
+is where `extract --render-markdown` (render_markdown.py, via `rich`) and
+`extract --highlight` (highlight.py, via `pygments`) plug in, and it is
+deliberately narrow: the `---` separators, the bracketed gap/stop-reason
+notes this module authors itself, the ledger line, and the trailing
+`<!-- nyxloom-extract: ... -->` footer are NOT passed through it. Running
+the whole rendered output through a markdown renderer instead would mangle
+exactly that scaffolding -- a `---` line is a horizontal rule, an HTML
+comment vanishes -- and the footer is machine-read by read_since_marker(),
+so it must survive byte-exact. Neither dependency is imported here; the
+caller passes a callable.
+
 Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
 marker -- when given, `render_text` inserts that boundary's rendered
 `[files read: ...] [files edited: ...] [commits created: ...] [branches
@@ -77,6 +90,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 
 from .events import EventKind, NormalizedEvent
 from .ledger import Ledger
@@ -152,6 +166,17 @@ def _separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
     return f"{pad}{marker}{pad}"
 
 
+def render_event_block(ev: NormalizedEvent, block_render: Callable[[str], str] | None = None) -> str:
+    """One kept event's own rendered text block -- the `OPERATOR: ` prefix
+    rule (see the module docstring for why that one label, and why QA_PAIR is
+    excluded from it) plus the optional per-block render hook, applied to the
+    event's prose only, never to the prefix. Shared with follow.py so a live
+    stream and a one-shot render can't drift on either decision."""
+    text = block_render(ev.text) if block_render is not None else ev.text
+    prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
+    return f"{prefix}{text}"
+
+
 def render_text(
     events: list[NormalizedEvent],
     fmt: str,
@@ -161,6 +186,7 @@ def render_text(
     ledger: dict[str, Ledger] | None = None,
     insert_blank_lines: int = 1,
     gap_marker_mode: str = "full",
+    block_render: Callable[[str], str] | None = None,
 ) -> str:
     plain_sep = _separator(insert_blank_lines)
     parts: list[str] = []
@@ -185,8 +211,7 @@ def render_text(
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
             _add(note)
     for ev in events:
-        prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
-        _add(f"{prefix}{ev.text}")
+        _add(render_event_block(ev, block_render))
         if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():

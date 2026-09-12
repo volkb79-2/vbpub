@@ -706,7 +706,7 @@ def cmd_extract(args) -> int:
     [--max-lifecycle-markers N]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
     [--show-api-errors] [--show-compaction-content] [--insert-blank-lines N] [--gap-marker MODE]
-    [--min-gap-records N] [--show-gap-source]
+    [--min-gap-records N] [--show-gap-source] [--render-markdown] [--color | --no-color]
     [--strip-stale-wakeups] [--redact-pattern REGEX] [--task TEXT | --task-file PATH]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
@@ -769,6 +769,20 @@ def cmd_extract(args) -> int:
     flag's own --help text for the full value space (config.py's
     insert_blank_lines/gap_marker_mode comments have the complete picture).
 
+    --render-markdown (2026-09-12) is for READING the brief rather than
+    piping it: each kept block's prose goes through `rich`'s markdown
+    renderer, so headers/bold/code fences render the way the CLI that wrote
+    them showed you live. Rendering CONSUMES the markup characters, which is
+    exactly wrong when the point is to copy real markdown back out of the
+    terminal -- `--highlight` covers that case instead (pygments, every
+    character left in place). The two are mutually exclusive. Only kept
+    blocks' own prose is affected: the `---` separators, the bracketed gap/
+    stop-reason notes, the ledger line and the trailing `<!-- nyxloom-extract:
+    ... -->` footer are never passed through a renderer (the footer is
+    machine-read by --since-file and must stay byte-exact).
+    --color/--no-color override the isatty() default, exactly as on
+    extract-debug, and error if no render mode is active.
+
     --strip-stale-wakeups/--redact-pattern/--task/--task-file (2026-09-11,
     operator direction, "handoff to a fresh agent" -- see
     session_extract/mangle.py) exist for `nyxloom extract ... | claude`:
@@ -808,10 +822,18 @@ def cmd_extract(args) -> int:
             text_only.append("--task")
         if args.task_file is not None:
             text_only.append("--task-file")
+        if args.render_markdown:
+            text_only.append("--render-markdown")
         if text_only:
             print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
                   f"effect combined with --json", file=sys.stderr)
             return 1
+
+    if args.color is not None and not args.render_markdown:
+        # --color's only job is the render modes below; a flag that silently
+        # does nothing is the trap this package keeps erroring on instead.
+        print("error: --color/--no-color only apply to --render-markdown", file=sys.stderr)
+        return 1
 
     if args.redact_pattern:
         import re as re_mod
@@ -868,6 +890,12 @@ def cmd_extract(args) -> int:
             if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
         }
         result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
+
+    if args.render_markdown:
+        from .session_extract.render_markdown import render_markdown
+
+        use_color = sys.stdout.isatty() if args.color is None else args.color
+        result._block_render = lambda text: render_markdown(text, color=use_color)
 
     if result.stale_wakeups_stripped:
         print(f"nyxloom extract: stripped {result.stale_wakeups_stripped} stale-wakeup "
@@ -2737,6 +2765,22 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                     "exact same token --since/--until resolve, a 'go look it up "
                                     "yourself' pointer into the raw log. Off by default. No "
                                     "effect under --gap-marker=none")
+    render_group.add_argument("--render-markdown", action="store_true",
+                               help="Render each kept block's markdown for READING (via rich): "
+                                    "bold/headers/code fences actually rendered, the way the CLI "
+                                    "that wrote them showed you live. The markup characters are "
+                                    "consumed in the process, so this is the wrong mode for "
+                                    "copying prose back out -- see --highlight, which colors "
+                                    "markdown while leaving every character in place. Applies to "
+                                    "kept blocks' prose only; separators, gap/stop-reason notes "
+                                    "and the trailing marker comment are untouched")
+    color_group = extract_parser.add_mutually_exclusive_group()
+    color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
+                              help="Force ANSI color for --render-markdown/--highlight even when "
+                                   "stdout isn't a terminal (default: color iff stdout is a tty)")
+    color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
+                              help="Disable ANSI color for --render-markdown/--highlight even "
+                                   "when stdout is a terminal")
 
     handoff_group = extract_parser.add_argument_group(
         "handoff to a fresh agent",

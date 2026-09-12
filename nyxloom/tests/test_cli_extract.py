@@ -991,3 +991,36 @@ def test_extract_sessions_accepts_a_bare_session_uuid_too(tmp_path, capsys, monk
     exit_code = cli.main(["extract-sessions", uuid])
     assert exit_code == 0
     assert "(interactive session)" in capsys.readouterr().out
+
+
+def test_extract_render_markdown_renders_blocks_but_not_the_scaffolding(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--no-color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    # the '## Status' header rendered (its own '##' consumed)...
+    assert "Status" in out and "## Status" not in out
+    # ...while render.py's own separator and marker footer survive verbatim
+    assert "\n---\n" in out
+    assert "<!-- nyxloom-extract: format=claude-code marker=" in out
+
+
+def test_extract_render_markdown_errors_with_json(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--json", "--render-markdown"])
+    assert exit_code == 1
+    assert "--render-markdown" in capsys.readouterr().err
+
+
+def test_extract_color_without_a_render_mode_errors(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--no-color"])
+    assert exit_code == 1
+    assert "--color/--no-color only apply to" in capsys.readouterr().err
+
+
+def test_extract_color_and_no_color_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--color", "--no-color"])
+    assert exit_code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
