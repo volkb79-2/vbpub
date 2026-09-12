@@ -98,6 +98,24 @@ never a silent edit to the contract file.
   injectable), so RG-36/RG-41 stall semantics are unchanged. The daemon
   path does no per-tick work and no `ctl status` polling in v1.
 
+- **RW-13 (P1 C4):** accepted — `ctl status <id>` on a finished session
+  answers `unknown-session`; a finished session's summary is reachable via
+  the idempotent `stop`.
+- **RW-14 (P1 C4→C5/C6):** `ctl report` must render the REAL report (plan
+  D-8, contract §2.6) through the existing report tier inside the image;
+  a stub is not acceptable. If the session directory layout deviates from
+  what `analyze`/`store` expect, the daemon writes the compatible layout.
+- **RW-15 (P1):** the no-token path re-discovers `cgroup.procs` on the
+  discovery cadence and recommits DAMON targets on change, like the token
+  path.
+- **RW-16 (P1):** accepted — `WRITABLE_ROOTS` guards the raw writes
+  `serve.py`/`damon.py` issue directly; `RunDir` writes are sessions-dir
+  scoped by construction; the socket bind/unlink is control-plane.
+- Deferred by ruling: populating `events.jsonl` with detected events →
+  **CP-5** (the summary's `events` counts are the contractual part and are
+  computed). CP-4 (pre-existing `test_store.py` birthday-collision flake)
+  was filed by P1 session 4.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
