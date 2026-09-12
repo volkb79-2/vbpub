@@ -631,3 +631,29 @@ Verify: `grep -n "CGROUP_PARENT_DEV_GATES" AGENTS.md` shows the new bullet;
 `diff /workspaces/vbpub/AGENTS.md AGENTS.md` (run from this worktree)
 confirms this is the same root file the shared checkout also has dirty,
 not a worktree-only copy.
+
+### C9 — devcontainer.json: /run/cgprofile bind mount (RW-31/A2, D-30, M5) (hash: see next entry)
+
+`templates/devcontainer.json`'s `mounts` array gains
+`source=/run/cgprofile,target=/run/cgprofile,type=bind`, placed right
+after the existing `docker-api` bind and before the commented-out
+BuildKit worker mount, with the required 4-part comment: PURPOSE (the
+socket carrier half of RG-55's one-protocol-two-carriers transport,
+`transport=auto` prefers it when present/answering, exec-only forever on
+an unrebuilt devcontainer, no break); GROUP ACCESS (no new gid plumbing --
+root:docker 0660 socket, the existing `--group-add ${localEnv:DOCKER_GID}`
+runArg already covers it); HOST PREREQUISITE (needs host-setup >= the
+version installing `tmpfiles-cgprofile.conf`, since Docker `--mount`
+REFUSES to start at all on a missing bind source -- unlike `-v`, which
+would silently create one with the wrong owner); and an explicit
+opt-out (delete the line).
+
+Verified via a from-scratch JSONC comment-stripper (handles `//` and
+`/* */` inside/outside string literals) run against the file: parses as
+valid JSON, the new mount is present, `containerEnv` carries exactly the
+three placement vars (`CGROUP_PARENT_DEV_INTERACTIVE/_BACKGROUND/_GATES`)
+with zero `INFRA` residue.
+
+Verify: `python3 -c "..."` (JSONC-strip + `json.loads`, script content in
+this LOG entry's own commit message) confirms valid JSON and mount
+presence; `grep -n cgprofile templates/devcontainer.json`.

@@ -67,6 +67,26 @@
     // end-of-run reminder — disruptive, restarts every container, batch it
     // with any other pending daemon.json change).
     "source=/run/docker-api,target=/run/docker-api,type=bind",
+    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
+    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
+    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
+    // contract, one protocol shared with the `docker exec` carrier — run-gate's
+    // `transport = auto` prefers the socket when it is present and answering,
+    // else falls back to exec. Nothing breaks on a devcontainer that predates
+    // this mount: `auto` simply resolves to exec forever for it, no rebuild
+    // required to keep working.
+    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
+    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
+    // puts this container in that same group (the same principals who can
+    // `docker exec` can reach the socket).
+    // HOST PREREQUISITE: host-setup >= the version that ships this mount
+    // (host-setup/units/tmpfiles-cgprofile.conf, applied by install.sh) —
+    // `mounts` entries are Docker `--mount`, which REFUSES to start the
+    // container at all if the bind SOURCE does not exist (unlike `-v`, which
+    // would silently create one owned by the wrong user). Upgrade the host
+    // before rebuilding a devcontainer against this template, or delete this
+    // line to opt out.
+    "source=/run/cgprofile,target=/run/cgprofile,type=bind",
     // Host-managed BuildKit worker (mdt-buildkitd.service, dev-buildkitd.slice
     // — see host-setup/plan-buildkitd-service.md). OPTIONAL and commented out:
     // an unconditional mount here would break container start on any host that
