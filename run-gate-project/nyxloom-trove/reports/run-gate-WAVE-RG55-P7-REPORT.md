@@ -878,3 +878,88 @@ them as a known, deliberate gap rather than an oversight.
 Committed at `ee24ced6`. Relaunched `./run-gate.py tester-unified` from
 this tip after a PSI check (see the gate verdict below / this session's
 own return message for the outcome and elapsed time).
+
+## Round-1 repairs (sessions 9 + 10)
+
+| finding | commit | one-command verification |
+| --- | --- | --- |
+| B1 -- plugin's `os._exit` default turns a real kill into a false survivor | `802f0855` (session 9) | `cd assay && python3 -m pytest tests/test_cli_run.py -k configure_time_raise -q` |
+| B2 -- idle bound derived from `call` durations only, so a quiet setup/teardown/collection is `hung` | `07e121d9` | `cd assay && python3 -m pytest tests/test_liveness_proc_helpers.py tests/test_liveness_runner_monitor.py -q` |
+| B3 -- `candidate.tests_completed` read from the wrong directory on a lane declaring `cwd` | `5c1b9ef8` | `cd assay && python3 -m pytest tests/test_mutation_progress_budget_plan.py -k resolved_run_cwd -q` |
+| B4 -- every native-R2 verdict refused by an assay < 6.2.0 under an unchanged `schema_version: 11` | `4ef3985f` (docs; RW-49/D1 keeps 11) | `grep -n "unknown mutation field" assay/docs/CONSUMERS.md assay/CHANGES.md` |
+| B5 -- `[Unreleased]` contradicted itself, no Added/Changed/BREAKING split | `4ef3985f` | `sed -n '/^## \[Unreleased\]/,/cmru: release history/p' assay/CHANGES.md` |
+| S2, S4, S7, S8, S9, S10 | `ef247935` | `cd assay && python3 -m pytest tests/test_liveness.py -q && python3 -m pyflakes src/assay/*.py` |
+
+### B2 -- planted mutants on the calibration (10 planted, 10 caught)
+
+Each was applied to `src/assay/liveness.py`, the three liveness test files
+run, and the file restored (`git status` clean afterwards). None survived.
+
+| # | mutant | caught by |
+| --- | --- | --- |
+| M1 | leading gap taken from `gaps[-1]` instead of `gaps[0]` | `test_calibration_survives_the_reviewers_40s_module_fixture` |
+| M2 | steady-state multiplier `3.0` -> `2.0` | `test_calibration_survives_the_reviewers_40s_module_fixture` |
+| M3 | pre-first-event multiplier `3.0` -> `2.0` | `test_calibration_survives_the_reviewers_40s_module_fixture` |
+| M4 | the 15 s floor's `max` -> `min` | `test_calibration_survives_the_reviewers_40s_module_fixture` |
+| M5 | backwards-clock clamp `max(0.0, ...)` dropped | `test_calibration_clamps_a_backwards_clock_step_to_a_zero_gap` |
+| M6 | leading gap taken without the `session_start` guard | `test_calibration_without_a_session_start_uses_the_worst_gap_for_both` |
+| M7 | `len(stamps) < 2` -> `< 1` (one timestamp treated as an interval) | `test_calibration_a_lone_stamped_record_cannot_form_a_gap` |
+| M8 | runner: `event_count > 0` -> `>= 0`, so the pre-first bound never applies | `test_the_pre_first_event_bound_governs_until_the_first_event_arrives` |
+| M9 | plugin: every phase emitted as a `test` event | `test_materialized_plugin_writes_valid_json_events` |
+| M10 | plugin: `session_start` never written | `test_materialized_plugin_writes_valid_json_events` |
+
+M2/M3/M4 and M1 all land on the same test because that test pins four
+numbers at once (`worst_gap_s`, both bounds, `slowest_test_s`) on the
+reviewer's own measured shape; M1/M3 are additionally pinned apart by
+`test_calibration_leading_gap_is_the_first_interval_not_the_worst` and
+`test_calibration_covers_the_trailing_session_teardown_gap`, where the two
+bounds differ (120.0 vs 21.0, and 90.0 vs 15.0).
+
+### Coverage
+
+`liveness.py` 100% line AND branch (328 statements, 90 branches, 0 missing)
+under `test_liveness.py + test_liveness_proc_helpers.py +
+test_liveness_runner_monitor.py + test_cli_run.py` with `--cov-branch`.
+Every new conditional is exercised with the other optional parameter at its
+default: `LivenessRunner`'s `pre_first_event_within_s` defaults to `None`
+(= the steady-state bound) in every pre-existing monitor test, so those all
+drive the new bound-selection branch at the default; and the new bound tests
+leave `poll_interval_s`/`cpu_reader`/`popen` at theirs.
+
+### Deferred S-items, with reasons
+
+- **S1 (liveness writes into the judged tree with no ignore-guard, and never
+  cleans up).** Real design work, not a patch: a load-time refusal/WARN
+  mirroring the `--progress` diagnostic, PLUS a candidate-file cleanup
+  policy (delete each triple once `tests_completed` is read, or key the
+  whole directory per run and remove it at sweep end). Not gate-blocking --
+  every vbpub subproject is covered by the root `.gitignore`'s `.assay/`
+  entry, which the reviewer verified with `git check-ignore` -- but real
+  debt. Should become its own backlog row.
+- **S3 (unknown `--rejudge` id refuses with `UNREADABLE_ARTIFACT`).** The
+  message is already right; only the code is wrong. But it is raised as
+  `MutationStateError`, whose reason-code mapping is shared by the whole
+  `run_mutation` refusal path, so retyping this ONE site is not the
+  ten-line change it looks like from the call site -- it needs either a new
+  exception or a per-raise reason override, and the tests that pin
+  `MutationStateError` on this path. Deliberately not rushed into a repair
+  set.
+- **S5 (monitor cost and the unbounded `cpu_samples` list).** A performance
+  change inside the hot loop B1 and B2 just hardened. Its own reviewed
+  change; folding it in here would put an unmeasured optimisation under the
+  same round-2 review as the correctness repairs.
+- **S6 (`--rejudge-outcome` help text hand-transcribes `MUTATION_BUCKETS`).**
+  Genuinely cheap and genuinely right -- it is the A-228 pattern this
+  package's own `verdict.py` guards against. It re-adds to `cli.py` the
+  import `95d02f50` removed, so it wants one small test pinning the help
+  string against the vocabulary rather than a bare edit. Out of this
+  session's call budget; should be the first thing a follow-up picks up.
+
+### Gate (session 10)
+
+Launched from the clean tip `ef247935` after the pre-flight checks
+(`docker ps` container count, `/proc/pressure/memory` `full avg10`). No
+commit or edit touched the worktree while it ran -- HEAD movement voids the
+measurement (the incident that wasted P7's second gate run). The verdict
+line, read in a separate step, is in this session's return message and in
+the controller log.
