@@ -328,3 +328,13 @@ Wired into `run-gate.toml`'s `[lanes.smoke]` `argv` (after the `py_compile`
 step, before the final `echo`) so it is part of the actual registered gate,
 not a standalone script nobody runs — updated the lane's header comment to
 describe it.
+
+### Gate verdict (hash: 62927f1f = the Gates commit above)
+
+RAM PSI checked first (`/proc/pressure/memory`): `full avg10=2.44` — well
+under the 5 back-off threshold. From a clean, committed tree (run-gate
+refuses a dirty one): `nice -n 19 ionice -c 3 python3 run-gate.py smoke`.
+Verdict read in a separate step (not a pipe tail): `run-gate: lane 'smoke'
+exit 0`. `docker ps -a --filter name=run-gate-vbpub-smoke` afterward, in
+its own separate step: no leftover container. REPORT written next with the
+final tip and the exact operator command sequence.
