@@ -476,7 +476,11 @@ def deliver(att: AttentionEvent, config: FollowConfig, out) -> None:
         }
         try:
             ok, detail = notify_mod.send(config.notify, note)
-        except Exception as e:  # a transport this module cannot reason about
+        except Exception as e:  # census: advisory-degradation (nyxloom-P123)
+            # Matches notify.py's own classification of a delivery failure: a
+            # notification that does not arrive can only ever REDUCE what
+            # happens, never authorize anything, and a follow loop that dies
+            # because a push failed is worse than a missed push.
             ok, detail = False, str(e)
         if not ok:
             print(f"nyxloom follow: --notify-project delivery failed: {detail}", file=sys.stderr)
