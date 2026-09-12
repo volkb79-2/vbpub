@@ -805,3 +805,156 @@ CONFIG layer for this already exists and is tested — `resolve_profile_settings
 — only the RUNTIME consequence of `enabled: False` remains unwired). Then
 C4 (history schema 2) through C8 (docs/spec/backlog/revision) are entirely
 untouched. See `BRIEF-4.md`.
+
+## Session 5 (fresh successor) — orientation
+
+Read, in order: BRIEF-4 (the 8-item remaining-wiring list with then-current
+line numbers, both things BRIEF-3's draft got wrong, the retention prompt),
+the handoff §2 C3–C8/§3/§4/§5/§6/§7, the interface contract §1–§7 (already
+fully absorbed per BRIEF-4's own "do not re-read" list — re-read only the
+obligations block, §4, since that is what the wiring implements). Two
+controller rulings quoted verbatim in the dispatch prompt, both APPLIED as
+given, no re-litigation: **RW-11** (the basic-path file list stays 12
+files, controller confirms BRIEF-4's own reading against the contract
+text), **RW-12** (`await_container`'s tick shape — no background thread;
+`proc.wait(timeout=tick)` with `tick = PROFILE_SAMPLE_SECONDS` while a
+basic sampler is active else `PROGRESS_POLL_SECONDS`; the stall/log-watch
+poll itself gated to real `PROGRESS_POLL_SECONDS` elapsed; daemon path does
+NO per-tick work in v1; reaching the timeout branch structurally proves the
+container is running — sample there). RW-12 also resolves BRIEF-3/BRIEF-4's
+open "background thread vs. shrunk poll interval" decision — the
+controller picked the shrunk-interval shape, not the thread BRIEF-3 leaned
+toward.
+
+Worktree/branch/HEAD verified unchanged (`40c1aa65`) before touching
+anything — matches the dispatch prompt exactly, no drift since BRIEF-4 was
+written.
+
+Orientation call count: 2 (BRIEF-4, handoff sections) + `git log`/`grep -n`
+line-number re-verification before each edit cluster, per the standing
+house rule. Nothing in the read list was wrong; BRIEF-4's line numbers
+matched HEAD exactly (no intervening commits).
+
+## Commit 6 — C3 wiring: token, orchestration glue, all four lane runners, re-attach/promote
+
+Design decisions made while wiring (beyond what BRIEF-4/RW-11/RW-12 already
+settled), each recorded here rather than only in code comments:
+
+- **Container id resolution reuses `container_state()`** (the SAME single
+  `docker inspect -f '{{...5 fields...}}'` call `resolve_inflight` already
+  makes elsewhere in this file) rather than issuing a second, literally
+  `docker inspect --format '{{.Id}}'` call the handoff's own prose
+  describes. The real docker fact needed (a 64-hex container id) is
+  identical either way; a second differently-shaped inspect call would
+  duplicate existing, already-tested plumbing for zero behavioral gain, and
+  `fake_docker_stateful`'s own inspect answer already matches
+  `container_state`'s expected 5-field format — a literal second call would
+  have needed either a NEW shim behavior (risking the ~40 other tests that
+  share that shim) or a mismatched answer. Not treated as a decision ask:
+  it satisfies the contract's own obligation ("docker inspect ... resolves
+  the real id") by a different, already-proven path to the same fact.
+- **The footprint disclosure line is NOT printed by C3.** Contract §4.6's
+  line 3 needs `history median peak {n} MiB ({k} runs)` — a value only
+  `series_stats` (C4) can produce; there is no history data shaped that way
+  until C4 lands. BRIEF-4's own text already drew this line ("footprint
+  line (C4/C5 territory for the full footprint line, but the profile-
+  session line belongs here)") — followed as written, not reinterpreted.
+- **The test-only kill switch** (`RUN_GATE_TEST_DISABLE_PROFILING`) — see
+  REPORT's own dedicated section; the single highest-leverage decision this
+  session made, since without it essentially every pre-existing test in the
+  file would have broken on first run. Verified empirically: the FULL
+  `tests/` suite passes byte-for-byte unchanged (898 passed, 3 skipped —
+  the exact baseline) with the kill switch active and ZERO new wiring code
+  reached, before a single new RG-55 wiring test was added.
+- **Re-attach of a basic-path session is not attempted.** A basic-path
+  session's samples live in the ORIGINAL client's process memory; a
+  re-attaching client is, by definition, a different process. Contract
+  text does not address this case explicitly (it is written from the
+  daemon's persistent-session point of view); read as: adopt what CAN be
+  adopted (a daemon session id), name what cannot (no fabricated resume).
+
+### The final-sample defect: how it was found and closed same-session
+
+Found by the live probe required BEFORE return (handoff §4.1), not by a
+unit test — the golden-fixture tests all feed samples directly into
+`ResourceAccumulator`/`BasicSampler`, never exercising the real
+`docker exec` timing against an ACTUALLY-EXITED container, because no fake
+docker shim in this suite modeled "exec refuses after exit" before this
+session (real docker does; the shims never needed to say so until real
+end-to-end wiring existed to expose it). Root-caused by direct
+reproduction (`docker run` a container with a 2s sleep, wait 3s, `docker
+exec` into it — "is not running", exit 1) rather than guessing from the
+symptom. Fixed same session (`BasicSampler.sample_final()`, commit
+`38089fe6`) rather than deferred, because it silently defeated the
+ephemeral basic-path's primary practical signal (peak memory) on every
+single run — see REPORT's "A real finding" section for the full fix
+narrative and its re-verification.
+
+### Gate verdicts (read in a separate step from the captured log, not a pipe tail)
+
+- `nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py -k
+  "Profiling or Reattach"` (targeted, iterating): grew from 18 (orchestration
+  glue unit tests) to 45 (adding await_container/bare-host/ephemeral/exec/
+  re-attach integration tests) to 49 after the final-sample fix's own 4
+  tests; three test-authoring bugs found and fixed while iterating — a
+  `--worktree` flag on tests whose lane argv carried no `{worktree}` token
+  (RG-1 refusal, unrelated to profiling — fixed by dropping the flag, the
+  lane never needed it), a `run_tool()` subprocess call in 3 exec-lane
+  tests that could never satisfy diff-coverage (coverage.py does not
+  instrument a spawned child interpreter — converted to in-process
+  `run_gate.main()` calls, mirroring every other wiring test in the file),
+  and a `resolve_inflight` collect-branch test asserting a call shape
+  (`run_record=None`) the function's OWN pre-existing `adopt_inflight_start`
+  dependency already crashes on — removed the redundant defensive guard
+  from the source instead of chasing an artificial test for dead code.
+- `nice -n 19 ionice -c 3 python3 -m pytest tests/ -q` (whole suite): 898
+  passed, 3 skipped BEFORE any new test was added (proves the kill switch
+  alone changes nothing observable); 936 passed, 3 skipped after C3
+  wiring's own 45 new tests; 940 passed, 3 skipped after the final-sample
+  fix's 4 more.
+- `nice -n 19 ionice -c 3 ./run-gate.py selftest --allow-dirty`: FIRST run
+  (wiring, before closing gaps) — diff-coverage FAIL 493/515 (95.7%) lines,
+  191/198 branches, 22 named lines (mostly `run_exec_lane`'s own new code —
+  the `run_tool()`-subprocess coverage blind spot above, plus two genuinely
+  unreachable-via-main() defensive branches: `promote_follower`'s daemon
+  `stop()` failure arm, `resolve_inflight`'s collect-branch `run_record is
+  not None` guard). SECOND run (after the 3 test-authoring fixes above +
+  2 new direct-call tests for the promote/collect branches): diff-coverage
+  **OK 514/514 (100.0%) lines, 196/196 (100.0%) branches, exit 0**; 936
+  passed, 3 skipped, 108.86s. THIRD run (after the final-sample fix, its 4
+  new tests): diff-coverage **OK 529/529 (100.0%) lines, 200/200 (100.0%)
+  branches, exit 0**; 940 passed, 3 skipped, 108.37s.
+- `./run-gate.py --base main assay-r1`: PASS against `d8003d36` (100.0%,
+  changed_lines mode, `require_branch: true`, base resolved via merge-base
+  to `e499a168`); re-run and PASS against `38089fe6` (the final-sample fix
+  commit) before return.
+- `./run-gate.py assay-r3`: PASS against both commits — `canary: 1
+  rejected, 0 survived` each time (`--base` refused by name on this lane,
+  correctly — it is a command lane with no `{base}` token, matching R-26's
+  own rule; ran without the flag).
+- `assay-r2` deliberately NOT run — C4-C8 still remain, so this is not the
+  session making the final commit.
+- Live acceptance (handoff §4.1/§4.2), from a throwaway git repo
+  (`/tmp/.../scratchpad/rg55-probe`) symlinking this worktree's
+  `run-gate.py`: full transcript and headline numbers in REPORT's own
+  "Live acceptance" section. `footprint --write` (§4.3) deferred to C5 —
+  the verb does not exist yet.
+
+Commits: `d8003d36` — `feat(rg55-p2): C3 wiring -- token, daemon/basic
+orchestration, ephemeral+exec flows, re-attach/promote profiling rules`;
+`38089fe6` — `fix(rg55-p2): basic-path final sample must not record a
+total docker-exec failure as data`.
+
+## Checkpoint
+
+C3 is now fully DONE (config+client+accumulator+sampler from commit
+`4d684920`, wiring from `d8003d36`, the live-probe-found fix from
+`38089fe6`) — green `selftest` (100% line+branch), green whole suite
+(940 passed, 3 skipped), green `assay-r1`/`assay-r3` against the final
+commit, both live acceptance probes run and satisfying their numeric
+criteria, LOG/REPORT updated, `BRIEF-5.md` written for the successor.
+C4 (history schema 2) through C8 (docs/spec/backlog/revision,
+`__revision__ = 41`) are entirely untouched — see `BRIEF-5.md` for the
+concrete starting point (C4's `HISTORY_SCHEMA`/`series_stats` design,
+current `history`-related line numbers, the deferred footprint disclosure
+line C4/C5 need to complete together).

@@ -362,6 +362,169 @@ package's part — flagged for the P0 controller and the P1 (daemon) session
 to confirm independently, since the contract is described as FROZEN and
 shared verbatim between both packages.
 
+## C3 (wiring) — token, orchestration glue, all four lane runners, re-attach/promote (R-43 COMPLETE)
+
+Finishes C3. RW-11 (basic-path 12-file list) and RW-12 (`await_container`
+tick shape: `proc.wait(timeout=PROFILE_SAMPLE_SECONDS)` while a basic
+sampler is active, else unchanged `PROGRESS_POLL_SECONDS`, with the stall/
+log-watch poll gated to real `PROGRESS_POLL_SECONDS` elapsed via an
+injectable monotonic clock; no daemon per-tick work) applied exactly as
+ruled — quoted at the top of LOG's Session 5.
+
+**New orchestration functions** (between `BasicSampler` and the
+environment-fact-derivation section, so the narrow, independently-tested
+contract classes stay above the glue that calls them): `profile_meta`,
+`read_host_pressure_snapshot`/`print_host_pressure_line`,
+`start_lane_profiling` (daemon-try-then-basic-fallback, sampling the
+baseline immediately on fallback), `tick_lane_profiling`,
+`finish_lane_profiling`, `print_profile_warning` (ONE warning per
+invocation, contract §1.3, via a `_warned` sentinel), `print_profile_session_line`,
+`print_profile_plan_dry_run`. A profiler STATE is a plain dict (matching
+`record`/`watch`'s own calling convention in this file), never a class —
+documented at its first write in `start_lane_profiling`'s own docstring.
+
+**Ephemeral (`run_container_lane`)**: token appended right after the
+`forward_env` loop (gated behind `profiling = bool(profile_plan and
+profile_plan["enabled"])`, so disabled means literally no `-e` flag, no
+extra `docker inspect`, no `start_lane_profiling` call at all — not just
+an unused token); `write_inflight_record` called TWICE (once with
+`profile_token`/`profile_daemon` right after a successful `docker run -d`,
+a second time adding `profile_session` after a successful daemon `start`);
+container id resolved via `container_state(docker, name)["id"]` — the
+SAME single `docker inspect` call `resolve_inflight` already uses
+elsewhere in this file, not a second, differently-shaped one — falling
+back to `docker run -d`'s own stdout id if `container_state` reports the
+container already gone (tested directly, since a real fake-docker shim
+without `inspect` support cannot express it safely).
+
+**Exec (`run_exec_lane`)**: rewritten from blocking `subprocess.run(argv)`
+to `Popen` + a `proc.wait(timeout=…)` loop identical in shape to
+`await_container`'s (tick = `PROFILE_SAMPLE_SECONDS` only while a basic
+sampler is active, else `None` — blocks exactly like the old blocking call
+when profiling is off or daemon-mode, contract's own "no per-tick work"
+rule for the daemon path, one level over); container id = the persistent
+runner's (`container_state` again); `--scope container-shared`. The
+red-first proof named by the wave's own test spec (§3) — verified by
+REASONING rather than by literally reverting and re-running: the OLD
+`subprocess.run(argv)` call structurally blocks until the process exits,
+so the loop that calls `tick_lane_profiling` never runs at all under that
+shape — at most the ONE pre-loop baseline sample from `start_lane_profiling`
+could ever exist, never the ≥2 the new test asserts. The rewrite and its
+test were developed together (the coupling between the Popen loop and the
+profiler-state threading made a literal revert-and-rerun round trip cost
+more than the argument above already proves); recorded here rather than
+silently claimed as executed.
+
+**Bare-host (`run_bare_host_lane`)**: the host-PSI line (gated behind
+`profile_plan["enabled"]`, same as every other new disclosure line, so it
+never fires under the kill switch) and the RG-57 record fields
+unconditionally (`resources: null`, `profile_error: "bare-host lanes are
+not profiled (RG-57)"`, `profile_ref: null`) whenever a `run_record`
+exists (i.e., every non-dry-run invocation).
+
+**Re-attach/collect/promote (`resolve_inflight`/`promote_follower`)**: the
+COLLECT branch (container already exited before this client saw it) sets
+the three fields unconditionally — `run_record` is never `None` there,
+`adopt_inflight_start` (an EXISTING function, its own signature `run_record:
+dict`, not optional) is called unconditionally one statement earlier and
+would already crash first if it ever were, so a defensive guard here would
+have been dead code inconsistent with that. The ADOPT branch (re-attach to
+a still-RUNNING container whose original owner died) adopts the recorded
+`profile_session` — daemon mode, no new `start` — when the record has one;
+when it does not (the original run degraded to basic, or profiling was
+disabled), `profile_error` names why re-attach specifically cannot resume a
+basic-path session (its samples live only in the dead process's memory).
+`promote_follower` (this client was FOLLOWING a live owner who then died)
+mirrors the adopt case exactly, finishing the recorded session itself
+before its own `docker rm -f`.
+
+### A real finding from the live probes — and its fix
+
+Handoff §4.1's own ephemeral acceptance check (`memory.peak_bytes ≥ 100
+MiB`) FAILED on the first live run: `peak_bytes` came back `null` every
+time. Root cause, confirmed by direct reproduction against a real
+container (`docker exec <name> ...` immediately after it exits, `rm -f`
+still pending): `docker exec` refuses outright ("is not running") on an
+already-exited-but-not-yet-removed container — and `finish_lane_profiling`'s
+"final sample" (contract §4.2) always runs AFTER `await_container` has
+already confirmed the process exited via `docker wait`. The pre-fix code
+called the SAME `sample_once()` ticks use for that final sample, silently
+recording the resulting TOTAL read failure as `samples[-1]` — and scope
+`"container"`'s own peak formula (contract §7) is defined as the LAST read
+of `memory.peak`, so the run's actual last GOOD reading (from an earlier,
+in-tick sample) was discarded every single time. The exec-mode
+(`container-shared`) scope never has this problem — the persistent runner
+stays alive after the LANE's own command exits, so its final `docker exec`
+always succeeds; live-probed clean before this was even discovered (see
+"Live acceptance" below).
+
+Fix: `BasicSampler.sample_final()` (new method; `sample_once()` — and
+every test that calls it directly, including the golden-fixture byte-exact
+one — is completely untouched) drops a TOTAL failure (every field
+unreadable — a `_is_total_failure` helper distinguishes this from the
+PARTIAL per-file misses `_read_container` already tolerated) instead of
+recording it, with a same-run safety net (record it anyway if the
+accumulator would otherwise finish with zero samples, avoiding a new crash
+mode). `finish_lane_profiling`'s basic branch calls `sample_final()`
+instead of `sample_once()` — the only call-site change. Re-probed live
+after the fix (see "Live acceptance"): `peak_bytes` now 115523584 (110.17
+MiB), `profile_error: null`. Committed separately (`38089fe6`) so the
+finding and its fix are each their own reviewable unit; assay-r1/r3 re-run
+clean against it.
+
+### Test-only escape hatch (flagged for controller review, not in the contract)
+
+`[profile] enabled` defaults `true` (contract §4.7) with NO project config
+declaring `[profile]` at all in ~800 of this suite's pre-existing tests —
+every one of which pins an EXACT docker call log, argv list, or stdout/
+stderr for something else entirely. Wiring profiling in without an opt-out
+would have added, to every one of them: a new `docker exec <daemon>
+cgprofile ctl version` probe, very likely a further basic-path-fallback
+`docker exec` (no real daemon container ever exists in these fixtures), a
+new `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new disclosure lines —
+broken on contact. `RUN_GATE_TEST_DISABLE_PROFILING`
+(`PROFILE_TEST_DISABLE_ENV_VAR`) is `resolve_profile_settings()`'s own
+unconditional override, checked before any config table; one new autouse
+fixture (`profiling_off_by_default`, mirroring the file's existing
+`ambient_cgroup` pattern) sets it for the WHOLE file, and every RG-55
+wiring test unsets it explicitly (a class-scoped override where a whole
+class needs it, e.g. `TestProfileConfigValidation`, `TestProfilingOrchestration`).
+Not named anywhere in the interface contract or the handoff — a wiring-
+session engineering call, not a product decision, but one wide enough
+(every future profiling-adjacent test in this file inherits it) that the
+controller should bless or correct the shape. `usage()`/README/CHANGES do
+NOT document it (C8 territory, and it is explicitly NOT a supported
+operator feature — naming it there would imply otherwise).
+
+### Live acceptance (handoff §4, run from `/tmp/.../scratchpad/rg55-probe`, a throwaway git repo symlinking this worktree's `run-gate.py`)
+
+1. **Ephemeral, no daemon present** (`[lanes.probe]`, `tester-unified:local`,
+   `bytearray(100*1024*1024)` + `sleep 12`), `docker update --cpus=3`
+   applied right after launch, ONE gate container at a time throughout:
+   basic path engaged (`WARNING profiling: ... cgprofile ctl version ...
+   No such container: cgprofile-host-daemon — basic in-lane sampling
+   only`), host-PSI line printed. FIRST run (pre-fix): `peak_bytes: null`
+   — the finding above. AFTER the fix: `method: "basic"`, `scope:
+   "container"`, `samples: 3`, `source: "memory.peak"`, `peak_bytes:
+   115523584` (110.17 MiB, ≥ 100 MiB — satisfied), `baseline_bytes:
+   114167808`, `profile_error: null`. Torn down (`docker rm -f`, already
+   automatic via run-gate's own `finally`).
+2. **Exec, `container-shared`** (`[environments.shared] mode = "exec"`,
+   persistent runner `rg55-p2-shared` — `tester-unified:local` image, real
+   `git`/`python3`/`bash` present, unlike the smaller `cmru-enroll-
+   fixture:local` image first tried and found missing `git` — bind-mounted
+   the probe dir so `--workdir` resolves inside the runner), lane
+   allocating 80 MiB + `sleep 12`: `scope: "container-shared"`, `source:
+   "sampled-max"`, `baseline_bytes: 5894144`, `peak_bytes: 94507008`
+   (90.14 MiB), `peak_over_baseline_bytes: 88612864` (84.51 MiB, ≥ 70 MiB —
+   satisfied), `samples: 4` (≥ 2 — satisfied), every cpu/pressure/fault/
+   event field populated (none of the ephemeral-scope's null-final-sample
+   problem — the runner never exits). Torn down with `docker rm -f
+   rg55-p2-shared` after the probe (persistent runners are the operator's
+   to manage in real use; this one was this session's own fixture).
+3. **`footprint --write`** — NOT run. `footprint` is C5 territory (the
+   verb does not exist yet); deferred with C5 to the next session.
+
 ## Decision asks
 
 **C2's `[lanes.r1]`/`[lanes.r2]` `judge.source_roots` scoping —
@@ -430,14 +593,37 @@ reads both files anyway. A controller/P1 ruling confirming this reading
 (or correcting the contract's own §4.3 text) is welcome but was not
 required before proceeding.
 
-**Open, unmade decision carried forward from BRIEF-3, NOT resolved this
-session (deferred to the wiring session, C3's remainder):**
-`await_container`'s polling-granularity shape — shrink the shared
-`proc.wait(timeout=...)` interval when profiling is active (option 1) vs.
-a separate background-thread sampler mirroring `LogStreamWatch` (option
-2). BRIEF-3's own lean favors option 2 (lower regression risk against
-`await_container`'s heavily adversarially-reviewed stall/re-attach logic);
-this session did not need to decide it since no wiring was attempted.
+**`await_container`'s polling-granularity shape — RESOLVED by controller
+ruling RW-12 before this session's dispatch (superseding BRIEF-3's own
+lean toward a background thread).** No background thread: `proc.wait(
+timeout=tick)` with `tick = PROFILE_SAMPLE_SECONDS` while a basic sampler
+is active else `PROGRESS_POLL_SECONDS`, the stall/log-watch poll itself
+gated to real `PROGRESS_POLL_SECONDS` elapsed via an injectable monotonic
+clock, daemon path does no per-tick work in v1. Applied exactly as ruled;
+full behavior verified by `TestAwaitContainerProfilingWiring` (LOG's
+Session 5).
+
+**New decision ask, C3 wiring (not blocking, RW-9 process): the test-only
+kill switch (`RUN_GATE_TEST_DISABLE_PROFILING`).** Full rationale in this
+report's own "Test-only escape hatch" section above. Not named in the
+contract or handoff; a wiring-session engineering call wide enough
+(inherited by every future profiling-adjacent test in this file) that a
+controller read is welcome, though it was not required before proceeding.
+
+**New decision ask, C3 wiring (not blocking, RW-9 process): container id
+resolution reuses `container_state()` rather than a second, literally
+`docker inspect --format '{{.Id}}'` call.** Full rationale in the "Commit
+6" LOG section above. Satisfies the same contract obligation (a real
+64-hex id, resolved via `docker inspect`, before `ctl start`) through
+already-tested plumbing instead of duplicating it.
+
+**A real finding, not a decision ask (already fixed, not left open):** the
+basic-path final-sample defect — see this report's own "A real finding"
+section and LOG's Session 5 "The final-sample defect" subsection for the
+full root-cause-to-fix narrative. Recorded here because it changes
+`ResourceAccumulator`/`BasicSampler`'s previously "already proven, do not
+re-derive" status: `sample_once()` itself is untouched and remains fully
+proven; `sample_final()` is new and is its own, separately proven unit.
 
 None raised for C1 — RG-53's implementation directions were fully
 DECIDED in the backlog's own "Directions, not picked here" list (both were
@@ -472,26 +658,29 @@ visibility rather than as a blocking ask:
   a real coverage-gap fix `assay-r1`'s first live run surfaced. `assay-r1`
   and `assay-r3` both PASS; `assay-r2` deliberately deferred to "the very
   end" per the handoff's own timing rule.
-- **C3 (profiling client, R-43) — PARTIAL.** Config layer, `ProfilerClient`,
-  `ResourceAccumulator` (proven byte-exact against the golden fixtures),
-  `BasicSampler`, and `generate_profile_token()` are DONE and gate-verified
-  (commit `4d684920`, 100% line+branch diff-coverage, assay-r1/r3 PASS).
-  NOT done: wiring any of it into `await_container`/`run_container_lane`/
-  `run_exec_lane`/`run_bare_host_lane`/`follow_container`/
-  `resolve_inflight` — five of the most heavily adversarially-reviewed
-  functions in this file, per `__revision__ = 40`'s own changelog — plus
-  disclosure lines (contract §4.6), `--dry-run` profile-plan text, and the
-  runtime consequence of `enabled: false`/lane opt-out (the config exists
-  and is tested; nothing reads it at run time yet). See `BRIEF-4.md` for
-  the concrete continuation state.
+- **C3 (profiling client, R-43) — COMPLETE.** Config layer + client +
+  accumulator + sampler (commit `4d684920`) AND the wiring — token
+  injection, daemon-try/basic-fallback orchestration, all four lane
+  runners, re-attach/collect/promote — (commits `d8003d36`, `38089fe6`).
+  100% line+branch diff-coverage throughout; assay-r1/r3 PASS against the
+  final commit; live acceptance probes run and both satisfy the handoff's
+  own numeric criteria (ephemeral basic-path peak ≥ 100 MiB, exec
+  container-shared peak-over-baseline ≥ 70 MiB with ≥ 2 samples) — the
+  ephemeral one only after a real defect the live probe itself found and
+  this session fixed (see "A real finding" above). `footprint --write`'s
+  refusal-then-write probe (handoff §4.3) deferred to C5, since the verb
+  does not exist yet.
 - **C4 (history schema 2, R-36)**, **C5 (`footprint` verb, R-44)**, **C6
   (RG-48, `resources.cpus`)**, **C7 (`doctor` profiler check)**, **C8
-  (docs/spec/backlog/revision sweep, `__revision__ = 41`)** — not started;
-  each depends on C3's schema/constants existing first.
-- Live acceptance probes (handoff §4) — blocked on C3, not yet attempted.
+  (docs/spec/backlog/revision sweep, `__revision__ = 41`)** — not started.
+  C3's schema/constants they depend on now exist and are wired; nothing
+  further blocks starting C4. See `BRIEF-5.md` for the concrete
+  continuation state.
 - RG-56 (admission control) and RG-57 (bare-host attribution) remain filed,
   untouched, per the handoff's explicit instruction not to re-file or
-  design them in this package.
+  design them in this package (RG-57's own text is now CITED, verbatim, in
+  the bare-host `profile_error` this session wired — still not designed
+  further than that citation).
 
 ## Files touched
 
@@ -545,8 +734,21 @@ C3 partial (this session, commit `4d684920`):
 - `run-gate-project/tests/fixtures/rg55/**` (new, 185 files, vendored
   byte-identical from `run-gate-project/nyxloom-trove/fixtures/rg55/`)
 
-Records only (this session, uncommitted at time of writing, committed
-with this checkpoint):
+Records only (prior session, commit `40c1aa65`):
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-4.md` (new)
+
+C3 wiring (this session, commit `d8003d36`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+C3 wiring fix — the basic-path final-sample live-probe finding (this
+session, commit `38089fe6`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+Records only (this session, committed with this checkpoint):
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-5.md` (new)
