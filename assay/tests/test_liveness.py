@@ -621,8 +621,8 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     syntax, and `repr(None)` is the bare token `None`, not JSON's `null`.
     Every line the plugin ever wrote was therefore invalid JSON, silently
     swallowed by every downstream `json.loads` as a "tolerated torn line" --
-    `compute_expect_next_event_within_s` never found a real `slowest_test_s`
-    (always the coarse fallback) and `_read_events_progress` never saw a
+    the calibration never found a real measurement (always the coarse
+    fallback) and `_read_events_progress` never saw a
     real `session_finish`. No existing test caught this because every OTHER
     test in this package hand-constructs its own valid-JSON event fixtures
     rather than running the plugin's own code. This test imports the
@@ -642,43 +642,70 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     events_path = tmp_path / "events.ndjson"
     monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
 
-    # `when="setup"` must be a no-op (only `"call"` is recorded) -- and a
-    # `None` duration (a real, if rare, `TestReport.duration` value) must
+    # (B091 round-1 B2) `when="setup"` is now RECORDED, as a `phase` event
+    # carrying `when` -- it is a live sign of progress, and its `t` is what
+    # makes a slow fixture measurable at all. It must NOT be a `test` event:
+    # that keyword is one-per-test by contract (A4's progress forwarding,
+    # and `tests_completed`).
+    #
+    # A `None` duration (a real, if rare, `TestReport.duration` value) must
     # round-trip through `json.dumps` as JSON `null`, never the bare Python
     # token `None` the old `%r` formatting produced.
+    plugin.pytest_configure(config=None)
     plugin.pytest_runtest_logreport(_FakeReport(when="setup", nodeid="x", outcome="passed", duration=0.1))
     plugin.pytest_runtest_logreport(
         _FakeReport(when="call", nodeid="pkg/test_mod.py::test_it", outcome="passed", duration=0.0125)
     )
     plugin.pytest_runtest_logreport(_FakeReport(when="call", nodeid="y", outcome="failed", duration=None))
+    plugin.pytest_runtest_logreport(_FakeReport(when="teardown", nodeid="y", outcome="passed", duration=0.2))
     plugin.pytest_sessionfinish(session=None, exitstatus=0)
 
-    lines = events_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 3  # the "setup" report never wrote a line.
     import json as _json
 
-    first = _json.loads(lines[0])  # Raises if this is not valid JSON.
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    records = [_json.loads(line) for line in lines]  # Raises if not valid JSON.
+    assert [record["event"] for record in records] == [
+        "session_start",
+        "phase",
+        "test",
+        "test",
+        "phase",
+        "session_finish",
+    ]
+    # `session_start` is written from `pytest_configure`, so it is the
+    # FIRST stamped record -- which is what makes the leading gap (slow
+    # collection, a slow session fixture) measurable.
+    assert set(records[0]) == {"event", "t"}
+    assert isinstance(records[0]["t"], float)
+    assert records[1]["when"] == "setup" and records[1]["duration_s"] == 0.1
+    assert records[4]["when"] == "teardown"
+    first = records[2]
     assert first == {
         "event": "test",
+        "when": "call",
         "nodeid": "pkg/test_mod.py::test_it",
         "outcome": "passed",
         "duration_s": 0.0125,
         "t": first["t"],
     }
     assert isinstance(first["t"], float)
-    second = _json.loads(lines[1])
+    second = records[3]
     assert second["nodeid"] == "y"
     assert second["duration_s"] is None  # JSON `null`, not the string "None".
-    third = _json.loads(lines[2])
+    third = records[5]
     assert third["event"] == "session_finish"
     assert third["exitstatus"] == 0
+    # Every record carries a float `t` -- the calibration is built entirely
+    # out of the intervals between them, so a record without one is invisible
+    # to it.
+    assert all(isinstance(record["t"], float) for record in records)
     # Every character in every line is ASCII/UTF-8 double-quoted JSON --
     # `json.loads` above already proves this, but the explicit `"` check
     # pins the regression symptom directly: the old format's `nodeid` field
     # read `'pkg/test_mod.py::test_it'` (single-quoted), which this asserts
     # can never reappear.
-    assert "'pkg/test_mod.py::test_it'" not in lines[0]
-    assert '"pkg/test_mod.py::test_it"' in lines[0]
+    assert "'pkg/test_mod.py::test_it'" not in lines[2]
+    assert '"pkg/test_mod.py::test_it"' in lines[2]
 
 
 # --------------------------------------------------------------------------

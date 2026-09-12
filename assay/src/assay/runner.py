@@ -3653,23 +3653,18 @@ def _run_prepared_lane(
         # recomputes it either. `None` when liveness was never injected
         # (`LivenessRunner` is never constructed in that case, so nothing
         # reads this).
-        liveness_expect_next_event_within_s: float | None = (
-            liveness.compute_expect_next_event_within_s(
+        #
+        # (B091 round-1 B2) ONE call, returning the whole calibration --
+        # both bounds AND the two raw measurements the `plan` progress event
+        # discloses (`worst_gap_s`, `slowest_test_s`). Previously this was
+        # two calls parsing the same file for two halves of one answer;
+        # collapsing them removes the seam entirely (B088's "two
+        # derivations drift").
+        liveness_calibration: liveness.LivenessCalibration | None = (
+            liveness.compute_liveness_calibration(
                 liveness_baseline_events_path,
                 mutation.baseline_wall_seconds(result),
             )
-            if liveness_injected
-            else None
-        )
-        # (B091/D-23, P7 A4) The raw measurement `liveness_expect_next_
-        # event_within_s` above was derived from -- `assay.liveness.
-        # baseline_slowest_test_s` is the SAME underlying parse
-        # `compute_expect_next_event_within_s` calls internally (B088's own
-        # "two derivations drift" lesson: one canonical function, read back
-        # twice, never two independent hand-rolled parses of the same
-        # file). Reported on the `plan` progress event alongside it.
-        liveness_slowest_test_s: float | None = (
-            liveness.baseline_slowest_test_s(liveness_baseline_events_path)
             if liveness_injected
             else None
         )
@@ -4270,11 +4265,16 @@ def _run_prepared_lane(
             # language, or an ingested lane), `process_runner` is used
             # verbatim -- byte-for-byte the pre-B091 candidate path.
             if liveness_injected:
-                assert liveness_expect_next_event_within_s is not None
+                assert liveness_calibration is not None
                 assert liveness_candidates_dir is not None
                 candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
                     events_dir=liveness_candidates_dir,
-                    expect_next_event_within_s=liveness_expect_next_event_within_s,
+                    expect_next_event_within_s=(
+                        liveness_calibration.expect_next_event_within_s
+                    ),
+                    pre_first_event_within_s=(
+                        liveness_calibration.pre_first_event_within_s
+                    ),
                 )
             else:
                 candidate_process_runner = process_runner
@@ -4298,9 +4298,29 @@ def _run_prepared_lane(
                     # non-liveness lane, matching the three fields just
                     # above.
                     liveness_baseline_events_path=liveness_baseline_events_path,
-                    liveness_slowest_test_s=liveness_slowest_test_s,
+                    liveness_slowest_test_s=(
+                        liveness_calibration.slowest_test_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
                     liveness_expect_next_event_within_s=(
-                        liveness_expect_next_event_within_s
+                        liveness_calibration.expect_next_event_within_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    # (B091 round-1 B2) The two NEW disclosed figures: the
+                    # measurement the bound is actually derived from, and
+                    # the separate bound governing the window before a
+                    # candidate's first event.
+                    liveness_worst_gap_s=(
+                        liveness_calibration.worst_gap_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_pre_first_event_within_s=(
+                        liveness_calibration.pre_first_event_within_s
+                        if liveness_calibration is not None
+                        else None
                     ),
                     liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,

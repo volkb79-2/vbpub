@@ -9,6 +9,7 @@ effect of some larger scenario.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -186,67 +187,297 @@ def test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails(
 
 
 # --------------------------------------------------------------------------
-# compute_expect_next_event_within_s
+# baseline_event_gaps / compute_liveness_calibration
+# (B091 round-1 blocker B2, RW-49/D3 calibration (a))
+#
+# The pre-B2 formula was `max(3 x slowest_test_s, 15s)` over `call`-phase
+# durations only. The reviewer measured what that misses: a project whose
+# module-scoped fixture slept 40s reported `slowest_test_s = 0.00037`, so the
+# bound collapsed to its 15s floor and EVERY candidate was killed as `hung`
+# at ~31s -- including the one the suite was about to kill honestly. The
+# tests below pin the replacement against exactly those shapes.
 # --------------------------------------------------------------------------
 
 
-def test_compute_expect_next_event_within_s_none_path_uses_fallback() -> None:
-    assert liveness.compute_expect_next_event_within_s(None, 40.0) == 60.0  # max(60, 10)
-    assert liveness.compute_expect_next_event_within_s(None, 400.0) == 100.0  # max(60, 100)
+def _write(path: Path, *records: str) -> Path:
+    path.write_text("".join(record + "\n" for record in records), encoding="utf-8")
+    return path
 
 
-def test_compute_expect_next_event_within_s_missing_file_uses_fallback(
+def _start(t: float) -> str:
+    return json.dumps({"event": "session_start", "t": t})
+
+
+def _phase(t: float, when: str, duration: float = 0.0) -> str:
+    return json.dumps(
+        {
+            "event": "test" if when == "call" else "phase",
+            "when": when,
+            "nodeid": "pkg/test_it.py::test_one",
+            "outcome": "passed",
+            "duration_s": duration,
+            "t": t,
+        }
+    )
+
+
+def _finish(t: float) -> str:
+    return json.dumps({"event": "session_finish", "exitstatus": 0, "t": t})
+
+
+def test_calibration_none_path_uses_the_plugin_inactive_fallback() -> None:
+    for baseline_s, expected in ((40.0, 60.0), (400.0, 100.0)):
+        calibration = liveness.compute_liveness_calibration(None, baseline_s)
+        assert calibration.expect_next_event_within_s == expected
+        # No leading measurement exists on this path either, so the
+        # pre-first-event window gets the SAME coarse bound -- never a
+        # tighter one invented out of nothing.
+        assert calibration.pre_first_event_within_s == expected
+        assert calibration.worst_gap_s is None
+        assert calibration.slowest_test_s is None
+
+
+def test_calibration_missing_file_uses_the_plugin_inactive_fallback(
     tmp_path: Path,
 ) -> None:
     missing = tmp_path / "does-not-exist.ndjson"
-    assert liveness.compute_expect_next_event_within_s(missing, 40.0) == 60.0
-
-
-def test_compute_expect_next_event_within_s_reads_slowest_test(tmp_path: Path) -> None:
-    events = tmp_path / "baseline.ndjson"
-    events.write_text(
-        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
-        '{"event": "test", "nodeid": "b", "outcome": "passed", "duration_s": 6.0, "t": 1}\n'
-        '{"event": "test", "nodeid": "c", "outcome": "passed", "duration_s": 2.0, "t": 2}\n'
-        '{"event": "session_finish", "exitstatus": 0, "t": 3}\n',
-        encoding="utf-8",
+    assert liveness.baseline_event_gaps(missing) is None
+    assert (
+        liveness.compute_liveness_calibration(missing, 40.0).expect_next_event_within_s
+        == 60.0
     )
-    # slowest_test_s = 6.0 -> max(3 * 6.0, 15.0) = 18.0
-    assert liveness.compute_expect_next_event_within_s(events, 400.0) == 18.0
 
 
-def test_compute_expect_next_event_within_s_tolerates_a_torn_last_line(
+def test_calibration_a_lone_stamped_record_cannot_form_a_gap(tmp_path: Path) -> None:
+    """One timestamp is not an interval. The fallback, not a zero gap that
+    would collapse both bounds onto the 15s floor.
+    """
+    events = _write(tmp_path / "baseline.ndjson", _start(0.0))
+    assert liveness.baseline_event_gaps(events) is None
+    assert (
+        liveness.compute_liveness_calibration(events, 400.0).expect_next_event_within_s
+        == 100.0
+    )
+
+
+def test_calibration_survives_the_reviewers_40s_module_fixture(tmp_path: Path) -> None:
+    """The exact shape round-1 B2 reproduced end to end: a 42.5s baseline
+    whose time is spent almost entirely inside a module-scoped fixture, and
+    whose only `call` report is 0.4ms long.
+
+    Pre-B2 this produced `expect_next_event_within_s = 15.0` and the
+    candidate was killed as `hung` at 31s -- a quarter of the 127.6s budget
+    assay itself derived, before the asserting test body ever ran. The gap
+    calibration sees the fixture directly, because the `setup` report's own
+    timestamp is 40s after `session_start`.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _start(0.0),
+        _phase(40.0, "setup", duration=40.0),
+        _phase(40.001, "call", duration=0.00037),
+        _phase(40.002, "teardown"),
+        _finish(42.5),
+    )
+    calibration = liveness.compute_liveness_calibration(events, 42.522)
+    assert calibration.worst_gap_s == 40.0
+    assert calibration.expect_next_event_within_s == 120.0
+    assert calibration.pre_first_event_within_s == 120.0
+    # The measurement the OLD formula used is still reported, unchanged in
+    # meaning -- and is still 0.4ms, which is why it must not be the input
+    # to the bound. `max(3 * 0.00037, 15.0)` is the 15.0 that killed
+    # healthy candidates.
+    assert calibration.slowest_test_s == 0.00037
+
+
+def test_calibration_covers_a_slow_collection(tmp_path: Path) -> None:
+    """A 20s import at collection time: no report of any phase exists yet,
+    so `call`-duration calibration was blind to it by construction.
+    `session_start` is written from `pytest_configure`, BEFORE collection,
+    which is what makes this interval measurable at all.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _start(0.0),
+        _phase(20.0, "setup"),
+        _phase(20.001, "call", duration=0.001),
+        _phase(20.002, "teardown"),
+        _finish(20.01),
+    )
+    calibration = liveness.compute_liveness_calibration(events, 20.5)
+    assert calibration.worst_gap_s == 20.0
+    assert calibration.expect_next_event_within_s == 60.0
+    assert calibration.pre_first_event_within_s == 60.0
+
+
+def test_calibration_covers_the_trailing_session_teardown_gap(tmp_path: Path) -> None:
+    """A 30s session-scoped teardown, between the last report and
+    `session_finish` -- the other end the `call`-only formula could not see.
+    It also separates the two bounds: the worst gap is the trailing one,
+    while the leading gap is 0.1s and floors at 15s.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _start(0.0),
+        _phase(0.1, "setup"),
+        _phase(0.2, "call", duration=0.05),
+        _phase(0.3, "teardown"),
+        _finish(30.3),
+    )
+    calibration = liveness.compute_liveness_calibration(events, 30.5)
+    assert calibration.worst_gap_s == 30.0
+    assert calibration.expect_next_event_within_s == 90.0
+    assert calibration.pre_first_event_within_s == 15.0
+
+
+def test_calibration_floor_is_inclusive_at_the_exact_boundary(tmp_path: Path) -> None:
+    """5.0s is exactly where `3 x gap` meets the 15s floor. Pinned on both
+    sides so neither the multiplier nor the direction of the `max` can be
+    changed without a failure.
+    """
+    at = _write(
+        tmp_path / "at.ndjson", _start(0.0), _phase(5.0, "setup"), _finish(5.0)
+    )
+    assert liveness.baseline_event_gaps(at).worst_gap_s == 5.0
+    assert liveness.compute_liveness_calibration(at, 400.0).expect_next_event_within_s == 15.0
+    over = _write(
+        tmp_path / "over.ndjson", _start(0.0), _phase(6.0, "setup"), _finish(6.0)
+    )
+    assert liveness.compute_liveness_calibration(over, 400.0).expect_next_event_within_s == 18.0
+    under = _write(
+        tmp_path / "under.ndjson", _start(0.0), _phase(1.0, "setup"), _finish(1.0)
+    )
+    assert liveness.compute_liveness_calibration(under, 400.0).expect_next_event_within_s == 15.0
+
+
+def test_calibration_leading_gap_is_the_first_interval_not_the_worst(
     tmp_path: Path,
 ) -> None:
-    events = tmp_path / "baseline.ndjson"
-    events.write_text(
-        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 9.0, "t": 0}\n'
-        '{"event": "test", "nodeid": "b", "outc',  # torn -- the plugin was still writing.
-        encoding="utf-8",
+    """The pre-first-event bound is the LEADING gap specifically -- how long
+    this suite takes to produce its first sign of life -- not the worst gap
+    anywhere in the run. A file whose worst gap sits in the middle must
+    leave the two bounds different.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _start(0.0),
+        _phase(7.0, "setup"),
+        _phase(7.5, "call", duration=0.1),
+        _phase(47.5, "teardown"),
+        _finish(47.6),
     )
-    assert liveness.compute_expect_next_event_within_s(events, 400.0) == 27.0  # max(27, 15)
+    gaps = liveness.baseline_event_gaps(events)
+    assert (gaps.worst_gap_s, gaps.leading_gap_s) == (40.0, 7.0)
+    calibration = liveness.compute_liveness_calibration(events, 48.0)
+    assert calibration.expect_next_event_within_s == 120.0
+    assert calibration.pre_first_event_within_s == 21.0
 
 
-def test_compute_expect_next_event_within_s_ignores_non_test_and_malformed_duration(
+def test_calibration_without_a_session_start_uses_the_worst_gap_for_both(
     tmp_path: Path,
 ) -> None:
+    """An events file that does NOT begin with `session_start` (a baseline
+    written by a pre-B2 plugin, or one whose `pytest_configure` write
+    failed) carries no honest leading measurement. The leading gap must
+    then be the CONSERVATIVE worst gap, never the first interval -- which
+    here would be a 0.1s gap and a 15s bound on a suite that goes quiet for
+    40s.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _phase(0.0, "call", duration=0.1),
+        _phase(0.1, "call", duration=0.1),
+        _phase(40.1, "call", duration=0.1),
+        _finish(40.2),
+    )
+    gaps = liveness.baseline_event_gaps(events)
+    assert (gaps.worst_gap_s, gaps.leading_gap_s) == (40.0, 40.0)
+    calibration = liveness.compute_liveness_calibration(events, 41.0)
+    assert calibration.pre_first_event_within_s == 120.0
+
+
+def test_calibration_clamps_a_backwards_clock_step_to_a_zero_gap(
+    tmp_path: Path,
+) -> None:
+    """`t` is wall-clock `time.time()` in the candidate's own interpreter,
+    so a clock step backwards mid-run is possible. It must read as "no time
+    passed", never as a negative gap.
+    """
+    events = _write(tmp_path / "baseline.ndjson", _start(10.0), _finish(5.0))
+    assert liveness.baseline_event_gaps(events).worst_gap_s == 0.0
+    assert (
+        liveness.compute_liveness_calibration(events, 400.0).expect_next_event_within_s
+        == 15.0
+    )
+
+
+def test_calibration_ignores_records_without_a_usable_timestamp(
+    tmp_path: Path,
+) -> None:
+    """A missing, non-numeric or boolean `t` contributes no point to the
+    sequence -- and a torn last line is skipped, exactly as every other
+    reader of these files does.
+
+    A line that is valid JSON but not an OBJECT (`123`, a bare string) is
+    skipped too: the plugin only ever writes objects, so such a line is
+    corruption, and counting it as an event would let a garbage file read
+    as liveness.
+    """
     events = tmp_path / "baseline.ndjson"
     events.write_text(
         "\n"  # blank line
-        '{"event": "session_finish", "exitstatus": 0, "t": 0}\n'
-        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": "oops", "t": 1}\n'
-        '{"event": "test", "nodeid": "b", "outcome": "passed", "duration_s": true, "t": 2}\n',
+        '{"event": "session_start", "t": 0}\n'
+        "123\n"  # valid JSON, not an object.
+        '"a bare string"\n'
+        '{"event": "phase", "when": "setup", "t": "oops"}\n'
+        '{"event": "phase", "when": "setup", "t": true}\n'
+        '{"event": "phase", "when": "setup"}\n'
+        '{"event": "test", "when": "call", "duration_s": 0.1, "t": 9.0}\n'
+        '{"event": "session_finish", "exitsta',  # torn -- still being written.
         encoding="utf-8",
     )
-    # Neither "test" record has a usable numeric duration_s -> fallback.
-    assert liveness.compute_expect_next_event_within_s(events, 40.0) == 60.0
+    gaps = liveness.baseline_event_gaps(events)
+    assert (gaps.worst_gap_s, gaps.leading_gap_s) == (9.0, 9.0)
+
+
+def test_calibration_slowest_test_s_still_means_the_slowest_call_phase(
+    tmp_path: Path,
+) -> None:
+    """The `plan` event's `slowest_test_s` key keeps its name AND its exact
+    pre-B2 meaning, so no consumer finds it silently measuring something
+    else. A 40s `setup` duration must NOT move it.
+    """
+    events = _write(
+        tmp_path / "baseline.ndjson",
+        _start(0.0),
+        _phase(40.0, "setup", duration=40.0),
+        _phase(40.5, "call", duration=0.5),
+        _phase(40.6, "teardown", duration=0.1),
+        _finish(40.7),
+    )
+    calibration = liveness.compute_liveness_calibration(events, 41.0)
+    assert calibration.slowest_test_s == 0.5
+    assert calibration.worst_gap_s == 40.0
+
+
+def test_calibration_tolerates_a_torn_last_line(tmp_path: Path) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        '{"event": "session_start", "t": 0}\n'
+        '{"event": "test", "when": "call", "duration_s": 9.0, "t": 9.0}\n'
+        '{"event": "test", "nodeid": "b", "outc',  # torn -- still being written.
+        encoding="utf-8",
+    )
+    calibration = liveness.compute_liveness_calibration(events, 400.0)
+    assert calibration.expect_next_event_within_s == 27.0  # max(3 * 9.0, 15)
+    assert calibration.slowest_test_s == 9.0
 
 
 # --------------------------------------------------------------------------
-# baseline_slowest_test_s (B091/D-23, P7 A4) -- the same measurement
-# compute_expect_next_event_within_s above already made internally, now
-# extracted so a caller (the `plan` progress event) reads it back rather
-# than re-deriving.
+# baseline_slowest_test_s (B091/D-23, P7 A4) -- reported on the `plan`
+# progress event. Since round-1 B2 it is NO LONGER the input to the idle
+# bound (see the gap tests above); it remains the slowest `call`-phase
+# duration and nothing else.
 # --------------------------------------------------------------------------
 
 
@@ -269,9 +500,9 @@ def test_baseline_slowest_test_s_reads_the_max_duration(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert liveness.baseline_slowest_test_s(events) == 6.0
-    # compute_expect_next_event_within_s must agree exactly -- it now
-    # delegates to this same function, never a second parse.
-    assert liveness.compute_expect_next_event_within_s(events, 400.0) == 18.0
+    # `compute_liveness_calibration` must agree exactly -- it reads this
+    # same function back, never a second parse.
+    assert liveness.compute_liveness_calibration(events, 400.0).slowest_test_s == 6.0
 
 
 def test_baseline_slowest_test_s_tolerates_a_torn_last_line(tmp_path: Path) -> None:

@@ -2125,10 +2125,31 @@ v11 — no v12 cut; a document produced before `hung` existed simply omits the
 key) is `LivenessRunner`'s own classification for a candidate that stops
 making progress, on EITHER of two branches:
 
-- no `test`/`session_finish` progress event AND the process tree's CPU time
+- no progress event of any kind (`session_start`, a `setup`/`teardown`
+  `phase`, a `call`-phase `test`, or `session_finish`) within the applicable
+  bound — `pre_first_event_within_s` until the candidate's first event,
+  `expect_next_event_within_s` after it — AND the process tree's CPU time
   grew less than 1.0 s over the trailing 30 s window, or
 - a `session_finish` event was seen (the runner completed) but the process
   is still alive 30 s later.
+
+**The residual limitation, stated plainly (P7 round-1 B2, item 3).** The
+events side file is in practice the ONLY live progress signal a pytest
+candidate has. The documented fallback — growth of the candidate's stdout
+and stderr files — was measured flat at **0 bytes for a whole run**, because
+pytest under its default global capture writes nothing to the real file
+descriptors until the run ends. On a lane where the plugin is active that
+costs nothing. On a lane where it is **not** active (the plugin failed to
+load, or the baseline produced too little to calibrate against) liveness is
+COARSE: the candidate is governed only by the `max(60s, baseline_s / 4)`
+bound, the 30 s flat-CPU window and `budget_per_candidate`. Read such a
+lane's `hung` count as a coarse signal, not a measurement. Two consequences
+worth knowing:
+
+- a candidate can never be declared `hung` sooner than 30 s, whatever the
+  bound says — the flat-CPU window has to fill first;
+- a candidate that is genuinely burning CPU is never `hung`, by
+  construction; that is `budget_exceeded`.
 
 `hung` is scored **like** `budget_exceeded` — excluded from the
 `killed / (killed + survived)` denominator — but reported as its **own**
@@ -2238,7 +2259,7 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
-| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `expect_next_event_within_s` (B091 A4 — `None`/`None` whenever `liveness.active` is `false`) |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s` |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
@@ -2293,14 +2314,36 @@ regardless of which of the three the lane declared.
 **`plan` also carries the liveness half** (B091 A2–A4, see "Liveness for a
 native R2 python/pytest lane" below): `liveness` is the same
 `{active, reason, plugin}` record the verdict's `judgment.r2.liveness` field
-carries, and `slowest_test_s`/`expect_next_event_within_s` are the two
-figures `LivenessRunner`'s own idle-stall threshold was derived from —
-`slowest_test_s` read back from the measured baseline's own `test` events
-(never re-derived a second way; see `assay.liveness.baseline_slowest_test_s`),
-`expect_next_event_within_s = max(3 x slowest_test_s, 15s)` (falling back to
-`max(60s, baseline_s / 4)` when no baseline test-event data is available).
-Both are `None` whenever `liveness.active` is `false` — a non-pytest argv, a
-non-python lane, or an explicit `judge.mutation.liveness = false`.
+carries, and `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`
+and `pre_first_event_within_s` are the figures `LivenessRunner`'s own
+idle-stall thresholds were derived from, all from one computation
+(`assay.liveness.compute_liveness_calibration`), never re-derived a second
+way:
+
+| field | meaning |
+| --- | --- |
+| `worst_gap_s` | the largest interval between two consecutive events in the BASELINE's own side file — the measurement the bound is derived from. `null` on the plugin-inactive fallback path |
+| `expect_next_event_within_s` | `max(3 x worst_gap_s, 15s)` — how long a candidate may go silent once it has produced at least one event |
+| `pre_first_event_within_s` | `max(3 x the baseline's LEADING gap, 15s)` — the bound in force before a candidate has produced any event at all |
+| `slowest_test_s` | the slowest `call`-phase duration in the baseline. **Unchanged in meaning**, and since 6.2.0 no longer the input to either bound (see below) |
+
+All four are `None` whenever `liveness.active` is `false` — a non-pytest
+argv, a non-python lane, or an explicit `judge.mutation.liveness = false`.
+When the plugin produced too little to measure (fewer than two stamped
+records), both bounds fall back to `max(60s, baseline_s / 4)` and
+`worst_gap_s` is `null`.
+
+**Why gaps and not test durations (changed in 6.2.0, P7 round-1 B2).**
+Until 6.2.0 the bound was `max(3 x slowest_test_s, 15s)` over `call`-phase
+durations alone. A pytest suite is silent during collection, during
+session/module fixture setup and during teardown, and none of those produce
+a `call` report — so on a project whose module-scoped fixture took 40 s,
+`slowest_test_s` measured 0.0004 and the bound collapsed to its 15 s floor,
+killing every candidate as `hung` at ~31 s, including candidates the suite
+was about to kill honestly. The plugin now stamps `session_start` (from
+`pytest_configure`, before collection), every `setup`/`teardown` report and
+`session_finish`, so the intervals between its records measure the silence
+directly, leading and trailing stretches included.
 
 ### `--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`: force specific candidates to re-execute (B091 A5)
 

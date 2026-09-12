@@ -30,6 +30,7 @@ unbounded lane (`timeout=None`) never expires on elapsed budget alone
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -96,11 +97,17 @@ def _runner(
     clock: _FakeClock,
     cpu_reader,
     expect_next_event_within_s: float = 15.0,
+    pre_first_event_within_s: float | None = None,
 ) -> tuple[liveness.LivenessRunner, Path]:
     events_dir = tmp_path / "candidates"
     runner = liveness.LivenessRunner(
         events_dir=events_dir,
         expect_next_event_within_s=expect_next_event_within_s,
+        # (B091 round-1 B2) `None` -- the constructor default -- is what
+        # every pre-existing test below keeps passing, so each of them
+        # exercises the new bound-selection conditional with this parameter
+        # at ITS default (the two bounds equal, i.e. the pre-B2 behaviour).
+        pre_first_event_within_s=pre_first_event_within_s,
         monotonic=clock.now,
         sleep=clock.advance,
         cpu_reader=cpu_reader,
@@ -109,6 +116,39 @@ def _runner(
     cwd = tmp_path / "cand"
     cwd.mkdir()
     return runner, cwd
+
+
+def _scripted_events(
+    clock: _FakeClock,
+    events_path: Path,
+    script: list[tuple[float, dict]],
+    *,
+    proc: _ScriptedProc | None = None,
+    finish_at: tuple[float, int] | None = None,
+    cpu: float = 3.0,
+):
+    """A `cpu_reader` that doubles as the candidate PROCESS: on each tick it
+    appends whichever scripted plugin records the virtual clock has now
+    reached (the real candidate's own pytest would write these), optionally
+    exits the process, and reports a FLAT CPU reading.
+
+    Flat CPU is the point: every shape B2 is about -- a container fixture
+    coming up, a DB migration, a slow import -- is I/O-bound, so the
+    CPU-growth guard offers no protection and the idle bound alone decides.
+    """
+    pending = list(script)
+
+    def reader(pid: int) -> float:
+        while pending and pending[0][0] <= clock.t:
+            record = pending.pop(0)[1]
+            events_path.parent.mkdir(parents=True, exist_ok=True)
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({**record, "t": clock.t}) + "\n")
+        if finish_at is not None and proc is not None and clock.t >= finish_at[0]:
+            proc.finish(finish_at[1])
+        return cpu
+
+    return reader
 
 
 # --------------------------------------------------------------------------
@@ -448,3 +488,172 @@ def test_real_subprocess_normal_completion_captures_real_output(
     )
     assert result.returncode == 0
     assert result.stdout == "hello from a real child\n"
+
+
+# --------------------------------------------------------------------------
+# (B091 round-1 blocker B2, RW-49/D3) the two bounds
+# --------------------------------------------------------------------------
+
+
+def test_a_slow_module_fixture_is_not_hung_under_a_gap_calibrated_bound(
+    tmp_path: Path,
+) -> None:
+    """The reviewer's end-to-end reproduction, as a loop-level regression.
+
+    A candidate whose module-scoped fixture idles 40s I/O-bound, then runs
+    the test that asserts on the mutated function and FAILS (an honest
+    kill), then exits 1. Under the gap-derived bound (the 42.5s baseline's
+    worst gap was 40s, so `3 x 40 = 120`) the monitor must leave it alone
+    and return the real exit status.
+
+    The same run under the pre-B2 bound -- 15.0, which is what
+    `max(3 x slowest_test_s, 15)` collapsed to because the only `call`
+    report was 0.4ms long -- is killed as `hung`, destroying a real kill.
+    Both halves are asserted here, so the calibration cannot regress
+    silently in either direction.
+    """
+    script = [
+        (1.0, {"event": "session_start"}),
+        (40.0, {"event": "phase", "when": "setup", "duration_s": 39.0}),
+        (41.0, {"event": "test", "when": "call", "outcome": "failed"}),
+    ]
+
+    def run(expect_next_event_within_s: float):
+        clock = _FakeClock()
+        proc = _ScriptedProc(pid=909)
+        events_dir = tmp_path / f"candidates-{expect_next_event_within_s}"
+        cwd = tmp_path / f"cand-{expect_next_event_within_s}"
+        cwd.mkdir()
+        reader = _scripted_events(
+            clock,
+            liveness.candidate_events_path(events_dir, cwd),
+            script,
+            proc=proc,
+            finish_at=(42.0, 1),
+        )
+        runner = liveness.LivenessRunner(
+            events_dir=events_dir,
+            expect_next_event_within_s=expect_next_event_within_s,
+            pre_first_event_within_s=expect_next_event_within_s,
+            monotonic=clock.now,
+            sleep=clock.advance,
+            cpu_reader=reader,
+            popen=_FakePopen(proc),
+        )
+        return runner(("pytest", "-q"), env={}, cwd=cwd, timeout=127.5)
+
+    completed = run(120.0)
+    assert completed.returncode == 1  # the suite killed the mutant, honestly.
+
+    with pytest.raises(liveness.LivenessHungExpired):
+        run(15.0)
+
+
+def test_the_pre_first_event_bound_governs_until_the_first_event_arrives(
+    tmp_path: Path,
+) -> None:
+    """A candidate that never produces a single plugin event is judged by
+    `pre_first_event_within_s` alone -- `expect_next_event_within_s` must
+    not reach it. Pinned in BOTH directions with the two bounds far apart,
+    so swapping them, or applying the wrong one, fails here.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=707)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: 3.0,  # flat.
+        expect_next_event_within_s=600.0,  # generous; must NOT apply.
+        pre_first_event_within_s=15.0,
+    )
+    with pytest.raises(liveness.LivenessHungExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=500.0)
+    # 30s of flat-CPU history is still required before any kill.
+    assert clock.t >= 30.0
+
+    clock2 = _FakeClock()
+    proc2 = _ScriptedProc(pid=708)
+    runner2, cwd2 = _runner(
+        tmp_path / "second",
+        proc=proc2,
+        clock=clock2,
+        cpu_reader=lambda pid: 3.0,
+        expect_next_event_within_s=15.0,  # tight; must NOT apply.
+        pre_first_event_within_s=600.0,
+    )
+    # Never `hung`: the only bound in force is the generous pre-first one,
+    # so this candidate reaches its plain elapsed budget instead -- which is
+    # `budget_exceeded`, a different and honest outcome.
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        runner2(("pytest", "-q"), env={}, cwd=cwd2, timeout=200.0)
+    assert not isinstance(excinfo.value, liveness.LivenessHungExpired)
+
+
+def test_the_steady_state_bound_takes_over_once_an_event_has_arrived(
+    tmp_path: Path,
+) -> None:
+    """The mirror of the test above: with the SAME generous pre-first bound,
+    one `session_start` record is enough to hand the decision to
+    `expect_next_event_within_s`, and a candidate that then goes quiet is
+    `hung` on the tight bound.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=606)
+    events_dir = tmp_path / "candidates"
+    cwd = tmp_path / "cand"
+    cwd.mkdir()
+    reader = _scripted_events(
+        clock,
+        liveness.candidate_events_path(events_dir, cwd),
+        [(1.0, {"event": "session_start"})],
+    )
+    runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=15.0,
+        pre_first_event_within_s=600.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_reader=reader,
+        popen=_FakePopen(proc),
+    )
+    with pytest.raises(liveness.LivenessHungExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=500.0)
+    assert clock.t < 600.0  # the tight bound, not the generous one, decided.
+
+
+def test_a_setup_phase_record_counts_as_progress(tmp_path: Path) -> None:
+    """(B091 round-1 B2) The plugin now records `setup`/`teardown` as
+    `phase` events, and the monitor must treat them as activity -- that is
+    the whole mechanism by which a suite that is doing fixture work, rather
+    than running test bodies, stays alive. A candidate emitting ONLY
+    `phase` records (never a `test` one) must not be `hung`.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=505)
+    events_dir = tmp_path / "candidates"
+    cwd = tmp_path / "cand"
+    cwd.mkdir()
+    reader = _scripted_events(
+        clock,
+        liveness.candidate_events_path(events_dir, cwd),
+        [
+            (1.0, {"event": "session_start"}),
+            (10.0, {"event": "phase", "when": "setup"}),
+            (20.0, {"event": "phase", "when": "teardown"}),
+            (30.0, {"event": "phase", "when": "setup"}),
+            (40.0, {"event": "phase", "when": "teardown"}),
+        ],
+        proc=proc,
+        finish_at=(45.0, 0),
+    )
+    runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=15.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_reader=reader,
+        popen=_FakePopen(proc),
+    )
+    completed = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=300.0)
+    assert completed.returncode == 0

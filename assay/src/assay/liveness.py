@@ -166,24 +166,48 @@ def _events_path():
     return os.environ.get("ASSAY_LIVENESS_EVENTS")
 
 
-def pytest_runtest_logreport(report):
+def _append(record):
     try:
-        if report.when != "call":
-            return
         path = _events_path()
         if not path:
             return
-        record = {
-            "event": "test",
-            "nodeid": report.nodeid,
-            "outcome": report.outcome,
-            "duration_s": report.duration,
-            "t": time.time(),
-        }
+        record["t"] = time.time()
         with open(path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\\n")
     except Exception:
         pass
+
+
+def pytest_configure(config):
+    # (B091 round-1 B2) The FIRST timestamp of the session, written before
+    # collection starts. Without it the events file's earliest stamp is the
+    # first test's `setup` report, which is AFTER collection and after every
+    # session/module fixture that test needs -- so a slow import or a slow
+    # session fixture was invisible to the calibration and the monitor
+    # counted that whole stretch as idleness.
+    _append({"event": "session_start"})
+
+
+def pytest_runtest_logreport(report):
+    # (B091 round-1 B2) EVERY phase, not just `call`. `report.duration` for
+    # a `setup` report includes the fixture, and -- more to the point -- the
+    # record's own `t` is a live sign of progress the monitoring loop can
+    # see. The `call` phase alone keeps the `test` event name: that keyword
+    # is what A4 forwards to the progress stream (one per test, RW-33) and
+    # what `tests_completed` counts, and both must stay one-per-test. The
+    # other two phases get `phase`, which the monitor counts as activity and
+    # every `test`-keyed reader ignores by construction.
+    try:
+        record = {
+            "event": "test" if report.when == "call" else "phase",
+            "when": report.when,
+            "nodeid": report.nodeid,
+            "outcome": report.outcome,
+            "duration_s": report.duration,
+        }
+    except Exception:
+        return
+    _append(record)
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -192,15 +216,7 @@ def pytest_sessionfinish(session, exitstatus):
         _EXIT_STATUS = int(exitstatus)
     except Exception:
         _EXIT_STATUS = 1
-    try:
-        path = _events_path()
-        if not path:
-            return
-        record = {"event": "session_finish", "exitstatus": _EXIT_STATUS, "t": time.time()}
-        with open(path, "a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record) + "\\n")
-    except Exception:
-        pass
+    _append({"event": "session_finish", "exitstatus": _EXIT_STATUS})
 
 
 @pytest.hookimpl(trylast=True)
@@ -565,6 +581,55 @@ def tree_cpu_seconds(root_pid: int) -> float:
     return total_ticks / clock_ticks_per_s
 
 
+#: (B091 round-1 B2) The plugin's three event names, spelled once here so a
+#: reader can never drift from the writer's vocabulary. `test` is the `call`
+#: phase ONLY -- one per test, which is what A4's progress forwarding and
+#: `tests_completed` both require; `phase` is `setup`/`teardown`;
+#: `session_start`/`session_finish` bracket the whole session.
+TEST_EVENT = "test"
+PHASE_EVENT = "phase"
+SESSION_START_EVENT = "session_start"
+SESSION_FINISH_EVENT = "session_finish"
+
+#: (B091/RW-33) The floor under every measurement-derived idle bound -- no
+#: calibration, however fast the baseline, ever asks a candidate for a sign
+#: of life sooner than this.
+LIVENESS_IDLE_FLOOR_S = 15.0
+
+#: (B091/RW-33) The floor under the PLUGIN-INACTIVE fallback bound -- see
+#: :func:`compute_liveness_calibration` for why that path is deliberately
+#: much coarser than the calibrated one.
+LIVENESS_FALLBACK_FLOOR_S = 60.0
+
+
+def _iter_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
+    """Yield every valid record in *events_path*, of EVERY event kind, in
+    file order -- THE one parse loop over one of these NDJSON side files.
+
+    `None` (never wired with `ASSAY_LIVENESS_EVENTS`), an absent/unreadable
+    path, and a torn last line (the file's own writer still appending when
+    this is read) all yield nothing extra -- tolerated by skipping, never
+    raised, matching the plugin's own append-per-event contract which makes
+    a torn line possible only for the very last one.
+    """
+    if events_path is None:
+        return
+    try:
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except (ValueError, RecursionError):
+            continue  # Tolerant of a torn last line.
+        if isinstance(record, dict):
+            yield record
+
+
 def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
     """Yield every valid `test` event record in *events_path*, in file
     order.
@@ -581,24 +646,19 @@ def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
     into three different ideas of what counts as a valid `test` event
     (B088's own "two independent derivations is how a reader and a writer
     drift apart" reasoning, applied here to a THIRD and FOURTH reader this
-    session (B091 A4) adds beside :func:`compute_expect_next_event_within_s`
-    -- itself now also built on this same generator, below).
+    session (B091 A4) adds beside :func:`compute_liveness_calibration`
+    -- itself now also built on the same generator, below).
+
+    (B091 round-1 B2) The traversal itself now lives in :func:`_iter_events`,
+    which yields EVERY event kind; this function is the `test`-only filter
+    over it. `test` still means the `call` phase and nothing else, so every
+    reader keyed on it -- :func:`baseline_slowest_test_s`,
+    :func:`baseline_test_events`, :func:`count_test_events` -- keeps its
+    exact pre-B2 meaning now that the plugin also records `setup`/`teardown`
+    (as `phase`) and the two session brackets.
     """
-    if events_path is None:
-        return
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except (ValueError, RecursionError):
-            continue  # Tolerant of a torn last line.
-        if isinstance(record, dict) and record.get("event") == "test":
+    for record in _iter_events(events_path):
+        if record.get("event") == TEST_EVENT:
             yield record
 
 
@@ -650,58 +710,176 @@ def count_test_events(events_path: "Path | None") -> int:
     return sum(1 for _ in _iter_test_events(events_path))
 
 
-def compute_expect_next_event_within_s(
-    baseline_events_path: "Path | None", baseline_s: float
-) -> float:
-    """RW-33's `expect_next_event_within_s`: ``max(3 x slowest_test_s,
-    15s)`` when the BASELINE's own events file names a slowest test,
-    else the documented fallback ``max(60s, baseline_s / 4)``.
+class BaselineEventGaps(NamedTuple):
+    """(B091 round-1 B2) What the BASELINE's own events file says about how
+    long this suite goes QUIET, which is the only question the monitoring
+    loop actually asks.
 
-    *baseline_events_path* is `None` when the baseline was never wired with
-    `ASSAY_LIVENESS_EVENTS` (liveness inactive for this lane -- the caller
-    never reaches this function in that case, since `LivenessRunner` is
-    never constructed either) or when the file is absent/unreadable/carries
-    no parseable `test` event (a torn last line, from the baseline still
-    writing when this is read, is tolerated by skipping only that one
-    unparseable line, matching the plugin's own append-per-event contract
-    which makes a torn line possible only for the very last one).
+    *worst_gap_s* is the largest interval between two consecutive stamped
+    records -- and because the plugin brackets the session with
+    `session_start` (from `pytest_configure`, before collection) and
+    `session_finish`, that interval set INCLUDES the leading gap (collection
+    plus whatever session/module fixture the first test needs) and the
+    trailing gap (session teardown). Those two are exactly the stretches the
+    pre-B2 `call`-duration calibration could not see.
 
-    Delegates the parse to :func:`baseline_slowest_test_s` -- the same
-    measurement, not a second one.
+    *leading_gap_s* is the first interval specifically -- `session_start` to
+    the first report -- i.e. how long this suite takes to produce its first
+    sign of life. It calibrates the window before a CANDIDATE has produced
+    any event at all. When the file does not begin with `session_start`
+    (an older baseline, or a plugin whose `pytest_configure` write failed)
+    there is no honest leading measurement, so this falls back to
+    *worst_gap_s*, the conservative choice -- never a tighter bound derived
+    from an interval that is not the leading one.
     """
+
+    worst_gap_s: float
+    leading_gap_s: float
+
+
+class LivenessCalibration(NamedTuple):
+    """(B091 round-1 B2) Everything :class:`LivenessRunner` and the `plan`
+    progress event need about a lane's idle expectations, from ONE parse of
+    ONE file -- never two hand-rolled derivations of the same measurement
+    (B088's own "two derivations drift" lesson).
+    """
+
+    #: The steady-state bound: how long the candidate may go without any
+    #: plugin event before the CPU-growth check gets to call it `hung`.
+    expect_next_event_within_s: float
+    #: The bound that applies before the candidate's FIRST event.
+    pre_first_event_within_s: float
+    #: The raw measurement `expect_next_event_within_s` was derived from --
+    #: `None` on the plugin-inactive fallback path, where no gap was
+    #: observed at all. Disclosed on the `plan` progress event.
+    worst_gap_s: float | None
+    #: The slowest `call`-phase duration, unchanged in meaning from before
+    #: B2 (it is NOT what the bound is derived from any more -- see
+    #: :data:`worst_gap_s`). Disclosed on the `plan` progress event because
+    #: it is still the figure an operator reads as "the slowest test".
+    slowest_test_s: float | None
+
+
+def baseline_event_gaps(
+    baseline_events_path: "Path | None",
+) -> "BaselineEventGaps | None":
+    """The BASELINE's own worst and leading inter-event gaps, or `None` when
+    fewer than two stamped records exist to form a single gap (a `None`,
+    absent, unreadable or near-empty path -- see :func:`_iter_events`).
+
+    Gaps are clamped at zero: `t` is wall-clock `time.time()` in the
+    candidate's own interpreter, so a clock step backwards during a run must
+    read as "no time passed", never as a negative gap that would drag the
+    maximum down.
+    """
+    stamps: list[float] = []
+    first_event: Any = None
+    for record in _iter_events(baseline_events_path):
+        stamp = record.get("t")
+        if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
+            continue
+        if not stamps:
+            first_event = record.get("event")
+        stamps.append(float(stamp))
+    if len(stamps) < 2:
+        return None
+    gaps = [max(0.0, later - earlier) for earlier, later in zip(stamps, stamps[1:])]
+    worst_gap_s = max(gaps)
+    leading_gap_s = gaps[0] if first_event == SESSION_START_EVENT else worst_gap_s
+    return BaselineEventGaps(worst_gap_s=worst_gap_s, leading_gap_s=leading_gap_s)
+
+
+def compute_liveness_calibration(
+    baseline_events_path: "Path | None", baseline_s: float
+) -> LivenessCalibration:
+    """RW-33's `expect_next_event_within_s`, as re-derived by RW-49/D3
+    calibration (a): ``max(3 x the baseline's worst observed inter-event
+    gap, 15s)``, with ``max(3 x the baseline's leading gap, 15s)`` governing
+    the window before the candidate's first event -- else the documented
+    plugin-inactive fallback ``max(60s, baseline_s / 4)`` for both.
+
+    **Why gaps and not `call` durations (round-1 blocker B2).** The pre-B2
+    formula was ``max(3 x slowest_test_s, 15s)`` over `call` durations only.
+    The monitor's question is not "how long does a test body take" but "how
+    long does this suite go SILENT", and a suite goes silent during
+    collection, during session/module fixture setup and during teardown --
+    none of which produce a `call` report. On a measured real project whose
+    module-scoped fixture slept 40s, `slowest_test_s` was 0.0004 and the
+    bound collapsed to its 15s floor, so every candidate was killed as
+    `hung` at ~31s -- including candidates the suite was about to kill
+    honestly. Gaps between the plugin's own stamped records measure the
+    silence directly, and the two session brackets make the first and last
+    stretch measurable too.
+
+    **Why the pre-first-event bound is separate, and tighter.** Once the
+    plugin is loaded, `session_start` arrives within an interpreter start-up
+    of the spawn, so a candidate that has produced NOTHING is a candidate
+    whose `pytest_configure` never completed -- a much stronger signal than
+    an ordinary quiet stretch mid-run, and one the baseline's own leading
+    gap (collection, which happens strictly after `session_start`) already
+    over-estimates. It can never fire early on its own regardless:
+    :class:`LivenessRunner` needs :data:`_HUNG_CPU_WINDOW_S` of flat-CPU
+    history before it may declare anything `hung`, so 30s is the real floor
+    under every kill.
+
+    **The fallback path is deliberately coarse.** *baseline_events_path* is
+    `None` when the baseline was never wired with `ASSAY_LIVENESS_EVENTS`,
+    and carries too few stamped records when the plugin never loaded or
+    never ran. There is then no measurement to calibrate against and the
+    only remaining progress signal is growth of the candidate's stdout/
+    stderr FILES -- which, for a pytest lane under its default global
+    capture, stays flat at 0 bytes until the run ends. A plugin-less lane
+    therefore gets COARSE liveness only: the `max(60s, baseline_s/4)` bound,
+    the 30s CPU window, and the elapsed budget -- documented as such in
+    CONSUMERS.md so no consumer reads an all-`hung` sweep as a measurement.
+    """
+    gaps = baseline_event_gaps(baseline_events_path)
     slowest_test_s = baseline_slowest_test_s(baseline_events_path)
-    if slowest_test_s is not None:
-        return max(3.0 * slowest_test_s, 15.0)
-    return max(60.0, baseline_s / 4.0)
+    if gaps is None:
+        fallback = max(LIVENESS_FALLBACK_FLOOR_S, baseline_s / 4.0)
+        return LivenessCalibration(
+            expect_next_event_within_s=fallback,
+            pre_first_event_within_s=fallback,
+            worst_gap_s=None,
+            slowest_test_s=slowest_test_s,
+        )
+    return LivenessCalibration(
+        expect_next_event_within_s=max(
+            3.0 * gaps.worst_gap_s, LIVENESS_IDLE_FLOOR_S
+        ),
+        pre_first_event_within_s=max(
+            3.0 * gaps.leading_gap_s, LIVENESS_IDLE_FLOOR_S
+        ),
+        worst_gap_s=gaps.worst_gap_s,
+        slowest_test_s=slowest_test_s,
+    )
 
 
 def _read_events_progress(events_path: Path, previous_count: int) -> tuple[int, bool]:
-    """Re-read *events_path* end to end and return ``(valid_line_count,
+    """Re-read *events_path* end to end and return ``(valid_record_count,
     saw_session_finish)``. Tolerant of a torn last line (``json.loads``
     failure is skipped, never raised) exactly like
-    :func:`compute_expect_next_event_within_s`. *previous_count* is unused
+    :func:`compute_liveness_calibration`.
+
+    (B091 round-1 B2) The count is over EVERY event kind -- `session_start`,
+    `phase` (`setup`/`teardown`), `test` (`call`) and `session_finish` alike
+    -- because the monitoring loop's question is "did this candidate do
+    anything since the last tick", and a `setup` report is as good an answer
+    as a `call` report. It shares :func:`_iter_events` with the calibration
+    so the writer's vocabulary is read back in exactly one place.
+
+    *previous_count* is unused
     by this function itself -- it exists only so a caller unable to import
     both this function's return convention and its own bookkeeping in one
     line can compare the two counts inline; kept as a parameter (rather than
     dropped) to keep every call site's own diff small and self-explanatory.
     """
     del previous_count  # Documented above: comparison is the CALLER's job.
-    try:
-        lines = events_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return 0, False
     valid = 0
     saw_session_finish = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            record = json.loads(stripped)
-        except (ValueError, RecursionError):
-            continue
+    for record in _iter_events(events_path):
         valid += 1
-        if isinstance(record, dict) and record.get("event") == "session_finish":
+        if record.get("event") == SESSION_FINISH_EVENT:
             saw_session_finish = True
     return valid, saw_session_finish
 
@@ -759,11 +937,14 @@ class LivenessRunner:
     ``subprocess.run(timeout=...)`` no longer applies once `Popen` replaces
     it).
 
-    `hung` iff: no progress (a NEW `test`/`session_finish` event, OR
-    stdout/stderr file growth -- the "plugin inactive" fallback RW-33 names,
-    folded in as an extra progress signal rather than a separate code path,
-    since either one is sufficient evidence the candidate is still doing
-    something) for `expect_next_event_within_s` AND the tree's CPU grew less
+    `hung` iff: no progress (a NEW plugin event of ANY kind --
+    `session_start`, `phase`, `test` or `session_finish`, B091 round-1 B2 --
+    OR growth of the candidate's stdout/stderr FILES, the "plugin inactive"
+    fallback RW-33 names, folded in as an extra progress signal rather than
+    a separate code path, since either one is sufficient evidence the
+    candidate is still doing something) for the applicable bound
+    (`pre_first_event_within_s` until the candidate's first event,
+    `expect_next_event_within_s` after it) AND the tree's CPU grew less
     than :data:`_HUNG_CPU_GROWTH_FLOOR_S` over the trailing
     :data:`_HUNG_CPU_WINDOW_S`; OR a `session_finish` event was seen and the
     process is still alive :data:`_HUNG_SESSION_FINISH_GRACE_S` later
@@ -785,6 +966,19 @@ class LivenessRunner:
     the clock/sleep/CPU-reader around a REAL, cheap ``subprocess.Popen(["sh",
     "-c", "sleep 0.01"])`` child for a closer-to-real integration check,
     without any test needing to wait out a real 15s/30s/60s threshold.
+
+    **The file-growth fallback is coarse, by measurement, and that is
+    disclosed rather than hidden (B091 round-1 B2).** The stdout/stderr
+    signal reads the SIZE of the two side files, which is the only thing
+    that can be read without a pipe -- but pytest under its default global
+    capture writes nothing to the real fds until the run ends, so for the
+    one runner liveness is restricted to those files stay at 0 bytes for the
+    whole run. On a lane where the plugin IS active that costs nothing (the
+    events file carries a record per phase). On a lane where it is not, the
+    fallback is effectively inert and the candidate is governed by the
+    coarse `max(60s, baseline_s/4)` bound, the 30s flat-CPU window and the
+    elapsed budget alone -- stated in CONSUMERS.md so nobody reads such a
+    lane's `hung` count as a fine-grained measurement.
     """
 
     def __init__(
@@ -792,6 +986,12 @@ class LivenessRunner:
         *,
         events_dir: Path,
         expect_next_event_within_s: float,
+        #: (B091 round-1 B2) The bound that applies until the candidate's
+        #: FIRST plugin event arrives -- `None` (the default) means "use
+        #: *expect_next_event_within_s* for that window too", which is both
+        #: the pre-B2 behaviour and what the plugin-inactive fallback path
+        #: wants, since it has no separate leading measurement to offer.
+        pre_first_event_within_s: float | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         poll_interval_s: float = _LIVENESS_POLL_INTERVAL_S,
@@ -801,6 +1001,11 @@ class LivenessRunner:
         self._events_dir = events_dir
         self._events_dir.mkdir(parents=True, exist_ok=True)
         self._expect_next_event_within_s = expect_next_event_within_s
+        self._pre_first_event_within_s = (
+            expect_next_event_within_s
+            if pre_first_event_within_s is None
+            else pre_first_event_within_s
+        )
         self._monotonic = monotonic
         self._sleep = sleep
         self._poll_interval_s = poll_interval_s
@@ -961,9 +1166,22 @@ class LivenessRunner:
                     cpu_growing = (cpu_now - baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S
 
             idle_for = now - last_progress_at
-            hung = (
-                idle_for >= self._expect_next_event_within_s and not cpu_growing
-            ) or (
+            # (B091 round-1 B2) Which bound applies depends on whether this
+            # candidate has produced ANY plugin event yet. Before the first
+            # one the only thing that can have happened is interpreter
+            # start-up and plugin registration, calibrated by the baseline's
+            # own leading gap; after it the candidate is inside collection,
+            # fixtures or test bodies, calibrated by the baseline's worst
+            # observed gap. `_pre_first_event_within_s` IS
+            # `_expect_next_event_within_s` unless the caller distinguished
+            # them, so this selection is inert for every caller that does
+            # not (the plugin-inactive fallback path included).
+            bound = (
+                self._expect_next_event_within_s
+                if event_count > 0
+                else self._pre_first_event_within_s
+            )
+            hung = (idle_for >= bound and not cpu_growing) or (
                 session_finish_at is not None
                 and (now - session_finish_at) >= _HUNG_SESSION_FINISH_GRACE_S
             )

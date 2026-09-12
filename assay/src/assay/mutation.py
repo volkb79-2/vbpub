@@ -1861,6 +1861,17 @@ def run_mutation(
     #: lesson). Both `None` for every non-liveness lane.
     liveness_slowest_test_s: float | None = None,
     liveness_expect_next_event_within_s: float | None = None,
+    #: (B091 round-1 B2) The two figures RW-49/D3's calibration (a) adds,
+    #: from the SAME one `assay.liveness.compute_liveness_calibration` call
+    #: as the two above. *liveness_worst_gap_s* is the raw measurement
+    #: `expect_next_event_within_s` is now derived from (the baseline's
+    #: worst observed inter-event gap, session brackets included) --
+    #: `slowest_test_s` keeps its pre-B2 meaning, the slowest `call`-phase
+    #: duration, which is NO LONGER what the bound comes from.
+    #: *liveness_pre_first_event_within_s* is the separate, tighter bound
+    #: governing a candidate that has produced no event at all yet.
+    liveness_worst_gap_s: float | None = None,
+    liveness_pre_first_event_within_s: float | None = None,
     #: (B091/D-23, P7 A4) The lane's own PERSISTENT
     #: `.assay/liveness/candidates/` directory -- `None` for every
     #: non-liveness lane. When given, each candidate's own `tests_completed`
@@ -2111,8 +2122,17 @@ def run_mutation(
                     # line is written) was DERIVED from -- `None`/`None` for
                     # every liveness-off lane, matching the `liveness` block
                     # just above.
+                    #
+                    # (B091 round-1 B2) `slowest_test_s` keeps its name AND
+                    # its exact pre-B2 meaning -- the slowest `call`-phase
+                    # duration -- so no consumer reading it finds the key
+                    # silently measuring something else. What CHANGED is
+                    # that it is no longer the input to the bound;
+                    # `worst_gap_s` is, and it is disclosed beside it.
                     "slowest_test_s": liveness_slowest_test_s,
+                    "worst_gap_s": liveness_worst_gap_s,
                     "expect_next_event_within_s": liveness_expect_next_event_within_s,
+                    "pre_first_event_within_s": liveness_pre_first_event_within_s,
                 }
             )
             if liveness_baseline_events_path is not None:
