@@ -1781,7 +1781,37 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     directly), `cpu.cores_avg` derived; every OTHER field
     (`pressure`, `faults`, `pids`, `damon`, `host`, `events`, `session`,
     `daemon`, `target.*`, `samples`, `interval_seconds`) `null` (contract
-    Sec 1.7: absent means unknown, never fabricated). NEVER a `BasicSampler`
+    Sec 1.7: absent means unknown, never fabricated).
+
+    **`memory.floor_bytes`/`memory.peak_at_floor` (RW-46b).** fork+exec's
+    COW page-table inheritance means a short-lived child's own `ru_maxrss`
+    high-water mark can never fall below the PARENT's (run-gate's own)
+    resident size at the moment of fork — proven directly against
+    `Popen`/`posix_spawn`/raw `fork()+exec()` (round-1 review B1 residual
+    finding): an artificial small parent (~11 MiB resident) forking
+    `/bin/true` measured `ru_maxrss` ~11 MiB for the trivial child; the
+    SAME fork with a 300 MiB parent measured ~311–318 MiB for the SAME
+    trivial child, on all three mechanisms identically. `run_bare_host_
+    lane` reads run-gate's OWN resident set (`/proc/self/statm`, resident
+    pages × page size) immediately before spawning the lane's child and
+    records it as `memory.floor_bytes`; `memory.peak_bytes` is unchanged
+    (still the exact `ru.ru_maxrss * 1024` `wait4()` reports — there is
+    nothing left in the accounting itself to fix). `memory.peak_at_floor`
+    is `true` when `peak_bytes <= floor_bytes` (this run's peak is
+    unmeasurable beyond run-gate's own floor — NOT necessarily the lane's
+    true peak), `false` when the child's own footprint genuinely exceeded
+    it (a real measurement), `null` only when `floor_bytes` itself could
+    not be read (contract Sec 1.7). `footprint`/`history`/`doctor` print
+    "(peak <= floor)" next to such a lane's numbers, alongside the
+    existing `[source: rusage-maxrss]` caveat; the footprint manifest's
+    per-lane entry carries `"peak_at_floor"` from its most-recently-
+    profiled run (`R-44a`). A future RG-56 admission-control consumer
+    should treat a `peak_at_floor: true` lane as small (its true peak is
+    bounded above by nothing this measurement can express, but bounded
+    BELOW by nothing useful either — the honest reading is "small or
+    unmeasured", never "large").
+
+    NEVER a `BasicSampler`
     fallback on this path — no cgroup here is safely attributable to just
     this lane's own child the way a fresh ephemeral container's cgroup is;
     a basic-path sample would silently mix in run-gate's own process and
@@ -1821,6 +1851,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     describe how it is profiled NOW); `source` is disclosed downstream
     (`_fmt_footprint_row`, `doctor`'s footprint section) ONLY when it is
     `"rusage-maxrss"` (`R-43i`) — every other method's row is unchanged.
+    `peak_at_floor` (RW-46b) is read the SAME way, one field over
+    (`memory.peak_at_floor` of that same most-recent-profiled entry) and
+    disclosed downstream ONLY when it is `true` — see `R-43i`.
     `last_commit`/`last_at` name the single most recent
     completed run overall, pass or fail. The five numeric series
     (`duration_s`, `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,

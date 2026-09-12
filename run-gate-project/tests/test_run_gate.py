@@ -7277,6 +7277,10 @@ class TestFootprintManifestBuild:
                 "runs": 1, "completed_runs": 1,
                 "scope": "container-shared", "method": "daemon",
                 "source": "sampled-max",
+                # RW-46b: a daemon-path Summary (SUMMARY_V1) carries no
+                # `peak_at_floor` key at all -- rusage-only concept -- so
+                # `.get()` reads None, not a fabricated False.
+                "peak_at_floor": None,
                 "duration_s": {"median": 10.0, "max": 10.0},
                 "memory_peak_bytes": {"median": 734003200, "max": 734003200},
                 "memory_peak_over_baseline_bytes": {"median": 209715200,
@@ -14374,6 +14378,12 @@ class TestBareHostProfilingWiring:
         assert isinstance(res["memory"]["peak_bytes"], int)
         assert res["memory"]["peak_bytes"] > 0
         assert res["memory"]["baseline_bytes"] is None
+        # RW-46b: this fixture proc root (RG55_FIXTURES/frames/0/proc) has
+        # no self/statm -- `_self_rss_bytes()` degrades to None (contract
+        # Sec 1.7: absent, never fabricated), so the floor is honestly
+        # unknown here rather than wrongly zero.
+        assert res["memory"]["floor_bytes"] is None
+        assert res["memory"]["peak_at_floor"] is None
         assert res["cpu"]["seconds"] is not None and res["cpu"]["seconds"] >= 0
         assert res["cpu"]["cores_max"] is None
         assert res["target"] == {"container_id": None, "cgroup": None,
@@ -14382,6 +14392,48 @@ class TestBareHostProfilingWiring:
         assert res["damon"] is None
         assert latest["profile_error"] is None
         assert latest["profile_ref"] is None
+
+    def test_real_proc_wires_a_real_floor_end_to_end(self, tmp_path,
+                                                     monkeypatch, capsys):
+        """RW-46b end-to-end: with NO `RUN_GATE_PROC_ROOT` override (this
+        test process's own REAL `/proc/self/statm`, always readable on
+        Linux), `run_bare_host_lane` must actually call `_self_rss_bytes()`
+        before spawning and thread the result all the way into the
+        persisted record -- proving the wiring, not just the isolated
+        arithmetic `TestBareHostRusageArithmetic` already pins."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROC_ROOT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        assert run_gate.main(["suite"]) == 0
+        mem = lane_slot(proj)["latest"]["resources"]["memory"]
+        assert isinstance(mem["floor_bytes"], int) and mem["floor_bytes"] > 0
+        assert mem["peak_at_floor"] in (True, False)  # a real answer, not None
+        assert mem["peak_bytes"] >= 0
+
+    def test_daemon_path_never_computes_a_floor(self, tmp_path, monkeypatch,
+                                               capsys):
+        """RW-46b is a rusage-path-only concept (the daemon path measures
+        via a real cgroup) -- a daemon-path run must leave floor_bytes/
+        peak_at_floor out of the picture entirely (both null, contract
+        Sec 1.7), never a stale/zero placeholder."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROC_ROOT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = (RG55_FIXTURES / "start-v1.json").read_text()
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           start=(start, None, None), stop=(stop, None, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        assert run_gate.main(["suite"]) == 0
+        mem = lane_slot(proj)["latest"]["resources"]["memory"]
+        assert mem.get("floor_bytes") is None
+        assert mem.get("peak_at_floor") is None
 
     def test_disabled_prints_nothing_new(self, tmp_path, monkeypatch, capsys):
         # kill switch is ON by default (profiling_off_by_default) -- no
@@ -14810,6 +14862,87 @@ class TestBareHostRusageArithmetic:
             state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z")
         assert result["resources"]["duration_seconds"] == 0.0
         assert result["resources"]["cpu"]["cores_avg"] is None
+
+    # -- RW-46b: memory.floor_bytes / memory.peak_at_floor -----------------
+
+    def test_floor_bytes_omitted_leaves_peak_at_floor_none_not_fabricated(self):
+        """The other optional parameter at its default: `floor_bytes` is
+        NOT passed at all (same call shape every pre-RW-46b test above
+        already uses) -- `peak_at_floor` must be `None` (unknown), never
+        silently `False` (contract Sec 1.7: absent is never fabricated as
+        a definite answer)."""
+        ru = _FakeRusage(ru_maxrss=12345, ru_utime=1.0, ru_stime=0.0)
+        state = {"mode": "rusage", "warning": None}
+        result = run_gate.finish_bare_host_profiling(
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+        mem = result["resources"]["memory"]
+        assert mem["floor_bytes"] is None
+        assert mem["peak_at_floor"] is None
+        assert mem["peak_bytes"] == 12345 * 1024  # unaffected by the omission
+
+    def test_peak_at_or_below_floor_is_flagged_true(self):
+        """peak_bytes == floor_bytes (the boundary, `<=` not `<`) and
+        peak_bytes < floor_bytes (impossible in practice per
+        `_self_rss_bytes`'s own proof, but the comparison itself must not
+        silently assume peak >= floor) both read as floor-bound."""
+        for maxrss_kib, floor in ((100, 100 * 1024), (50, 100 * 1024)):
+            ru = _FakeRusage(ru_maxrss=maxrss_kib, ru_utime=0.1, ru_stime=0.0)
+            state = {"mode": "rusage", "warning": None}
+            result = run_gate.finish_bare_host_profiling(
+                state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:01Z",
+                floor)
+            mem = result["resources"]["memory"]
+            assert mem["floor_bytes"] == floor
+            assert mem["peak_at_floor"] is True, (maxrss_kib, floor)
+            assert mem["peak_bytes"] == maxrss_kib * 1024
+
+    def test_peak_strictly_above_floor_is_flagged_false(self):
+        ru = _FakeRusage(ru_maxrss=300 * 1024, ru_utime=0.1, ru_stime=0.0)
+        state = {"mode": "rusage", "warning": None}
+        result = run_gate.finish_bare_host_profiling(
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:01Z",
+            11 * 1024 * 1024)
+        mem = result["resources"]["memory"]
+        assert mem["floor_bytes"] == 11 * 1024 * 1024
+        assert mem["peak_at_floor"] is False
+        assert mem["peak_bytes"] == 300 * 1024 * 1024
+
+
+class TestSelfRssBytes:
+    """RW-46b's `_self_rss_bytes()` in isolation -- the read
+    `run_bare_host_lane` does immediately before spawning a rusage-path
+    lane's child, honoring `RUN_GATE_PROC_ROOT` like `read_host_pressure_
+    snapshot`/`cgroup_namespace_is_private` so it can be driven with a
+    fake `<root>/self/statm` rather than this test process's real one."""
+
+    def _fake_proc_root(self, tmp_path, monkeypatch, statm_line: str | None):
+        root = tmp_path / "fake-proc"
+        (root / "self").mkdir(parents=True)
+        if statm_line is not None:
+            (root / "self" / "statm").write_text(statm_line)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(root))
+        return root
+
+    def test_reads_resident_pages_times_page_size(self, tmp_path, monkeypatch):
+        # statm fields: size resident shared text lib data dt (pages).
+        # resident = field index 1 = 4321 here.
+        self._fake_proc_root(tmp_path, monkeypatch,
+                             "10000 4321 100 50 0 900 0\n")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        assert run_gate._self_rss_bytes() == 4321 * page_size
+
+    def test_missing_statm_returns_none_not_zero(self, tmp_path, monkeypatch):
+        self._fake_proc_root(tmp_path, monkeypatch, statm_line=None)
+        assert run_gate._self_rss_bytes() is None
+
+    def test_malformed_statm_returns_none_not_a_traceback(self, tmp_path,
+                                                          monkeypatch):
+        self._fake_proc_root(tmp_path, monkeypatch, "not-a-number\n")
+        assert run_gate._self_rss_bytes() is None
+
+    def test_too_few_fields_returns_none(self, tmp_path, monkeypatch):
+        self._fake_proc_root(tmp_path, monkeypatch, "10000\n")
+        assert run_gate._self_rss_bytes() is None
 
 
 class TestResolveSelfContainerIdDirectBranches:

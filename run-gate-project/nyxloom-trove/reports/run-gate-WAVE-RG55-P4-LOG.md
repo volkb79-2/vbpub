@@ -923,3 +923,70 @@ serial `nice -n 19 ionice -c 3`):
 - `python3 -m pytest tests/test_run_gate.py -k "TestDoctor or TestUsageEnvironmentContract or test_no_stdlib_violations" -q` → 45 passed
 - `python3 -m pytest tests/test_run_gate.py -k "TestDoctorStaleLockCheck" -q` → 4 passed
 - `python3 -m pytest tests/test_run_gate.py -k "Lock or lock or Mutex or ResourceAdmission or Doctor" -q` → 100 passed
+
+### Commit 2 — RW-46b: rusage floor_bytes / peak_at_floor
+
+New `_self_rss_bytes()` (`run-gate.py`, near `_RUSAGE_NULL_SECTIONS`):
+reads run-gate's own resident set from `/proc/self/statm` (field index 1,
+resident pages, × `os.sysconf("SC_PAGE_SIZE")`), honors `RUN_GATE_PROC_ROOT`
+like `read_host_pressure_snapshot`/`cgroup_namespace_is_private` so tests
+can drive it with a fake `<root>/self/statm`; `None` on any read/parse
+failure (contract Sec 1.7 — never fabricated as zero). `run_bare_host_lane`
+calls it immediately before `Popen()`, rusage mode only (the daemon path
+measures via a real cgroup — no floor to disclose), and threads the result
+into `finish_bare_host_profiling`'s new optional `floor_bytes` parameter
+(default `None`, so every pre-existing call site — and B2's own
+`TestBareHostRusageArithmetic` oracles — is unaffected). `memory.peak_bytes`
+is UNCHANGED (still the exact `ru.ru_maxrss * 1024` `wait4()` reports —
+nothing left in the arithmetic itself to fix, per RW-43); new
+`memory.floor_bytes` (the reading) and `memory.peak_at_floor`
+(`peak_bytes <= floor_bytes` when `floor_bytes` is known, else `None` —
+never a fabricated `False`).
+
+Propagation: `build_footprint_manifest`'s per-lane entry gains
+`peak_at_floor`, read from the SAME most-recent-profiled entry `scope`/
+`method`/`source` already come from (a lane's floor-bound-ness can change
+run to run as run-gate's own RSS varies, so this is NOT an aggregate over
+history). `_lane_stats` gains two ANY-of-contributing-entries flags
+(`memory_source_rusage`, `memory_peak_at_floor`) for `_fmt_resource_stats`
+(the `history` verb has no manifest to read a single value from).
+`_fmt_footprint_row`/`_fmt_resource_stats`/`print_footprint_line` (S1: the
+LIVE per-run line and `history` previously showed neither caveat at all)
+all print `[source: rusage-maxrss]` and `(peak <= floor)` next to the
+qualifying number now. `doctor`'s existing "footprint source" INFO block
+gains a sibling "footprint peak-at-floor" INFO block, same population
+logic.
+
+Docs: SPEC.md `R-43i` (the floor/peak_at_floor mechanism, with the
+Popen/posix_spawn/fork+exec proof carried over from session 4's REPORT)
+and `R-44a` (manifest field provenance) amended; LANE-AUTHORING.md's
+footprint-budgeting guidance gets a floor paragraph; CHANGES.md `[Unreleased]`
+RG-57 entry gets a "Round-2 review (RW-46b)" postscript (the existing
+convention session 4's B1/B3 postscripts already established).
+
+Tests: `TestBareHostRusageArithmetic` +3 (floor omitted -> `peak_at_floor`
+None not fabricated False; peak <= floor at the boundary AND below it ->
+True; peak > floor -> False) — satisfies the dispatch's "every new
+conditional tested with the other optional parameter at its default" via
+the omitted-floor case. New `TestSelfRssBytes` (4 tests: real arithmetic
+against a fake statm, missing file, malformed content, too-few-fields —
+all degrade to `None`, never a traceback or a fabricated number).
+`TestBareHostProfilingWiring` +2: `test_real_proc_wires_a_real_floor_end_
+to_end` (no PROC_ROOT override -- this test process's own real
+`/proc/self/statm`, proves the wiring reaches the persisted record, not
+just the isolated unit), `test_daemon_path_never_computes_a_floor` (daemon
+path leaves both fields `None`, never a stale/zero placeholder). Existing
+`test_daemon_absent_falls_back_to_rusage_and_discloses_why` (uses a
+fixture proc root with no `self/statm`) gained two assertions
+(`floor_bytes`/`peak_at_floor` both `None`) — degrades honestly rather
+than crashing. One PRE-EXISTING test needed updating for the new manifest
+key (`TestFootprintManifestBuild::test_a_lane_with_one_profiled_pass_
+matches_contract_shape`, an exact-dict-equality oracle — added
+`"peak_at_floor": None` to the expected shape, the correct read of a
+daemon-path fixture that carries no such key at all).
+
+Verification (all green, PSI `full avg10` 0.56–2.56%, serial):
+- `python3 -m pytest tests/test_run_gate.py -k "TestBareHostRusageArithmetic or TestSelfRssBytes or TestBareHostProfilingWiring" -q` → 27 passed
+- `python3 -m pytest tests/test_run_gate.py -k "History or Footprint or footprint or history" -q` → 177 passed
+- `python3 -m pytest tests/test_run_gate.py -k "BareHost or Rusage or rusage or Profil or profil or Doctor" -q` → 211 passed
+- `python3 -m pytest tests/test_run_gate.py -k "BareHost or Rusage or rusage or SelfRss or Footprint or footprint or History or history or Doctor or Lock or Mutex or ResourceAdmission" -q` → 292 passed

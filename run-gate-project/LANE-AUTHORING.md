@@ -272,7 +272,15 @@ with sqlfluff in a command lane if the project wants it.
   coarser `os.wait4()`-based number (`method: "rusage"`, peak memory is
   that lane's own child's peak RSS, not a cgroup read, not a sum across
   children, and never borrowed from another child; `footprint`/`doctor`
-  disclose that caveat next to the number).
+  disclose that caveat next to the number). A very light lane's reported
+  peak also has a FLOOR: it can never read below run-gate's own resident
+  memory at the moment it forked the lane's child (fork/COW accounting —
+  RW-46b). When `memory.peak_bytes <= memory.floor_bytes`,
+  `memory.peak_at_floor` is `true` and every surface above prints
+  "(peak <= floor)" next to it — that lane's true footprint is smaller
+  than or comparable to run-gate's own process, not necessarily the exact
+  number shown; budget it as SMALL rather than reading the number
+  literally.
   Once a lane has a handful of profiled runs, `./run-gate.py footprint
   --write` distills a COMMITTED peak-memory/CPU/stall number for it —
   size `resources.memory`/`resources.cpus` off THAT (with headroom for the

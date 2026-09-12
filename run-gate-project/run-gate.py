@@ -1978,6 +1978,42 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     return state
 
 
+def _self_rss_bytes() -> int | None:
+    """RW-46b. `os.wait4()`'s `ru_maxrss` is a fork+exec hiwater mark, and
+    COW page-table inheritance means a short-lived child's own high-water
+    RSS can never fall below the PARENT's (run-gate's own) resident size
+    at the moment of fork — proven directly against `Popen`/`posix_spawn`/
+    raw `fork()+exec()` (round-1 review B1 residual finding, RW-43's own
+    REPORT): an artificial small parent (~11 MiB resident) forking
+    `/bin/true` measured `ru_maxrss` ~11 MiB for the trivial child; the
+    SAME fork with a big parent (300 MiB allocated first) measured
+    ~311-318 MiB for the SAME trivial child, on all three mechanisms
+    identically. `run_bare_host_lane` reads this IMMEDIATELY BEFORE
+    spawning the lane's own child (the closest this process can get to
+    "resident size at fork time" without racing the fork itself) and
+    hands it to `finish_bare_host_profiling` as the rusage summary's
+    `memory.floor_bytes` — not a bug fix (there is nothing left in the
+    accounting itself to fix; `os.wait4` already reports the ONE child's
+    own exact numbers, RW-43/B1), but an honest disclosure that a peak at
+    or below this floor cannot be distinguished from "no measurable
+    footprint beyond run-gate's own", per contract Sec 1.7. Reads resident
+    pages (field index 1) from `/proc/self/statm`, honors `RUN_GATE_PROC_
+    ROOT` like `read_host_pressure_snapshot`/`cgroup_namespace_is_private`
+    so a test can drive it with a fake `<root>/self/statm`. `None` when
+    unreadable or malformed — absent is never zero, and a fabricated floor
+    would be worse than no floor at all."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        fields = (root / "self" / "statm").read_text().split()
+        resident_pages = int(fields[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, IndexError, ValueError):
+        return None
+    if resident_pages < 0 or page_size <= 0:
+        return None
+    return resident_pages * page_size
+
+
 # RG-57/RW-27b: the schema-1 Summary's non-rusage sections, built once so
 # `finish_bare_host_profiling`'s rusage branch does not hand-roll four
 # separate all-null dicts inline. Every leaf here is a fact getrusage()
@@ -1999,7 +2035,8 @@ _RUSAGE_NULL_SECTIONS = {
 
 
 def finish_bare_host_profiling(state: dict, ru,
-                               started_at: str, ended_at: str) -> dict:
+                               started_at: str, ended_at: str,
+                               floor_bytes: int | None = None) -> dict:
     """RG-57/RW-27b's counterpart to `finish_lane_profiling` — same
     three-field return shape (`{'resources', 'profile_error',
     'profile_ref'}`), called from `run_bare_host_lane`'s own `finally`
@@ -2030,7 +2067,19 @@ def finish_bare_host_profiling(state: dict, ru,
     cannot supply. `memory.peak_bytes` is `ru.ru_maxrss * 1024` (Linux
     reports KiB) — the lane's own child's peak RSS (`source:
     "rusage-maxrss"` discloses exactly that caveat downstream, in
-    `footprint`/`doctor`/`history`)."""
+    `footprint`/`doctor`/`history`).
+
+    `floor_bytes` (RW-46b) is run-gate's OWN resident memory, read by the
+    caller immediately before spawning the child (`_self_rss_bytes()`) —
+    fork+exec's COW inheritance means `peak_bytes` can never honestly fall
+    below it (see `_self_rss_bytes`'s own docstring for the proof).
+    `memory.peak_at_floor` is `True` when `peak_bytes <= floor_bytes`
+    (unmeasurable beyond that floor — not necessarily this lane's true
+    peak), `False` when it exceeds it (this child genuinely pushed the
+    high-water mark higher, a real measurement), and `None` only when
+    `floor_bytes` itself is `None` (unreadable `/proc/self/statm` —
+    contract Sec 1.7: absent is never fabricated as either True or
+    False)."""
     if state["mode"] == "daemon":
         return finish_lane_profiling(state)
     if state["mode"] == "disabled":
@@ -2050,6 +2099,9 @@ def finish_bare_host_profiling(state: dict, ru,
     cpu_seconds = round(ru.ru_utime + ru.ru_stime, 3)
     cores_avg = (round(cpu_seconds / duration_seconds, 3)
                 if duration_seconds else None)
+    peak_bytes = ru.ru_maxrss * 1024
+    peak_at_floor = (peak_bytes <= floor_bytes) if floor_bytes is not None \
+        else None
     resources = {
         "schema": 1,
         "session": None,
@@ -2064,8 +2116,10 @@ def finish_bare_host_profiling(state: dict, ru,
         "target": {"container_id": None, "cgroup": None,
                   "token": None, "targets_seen": None},
         "memory": {
-            "peak_bytes": ru.ru_maxrss * 1024,
+            "peak_bytes": peak_bytes,
             "source": "rusage-maxrss",
+            "floor_bytes": floor_bytes,
+            "peak_at_floor": peak_at_floor,
             "baseline_bytes": None,
             "peak_over_baseline_bytes": None,
             "p90_bytes": None,
@@ -2168,13 +2222,19 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
         if isinstance(manifest_peak, (int, float)) \
         and not isinstance(manifest_peak, bool) else ""
+    # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
+    # already print, here on the LIVE per-run line — read far more often
+    # than `footprint --write`'s own table (round-1 review S1).
+    source_note = " [source: rusage-maxrss]" \
+        if mem.get("source") == "rusage-maxrss" else ""
+    floor_note = " (peak <= floor)" if mem.get("peak_at_floor") else ""
     print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
          f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
          f"s stalled on memory (full){hot_seg}; history median peak "
          f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
-         f"{manifest_seg}", flush=True)
+         f"{manifest_seg}{source_note}{floor_note}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3517,6 +3577,15 @@ def _lane_stats(entries: list[dict]) -> dict:
         # two-on-even-count median `series_stats` always had.
         stats[key] = series_stats(entries, getter,
                                   byte_valued=key.endswith("_bytes"))
+    # RG-57/C4 + RW-46b: caveat flags for `_fmt_resource_stats` (the
+    # `history` verb has no manifest to read them from, unlike `footprint`)
+    # -- ANY contributing entry carrying the caveat is enough to print it,
+    # never a majority/all requirement, so a mixed-mode series (daemon
+    # became reachable partway through) never under-discloses.
+    mems = [(e.get("resources") or {}).get("memory") or {} for e in entries]
+    stats["memory_source_rusage"] = any(m.get("source") == "rusage-maxrss"
+                                        for m in mems)
+    stats["memory_peak_at_floor"] = any(m.get("peak_at_floor") for m in mems)
     return stats
 
 
@@ -3565,17 +3634,25 @@ def _fmt_resource_stats(stats: dict) -> str:
     series over the SAME entries `_fmt_stats`'s own line just described;
     `-` for any series with zero contributing entries (RG-27's dirty-run
     trap generalizes: an unprofiled or errored run contributes to NEITHER
-    series, the same way it never touched `duration_stats`)."""
+    series, the same way it never touched `duration_stats`). S1/RW-46b:
+    the SAME `[source: rusage-maxrss]`/`(peak <= floor)` caveats
+    `_fmt_footprint_row`/`doctor` print, here driven by `_lane_stats`'
+    own ANY-of-entries flags (no per-lane manifest to read them from at
+    this call site)."""
     peak = stats["memory_peak_bytes"]
     over = stats["memory_peak_over_baseline_bytes"]
     hot = stats["hot_set_p90_bytes"]
     cores = stats["cpu_cores_avg"]
     stall = stats["memory_full_stall_seconds"]
+    source_note = " [source: rusage-maxrss]" \
+        if stats.get("memory_source_rusage") else ""
+    floor_note = " (peak <= floor)" if stats.get("memory_peak_at_floor") else ""
     return (f"PEAK {_fmt_mib(peak['median'])} (max {_fmt_mib(peak['max'])})  "
             f"+BASE {_fmt_mib(over['median'])}  "
             f"HOT p90 {_fmt_mib(hot['median'])}  "
             f"CORES {_fmt_cores(cores['median'])}  "
-            f"STALL {_fmt_seconds(stall['median'])}")
+            f"STALL {_fmt_seconds(stall['median'])}"
+            f"{source_note}{floor_note}")
 
 
 def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
@@ -3712,6 +3789,12 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         # it produced rather than let it look like every other lane's
         # cgroup-measured peak.
         source = (profiled_res.get("memory") or {}).get("source")
+        # RW-46b: same "most recent profiled entry" read, one field further
+        # -- whether THAT run's own peak was bounded by run-gate's own RSS
+        # at spawn (`floor_bytes`), not a per-lane aggregate across every
+        # historical run (a lane's floor-bound-ness can change run to run
+        # as run-gate's own resident size varies).
+        peak_at_floor = (profiled_res.get("memory") or {}).get("peak_at_floor")
         last = hist[-1]
         peak = stats["memory_peak_bytes"]
         over = stats["memory_peak_over_baseline_bytes"]
@@ -3724,6 +3807,7 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
             "scope": scope,
             "method": method,
             "source": source,
+            "peak_at_floor": peak_at_floor,
             "duration_s": {"median": stats["median_seconds"],
                           "max": stats["max_seconds"]},
             "memory_peak_bytes": {"median": peak["median"], "max": peak["max"]},
@@ -3757,6 +3841,11 @@ def _fmt_footprint_row(name: str, lm: dict) -> str:
     # cgroup-measured number.
     source_note = (" [source: rusage-maxrss]" if lm.get("source") == "rusage-maxrss"
                    else "")
+    # RW-46b: this lane's most-recent profiled run could not distinguish
+    # its own peak from run-gate's own RSS at spawn -- the median/max MiB
+    # above are still the honest wait4() numbers, this only says they may
+    # UNDERSTATE the lane's true peak.
+    floor_note = " (peak <= floor)" if lm.get("peak_at_floor") else ""
     return (f"  {name:<20}{lm['runs']:>5}  "
            f"{_fmt_mib(peak['median']):>9}/{_fmt_mib(peak['max']):<9}  "
            f"{_fmt_mib(over['median']):>9}  "
@@ -3764,7 +3853,7 @@ def _fmt_footprint_row(name: str, lm: dict) -> str:
            f"{_fmt_cores(cores['avg_median']):>6}  "
            f"{_fmt_seconds(stall['median']):>7}  "
            f"{_fmt_seconds(dur['median']):>9}"
-           f"{source_note}")
+           f"{source_note}{floor_note}")
 
 
 def print_footprint_report(manifest: dict, worktree_scope: str | None,
@@ -5548,6 +5637,17 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                    f"(RG-57 bare-host daemon-absent path) — that lane's own "
                    f"child's peak RSS (os.wait4), not a cgroup read and not "
                    f"a sum across children")
+        # RW-46b: a further caveat, ORTHOGONAL to the one above -- a lane
+        # can be rusage-sourced without being floor-bound (its own child
+        # genuinely pushed the high-water mark past run-gate's own RSS).
+        floor_lanes = [name for name in sorted(manifest.get("lanes", {}))
+                       if manifest["lanes"][name].get("peak_at_floor")]
+        if floor_lanes:
+            record("INFO", "footprint peak-at-floor",
+                   f"{', '.join(floor_lanes)}: most recent profiled peak <= "
+                   f"run-gate's own RSS at spawn (memory.floor_bytes) — "
+                   f"unmeasurable beyond that floor, not necessarily this "
+                   f"lane's true peak")
         distilled_at = manifest.get("distilled_at")
         age_days = None
         if isinstance(distilled_at, str):
@@ -7706,6 +7806,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # never leaves the lane's child running detached.
     started_at = _iso_utc(time.time())
     ru = None
+    # RW-46b: run-gate's own resident memory, read as close to the fork as
+    # this process can get -- immediately before Popen(), rusage mode only
+    # (the daemon path measures via a real cgroup, no floor to disclose).
+    # See `_self_rss_bytes`'s own docstring for why this is a real floor on
+    # `ru_maxrss`, not an approximation.
+    floor_bytes = (_self_rss_bytes()
+                  if profiler_state["mode"] == "rusage" else None)
     try:
         if profiler_state["mode"] == "rusage":
             proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env)
@@ -7730,7 +7837,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         ended_at = _iso_utc(time.time())
         try:
             profile_result = finish_bare_host_profiling(
-                profiler_state, ru, started_at, ended_at)
+                profiler_state, ru, started_at, ended_at, floor_bytes)
             print_profile_warning(profiler_state)
             print_footprint_line(lane_name, project_dir, profile_result["resources"])
             if run_record is not None:

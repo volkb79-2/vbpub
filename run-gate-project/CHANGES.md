@@ -37,7 +37,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   five lanes are all bare-host, so
   `./run-gate.py selftest` now itself records a profile and `footprint
   --write` stops refusing for this project (see "The footprint manifest"
-  in `CONSUMERS.md` for a real transcript).
+  in `CONSUMERS.md` for a real transcript). **Round-2 review (RW-46b):**
+  `os.wait4()`'s `ru_maxrss` is still an honest fix (nothing left to
+  correct in the arithmetic itself), but fork+exec's COW page-table
+  inheritance means a short-lived child's own high-water RSS can never
+  fall below run-gate's OWN resident size at the moment it forked the
+  child — proven directly against `Popen`/`posix_spawn`/raw
+  `fork()+exec()`. `memory.floor_bytes` (run-gate's own RSS,
+  `/proc/self/statm`, read immediately before spawning) and
+  `memory.peak_at_floor` (`true` when `peak_bytes <= floor_bytes` —
+  unmeasurable beyond that floor, not necessarily the lane's true peak)
+  now ride alongside `peak_bytes`; `footprint`/`history`/`doctor` print
+  "(peak <= floor)" for such a run, and the footprint manifest's per-lane
+  entry carries `peak_at_floor` from its most-recently-profiled run. SPEC
+  `R-43i`/`R-44a` amended, LANE-AUTHORING.md's own footprint-budgeting
+  guidance updated.
 - **RG-60 — exec-lane inflight record.** `run_exec_lane` now writes the
   same inflight record `run_container_lane` writes (after the profiling
   session, if any, is established and before the exec begins; cleared in
@@ -116,6 +130,22 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   this check had no rule id of its own until now).
 
 ### Fixed (detail)
+- **RW-46a — the test suite no longer writes its RG-20/R-41 coordination
+  locks into host `/tmp`.** `SHARED_LOCK_DIR` stays `/tmp` in production
+  (both mutexes coordinate SEPARATE run-gate invocations on one host, by
+  design); a new `RUN_GATE_LOCK_DIR` override (re-read on every call, same
+  shape as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`) plus an autouse
+  `tests/conftest.py` fixture now points every test at a throwaway
+  per-test directory. Root cause of 493 stale
+  `run-gate-exec-*-runner.lock` DIRECTORIES found accumulated under
+  production `/tmp` (never a legitimate shape — the code only ever
+  `os.open()`s a plain FILE at that path): two existing tests deliberately
+  `mkdir()`ed a directory there, with no cleanup, to prove the
+  OSError-not-traceback path; fixed at both call sites plus a permanent,
+  suite-wide teardown assertion against the defect class recurring
+  anywhere. `doctor` gains an INFO check counting stale lock entries older
+  than 1 day (naming how many are directories) — report only, never
+  deletes.
 - **RG-59 — live-run daemon-absent warning names the real cause.**
   `ProfilerClient._ctl`'s `json.JSONDecodeError` branch used to report
   "produced unparsable stdout" for two structurally different causes: a
