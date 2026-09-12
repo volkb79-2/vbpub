@@ -22,3 +22,12 @@ exists, in a small follow-up entry-only commit).
 - Self-review found and fixed one real bug before this commit (WARN/
   "none"-detection conflation crashing `parse_duration("none")` when
   `diagnostics=None`) — see REPORT.md for detail and the regression test.
+
+### `f649a249` — test fix: stray leftover assertion in the A1 regression test
+
+- `tests/test_runner_run_lane_r2.py` only. The new `diagnostics=None`
+  regression test (added in `de32bb91`) inherited a trailing
+  `assert "B090" in warning` line from the test above it (an imprecise
+  Edit match) — `NameError`, not a real failure; caught by actually running
+  the file, not by trusting the diff. Production code (already committed)
+  needed no change.
