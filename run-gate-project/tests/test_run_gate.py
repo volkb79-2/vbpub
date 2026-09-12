@@ -7009,6 +7009,541 @@ class TestHistoryTableResourceColumns:
         assert "CORES -" in out
 
 
+# ---------------------------------------------------------------------------
+# RG-55/C5 — the `footprint` verb (SPEC R-44): distills history into
+# run-gate.footprint.json (contract Sec 4.5), doctor drift/staleness,
+# profile_meta's `expected`, the footprint disclosure line.
+# ---------------------------------------------------------------------------
+
+SUMMARY_V1 = json.loads(
+    (Path(__file__).parent / "fixtures" / "rg55" / "summary-v1.json").read_text())
+
+
+def record_profiled_run(proj: Path, repo: Path, resources: dict | None, *,
+                        lane: str = "suite", exit_code: int | None = 0,
+                        seconds: float = 1.0, keep: int = 10,
+                        profile_error: str | None = None) -> dict:
+    """`record_run`'s exact recipe (real git repo, real ignore check, real
+    lock, real atomic write; only the clock substituted), PLUS the three
+    profiling fields `run_container_lane`/`run_exec_lane` actually set on a
+    real record -- `record_run` never touches them (schema-1-shaped, the
+    'never profiled' baseline these tests need a contrasting fixture to)."""
+    rec = run_gate.start_run_record(lane, repo, repo)
+    rec["_started_monotonic"] = time.monotonic() - seconds
+    run_gate.finish_run_record(rec, exit_code=exit_code)
+    rec["resources"] = resources
+    rec["profile_error"] = profile_error
+    rec["profile_ref"] = None
+    run_gate.record_invocation(proj, repo, rec, keep)
+    return rec
+
+
+class TestFootprintConfigPolicy:
+    """`resolve_footprint_policy` -- `resolve_history_keep`'s exact
+    shadowing pattern (R-09), same tests one table over."""
+
+    def test_defaults_when_nothing_declares_footprint(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        tol, age, source = run_gate.resolve_footprint_policy(
+            cfg, cfg_path, central, central_path)
+        assert (tol, age) == (run_gate.FOOTPRINT_TOLERANCE_PCT_DEFAULT,
+                              run_gate.FOOTPRINT_MAX_AGE_DAYS_DEFAULT)
+        assert source == "default"
+
+    def test_project_footprint_table_wins(self, tmp_path):
+        _, proj = make_history_repo(
+            tmp_path, HISTORY_LANE + "\n[footprint]\ntolerance_pct = 10\n")
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        tol, age, source = run_gate.resolve_footprint_policy(
+            cfg, cfg_path, central, central_path)
+        assert tol == 10
+        assert str(cfg_path) in source
+
+    def test_central_footprint_table_is_inherited_when_project_is_silent(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        (repo / "run-gate.toml").write_text(
+            "schema_version = 1\n[footprint]\nmax_age_days = 7\n")
+        commit_all(repo, "central footprint policy")
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        tol, age, source = run_gate.resolve_footprint_policy(
+            cfg, cfg_path, central, central_path)
+        assert age == 7
+        assert "central" in source
+
+
+class TestFootprintManifestBuild:
+    """`build_footprint_manifest` — unit-level, direct calls, no CLI."""
+
+    def _entry(self, commit, resources, outcome="pass", started="2026-01-01T00:00:00Z"):
+        return {"commit": commit, "outcome": outcome, "duration_seconds": 10.0,
+                "history_eligible": True, "started_at": started,
+                "resources": resources, "profile_error": None,
+                "profile_ref": None}
+
+    def test_a_lane_with_no_profiled_pass_is_omitted(self):
+        entries = [self._entry("a", None), self._entry("b", None, outcome="fail")]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "HEAD")
+        assert m["lanes"] == {}
+
+    def test_a_lane_with_one_profiled_pass_matches_contract_shape(self):
+        entries = [self._entry("a", SUMMARY_V1)]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10,
+                                              "deadbeef")
+        assert m == {
+            "schema": 1, "generated_by": "run-gate",
+            "revision": run_gate.__revision__,
+            "distilled_at": m["distilled_at"],  # asserted separately below
+            "from_commit": "deadbeef", "keep": 10,
+            "lanes": {"suite": {
+                "runs": 1, "completed_runs": 1,
+                "scope": "container-shared", "method": "daemon",
+                "duration_s": {"median": 10.0, "max": 10.0},
+                "memory_peak_bytes": {"median": 734003200, "max": 734003200},
+                "memory_peak_over_baseline_bytes": {"median": 209715200,
+                                                    "max": 209715200},
+                "hot_set_bytes": {"p90_median": 230686720, "p90_max": 230686720},
+                "cpu_cores": {"avg_median": 1.0, "max": 1.0},
+                "memory_full_stall_s": {"median": 1.8, "max": 1.8},
+                "last_commit": "a", "last_at": "2026-01-01T00:00:00Z",
+            }}}
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                             m["distilled_at"])
+
+    def test_runs_counts_every_pass_completed_counts_fails_too(self):
+        entries = [self._entry("a", SUMMARY_V1), self._entry("b", None),
+                  self._entry("c", None, outcome="fail")]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        assert m["lanes"]["suite"]["runs"] == 2           # a + b (both pass)
+        assert m["lanes"]["suite"]["completed_runs"] == 3  # + fail c
+
+    def test_scope_and_method_come_from_the_most_recent_profiled_entry(self):
+        older = dict(SUMMARY_V1, scope="container", method="basic")
+        newer = dict(SUMMARY_V1, scope="container-shared", method="daemon")
+        entries = [self._entry("a", older), self._entry("b", None),
+                  self._entry("c", newer)]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        assert m["lanes"]["suite"]["scope"] == "container-shared"
+        assert m["lanes"]["suite"]["method"] == "daemon"
+
+    def test_last_commit_and_at_name_the_overall_last_entry_even_unprofiled(self):
+        entries = [self._entry("a", SUMMARY_V1, started="2026-01-01T00:00:00Z"),
+                  self._entry("b", None, outcome="fail",
+                             started="2026-06-01T00:00:00Z")]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        assert m["lanes"]["suite"]["last_commit"] == "b"
+        assert m["lanes"]["suite"]["last_at"] == "2026-06-01T00:00:00Z"
+
+    def test_lane_filter_restricts_the_manifest_to_one_lane(self):
+        entries = [self._entry("a", SUMMARY_V1)]
+        store = {"schema": 2, "lanes": {
+            "suite": {"latest": None, "history": entries},
+            "other": {"latest": None, "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        assert set(m["lanes"]) == {"suite"}
+
+
+FOOTPRINT_LANE = """\
+    schema_version = 1
+
+    [environments.tester-unified]
+    image = "tester-unified:local"
+
+    [lanes.suite]
+    kind = "command"
+    environment = "tester-unified"
+    argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]
+    clean_tree = false
+
+    [lanes.other]
+    kind = "command"
+    environment = "tester-unified"
+    argv = ["bash", "-c", "true"]
+    clean_tree = false
+"""
+
+
+def read_footprint(proj: Path) -> dict:
+    return json.loads((proj / run_gate.FOOTPRINT_FILE_NAME).read_text())
+
+
+class TestFootprintVerbCLI:
+    """In-process (`run_gate.main()`) -- diff-coverage's own rule for
+    anything a NEW CLI branch must show as exercised."""
+
+    def _proj(self, tmp_path):
+        return make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+
+    def test_write_refuses_when_no_lane_has_a_profiled_run(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        record_run(proj, repo)   # unprofiled -- schema-1-shaped
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "--write"])
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "footprint --write refused" in err
+        assert not (proj / run_gate.FOOTPRINT_FILE_NAME).exists()
+
+    def test_write_refuses_on_an_empty_store_too(self, tmp_path, monkeypatch,
+                                                  capsys):
+        repo, proj = self._proj(tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "--write"])
+        assert code == 2
+        assert "footprint --write refused" in capsys.readouterr().err
+
+    def test_write_succeeds_and_the_file_matches_the_manifest_shape(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "--write"])
+        assert code == 0, capsys.readouterr().err
+        out = capsys.readouterr().out
+        assert f"manifest written: {proj / run_gate.FOOTPRINT_FILE_NAME}" in out
+        on_disk = read_footprint(proj)
+        assert on_disk["schema"] == 1
+        assert on_disk["lanes"]["suite"]["runs"] == 1
+        assert on_disk["from_commit"] == run_gate.head_commit(repo)
+        # sorted keys + trailing newline (the SAME `_write_json_atomic`
+        # discipline history's own store already uses).
+        raw = (proj / run_gate.FOOTPRINT_FILE_NAME).read_text()
+        assert raw.endswith("\n") and not raw.endswith("\n\n")
+        assert list(json.loads(raw).keys()) == sorted(json.loads(raw).keys())
+
+    def test_write_with_a_lane_filter_is_refused(self, tmp_path, monkeypatch,
+                                                  capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "suite", "--write"])
+        assert code == 2
+        assert "does not accept a LANE filter" in capsys.readouterr().err
+
+    def test_json_without_write_previews_and_touches_no_disk(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "--json"])
+        assert code == 0
+        out = capsys.readouterr().out
+        doc = json.loads(out)
+        assert doc["lanes"]["suite"]["runs"] == 1
+        assert not (proj / run_gate.FOOTPRINT_FILE_NAME).exists()
+
+    def test_table_output_with_no_data_says_so(self, tmp_path, monkeypatch,
+                                               capsys):
+        repo, proj = self._proj(tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint"])
+        assert code == 0
+        assert "no lane has a completed, profiled run" in capsys.readouterr().out
+
+    def test_table_output_prints_a_row_per_lane(self, tmp_path, monkeypatch,
+                                                capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "LANE" in out and "RUNS" in out and "PEAK" in out
+        assert "suite" in out
+        assert "other" not in out   # never ran: omitted from the manifest
+
+    def test_lane_filter_queries_one_lane_without_write(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "suite", "--json"])
+        assert code == 0
+        assert set(json.loads(capsys.readouterr().out)["lanes"]) == {"suite"}
+
+    def test_unknown_lane_is_refused(self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "nope"])
+        assert code == 2
+        assert "unknown lane" in capsys.readouterr().err
+
+    def test_footprint_is_a_reserved_lane_name(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, FOOTPRINT_LANE.replace(
+            "[lanes.suite]", "[lanes.footprint]"))
+        proc = run_tool(proj, "--list")
+        assert proc.returncode == 2
+        assert "reserved" in proc.stderr
+
+    def test_worktree_override_resolves_and_scopes_the_answer(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["footprint", "--worktree", str(repo)])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert f"tree:  {repo}" in out
+
+    def test_write_flag_refused_on_every_other_verb(self, tmp_path,
+                                                     monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["history", "--write"])
+        assert code == 2
+        assert "--write is honored by the `footprint` verb only" in \
+            capsys.readouterr().err
+
+
+class TestFootprintProfileMetaExpected:
+    """`profile_meta`'s `expected` field (RG-55/C5): the manifest's
+    `memory_peak_bytes.median` for THIS lane, or `None`."""
+
+    def test_no_manifest_means_expected_is_none(self, tmp_path):
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"] is None
+
+    def test_a_manifest_entry_fills_expected(self, tmp_path):
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "memory_peak_bytes": {"median": 512 * MIB, "max": 600 * MIB}}}}
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"] == 512 * MIB
+
+    def test_a_manifest_with_no_entry_for_this_lane_stays_none(self, tmp_path):
+        manifest = {"schema": 1, "lanes": {"other": {
+            "memory_peak_bytes": {"median": 512 * MIB}}}}
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"] is None
+
+    def test_a_corrupt_manifest_never_raises(self, tmp_path):
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text("not json")
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"] is None
+
+    @pytest.mark.parametrize("bad_shape", [
+        "[]",                       # valid JSON, not an object
+        '{"schema": 1}',            # object, but no "lanes" key
+        '{"lanes": "nope"}',        # "lanes" present but not a table
+    ])
+    def test_a_malformed_shape_manifest_reads_as_none(self, tmp_path,
+                                                       bad_shape):
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(bad_shape)
+        assert run_gate.load_footprint_manifest(tmp_path) is None
+
+
+class TestFootprintDisclosureLine:
+    """`print_footprint_line` (contract Sec 4.6, line 3)."""
+
+    def test_no_resources_prints_nothing(self, capsys):
+        run_gate.print_footprint_line("suite", Path("/tmp/nope-xyz"), None)
+        assert capsys.readouterr().out == ""
+
+    def test_minimal_summary_omits_optional_segments(self, tmp_path, capsys):
+        resources = {"memory": {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB},
+                    "cpu": {"cores_avg": 0.5},
+                    "host": {"memory_full_stall_seconds": 0.0}}
+        run_gate.print_footprint_line("suite", tmp_path, resources)
+        out = capsys.readouterr().out
+        assert "run-gate: footprint suite: peak 100 MiB, p90 90 MiB, " \
+              "0.50 cores avg, 0.0 s stalled on memory (full); " \
+              "history median peak - (0 runs)" in out
+        assert "over baseline" not in out
+        assert "hot-set" not in out
+        assert "manifest" not in out
+
+    def test_over_baseline_and_hot_set_segments_appear_when_present(
+            self, tmp_path, capsys):
+        resources = dict(SUMMARY_V1)
+        run_gate.print_footprint_line("suite", tmp_path, resources)
+        out = capsys.readouterr().out
+        assert "(+200 MiB over baseline)" in out
+        assert "hot-set p90 220 MiB" in out
+
+    def test_history_median_and_manifest_tail_reflect_the_store(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "memory_peak_bytes": {"median": 800 * MIB, "max": 900 * MIB}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        run_gate.print_footprint_line("suite", proj, SUMMARY_V1)
+        out = capsys.readouterr().out
+        assert "history median peak 700 MiB (1 runs)" in out
+        assert "| manifest 800 MiB" in out
+
+
+class TestFootprintDoctorChecks:
+    """`doctor`'s footprint freshness check (RG-55/C5): staleness AND
+    drift against the LIVE history, or one INFO line when no manifest
+    exists at all."""
+
+    def _doctor(self, tmp_path, monkeypatch, capsys, config=FOOTPRINT_LANE):
+        repo, proj = make_history_repo(tmp_path, config=config)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        return repo, proj, code, capsys.readouterr().out
+
+    def test_no_manifest_is_an_info_line_not_a_warning(self, tmp_path,
+                                                        monkeypatch, capsys):
+        repo, proj, code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[INFO] footprint manifest" in out
+        assert "none written yet" in out
+        assert code == 0
+
+    def test_manifest_within_tolerance_and_fresh_is_all_ok(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1,
+                   "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[OK] footprint drift" in out
+        assert "[OK] footprint staleness" in out
+        assert code == 0
+
+    def test_manifest_drifted_beyond_tolerance_warns_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)   # live median 734003200
+        manifest = {"schema": 1,
+                   "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 100 * MIB, "max": 100 * MIB}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] footprint drift 'suite'" in out
+        assert "re-run 'run-gate footprint --write'" in out
+        assert code == 0   # a WARN never fails doctor
+
+    def test_manifest_stale_beyond_max_age_warns_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        old = run_gate._iso_utc(time.time() - 40 * 86400)   # > 30-day default
+        manifest = {"schema": 1, "distilled_at": old,
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] footprint staleness" in out
+        assert "40 day(s) ago" in out
+
+    def test_a_custom_tolerance_and_max_age_are_honored(
+            self, tmp_path, monkeypatch, capsys):
+        # live median (SUMMARY_V1) is 734003200; a manifest at EXACTLY 2x
+        # that is a 100% drift -- FAILS the 25% default, PASSES a
+        # configured 150% tolerance, so the "OK" here can only come from
+        # the CONFIGURED value actually being read.
+        cfg = FOOTPRINT_LANE + \
+            "\n[footprint]\ntolerance_pct = 150\nmax_age_days = 1\n"
+        repo, proj = make_history_repo(tmp_path, config=cfg)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1,
+                   "distilled_at": run_gate._iso_utc(time.time() - 2 * 86400),
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 734003200 * 2,
+                                             "max": 734003200 * 2}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[OK] footprint drift" in out
+        assert "[WARN] footprint staleness" in out   # 2 days > max_age_days=1
+
+    def test_a_manifest_lane_with_a_null_median_is_skipped_not_crashed(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1, "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {"memory_peak_bytes": {"median": None}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Traceback" not in out
+        assert "footprint drift 'suite'" not in out
+
+    def test_a_manifest_lane_absent_from_live_history_is_skipped(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        # NO record_profiled_run: the manifest names a lane with zero live
+        # history -- `lane_history_report`'s own median reads null.
+        manifest = {"schema": 1, "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "footprint drift 'suite'" not in out
+
+    def test_missing_distilled_at_produces_no_staleness_verdict(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1, "lanes": {"suite": {   # no distilled_at
+            "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        assert "footprint staleness" not in capsys.readouterr().out
+        assert code == 0
+
+    def test_malformed_distilled_at_never_raises(self, tmp_path, monkeypatch,
+                                                  capsys):
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1, "distilled_at": "not-a-timestamp",
+                   "lanes": {"suite": {
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Traceback" not in out
+        assert "footprint staleness" not in out
+
+
 class TestHistoryEligibilityGuard:
     """TRAP 2 (RG-27's own words): 'an aborted/dirty-tree run silently
     corrupting the bounded history's commit-keyed entries (e.g. overwriting a
@@ -7877,7 +8412,8 @@ class TestJsonFlagScope:
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, *args)
         assert out.returncode == 2, out.stdout + out.stderr
-        assert "--json is honored by the `history` verb only" in out.stderr
+        assert "--json is honored by the `history`/`footprint` verbs only" \
+            in out.stderr
         assert "Traceback" not in out.stderr
 
     def test_list_without_json_is_unchanged(self, tmp_path):
@@ -7889,7 +8425,7 @@ class TestJsonFlagScope:
     def test_usage_says_where_json_is_accepted(self, tmp_path):
         _, proj = make_history_repo(tmp_path)
         out = run_tool(proj, "--help")
-        assert "`history` ONLY" in out.stdout
+        assert "`history`/`footprint` ONLY" in out.stdout
         assert "REFUSES it by name" in out.stdout
         assert "run-gate.py history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
@@ -7960,7 +8496,7 @@ class TestHistoryReadScopeInProcess:
         repo, proj = make_history_repo(tmp_path)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(args) == 2
-        assert "--json is honored by the `history` verb only" \
+        assert "--json is honored by the `history`/`footprint` verbs only" \
             in capsys.readouterr().err
 
 

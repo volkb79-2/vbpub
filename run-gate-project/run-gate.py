@@ -113,6 +113,15 @@ HISTORY_KEEP_DEFAULT = 10
 HISTORY_LOCK_TIMEOUT = 5.0   # seconds — telemetry NEVER blocks a gate
 HISTORY_OUTCOMES = ("pass", "fail", "error", "aborted")
 
+# RG-55/R-44: the footprint manifest lives NEXT TO run-gate.toml itself —
+# unlike the history store (HISTORY_DIR_NAME, gitignored, per-instance
+# telemetry) this file is TRACKED (CONSUMERS.md, C8): a distilled, committed
+# snapshot of what each lane costs, meant to travel with the config it
+# describes so a NEW clone (with no `.run-gate/` of its own yet) still has a
+# budget to compare against.
+FOOTPRINT_FILE_NAME = "run-gate.footprint.json"
+FOOTPRINT_SCHEMA = 1
+
 # RG-35 inflight (re-attach) records. One file per lane inside the SAME
 # `.run-gate/` store the history file lives in, so the scope is (judged
 # worktree x project x lane) by construction — R-36f's scoping answer, reused
@@ -523,6 +532,23 @@ def _validate_history_policy(table: object, where: str) -> None:
         if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
             fail(f"{where} [history]: 'keep' must be an integer >= 1 "
                  f"(got {keep!r})")
+
+
+def resolve_footprint_policy(cfg: dict, cfg_path: Path, central: dict,
+                             central_path: Path | None) -> tuple[int, int, str]:
+    """RG-55/R-44: `[footprint]` shadowing -- the exact pattern
+    `resolve_history_keep` already establishes (R-09, whole-table, never a
+    per-key merge). Returns `(tolerance_pct, max_age_days, source)`; both
+    numbers always come from the SAME table (no cross-table mixing of one
+    key from the project and the other from central)."""
+    if "footprint" in cfg:
+        table, source = cfg["footprint"], f"[footprint] in {cfg_path}"
+    elif central_path is not None and "footprint" in central:
+        table, source = central["footprint"], f"[footprint] in central {central_path}"
+    else:
+        table, source = {}, f"default"
+    return (table.get("tolerance_pct", FOOTPRINT_TOLERANCE_PCT_DEFAULT),
+           table.get("max_age_days", FOOTPRINT_MAX_AGE_DAYS_DEFAULT), source)
 
 
 def resolve_history_keep(cfg: dict, cfg_path: Path, central: dict,
@@ -1389,14 +1415,17 @@ class BasicSampler:
 
 def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
                  ) -> dict:
-    """Contract Sec 2.2 `--meta`. `expected` stays `null` here — filling it
-    from a `run-gate.footprint.json` manifest is C5 territory; a lane
-    invocation with no manifest yet (every one, until C5 ships) is exactly
-    what `null` already means (contract: "null or {...}")."""
+    """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is this LANE's own
+    `memory_peak_bytes.median` from `run-gate.footprint.json` when a
+    manifest exists next to the effective project's `run-gate.toml` and
+    names this lane — `null` otherwise (no manifest yet, or a lane the
+    manifest has never seen a profiled run for), exactly what `null` already
+    meant before this manifest existed (contract: "null or {...}")."""
     return {"lane": lane_name, "project": str(project_dir),
            "worktree": str(worktree), "commit": head_commit(worktree),
            "run_gate_revision": __revision__, "kind": lane["kind"],
-           "expected": None}
+           "expected": footprint_manifest_lane_peak_median(
+               load_footprint_manifest(project_dir), lane_name)}
 
 
 def read_host_pressure_snapshot() -> dict | None:
@@ -1568,6 +1597,60 @@ def print_profile_plan_dry_run(plan: dict, scope: str) -> None:
     print(f"run-gate: DRY RUN — profile plan: daemon {plan['daemon']!r}, "
          f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
          f"token env {PROFILE_TOKEN_ENV}", flush=True)
+
+
+def _fmt_stall_seconds(value: object) -> str:
+    """`{s} s stalled on memory (full)` (contract Sec 4.6, line 3) — a
+    SPACE before the literal 's', unlike `_fmt_seconds`'s compact '4.8s'
+    (that one is a table cell; this one is a sentence)."""
+    return f"{value:.1f}" if isinstance(value, (int, float)) \
+        and not isinstance(value, bool) else "-"
+
+
+def print_footprint_line(lane_name: str, project_dir: Path,
+                         resources: dict | None) -> None:
+    """Contract Sec 4.6, line 3 (RG-55/C5). A no-op when THIS invocation
+    recorded no resources at all — disabled, or a profile error the
+    WARNING line already named; there is nothing to distill a footprint
+    line FROM. Reads the history store fresh (no lock, like `history` —
+    this is disclosure, not the record write) for the STANDING median this
+    run is being compared against, deliberately BEFORE this run's own
+    flush: the sentence reads as "this run measured X; the trend has been
+    Y" — a comparison, not a number quietly folded into itself."""
+    if resources is None:
+        return
+    mem = resources.get("memory") or {}
+    cpu = resources.get("cpu") or {}
+    # `host.memory_full_stall_seconds`, deliberately NOT `pressure.*`
+    # (contract Sec 3 has both, session-scoped and host-scoped): this is
+    # the SAME field `RESOURCE_SERIES_GETTERS["memory_full_stall_seconds"]`
+    # (C4) already feeds into the "history median" figure two segments
+    # later in this same line — one name, one source, or the two numbers
+    # in one sentence would silently describe different things.
+    host = resources.get("host") or {}
+    damon = resources.get("damon")
+    hot = (damon or {}).get("hot_bytes", {}).get("p90") \
+        if isinstance(damon, dict) else None
+    over = mem.get("peak_over_baseline_bytes")
+    over_seg = f" (+{_fmt_mib(over)} over baseline)" \
+        if isinstance(over, (int, float)) and not isinstance(over, bool) else ""
+    hot_seg = f", hot-set p90 {_fmt_mib(hot)}" \
+        if isinstance(hot, (int, float)) and not isinstance(hot, bool) else ""
+    store = load_history_store(history_store_path(project_dir))
+    hist_peak = lane_history_report(store, lane_name)["stats"]["passes"][
+        "memory_peak_bytes"]
+    manifest_peak = footprint_manifest_lane_peak_median(
+        load_footprint_manifest(project_dir), lane_name)
+    manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
+        if isinstance(manifest_peak, (int, float)) \
+        and not isinstance(manifest_peak, bool) else ""
+    print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
+         f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
+         f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
+         f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
+         f"s stalled on memory (full){hot_seg}; history median peak "
+         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
+         f"{manifest_seg}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2184,6 +2267,40 @@ def load_history_store(path: Path) -> dict:
         return _empty_history_store()
     data.setdefault("schema", HISTORY_SCHEMA)
     return data
+
+
+def footprint_manifest_path(project_dir: Path) -> Path:
+    return project_dir / FOOTPRINT_FILE_NAME
+
+
+def load_footprint_manifest(project_dir: Path) -> dict | None:
+    """RG-55/R-44. `None` — never raises — for missing, unreadable, corrupt,
+    or malformed-shape JSON: a manifest is an OPTIONAL cross-check (`doctor`
+    staleness/drift, `meta.expected`, the footprint line's `| manifest …`
+    tail), never a fact anything downstream depends on to keep running."""
+    try:
+        data = json.loads(footprint_manifest_path(project_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("lanes"), dict):
+        return None
+    return data
+
+
+def footprint_manifest_lane_peak_median(manifest: dict | None,
+                                        lane_name: str) -> object:
+    """`memory_peak_bytes.median` for ONE lane, or `None` — the single
+    number `profile_meta()` (daemon `--meta`) and the footprint disclosure
+    line's `| manifest …` tail both read out of a manifest; one place to
+    walk the (possibly absent) shape rather than two copies of the same
+    three `.get()` calls."""
+    if manifest is None:
+        return None
+    lane = manifest.get("lanes", {}).get(lane_name)
+    if not isinstance(lane, dict):
+        return None
+    peak = lane.get("memory_peak_bytes")
+    return peak.get("median") if isinstance(peak, dict) else None
 
 
 def _apply_record(store: dict, record: dict, keep: int) -> dict:
@@ -2964,6 +3081,161 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# RG-55/R-44 — the footprint manifest: a distilled, COMMITTED snapshot of
+# what each lane costs (contract Sec 4.5), read by `doctor` (staleness/
+# drift) and by the run path itself (`profile_meta`'s `expected`, the
+# footprint line's `| manifest …` tail).
+# ---------------------------------------------------------------------------
+
+def build_footprint_manifest(store: dict, lanes: dict, keep: int,
+                             from_commit: str | None) -> dict:
+    """Contract Sec 4.5's exact shape. Distills PASS + history-eligible
+    entries — the SAME population `lane_history_report`'s own
+    `stats.passes` already reports — per lane; a lane with no
+    history-eligible PASS entry that was actually PROFILED (`resources`
+    not null: unprofiled, disabled, and errored runs all leave it null)
+    is OMITTED entirely (contract Sec 1.7: absent means unknown, never a
+    lane silently reported at zero). `completed_runs` counts fails too
+    (the SAME population `stats.completed` reports) — a failing lane's
+    measured cost is real even though it never joins the numeric series.
+    `scope`/`method` come from the MOST RECENT entry that was actually
+    profiled (scanning newest-first), because a lane's profiling method
+    can change (daemon becomes available, `[profile]` changes) and the
+    manifest should describe how it is profiled NOW, not on its first
+    measured run. `last_commit`/`last_at` name the single most recent
+    completed run overall (pass or fail — the SAME entry `completed_runs`
+    already counts), because that is the literal answer to "when did this
+    lane last run", independent of whether it happened to be profiled."""
+    lanes_out: dict = {}
+    for name in sorted(lanes):
+        slot = store.get("lanes", {}).get(name) or {}
+        hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        passes = [e for e in hist if e.get("outcome") == "pass"]
+        if not any(e.get("resources") is not None for e in passes):
+            continue
+        stats = _lane_stats(passes)
+        # The guard two lines up (`not any(...)`) already guarantees `hist`
+        # (a superset of `passes`) contains at least one profiled entry, so
+        # `next(...)` (no default) never raises — a plain `for`/`break` here
+        # would leave coverage.py tracking an "exhausted without breaking"
+        # branch arc that is structurally unreachable given that guard.
+        profiled_res = next(e["resources"] for e in reversed(hist)
+                            if e.get("resources") is not None)
+        scope, method = profiled_res.get("scope"), profiled_res.get("method")
+        last = hist[-1]
+        peak = stats["memory_peak_bytes"]
+        over = stats["memory_peak_over_baseline_bytes"]
+        hot = stats["hot_set_p90_bytes"]
+        cores = stats["cpu_cores_avg"]
+        stall = stats["memory_full_stall_seconds"]
+        lanes_out[name] = {
+            "runs": len(passes),
+            "completed_runs": len(hist),
+            "scope": scope,
+            "method": method,
+            "duration_s": {"median": stats["median_seconds"],
+                          "max": stats["max_seconds"]},
+            "memory_peak_bytes": {"median": peak["median"], "max": peak["max"]},
+            "memory_peak_over_baseline_bytes":
+                {"median": over["median"], "max": over["max"]},
+            "hot_set_bytes": {"p90_median": hot["median"], "p90_max": hot["max"]},
+            "cpu_cores": {"avg_median": cores["median"], "max": cores["max"]},
+            "memory_full_stall_s": {"median": stall["median"], "max": stall["max"]},
+            "last_commit": last.get("commit"),
+            "last_at": last.get("started_at"),
+        }
+    return {
+        "schema": FOOTPRINT_SCHEMA,
+        "generated_by": "run-gate",
+        "revision": __revision__,
+        "distilled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "from_commit": from_commit,
+        "keep": keep,
+        "lanes": lanes_out,
+    }
+
+
+def _fmt_footprint_row(name: str, lm: dict) -> str:
+    peak, over = lm["memory_peak_bytes"], lm["memory_peak_over_baseline_bytes"]
+    hot, cores = lm["hot_set_bytes"], lm["cpu_cores"]
+    stall, dur = lm["memory_full_stall_s"], lm["duration_s"]
+    return (f"  {name:<20}{lm['runs']:>5}  "
+           f"{_fmt_mib(peak['median']):>9}/{_fmt_mib(peak['max']):<9}  "
+           f"{_fmt_mib(over['median']):>9}  "
+           f"{_fmt_mib(hot['p90_median']):>9}  "
+           f"{_fmt_cores(cores['avg_median']):>6}  "
+           f"{_fmt_seconds(stall['median']):>7}  "
+           f"{_fmt_seconds(dur['median']):>9}")
+
+
+def print_footprint_report(manifest: dict, worktree_scope: str | None,
+                           store_path: Path, manifest_path: Path,
+                           written: bool) -> None:
+    print(f"{PROG} rev {__revision__} — lane resource footprint")
+    if worktree_scope:
+        print(f"tree:  {worktree_scope}  (--worktree; this answer describes "
+              f"THAT tree, not the invoking checkout)")
+    print(f"store: {store_path}"
+          f"{'' if store_path.is_file() else '  (not written yet)'}")
+    if written:
+        print(f"manifest written: {manifest_path}")
+    if not manifest["lanes"]:
+        print("(no lane has a completed, profiled run in its history yet)")
+        return
+    print(f"  {'LANE':<20}{'RUNS':>5}  {'PEAK(med/max)':<19}  {'+BASE':>9}  "
+         f"{'HOT p90':>9}  {'CORES':>6}  {'STALL':>7}  {'DURATION':>9}")
+    for name in sorted(manifest["lanes"]):
+        print(_fmt_footprint_row(name, manifest["lanes"][name]))
+
+
+def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
+                  central: dict, central_path: Path | None,
+                  lane_name: str | None, as_json: bool, write: bool,
+                  from_commit: str | None,
+                  worktree_scope: str | None = None) -> int:
+    """RG-55/R-44. `project_dir` is the EFFECTIVE project dir (`history`'s
+    own read-scope rule, reused: `footprint --worktree B` answers about B's
+    store, and — unlike `history` — ALSO writes B's manifest, next to B's
+    own run-gate.toml). Reads the history store with NO LOCK (a query, like
+    `history`); `--write` is the only write this verb performs, and it
+    writes the manifest file, never the history store itself."""
+    if lane_name is not None and lane_name not in lanes:
+        fail(f"unknown lane {lane_name!r} — known lanes: "
+             f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+             f"{f'; shared: {central_path}' if central_path else ''})")
+    if write and lane_name is not None:
+        # A partial write would SILENTLY drop every other lane's distilled
+        # data from the manifest file on disk — `--write` always means "the
+        # whole project's footprint", the same way `cmru release`/CI would
+        # invoke it; query one lane's numbers without `--write` instead.
+        fail(f"footprint --write does not accept a LANE filter ({lane_name!r}"
+             f") — it always writes the FULL manifest (every lane); omit "
+             f"LANE to write everything, or drop --write to query just "
+             f"{lane_name!r}")
+    keep, _keep_source = resolve_history_keep(cfg, cfg_path, central,
+                                               central_path)
+    store_path = history_store_path(project_dir)
+    store = load_history_store(store_path)
+    selected = {lane_name: lanes[lane_name]} if lane_name else lanes
+    manifest = build_footprint_manifest(store, selected, keep, from_commit)
+    manifest_path = footprint_manifest_path(project_dir)
+    if write:
+        if not manifest["lanes"]:
+            fail("footprint --write refused: no lane has a completed, "
+                 "profiled run in its history yet — run a profiled lane "
+                 "first (bare-host lanes are never profiled, RG-57; "
+                 "profiling must be enabled — check RUN_GATE_PROFILE and "
+                 "[profile]/lane 'profile')")
+        _write_json_atomic(manifest, manifest_path)
+    if as_json:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    print_footprint_report(manifest, worktree_scope, store_path,
+                           manifest_path, write)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # command assembly + run
 # ---------------------------------------------------------------------------
 
@@ -3336,7 +3608,8 @@ _CD_TARGET_RE = re.compile(r"\bcd\s+(\S+)")
 _INVOCATION_RE = re.compile(
     r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
 _BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
-_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history"}
+_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history",
+                           "footprint"}
 _DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
 # Fields that are prose BY NAME: a label describes an invocation, it doesn't
 # run one ("label = \"proj: run-gate gate conjunction\"" — found live in
@@ -4607,13 +4880,73 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             worktree_override):
         record(status, topic, detail)
 
+    # 6. RG-55/R-44: footprint manifest freshness — staleness AND drift
+    # against the LIVE history, so an operator learns the committed numbers
+    # have gone stale before trusting them (RG-56's own prerequisite: a
+    # scheduler cannot act on a footprint nobody re-measured). Reads the
+    # SAME `project_dir` every other check here reads (not relocated by
+    # --worktree, matching this function's existing per-check scope).
+    manifest = load_footprint_manifest(project_dir)
+    if manifest is None:
+        record("INFO", "footprint manifest",
+               f"none written yet — once a profiled lane has a completed "
+               f"run in its history, run '{PROG} footprint --write'")
+    else:
+        tol_pct, max_age_days, _src = resolve_footprint_policy(
+            cfg, cfg_path, central, central_path)
+        fp_store = load_history_store(history_store_path(project_dir))
+        drifted = []
+        for name in sorted(manifest.get("lanes", {})):
+            man_lane = manifest["lanes"][name]
+            man_median = (man_lane.get("memory_peak_bytes") or {}).get("median")
+            if not isinstance(man_median, (int, float)) or man_median <= 0:
+                continue
+            live_median = lane_history_report(fp_store, name)["stats"][
+                "passes"]["memory_peak_bytes"]["median"]
+            if not isinstance(live_median, (int, float)):
+                continue
+            drift_pct = abs(live_median - man_median) / man_median * 100
+            if drift_pct > tol_pct:
+                drifted.append(name)
+                record("WARN", f"footprint drift {name!r}",
+                       f"live history median peak {_fmt_mib(live_median)} "
+                       f"vs manifest {_fmt_mib(man_median)} "
+                       f"({drift_pct:.0f}% > {tol_pct}% tolerance) — re-run "
+                       f"'{PROG} footprint --write'")
+        if manifest.get("lanes") and not drifted:
+            record("OK", "footprint drift",
+                   f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
+                   f"their live history median peak")
+        distilled_at = manifest.get("distilled_at")
+        age_days = None
+        if isinstance(distilled_at, str):
+            try:
+                age_days = (time.time() - _parse_iso_utc(distilled_at)) / 86400
+            except ValueError:
+                age_days = None
+        if age_days is not None and age_days > max_age_days:
+            record("WARN", "footprint staleness",
+                   f"distilled {age_days:.0f} day(s) ago (> {max_age_days} "
+                   f"day threshold, {_src}) — re-run '{PROG} footprint "
+                   f"--write'")
+        elif age_days is not None:
+            record("OK", "footprint staleness",
+                   f"distilled {age_days:.0f} day(s) ago (<= {max_age_days} "
+                   f"day threshold)")
+
     ok_n = sum(1 for s, *_ in results if s == "OK")
     warn_n = sum(1 for s, *_ in results if s == "WARN")
     fail_n = sum(1 for s, *_ in results if s == "FAIL")
     skip_n = sum(1 for s, *_ in results if s == "SKIP")
+    # RG-55/R-44: INFO is a NEW status class alongside OK/WARN/FAIL/SKIP —
+    # advisory-only, never a warning (it names a NEXT STEP, not a defect:
+    # "no footprint manifest yet" is the expected state of a project that
+    # has never run a profiled lane). Counted separately so the printed
+    # total still equals len(results).
+    info_n = sum(1 for s, *_ in results if s == "INFO")
     print(f"run-gate: doctor: {len(results)} check(s): {ok_n} OK, "
           f"{warn_n} warning(s), {fail_n} failure(s), {skip_n} skipped "
-          f"(could not determine)", flush=True)
+          f"(could not determine), {info_n} info", flush=True)
     return 2 if fail_n else 0
 
 
@@ -5490,6 +5823,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
         if profiler is not None:
             profile_result = finish_lane_profiling(profiler)
             print_profile_warning(profiler)
+            print_footprint_line(lane_name, project_dir,
+                                 profile_result["resources"])
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -6315,6 +6650,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # lane, so this IS the equivalent "same finally" moment.
         profile_result = finish_lane_profiling(profiler_state)
         print_profile_warning(profiler_state)
+        print_footprint_line(lane_name, project_dir, profile_result["resources"])
         if run_record is not None:
             run_record["resources"] = profile_result["resources"]
             run_record["profile_error"] = profile_result["profile_error"]
@@ -6404,6 +6740,20 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          series. Reads the store, runs no lane, decides no policy.",
         "          --worktree redirects the READ exactly as it redirects a run:",
         "          the answer describes THAT tree\'s store, and says so)",
+        "       run-gate.py footprint [LANE] [--worktree PATH] [--json] [--write]",
+        "         (RG-55/R-44: the resource cost each lane's history has actually",
+        "          measured — peak memory, +baseline, hot-set p90, CPU cores,",
+        "          memory-full stall, duration — distilled from PASS +",
+        "          history-eligible runs into run-gate.footprint.json (TRACKED,",
+        "          committed; next to the effective project's run-gate.toml).",
+        "          --write performs that write and REFUSES (exit 2) when no lane",
+        "          has a completed, profiled run yet; without --write, prints the",
+        "          same numbers (table or --json) without touching disk. A LANE",
+        "          filter queries one lane's numbers but is REFUSED together with",
+        "          --write (a partial write would silently drop every other",
+        "          lane's data). `doctor` reads the manifest for staleness/drift;",
+        "          the run path reads it to fill the profiler's `expected` hint",
+        "          and the footprint disclosure line's '| manifest …' tail)",
         "",
         "lanes (run-gate.toml; * = inherited from the repo-root config):",
     ]
@@ -6479,11 +6829,15 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    first — by name, disclosed — and runs anew. Refused",
         "                    by name on host and exec lanes, which start no",
         "                    container of run-gate's own",
-        "  --json            `history` ONLY: the same data as one JSON document",
-        "                    (latest + bounded history + median/min/max, split",
-        "                    passes vs all completed runs). Every other verb",
-        "                    REFUSES it by name rather than silently printing",
-        "                    its human form (--list is already a machine table)",
+        "  --json            `history`/`footprint` ONLY: the same data as one",
+        "                    JSON document (history: latest + bounded history +",
+        "                    median/min/max, split passes vs all completed runs;",
+        "                    footprint: the exact run-gate.footprint.json shape).",
+        "                    Every other verb REFUSES it by name rather than",
+        "                    silently printing its human form (--list is already",
+        "                    a machine table)",
+        "  --write           `footprint` ONLY: write run-gate.footprint.json.",
+        "                    Every other verb REFUSES it by name",
         "",
         "liveness (RG-36/RG-41) — judged from the lane's progress file (assay)",
         "or its own log stream (command), never from a guessed total:",
@@ -6587,8 +6941,13 @@ def main(argv: list[str] | None = None) -> int:
                         "\"request\"), and for conjunction lanes carrying a "
                         "{base} token")
     parser.add_argument("--json", action="store_true",
-                        help="RG-27: `history` emits one machine-readable "
-                             "JSON document instead of the human table")
+                        help="RG-27/RG-55: `history`/`footprint` emit one "
+                             "machine-readable JSON document instead of the "
+                             "human table")
+    parser.add_argument("--write", action="store_true",
+                        help="RG-55/R-44: `footprint` only — write "
+                             "run-gate.footprint.json next to the effective "
+                             "project's run-gate.toml")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--fresh", action="store_true",
                         help="RG-35: remove the container an earlier client "
@@ -6615,16 +6974,21 @@ def main(argv: list[str] | None = None) -> int:
         # lane's inflight run, so every verb and every other runner refuses
         # it by name rather than accepting it and doing nothing (R-25/R-35).
         if args.fresh and args.lane in (None, "doctor", "history",
-                                        "validate-pointers"):
+                                        "footprint", "validate-pointers"):
             fail("--fresh is honored on the run path only (run-gate.py <lane> "
                  "--fresh) — it removes the container an earlier client left "
                  "running for that lane; the query and preflight verbs start "
                  "no container and have nothing to refresh")
-        if args.json and args.lane != "history":
-            fail("--json is honored by the `history` verb only (run-gate.py "
-                 "history [LANE] --json); `--list` is already a machine "
-                 "table (name<TAB>kind<TAB>environment) and every other verb "
+        if args.json and args.lane not in ("history", "footprint"):
+            fail("--json is honored by the `history`/`footprint` verbs only "
+                 "(run-gate.py history [LANE] --json, run-gate.py footprint "
+                 "[LANE] --json); `--list` is already a machine table "
+                 "(name<TAB>kind<TAB>environment) and every other verb "
                  "prints human text")
+        if args.write and args.lane != "footprint":
+            fail("--write is honored by the `footprint` verb only "
+                 "(run-gate.py footprint [LANE] --write) — every other verb "
+                 "either judges a lane or reports without writing")
         project_dir = find_project_dir()
         if args.help or (args.lane is None and not args.list
                          and not args.check_env):
@@ -6696,6 +7060,24 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_history(lanes, hist_dir, cfg, cfg_path, central,
                                central_path, args.target, args.json,
                                hist_scope)
+        if args.lane == "footprint":
+            # RG-55/R-44: distills the SAME store `history` reads (no lock,
+            # a query) into the manifest shape contract Sec 4.5 defines.
+            # Unlike `history`, this verb's write side (`--write`) needs a
+            # real commit to stamp `from_commit` with, so the worktree is
+            # ALWAYS resolved (never `history`'s "stay git-free when
+            # unflagged" — a manifest is meaningless without knowing which
+            # commit it was distilled from). `resolve_worktree_scope`
+            # (RG-30's helper, shared with `doctor`) does exactly this:
+            # validates a given `--worktree` up front and returns the
+            # EFFECTIVE project dir a query/write must use instead of the
+            # invoking checkout's own.
+            _, fp_worktree, fp_dir, fp_scope = resolve_worktree_scope(
+                project_dir, args.worktree, "footprint")
+            return cmd_footprint(lanes, fp_dir, cfg, cfg_path, central,
+                                 central_path, args.target, args.json,
+                                 args.write, head_commit(fp_worktree),
+                                 fp_scope)
         if args.list:
             return cmd_list(lanes)
         if args.check_env:
