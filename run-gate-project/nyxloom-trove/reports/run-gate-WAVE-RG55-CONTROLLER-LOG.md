@@ -358,12 +358,49 @@ never a silent edit to the contract file.
   probe container before any rebuild. Scope lands in P6 (daemon), P8 M5
   (mount), P5 (client).
 
+- **RW-32 (P8 review round 1 — ACCEPT-conditional B1–B6; decision asks D1–D5
+  ruled; M5 folded into round 2):** round file
+  `run-gate-WAVE-RG55-P8-REVIEW-round1.md` (~14:50Z). Rulings: **D1** the
+  cap watcher gains `dev-gates.slice` with its own knob
+  `DEV_CAP_GATES_MEMORY_MAX`, default `4G` (= the tier's `MemoryHigh`: one
+  lane alone can drive the tier into throttle but never past `MemoryMax`;
+  two lanes are bounded by the tier's oomd pressure kill at 6G; `1G` would
+  re-create the incident this wave fixes). Finer per-lane caps come from
+  daemon placement (D-25, P6/P5) and COMPOSE with the watcher's coarse
+  backstop — the watcher is not withdrawn when placement lands. **D2**
+  `ManagedOOMSwap=kill` is DROPPED: D-19 lists only the pressure kill and
+  `MemorySwapMax=32G` makes swap the gates' relief valve — an oomd swap kill
+  contradicts the design. **D3** `CPUWeight=20`/`IOWeight=10` STAND (D-19);
+  the README states the arithmetic (interactive's worst-case share under
+  3-way contention 83% → 71%, accepted because gates and background are
+  rarely both busy; revisit on a measurement, not a guess). **D4** mdt
+  `AGENTS.md` is updated NOW (P8 scope); run-gate/cmru/srdm consumers are
+  propagated at P5 (run-gate's default parent) and their rows filed in
+  their own backlogs by the controller after merge — the P8 REPORT lists
+  them under "onward propagation". **D5** P8 never touches mdt `TODO.md`
+  (dirty in the shared checkout — a merge touching it would abort); the
+  record goes to `host-setup/README.md` ("Changes") + the P8 REPORT, and the
+  operator adds the TODO line themselves. B1–B6 accepted as prescribed; the
+  wizard earmark-sum defect (fourth `MemoryHigh` missing) is promoted to
+  REQUIRED (cheap, real); `AGENTS.md` variables, REPORT `Tip:`, the
+  "byte-for-byte" overclaim and the D-24 fallback wording are fixed in the
+  same pass. **M5 (D-30 template mount)** lands in the SAME repair set so
+  round 2 covers it: `templates/devcontainer.json` bind-mounts
+  `/run/cgprofile` (the `--group-add ${localEnv:DOCKER_GID}` already
+  present is exactly the socket's group — no new gid plumbing); because
+  `mounts` entries are `--mount` (docker refuses a missing bind source),
+  host-setup ships a `tmpfiles.d` entry `d /run/cgprofile 0770 root docker -`
+  installed + applied by `install.sh`, verified by `check.sh` (dir mode +
+  owner; socket present → INFO "socket carrier available", absent → INFO
+  "exec carrier only"); the daemon (P6) re-asserts owner/mode at start as
+  belt and braces. Round 3 stays in reserve.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29) |
-| P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); operator installs on the host |
+| P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 folded (RW-32), round 2 pending; operator installs on the host |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |
