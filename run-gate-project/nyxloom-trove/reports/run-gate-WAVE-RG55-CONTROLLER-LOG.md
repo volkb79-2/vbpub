@@ -243,9 +243,41 @@ never a silent edit to the contract file.
   controller's heartbeat checks both runs and messages an idle agent
   whose run has finished.
 
+- **RW-27 (third track: the wave's own backlog entries are folded in):**
+  operator 2026-09-12 ~12:55Z: "can you start work on new backlog entries
+  you filed as well and fold them in? you are free to run a 3rd track in
+  parallel". Ruling: the base packages ship first, unchanged (run-gate
+  23.7.0 rev 41, cgprofile 1.0.0 — their reviews are done or imminent and
+  are not reopened); the follow-ups ship as SECOND releases in the same
+  wave (run-gate 23.8.0 rev 42, cgprofile 1.1.0), each with its own fresh
+  adversarial review and full assay lanes. Packages: **P4** run-gate
+  follow-ups RG-57, RG-58, RG-59, RG-60, RG-61 on branch
+  `rg55-followups-run-gate` from the P2 tip `186461de` (dispatched NOW;
+  handoff `run-gate-WAVE-RG55-P4-HANDOFF.md`, review handoff written);
+  **P6** cgroup-profiler follow-ups CP-4 (id-suffix flake), CP-5
+  (events.jsonl records), CP-6 (DAMON series in `ctl report`), CP-7
+  (limits table resolved) from the P1 tip, dispatched when P1's r2
+  container exits (2-container cap + memory); CP-1 (retention tuning
+  needs real data), CP-2 (socket transport) and CP-3 (DAMON paddr) stay
+  OPEN — they need measurements or a design round, not this wave; **P5**
+  RG-56 admission after BOTH base merges: contract amendment by the
+  controller first (`ctl status` must expose each session's
+  `meta.expected`; run-gate computes go/wait/refuse client-side from
+  `status` + `host` PSI + the manifest, `--allow-pressure`, `--dry-run`
+  reports), then one daemon-side and one run-gate-side package.
+  Sub-rulings: **RW-27a** RG-58 = option 2 (load-time WARNING + `doctor`
+  WARN, never refuse); **RW-27b** RG-57 = both halves as filed (daemon
+  path via self container id + token, `scope container-shared`;
+  daemon-absent `method: "rusage"`, `source: "rusage-maxrss"`, no basic
+  sampler on that path); rusage entries are footprint-eligible with the
+  source caveat printed. Host rule for the third track while two
+  mutation runs are live: targeted pytest only until P2's `assay-r2` pid
+  exits; one mutation run per project at a time.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
+| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |
