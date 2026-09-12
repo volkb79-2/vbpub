@@ -12498,6 +12498,23 @@ class TestResourceAccumulatorGoldenFixtures:
                             "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None  # no eligible pair
 
+    def test_cores_max_skips_a_pair_with_only_one_side_readable(self):
+        # assay-r2 mutation lane: an or-vs-and swap on `u0 is None or u1
+        # is None` survived, since no prior test ever left exactly ONE
+        # side of a consecutive pair unreadable (the sibling test above
+        # unreads `memory_stat`, never `cpu_stat`). The mutant would reach
+        # `(u1 - u0)` with one side `None` and raise `TypeError` instead
+        # of skipping the pair.
+        acc = run_gate.ResourceAccumulator("container-shared")
+        s0 = _rg55_container_sample(0)
+        s0["cpu_stat"] = dict(s0["cpu_stat"])
+        del s0["cpu_stat"]["usage_usec"]   # unreadable at the FIRST end only
+        acc.add_sample(s0, host=_rg55_host_sample(0), at=0.0)
+        acc.add_sample(_rg55_container_sample(1), host=_rg55_host_sample(1), at=1.0)
+        result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                            "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
+        assert result["cpu"]["cores_max"] is None  # the only pair is skipped
+
     def test_peak_over_baseline_bytes_is_floored_at_zero_container_shared(self):
         # B3 (round-1 review): a mutant removing `max(0, ...)` survived the
         # WHOLE suite -- no test called this directly with a SHRINKING
