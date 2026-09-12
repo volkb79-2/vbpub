@@ -55,23 +55,34 @@ EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
 CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
 PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 host PSI)
-# RG-55 wiring escape hatch: `[profile] enabled = true` is the CONTRACT
-# default, so every one of this suite's ~800 pre-existing lane-execution
-# tests -- none of which declare `[profile]` at all, and every one of which
-# pins an EXACT docker call log, argv list, or stdout/stderr -- would
-# silently pick up a new `docker exec <daemon> cgprofile ctl version` probe,
-# very likely a further basic-path fallback `docker exec` (no real daemon is
-# ever running in these fixtures), a new `-e RUN_GATE_PROFILE_SESSION=`
-# argv flag, and new disclosure lines, on every run. Retrofitting every one
-# of those tests with an explicit `profile = false` is not practical in one
-# session and would also bury the ONE thing that matters (what that test was
-# actually pinning) under an unrelated new lane key. This variable is an
-# unconditional override (checked BEFORE any config table), set process-
-# wide for the whole pre-existing suite by one autouse fixture and
-# deliberately unset by the RG-55 wiring tests that mean to exercise the
-# real default. Flagged in the REPORT's "Decision asks" for controller
-# review -- it is not named in the interface contract.
-PROFILE_TEST_DISABLE_ENV_VAR = "RUN_GATE_TEST_DISABLE_PROFILING"
+# RG-55 / SPEC R-43g: `RUN_GATE_PROFILE` ('on'|'off') is an OPERATOR-FACING
+# ambient override for `[profile] enabled`, the same class of knob as
+# `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT` -- a real environment fact
+# (e.g. a CI runner with no `docker exec` rights to a profiler daemon it will
+# never have), NOT a test-only switch (RW-17 superseded the original
+# `RUN_GATE_TEST_DISABLE_PROFILING` kill switch on exactly this ground).
+# Checked BEFORE any config table; absent means config decides; any value
+# other than 'on'/'off' is refused BY NAME (`fail`, exit 2). 'off' forces
+# `enabled = False` unconditionally, records `disabled_reason` naming
+# itself, and needs no daemon/lane config to do it. 'on' forces
+# `enabled = True` unconditionally, overriding even a lane's own
+# `profile = false`.
+#
+# It is also this suite's own escape hatch: `[profile] enabled = true` is
+# the CONTRACT default, so every one of this file's ~800 pre-existing
+# lane-execution tests -- none of which declare `[profile]` at all, and
+# every one of which pins an EXACT docker call log, argv list, or
+# stdout/stderr -- would silently pick up a new `docker exec <daemon>
+# cgprofile ctl version` probe, very likely a further basic-path fallback
+# `docker exec` (no real daemon is ever running in these fixtures), a new
+# `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new disclosure lines, on
+# every run. Retrofitting every one of those tests with an explicit
+# `profile = false` is not practical in one session and would also bury the
+# ONE thing that matters (what that test was actually pinning) under an
+# unrelated new lane key. Set to 'off' process-wide for the whole
+# pre-existing suite by one autouse fixture; the RG-55 wiring tests that
+# mean to exercise the real default unset it, or set it to 'on', explicitly.
+PROFILE_AMBIENT_ENV_VAR = "RUN_GATE_PROFILE"
 SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
 
 # RG-27 lane invocation history. The store is PER (judged worktree × project):
@@ -528,12 +539,29 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     documented defaults, then the lane's own `profile` key on top (a bool
     `false` disables outright; a table overrides `enabled`/`damon` only).
     `source` names where `enabled`/`daemon`/`interval`/`damon` came from
-    before any lane-level override, for disclosure (R-05)."""
-    if os.environ.get(PROFILE_TEST_DISABLE_ENV_VAR):
+    before any lane-level override, for disclosure (R-05). `disabled_reason`
+    is the exact `profile_error` text a disabled lane's record gets
+    (RW-17) -- 'disabled' by default, naming `RUN_GATE_PROFILE` when that
+    is what disabled it.
+
+    `RUN_GATE_PROFILE` ('on'|'off', SPEC R-43g) is an unconditional
+    ambient override checked before any config table: 'off' short-circuits
+    everything below (no daemon/lane config is even consulted -- a disabled
+    lane needs none of it); 'on' is applied LAST, after config and the
+    lane's own `profile` key, so it wins even over a lane's
+    `profile = false`. Any other value is refused by name at exit 2 (never
+    silently ignored -- a mistyped override that appears to do nothing is
+    the exact hazard a named refusal exists to catch)."""
+    ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
+    if ambient is not None and ambient not in ("on", "off"):
+        fail(f"{PROFILE_AMBIENT_ENV_VAR} must be 'on' or 'off' (got "
+             f"{ambient!r})")
+    if ambient == "off":
         return {"enabled": False, "daemon": PROFILE_DAEMON_DEFAULT,
                "interval": PROFILE_INTERVAL_DEFAULT,
                "damon": PROFILE_DAMON_DEFAULT,
-               "source": f"${PROFILE_TEST_DISABLE_ENV_VAR}"}
+               "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
+               "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
     if "profile" in cfg:
         table, source = cfg["profile"], f"[profile] in {cfg_path}"
     elif central_path is not None and "profile" in central:
@@ -546,6 +574,7 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
         "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
         "source": source,
+        "disabled_reason": "disabled",
     }
     lane_prof = lane.get("profile")
     if lane_prof is False:
@@ -556,6 +585,9 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
             settings["enabled"] = lane_prof["enabled"]
         if "damon" in lane_prof:
             settings["damon"] = lane_prof["damon"]
+    if ambient == "on":
+        settings["enabled"] = True
+        settings["source"] = f"${PROFILE_AMBIENT_ENV_VAR}=on (base: {settings['source']})"
     return settings
 
 
@@ -1374,10 +1406,13 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
       sampler           BasicSampler | None
       profiler_status   the `version` response rendered for the host-PSI
                         line's optional segment, or None
+      disabled_reason   the `profile_error` text when `mode == "disabled"`
+                        (RW-17: names `RUN_GATE_PROFILE` when that is why)
     """
     state = {"mode": "disabled", "client": None, "daemon": plan.get("daemon"),
              "session": None, "session_line": None, "warning": None,
-             "sampler": None, "profiler_status": None}
+             "sampler": None, "profiler_status": None,
+             "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not plan["enabled"]:
         return state
     client = ProfilerClient(docker, plan["daemon"])
@@ -1445,7 +1480,8 @@ def finish_lane_profiling(state: dict) -> dict:
         return {"resources": state["sampler"].finish(), "profile_error": None,
                 "profile_ref": None}
     if state["mode"] == "disabled":
-        return {"resources": None, "profile_error": "disabled",
+        return {"resources": None,
+                "profile_error": state.get("disabled_reason", "disabled"),
                 "profile_ref": None}
     # Enabled, but neither path ever got going — e.g. a re-attach that
     # adopted no recorded session (basic-path in-memory samples cannot
@@ -1478,11 +1514,13 @@ def print_profile_session_line(state: dict) -> None:
 
 def print_profile_plan_dry_run(plan: dict, scope: str) -> None:
     """`--dry-run` (contract Sec 4 obligation, handoff C3): the plan, never
-    a real call."""
+    a real call. When disabled, names the SOURCE `resolve_profile_settings`
+    resolved (RW-17: a `RUN_GATE_PROFILE=off` override discloses itself the
+    same way `[profile] enabled = false` or a lane's own `profile = false`
+    would)."""
     if not plan["enabled"]:
-        print("run-gate: profiling disabled ([profile] enabled = false, or "
-             "this lane's own 'profile = false') — no token, no daemon "
-             "call, no sampler", flush=True)
+        print(f"run-gate: profiling disabled ({plan['source']}) — no "
+             "token, no daemon call, no sampler", flush=True)
         return
     print(f"run-gate: DRY RUN — profile plan: daemon {plan['daemon']!r}, "
          f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
@@ -5780,9 +5818,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           flush=True)
     if dry_run:
         # RG-8: the plan above IS what the live run executes — same assembly
-        # code path, only the `docker run` itself skipped.
-        if profiling:
-            print_profile_plan_dry_run(profile_plan, "container")
+        # code path, only the `docker run` itself skipped. Unconditional
+        # (RW-17 finding): `print_profile_plan_dry_run` already branches on
+        # `plan["enabled"]` itself — gating the CALL on `profiling` too made
+        # the disabled-disclosure branch dead code, so a disabled lane's
+        # `--dry-run` never named WHY (e.g. `RUN_GATE_PROFILE=off`).
+        print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
         return 0
     started = subprocess.run(argv, capture_output=True, text=True)
@@ -5849,7 +5890,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         profiler_state = {"mode": "disabled", "client": None, "daemon": None,
                           "session": None, "session_line": None,
                           "warning": None, "sampler": None,
-                          "profiler_status": None}
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
     else:
         # Contract Sec 4 obligation 2: `docker run -d` (above) -> `docker
         # inspect` -> `ctl start`. `container_state()` already resolves the
@@ -6026,8 +6069,11 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if dry_run:
         # RG-8: name resolution + running-check above are rehearsed too —
         # a dry-run against a stopped runner reports the real refusal.
-        if profiling:
-            print_profile_plan_dry_run(profile_plan, "container-shared")
+        # Unconditional (RW-17 finding, same as the ephemeral path):
+        # `print_profile_plan_dry_run` already branches on `plan["enabled"]`
+        # itself, so gating the CALL on `profiling` too made its
+        # disabled-disclosure branch unreachable in production.
+        print_profile_plan_dry_run(profile_plan, "container-shared")
         print(f"run-gate: DRY RUN — the argv above is what a live run would "
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
@@ -6037,7 +6083,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         profiler_state = {"mode": "disabled", "client": None, "daemon": None,
                           "session": None, "session_line": None,
                           "warning": None, "sampler": None,
-                          "profiler_status": None}
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
     else:
         # Contract Sec 4 obligation 2: the container id is the PERSISTENT
         # runner's — this exec never creates a container of its own.
@@ -6293,6 +6341,15 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
         "                                (default /sys/fs/cgroup; override in namespaces",
         "                                that hide the host cgroup or in tests)",
+        f"  {PROFILE_AMBIENT_ENV_VAR}                 ambient override for [profile] enabled",
+        "                                ('on'|'off', RG-55/SPEC R-43g); absent = config",
+        "                                decides. 'off' disables profiling for EVERY lane",
+        "                                regardless of [profile]/lane profile= (no token,",
+        "                                no daemon call, no sampler — e.g. a CI runner",
+        "                                with no docker exec rights to a profiler daemon",
+        "                                it will never have); 'on' force-enables even over",
+        "                                a lane's own profile = false. Any other value",
+        "                                refuses at load, by name",
         "",
         "Lane declarations: run-gate.toml next to this script; shared environment",
         "facts may live in an enclosing repo-root run-gate.toml. Judgment policy",
@@ -6570,9 +6627,10 @@ def main(argv: list[str] | None = None) -> int:
             check_slice_memory_admission(lane, args.lane, slice_name,
                                          slice_src)
         # RG-55/contract Sec 4: resolved ONCE per invocation, like `env`
-        # above — `resolve_profile_settings` folds in the test-only kill
-        # switch (`PROFILE_TEST_DISABLE_ENV_VAR`) internally, so this is the
-        # one and only place a lane's profiling policy is decided. The token
+        # above — `resolve_profile_settings` folds in the operator-facing
+        # ambient override (`PROFILE_AMBIENT_ENV_VAR` / `RUN_GATE_PROFILE`,
+        # RW-17) internally, so this is the one and only place a lane's
+        # profiling policy is decided. The token
         # is generated regardless of `--dry-run` (RG-8: a dry run's argv IS
         # what the live run would execute, token included) but is `None`
         # when profiling is not enabled — contract Sec 4 obligation 8's "no

@@ -257,12 +257,13 @@ def profiling_off_by_default(monkeypatch):
     `docker exec <daemon> cgprofile ctl version` probe, very likely a further
     basic-path-fallback `docker exec` (no real daemon ever runs in these
     fixtures), a new `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new
-    disclosure lines, on every single run. `run_gate.PROFILE_TEST_DISABLE_ENV_VAR`
-    is `resolve_profile_settings()`'s own unconditional override, checked
-    before any config table — it exists FOR this fixture. The RG-55 wiring
-    tests that mean to exercise the real default explicitly
-    `monkeypatch.delenv` it."""
-    monkeypatch.setenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, "1")
+    disclosure lines, on every single run. `run_gate.PROFILE_AMBIENT_ENV_VAR`
+    (`RUN_GATE_PROFILE`, RW-17) is `resolve_profile_settings()`'s own
+    unconditional 'on'/'off' override, checked before any config table — it
+    exists as a real operator knob (SPEC R-43g) and this fixture reuses it.
+    The RG-55 wiring tests that mean to exercise the real default explicitly
+    `monkeypatch.delenv` it (or set it to 'on')."""
+    monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
 
 
 SIMPLE_LANE = """\
@@ -10781,7 +10782,7 @@ class TestProfileConfigValidation:
         real config-resolution behavior — the one thing the module-level
         `profiling_off_by_default` fixture exists to override everywhere
         else. Unset it here, back to the real default, for this class only."""
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
 
     def _cfg(self, tmp_path: Path, text: str) -> Path:
         p = tmp_path / "run-gate.toml"
@@ -10801,7 +10802,8 @@ class TestProfileConfigValidation:
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert settings == {
             "enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
-            "interval": "1s", "damon": True, "source": "default"}
+            "interval": "1s", "damon": True, "source": "default",
+            "disabled_reason": "disabled"}
 
     def test_top_level_profile_table_overrides_defaults(self, tmp_path):
         path = self._cfg(tmp_path, """\
@@ -11618,12 +11620,12 @@ class TestBasicSamplerFinalSample:
 # run_exec_lane's Popen rewrite, run_bare_host_lane's disclosure, and
 # resolve_inflight/promote_follower's re-attach/collect/promote profiling
 # rules. Every test in this section either unsets
-# `PROFILE_TEST_DISABLE_ENV_VAR` (the module-level `profiling_off_by_default`
-# autouse fixture forces it "on" for the whole file, see that fixture's own
+# `PROFILE_AMBIENT_ENV_VAR` (the module-level `profiling_off_by_default`
+# autouse fixture forces it "off" for the whole file, see that fixture's own
 # docstring) or drives `resolve_inflight`'s profiling logic directly through
 # a PLANTED inflight record, which reads `profile_session`/`profile_token`
-# off the record itself and never consults `[profile]`/the kill switch at
-# all (resolve_inflight's early return happens BEFORE run_container_lane
+# off the record itself and never consults `[profile]`/the ambient override
+# at all (resolve_inflight's early return happens BEFORE run_container_lane
 # ever resolves a fresh profile_plan).
 # ---------------------------------------------------------------------------
 
@@ -11656,27 +11658,55 @@ def add_cgprofile_exec_case_to_stateful_shim(monkeypatch) -> None:
     shim.write_text(body)
 
 
-class TestProfileTestKillSwitch:
-    def test_env_var_forces_disabled_regardless_of_config(self, tmp_path):
-        # `profiling_off_by_default` (module autouse) has ALREADY set this --
-        # this test exercises resolve_profile_settings()'s own unconditional
-        # override, the ONE thing standing between RG-55 and ~800 broken
-        # pre-existing assertions (see that fixture's docstring).
+class TestProfileAmbientOverride:
+    """RW-17: `RUN_GATE_PROFILE` ('on'|'off') — the operator-facing ambient
+    override that superseded the old test-only kill switch."""
+
+    def _cfg(self, tmp_path: Path, enabled: bool, lane_profile=None) -> dict:
         path = tmp_path / "run-gate.toml"
-        path.write_text(textwrap.dedent("""\
+        lane_lines = "kind = \"command\"\nenvironment = \"bare-host\"\nargv = [\"true\"]\n"
+        if lane_profile is not None:
+            lane_lines += f"profile = {str(lane_profile).lower()}\n"
+        path.write_text(textwrap.dedent(f"""\
             schema_version = 1
             [profile]
-            enabled = true
+            enabled = {str(enabled).lower()}
             [lanes.suite]
-            kind = "command"
-            environment = "bare-host"
-            argv = ["true"]
-        """))
+            {lane_lines}"""))
         cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        return cfg, path
+
+    def test_env_var_off_forces_disabled_regardless_of_config(self, tmp_path):
+        # `profiling_off_by_default` (module autouse) has ALREADY set this --
+        # this test exercises resolve_profile_settings()'s own unconditional
+        # 'off' override, the ONE thing standing between RG-55 and ~800
+        # broken pre-existing assertions (see that fixture's docstring).
+        cfg, path = self._cfg(tmp_path, enabled=True)
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert settings["enabled"] is False
-        assert settings["source"] == f"${run_gate.PROFILE_TEST_DISABLE_ENV_VAR}"
+        assert settings["source"] == f"${run_gate.PROFILE_AMBIENT_ENV_VAR}=off"
+        assert settings["disabled_reason"] == (
+            f"disabled ({run_gate.PROFILE_AMBIENT_ENV_VAR}=off)")
+
+    def test_env_var_on_forces_enabled_over_lane_profile_false(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "on")
+        cfg, path = self._cfg(tmp_path, enabled=True, lane_profile=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is True
+        assert settings["source"].startswith(
+            f"${run_gate.PROFILE_AMBIENT_ENV_VAR}=on")
+
+    def test_env_var_invalid_value_refused_by_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "maybe")
+        cfg, path = self._cfg(tmp_path, enabled=True)
+        with pytest.raises(run_gate.GateError, match=(
+                f"{run_gate.PROFILE_AMBIENT_ENV_VAR} must be 'on' or 'off' "
+                r"\(got 'maybe'\)")):
+            run_gate.resolve_profile_settings(
+                cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
 
 
 class TestProfilingOrchestration:
@@ -11687,7 +11717,7 @@ class TestProfilingOrchestration:
 
     @pytest.fixture(autouse=True)
     def _profiling_on(self, monkeypatch):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
 
     def _plan(self, **overrides):
         plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
@@ -12005,7 +12035,7 @@ class TestAwaitContainerProfilingWiring:
 
 class TestBareHostProfilingWiring:
     def test_host_pressure_line_and_record_fields(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
         repo, proj = make_history_repo(tmp_path, """\
@@ -12049,7 +12079,7 @@ class TestBareHostProfilingWiring:
         # main() never builds a run_record for --dry-run — the ONLY way to
         # exercise run_bare_host_lane's `run_record is not None` guard's
         # False side.
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [lanes.suite]
@@ -12081,7 +12111,7 @@ class TestEphemeralProfilingWiring:
         """
 
     def test_daemon_path_ephemeral_record_matches_golden(self, tmp_path, monkeypatch):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
@@ -12106,9 +12136,10 @@ class TestEphemeralProfilingWiring:
 
     def test_disabled_lane_has_no_token_and_no_profiling_calls(
             self, tmp_path, monkeypatch):
-        # kill switch stays ON (default) -- proves the production `disabled`
-        # shape end-to-end, through the SAME code every one of this file's
-        # ~800 other tests already exercises.
+        # `RUN_GATE_PROFILE=off` stays set (the module autouse default) --
+        # proves the production `disabled` shape end-to-end, through the
+        # SAME code every one of this file's ~800 other tests already
+        # exercises.
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
@@ -12120,12 +12151,13 @@ class TestEphemeralProfilingWiring:
         assert not any(PROFILE_TOKEN_ENV_NEEDLE in " ".join(c) for c in run_calls)
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None
-        assert latest["profile_error"] == "disabled"
+        assert latest["profile_error"] == (
+            f"disabled ({run_gate.PROFILE_AMBIENT_ENV_VAR}=off)")
         assert latest["profile_ref"] is None
 
     def test_dry_run_prints_the_profile_plan_and_starts_nothing(
             self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
@@ -12136,9 +12168,24 @@ class TestEphemeralProfilingWiring:
         assert run_gate.PROFILE_TOKEN_ENV in out
         assert docker_runs(log) == []
 
+    def test_dry_run_discloses_the_ambient_off_override_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        # `profiling_off_by_default` (module autouse) leaves `RUN_GATE_PROFILE`
+        # set to 'off' -- end-to-end proof that --dry-run names it (RW-17),
+        # not just the unit-level `print_profile_plan_dry_run` test above.
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert (f"profiling disabled (${run_gate.PROFILE_AMBIENT_ENV_VAR}=off)"
+               in out)
+        assert docker_runs(log) == []
+
     def test_container_state_returning_none_falls_back_to_run_output(
             self, tmp_path, monkeypatch):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
@@ -12176,7 +12223,7 @@ class TestExecLaneProfilingWiring:
         # a spawned `python3 run-gate.py` child, so a subprocess-only test
         # here would pin the behavior but never satisfy the diff-coverage
         # gate for run_exec_lane's own new lines.
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.2)
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
         repo = make_repo(tmp_path)
@@ -12209,7 +12256,7 @@ class TestExecLaneProfilingWiring:
         assert len(execs) >= 2, docker_execs(log)
 
     def test_exec_lane_scope_is_container_shared(self, tmp_path, monkeypatch):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
         repo = make_repo(tmp_path)
         cfg = """\
@@ -12248,7 +12295,7 @@ class TestExecLaneProfilingWiring:
 
     def test_exec_lane_dry_run_prints_the_profile_plan(
             self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
