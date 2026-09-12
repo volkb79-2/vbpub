@@ -1144,3 +1144,37 @@ concurrently on this shared host, exactly the hazard RW-46a's finding
 described, growing since session 4's 493-directory snapshot; this
 package's own test suite no longer contributes to it, per the
 `test_a_real_lane_run_never_touches_host_tmp` regression test).
+
+### Gate verdicts this session (item 5)
+
+- **`selftest` (bare): PASS**, second attempt (first attempt's diff-
+  coverage gaps closed by Commits 4-5 above; pytest itself was green on
+  BOTH attempts, 1139 and then 1143/1142 passed, zero failures — no
+  `TestExecModeMutex` recurrence on either attempt, confirming RW-46a's
+  isolation fix holds under real concurrent sibling-package load).
+- **`assay-r1` (`--base rg55-run-gate-client`): PASS**, third attempt.
+  Attempts 1-2 FAILED on two DIFFERENT, unrelated, pre-existing tests —
+  neither touches any file this package's diff modified:
+  - Attempt 1: `TestEstateBudgetTimeoutPairing::test_estate_pairing_
+    sweep_is_alive` — `estate-wide pairing collapsed to [('nyxloom',
+    'tester-unified'), ('ciu', 'tester-unified')]` (needs >= 3).
+  - Attempt 2: `TestHistoryEligibilityGuard.test_tree_state_is_sampled_
+    before_the_lane_not_after` — `assert 4.001 == 4.0`.
+  - **Root-caused, not blindly retried**: reproduced
+    `TestEstateBudgetTimeoutPairing` failing non-deterministically in 3
+    isolated runs of just that class (PASS, PASS, FAIL) — confirmed
+    `pytest-randomly` 5.0.0 is installed and active (no `-p no:randomly`
+    anywhere in this project's pytest config or lane argv), and the
+    failing test's own `PAIRINGS_SEEN` class-level accumulator is
+    order-dependent on its sibling parametrized test completing FIRST — a
+    genuine pre-existing test-isolation bug, not a P4 regression. The
+    second failure is an ordinary floating-point timing flake under host
+    load (`time.monotonic()` delta off by 1ms). Filed
+    `KNOWN_ISSUES_TODO_BACKLOG.md` RG-62 for both (out of this package's
+    own RG-57..61 scope to fix).
+  - Attempt 3: clean, PASS, exit 0.
+- **`assay-r3` (bare): PASS**, first attempt, exit 0. Both canaries
+  (`median-not-mean`, `median-not-mean-series-stats`) verified rejected;
+  `canary: 2 rejected, 0 survived`.
+- **`assay-r2`: NOT attempted** — controller-scheduled separately per
+  RW-42/RW-43/RW-46's own dispatch (never this package's own call to make).

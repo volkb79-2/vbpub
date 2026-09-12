@@ -4698,3 +4698,56 @@ tests after this correction was written); see the RG-57/RG-58/RG-60
 entries above for the counts recounted at the RW-46/S5 tip. A test count
 in prose rots the moment the next commit touches that class — treat every
 number above as "true when written," not a live invariant.
+
+## RG-62 — two pre-existing order-/timing-sensitive test flakes found live while gating P4 (RW-46)
+
+**Provenance:** found live during RW-46/session 5's `assay-r1` gate
+verification (3 attempts, 2 distinct failures, neither touching any file
+this package's own diff modified). Filed here (this package's own
+backlog) per this session's own dispatch instructions and the estate
+convention that a tool's own defects, found while working in it, are
+recorded in the tool's backlog — never worked around locally without a
+record.
+
+**1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`
+is order-dependent.** `PAIRINGS_SEEN` (a class-level `list`) is populated
+incrementally by the class's OTHER, parametrized test
+(`test_consumer_timeouts_never_cut_lanes_short`, one instance per sibling
+`nyxloom-trove/nyxloom.toml` found under `RUN_GATE_DIR.parent`) as each
+instance runs; the aggregate test then asserts `len(PAIRINGS_SEEN) >= 3`.
+This implicitly assumes ALL parametrized instances run to completion
+BEFORE the aggregate check — true only under pytest's default
+definition-order collection. `pytest-randomly` 5.0.0 is installed and
+active for this project's own `tests -q` invocation (no `-p no:randomly`
+anywhere in this repo's pytest config or in the `selftest`/`assay-r*`
+lane argv), so EVERY invocation gets a fresh random seed and CAN place
+the aggregate test before enough of its sibling instances have run,
+under-counting `PAIRINGS_SEEN` and failing an otherwise-healthy estate.
+Reproduced directly: `python3 -m pytest tests/test_run_gate.py -k
+TestEstateBudgetTimeoutPairing -q` run 3 times in immediate succession —
+PASS, PASS, FAIL (`estate-wide pairing collapsed to
+[('nyxloom', 'tester-unified'), ('ciu', 'tester-unified')]`) — same code,
+same tree, different random seed each time. **Prescription:** either
+(a) make the aggregate a `pytest.fixture(scope="class", autouse=True)`
+teardown (runs after every test in the class regardless of order), or
+(b) mark the parametrized test and the aggregate with an explicit
+`@pytest.mark.order` (pytest-order) / a session-scoped fixture ensuring
+collection order, or (c) simplest: pin `-p no:randomly` for this one test
+module/class via a local `pytestmark`. Not fixed by this session
+(out of P4's RG-57..61 scope; not touched by this package's diff).
+
+**2. `TestHistoryEligibilityGuard.test_tree_state_is_sampled_before_the_
+lane_not_after` is a floating-point timing flake under host load.**
+`rec["_started_monotonic"] = time.monotonic() - 4.0` then asserts
+`duration_seconds == 4.0` exactly — observed failing as `4.001 == 4.0`
+during a loaded moment on this shared host (this session's own gate
+attempts + sibling RG-55 packages' concurrent pytest/gate runs).
+**Prescription:** `pytest.approx(4.0, abs=0.05)` or similar tolerance,
+matching this suite's OWN `pytest.approx` precedent used elsewhere for
+timing-derived assertions. Not fixed by this session (same reasoning as
+above).
+
+Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
+neither touches code this package's diff modified, and both were
+confirmed non-deterministic (pass on a retry) before being recorded here
+rather than "fixed" by silently retrying past them without a trace.
