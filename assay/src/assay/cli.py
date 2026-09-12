@@ -103,7 +103,7 @@ from .output import (
     resolve_state_directory,
     validate_progress_destination,
 )
-from .verdict import Evidence, EvidenceDeclaration, Verdict
+from .verdict import MUTATION_BUCKETS, Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
@@ -232,6 +232,35 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true")
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    run.add_argument(
+        "--rejudge",
+        default=None,
+        metavar="ID[,ID...]",
+        help=(
+            "(B091/D-23) with --resume: drop these mutation candidate "
+            "ids' resume records before the store is consulted, so each "
+            "re-executes against the current judging suite instead of "
+            "replaying its prior verdict. Refused, before any work, if an "
+            "id does not match any of this run's own current candidate "
+            "identities -- unknown, or the mutant's own source bytes "
+            "changed since the id was recorded (B088). Requires --resume."
+        ),
+    )
+    run.add_argument(
+        "--rejudge-outcome",
+        default=None,
+        metavar="BUCKET[,BUCKET...]",
+        help=(
+            "(B091/D-23) with --resume: the same drop as --rejudge, "
+            "selected by a resumed record's own persisted outcome bucket "
+            "rather than by explicit id -- e.g. "
+            "'hung,budget_exceeded,error' re-executes every previously "
+            "hung/budget-exceeded/crashed candidate. One of killed, "
+            "survived, crashed (or its alias 'error'), budget_exceeded, "
+            "equivalent, hung; a union with --rejudge when both are given. "
+            "Requires --resume."
+        ),
+    )
     _add_request_base_argument(run)
 
     plan = subparsers.add_parser(
@@ -1378,6 +1407,8 @@ def _run_reserved(
                 deadline=deadline,
                 resume=getattr(args, "resume", False),
                 shard=getattr(args, "shard", None),
+                rejudge=getattr(args, "rejudge", None),
+                rejudge_outcome=getattr(args, "rejudge_outcome", None),
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 # B031/A-320: opt-in, consumer-named, absent by default.

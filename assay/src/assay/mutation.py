@@ -1889,6 +1889,20 @@ def run_mutation(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    #: (B091/D-23, P7 A5) ``--rejudge <id>[,...]``: candidate ids to drop
+    #: from the resume store BEFORE it is consulted, so each re-executes
+    #: instead of replaying a possibly-stale verdict, exactly like a
+    #: candidate with no record at all. Empty (never `None` -- the caller
+    #: resolves an omitted flag to the empty frozenset) for every run that
+    #: never asked for one. Requires *resume*; refused otherwise (a
+    #: rejudge with nothing to resume FROM is not a meaningful request).
+    rejudge_ids: frozenset[str] = frozenset(),
+    #: (B091/D-23, P7 A5) ``--rejudge-outcome hung,budget_exceeded,...``:
+    #: the SAME drop, selected by a resumed record's own persisted
+    #: ``outcome_bucket`` (one of :data:`~assay.verdict.MUTATION_BUCKETS`)
+    #: rather than by explicit id. The two selections are a UNION, never
+    #: mutually exclusive -- a candidate matching either is dropped.
+    rejudge_outcomes: frozenset[str] = frozenset(),
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -2006,6 +2020,24 @@ def run_mutation(
         raise ValueError("run_mutation requires both shard_index and shard_count")
     if shard_specified:
         select_mutation_shard((), index=shard_index, count=shard_count)
+    # (B091/D-23, P7 A5) A rejudge selection with nothing to resume FROM
+    # is not a meaningful request -- every candidate would execute anyway,
+    # and the caller almost certainly meant `--resume --rejudge ...`
+    # together.
+    if (rejudge_ids or rejudge_outcomes) and not resume:
+        raise ValueError(
+            "run_mutation rejudge_ids/rejudge_outcomes requires resume=True "
+            "-- rejudging drops matching records from the resume store "
+            "before it is consulted, which is meaningless when nothing is "
+            "being resumed"
+        )
+    unknown_rejudge_outcomes = rejudge_outcomes - frozenset(MUTATION_BUCKETS)
+    if unknown_rejudge_outcomes:
+        raise ValueError(
+            f"run_mutation rejudge_outcomes named unknown bucket(s) "
+            f"{sorted(unknown_rejudge_outcomes)}; expected a subset of "
+            f"{sorted(MUTATION_BUCKETS)}"
+        )
     if state_root is not None:
         Path(state_root).mkdir(parents=True, exist_ok=True)
 
@@ -2180,35 +2212,74 @@ def run_mutation(
         )
         resumed_records: list[Mapping[str, Any]] = []
         rejected_total = 0
+        rejudged_total = 0
         if resume:
             assert isinstance(state_root, Path)
             assert judge is not None
+            # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
+            # record is even loaded, the moment a named id does not match
+            # ANY of this run's own current candidate identities. Candidate
+            # ids fold in the mutant's own source bytes by construction
+            # (B066), so an id whose source has since changed simply no
+            # longer appears in `current_ids` -- indistinguishable, at the
+            # id level, from a typo or a stale id copied from a different
+            # run. Either way, silently ignoring it (treating "not found"
+            # as "nothing to do") would let a consumer believe a rejudge
+            # happened when it did not -- exactly the B088 principle this
+            # item cross-references: an identity that no longer matches
+            # current reality must not be silently trusted.
+            if rejudge_ids:
+                current_ids = {candidate_id(job) for job in selected_jobs}
+                unknown_rejudge_ids = rejudge_ids - current_ids
+                if unknown_rejudge_ids:
+                    raise MutationStateError(
+                        "--rejudge named a candidate id not present in "
+                        "this lane's current candidate set (unknown, or "
+                        "the mutant's own source bytes changed since the "
+                        "id was recorded -- B088's own 'an identity that "
+                        "no longer matches current reality must not be "
+                        "silently trusted' principle): "
+                        f"{sorted(unknown_rejudge_ids)}"
+                    )
             for job in selected_jobs:
                 record = _load_validated_state_record(state_root, job, judge=judge)
                 if record is _RECORD_REJECTED:
                     rejected_total += 1
                 elif record is not None:
                     assert not isinstance(record, str)
+                    # (B091/D-23, P7 A5) A record matching EITHER selection
+                    # is dropped here, before it ever reaches
+                    # `resumed_records` -- the exact same effect as a
+                    # candidate with no record at all, so it falls straight
+                    # through to `pending_jobs` below and genuinely
+                    # re-executes against the CURRENT judging suite, never
+                    # replaying the old verdict.
+                    if (
+                        candidate_id(job) in rejudge_ids
+                        or record.get("outcome_bucket") in rejudge_outcomes
+                    ):
+                        rejudged_total += 1
+                        continue
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
             )
-            # (B088) Emitted when anything was resumed OR anything was
-            # REFUSED. Before, this fired only on a successful resume, so a
-            # store whose every record was rejected -- the judging suite
-            # moved, or the lane's own identity did -- produced no event at
-            # all, and was indistinguishable from an empty store. That is
-            # the shape an operator most needs named: "I passed --resume and
-            # nothing ever resumes" has two completely different causes and
-            # used to have one (absent) symptom.
-            if write_progress is not None and (resumed_records or rejected_total):
+            # (B088) Emitted when anything was resumed, REFUSED, or
+            # REJUDGED. Before A5, this fired only on a successful resume
+            # or a refusal, so a run that rejudged every one of its records
+            # (a real, intentional event) would have looked identical to
+            # one where nothing happened at all.
+            if write_progress is not None and (
+                resumed_records or rejected_total or rejudged_total
+            ):
                 write_progress(
                     {
                         "candidate_total": total,
                         "event": "resume",
                         "resumed_total": len(resumed_records),
                         "rejected_total": rejected_total,
+                        "rejudged_total": rejudged_total,
                     }
                 )
         else:

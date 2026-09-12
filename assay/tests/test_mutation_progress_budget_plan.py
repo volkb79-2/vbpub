@@ -481,6 +481,344 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
     }
 
 
+# --- B091/D-23, P7 A5: --rejudge / --rejudge-outcome -----------------------
+
+
+def _seed_resumed_state(tmp_path, state_root, progress_path=None):
+    """The exact two-candidate setup `test_resume_reuses_completed_records_
+    without_rerunning` uses (one killed via `a = False`, one survived via
+    `b = False`), factored out so every rejudge test below shares it rather
+    than re-deriving the fixture. Returns `(repo, lane, scratch, baseline,
+    first_result)`.
+    """
+    repo = _repo(tmp_path)
+    lane = make_lane(argv=("pytest", "-q"))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in text:
+            return subprocess.CompletedProcess(list(argv), returncode=1)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        first = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            state_root=state_root,
+            resume=True,
+        )
+    assert first.total == 2
+    assert len(first.killed) == 1 and len(first.survived) == 1
+    return repo, lane, scratch, baseline, first
+
+
+def _candidate_id_by_outcome_bucket(state_root: Path, outcome_bucket: str) -> str:
+    """The persisted `candidate_id` (a sha256 hex digest -- what `--rejudge`
+    actually takes) of the ONE record in *state_root* whose own
+    `outcome_bucket` matches. `MutantOutcome.identity` is a DIFFERENT,
+    tuple-shaped identity (path/span/hash/operator) -- not the digest
+    string `run_mutation`'s resume mechanism keys records by -- so this
+    reads the real candidate id back from the record itself rather than
+    guessing at a conversion between the two.
+    """
+    matches = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in state_root.glob("*.json")
+    ]
+    matches = [record for record in matches if record["outcome_bucket"] == outcome_bucket]
+    assert len(matches) == 1, matches
+    return matches[0]["candidate_id"]
+
+
+def test_rejudge_ids_drops_only_the_named_record_and_reexecutes_it(tmp_path):
+    """(B091/D-23, P7 A5) `--rejudge <id>` drops exactly the named
+    candidate's resume record before the store is consulted -- it
+    re-executes against the CURRENT judging suite, proven here by a suite
+    that now kills what the FIRST run recorded as `survived`, while the
+    other, un-rejudged candidate resumes without re-executing at all.
+    """
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    repo, lane, scratch, baseline, first = _seed_resumed_state(tmp_path, state_root)
+    survived_id = _candidate_id_by_outcome_bucket(state_root, "survived")
+
+    calls: list[str] = []
+
+    def strengthened(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        calls.append(text)
+        # A genuine test-suite strengthening: BOTH mutants would now be
+        # killed if actually re-executed -- proving this is real execution,
+        # never a replayed stale verdict.
+        return subprocess.CompletedProcess(list(argv), returncode=1)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        rejudged = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=strengthened,
+            clock=lambda: datetime.now(timezone.utc),
+            state_root=state_root,
+            resume=True,
+            rejudge_ids=frozenset({survived_id}),
+        )
+
+    # Exactly one candidate re-executed -- the rejudged one.
+    assert len(calls) == 1
+    assert "b = False" in calls[0]
+    assert rejudged.total == 2
+    # The un-rejudged (killed) candidate resumed as-is; the rejudged one
+    # (previously survived) is now ALSO killed, by real re-execution.
+    assert len(rejudged.killed) == 2
+    assert len(rejudged.survived) == 0
+    assert {item.identity for item in first.killed}.issubset(
+        {item.identity for item in rejudged.killed}
+    )
+
+
+def test_rejudge_outcome_drops_records_matching_the_named_bucket(tmp_path):
+    """The same drop as `--rejudge`, selected by the record's own
+    persisted `outcome_bucket` instead of an explicit id.
+    """
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    repo, lane, scratch, baseline, first = _seed_resumed_state(tmp_path, state_root)
+
+    calls: list[str] = []
+
+    def strengthened(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        calls.append(text)
+        return subprocess.CompletedProcess(list(argv), returncode=1)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        rejudged = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=strengthened,
+            clock=lambda: datetime.now(timezone.utc),
+            state_root=state_root,
+            resume=True,
+            rejudge_outcomes=frozenset({"survived"}),
+        )
+
+    assert len(calls) == 1
+    assert "b = False" in calls[0]
+    assert len(rejudged.killed) == 2
+    assert len(rejudged.survived) == 0
+
+
+def test_rejudge_ids_and_rejudge_outcomes_are_a_union(tmp_path):
+    """Naming the SAME candidate through both selections at once is not an
+    error and does not double-count it -- exercises both optional
+    parameters together, each at a non-default value.
+    """
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    repo, lane, scratch, baseline, first = _seed_resumed_state(tmp_path, state_root)
+    survived_id = _candidate_id_by_outcome_bucket(state_root, "survived")
+
+    calls: list[str] = []
+
+    def strengthened(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        calls.append(str(cwd))
+        return subprocess.CompletedProcess(list(argv), returncode=1)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        rejudged = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=strengthened,
+            clock=lambda: datetime.now(timezone.utc),
+            state_root=state_root,
+            resume=True,
+            rejudge_ids=frozenset({survived_id}),
+            rejudge_outcomes=frozenset({"survived"}),
+        )
+
+    assert len(calls) == 1  # not re-executed twice for matching both.
+    assert len(rejudged.killed) == 2
+
+
+def test_rejudge_unknown_id_refuses_before_any_execution(tmp_path):
+    """(B091/D-23, P7 A5, B088) An id that does not match any of THIS run's
+    own current candidate identities -- a typo, or the mutant's own source
+    bytes changed since the id was recorded -- refuses outright, before a
+    single record is even loaded, rather than silently doing nothing.
+    """
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    repo, lane, scratch, baseline, first = _seed_resumed_state(tmp_path, state_root)
+
+    def must_not_run(argv, *, env, cwd, timeout):
+        raise AssertionError("a refused rejudge must never execute anything")
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(
+            mutation.MutationStateError,
+            match="not present in this lane's current candidate set",
+        ):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=must_not_run,
+                clock=lambda: datetime.now(timezone.utc),
+                state_root=state_root,
+                resume=True,
+                rejudge_ids=frozenset({"0" * 64}),
+            )
+
+
+def test_resume_progress_event_gains_rejudged_total(tmp_path):
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    repo, lane, scratch, baseline, first = _seed_resumed_state(tmp_path, state_root)
+    survived_id = _candidate_id_by_outcome_bucket(state_root, "survived")
+    progress_path = tmp_path / ".assay" / "second.progress.jsonl"
+
+    def strengthened(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        return subprocess.CompletedProcess(list(argv), returncode=1)
+
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=strengthened,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            state_root=state_root,
+            resume=True,
+            rejudge_ids=frozenset({survived_id}),
+        )
+
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    resume_event = next(event for event in events if event["event"] == "resume")
+    assert resume_event["resumed_total"] == 1
+    assert resume_event["rejected_total"] == 0
+    assert resume_event["rejudged_total"] == 1
+
+
+def test_run_mutation_refuses_rejudge_ids_without_resume(tmp_path):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(ValueError, match="requires resume=True"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                rejudge_ids=frozenset({"a" * 64}),
+            )
+
+
+def test_run_mutation_refuses_an_unknown_rejudge_outcome_bucket_name(tmp_path):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(ValueError, match="unknown bucket"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                state_root=state_root,
+                resume=True,
+                rejudge_outcomes=frozenset({"bogus"}),
+            )
+
+
 def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_filename(
     tmp_path,
 ):

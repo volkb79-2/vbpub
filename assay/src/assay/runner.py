@@ -3468,6 +3468,10 @@ def _run_prepared_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    #: (B091/D-23, P7 A5) Straight through to `mutation.run_mutation` --
+    #: see its own docstring. Empty for every call site that never asked.
+    rejudge_ids: frozenset[str] = frozenset(),
+    rejudge_outcomes: frozenset[str] = frozenset(),
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
@@ -4330,6 +4334,8 @@ def _run_prepared_lane(
                     resume=resume,
                     shard_index=shard_index,
                     shard_count=shard_count,
+                    rejudge_ids=rejudge_ids,
+                    rejudge_outcomes=rejudge_outcomes,
                 )
             except AssayError as exc:
                 # (B053/A-409) Announced once, here. The SAME error also
@@ -4963,6 +4969,8 @@ def _run_higher_rigor_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    rejudge_ids: frozenset[str] = frozenset(),
+    rejudge_outcomes: frozenset[str] = frozenset(),
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
@@ -5161,6 +5169,8 @@ def _run_higher_rigor_lane(
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        rejudge_ids=rejudge_ids,
+                        rejudge_outcomes=rejudge_outcomes,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
@@ -5318,6 +5328,15 @@ def run_lane(
     deadline: LaneDeadline | None = None,
     resume: bool = False,
     shard: str | None = None,
+    #: (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, unparsed --
+    #: comma-separated, exactly like *shard*'s own `"INDEX/COUNT"` string.
+    #: Parsed and refused (clean `BAD_LANE_CONFIG`, never an uncaught
+    #: exception) at the same point *shard* is, just below. `None` (the
+    #: default) is "neither flag was given", not "rejudge nothing" spelled
+    #: oddly -- an empty string after splitting is refused the same way a
+    #: malformed `--shard` is, rather than silently becoming a no-op.
+    rejudge: str | None = None,
+    rejudge_outcome: str | None = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
@@ -5439,6 +5458,8 @@ def run_lane(
                 deadline=deadline,
                 resume=resume,
                 shard=shard,
+                rejudge=rejudge,
+                rejudge_outcome=rejudge_outcome,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 progress_artifact=None,
@@ -5745,6 +5766,85 @@ def run_lane(
                 clock=clock,
             )
 
+    # (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, parsed and refused
+    # HERE -- the same point *shard* is, and the same clean `BAD_LANE_CONFIG`
+    # shape (a complete refused verdict, never an uncaught exception) rather
+    # than deferring to `mutation.run_mutation`'s own defensive `ValueError`s,
+    # which exist for a direct library caller bypassing the CLI, not for an
+    # operator's own typo.
+    def _refuse_bad_rejudge_config(message: str) -> Verdict:
+        detail = announce_refusal(
+            AssayError(
+                message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG
+            ),
+            diagnostics=diagnostics,
+        )
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+            detail=detail,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
+    rejudge_ids: frozenset[str] = frozenset()
+    if rejudge is not None:
+        rejudge_ids = frozenset(
+            part.strip() for part in rejudge.split(",") if part.strip()
+        )
+        if not rejudge_ids:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge {rejudge!r} names no candidate id -- expected a "
+                f"comma-separated list, e.g. --rejudge abc123,def456."
+            )
+
+    # `"error"` is accepted as a documented alias for the real bucket name
+    # `"crashed"` (Outcome.ERROR is what `_classify_mutant_result` maps onto
+    # that bucket) -- the handoff's own example spelling
+    # (`--rejudge-outcome hung,budget_exceeded,error`) is honoured verbatim
+    # at the CLI surface, while `mutation.run_mutation` itself only ever
+    # sees canonical `MUTATION_BUCKETS` names.
+    _REJUDGE_OUTCOME_ALIASES = {"error": "crashed"}
+    rejudge_outcomes: frozenset[str] = frozenset()
+    if rejudge_outcome is not None:
+        raw_outcomes = frozenset(
+            _REJUDGE_OUTCOME_ALIASES.get(token, token)
+            for part in rejudge_outcome.split(",")
+            if (token := part.strip())
+        )
+        unknown_outcomes = raw_outcomes - frozenset(mutation.MUTATION_BUCKETS)
+        if not raw_outcomes:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge-outcome {rejudge_outcome!r} names no outcome "
+                f"bucket -- expected a comma-separated subset of "
+                f"{sorted(mutation.MUTATION_BUCKETS)} (or 'error' as an "
+                f"alias for 'crashed')."
+            )
+        if unknown_outcomes:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge-outcome {rejudge_outcome!r}: unknown bucket(s) "
+                f"{sorted(unknown_outcomes)}; expected a comma-separated "
+                f"subset of {sorted(mutation.MUTATION_BUCKETS)} (or 'error' "
+                f"as an alias for 'crashed')."
+            )
+        rejudge_outcomes = raw_outcomes
+
+    if (rejudge_ids or rejudge_outcomes) and not resume:
+        return _refuse_bad_rejudge_config(
+            "--rejudge/--rejudge-outcome require --resume -- rejudging "
+            "drops matching records from the resume store before it is "
+            "consulted, which is meaningless when nothing is being resumed."
+        )
+
     if r1_declared or r2_declared or r3_declared:
         # A-189: exact R0 alone stays on the direct live-tree path below;
         # every higher-rigor lane uses P22's committed-snapshot state
@@ -5775,6 +5875,8 @@ def run_lane(
             resume=resume,
             shard_index=shard_index,
             shard_count=shard_count,
+            rejudge_ids=rejudge_ids,
+            rejudge_outcomes=rejudge_outcomes,
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_stream=progress_stream,
