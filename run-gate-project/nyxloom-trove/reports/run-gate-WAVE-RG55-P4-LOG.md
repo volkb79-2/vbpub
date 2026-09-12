@@ -663,3 +663,83 @@ devcontainer has no `cgprofile-host-daemon`), 0 FAIL, 2 SKIP (r1/r2
 toolchain checks, expected for `bare-host` lanes), 1 INFO (the RG-57
 `footprint source: rusage-maxrss` disclosure, confirming C4's own design
 intent is live). Full output in the REPORT.
+
+### Commit 9 (`assay-r1`/`assay-r3` verdicts, fix `7539a44e`)
+
+`./run-gate.py --base rg55-run-gate-client assay-r1`: **PASS** (exit 0).
+`r1: PASS (exit 0)`, commit `02707e30`, `1114`-test suite via
+`assay-6.1.1.pyz`. Host load at launch: PSI `full avg10` 0.00, exactly one
+OTHER project's gate container (`docker ps`).
+
+`./run-gate.py --base rg55-run-gate-client assay-r3` was tried FIRST and
+REFUSED (exit 2): `assay-r3` is `kind = "command"` (the canary script,
+`run-gate.toml`'s own comment already says so) whose argv carries no
+`{base}` token, so it does not delegate a comparison base at all — R-35's
+refusal, the same rule `selftest` hits, just with an explicit error
+instead of a silent no-op. Re-ran with no `--base` at all:
+`./run-gate.py assay-r3` — **RED** (exit 1): `median-not-mean`
+(`duration_stats`'s own canary, the one this task's own dispatch prompt
+named explicitly) **ok — "assay-r1 would reject it"**, the real test
+suite genuinely failing on the planted mutation, VERIFIED not just run.
+But `median-not-mean-series-stats` came back `BROKEN CANARY (target text
+not found -- the code moved)`, scored as a SURVIVED mutant (`canary: 1
+rejected, 1 SURVIVED`).
+
+Root cause (not this package's own bug, but this package's gate still has
+to be green to release): `series_stats` (`run-gate.py:3405`, P2's own
+pre-existing RW-24/R-36k work) grew a `byte_valued` branch since
+`tools/canary-run.sh`'s `find` text was last anchored — the literal block
+it searches for moved one indent level deeper (into the branch's `else`
+arm) and no longer matches verbatim. Read `series_stats`'s current source
+and the target test
+(`TestHistoryResourceSeries::test_median_resists_a_10x_outlier_and_
+absent_entries_are_excluded`) before touching anything, confirmed the
+test's `cpu_cores_avg`/`memory_full_stall_seconds` assertions exercise
+ONLY the non-byte `else` arm (never `byte_valued`), so re-anchoring
+`find`/`replace` to the current text preserves the exact same mutation
+semantics and the exact same killing test. Fixed in `tools/canary-run.sh`;
+its own stale "BYTE-IDENTICAL" comment corrected, a new paragraph records
+the incident. Verified locally before committing:
+`tools/canary-run.sh median-not-mean-series-stats` alone — `ok`; the full
+script — `canary: 2 rejected, 0 survived`.
+
+Re-ran the real gate once after the fix (clean tree, PSI `full avg10`
+0.02): `./run-gate.py assay-r3` — **PASS** (exit 0). Both canaries `ok`,
+`canary: 2 rejected, 0 survived`, `run-gate: lane 'assay-r3' exit 0`.
+
+### `assay-r2` — occupied, not attempted (per the dispatch prompt's own rule)
+
+Re-checked immediately after `assay-r3` went GREEN: `pgrep -af
+'run-gate.py --base main assay-r2|assay.cli run r2'` shows PID
+`1499375`, `python3 ./run-gate.py --base main assay-r2`, cwd
+`/workspaces/vbpub/.worktrees/rg55-run-gate-client/run-gate-project`
+(confirmed via `/proc/1499375/cwd` — this IS P2's own worktree, not this
+one), `05:20` elapsed at the time of the check — P2's THIRD `assay-r2`
+attempt (the pid `1141617` BRIEF-2 named is now gone; a further resume
+replaced it, exactly the "may take ~2h" scenario the dispatch prompt
+warned about). run-gate-project's own `r2` (mutation) lane is therefore
+STILL occupied. Per the dispatch prompt's own explicit instruction ("If
+occupied: write 'r2 pending' ... and RETURN"): **r2 pending — waiting for
+P2's resume.** Not attempted this session. `docker ps` still shows exactly
+one gate container (`run-gate-vbpub-r2-680904-…`, cgroup-profiler's own
+P1 resume, unrelated) — within the `≤ 2` cap regardless.
+
+## Session 3 return (tip `7539a44e`)
+
+Working tree clean. Tip `7539a44e` on branch `rg55-followups-run-gate`.
+Verdict lines this session produced:
+- `selftest`: **PASS** — `1114 passed, 3 skipped`; `diff-coverage OK:
+  1008/1008 changed executable lines covered (100.0% ≥ 100.0% floor);
+  branches 376/376 taken`.
+- `assay-r1`: **PASS** (exit 0).
+- `assay-r3`: **PASS** (exit 0) — both canaries VERIFIED rejected
+  (`duration_stats`'s own canary explicitly, per the dispatch prompt's own
+  ask, and `series_stats`'s, after the staleness fix above).
+- `assay-r2`: **NOT RUN** — occupied by P2's own resume (pid `1499375`,
+  P2's worktree). Continuation: `run-gate-WAVE-RG55-P4-BRIEF-3.md`.
+
+Records still open for whoever runs r2 next: the full REPORT (per-
+deliverable evidence, the survivor table once r2 lands) — a partial
+REPORT covering everything gated so far is written this session
+(`run-gate-WAVE-RG55-P4-REPORT.md`) and needs r2's survivor triage
+appended before it is complete.
