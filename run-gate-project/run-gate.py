@@ -1241,6 +1241,54 @@ class BasicSampler:
         self.accumulator.add_sample(container, host=host, at=now)
         self.ended_at = self._wall()
 
+    @staticmethod
+    def _is_total_failure(container: dict) -> bool:
+        """Every field unreadable — a `docker exec` that could not reach the
+        container AT ALL (RG-55 P2 live probe finding, contract Sec 4.2):
+        for the ephemeral scope, `docker exec` on an already-exited-but-not-
+        yet-removed container fails outright ("is not running") every time,
+        because `finish_lane_profiling`'s final sample runs AFTER
+        `await_container` has already confirmed the process exited. That is
+        categorically different from the PARTIAL per-file misses
+        `_read_container` already tolerates mid-run (RW-12's ticks only ever
+        read a container the wait loop just confirmed is alive) — a container
+        that could not be reached took no reading at all, not a reading of
+        all-absent values."""
+        scalars = ("memory_current", "memory_peak", "memory_swap_current",
+                  "pids_peak", "memory_max", "memory_high")
+        dicts = ("memory_stat", "cpu_stat", "memory_pressure", "cpu_pressure",
+                "io_pressure", "memory_events_local")
+        return (all(container.get(k) is None for k in scalars)
+               and all(not container.get(k) for k in dicts))
+
+    def sample_final(self) -> None:
+        """The LAST sample (contract Sec 4.2), taken in the SAME `finally`
+        that removes the container / ends the exec, immediately before
+        `finish()`. Unlike `sample_once()` (used for every mid-run tick),
+        a TOTAL read failure here is silently dropped rather than recorded:
+        for scope "container", contract Sec 7 defines `memory.peak_bytes` as
+        the LAST READ of `memory.peak`, and a call that never reached the
+        container took no reading to be "last" — recording it anyway would
+        silently discard the run's actual last GOOD sample (measured live:
+        every ephemeral basic-path run's final sample failed this way,
+        nulling `memory.peak_bytes` on every single one, until this method
+        existed). `ended_at` still advances either way — that is a wall-
+        clock fact about when this client stopped watching, not a cgroup
+        reading, and stays true whether or not the read itself succeeded."""
+        now = self._clock()
+        if self._first_at is None:
+            self._first_at = now
+            self.started_at = self._wall()
+        container = self._read_container()
+        host = self._read_host()
+        # The `or not self.accumulator._samples` half is a safety net for a
+        # caller that (unlike this wiring) never took an earlier sample:
+        # `finish()` requires at least one, and a genuinely-empty run
+        # recording ITS total failure is still better than crashing.
+        if not self._is_total_failure(container) or not self.accumulator._samples:
+            self.accumulator.add_sample(container, host=host, at=now)
+        self.ended_at = self._wall()
+
     def finish(self) -> dict:
         """The Summary (contract Sec 3, `method: "basic"`). The caller must
         call `sample_once()` at least once (session start) before this —
@@ -1393,7 +1441,7 @@ def finish_lane_profiling(state: dict) -> dict:
                                 "session": state["session"],
                                 "session_dir": stop_doc.get("session_dir")}}
     if state["mode"] == "basic" and state["sampler"] is not None:
-        state["sampler"].sample_once()   # the final sample, contract Sec 4.2
+        state["sampler"].sample_final()   # contract Sec 4.2's final sample
         return {"resources": state["sampler"].finish(), "profile_error": None,
                 "profile_ref": None}
     if state["mode"] == "disabled":

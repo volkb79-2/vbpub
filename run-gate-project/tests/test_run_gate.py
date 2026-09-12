@@ -11524,6 +11524,93 @@ class TestBasicSampler:
         assert result["pids"]["peak"] is None
 
 
+class TestBasicSamplerFinalSample:
+    """`sample_final()` (added after the RG-55 P2 live-probe finding: a real
+    `docker exec` into an already-exited-but-not-yet-removed ephemeral
+    container refuses outright -- "is not running" -- every time, because
+    `finish_lane_profiling`'s final sample runs AFTER `await_container` has
+    already confirmed the process exited via `docker wait`. Using the plain
+    `sample_once()` there silently recorded that TOTAL failure as sample[-1],
+    nulling `memory.peak_bytes` (scope "container"'s own formula: the LAST
+    read) on every single ephemeral basic-path run -- measured live, not
+    hypothesized."""
+
+    def test_a_total_failure_final_read_is_dropped_last_good_sample_stands(
+            self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)  # answers exec with nothing -> total failure
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        sampler = run_gate.BasicSampler(docker, "c", "container",
+                                        container_id="x", cgroup="/x")
+        # A real first sample (memory.peak == 700 here), then a total-failure
+        # final call -- peak_bytes must still be 700, not null.
+        sampler.accumulator.add_sample(
+            {"memory_current": 600, "memory_peak": 700,
+             "memory_swap_current": 0, "memory_stat": {"anon": 1, "file": 1},
+             "cpu_stat": {"usage_usec": 100}, "memory_pressure": {},
+             "cpu_pressure": {}, "io_pressure": {},
+             "memory_events_local": {}, "memory_max": None,
+             "memory_high": None, "pids_peak": 3}, at=0.0)
+        sampler._first_at = 0.0
+        sampler.started_at = "2026-09-12T10:00:00Z"
+        sampler.sample_final()   # the shim answers total failure
+        result = sampler.finish()
+        assert result["memory"]["peak_bytes"] == 700
+        assert result["samples"] == 1          # the failed attempt was NOT added
+
+    def test_a_partial_failure_final_read_is_kept(self, tmp_path, monkeypatch):
+        # A shim that answers SOME files (memory.current) but not others is
+        # a PARTIAL failure -- kept, same tolerance _read_container always had.
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir()
+        log = tmp_path / "docker-calls.log"
+        log.write_text("")
+        shim = shim_dir / "docker"
+        shim.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\037' \"$@\" >> \"{log}\"\n"
+            "printf '\\n' >> \"" + str(log) + "\"\n"
+            'echo "== memory.current"\n'
+            'echo "600"\n'
+            "exit 0\n")
+        shim.chmod(shim.stat().st_mode | 0o111)
+        monkeypatch.setenv("PATH", f"{shim_dir}:{__import__('os').environ['PATH']}")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        docker = shutil.which("docker")
+        sampler = run_gate.BasicSampler(docker, "c", "container-shared",
+                                        container_id="x", cgroup="/x")
+        sampler.sample_once()
+        sampler.sample_final()
+        result = sampler.finish()
+        assert result["samples"] == 2          # the partial read WAS added
+        assert result["memory"]["peak_bytes"] == 600   # sampled-max, both 600
+
+    def test_total_failure_with_no_prior_sample_still_finishes(
+            self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        sampler = run_gate.BasicSampler(docker, "c", "container",
+                                        container_id="x", cgroup="/x")
+        sampler.sample_final()   # the ONLY call -- never raises
+        result = sampler.finish()
+        assert result["samples"] == 1
+        assert result["memory"]["peak_bytes"] is None
+
+    def test_is_total_failure_helper(self):
+        all_none = {"memory_current": None, "memory_peak": None,
+                   "memory_swap_current": None, "pids_peak": None,
+                   "memory_max": None, "memory_high": None,
+                   "memory_stat": {}, "cpu_stat": {}, "memory_pressure": {},
+                   "cpu_pressure": {}, "io_pressure": {},
+                   "memory_events_local": {}}
+        assert run_gate.BasicSampler._is_total_failure(all_none) is True
+        partial = dict(all_none, memory_current=123)
+        assert run_gate.BasicSampler._is_total_failure(partial) is False
+        partial2 = dict(all_none, cpu_stat={"usage_usec": 1})
+        assert run_gate.BasicSampler._is_total_failure(partial2) is False
+
+
 # ---------------------------------------------------------------------------
 # RG-55 / C3 WIRING — token injection, the daemon/basic orchestration glue
 # (start_lane_profiling/tick_lane_profiling/finish_lane_profiling and the
@@ -11800,14 +11887,17 @@ class TestProfilingOrchestration:
 
 class _CountingSampler:
     """A `BasicSampler`-shaped stub: `await_container`'s tick loop only ever
-    calls `.sample_once()`/`.finish()`, never touches docker itself, so
-    isolating the CALLER's tick/poll-gating logic (RW-12) does not need a
-    real docker-exec target at all."""
+    calls `.sample_once()`/`.sample_final()`/`.finish()`, never touches
+    docker itself, so isolating the CALLER's tick/poll-gating logic (RW-12)
+    does not need a real docker-exec target at all."""
 
     def __init__(self):
         self.calls = 0
 
     def sample_once(self) -> None:
+        self.calls += 1
+
+    def sample_final(self) -> None:
         self.calls += 1
 
     def finish(self) -> dict:
