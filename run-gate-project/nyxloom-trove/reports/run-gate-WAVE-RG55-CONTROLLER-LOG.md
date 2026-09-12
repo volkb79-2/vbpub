@@ -519,12 +519,27 @@ never a silent edit to the contract file.
   devcontainer then carries the socket mount. Worktree
   `.worktrees/mdt-dev-slices` removed; branch kept until the wave closes.
 
+- **RW-39 (gate rule relaxed for non-mutation lanes — PSI is the
+  signal):** the handoffs' "no run-gate lane while a mutation run is live"
+  was capacity caution; the operator's standing rule is that RAM PSI is
+  the only limit. Ruling: r0/r1-style pytest lanes and r3 canaries (bare-
+  host, serial) MAY run while other mutation runs are live, one lane at a
+  time, `nice -n 19 ionice -c 3`, launched only while memory `full avg10`
+  < 5. Still serialized estate-wide: r2 mutation lanes (one per project,
+  ≤ 2 gate containers) and image builds/probe containers. Applies to P6
+  session 5 onward and to P7's next session; P4 keeps its handoff's
+  sequencing (its whole-suite run waits for pid 2415767 because it merges
+  P2 first). Also noted: P1's "resume" under run-gate ownership re-judges
+  all 208 candidates (the container snapshot does not carry the untracked
+  `.assay/mutation-state/`), ~3.5 h instead of minutes — accepted, the
+  verdict must be on the final tree anyway; P1 records the mechanism.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); orphaned r2 container exited 15:49Z (208 candidates, 195 killed, 13 survived on the OLD tree `7ec4f9e8`); `budget_per_candidate` key misplaced in `16f3a29f` → fixed `5ce232d1`; r2 RESUME under run-gate ownership running since ~15:58Z (container `run-gate-vbpub-r2-680904-…`, tip `2c62f4db`); survivor triage + final gates + reviewer pending the verdict |
-| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus — C6 socket carrier carries design judgment) dispatched ~16:05Z for C6 (+C7); release cgprofile 1.1.0 after review |
+| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus) → C6 socket carrier `bb575fd4` (35 tests, parity harness, PROTOCOL.md), BRIEF-5 `b865556b`; session 5 (Opus) dispatched ~16:30Z for C7 (+C8), r0/r1 lane per RW-39; release cgprofile 1.1.0 after review |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 → spike + plugin + v1 runner (`f4fa1788`), BRIEF-2 `ef5088f6`; session 3 → RW-36 gating `e27b107b` + verify.py fix, BRIEF-3 `d2b7c76d` (A3 mechanism decided: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG`); session 4 dispatched ~15:55Z for A3 (+A4) |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
