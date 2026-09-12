@@ -508,6 +508,92 @@ def test_liveness_runner_none_timeout_passes_through(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# B1 (P7 round-1 review) -- pytest_unconfigure must not os._exit when
+# pytest_sessionfinish never ran (the session never started: a raising
+# conftest.pytest_configure/pytest_sessionstart). Direct plugin-module unit
+# tests, no real pytest subprocess -- the real end-to-end CLI proof (a
+# scratch-project lane recording `killed`, not `survived`) lives in
+# `test_cli_run.py`.
+# --------------------------------------------------------------------------
+
+
+def _load_materialized_plugin(tmp_path: Path):
+    import importlib.util
+
+    liveness_dir = tmp_path / "liveness"
+    plugin_path = liveness.materialize_liveness_plugin(liveness_dir)
+    spec = importlib.util.spec_from_file_location(
+        "assay_liveness_plugin_under_test_b1", plugin_path
+    )
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    return plugin
+
+
+def test_unconfigure_does_not_exit_when_sessionfinish_never_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1: the session never started (the shape a raising
+    `conftest.pytest_configure`/`pytest_sessionstart` produces) --
+    `pytest_sessionfinish` never runs, so `_EXIT_STATUS` stays the `None`
+    sentinel. `pytest_unconfigure` must return WITHOUT calling `os._exit`,
+    leaving pytest's own exit path/status intact. Before the fix,
+    `_EXIT_STATUS` started at `0` and this call would `os._exit(0)` --
+    manufacturing a false PASS (and, through `_classify_mutant_result`, a
+    false `survived`) out of a session that never ran a single test.
+    """
+    import os as os_module
+
+    plugin = _load_materialized_plugin(tmp_path)
+    assert plugin._EXIT_STATUS is None
+    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EXIT_ENV, "1")
+    calls: list[int] = []
+    monkeypatch.setattr(os_module, "_exit", lambda code: calls.append(code))
+    plugin.pytest_unconfigure(config=None)
+    assert calls == []  # os._exit must never be called.
+
+
+def test_unconfigure_exits_with_the_assigned_status_after_sessionfinish_ran(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the same conditional (BRIEF-1's own lesson): once
+    `pytest_sessionfinish` DID run and assigned a real exit status, the
+    sentinel no longer applies and `pytest_unconfigure` must still exit --
+    the fix must not turn OFF the mechanism B090/A2 exists for.
+    """
+    import os as os_module
+
+    plugin = _load_materialized_plugin(tmp_path)
+    plugin.pytest_sessionfinish(session=None, exitstatus=3)
+    assert plugin._EXIT_STATUS == 3
+    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EXIT_ENV, "1")
+    calls: list[int] = []
+    monkeypatch.setattr(os_module, "_exit", lambda code: calls.append(code))
+    plugin.pytest_unconfigure(config=None)
+    assert calls == [3]
+
+
+def test_unconfigure_stays_a_noop_when_the_exit_env_var_is_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OTHER optional parameter at its default (BRIEF-1's lesson,
+    restated for this new conditional): `ASSAY_LIVENESS_EXIT` unset (R0/R1,
+    or liveness inactive) must never call `os._exit`, regardless of whether
+    `_EXIT_STATUS` was ever assigned.
+    """
+    import os as os_module
+
+    plugin = _load_materialized_plugin(tmp_path)
+    plugin.pytest_sessionfinish(session=None, exitstatus=0)
+    monkeypatch.delenv(liveness.ASSAY_LIVENESS_EXIT_ENV, raising=False)
+    calls: list[int] = []
+    monkeypatch.setattr(os_module, "_exit", lambda code: calls.append(code))
+    plugin.pytest_unconfigure(config=None)
+    assert calls == []
+
+
+# --------------------------------------------------------------------------
 # plugin_source_hash
 # --------------------------------------------------------------------------
 

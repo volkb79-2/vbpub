@@ -2092,7 +2092,13 @@ check — assay now:
    `os._exit(rc)` from the plugin's `pytest_unconfigure(trylast=True)` hook
    right after the terminal summary prints and pytest-cov's own data write
    completes — bypassing the interpreter's normal thread-join-at-shutdown
-   entirely, so a leaked thread can no longer hang the candidate;
+   entirely, so a leaked thread can no longer hang the candidate. This only
+   happens when `pytest_sessionfinish` actually ran and assigned an exit
+   status; if the session never started (a raising
+   `conftest.pytest_configure`/`pytest_sessionstart`), `pytest_unconfigure`
+   still fires but returns without exiting, so pytest's own exit status
+   stands — a genuine early failure is never turned into a false survivor
+   (P7 round-1 B1);
 3. runs the candidate under an active `LivenessRunner` monitoring loop
    (`Popen(start_new_session=True)`, 1 s sampling) instead of a plain
    blocking wait, watching the plugin's own side-file events AND the

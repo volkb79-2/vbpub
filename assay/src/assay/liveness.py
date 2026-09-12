@@ -14,9 +14,18 @@ ruling is ONE mechanism, two parts, applied ONLY to native R2 lanes
    ``pytest_unconfigure`` -- AFTER the terminal summary and pytest-cov's
    sessionfinish write, per a real spike (session 2's LOG/REPORT) --
    bypassing the interpreter's normal thread-join-at-shutdown sequence
-   entirely. A leaked non-daemon thread can no longer hang the process; the
-   mutant instead SURVIVES (it must be killed by an honest assertion), which
-   is D-23's actual point.
+   entirely, but ONLY when ``pytest_sessionfinish`` actually ran and
+   assigned an exit status (P7 round-1 B1). When the session never started
+   (e.g. a raising ``conftest.pytest_configure``/``pytest_sessionstart``),
+   ``pytest.main`` has not returned and no summary was printed;
+   ``pytest_unconfigure`` still fires (``Config._ensure_unconfigure()``),
+   and on that path it now returns WITHOUT exiting, leaving pytest's own
+   exit status (and process exit) exactly as it would be with the plugin
+   absent -- the earlier unconditional ``os._exit(0)`` there manufactured a
+   false SURVIVOR out of a session that genuinely never ran a test. A
+   leaked non-daemon thread can no longer hang the process; the mutant
+   instead SURVIVES (it must be killed by an honest assertion), which is
+   D-23's actual point.
 2. **A candidate-only env stamp and, from this session, an ACTIVE monitoring
    loop** (:class:`LivenessRunner`) that turns the plugin's ``os._exit``
    behaviour on ONLY for R2 candidate executions, never for the R0 baseline
@@ -150,7 +159,7 @@ import time
 
 import pytest
 
-_EXIT_STATUS = 0
+_EXIT_STATUS = None  # sentinel: pytest_sessionfinish never ran/decided
 
 
 def _events_path():
@@ -198,6 +207,15 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_unconfigure(config):
     try:
         if os.environ.get("ASSAY_LIVENESS_EXIT") != "1":
+            return
+        if _EXIT_STATUS is None:
+            # pytest_sessionfinish never ran (the session never started --
+            # e.g. a raising conftest.pytest_configure/pytest_sessionstart):
+            # pytest never decided an exit status, so let pytest's own exit
+            # path stand rather than manufacturing one. B1: the earlier
+            # unconditional os._exit(0) here turned exactly this shape into
+            # a false SURVIVOR (exit 0) for a session that genuinely never
+            # ran a test.
             return
         try:
             sys.stdout.flush()

@@ -629,6 +629,94 @@ budget_per_candidate = "35s"
     assert r2_judgment["liveness"]["reason"] == "auto-pytest-argv"
 
 
+def test_run_liveness_does_not_turn_a_configure_time_raise_into_a_false_survivor(
+    git_repo: GitRepo,
+):
+    """(P7 round-1 B1) The reviewer's own reproduction, end to end through
+    the real CLI. `tests/conftest.py` bootstraps at CONFIGURE time from the
+    mutated product code itself (`guard(0)`): `True` at baseline (the
+    committed `x <= 0`), `False` under the `python:compare-swap` mutant
+    (`x <= 0` -> `x < 0`, `ast.LtE` -> `ast.Lt`) -- so the mutant's own
+    `pytest_configure` hook raises `RuntimeError` before a single test runs,
+    and `pytest_sessionfinish` never fires. Before the fix, the plugin's
+    unconditional `os._exit(0)` from `pytest_unconfigure` (which DOES still
+    run on this path -- `Config._ensure_unconfigure()`) turned that genuine
+    crash into exit 0 -- a false PASS, and through
+    `mutation._classify_mutant_result`, a false `survived`. The suite DID
+    catch the mutant; only the plugin's old default erased the evidence.
+    After the fix, pytest's own exit code (3, INTERNAL_ERROR) stands, is an
+    ordinary non-zero exit, and is reported `killed`, never `survived`.
+    """
+    (git_repo.path / "pkg").mkdir()
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return False\n")
+    git_repo.write(
+        "tests/conftest.py",
+        "from pkg.mod import guard\n\n\n"
+        "def pytest_configure(config):\n"
+        "    if not guard(0):\n"
+        "        raise RuntimeError('configure-time bootstrap broken')\n",
+    )
+    git_repo.write(
+        "tests/test_mod.py",
+        "def test_trivially_true():\n    assert True\n",
+    )
+    base_rev = git_repo.commit_all("add pkg + tests + configure-time bootstrap")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return x <= 0\n")
+    git_repo.commit_all("introduce the compare-swap site")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["{sys.executable}", "-m", "pytest", "tests", "-q"]
+env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 5
+operators = ["python:compare-swap"]
+budget_per_candidate = "50s"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["outcome"] == "PASS"
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
+    assert document["claims"][0]["status"] == "PASS"
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "PASS"
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert len(mutation["killed"]) == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["hung"] == []
+    assert mutation["budget_exceeded"] == []
+    assert mutation["equivalent"] == []
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment["liveness"]["active"] is True
+    assert r2_judgment["liveness"]["reason"] == "auto-pytest-argv"
+
+
 def _r2_lane_with_two_candidates(git_repo: GitRepo) -> str:
     """A base commit plus two independent compare-swap sites, one per
     function, so `--shard 0/2`/`--shard 1/2` each own exactly one real
