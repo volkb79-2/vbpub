@@ -12437,6 +12437,230 @@ class TestProfilerClient:
         assert "non-object" in reason
 
 
+# ---------------------------------------------------------------------------
+# RG-55/C7 -- doctor's "profiler" check: daemon presence (`docker ps`),
+# `ctl version` (contract/version/damon), effective [profile] settings incl.
+# RUN_GATE_PROFILE, and `ctl host` pressure once the daemon answers.
+# ---------------------------------------------------------------------------
+
+PROFILER_DOCTOR_LANE = """\
+    schema_version = 1
+    [environments.tester-unified]
+    image = "tester-unified:local"
+    [lanes.suite]
+    kind = "command"
+    environment = "tester-unified"
+    argv = ["true"]
+    clean_tree = false
+"""
+
+
+def _add_daemon_ps_case(monkeypatch, daemon: str = run_gate.PROFILE_DAEMON_DEFAULT) -> None:
+    shim = shim_dir_of(monkeypatch) / "docker"
+    shim.write_text(shim.read_text().replace(
+        'case "$1" in', f'case "$1" in\n  ps) echo "{daemon}" ;;'))
+
+
+class TestDoctorProfilerCheck:
+    """Every finding here is WARN/OK/SKIP, never FAIL -- profiling is
+    optional infrastructure (contract Sec 4 obligation 3, a lane without a
+    reachable daemon still gets a basic in-lane profile), so doctor never
+    blocks a project on it being unavailable."""
+
+    @pytest.fixture(autouse=True)
+    def _real_profile_resolution(self, monkeypatch):
+        """Unset the module's own `profiling_off_by_default` autouse
+        fixture's RUN_GATE_PROFILE=off -- these tests need the REAL
+        resolution (`TestProfileConfigValidation`'s own pattern)."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+
+    def _doctor(self, tmp_path, monkeypatch, capsys, daemon_running=False):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        if daemon_running:
+            _add_daemon_ps_case(monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_disabled_profiling_warns_on_both_lines(self, tmp_path,
+                                                     monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE +
+                            "\n[profile]\nenabled = false\n")
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] profile config" in out and "enabled=False" in out
+        assert "[WARN] profiler daemon" in out and "profiling disabled" in out
+        assert code == 0
+
+    def test_ambient_override_disclosed_in_profile_config(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert (f"${run_gate.PROFILE_AMBIENT_ENV_VAR}='off' override active"
+               in out)
+
+    def test_daemon_not_running_warns_by_name(self, tmp_path, monkeypatch,
+                                              capsys):
+        code, out = self._doctor(tmp_path, monkeypatch, capsys,
+                                 daemon_running=False)
+        assert "[WARN] profiler daemon" in out
+        assert "not running" in out and "ciu up" in out
+        assert code == 0
+
+    def test_daemon_running_but_ctl_version_fails_warns_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        _add_daemon_ps_case(monkeypatch)
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(None, 3, None))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] profiler daemon" in out
+        assert "running but unreachable" in out
+        assert code == 0
+
+    def test_wrong_contract_warns_by_name(self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        _add_daemon_ps_case(monkeypatch)
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(
+            json.dumps({"ok": True, "contract": 2}), None, None))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] profiler daemon" in out and "contract" in out
+
+    def test_daemon_up_reports_version_and_host_slice_pressure(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        _add_daemon_ps_case(monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        host = (RG55_FIXTURES / "host-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           host=(host, None, None))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[OK] profiler daemon" in out
+        assert "cgprofile 1.0.0" in out and "damon available" in out
+        assert "[OK] profiler host pressure" in out
+        assert "full avg10=0.15%" in out
+        assert "[OK] profiler slice dev-background.slice" in out
+        assert "[OK] profiler slice dev-interactive.slice" in out
+        assert "[OK] profiler slice dev.slice" in out
+        assert code == 0
+
+    def test_daemon_up_but_ctl_host_fails_warns_separately(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        _add_daemon_ps_case(monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           host=(None, 3, None))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[OK] profiler daemon" in out
+        assert "[WARN] profiler host/slice pressure" in out
+
+    def test_docker_absent_is_skip_not_a_crash(self, tmp_path, monkeypatch,
+                                               capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda name: None)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[SKIP] profiler daemon" in out
+        assert "docker not found" in out
+
+
+class TestCgroupNamespacePrivateWhy:
+    """RG-55/C7: the R-29 slice-memory-admission WARN names WHY when the
+    read failed from a private cgroup namespace."""
+
+    def _cfg(self):
+        return SIMPLE_LANE + (
+            "    [lanes.suite.resources]\n    memory = \"512m\"\n")
+
+    def test_helper_detects_private_namespace(self, tmp_path, monkeypatch):
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text("0::/\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
+        assert run_gate.cgroup_namespace_is_private() is True
+
+    def test_helper_false_for_a_non_root_unified_line(self, tmp_path,
+                                                       monkeypatch):
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text("0::/some/path\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
+        assert run_gate.cgroup_namespace_is_private() is False
+
+    def test_helper_false_when_unreadable(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(tmp_path / "no-such-proc"))
+        assert run_gate.cgroup_namespace_is_private() is False
+
+    def test_admission_warning_names_the_private_namespace_reason(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text("0::/\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
+        # RUN_GATE_CGROUPFS_ROOT points at an EMPTY tree -- memory.max is
+        # absent, the "no derivable ceiling" branch this WHY attaches to.
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(tmp_path / "cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        code = run_gate.main(["suite"])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "cgroupns=private" in out
+        assert "host-side slice truth is only reachable through the " \
+              "profiler daemon" in out
+
+    def test_admission_warning_omits_the_why_when_not_private(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        proc_root = tmp_path / "proc"
+        (proc_root / "self").mkdir(parents=True)
+        (proc_root / "self" / "cgroup").write_text("0::/some/other/path\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(tmp_path / "cgfs"))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py"), "suite"])
+        code = run_gate.main(["suite"])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "cgroupns=private" not in out
+        assert "no derivable memory ceiling" in out
+
+    def _proj(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        return repo, proj
+
+
 class TestGenerateProfileToken:
     def test_token_is_32_hex_chars(self):
         token = run_gate.generate_profile_token()

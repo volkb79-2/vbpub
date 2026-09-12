@@ -1442,6 +1442,25 @@ def read_host_pressure_snapshot() -> dict | None:
     return _profile_parse_pressure(text) or None
 
 
+def cgroup_namespace_is_private() -> bool:
+    """RG-55/C7: `/proc/self/cgroup` reads exactly `0::/` under a PRIVATE
+    cgroup namespace (cgroupns=private — the devcontainer/CI default this
+    project itself runs under): the unified-hierarchy line names the
+    process's OWN root, which the kernel makes read AS the namespace root
+    when it is private, so nothing beyond it — a host slice directory
+    included — is visible from here at all, ever, regardless of
+    `$RUN_GATE_CGROUPFS_ROOT`. Honors `$RUN_GATE_PROC_ROOT` like
+    `read_host_pressure_snapshot`, so a test can drive it the same way.
+    `False` (never raises) when `/proc/self/cgroup` is unreadable — that is
+    a DIFFERENT, unrelated failure, not evidence of a private namespace."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        text = (root / "self" / "cgroup").read_text().strip()
+    except OSError:
+        return False
+    return text == "0::/"
+
+
 def print_host_pressure_line(profiler_status: str | None = None) -> None:
     """Contract Sec 4.6, line 1 — the `| slice …` segment is never emitted
     (v1 never calls `ctl host`, RW-12) and the `| profiler …` segment only
@@ -1898,11 +1917,23 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
     max_raw = _read("memory.max")
     cur_raw = _read("memory.current")
     if max_raw is None or max_raw == "max":
+        # RG-55/C7: name WHY when the reason is a private cgroup namespace
+        # (this devcontainer's own default) rather than leave a reader to
+        # guess between "wrong path" and "structurally unreachable from
+        # here" — the two calls for different fixes (export
+        # $RUN_GATE_CGROUPFS_ROOT vs. nothing this process can do about it
+        # at all, ever).
+        why = ""
+        if max_raw is None and cgroup_namespace_is_private():
+            why = (f" — /proc/self/cgroup is '0::/' and no slice directory "
+                   f"is visible: cgroupns=private; host-side slice truth is "
+                   f"only reachable through the profiler daemon ({PROG} "
+                   f"doctor's own 'profiler' check, RG-55/C7)")
         print(f"run-gate: admission WARNING: no derivable memory ceiling for "
               f"slice {slice_name} ({sl_dir}/memory.max "
               f"{'absent' if max_raw is None else '= max'}; export "
-              f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here) — "
-              f"admission by shared-infra rules only", flush=True)
+              f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
+              f"{why} — admission by shared-infra rules only", flush=True)
         return
     if cur_raw is None or not cur_raw.isdigit():
         print(f"run-gate: admission WARNING: slice {slice_name} current usage "
@@ -4933,6 +4964,81 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             record("OK", "footprint staleness",
                    f"distilled {age_days:.0f} day(s) ago (<= {max_age_days} "
                    f"day threshold)")
+
+    # 7. RG-55/R-43 (C7): the profiler daemon — OPTIONAL infrastructure (a
+    # lane without it still gets a "basic" in-lane profile, contract Sec
+    # 4 obligation 3), so every finding here is INFO/WARN/OK, never FAIL —
+    # doctor never blocks a project on profiling being unavailable. Uses a
+    # SYNTHETIC empty lane (`{}`) to resolve `[profile]` at the PROJECT
+    # level (no lane-specific `profile =`/`[lanes.<n>.profile]` override) —
+    # the "effective settings" a project-wide preflight is asking about.
+    profile_settings = resolve_profile_settings({}, cfg, cfg_path, central,
+                                                central_path)
+    ambient_profile = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
+    ambient_note = (f"; ${PROFILE_AMBIENT_ENV_VAR}={ambient_profile!r} "
+                    f"override active" if ambient_profile else "")
+    record("OK" if profile_settings["enabled"] else "WARN", "profile config",
+           f"enabled={profile_settings['enabled']} "
+           f"daemon={profile_settings['daemon']!r} "
+           f"interval={profile_settings['interval']} "
+           f"damon={profile_settings['damon']} "
+           f"(source: {profile_settings['source']}){ambient_note}")
+    if not profile_settings["enabled"]:
+        record("WARN", "profiler daemon",
+               "profiling disabled — no lane will be profiled; see "
+               "'profile config' above for why")
+    elif not docker:
+        record("SKIP", "profiler daemon",
+               "docker not found on PATH — cannot check")
+    else:
+        daemon_name = profile_settings["daemon"]
+        ps = subprocess.run([docker, "ps", "--filter",
+                             f"name=^{daemon_name}$", "--format", "{{.Names}}"],
+                            capture_output=True, text=True)
+        if ps.returncode != 0 or daemon_name not in ps.stdout.split():
+            record("WARN", "profiler daemon",
+                   f"{daemon_name!r} not running — every lane falls back to "
+                   f"basic (in-lane) sampling ('cd scripts/cgroup-profiler "
+                   f"&& ciu up' starts it, vbpub estate infrastructure)")
+        else:
+            client = ProfilerClient(docker, daemon_name)
+            version_doc, reason = client.version()
+            if version_doc is None:
+                record("WARN", "profiler daemon",
+                       f"{daemon_name!r} is running but unreachable: {reason}")
+            else:
+                cgprofile_ver = version_doc.get("cgprofile", "?")
+                damon_state = (version_doc.get("daemon") or {}).get(
+                    "damon", "unavailable")
+                record("OK", "profiler daemon",
+                       f"{daemon_name!r} reachable: cgprofile {cgprofile_ver}, "
+                       f"contract {version_doc.get('contract')}, damon "
+                       f"{damon_state}")
+                # RG-55/C7: host + slice pressure via `ctl host` — the
+                # WORKAROUND the amended R-29 WARN above now points to:
+                # host-side slice truth this process cannot read directly
+                # from inside a private cgroup namespace (cgroup_namespace_
+                # is_private) IS reachable through the daemon, which does
+                # not run inside that namespace.
+                host_doc, host_reason = client.host()
+                if host_doc is None:
+                    record("WARN", "profiler host/slice pressure",
+                           f"ctl host unreachable: {host_reason}")
+                else:
+                    host_snap = host_doc.get("host") or {}
+                    mem_p = (host_snap.get("pressure") or {}).get(
+                        "memory") or {}
+                    record("OK", "profiler host pressure",
+                           f"memory PSI full avg10={mem_p.get('full_avg10')}% "
+                           f"avg60={mem_p.get('full_avg60')}%")
+                    for slice_name in sorted(host_snap.get("slices") or {}):
+                        s = host_snap["slices"][slice_name]
+                        s_mem_p = (s.get("pressure") or {}).get(
+                            "memory") or {}
+                        record("OK", f"profiler slice {slice_name}",
+                               f"current {_fmt_mib(s.get('memory_current_bytes'))}"
+                               f", memory PSI full avg10="
+                               f"{s_mem_p.get('full_avg10')}%")
 
     ok_n = sum(1 for s, *_ in results if s == "OK")
     warn_n = sum(1 for s, *_ in results if s == "WARN")
