@@ -14789,6 +14789,36 @@ class TestBareHostProfilingWiring:
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
 
+    def test_returncode_is_set_after_wait4_reaps_the_child(
+            self, tmp_path, monkeypatch):
+        # S10 (round-2 review, RW-51): `os.wait4()` reaps the child
+        # directly, bypassing `Popen.wait()` -- the ONE place that would
+        # otherwise set `proc.returncode` itself. Left `None`,
+        # `Popen.__del__` logs a spurious `ResourceWarning: subprocess
+        # <pid> is still running` and the object sits on
+        # `subprocess._active` for a `waitpid` that can never succeed a
+        # second time (reproduced with `python3 -W error::ResourceWarning`
+        # before this fix). Spies on `Popen` the same way `test_wait4_
+        # interrupted_kills_the_child_and_reraises` does, to inspect the
+        # REAL object's own `.returncode` after a real wait4-reaped run.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config().replace(
+            'argv = ["true"]', 'argv = ["sh", "-c", "exit 5"]'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        real_popen = subprocess.Popen
+        procs = []
+
+        def _spy_popen(argv, **kw):
+            p = real_popen(argv, **kw)
+            procs.append(p)
+            return p
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
+        assert run_gate.main(["suite"]) == 5   # the LANE's own exit code
+        lane_procs = [p for p in procs if list(p.args) == ["sh", "-c", "exit 5"]]
+        assert len(lane_procs) == 1
+        assert lane_procs[0].returncode == 5
+
     def test_wait4_interrupted_kills_the_child_and_reraises(
             self, tmp_path, monkeypatch):
         # The OTHER half of the wait4() bracket's guard: a `BaseException`

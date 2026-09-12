@@ -59,7 +59,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   contract Sec 2.2 originally specified. Now a five-key object; a
   manifest entry written before this fix (no `source` key of its own)
   derives it from that entry's own `method`/`scope` pair instead of
-  falling back to `null` outright. SPEC `R-44d` amended.
+  falling back to `null` outright. SPEC `R-44d` amended. **S10 (round-2
+  review, RW-51):** the rusage path's `os.wait4()` reaps the lane's child
+  directly, which never set `Popen.returncode` on the `proc` object
+  itself (only `Popen.wait()` does that) — harmless in practice, but a
+  spurious `ResourceWarning: subprocess <pid> is still running` under
+  `python3 -W error::ResourceWarning`. `proc.returncode` is now set from
+  `os.waitstatus_to_exitcode()`'s own result right after computing it.
 - **RG-60 — exec-lane inflight record.** `run_exec_lane` now writes the
   same inflight record `run_container_lane` writes (after the profiling
   session, if any, is established and before the exec begins; cleared in

@@ -7877,6 +7877,20 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                 raise
             else:
                 code = os.waitstatus_to_exitcode(status)
+                # S10 (round-2 review, RW-51): `os.wait4()` reaps the
+                # child directly, bypassing `Popen.wait()` -- the ONE
+                # place that would otherwise set `proc.returncode` itself.
+                # Left `None`, `Popen.__del__` logs a spurious
+                # `ResourceWarning: subprocess <pid> is still running` (the
+                # object still thinks its child is unreaped) and the
+                # instance sits on `subprocess._active` for a `waitpid`
+                # that can never succeed a second time. Harmless in
+                # practice (`ResourceWarning` is off by default, and the
+                # eventual internal `waitpid` failure is swallowed), but
+                # pure noise for any consumer running with warnings
+                # enabled -- telling `proc` what its own child already
+                # exited with costs one line.
+                proc.returncode = code
         else:
             code = subprocess.run(argv, cwd=str(project_dir),
                                   env=run_env).returncode
