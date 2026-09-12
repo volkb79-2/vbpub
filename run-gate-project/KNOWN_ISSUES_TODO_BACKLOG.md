@@ -4148,3 +4148,57 @@ folded:
   run-gate's to do and does not touch assay's semantics.
 - The real fix, if there is one, belongs in assay's backlog next to
   B008; file it there before implementing anything here.
+
+## RG-55 — no per-lane resource-usage profile (peak RSS, hot-set, CPU, wall-clock) is measured or persisted, so concurrent-lane scheduling has no footprint signal to schedule against
+
+Filed from a dstdns consumer session, 2026-09-12, while scoping a
+test-improvement program that raises how many lanes/stacks may run
+concurrently on a host shared with co-resident production workloads.
+
+`.assay/` already persists a per-lane snapshot — `progress-<lane>.jsonl`
+(live progress, survives a resume) and `verdict-<lane>.json` (the last
+verdict, pass/fail plus coverage/mutation numbers) — but only the LATEST
+run, and neither carries anything about the run's actual resource
+footprint: peak RSS, hot memory-access set size, CPU count actually used,
+wall-clock duration. A consumer scheduling several lanes concurrently
+today has only a flat concurrency count to reason with (dstdns: "N
+concurrent stacks, M concurrent gates"), which cannot distinguish a lane
+using 1 CPU / 100MB from one using 2 CPU / 700MB peak / 200MB hot-set —
+either wastes spare capacity by under-packing, or risks real memory
+thrashing by over-packing, because the actual constraint that matters
+(memory pressure causing thrashing, not raw usage — a host can tolerate
+tens of GB of swap and full CPU saturation just fine, but must never let
+`/proc/pressure/memory` start climbing) has no data feeding a scheduling
+decision at all.
+
+Two tools already exist in this estate for exactly this measurement and
+are not yet wired into any lane-execution path: `scripts/cgroup-profiler/`
+(cgroup-scoped resource accounting) and `scripts/damon-analysis/`
+(`damon_cli.py`, DAMON-based memory access-pattern profiling, already
+consumed by `topos`'s own CLI dispatch — `topos/src/topos/damon`). Neither
+speaks to run-gate/assay's lane-execution machinery today.
+
+### Status — OPEN
+
+Not yet scoped as an implementation plan, filed as the concrete need
+rather than a design:
+
+- A lane's resource profile should be captured wrapping the lane's actual
+  process tree (via `cgroup-profiler` and/or `damon-analysis`) and
+  persisted alongside — or as an extension of — the existing
+  `verdict-<lane>.json`/`progress-<lane>.jsonl` mechanism, ideally as a
+  short history rather than only the latest run, so a scheduler can use a
+  stable estimate rather than one noisy sample.
+- The consumer-facing use case is admission control: before starting
+  lane N concurrently with already-running lanes, check the *live* PSI
+  reading (`/proc/pressure/memory`) plus each running lane's own measured
+  footprint, and only admit N if doing so is not expected to push memory
+  pressure into a rising state. Swap usage itself is not the gate — PSI
+  is.
+- Whether this belongs in run-gate proper, in assay (which already owns
+  the per-lane verdict/progress files), or as a thin wrapper script that
+  both consume is an open design question — filed here first because
+  run-gate owns the lane-dispatch entry point every consumer already
+  calls.
+- dstdns's own applied policy, once this exists: `docs/testing/RIGOR-COVERAGE-POLICY.md`
+  "Resource-profiling and scheduling" section.
