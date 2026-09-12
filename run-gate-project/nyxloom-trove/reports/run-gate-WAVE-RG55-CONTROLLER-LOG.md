@@ -178,6 +178,31 @@ never a silent edit to the contract file.
   `coverage_gate` record-lookup false green is fixed if small, else RG-58;
   all listed doc drift fixed in the round.
 
+- **P2 fix round 1 → review round 2 (tip `a7a84e09`): ACCEPT**, two
+  records-only conditions: (1) the deferred residues (S1/D5 doctor warning
+  for bare-host `stall_timeout`, S6, S11, S13-code, the S14 doc-drift list)
+  become real backlog rows (RG-58..); (2) the B3/M5 claim is corrected — M5
+  (`peak_over_baseline` floor at 0 in scope `container-shared`) is an
+  EQUIVALENT mutant (the max over a list whose first element is the
+  baseline cannot go negative; 340 combinations, zero negatives), so the
+  LOG must say so instead of "proved the floor". Also fold at merge: SPEC
+  `R-43f` must not claim `profile_token` is recorded for exec lanes (no
+  recovery record exists there). Gates at the tip: selftest 1083 passed,
+  873/873 lines, 334/334 branches; assay-r1 PASS; assay-r3 2 rejected /
+  0 survived. RW-21 verified live (cpu.seconds 0.093 → 0.292 against the
+  container's 0.321 s lifetime).
+- **RW-24 (S11, byte medians):** byte-valued series in `history` stats and
+  the footprint manifest use the nearest-rank p50 (an integer element of
+  the series, consistent with §7), never the arithmetic midpoint (`100.5`
+  bytes is not a measurement); float series (`duration_seconds`,
+  `cpu_cores_avg`, stall seconds) keep `statistics.median` (R-36d
+  unchanged). Lands in the P2 close-out with a test.
+- **P2 close-out plan:** after session 7's r2 verdict + triage lands (it
+  owns the worktree's LOG/REPORT until then), ONE fresh close-out
+  implementer: ACCEPT conditions (backlog rows, B3/M5 correction, `R-43f`),
+  RW-24, then the final `assay-r2` on the tip (resume, RW-22), final gates,
+  return → merge `--no-ff`.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
