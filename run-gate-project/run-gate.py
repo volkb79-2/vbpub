@@ -1710,8 +1710,9 @@ class BasicSampler:
 def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
                  ) -> dict:
     """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is the FROZEN
-    contract's four-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
-    `cpu_cores_avg`, `duration_median_s`) built from this LANE's entry in
+    contract's five-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
+    `cpu_cores_avg`, `duration_median_s`, `source` — B5, round-2 review
+    RW-51, contract Sec 3a) built from this LANE's entry in
     `run-gate.footprint.json` when a manifest exists next to the effective
     project's `run-gate.toml` and names this lane — `null` otherwise (no
     manifest yet, or a lane the manifest has never seen a profiled run for).
@@ -2919,12 +2920,33 @@ def footprint_manifest_lane_peak_median(manifest: dict | None,
     return peak.get("median") if isinstance(peak, dict) else None
 
 
+# B5 (round-2 review, RW-51; contract Sec 3a): a manifest written before
+# this fix carries no per-lane `source` key at all -- `footprint_manifest_
+# lane_expected` still owes admission (RG-56) a best-effort provenance
+# rather than a bare `null` when `method`/`scope` alone already say it
+# (Sec 3's own `source = "memory.peak" | "sampled-max"` rule for the
+# daemon/basic paths, Sec 3a's `"rusage-maxrss"` for rusage). Never
+# GUESSED beyond what those two fields pin down -- an unrecognized
+# `(method, scope)` pair stays `None`, exactly like a manifest with no
+# `source` key and no derivable one.
+_METHOD_SCOPE_DERIVED_SOURCE = {
+    ("daemon", "container"): "memory.peak",
+    ("daemon", "container-shared"): "sampled-max",
+    ("basic", "container"): "memory.peak",
+    ("basic", "container-shared"): "sampled-max",
+    ("rusage", None): "rusage-maxrss",
+}
+
+
 def footprint_manifest_lane_expected(manifest: dict | None,
                                      lane_name: str) -> dict | None:
     """B2 (round-1 review): contract Sec 2.2's `--meta` `expected` field --
-    `null` or the four-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
-    cpu_cores_avg, duration_median_s}`. `profile_meta()` is the ONLY caller;
-    kept separate from `footprint_manifest_lane_peak_median` (which returns a
+    `null` or the five-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
+    cpu_cores_avg, duration_median_s, source}` (B5, round-2 review, RW-51:
+    contract Sec 3a requires `source` -- "the manifest's" -- so admission
+    (RG-56) knows the provenance of a rusage-derived number mixed in among
+    cgroup-measured ones). `profile_meta()` is the ONLY caller; kept
+    separate from `footprint_manifest_lane_peak_median` (which returns a
     bare scalar for the footprint disclosure line's `| manifest …` tail) so
     neither caller's contract-mandated shape leaks into the other's."""
     if manifest is None:
@@ -2936,10 +2958,15 @@ def footprint_manifest_lane_expected(manifest: dict | None,
     hot = lane.get("hot_set_bytes")
     cores = lane.get("cpu_cores")
     duration = lane.get("duration_s")
+    source = lane.get("source")
+    if source is None:
+        source = _METHOD_SCOPE_DERIVED_SOURCE.get(
+            (lane.get("method"), lane.get("scope")))
     return {
         "memory_peak_median_bytes": peak.get("median") if isinstance(peak, dict) else None,
         "hot_set_p90_bytes": hot.get("p90_median") if isinstance(hot, dict) else None,
         "cpu_cores_avg": cores.get("avg_median") if isinstance(cores, dict) else None,
+        "source": source,
         "duration_median_s": duration.get("median") if isinstance(duration, dict) else None,
     }
 

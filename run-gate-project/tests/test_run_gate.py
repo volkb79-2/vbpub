@@ -7574,10 +7574,10 @@ class TestFootprintManifestLanePeakMedian:
 
 class TestFootprintProfileMetaExpected:
     """`profile_meta`'s `expected` field (RG-55/C5, corrected by B2, round-1
-    review): contract Sec 2.2's four-key object
-    (`memory_peak_median_bytes`, `hot_set_p90_bytes`, `cpu_cores_avg`,
-    `duration_median_s`) built from THIS lane's manifest entry, or `None`
-    (the WHOLE field) — never a bare scalar."""
+    review; B5, round-2 review RW-51): contract Sec 2.2/Sec 3a's five-key
+    object (`memory_peak_median_bytes`, `hot_set_p90_bytes`, `cpu_cores_avg`,
+    `duration_median_s`, `source`) built from THIS lane's manifest entry, or
+    `None` (the WHOLE field) — never a bare scalar."""
 
     def test_no_manifest_means_expected_is_none(self, tmp_path):
         meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
@@ -7595,17 +7595,19 @@ class TestFootprintProfileMetaExpected:
             "hot_set_p90_bytes": None,
             "cpu_cores_avg": None,
             "duration_median_s": None,
+            "source": None,
         }
 
-    def test_a_full_manifest_entry_fills_all_four_keys(self, tmp_path):
-        # B2 (round-1 review): contract Sec 2.2 requires the FULL four-key
-        # object, not just memory_peak_median_bytes -- this is the
-        # discriminating case a partial-object regression would slip past.
+    def test_a_full_manifest_entry_fills_all_five_keys(self, tmp_path):
+        # B2 (round-1 review): contract Sec 2.2 requires the FULL object,
+        # not just memory_peak_median_bytes -- this is the discriminating
+        # case a partial-object regression would slip past.
         manifest = {"schema": 1, "lanes": {"suite": {
             "memory_peak_bytes": {"median": 512 * MIB, "max": 600 * MIB},
             "hot_set_bytes": {"p90_median": 190 * MIB, "p90_max": 214 * MIB},
             "cpu_cores": {"avg_median": 1.3, "max": 2.9},
             "duration_s": {"median": 316.2, "max": 479.0},
+            "source": "rusage-maxrss",
         }}}
         (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
@@ -7615,7 +7617,26 @@ class TestFootprintProfileMetaExpected:
             "hot_set_p90_bytes": 190 * MIB,
             "cpu_cores_avg": 1.3,
             "duration_median_s": 316.2,
+            "source": "rusage-maxrss",
         }
+
+    def test_a_manifest_missing_source_derives_it_from_method_and_scope(
+            self, tmp_path):
+        # B5 (round-2 review, RW-51): a manifest written before this fix
+        # (or any entry whose profiled run predates the `source` key) has
+        # no per-lane `source` at all -- `expected["source"]` must still
+        # carry the provenance contract Sec 3a promises admission (RG-56),
+        # derived from the SAME `method`/`scope` pair Sec 3's own
+        # `source = "memory.peak" | "sampled-max"` rule already fixes,
+        # never left `null` when it is this recoverable.
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "memory_peak_bytes": {"median": 512 * MIB, "max": 600 * MIB},
+            "method": "daemon", "scope": "container-shared",
+        }}}
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"]["source"] == "sampled-max"
 
     def test_a_manifest_with_no_entry_for_this_lane_stays_none(self, tmp_path):
         manifest = {"schema": 1, "lanes": {"other": {

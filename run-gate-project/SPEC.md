@@ -1886,17 +1886,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     defect to block on.
   - **`R-44d` The run path reads the manifest.** When one exists and names
     the invoked lane, `profile_meta()`'s `expected` field (contract Sec 2.2
-    `--meta`) is filled with the contract's four-key object
+    `--meta`) is filled with the contract's five-key object
     (`memory_peak_median_bytes`, `hot_set_p90_bytes`, `cpu_cores_avg`,
     `duration_median_s`, each `int|float|null`, built from the manifest
     lane entry's `memory_peak_bytes.median`/`hot_set_bytes.p90_median`/
-    `cpu_cores.avg_median`/`duration_s.median`) — `null` (the whole field,
-    not a key inside it) otherwise: no manifest, or the lane is not in it
-    yet (B2, round-1 review: a bare scalar here violated contract Sec 2.2,
-    which requires `null` or the object, never a number). The footprint
-    disclosure line's `| manifest <n> MiB` tail reads a DIFFERENT,
-    independent scalar lookup (`footprint_manifest_lane_peak_median`) —
-    the two are not the same call.
+    `cpu_cores.avg_median`/`duration_s.median`; `source`, `str|null`, B5
+    round-2 review RW-51/contract Sec 3a — the manifest lane's own
+    `source`, or, when a manifest entry predates that key, the value its
+    `method`/`scope` pair already pins down per Sec 3's `source =
+    "memory.peak" | "sampled-max"` rule and Sec 3a's `"rusage-maxrss"`,
+    else `null`) — `null` (the whole field, not a key inside it) otherwise:
+    no manifest, or the lane is not in it yet (B2, round-1 review: a bare
+    scalar here violated contract Sec 2.2, which requires `null` or the
+    object, never a number). The footprint disclosure line's `| manifest
+    <n> MiB` tail reads a DIFFERENT, independent scalar lookup
+    (`footprint_manifest_lane_peak_median`) — the two are not the same
+    call.
   - **`R-44e` The disclosure line** (contract Sec 4.6, exact shape):
     `run-gate: footprint <lane>: peak <n> MiB[ (+<n> MiB over baseline)],
     p90 <n> MiB, <c> cores avg, <s> s stalled on memory (full)[, hot-set
