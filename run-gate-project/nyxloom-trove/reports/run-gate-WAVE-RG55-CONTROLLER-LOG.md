@@ -134,9 +134,23 @@ never a silent edit to the contract file.
   have caught it (AGENTS.md's "argv proves construction, not acceptance"
   again). The P2 reviewer must re-run that probe.
 
+- **RW-19 (P1 r2 budget):** cgroup-profiler's r2 mutation lane has 217
+  candidates at ~84 s each with `jobs = 2` (~2.5 h); `[lanes.r2] budget`
+  in `assay.toml` and the `run-gate.toml` r2 lane budget raised 45m → 4h
+  (`71c6f607`), one resume run allowed; partial verdict + survivors recorded
+  if still exceeded.
+- **RW-20 (P2 assay-r2 runtime):** run-gate-project's r2 lane has 256
+  candidates with the whole ~950-test suite per candidate (`jobs = 1`,
+  bare-host) — far beyond 4 h. Resume runs (`--resume` is always passed)
+  continue until a final verdict, no cap; the implementer session stays
+  alive until then (the lane process is tied to it); survivor triage commits
+  land in the reviewer's fix-verification round. The adversarial review of
+  the tip `62d9a66a` starts in parallel; the reviewer does not touch
+  `.assay/` or run r2 itself.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
-| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | session 1 → C0+C1 (`bc47130d`); session 2 dispatched for C2–C9 |
-| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | session 1 → C1 (`1dc201ab`); session 2 → RW-5 rework + pyz vendored (`554d1a1a`); session 3 dispatched for C2 rest + C3–C8 |
+| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
+| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |
