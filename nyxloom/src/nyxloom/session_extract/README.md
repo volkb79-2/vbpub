@@ -342,7 +342,64 @@ sessions.py     list_agents()/render_tree(): `nyxloom extract-sessions`'s
                 nyxloom/docs/design-context-lifecycle-experiments.md for
                 why this was needed and how each adapter's answer was
                 verified against real local data.
+locate.py       resolve_session_ref(): a bare session id -> the file (or
+                SQLite store + session id) holding it, so no extract-* verb
+                needs a hand-constructed path -- see "Pointing at a session
+                by id alone" below.
 ```
+
+## Pointing at a session by id alone
+
+Every `extract-*` verb's `SESSION_LOG` positional accepts **either** a path
+**or** just the session's own id, resolved by `locate.py`. The motivating
+case: a terminal restart (or a session id pasted into a chat message) leaves
+you holding the id and nothing else, and every harness buries the actual file
+somewhere unmemorable — under an escaped-cwd project directory, under a
+`YYYY/MM/DD` tree with a timestamp in the filename, or inside a single
+machine-wide SQLite store.
+
+Three id shapes are recognized, **each pinned to real local data rather than
+to what the adapters' docstrings appear to show** — two of the three
+originally-designed patterns were wrong, and both were caught only by
+checking the real corpus:
+
+| Shape | Pattern | Where it's searched |
+| --- | --- | --- |
+| Claude Code / Codex session uuid | `8-4-4-4-12` hex, case-insensitive | `~/.claude/projects/*/` (as `<uuid>.jsonl`) and `~/.codex/sessions/**/rollout-*.jsonl` (as a filename **suffix**, which covers Codex sub-agent rollouts for free) |
+| Claude Code sub-agent `agentId` | **17 hex chars, not a uuid** | `~/.claude/projects/*/*/subagents/agent-<id>.jsonl` |
+| opencode session id | `ses_` + **mixed-case alphanumerics** | `$XDG_DATA_HOME/opencode/opencode.db` (when set) and `~/.local/share/opencode/opencode.db` |
+
+- The sub-agent shape was designed as a uuid. All **1117** real
+  `subagents/agent-*.jsonl` files on this machine carry a **17-hex-char** id
+  (`a36c6ff1d3cc69767`), zero exceptions — a uuid-only trigger would have
+  rejected every pasted sub-agent id outright.
+- The opencode shape was designed as `ses_<hex>`, read off
+  `adapters/opencode.py`'s own **truncated** example (`ses_0a6bb813bffe...`).
+  All **72** real sessions in the real local store are `ses_` + 26
+  **mixed-case** alphanumerics (`ses_04bd4e9b4ffeBJm48T6v130DS6`); **none**
+  is pure hex, so the hex-only pattern would have matched nothing at all.
+  The id is therefore matched case-**sensitively** and passed to the DB
+  lookup verbatim.
+
+Resolution is deliberately strict: exactly one match resolves silently; zero
+matches error; more than one match errors **listing every candidate** so you
+can re-run with the path (or `--opencode-session`) you meant. Silently
+picking "the newest" or "the first found" is precisely how a resume lands in
+the wrong session.
+
+Claude Code project directories are keyed by an escaped cwd
+(`/workspaces/vbpub` → `-workspaces-vbpub`, `.` and `/` both becoming `-`),
+so the directory matching the **current** cwd is searched first and
+short-circuits on a unique hit. That priority is a speed optimization only —
+correctness comes from the full scan it falls back to, which is also what
+covers any cwd whose escaping this module gets wrong. The escaping rule is
+the harness's, not ours; it was checked against all 26 real project dirs
+here, and it is free to change.
+
+Verified end to end against this machine's own history: a real top-level
+Claude Code uuid, a real sub-agent `agentId`, a real Codex rollout uuid, and
+a real `ses_...` id against the real 935 MB opencode store all resolve;
+a nonexistent uuid errors.
 
 ## Delta extraction
 

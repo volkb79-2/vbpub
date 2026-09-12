@@ -682,6 +682,24 @@ def _resolve_since_marker(args) -> tuple[str | None, int | None]:
     return since_marker, None
 
 
+def _resolve_session_log(args) -> tuple[Path, str | None] | None:
+    """The shared SESSION_LOG positional resolution every extract-* verb
+    runs first: a path is taken as-is, a bare session id is located on disk
+    (session_extract/locate.py). Returns (path, session_id) -- session_id
+    being the opencode session the ref itself named, else whatever
+    --opencode-session passed -- or None after printing the error, which the
+    caller turns into exit 1.
+    """
+    from .session_extract.locate import LocateError, resolve_session_ref
+
+    try:
+        ref = resolve_session_ref(args.path, Path.cwd())
+    except LocateError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
+    return ref.path, ref.session_id or getattr(args, "opencode_session", None)
+
+
 def cmd_extract(args) -> int:
     """extract <path> [--opencode-session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
@@ -767,6 +785,11 @@ def cmd_extract(args) -> int:
     from .session_extract.config import PROFILES
     from .session_extract.events import EventKind
 
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
     since_marker, err = _resolve_since_marker(args)
     if err is not None:
         return err
@@ -828,7 +851,7 @@ def cmd_extract(args) -> int:
         redact_patterns=tuple(args.redact_pattern) if args.redact_pattern else (),
         hide_compaction_content=not args.show_compaction_content,
     )
-    result = extract(Path(args.path), config, fmt=args.format, session_id=args.opencode_session)
+    result = extract(path, config, fmt=args.format, session_id=session_id)
 
     if args.ledger:
         if args.json:
@@ -844,7 +867,7 @@ def cmd_extract(args) -> int:
             ev.marker for ev in result.events
             if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
         }
-        result._ledger = ledger_mod.build_ledger(Path(args.path), result.format, boundary_markers)
+        result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
 
     if result.stale_wakeups_stripped:
         print(f"nyxloom extract: stripped {result.stale_wakeups_stripped} stale-wakeup "
@@ -900,11 +923,15 @@ def cmd_extract_lossless(args) -> int:
     from .session_extract import lossless
     from .session_extract.adapters import detect
 
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
     since_marker, err = _resolve_since_marker(args)
     if err is not None:
         return err
 
-    path = Path(args.path)
     fmt = args.format or detect(path).name
     if fmt == "claude-code":
         print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
@@ -913,7 +940,7 @@ def cmd_extract_lossless(args) -> int:
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
-        resolved_session = args.opencode_session
+        resolved_session = session_id
         if resolved_session is None:
             sessions = opencode_adapter.list_sessions(path)
             if len(sessions) == 1:
@@ -959,7 +986,10 @@ def cmd_extract_debug(args) -> int:
     from .session_extract.config import PROFILES
     from .session_extract.debug_diff import render_debug
 
-    path = Path(args.path)
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
     fmt = args.format or detect(path).name
 
     if fmt == "claude-code":
@@ -969,7 +999,7 @@ def cmd_extract_debug(args) -> int:
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
-        resolved_session = args.opencode_session
+        resolved_session = session_id
         if resolved_session is None:
             sessions = opencode_adapter.list_sessions(path)
             if len(sessions) == 1:
@@ -1000,7 +1030,7 @@ def cmd_extract_debug(args) -> int:
         hide_api_errors=not args.show_api_errors,
         hide_compaction_content=not args.show_compaction_content,
     )
-    result = extract(path, config, fmt=fmt, session_id=args.opencode_session)
+    result = extract(path, config, fmt=fmt, session_id=session_id)
     use_color = sys.stdout.isatty() if args.color is None else args.color
     print(render_debug(
         lossless_text, result.render(), use_color, config=config, fmt=fmt, all_events=result.all_events,
@@ -1028,8 +1058,13 @@ def cmd_extract_report(args) -> int:
     """
     from .session_extract import stats
 
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
     try:
-        rows = stats.build_call_rows(Path(args.path), fmt=args.format, session_id=args.opencode_session)
+        rows = stats.build_call_rows(path, fmt=args.format, session_id=session_id)
     except (NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -1074,8 +1109,13 @@ def cmd_extract_sessions(args) -> int:
     """
     from .session_extract import sessions
 
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, _session_id = resolved
+
     try:
-        nodes = sessions.list_agents(Path(args.path), fmt=args.format)
+        nodes = sessions.list_agents(path, fmt=args.format)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -2311,10 +2351,15 @@ _SESSION_LOG_HELP = (
     ".jsonl, or one of its own subagents/agent-<id>.jsonl sub-agent "
     "files), a Codex rollout file (~/.codex/sessions/YYYY/MM/DD/"
     "rollout-*.jsonl), or an opencode SQLite store (a file, or its "
-    "containing directory). NOT a nyxloom registered project id (`nyxloom "
-    "project list` shows those, an unrelated registry) -- if you don't "
-    "already know which file to point at, `nyxloom extract-sessions "
-    "<project-directory>` lists them."
+    "containing directory). OR just the session's own ID, with no path at "
+    "all -- a Claude Code/Codex session uuid, a 17-hex-char Claude Code "
+    "sub-agent agentId, or an opencode `ses_...` id -- and the file (or "
+    "store) holding it is located automatically, erroring rather than "
+    "guessing if the id matches nothing or more than one session (see "
+    "session_extract/locate.py). NOT a nyxloom registered project id "
+    "(`nyxloom project list` shows those, an unrelated registry) -- if you "
+    "don't already know which file or id to point at, `nyxloom "
+    "extract-sessions <project-directory>` lists them."
 )
 
 # Shared verbatim across every plain "Registered project id" positional/

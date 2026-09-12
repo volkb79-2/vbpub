@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from nyxloom import cli
+from nyxloom.session_extract.locate import escape_cwd
 
 
 def _rec(**kw):
@@ -949,3 +950,44 @@ def test_extract_redact_pattern_rejects_an_invalid_regex(tmp_path, capsys):
     exit_code = cli.main(["extract", str(fp), "--redact-pattern", "(unclosed"])
     assert exit_code == 1
     assert "invalid regex" in capsys.readouterr().err
+
+
+def test_extract_accepts_a_bare_claude_code_session_uuid(tmp_path, capsys, monkeypatch):
+    # Feature A wiring: every extract-* verb routes its SESSION_LOG
+    # positional through locate.resolve_session_ref, so a pasted session id
+    # with no path at all resolves to the file holding it (locate.py's own
+    # tests cover the search/priority/ambiguity rules).
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / escape_cwd(tmp_path)
+    project.mkdir(parents=True)
+    fixture = _write_claude_code_fixture(tmp_path)
+    (project / f"{uuid}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract", uuid])
+    assert exit_code == 0
+    assert "please look into this" in capsys.readouterr().out
+
+
+def test_extract_reports_an_unresolvable_session_ref(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    exit_code = cli.main(["extract", "03b58ae4-5a21-4667-bf22-7eb364115ba3"])
+    assert exit_code == 1
+    assert "not found under" in capsys.readouterr().err
+
+
+def test_extract_sessions_accepts_a_bare_session_uuid_too(tmp_path, capsys, monkeypatch):
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / escape_cwd(tmp_path)
+    project.mkdir(parents=True)
+    fixture = _write_claude_code_fixture(tmp_path)
+    (project / f"{uuid}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract-sessions", uuid])
+    assert exit_code == 0
+    assert "(interactive session)" in capsys.readouterr().out
