@@ -9797,6 +9797,83 @@ class TestInflightRecordDecisions:
         assert record.read_text() == before    # not cleared, not rewritten
         assert (state / "run-gate-planted").exists()   # not removed
 
+    def test_dry_run_refuses_a_record_written_by_the_exec_runner(
+            self, tmp_path, monkeypatch, capsys):
+        # B3 (round-1 review, RW-43; CIU-104 class): the reviewer's exact
+        # scenario -- a lane's `environment` flipped from exec to this
+        # ephemeral-container one AFTER a crashed run, so the inflight
+        # record on disk still names the exec path's PERSISTENT runner
+        # (`runner: "exec"`). Before this fix, the dry run said "a live
+        # run would re-attach to it" / "would remove it" -- both of which
+        # end in `docker rm -f` on a container this project never created.
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
+                                runner="exec")
+        before = record.read_text()
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert ("foreign record — refusing to attach, follow, collect, "
+                "or remove it") in out
+        assert "dstdns-98535c-test-runner" in out
+        assert "written by runner 'exec'" in out
+        assert lane_runs(log) == []
+        assert record.read_text() == before    # not cleared, not rewritten
+        assert (state / "dstdns-98535c-test-runner").exists()   # not removed
+
+    def test_live_run_refuses_a_foreign_record_and_runs_fresh_instead(
+            self, tmp_path, monkeypatch, capsys):
+        # The live-run counterpart: NOT a dry run, and no `--fresh` either
+        # -- `resolve_inflight` must still refuse before any docker call
+        # touches the exec-written record, and the lane proceeds by
+        # starting its OWN fresh container (the normal "nothing to attach
+        # to" path), never by re-attaching to or removing the foreign one.
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
+                       runner="exec")
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "foreign record — refusing" in out
+        assert [c for c in _docker_calls(log)
+               if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
+        assert [c for c in _docker_calls(log)
+               if c[0] == "exec" and "dstdns-98535c-test-runner" in c] == []
+        assert len(lane_runs(log)) == 1        # a NEW container, not a re-attach
+        assert (state / "dstdns-98535c-test-runner").exists()   # untouched
+
+    def test_fresh_refuses_to_remove_a_foreign_record(
+            self, tmp_path, monkeypatch, capsys):
+        # `--fresh` is the flag that would otherwise call `docker rm -f`
+        # directly (see test_fresh_removes_the_recorded_container_and_
+        # runs_anew above) -- the foreign-record guard sits BEFORE every
+        # branch in `resolve_inflight`, `--fresh` included, so it must
+        # refuse here too rather than "helpfully" cleaning up a runner it
+        # does not own.
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
+                       runner="exec")
+        assert run_gate.main(["suite", "--fresh"]) == 0
+        out = capsys.readouterr().out
+        assert "foreign record — refusing" in out
+        assert [c for c in _docker_calls(log)
+               if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
+        assert len(lane_runs(log)) == 1
+        assert (state / "dstdns-98535c-test-runner").exists()
+
+    def test_a_record_with_no_runner_key_is_treated_as_the_container_path(
+            self, tmp_path, monkeypatch, capsys):
+        # Backward compatibility: every record this run-gate revision
+        # itself writes carries `runner` (B3), but a record from BEFORE
+        # this field existed has none at all -- it predates RG-60 (the
+        # only OTHER writer), so it can only have been the container
+        # path's own, and must keep behaving exactly as before.
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state)
+        assert "runner" not in json.loads(record.read_text())
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "foreign record" not in out
+        assert "would re-attach to it" in out
+
     def test_dry_run_names_the_refusal_a_commit_mismatch_would_give(
             self, tmp_path, monkeypatch, capsys):
         """RW-18 (review S5, hollow test 5). The dry-run branch used to be

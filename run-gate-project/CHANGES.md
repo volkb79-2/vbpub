@@ -44,10 +44,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the same `finally` that finishes profiling), so a client that dies
   mid-run leaves a recovery record naming the profiling session, exactly
   as a container lane's client would. Written unconditionally, profiled
-  or not. Not yet wired into `resolve_inflight`/re-attach — RG-60's own
-  scope is the record existing to be FOUND, not a new re-attach design.
-  SPEC `R-43a`/`R-43f` amended (dropped the "an exec lane writes no
-  inflight record" caveat).
+  or not. Not wired into a re-attach of its own — RG-60's own scope is the
+  record existing to be FOUND, not a new re-attach design. SPEC
+  `R-43a`/`R-43f` amended (dropped the "an exec lane writes no inflight
+  record" caveat). **Round-1 review (RW-43/B3):** both writers now stamp
+  `runner` (`"container"`/`"exec"`) into the record, and the container
+  path's `resolve_inflight` refuses to attach, follow, collect, or
+  `docker rm -f` a record some OTHER runner wrote (SPEC `R-39f`) — the
+  gap RG-60 opened: an exec-written record sitting at the SAME path a
+  container lane reads, indistinguishable from one of its own, so a
+  lane's `environment` flipping from exec to an ephemeral-container one
+  between a crashed run and the next could otherwise re-attach to, or
+  `--fresh`-remove, a persistent CIU runner this project never created
+  (the CIU-104 incident class).
 - **RG-55 — per-lane resource profiling, against the cgroup-profiler daemon
   contract (`RG55-INTERFACE-CONTRACT.md`).** Every lane invocation gets a
   resource profile — peak memory (+baseline, p90, DAMON hot-set), CPU

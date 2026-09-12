@@ -6737,6 +6737,31 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         return None
     name = pending["container"]
     started = pending.get("started_at")
+    # B3 (round-1 review, RW-43; CIU-104 class): checked BEFORE any of
+    # RW-14's own questions and before any `docker` call at all -- a
+    # record whose `runner` names something other than this path
+    # ("container") was written by a DIFFERENT lane kind (RG-60's exec
+    # path stamps "exec") and may name a persistent CIU runner this
+    # invocation never created. A lane's `environment` can flip from exec
+    # to an ephemeral-container one between a crashed run and the next
+    # (an ordinary estate config move -- RG-43's own host/bare-host swap
+    # is precedent), and re-attaching to (or `--fresh`-removing) a
+    # container this lane never started is exactly the loss `R-39` exists
+    # to prevent, one level worse: a SHARED runner, not merely a
+    # duplicate. A record with no `runner` key at all predates this field
+    # (every record this run-gate revision itself ever wrote carries it)
+    # and is treated as "container" for backward compatibility -- the
+    # container path is the only writer that existed before RG-60.
+    runner = pending.get("runner")
+    if runner is not None and runner != "container":
+        print(f"run-gate: the inflight record for lane {lane_name!r} "
+              f"names container {name!r}, written by runner {runner!r} — "
+              f"foreign record — refusing to attach, follow, collect, or "
+              f"remove it. If this lane's environment changed since that "
+              f"record was written, delete "
+              f"{inflight_path(project_dir, lane_name)} once you know the "
+              f"run it describes is over", flush=True)
+        return None
     # RW-14: the FIRST question, before any of RW-1's five, is whether the
     # client that started this container is still alive. If it is, this
     # invocation is a second terminal on someone else's run and may only
@@ -7086,6 +7111,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
+        # B3 (round-1 review, RW-43): which lifecycle WROTE this record --
+        # `resolve_inflight` (the container path's own reconciliation)
+        # refuses to act on a record some OTHER runner wrote (CIU-104
+        # class: never `docker rm -f`/re-attach/follow/collect a container
+        # this invocation did not create).
+        "runner": "container",
         "container": name,
         "container_id": (started.stdout.strip().splitlines() or [""])[-1],
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -7393,6 +7424,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
+        # B3 (round-1 review, RW-43): `name` here is the PERSISTENT
+        # runner's own name, not a container this invocation created --
+        # stamping the writer lets the container path's `resolve_inflight`
+        # refuse to touch a record this lane kind wrote (CIU-104 class: a
+        # lane's `environment` can flip from exec to an ephemeral-
+        # container one between a crashed run and the next one, and the
+        # container an exec-written record names may be a live, shared
+        # CIU runner the container path never created).
+        "runner": "exec",
         "container": name,
         "container_id": container_id,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

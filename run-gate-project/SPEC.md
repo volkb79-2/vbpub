@@ -1244,7 +1244,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the same commit. It does not any more.
   - **`R-39a` The inflight record.** On a SUCCESSFUL `docker run -d`, and
     only then, run-gate writes `<effective project dir>/.run-gate/inflight/
-    <lane>.json`: container name and id, `started_at` (UTC ISO) and
+    <lane>.json`: `runner` (`"container"` — round-1 review B1/RW-43: RG-60
+    gave an exec lane the SAME record shape under the SAME path, keyed only
+    by (project dir, lane), so the writer must be distinguishable; see
+    `R-39f`), container name and id, `started_at` (UTC ISO) and
     `started_epoch`, the judged commit, worktree, project dir, the lane's
     verdict and progress paths (`null` for a command lane), and
     `__revision__`. Scope is (judged worktree x project x lane) BY
@@ -1472,6 +1475,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       the second terminal outright and lose the follow — the operator's most
       common second invocation is "show me what it is doing", not "start
       another one".
+  - **`R-39f` A foreign record (RG-60/round-1 review B1, RW-43).** RG-60 gave
+    an exec lane the SAME `.run-gate/inflight/<lane>.json` path a container
+    lane writes to — keyed only by (project dir, lane name), with no schema
+    difference between the two writers. Round-1 review: a lane's
+    `environment` can flip from an exec-mode one to an ephemeral-container
+    one between a crashed run and the next invocation (an ordinary estate
+    config move — `R-42`'s own `host`/bare-host role swap is precedent), and
+    without a check the container path would re-attach to, follow, or
+    (`--fresh`) `docker rm -f` the exec path's PERSISTENT runner — a
+    container this invocation never created, potentially a shared CIU
+    runner (the CIU-104 incident class). Every writer now stamps `runner`
+    (`"container"`/`"exec"`, `R-39a`); the container-lane reconciliation
+    CHECKS it FIRST, before any docker call and before any of `R-39e`'s
+    owner-liveness questions: a record whose `runner` is present and not
+    `"container"` is a FOREIGN record, disclosed by name (both in `--dry-
+    run` and live), and touched NOT AT ALL — no attach, no follow, no
+    collect, no removal, `--fresh` included. A record with no `runner` key
+    predates this field and is read as `"container"` (the only writer that
+    existed before RG-60), so old records keep their old behavior
+    unchanged.
 
 - `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
   a hard lane-wide bound in assay, so the only way to bound a long mutation
@@ -1676,16 +1699,20 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     (`[profile] enabled = false`, a lane's own `profile = false`, or the
     ambient `RUN_GATE_PROFILE=off`, `R-43g`) means no token, no daemon
     call, no sampler, `resources: null`, `profile_error` naming which.
-  - **`R-43f` Inflight record fields.** `profile_token` (recorded on both
-    `docker run` and `docker exec`, before any daemon call — RG-60), and
-    `profile_session` once `ctl start` confirms it (`run_exec_lane`'s own
-    record is written once, after `start` already ran, so the field is
-    filled directly rather than needing `run_container_lane`'s own
-    second-write step). A follower that promotes itself when the owning
-    client has died (`R-39`) reads these to call `stop` with the RECORDED
-    session, never a new `start` — this re-attach/promotion machinery
-    itself stays container-lane-only; an exec lane's record exists to be
-    FOUND (a recovery aid), not yet wired into `resolve_inflight`.
+  - **`R-43f` Inflight record fields.** `runner` (`"exec"` — `R-39a`/`R-39f`),
+    `profile_token` (recorded on both `docker run` and `docker exec`,
+    before any daemon call — RG-60), and `profile_session` once `ctl start`
+    confirms it (`run_exec_lane`'s own record is written once, after
+    `start` already ran, so the field is filled directly rather than
+    needing `run_container_lane`'s own second-write step). A follower that
+    promotes itself when the owning client has died (`R-39`) reads these to
+    call `stop` with the RECORDED session, never a new `start` — this
+    re-attach/promotion machinery itself stays container-lane-only; an exec
+    lane's record exists to be FOUND (a recovery aid), not wired into a
+    re-attach of its own. It IS wired into the CONTAINER path's own
+    `resolve_inflight` one way, defensively: `R-39f`'s foreign-record
+    refusal, so a container lane never mistakes an exec-written record for
+    one of its own.
   - **`R-43g` Disclosure lines** (exact shapes, contract Sec 4.6): the
     host-PSI line (`| profiler <daemon> (cgprofile <ver>, damon <on|off|
     unavailable>)` appended only when a `version` call already answered
