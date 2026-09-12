@@ -1525,3 +1525,226 @@ OWN remaining work (assay-r2 survivor triage, the eventual final gate
 sweep) continues exactly as RW-20 directs, against whatever HEAD is
 current at each step, and commits its own remaining changes as promptly
 as each is verified from here on to avoid a repeat.
+
+---
+
+## Fix round 1 (fresh implementer, against the round-1 REJECT)
+
+A SEPARATE fresh session, dispatched to fix the round-1 review's 5
+blockers and RW-23's items, working in this SAME shared worktree per the
+estate's Mode-A convention (see the concurrency note immediately above —
+this is one of the "six commits" that session observed landing with no
+action from it; `5f91f308`/`8faaf969` are this fix round's own commits,
+confirmed by their authors/messages). `.assay/` was never touched; the r2
+lane was never touched, still alive at every check during this round.
+
+**T1 (main, `3b75e1df`):** contract amendment landed on `main` first, per
+the controller's dispatch — RW-21 ("Scope `container`: absolute counters")
+and RW-11 (12-file basic-path list) written into
+`RG55-INTERFACE-CONTRACT.md` §3/§4.3/§7, mirrored byte-identical to
+`scripts/cgroup-profiler/docs/`, `summary-container-v1.json` regenerated,
+`summary-basic-container-v1.json` added (new), README derivation table
+added. Then merged into this branch (`a55e4d3e`, clean, no conflicts).
+
+**Per-blocker fixes (commit `5f91f308` unless noted), each with its own test:**
+
+- **B1** (profiling could raise past the verdict and leak the container):
+  - `errors="replace"` added to `ProfilerClient._ctl`'s and
+    `BasicSampler._read_container`'s `subprocess.run(text=True)` calls.
+  - `_ctl` now catches `Exception` (was `TimeoutExpired, OSError` only)
+    and validates the required key per verb (`start`→`session`,
+    `stop`→`summary`), degrading to `(None, reason)`.
+  - `start_doc["session"]`/`stop_doc["summary"]` bare subscripts → `.get()`.
+  - `start_lane_profiling`/`tick_lane_profiling` call sites (both
+    `run_container_lane` and `run_exec_lane`) and the whole profiling
+    block of both `finally`s (`await_container`, `run_exec_lane`) wrapped
+    in `try/except Exception` — cleanup (`docker rm -f`,
+    `clear_inflight_record`) is structurally unreachable-by-exception now.
+  - Also fixed the S4 cgroup-fabrication bug (`target.cgroup` is now
+    `None`, never a guessed-wrong path, per RW-23e) and S10 (`proc.kill();
+    proc.wait()` on the exec lane's own Popen in the `finally`).
+  - Tests: `TestProfilingNeverRaisesEndToEnd` (2, ephemeral path, exception
+    in `_ctl`/`_read_container`), `TestProfilerClientDegradesOnMalformedResponses`
+    (4: missing `session`/`summary` key, `version` with no required key,
+    invalid-UTF-8 bytes), `TestBasicSampler::test_a_generic_exception_from_subprocess_run_reads_as_none`,
+    `TestProfilerClient::test_ctl_survives_a_generic_exception_from_subprocess_run`,
+    `TestAwaitContainerProfilingWiring`'s `test_tick_exception_never_breaks_the_wait_loop`
+    / `test_finally_profiling_exception_does_not_block_cleanup` /
+    `test_finally_profiling_exception_tolerates_no_run_record`,
+    `TestExecLaneProfilingWiring`'s matching three
+    (`test_start_lane_profiling_exception_never_escapes_exec_lane`,
+    `test_tick_exception_never_escapes_exec_lane`,
+    `test_finally_exception_never_escapes_exec_lane`,
+    `test_finally_exception_tolerates_no_run_record_exec_lane`).
+
+- **B2** (`meta.expected` violated FROZEN contract §2.2): `profile_meta`
+  now calls the new `footprint_manifest_lane_expected()`, emitting the
+  four-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
+  `cpu_cores_avg`, `duration_median_s`) instead of a bare int/None.
+  `SPEC.md` R-44d corrected to describe the object, not the scalar, and to
+  name the disclosure line's SEPARATE, unaffected scalar lookup.
+  `footprint_manifest_lane_peak_median` (the disclosure line's own
+  lookup) is UNCHANGED — kept deliberately separate so neither caller's
+  contract shape leaks into the other's. Tests:
+  `TestFootprintProfileMetaExpected::test_a_manifest_entry_fills_expected`
+  (updated) + `test_a_full_manifest_entry_fills_all_four_keys` (new). A
+  SECOND, unrelated coverage gap this redirect orphaned —
+  `footprint_manifest_lane_peak_median`'s own "lane not in the manifest"
+  branch, previously exercised only indirectly through `profile_meta`'s
+  tests — was caught for real by `assay-r1 --base main` (see Gates below)
+  and closed in `8faaf969` with `TestFootprintManifestLanePeakMedian` (3
+  direct-call tests).
+
+- **B3** (2 mutation survivors, no oracle — code was already correct):
+  `TestNearestRankValue` (3 tests: None-exclusion, all-None, mixed) and
+  `test_peak_over_baseline_bytes_is_floored_at_zero_container_shared`
+  (direct call proving the `max(0, ...)` floor with a shrinking baseline).
+  `_last_successful` (new helper, see RW-21 below) gets its own
+  `TestLastSuccessful` (3 tests) since it is new code, not a pre-existing
+  survivor.
+
+- **B4** (hollow red-first proof): `TestExecLaneProfilingWiring`'s sample
+  assertion raised `>= 2` → `>= 3` (exactly 2 is what the reviewer proved
+  the PRE-wiring blocking shape already reaches, via
+  `finish_lane_profiling`'s `sample_final()` alone, regardless of the
+  loop); docstring corrected from "at most 1" to "exactly 2", crediting
+  the reviewer's own revert-and-run experiment as the actual red-first
+  proof this class lacked. NOT independently re-verified by reverting the
+  Popen loop and re-running in this round (time-boxed; the reviewer's own
+  experiment — `4 passed` against a revert, confirmed with the OLD `>= 2`
+  assertion — is taken as authoritative since the fix (raising the bound)
+  is a direct, mechanical response to that exact experiment).
+
+- **B5** (records assert a gate sweep that never happened): both
+  "against `ac885ed4`" claims (LOG's "Final-commit gate sweep" heading,
+  REPORT's matching heading) and the "`assay-r2` dispatched last" claims
+  (LOG's session-7 paragraph, REPORT's `## assay-r2` section) corrected
+  IN PLACE with a **B5 correction** callout explaining what the store/`ps`
+  evidence actually showed, per the reviewer's own prescription — a
+  records correction, not a re-run (the reviewer independently re-verified
+  the substance).
+
+**RW-21 adoption (scope `container`: absolute counters):**
+`ResourceAccumulator.finish` now branches on `scope == "container"` for
+`cpu.seconds`/`throttled_seconds`/`nr_throttled`, every `pressure.*`
+field, every `faults.*` field, and `events.oom_kill`/`memory_high_breach`
+— all become the LAST SUCCESSFUL read (new `_last_successful` helper,
+skipping trailing `None`s per RW-7) instead of a delta from `s_0`;
+`peak_over_baseline_bytes` is unconditionally `None` in that scope.
+`_last_successful` also fixed `memory.peak_bytes` (scope `container`) and
+`pids.peak` in BOTH scopes to skip trailing failed reads (S7/RW-23a) —
+previously `samples[-1][...]` unconditionally. Evidence:
+`test_container_scope_matches_summary_basic_container_v1` reproduces
+`summary-basic-container-v1.json` byte-for-byte from the shared frames;
+`test_container_scope_absolute_counters_differ_from_delta` proves the
+rule actually changes numbers (not just relabels them) using the
+fixture's own non-zero frame-0 pressure/fault/event baselines; the LIVE
+probe below shows it working against real cgroupfs data.
+
+**RW-23 items landed (each with a test unless noted):**
+(a) RW-7 → `_last_successful`, applied everywhere "last read" appears in
+scope `container`, above. (b) bare-host `assay-r2`'s `stall_timeout`
+removed from `run-gate.toml` (was silently inert — `run_bare_host_lane`
+has no watch of any kind) + the comment corrected; no test (a config
+value, not code) — see Gates below for the live consequence. (c)
+`RUN_GATE_PROFILE=""` now treated as absent
+(`test_env_var_empty_string_counts_as_absent`). (d)/S2 the profile token
+is now ALWAYS redacted in `redact_forwarded_values`, regardless of the
+caller's `forward_env` allowlist (`TestRedactForwardedValues`, 2 tests).
+(e)/S4 the basic path never fabricates `target.cgroup` — `cgroup = None`
+in both `run_container_lane` and `run_exec_lane`'s profiling call sites;
+proven live below (`target.cgroup: null`, not a guessed-wrong path). (f)
+`tools/canary-run.sh`: `--exclude=.assay` added (was racing the live r2
+lane's `progress-r2.jsonl` under `set -euo pipefail`); the
+`median-not-mean` canary's find-string was ambiguous between
+`duration_stats`/`series_stats` (byte-identical snippet, `.replace(...,
+1)` silently targeting whichever appears first) — both now anchored on
+each function's own distinct empty-input `return` line, and a SECOND
+canary (`median-not-mean-series-stats`) added for `series_stats`, which
+was never canaried before; proven live by `assay-r3` below (`2 rejected,
+0 survived`). (g)/S8/RG-53 `tools/coverage_gate.py`'s `_rel_to_source`
+fixed to check the LEADING boundary too (previously only the trailing
+one — an empty tail after a match short-circuited the boundary check
+entirely, so `subject.py` matched as a bare substring inside
+`test_subject.py`); `test_rel_to_source_rejects_a_leading_substring_match`
++ `test_evaluate_does_not_collide_source_and_test_file_coverage` (the
+review's own end-to-end false-green scenario, reproduced and now
+correctly FAILing). Fix is ~15 lines with tests — well under the "file as
+RG-58" threshold, so fixed rather than deferred. (h) SPEC drift: R-44d
+corrected (B2, above). The remaining SPEC/CONSUMERS/CHANGES/backlog drift
+items S14 lists (R-30's doctor summary count, the RG-53 SPEC amendment
+promise, `[profile]`/`[footprint]` missing from CONSUMERS.md, the
+fabricated `footprint --write` transcript, `CHANGES.md`'s missing
+revision marker/stale "Verified empty" line/baseline-vs-peak mixup,
+`usage()`'s missing `RUN_GATE_PROC_ROOT`, the stale "test-only kill
+switch" comment, R-43g/h, the "both had shipped" SPEC claim, and the
+backlog's uncited test-count claims) are **DEFERRED** — pure prose/doc
+drift, no test pins them, and this round's time budget went to the 5
+blockers + the RW-23 items with real behavioural consequences first. (i)
+covered by RW-21/B1's own writeup above.
+
+**S-items explicitly DEFERRED this round** (none are blockers; each is a
+candidate for a follow-up round or a backlog filing if this package does
+not get a round 2 dedicated to non-blocking cleanup):
+- **S1/D5**: no code change beyond removing `stall_timeout` from the one
+  lane (RW-23b) — whether to REFUSE a bare-host lane declaring
+  `stall_timeout` at config-load time (vs. accepting it as
+  documented-inert) is still open; RW-23 did not rule on it.
+- **S3, S12**: DONE this round (RW-23c, S12 respectively — listed here
+  only to confirm they are NOT among the deferred items, since both are
+  named in the review's non-blocking list).
+- **S5**: DONE via RW-21 (D2's resolution).
+- **S6**: the doctor-time daemon-absent warning already has good text
+  (confirmed live, see Gates below); the LIVE-RUN warning's wrong-cause
+  text (`cgprofile ctl version` produced unparsable stdout" instead of
+  naming "container ... is not running") is UNCHANGED — deferred.
+- **S7**: DONE via RW-21/RW-23a (`_last_successful`).
+- **S9**: DONE (canary-run.sh, above).
+- **S11**: NOT fixed — byte medians in `series_stats`/`duration_stats`
+  can still be fractional (`round(..., 3)` on an even-count average) in
+  history/the footprint manifest, contrary to contract §7's "bytes are
+  never rounded". Deferred: fixing it requires a design decision (does an
+  even-count byte median round down, round to nearest, or refuse to
+  average and report the pair?) better suited to a numbered ruling than a
+  unilateral fix in a fix round.
+- **S13**: NOT fixed — `run_exec_lane` still writes no inflight record at
+  all (`write_inflight_record` is only called from `run_container_lane`),
+  and `SPEC.md` R-43f/R-43a still claim otherwise. Deferred: this is a
+  real gap (an exec lane has no recovery record if its client dies
+  mid-run) whose fix is a new code path, not a documentation correction,
+  and was judged out of scope for a review-response round focused on the
+  5 blockers.
+- **S14**: see "(h)" above.
+
+**Gates (this round's own tip, `8faaf969`, each verdict read in a
+separate step, never a pipe tail):**
+- Full suite: 1081 passed, 3 skipped, 2 warnings, 119.55s.
+- `selftest --allow-dirty`: diff-coverage **OK 873/873 (100.0%) lines,
+  334/334 (100.0%) branches**, exit 0.
+- `assay-r1 --base main --allow-dirty`: first attempt at `5f91f308` FAILED
+  (`UNCOVERED_LINES`, `run-gate.py:2492`(branch)/`2493` — the B2-orphaned
+  `footprint_manifest_lane_peak_median` branch, see B2 above); fixed in
+  `8faaf969`; re-run **PASS (exit 0)** at `8faaf969`. Did NOT need the
+  clean-scratch-clone fallback — the dirty-tree refusal the dispatch
+  warned about did not occur (this round's own tree was clean at both
+  attempts, having just committed; the refusal only bites an actually
+  dirty tree, which this session avoided by committing before gating).
+- `assay-r3 --allow-dirty`: **`canary: 2 rejected, 0 survived`, exit 0** —
+  live proof the S9 canary-run.sh fix (both find-strings now unambiguous,
+  the new series_stats canary) actually works, not just parses.
+- `doctor`: 11 checks — 6 OK, 2 warnings (RG-21 linked-worktree git view;
+  profiler daemon not running — both pre-existing/expected), 0 failures,
+  2 skipped, 1 info, exit 0.
+- Did NOT run `assay-r2` (RW-22: the running lane continues to its own
+  verdict; a fix round does not start a second one).
+
+**Live probe (RW-21 + RW-23e, real docker, `tester-unified:local`, 100
+MiB touched then held 12s, `resources.cpus = "3"`, no daemon —
+`cgprofile-host-daemon` still not running in this environment):** see
+this file's own quoted record in the REPORT's "Fix round 1" section.
+Headline: `cpu.seconds: 0.288` (an ABSOLUTE last-read value, not a delta
+— confirms RW-21 is live, not just unit-tested), `memory.
+peak_over_baseline_bytes: null` (confirms RW-21's nullability rule),
+`target.cgroup: null` (confirms RW-23e — no fabricated path). Container
+removed in the `finally`, throwaway project deleted after; `docker ps`
+count unchanged before/after (30, unrelated to this probe).

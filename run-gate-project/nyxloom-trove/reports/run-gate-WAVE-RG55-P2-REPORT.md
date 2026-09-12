@@ -1165,3 +1165,130 @@ C8 (session 7, commit `ac885ed4`):
 Records only (session 7, this checkpoint):
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+
+---
+
+# Fix round 1 (against the round-1 REJECT)
+
+Fresh implementer session, dispatched with the round-1 review as input
+(not this REPORT's own narrative). Full per-blocker/per-S-item detail and
+every pinning test name is in the LOG's own "Fix round 1" section; this
+section is the SHORT version plus the one piece of evidence the LOG only
+references — the live-probe record.
+
+**Commits:** `3b75e1df` (main, T1: RW-21/RW-11 contract amendment +
+goldens), `a55e4d3e` (merge main → branch, clean), `5f91f308` (T2-T4: B1-B5
++ RW-21 adoption + RW-23 items), `8faaf969` (one coverage gap `assay-r1`
+caught after B2's redirect).
+
+**Blockers:** B1 (profiling-never-raises: `errors="replace"`, broadened
+`except Exception`, required-key validation, call-site + finally-block
+try/except wraps in both `await_container` and `run_exec_lane` — 20+ new
+tests). B2 (`meta.expected` now the frozen contract's four-key object).
+B3 (2 mutation survivors — code was already correct, both now have
+direct-call tests). B4 (red-first assertion raised `>=2` → `>=3`,
+docstring corrected). B5 (LOG/REPORT records corrected in place — the
+final selftest never ran history-recorded at `ac885ed4`, `assay-r2` was
+dispatched FIRST not last; substance was already right, only the records
+were wrong).
+
+**RW-21 (scope `container`: absolute counters) adopted** in
+`ResourceAccumulator.finish`; `_last_successful` (new) also fixes
+RW-7/S7 for `memory.peak_bytes`/`pids.peak` in both scopes.
+
+**RW-23 items (a)-(i):** (a)/(RW-7) via `_last_successful`; (b)
+`stall_timeout` removed from the bare-host `assay-r2` lane (was inert);
+(c) `RUN_GATE_PROFILE=""` now absent, not refused; (d)/(S2) profile token
+always redacted in the argv line; (e)/(S4) `target.cgroup` never
+fabricated, `null` when unknown; (f)/(S9) `tools/canary-run.sh`:
+`.assay/` excluded from the tar copy, the `median-not-mean` canary
+disambiguated, a second canary added for `series_stats`; (g)/(S8)/RG-53
+`coverage_gate.py`'s `_rel_to_source` now checks the leading boundary too
+(fixed in ~15 lines + 2 tests, under the "file as RG-58" threshold); (h)
+SPEC R-44d corrected (the rest of S14's doc drift is deferred, see below);
+(i) is RW-21/B1.
+
+**Deferred (non-blocking, no test pins these; candidates for a follow-up
+round or an RG-58-style backlog filing):** S1/D5 (bare-host
+`stall_timeout` load-time refusal — still an open decision, RW-23 did
+not rule on it), S6 (the live-run daemon-absent warning's wrong-cause
+text — `doctor`'s own equivalent text is already correct), S11 (byte
+medians can still be fractional — needs a numbered ruling on the
+even-count rounding rule, not a unilateral fix), S13 (`run_exec_lane`
+writes no inflight record at all, contradicting SPEC R-43a/f — a real
+code gap, not a doc fix), and the rest of S14's prose/doc drift
+(R-30's summary count, CONSUMERS.md's missing `[profile]`/`[footprint]`
+blocks, the fabricated `footprint --write` transcript, CHANGES.md's
+several drift items, `usage()`'s missing env var, stale comments,
+R-43g/h, uncited backlog test counts).
+
+**Gates, this round's own tip (`8faaf969`), each read in a separate
+step:** full suite 1081 passed / 3 skipped; `selftest --allow-dirty`
+diff-coverage **OK 873/873 lines (100.0%), 334/334 branches (100.0%)**,
+exit 0; `assay-r1 --base main --allow-dirty` **PASS**, exit 0 (one
+retry — see B2/LOG for the coverage gap it caught and the fix); `assay-r3
+--allow-dirty` **`canary: 2 rejected, 0 survived`**, exit 0; `doctor` 11
+checks, 6 OK / 2 warnings (both pre-existing/expected) / 0 failures,
+exit 0. `assay-r2` NOT run (RW-22).
+
+**Live probe (real docker, throwaway project, `tester-unified:local`,
+`resources.cpus = "3"`, `RUN_GATE_PROFILE=on`, no daemon running — basic
+fallback exercised for real):** a 100 MiB-touching, 12s-holding Python
+payload. Full record from `.run-gate/history.json`'s `latest` entry:
+
+```json
+{
+  "resources": {
+    "schema": 1, "session": null, "daemon": null, "damon": null,
+    "scope": "container", "method": "basic",
+    "started_at": "2026-09-12T11:30:31Z", "ended_at": "2026-09-12T11:30:44Z",
+    "duration_seconds": 13.0, "interval_seconds": 5.106, "samples": 3,
+    "target": {
+      "container_id": "f5f8fe0e8c61d54382cc3a1d0cf6af9349807c55c6c6692c03c7e4758bd938ea",
+      "cgroup": null, "token": null, "targets_seen": null
+    },
+    "memory": {
+      "peak_bytes": 115269632, "source": "memory.peak",
+      "baseline_bytes": 114507776, "peak_over_baseline_bytes": null,
+      "p90_bytes": 114507776, "median_bytes": 114163712,
+      "swap_peak_bytes": 0, "anon_peak_bytes": 112250880, "file_peak_bytes": 4096
+    },
+    "cpu": {"seconds": 0.288, "cores_avg": 0.022, "cores_max": 0.01,
+            "throttled_seconds": 0.0, "nr_throttled": 0},
+    "pressure": {"memory_some_stall_seconds": 0.0, "memory_full_stall_seconds": 0.0,
+                "cpu_some_stall_seconds": 0.014, "io_some_stall_seconds": 0.0,
+                "io_full_stall_seconds": 0.0},
+    "faults": {"pgmajfault": 0, "workingset_refault_anon": 0, "workingset_refault_file": 0},
+    "pids": {"peak": 7},
+    "host": { "...": "PSI/loadavg populated at both ends, omitted here for length" },
+    "events": {"oom_kill": 0, "limit_drift": 0, "memory_high_breach": 0}
+  },
+  "profile_error": null, "profile_ref": null
+}
+```
+
+Disclosure line printed live: `run-gate: footprint probe: peak 110 MiB,
+p90 109 MiB, 0.02 cores avg, 0.8 s stalled on memory (full); history
+median peak - (0 runs)` — no `(+n MiB over baseline)` segment, matching
+`peak_over_baseline_bytes: null` (the disclosure line's optional segment
+correctly omits a null field rather than printing "+0 MiB" or similar).
+
+**Confirms, against real cgroupfs data (not just the frame fixtures):**
+`cpu.seconds` (0.288) is the ABSOLUTE last read, not a delta from `s_0` —
+RW-21 is live, not just unit-tested. `memory.peak_over_baseline_bytes`
+is `null` — RW-21's nullability rule. `target.cgroup` is `null`, never a
+guessed `/{slice}/docker-{id}.scope` path — RW-23e. `scope: "container"`,
+`method: "basic"` (daemon unavailable, correctly degraded, one WARNING
+printed). Container removed in the `finally`; `docker ps` count
+unchanged before/after (30, all pre-existing and unrelated); throwaway
+project deleted after the probe.
+
+**Decision asks carried forward, unresolved by this round (RW-9: none of
+these stopped the work):** D5 (S1, bare-host `stall_timeout` — refuse at
+load, warn once, or accept as documented-inert? still open). Whether S11
+(fractional byte medians) and S13 (`run_exec_lane`'s missing inflight
+record) get a dedicated round-2 fix or a backlog filing (RG-58-style) is
+for the controller to decide — both are real, neither is a blocker, and
+S13 in particular is the kind of gap this estate's "findings about a TOOL
+… filed in the tool's own backlog" convention exists for if it is not
+fixed here.
