@@ -13456,6 +13456,37 @@ class TestDoctorStaleLockCheck:
         assert stale_dir.is_dir(), "doctor must never remove a stale lock"
         stale_dir.rmdir()  # this test's own cleanup, not doctor's
 
+    def test_lock_dir_not_yet_created_is_ok(self, tmp_path, monkeypatch,
+                                            capsys):
+        """`isolate_shared_lock_dir` always creates its own dir, but
+        production's default (`/tmp`) or an operator's own
+        `RUN_GATE_LOCK_DIR` override might not exist yet on a fresh host
+        -- must read as OK (the `lock_root.is_dir()` guard's FALSE
+        branch), never crash on a missing directory."""
+        monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(tmp_path / "does-not-exist"))
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[OK] stale coordination locks" in out
+        assert code == 0
+
+    def test_lstat_race_is_skipped_not_a_crash(self, tmp_path, monkeypatch,
+                                               capsys):
+        """A real TOCTOU hazard on a shared host: an entry `glob()` finds
+        that vanishes (or otherwise fails `lstat()`) before this loop
+        reads it must be SKIPPED, never crash doctor."""
+        lock_dir = _shared_lock_dir()
+        ghost = lock_dir / "run-gate-exec-ghost.lock"
+        ghost.touch()
+        real_lstat = Path.lstat
+
+        def _boom(self, *a, **k):
+            if self.name == "run-gate-exec-ghost.lock":
+                raise OSError("planted: vanished mid-scan")
+            return real_lstat(self, *a, **k)
+        monkeypatch.setattr(Path, "lstat", _boom)
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[OK] stale coordination locks" in out
+        assert code == 0
+
 
 class TestCgroupNamespacePrivateWhy:
     """RG-55/C7: the R-29 slice-memory-admission WARN names WHY when the
@@ -14987,6 +15018,15 @@ class TestSelfRssBytes:
 
     def test_too_few_fields_returns_none(self, tmp_path, monkeypatch):
         self._fake_proc_root(tmp_path, monkeypatch, "10000\n")
+        assert run_gate._self_rss_bytes() is None
+
+    def test_negative_resident_pages_returns_none_not_a_fabricated_number(
+            self, tmp_path, monkeypatch):
+        """The defensive `resident_pages < 0 or page_size <= 0` guard --
+        never expected from a REAL /proc/self/statm, but if the kernel
+        ever handed back something nonsensical, this must degrade to None
+        rather than compute and propagate a garbage byte count."""
+        self._fake_proc_root(tmp_path, monkeypatch, "10000 -5 100 50 0 900 0\n")
         assert run_gate._self_rss_bytes() is None
 
 

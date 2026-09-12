@@ -1069,3 +1069,28 @@ disclosure additions to the same call sites).
 Verification (all green):
 - `python3 -m pytest tests/test_run_gate.py::TestExecLaneInflightRecord::test_killed_client_leaves_the_record_on_disk -q` → RED with the write reverted (`pass`), PASS restored
 - `python3 -m pytest tests/test_run_gate.py -k "ProfilerClient or ExecLaneInflightRecord or BareHost or ResolveSelfContainerId" -q` → 60 passed
+
+### Commit 4 — selftest's own diff-coverage gap (found by selftest itself)
+
+First selftest run this session: pytest FULLY GREEN (1139 passed, 3
+skipped, ZERO failures — no `TestExecModeMutex`/`IsADirectoryError`
+recurrence, confirming RW-46a's isolation fix works even with sibling
+packages' own pytest/gate processes concurrently active on this shared
+host at the time). The diff-coverage judge caught 5 uncovered lines/branches
+from this session's own new code: `run-gate.py:2032` (branch) + `2033`
+(`_self_rss_bytes`'s defensive `resident_pages < 0 or page_size <= 0`
+guard — never hit by a real `/proc/self/statm`, but the diff-coverage
+floor is 100%, not "the realistic paths"); `run-gate.py:5787` (branch) +
+`5792`/`5793` (`cmd_doctor`'s new stale-lock check: the `lock_root.is_dir()`
+guard's FALSE branch, never exercised because the test suite's own
+`isolate_shared_lock_dir` fixture always creates its directory; and the
+`except OSError: continue` TOCTOU guard around `entry.lstat()`). Four new
+tests: `TestSelfRssBytes::test_negative_resident_pages_returns_none_not_a_
+fabricated_number` (planted negative resident-page count); `TestDoctor
+StaleLockCheck::test_lock_dir_not_yet_created_is_ok` (`RUN_GATE_LOCK_DIR`
+pointed at a path that was never created); `test_lstat_race_is_skipped_
+not_a_crash` (a name-scoped `Path.lstat` monkeypatch raises `OSError` for
+one specific glob-matched entry, proving the loop skips it and keeps
+scanning rather than crashing doctor).
+
+Verification: `python3 -m pytest tests/test_run_gate.py -k "TestSelfRssBytes or TestDoctorStaleLockCheck" -q` → 11 passed
