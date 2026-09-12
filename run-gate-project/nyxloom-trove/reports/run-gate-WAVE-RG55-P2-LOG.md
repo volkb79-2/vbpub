@@ -259,12 +259,135 @@ and why, rather than rewriting history in place.
   lines touched) — a human or gate reading the log cannot mistake it for
   a real 100% pass.
 
-Commit: (recorded after the commit lands — see the git log for the hash;
-subject `fix(rw5): coverage_gate.py 0/0 diff reports SKIPPED, not refused
-or silently OK`).
+Commit: `8c76ba3e` — `fix(rw5): coverage_gate.py 0/0 diff reports SKIPPED, not refused or silently OK`.
 
-## Checkpoint (mid-session, not final)
+## C2 — assay lanes for run-gate-project (D-11): research + a real blocking finding
 
-C1-rework is a coherent boundary (green targeted tests + green selftest +
-LOG/REPORT + commit) but NOT the session's stopping point — continuing to
-C2 next per the dispatch prompt's deliverable order, budget permitting.
+Started C2 per the dispatch prompt's deliverable order. Read
+`cmru/run-gate.toml` (`[lanes.assay]`/`[lanes.coverage]`/`[lanes.mutation]`/
+`[lanes.canary]`/`[lanes.gate]`), `cmru/assay.toml` (R0-only, `schema_version
+= 2`, the `cmru` lane), `scripts/cgroup-profiler/assay.toml` (an in-repo
+`[lanes.r2]` with `rigor = ["R0","R2"]`, `isolation.unsafe_symlink_omissions`
+for the monorepo-lane case, `judge.mutation` operators — the template the
+handoff points at for R2's operator list), and worked examples in
+`assay/README.md`/`assay/docs/CONSUMERS.md` for `[lanes.<n>.judge]` shape,
+`base_source = "request"`, and `mode = "whole_target"` + `judge.targets`.
+
+**Finding, verified by reading `assay/src/assay/config.py` and
+`assay/src/assay/evaluate.py` directly (not assumed from docs):** the
+handoff's C2 instruction — "python judge scoped to `run-gate.py` only
+(tests/, tools/ never judged)" — cannot be implemented as a path-exclusion
+declaration in Assay's current schema, given `run-gate.py`,
+`tests/`, and `tools/` are SIBLINGS directly under the project root with no
+subdirectory isolating `run-gate.py` alone:
+
+- `judge.source_roots` must resolve to an existing DIRECTORY
+  (`config.py::_resolve_source_root`, `if not resolved.is_dir(): raise
+  LaneConfigError(...)`, line ~3369) — a single file is refused at load.
+  The only directory available that contains `run-gate.py` is the project
+  root itself, which also contains `tests/` and `tools/`.
+- `judge.targets` (`config.py` `_KNOWN_JUDGE_FIELDS`, "wave-1 §5") IS the
+  mechanism for naming individual files, but it is legal ONLY under
+  `mode = "whole_target"` (refused at load otherwise, `config.py` ~line
+  2114) — and `mode = "whole_target"` FORBIDS `judge.base`/`base_source`
+  entirely (`assay/docs/CONSUMERS.md`'s worked `redirect_chain` example:
+  "`judge.base` is FORBIDDEN here — a whole-target lane resolves no diff at
+  ANY tier"; confirmed again at the `base_source` refusal table, "given to
+  a lane that reads no base (R0/R3 only, or `mode = "whole_target"`) →
+  ERROR/BAD_LANE_CONFIG"). The handoff explicitly wants `base_source =
+  "request"` on both `[lanes.r1]` and `[lanes.r2]` — a changed-lines
+  (`mode = "changed_lines"`, the default) lane. The two mechanisms are
+  mutually exclusive by Assay's own design; there is no third option.
+- `PythonAdapter.excluded_dir_names` (`adapters/python.py` line 805) is a
+  frozen, adapter-level `frozenset()` — EMPTY for Python, and not a
+  lane-configurable field (no `judge.excluded_dirs`/`judge.exclude_paths`
+  key exists in `_KNOWN_JUDGE_FIELDS` at all). Compare `javascript.py`
+  (excludes `node_modules` etc.) and `sql.py` (`node_modules`, `vendor`,
+  `.venv`) — Python's adapter simply declares none, so there is no
+  adapter-level escape hatch either.
+- **`tests/` IS already excluded automatically, independent of any of the
+  above**: `evaluate.py::_is_considered` (the function R1's changed-lines
+  judge calls per changed file) calls `adapter.is_test_path(path)` and
+  excludes it (line ~427) — for Python that is anything under a `tests/`
+  segment, plus `test_*.py`/`conftest.py` (`assay/docs/CONSUMERS.md`'s own
+  wording). So `tests/test_run_gate.py`, `tests/test_coverage_gate.py` etc.
+  are safely out of scope automatically, with `source_roots = ["."]`, no
+  extra declaration needed.
+- **`tools/` is NOT a recognized test path** (it is real, non-test source —
+  ironically proven by this very session's C1-rework, which added 8 tests
+  to `tools/coverage_gate.py`) — nothing in Assay's schema excludes it.
+  With `source_roots = ["."]` and a coverage command scoped to
+  `--cov=run_gate` only (so the coverage artifact has no entry for
+  `tools/coverage_gate.py`), `evaluate_coverage`'s own logic
+  (`evaluate.py` ~line 519-527: a "considered" file absent from the
+  coverage profile is NOT skipped — `missing_lines[path] = ...;
+  total_changed_exec += len(lines)`, i.e. counted as 100% UNCOVERED) means
+  **every future commit touching `tools/coverage_gate.py` would
+  automatically FAIL `assay-r1` outright**, forever, with no config-level
+  fix available — exactly the false-refusal trap the interface contract's
+  own doctrine (and RG-53/RW-5 both, one package over) warns against.
+
+### Decision ask (blocking C2's `[lanes.r1]`/`[lanes.r2]` `judge` tables specifically — everything else in C2 is unblocked and could proceed)
+
+Two honest options, neither of which is "tools/ is silently excluded" (Assay
+cannot do that):
+1. **Measure `tools/` for real** — `--cov=run_gate --cov=tools --cov-branch`
+   instead of `--cov=run_gate` alone, so `source_roots = ["."]` judges
+   `tools/coverage_gate.py` changes like any other real source file (which
+   it is) instead of leaving it an unmeasured, permanently-failing target.
+   This satisfies the underlying INTENT (no false-refusal trap) but
+   contradicts the handoff's literal "tools/ never judged" — `tools/
+   coverage_gate.py` changes would need real test coverage to pass
+   `assay-r1`/`r2`, same bar as `run-gate.py` itself (arguably correct: it
+   is estate-vendored, shared code, not a throwaway script).
+2. **Split `tools/` out of `source_roots` by restructuring the project**
+   (e.g. `run-gate.py` moves under a new `src/`-style subdirectory of its
+   own) so `source_roots` can name that directory without also containing
+   `tools/`. Out of scope for this package on its own judgment — it is a
+   real repo-layout change touching `run-gate.toml`'s own `selftest` argv,
+   `cmru.toml`, the `run_gate.py` symlink, every doc that hardcodes
+   `run-gate.py`'s path, and every consumer's copy-path assumption
+   (`CONSUMERS.md`'s adoption steps) — the handoff's own forbid list
+   ("Forbid: ... changing a lane's exit-status semantics") does not
+   explicitly cover this, but it is the kind of structural change C8's
+   docs sweep did not budget for and no ruling has authorized.
+
+**This session did NOT pick one** — proceeding past this point risks
+writing a `[lanes.r1]`/`[lanes.r2]` `judge` table that silently does the
+wrong thing (option 2's absence looks identical to option 1 not yet
+applied), which is worse than surfacing it. Everything else C2 needs
+(vendoring the pyz, the `[lanes.r1]`/`[lanes.r2]` non-judge fields, the
+canary lane `[lanes.assay-r3]`, `run-gate.toml`'s lane wiring skeleton,
+`doctor`'s new checks) does not depend on this and is still open for the
+next successor to do while this is decided.
+
+### Mechanical C2 groundwork completed this session (does not depend on the above)
+
+`tools/assay/assay-6.1.1.pyz` + `.pyz.sha256` copied verbatim from
+`cmru/tools/assay/` (the estate's canonical pinned copy) into
+`run-gate-project/tools/assay/`; verified byte-identical via `sha256sum -c`
+against the shipped `.sha256` BEFORE `git add` (not trusted silently, per
+the dispatch prompt's explicit instruction). Top-level `.gitignore` (the
+worktree's own copy — NOT the main checkout's, confirmed a separate file,
+diffed identical before editing) gained
+`!run-gate-project/tools/assay/*.pyz`, mirroring the existing
+`!cmru/tools/assay/*.pyz` / `!tools/assay/*.pyz` (ciu, nyxloom) precedent.
+`git ls-files run-gate-project/tools/assay/` confirms both files tracked
+(no silent drop from an unrelated ignore rule). No functional code changed
+by this step, so the whole-suite `selftest` was not re-run for it (would
+cost ~104s of shared-host time for zero informational value against a
+change that adds two untracked-by-code files); the targeted
+`test_coverage_gate.py` suite was not affected either.
+
+Commit: `f687a4ed` — `chore(rg55-p2): vendor assay-6.1.1.pyz for run-gate-project's assay lanes`.
+
+## Checkpoint
+
+Stopping here — C1-rework is DONE, verified, committed; C2 has real,
+cited-evidence research plus one genuine blocking decision ask (the
+`tools/` scoping question above) and one completed mechanical sub-step
+(vendoring). This is a coherent boundary (two green-gate-adjacent commits,
+no code left uncommitted, LOG/REPORT/BRIEF written) rather than pushing
+into writing `assay.toml`/`run-gate.toml` lane tables that would encode an
+undecided design choice. See `run-gate-WAVE-RG55-P2-BRIEF-2.md` for the
+successor's continuation brief.

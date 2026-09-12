@@ -1,10 +1,11 @@
-# run-gate-WAVE-RG55-P2 — REPORT (partial, C1-rework only so far)
+# run-gate-WAVE-RG55-P2 — REPORT (partial: C1-rework done, C2 partially blocked)
 
 Package P2 of the RG-55 wave. This REPORT covers deliverable C1 (RG-53)
-and its RW-5 rework; C2-C8 are in progress/deferred — see
-`run-gate-WAVE-RG55-P2-BRIEF-1.md` (predecessor's continuation brief) and
-`run-gate-WAVE-RG55-P2-LOG.md` for the commit-by-commit record, including
-this session's "Session 2" orientation and "Commit 2 — C1-rework (RW-5)".
+and its RW-5 rework (DONE), plus C2's vendoring sub-step (DONE) and a
+blocking decision ask on C2's judge-table scoping; C3-C8 are deferred —
+see `run-gate-WAVE-RG55-P2-BRIEF-1.md` (predecessor's brief),
+`run-gate-WAVE-RG55-P2-BRIEF-2.md` (this session's continuation brief),
+and `run-gate-WAVE-RG55-P2-LOG.md` for the commit-by-commit record.
 
 ## C1-rework — RW-5 (0/0 diff semantics corrected)
 
@@ -125,7 +126,44 @@ repo, one proving the CLI's branch-note text appears on a passing run.
 
 ## Decision asks
 
-None yet raised for C1 — RG-53's implementation directions were fully
+**C2's `[lanes.r1]`/`[lanes.r2]` `judge.source_roots` scoping — BLOCKING,
+needs a controller/next-successor decision before those two judge tables
+can be written.** Full evidence trail (file:line citations against
+`assay/src/assay/config.py` and `assay/src/assay/evaluate.py`) is in the
+LOG's "C2 — assay lanes ... research + a real blocking finding" section;
+summarized here for the return message:
+
+The handoff's "python judge scoped to `run-gate.py` only (tests/, tools/
+never judged)" is not implementable as a path-exclusion in Assay's current
+schema when `run-gate.py`/`tests/`/`tools/` are siblings with no isolating
+subdirectory (confirmed by reading Assay's own source, not assumed):
+`judge.source_roots` must be a directory (a single file is refused at
+load); `judge.targets` (the only file-level scoping mechanism) is legal
+ONLY under `mode = "whole_target"`, which forbids `judge.base`/
+`base_source` entirely — mutually exclusive with the handoff's own
+`base_source = "request"` requirement; and the Python adapter's
+`excluded_dir_names` is a fixed, empty, non-lane-configurable set (unlike
+`javascript`'s or `sql`'s adapters, which DO exclude `node_modules` etc. at
+the adapter level — Python simply has no such list, and no lane-level
+override key exists). `tests/` is already excluded automatically via
+`is_test_path` regardless of any of this; `tools/` is not, and nothing in
+the schema can make it not-considered.
+
+Two real options, spelled out with tradeoffs in the LOG: **(1)** measure
+`tools/` for real (`--cov=run_gate --cov=tools`) so `tools/coverage_gate.py`
+changes are judged like any other real source (deviates from the literal
+handoff text, satisfies its underlying intent — no false-refusal trap);
+**(2)** restructure so `run-gate.py` sits in its own subdirectory,
+isolating it from `tools/` for `source_roots` purposes (a real repo-layout
+change touching the symlink, `cmru.toml`, every doc/consumer path
+assumption — likely out of scope for this package alone, no ruling
+authorizes it). This session did not pick one, to avoid silently encoding
+option 2's absence as if it were a considered choice. Everything else in
+C2 is unblocked and left for the next successor (vendoring is done; the
+lane skeletons, canary lane, `run-gate.toml` wiring, and `doctor` checks
+do not depend on this judge-table question).
+
+None raised for C1 — RG-53's implementation directions were fully
 DECIDED in the backlog's own "Directions, not picked here" list (both were
 picked: read `missing_branches`, and refuse the zero). One judgment call
 made where the backlog left the exact mechanism unstated, recorded here for
@@ -152,8 +190,12 @@ visibility rather than as a blocking ask:
 
 ## Deferred items (with RG ids where applicable)
 
-- **C2 (assay lanes, D-11)** — not started. No new RG id (part of this
-  wave's own scope, not a backlog defect).
+- **C2 (assay lanes, D-11)** — vendoring DONE (commit `f687a4ed`); the
+  `[lanes.r1]`/`[lanes.r2]` judge tables are BLOCKED on the decision ask
+  above, everything else in C2 (lane skeletons' non-judge fields, the
+  `[lanes.assay-r3]` canary lane, `run-gate.toml` wiring, `doctor` checks,
+  README's "Gate and evidence" update) is unstarted but unblocked. No new
+  RG id (part of this wave's own scope, not a backlog defect).
 - **C3 (profiling client, R-43)** — not started. Largest remaining
   deliverable; the successor should read the full contract (already
   frozen and read this session) plus the SPEC/run_gate.py read-list ranges
@@ -167,12 +209,33 @@ visibility rather than as a blocking ask:
   untouched, per the handoff's explicit instruction not to re-file or
   design them in this package.
 
-## Files touched (C1 only)
+## Files touched
 
+C1 (prior session, commit `607950fd`):
 - `run-gate-project/tools/coverage_gate.py`
 - `run-gate-project/tests/test_coverage_gate.py`
 - `run-gate-project/CHANGES.md`
 - `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md` (new)
-- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md` (new, this file)
-- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-1.md` (new, successor brief)
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md` (new)
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-1.md` (new)
+
+C1-rework / RW-5 (this session, commit `8c76ba3e`):
+- `run-gate-project/tools/coverage_gate.py`
+- `run-gate-project/tests/test_coverage_gate.py`
+- `run-gate-project/CHANGES.md`
+- `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+
+C2 vendoring (this session, commit `f687a4ed`):
+- `.gitignore` (worktree root, the monorepo-wide file — NOT
+  `run-gate-project/`-scoped)
+- `run-gate-project/tools/assay/assay-6.1.1.pyz` (new)
+- `run-gate-project/tools/assay/assay-6.1.1.pyz.sha256` (new)
+
+Records only (this session, uncommitted at time of writing, committed with
+this checkpoint):
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-2.md` (new)
