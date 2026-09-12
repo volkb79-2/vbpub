@@ -4409,3 +4409,202 @@ lane, not the conjunction wrapping it.
   `getrusage` cannot provide — i.e. `null`, never fabricated).
 
 ### Status — OPEN
+
+## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
+
+**Provenance:** RG-55 wave P2 review round 1 S1/D5
+(`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REVIEW-round1.md`).
+RW-23b (controller ruling) removed the misleading `stall_timeout` key from
+the one lane that had it (`assay-r2`) and corrected its comment, but left
+D5's own question — refuse, warn, or accept as documented-inert — unruled;
+review round 2 confirmed "the concrete hazard is gone ... what remains is
+a genuine open product question, correctly deferred."
+
+### Mechanism
+
+`run_bare_host_lane` (`run-gate.py`) is a plain `subprocess.run` with no
+`ProgressWatch`, no `LogStreamWatch`, no timer of any kind; a
+`stall_timeout` key on a `kind = "command"`/bare-host lane's config is
+accepted at load and then silently INERT for the lane's entire run —
+nothing bounds a stuck-but-still-running invocation the way
+`stall_timeout` does on a real container/exec lane. A future bare-host
+lane's author, copying a container lane's config as a template, can
+declare `stall_timeout = "20m"` and reasonably believe it is enforced; it
+is not, and nothing tells them so beyond a comment on a DIFFERENT lane.
+
+### Proposed contract
+
+D5's own three options, still open:
+1. **Refuse at config-load** (exit 2) when a bare-host lane declares
+   `stall_timeout` — loudest and safest, at the cost of breaking a config
+   someone wrote believing the comment.
+2. **Warn once** (at load, or via a `doctor` check mirroring `R-30a`'s own
+   precedent for a similarly cheap, load-time-computable config-shape
+   warning) naming the inert key and the reason, without refusing.
+3. **Accept as documented-inert** — the RW-23b comment already states the
+   rule on the one lane that had it; no further code change. Weakest
+   guarantee: a comment is read only by someone who goes looking, and only
+   on that one lane.
+
+No option is picked here; this is the decision D5 raised and RW-23
+explicitly did not rule on.
+
+### Oracles (sketch)
+
+- A bare-host lane config declaring `stall_timeout` → assert the chosen
+  behavior (refusal at load naming the lane and key; or a `doctor`/load-
+  time WARN naming both; option 3 needs no new oracle beyond the existing
+  comment).
+
+### Status — OPEN
+
+## RG-59 — the live-run daemon-absent warning names the wrong cause ("produced unparsable stdout" instead of "container ... is not running")
+
+**Provenance:** RG-55 wave P2 review round 1 S6; confirmed unchanged
+through fix round 1 (explicitly deferred: "the LIVE-RUN warning's
+wrong-cause text ... is UNCHANGED — deferred") and review round 2 ("S6 ...
+still exactly as in round 1; I saw the same text on every probe this
+round").
+
+### Mechanism
+
+When the `cgprofile-host-daemon` container is not running (today's
+default state in this environment), `ProfilerClient._ctl`'s `docker exec`
+fails; its stdout is empty/non-JSON, so the generic `json.JSONDecodeError`
+branch fires and the LIVE-run warning reads: `run-gate: WARNING
+profiling: \`cgprofile ctl version\` produced unparsable stdout (exit 1);
+stderr: Error response from daemon: container <id> is not running — basic
+in-lane sampling only`. The real cause is present only inside the
+`stderr_tail` fragment, not named as the headline reason — a consumer has
+to parse docker's own error text to understand what to do next.
+`doctor`'s OWN daemon-absence text (a separate code path,
+`run-gate.py`'s `cmd_doctor`) is already good ("profiler daemon not
+running — basic in-lane sampling only (start it: cd
+scripts/cgroup-profiler && ciu up)"); only the LIVE-run warning has the
+wrong-cause text.
+
+### Proposed contract
+
+When `_ctl`'s `docker exec` failure's `stderr_tail` matches docker's own
+"No such container" / "is not running" text, the live-run warning should
+say so and name the remedy — the same text `doctor` already uses — rather
+than reporting a generic "unparsable stdout", which should stay reserved
+for an ACTUALLY malformed daemon response from a daemon that IS running.
+
+### Oracles (sketch)
+
+- A fake `docker exec` returning docker's real "... is not running"
+  stderr with non-JSON/empty stdout → assert the live-run warning names
+  "daemon ... not running" (matching `doctor`'s own wording), not
+  "produced unparsable stdout".
+- A genuinely malformed (non-JSON, non-docker-error) stdout from a
+  RUNNING daemon → assert the existing "produced unparsable stdout"
+  wording is preserved for that case.
+
+### Status — OPEN
+
+## RG-60 — an exec lane's profiling session has no inflight/recovery record if the client dies mid-run
+
+**Provenance:** RG-55 wave P2 review round 1 S13, code half (the doc half
+— `SPEC.md` R-43f/R-43a claiming the token IS recorded for exec lanes —
+is corrected directly in this close-out, not filed; review round 2: "The
+*code* half ... is a new code path and correctly deferred: backlog.").
+
+### Mechanism
+
+`write_inflight_record` (`run-gate.py`) is called only from
+`run_container_lane`; `run_exec_lane` writes no inflight record at all. A
+container lane whose run-gate client dies mid-run leaves a recovery
+record naming the profiling session (`profile_token`/`profile_daemon`/
+etc.) so a later invocation can reconcile or clean it up; an exec lane in
+the identical situation leaves nothing on disk for anything to recover or
+reconcile against if the client process dies between starting the
+daemon session and finishing it.
+
+### Proposed contract
+
+`run_exec_lane` gains the same `write_inflight_record` call
+`run_container_lane` already makes, at the equivalent point in its own
+lifecycle (after the profiling token/session is established, before the
+exec begins), and the equivalent clearing call in its own success/failure
+paths. The record's shape is already defined by the existing mechanism;
+this wires it into the second lane kind that currently lacks it, not a
+new design.
+
+### Oracles (sketch)
+
+- An exec lane run with profiling enabled → assert an inflight record is
+  written before the `docker exec` begins and cleared in the `finally`,
+  mirroring the existing `TestAwaitContainerProfilingWiring`-style
+  coverage `run_container_lane` already has.
+- A killed exec-lane client (simulated) → assert the inflight record
+  survives on disk, matching the container-lane recovery path's existing
+  behavior.
+
+### Status — OPEN
+
+## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
+
+**Provenance:** RG-55 wave P2 review round 1 S14 (consolidated list); fix
+round 1 explicitly deferred all of it beyond the B2/R-44d fix ("pure
+prose/doc drift, no test pins them, and this round's time budget went to
+the 5 blockers + the RW-23 items with real behavioural consequences
+first"); review round 2 spot-checked the highest-value items and
+confirmed each still present at the ACCEPTed tip ("S14 remainder ... I
+spot-checked the highest-value items and they are indeed unfixed").
+
+### Mechanism
+
+Eight separate drift items, none affecting behavior, re-verified present
+at this close-out's own starting tip (`f08080e7`):
+1. `SPEC.md:555` and `:1660` cross-reference **`R-44`** for `doctor`'s
+   "profiler" check; `R-44a`-`e` are entirely the footprint manifest, and
+   `R-30` (Doctor) is untouched — the C7 deliverable (the `doctor`
+   profiler check itself) has no rule id of its own.
+2. `R-30` still says the summary counts "all four" statuses; the code has
+   emitted a fifth, `INFO`, since before this wave.
+3. The RG-53 SPEC amendment promised at this file's own RG-53 entry never
+   landed (`R-33` untouched), and `SPEC.md:756` (`R-35a`) still states the
+   now-false "scores `0/0` as 100% — a silent false green" (made false by
+   RW-5's own 0/0 rework this wave).
+4. `[profile]`/`[footprint]` are documented as prose only, nowhere as a
+   structured key-by-key block — `CONSUMERS.md` (the adoption contract,
+   which gives `[history]` and `[lanes.<n>.resources]` their own
+   full-schema blocks) has no equivalent `[profile]` block; `RUN_GATE_
+   PROFILE` is documented there as `off`-only, while `on`-over-lane-opt-
+   out and the by-name-value refusal appear only in SPEC/`usage()`.
+5. `CONSUMERS.md`'s `footprint --write` transcript is fabricated from the
+   contract's golden fixture and shows an impossible run (all five lanes
+   of this project are bare-host, so `--write` refuses, confirmed live);
+   its column layout also does not match `print_footprint_report`'s real
+   output.
+6. `CHANGES.md`'s `[Unreleased]` header comment still reads "Verified
+   empty as of 2026-09-11's release" above 100+ new lines added since,
+   with no `__revision__` drift-marker bump note (every prior dated entry
+   has one).
+7. `usage()` (`run-gate.py`) omits `RUN_GATE_PROC_ROOT` while listing its
+   sibling `RUN_GATE_CGROUPFS_ROOT`; `SPEC.md:178`'s lane-schema text
+   still points the `profile` key at `R-43g` (it is `R-43h` — README
+   already gets it right); `SPEC.md:50`'s "both had shipped in code"
+   claim (`resources`/`cpus`) is inaccurate for the `cpus` half.
+8. Backlog RG-53's own evidence cites a stale test-count delta, and this
+   file's FIXED entries generally cite no commit hashes; LOG test-count
+   claims in two places do not match the tests actually added.
+
+### Proposed contract
+
+A documentation-only sweep (no behavior change, no new tests beyond what
+a prose fix needs) correcting all eight items in place, the same shape
+C8's own revision-41 sweep used for the rest of this file family. Low
+individual risk, moderate total size (eight file-shaped edits across
+`SPEC.md`/`CONSUMERS.md`/`usage()`/`CHANGES.md`/this backlog file) —
+better suited to its own small package or a documentation-sweep session
+than folding into another wave's close-out.
+
+### Oracles (sketch)
+
+None needed beyond the existing prose-consistency review this class of
+fix always gets — no behavior changes, so no new pytest coverage is
+implied by fixing any of the eight items.
+
+### Status — OPEN
