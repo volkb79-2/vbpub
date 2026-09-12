@@ -4072,20 +4072,43 @@ degenerate comparison base into a SILENT green (see RG-51's round-2
 finding, where a merged-but-not-torn-down worktree produced
 `merge-base == HEAD`, hence zero changed lines, hence `0/0 OK`).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2), BREAKING
 
-Directions, not picked here:
-- Read `missing_branches` and count a changed line as uncovered when it
-  has an untaken arm; this is what the lane's own flag already pays for.
-- Separately: refuse (or at minimum warn loudly) when
-  `total_changed_exec == 0`, rather than reporting `0/0 ≥ 100.0% floor`
-  as a pass. assay's own `check_base_is_head`/`BASE_IS_HEAD`
-  (`measurability.py`) is the precedent; the vendored thin gate has no
-  equivalent. Note the trigger is NOT only "base equals HEAD" — RG-51's
-  own merge commit reached `0/0` with a base that was neither HEAD nor
-  stale (first-parent resolution of a merge, RG-54), and round 5 found a
-  third route (a branch whose work was reverted). The condition worth
-  acting on is the zero itself.
+Both directions landed together, in `tools/coverage_gate.py`:
+- `_validate_cov_record` now also validates the OPTIONAL `missing_branches`/
+  `executed_branches` keys (list of `[source_line, target_line]` int pairs —
+  coverage.py's own JSON shape, `jsonreport.py` `_convert_branch_arcs`).
+  `evaluate()` builds a per-source-line branch-arc map (`_branch_maps`) and
+  counts a changed line as uncovered when it executed but left an arm
+  untaken, not only when it never ran. `Verdict` gains `branches_total`,
+  `branches_missed` (both scoped to the changed+executable line set only —
+  reported BESIDE the line counts, never a second whole-file denominator)
+  and `branch_partial_lines` (which uncovered lines ran but had a missed
+  arm, vs. never ran at all); the CLI's OK/FAIL lines print the branch
+  tally and mark branch-partial lines `(branch)` in the FAIL listing.
+- `total_changed_exec == 0` is now REFUSED by the CLI (`main()`, exit 2)
+  unless `--allow-empty-diff` is passed, naming the resolved base, HEAD,
+  and the three known routes to a false 0/0 named above (merge-commit
+  first-parent, stale base ref, reverted work). `evaluate()` itself is
+  UNCHANGED in this respect (still a pure 0/0-is-100% classifier) — the
+  refusal is deliberately CLI-level so existing direct callers of
+  `evaluate()` are unaffected; `_check_nonempty_diff` is the small pure
+  helper the CLI calls, tested independently of git/subprocess.
+  `run-gate.toml`'s `selftest` argv is UNCHANGED (still no
+  `--allow-empty-diff`) — a 0/0 selftest now goes red here too, like every
+  other consumer.
+
+Evidence: `tests/test_coverage_gate.py` grew from 8 to 20 tests (branch-
+partial-line uncovered/covered pairs, branch totals scoped to changed lines
+only, malformed branch-arc shape rejection, `--allow-empty-diff` default +
+override, an end-to-end `main()` pair proving the refusal AND the
+override-allowed pass, and the CLI's branch-note text) — `pytest
+tests/test_coverage_gate.py -q` → 20 passed. **BREAKING** for every
+consumer of the vendored judge (topos pattern, RG-53's own analysis above):
+re-copying `tools/coverage_gate.py` picks up both stricter semantics; see
+`CHANGES.md` `[Unreleased]` for the consumer-facing note. SPEC amendment
+(a rule id under the R-33 diff-coverage floor family) lands with this
+wave's other spec/backlog pass.
 
 ## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
 

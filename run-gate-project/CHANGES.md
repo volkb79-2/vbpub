@@ -9,6 +9,40 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
 
+### Fixed (detail)
+- **RG-53 — BREAKING: `tools/coverage_gate.py` now reads `missing_branches`
+  and refuses a 0/0 diff.** Two independent semantic changes to the vendored
+  diff-coverage gate the `selftest` lane's floor rests on:
+  1. A changed line that executed but left an `if`/`for`/etc. arm untaken
+     (present in the coverage JSON's `missing_branches`, absent from
+     `missing_lines`) now counts as uncovered. `--cov-branch` (already
+     passed by this project's own `selftest` argv) was previously
+     decorative for the diff judge — only whole-file branch totals were
+     ever measured, never intersected with the changed-line set. `Verdict`
+     gains `branches_total`/`branches_missed`/`branch_partial_lines`,
+     reported beside the line counts in both the OK and FAIL CLI lines.
+  2. `total_changed_exec == 0` is now REFUSED (exit 2) unless
+     `--allow-empty-diff` is passed, naming the resolved base, HEAD, and
+     the three known routes to a false 0/0 (a merge commit's first-parent
+     base already containing every changed line, RG-54; a stale
+     worktree/base ref; reverted work that cancels out the lines it
+     re-touches, RG-51 round 5) — closing the `0/0 -> 100%` silent-pass
+     trap RG-53/RG-51 found. `evaluate()` itself stays a pure 0/0-is-100%
+     classifier (existing direct callers/tests of `evaluate()` are
+     unaffected); the refusal is CLI-level, in `main()`.
+  **BREAKING for every consumer of the vendored judge (topos pattern):
+  re-copying `tools/coverage_gate.py` picks up BOTH stricter semantics —
+  a lane that was previously green on an uncovered branch, or on a
+  degenerate 0/0 diff, now fails or refuses at load-time-adjacent points.
+  Consumers re-copy on their own; this file does not push the change.**
+  `run-gate.toml`'s own `selftest` argv is UNCHANGED (no `--allow-empty-diff`
+  passed) — this project's own gate now goes red on a 0/0 diff too, same as
+  every other consumer. `tools/coverage_gate.py`'s docstring records both
+  changes; `tests/test_coverage_gate.py` covers both (branch-partial lines
+  staying/leaving covered, branch totals scoped to changed lines only,
+  malformed branch-arc shape rejection, the `--allow-empty-diff` default and
+  override, and an end-to-end `main()` refusal + allowed-pass pair).
+
 <!-- cmru: release history -->
 
 ## [23.6.2] - 2026-09-11

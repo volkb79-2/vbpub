@@ -26,6 +26,14 @@ never imports from sibling projects.
 Base resolution serves both phases:
   * feature branch (HEAD is a normal tip) → diff vs merge-base(base, HEAD)
   * post-merge (HEAD has ≥2 parents) → diff vs its FIRST parent
+
+RG-53 (2026-09-12): a changed line that ran but left an `if`/`for`/etc. arm
+untaken now counts as uncovered too (`missing_branches`, populated whenever
+the coverage JSON was produced with `--cov-branch` — this project's own
+`selftest` lane already passes it, so the floor was previously decorative
+for branches). A diff that changes zero executable lines under `--source`
+is refused (exit 2) unless `--allow-empty-diff` is passed — three known
+routes reach 0/0 without the diff genuinely being empty (RG-53/RG-54).
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 # New-side hunk header: `@@ -a,b +c,d @@`.
@@ -135,6 +144,31 @@ def _validate_cov_record(path: str, record: dict) -> None:
                     f"coverage record for {path}: {key!r} contains "
                     f"{type(item).__name__} ({item!r}), expected int"
                 )
+    # RG-53: branch-arc keys are OPTIONAL (present only when the coverage
+    # JSON was produced with branch measurement on) but, when present, must
+    # be a list of [source_line, target_line] int pairs — coverage.py's own
+    # shape (jsonreport.py `_convert_branch_arcs`). Absent/empty means "no
+    # branch data", never "malformed"; a record that HAS the key but the
+    # wrong shape is still tampered/misread data, same as the line keys.
+    for key in ("missing_branches", "executed_branches"):
+        val = record.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, list):
+            raise CoverageGateError(
+                f"coverage record for {path}: {key!r} is {type(val).__name__}, "
+                f"expected list"
+            )
+        for item in val:
+            if (
+                not isinstance(item, (list, tuple))
+                or len(item) != 2
+                or not all(isinstance(x, int) for x in item)
+            ):
+                raise CoverageGateError(
+                    f"coverage record for {path}: {key!r} contains a "
+                    f"malformed arc {item!r}, expected [source_line, target_line]"
+                )
 
 
 @dataclass
@@ -145,10 +179,39 @@ class Verdict:
     pct: float
     fail_under: float
     files_missing_coverage: list[str] = field(default_factory=list)
+    # RG-53: branch totals, scoped to the SAME changed+executable lines the
+    # line-level counts above cover (never the whole file) — "beside lines",
+    # not a second independent denominator.
+    branches_total: int = 0
+    branches_missed: int = 0
+    # Changed lines that DID execute but left an arm untaken — a subset of
+    # `uncovered`, kept separately so callers can distinguish "never ran"
+    # from "ran, one branch didn't" without re-deriving it.
+    branch_partial_lines: dict[str, set[int]] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
         return self.pct >= self.fail_under
+
+
+def _branch_maps(cov: dict) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+    """Per-source-line branch-arc maps from one coverage.py file record.
+
+    Returns `(missing_by_line, all_by_line)`: `missing_by_line[ln]` is the
+    set of untaken target lines from source line `ln`; `all_by_line[ln]` is
+    every target (taken or not) from `ln`. A record with no branch data
+    (coverage collected without `--cov-branch`, or `missing_branches` absent)
+    yields two empty maps — every changed line's branch check is then a
+    no-op and behavior is identical to the pre-RG-53 line-only gate.
+    """
+    missing_by_line: dict[int, set[int]] = defaultdict(set)
+    all_by_line: dict[int, set[int]] = defaultdict(set)
+    for src, tgt in cov.get("missing_branches") or ():
+        missing_by_line[src].add(tgt)
+        all_by_line[src].add(tgt)
+    for src, tgt in cov.get("executed_branches") or ():
+        all_by_line[src].add(tgt)
+    return missing_by_line, all_by_line
 
 
 def evaluate(
@@ -175,7 +238,10 @@ def evaluate(
     }
     total_changed_exec = 0
     total_covered = 0
+    branches_total = 0
+    branches_missed = 0
     uncovered: dict[str, set[int]] = {}
+    branch_partial_lines: dict[str, set[int]] = {}
     files_missing: list[str] = []
     for path, lines in added.items():
         npath = _rel_to_source(path, prefix)
@@ -191,18 +257,35 @@ def evaluate(
                 files_missing.append(npath)
             continue
         # Validate coverage record shape: executed_lines and missing_lines
-        # must be lists of ints. This prevents malformed data from silently
-        # yielding a green verdict.
+        # must be lists of ints (and, if present, the branch-arc keys must be
+        # int pairs). This prevents malformed data from silently yielding a
+        # green verdict.
         _validate_cov_record(npath, cov)
         missing = set(cov.get("missing_lines", []))
         executed = set(cov.get("executed_lines", []))
         executable = missing | executed
         changed_exec = lines & executable
-        unc = changed_exec & missing
+        missing_by_line, all_by_line = _branch_maps(cov)
+        # RG-53: a changed line that DID execute but left an arm untaken
+        # (present in `missing_by_line`, absent from the never-executed
+        # `missing` set) counts as uncovered too — the whole point of
+        # `--cov-branch` for the diff judge.
+        line_never_ran = changed_exec & missing
+        branch_partial = {
+            ln for ln in (changed_exec - missing) if missing_by_line.get(ln)
+        }
+        unc = line_never_ran | branch_partial
         total_changed_exec += len(changed_exec)
-        total_covered += len(changed_exec & executed)
+        total_covered += len(changed_exec) - len(unc)
         if unc:
             uncovered[npath] = unc
+        if branch_partial:
+            branch_partial_lines[npath] = branch_partial
+        for ln in changed_exec:
+            arms = all_by_line.get(ln)
+            if arms:
+                branches_total += len(arms)
+                branches_missed += len(missing_by_line.get(ln, ()))
     pct = 100.0 if total_changed_exec == 0 else 100.0 * total_covered / total_changed_exec
     return Verdict(
         uncovered=uncovered,
@@ -211,6 +294,9 @@ def evaluate(
         pct=pct,
         fail_under=fail_under,
         files_missing_coverage=sorted(files_missing),
+        branches_total=branches_total,
+        branches_missed=branches_missed,
+        branch_partial_lines=branch_partial_lines,
     )
 
 
@@ -267,6 +353,40 @@ def _load_coverage(path: str) -> dict[str, dict]:
     return files
 
 
+def _check_nonempty_diff(
+    base_rev: str,
+    head_rev: str,
+    source: str,
+    changed_executable: int,
+    allow_empty_diff: bool,
+) -> str | None:
+    """RG-53: refuse a `0/0 -> 100%` verdict unless explicitly allowed.
+
+    Returns the exit-2 stderr message when `changed_executable == 0` and
+    `allow_empty_diff` was not passed; `None` otherwise (including the
+    genuinely-empty-diff-but-allowed case). Kept OUT of `evaluate()`, which
+    stays a pure 0/0-is-100% classifier for its own callers/tests — this is
+    a CLI-level policy, because none of the three known routes to 0/0 is
+    "there is nothing to judge": a merge commit's first-parent base already
+    containing every changed line (RG-54), a stale worktree/base ref that no
+    longer reflects real history (RG-51), or reverted work that cancels out
+    the very lines it re-touches (RG-51 round 5).
+    """
+    if changed_executable != 0 or allow_empty_diff:
+        return None
+    return (
+        f"diff-coverage ERROR: 0 changed executable lines under {source!r} "
+        f"between base {base_rev} and HEAD {head_rev} -- refusing an "
+        "empty-diff PASS. Known routes to 0/0, none of them \"nothing to "
+        "judge\": (1) HEAD is a merge commit and first-parent base "
+        "resolution already contains every changed line (RG-54); (2) a "
+        "stale worktree/base ref that no longer reflects real history "
+        "(RG-51); (3) reverted work that cancels out the very lines it "
+        "re-touches (RG-51 round 5). If this run genuinely changes no "
+        "executable line, pass --allow-empty-diff."
+    )
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="run-gate-project/tools/coverage_gate.py",
@@ -282,6 +402,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",
                     help="git repo/worktree (default: cwd)")
+    p.add_argument("--allow-empty-diff", action="store_true", default=False,
+                   help="permit a 0/0 changed-executable-lines verdict to "
+                        "pass (default: refused, exit 2 -- RG-53)")
     return p
 
 
@@ -289,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     try:
         base_rev = _resolve_base(args.repo, args.base)
+        head_rev = _git(args.repo, ["rev-parse", "HEAD"]).strip()
         added = _git_added_lines(args.repo, base_rev, args.source)
         coverage_files = _load_coverage(args.coverage_json)
     except CoverageGateError as exc:
@@ -300,20 +424,40 @@ def main(argv: list[str] | None = None) -> int:
     except CoverageGateError as exc:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2
+
+    empty_diff_msg = _check_nonempty_diff(
+        base_rev, head_rev, args.source, v.changed_executable, args.allow_empty_diff
+    )
+    if empty_diff_msg is not None:
+        print(empty_diff_msg, file=sys.stderr)
+        return 2
+
+    branch_note = (
+        f"; branches {v.branches_total - v.branches_missed}/{v.branches_total} taken"
+        if v.branches_total
+        else ""
+    )
     if v.passed:
         print(
             f"diff-coverage OK: {v.covered}/{v.changed_executable} changed "
             f"executable lines covered ({v.pct:.1f}% ≥ {v.fail_under:.1f}% floor)"
+            f"{branch_note}"
         )
         return 0
 
     print(
         f"diff-coverage FAIL: {v.covered}/{v.changed_executable} changed executable "
-        f"lines covered ({v.pct:.1f}% < {v.fail_under:.1f}% floor). Uncovered changed lines:"
+        f"lines covered ({v.pct:.1f}% < {v.fail_under:.1f}% floor){branch_note}. "
+        "Uncovered changed lines:"
     )
     for path in sorted(v.uncovered):
         tag = " [file unmeasured]" if path in v.files_missing_coverage else ""
-        print(f"  {path}:{tag} {sorted(v.uncovered[path])}")
+        partial = v.branch_partial_lines.get(path, set())
+        rendered = ", ".join(
+            f"{ln}(branch)" if ln in partial else str(ln)
+            for ln in sorted(v.uncovered[path])
+        )
+        print(f"  {path}:{tag} [{rendered}]")
     print("Add a test that exercises these lines, or mark a genuinely "
           "unreachable line with `# pragma: no cover`.")
     return 1
