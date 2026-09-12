@@ -814,7 +814,7 @@ controller runs the gate as a third container (RW-39); round 2 dispatched
   settled, gate log to be read in a separate step, no second gate
   container). Round 3 is the last under the cap.
 
-### RW-54 — 2026-09-12 21:20Z — P2's final pass failed at the R0 baseline;
+### RW-54 — 2026-09-12 21:13Z — P2's final pass failed at the R0 baseline;
 diagnose by hand first, relaunch on a stated condition; P4's r2 moves
 behind P2's release
 
@@ -847,7 +847,7 @@ behind P2's release
   is not contended by a 4 h sibling. P4 returns after B5 + the
   non-blocking items + selftest/r1/r3.
 
-### RW-55 — 2026-09-12 21:30Z — a closed P4 session re-woke and acted as a
+### RW-55 — 2026-09-12 21:17Z — a closed P4 session re-woke and acted as a
 controller; stopped; P4 session 6's early r2 terminated
 
 - P4 session 4 (`ade7916e85220fbb9`, closed ~19:30Z after round-1
@@ -867,6 +867,34 @@ controller; stopped; P4 session 6's early r2 terminated
   TaskStop'ed by the controller when its successor is dispatched, never
   left "completed" — its watchers re-invoke it with stale context.
 
+### RW-56 — 2026-09-12 21:26Z — P2's baseline failure root-caused: an
+order-dependent lock-directory plant; final pass runs with
+`PYTEST_ADDOPTS="-p no:randomly"`, tree unchanged
+
+- P2's by-hand baseline (3 failed / 1084 passed, 194 s): all three in
+  `TestExecModeMutex` — `IsADirectoryError` on
+  `/tmp/run-gate-exec-myproj-dev1-<pid>-runner.lock` at
+  tests/test_run_gate.py:3949 and :3968, and "DID NOT RAISE" at the
+  lock-released test because `main()` took the unusable-lock infra path
+  first. The directory is planted by
+  `test_unusable_lock_path_is_infra_failure_not_traceback` (line 4036,
+  `mkdir()` at 4053) with no cleanup; the name is pid-scoped, so it
+  poisons every later `os.open` of that path in the SAME process.
+  pytest-randomly is active (RG-62), so the plant precedes its siblings
+  on a per-run coin flip: runs 1–2 passed, run 3 and the by-hand run
+  did not. Not contention; not the cross-process hazard (pid-scoped).
+- Why not fix the tree: a commit invalidates the 281 judged records
+  (RW-41) for a defect P4's branch already fixes (RW-46a isolation +
+  cleanup). Ruling: the final 2-candidate pass runs with
+  `PYTEST_ADDOPTS="-p no:randomly"` (definition order puts the plant
+  after its siblings), proven deterministic by three by-hand runs first,
+  disclosed in P2's REPORT; test order changes nothing about which
+  mutants the suite kills. If assay strips the environment the baseline
+  fails identically and the track stops for a decision. Relaunch gate:
+  memory PSI only (RW-52).
+- P4 session 6 parked at `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 green,
+  r2 terminated per RW-54/55), waiting for the 23.7.0 release.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
@@ -875,5 +903,5 @@ controller; stopped; P4 session 6's early r2 terminated
 | P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus) → C6 socket carrier `bb575fd4` (35 tests, parity harness, PROTOCOL.md), BRIEF-5 `b865556b`; session 5 (Opus) → C7 watch role `4fa725dc` (104 tests, real kill, streaming on both carriers), r0/r1 lane GREEN 100%/100% project-wide, BRIEF-6 `7c34dcc2`; session 6 (Opus) → C8 placement `a654bd5d` (72 tests, guard whitelist, read-back proof), BRIEF-7 `e4be5111`; session 7 → CP-10 root cause `b50163e9` (host-PSI seam), C9 `478f1443`/`e17cdf9a` (docs, CHANGES, 1.1.0 sweep, rows FIXED), r0/r1 + r3 GREEN, BRIEF-8 `241122b6`; session 9 held (RW-48); session 10 dispatched ~20:30Z: merge `rg55-profiler-daemon`@`637b8c09`, r2 when P2's slot frees (~21:00Z), triage, r0-r1/r3; session 8 → live probes (a)–(f) against a real build: both carriers parity, peer-refused, `place-refused:no-gates-slice` (host has no dev-gates.slice yet), watch kill; REAL BUG CP-12 (kill never finalized the session — `watch` streamed forever) fixed `8067cc03` and re-probed; r0/r1 GREEN 1336 tests 100%/100%; tip `42784c17`; r2 pending a mutation slot (BRIEF-9); review handoff written; session 10 merged P1@`637b8c09` → tip `d4f51bbc`, r0/r1 100%/100%, r3 green; r2 launched 21:01Z (pid `4136306`, container `run-gate-vbpub-r2-4136306-…`, RW-52); then triage, r0-r1/r3, fresh Opus reviewer, release cgprofile 1.1.0 |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 → spike + plugin + v1 runner (`f4fa1788`), BRIEF-2 `ef5088f6`; session 3 → RW-36 gating `e27b107b` + verify.py fix, BRIEF-3 `d2b7c76d` (A3 mechanism decided: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG`); session 4 → A3 active runner + `hung` bucket `44dd12ca` (a real `judge_mutation` precedence bug fixed; 252 calls — clause violated, flagged), BRIEF-4 `4ace234f`; session 5 → A3 complete: e2e CLI tests `99463ae5`, boundary tests + mutant table `d1540eda` (real bug: plugin wrote `repr` not JSON — fixed), BRIEF-5 `72baf838`; session 6 → A4 `5baf2670`, A5 `c15f6040` (275 calls — clause violated again), BRIEF-6 `1eaf5683`; session 7 → A6 docs/backlog/B092 `afda58fd`, sweep 2077 green `8bf77745`, W7 schema re-sync `b3f31506`, tip `edb995f4`; registered gate (`tester-unified`, wheel-in-container) RED 18:30Z: 5 failed / 4681 passed (pyflakes, 3 real-R2-through-the-wheel standalone tests, RecursionError sweep) → session 8: 5 root causes fixed `95d02f50`/`ee24ced6` (dead imports, RecursionError on the side-file parser, stale wheel-R2 expected documents), tip `8f972def`; gate re-run 2 voided by a records commit moving HEAD mid-run (assay `NO_MEASUREMENT/HEAD_CHANGED`, 4686 passed); controller relaunched from the clean tip → GREEN `exit 0` 19:44Z; review round 1 REJECT B1–B5 (~20:20Z, RW-49) → session 9: B1 `802f0855`, BRIEF-9 `2c967cae`; session 10 (Opus — B2 calibration carries design judgment) dispatched ~20:35Z for B2–B5 + gate → B2 `07e121d9`, B3 `5c1b9ef8`, B4+B5 `4ef3985f`, S-items `ef247935`, tip `6f3aefad` (10 planted mutants caught, `liveness.py` 100%/100%; S1/S3/S5/S6 deferred; ~104 calls, disclosed); gate NOT run at the container cap → controller launched `tester-unified` on `6f3aefad` 21:08Z (RW-53); reviewer round 2 dispatched 21:10Z |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
-| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 repairs `a1cebacf`/`8c5af489`/`05193f44`/`9489bb6d`/`50684f2c`, tip `00a79de4` (507 calls — clause ignored), selftest/r1 RED on the shared-lock hazard → session 5 (RW-46): lock-dir isolation + root cause, floor_bytes, S1–S5, footprint regenerated, selftest PASS 1143/100%, r1 PASS, r3 PASS, tip `4fa46b03` (357 calls — clause ignored; RG-62 used for two pre-existing flaky tests → P5's row becomes RG-63); review round 2 ACCEPT-conditional (B5 only, ~20:45Z, RW-51) → session 6 dispatched for B5 + non-blocking + transcript; r2 pending a slot (after P1 ~23:30Z); round 3 = r2 survivor table |
+| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 repairs `a1cebacf`/`8c5af489`/`05193f44`/`9489bb6d`/`50684f2c`, tip `00a79de4` (507 calls — clause ignored), selftest/r1 RED on the shared-lock hazard → session 5 (RW-46): lock-dir isolation + root cause, floor_bytes, S1–S5, footprint regenerated, selftest PASS 1143/100%, r1 PASS, r3 PASS, tip `4fa46b03` (357 calls — clause ignored; RG-62 used for two pre-existing flaky tests → P5's row becomes RG-63); review round 2 ACCEPT-conditional (B5 only, ~20:45Z, RW-51) → session 6 dispatched for B5 + non-blocking + transcript → tip `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 GREEN); its 21:14Z r2 terminated (RW-54/55); parked until 23.7.0 is released → merge `main`, selftest/r1/r3, r2 on the merge tip; round 3 = r2 survivor table + B5 |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); review round 2 ACCEPT on `186461de` (close-out commits); assay-r2 hit the 4 h lane budget at ~165/283 (16:28Z) → RESUMED untracked (RW-40); the LOG-commit relaunch rejected all records (per-tree identity, RW-41) → re-run detached at `186461de` (pid `1499375`, 156 resumed; candidate 105 SIGKILLed by the controller, RW-50) finished 21:01Z with 2 placeholders unjudged → final short `--resume` pass pid `4137438` launched 21:02Z (RW-52); then `git switch rg55-run-gate-client`, survivor triage (state candidate 105's classification), final gates, merge --no-ff, release 23.7.0, install |
