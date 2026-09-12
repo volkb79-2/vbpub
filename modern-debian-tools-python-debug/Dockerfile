@@ -73,6 +73,8 @@ ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
 ARG INSTALL_COPILOT="true"
 ARG INSTALL_OPENCODE="true"
+ARG INSTALL_CLAUDELINK="true"
+ARG INSTALL_PI="true"
 ARG INSTALL_PHP="false"
 ARG PHP_VERSION
 ARG NVIM_VER=""
@@ -99,6 +101,8 @@ ARG REASONIX_VERSION="latest"
 ARG OPENCLAW_VERSION="latest"
 ARG COPILOT_VERSION="latest"
 ARG OPENCODE_VERSION="latest"
+ARG CLAUDELINK_VERSION="latest"
+ARG PI_VERSION="latest"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -178,11 +182,20 @@ ENV PATH="/home/vscode/.local/bin:${PATH}"
 
 # metadata.json is timestamped and only used by manifest generation later in
 # this Dockerfile. Keep it out of the tool-install cache boundary.
-COPY build/tool-artifacts-staging/downloads /tmp/tool-artifacts-staging/downloads
+#
+# downloads/ is NOT COPYed: it's ~1 GB of tarballs that both this stage and the
+# "Modern tools installation" RUN below only ever read from and then discard.
+# COPYing it would commit that ~1 GB to a real layer that no later RUN can ever
+# reclaim (deleting a file in a later layer just whiteouts it — the earlier
+# layer's bytes are still there in every pull/push). A build-context bind mount
+# is scoped to the single RUN that declares it and is never part of any layer,
+# so it costs nothing in the final image. Each consuming RUN below re-declares
+# the same bind mount independently.
 COPY build/tool-artifacts-staging/tool-versions.env /tmp/tool-artifacts-staging/tool-versions.env
 
 # Neovim and NvChad are shipped from upstream GitHub releases/tags.
-RUN set -euo pipefail; \
+RUN --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/tool-artifacts-staging/downloads \
+    set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
     if [ -f "${STAGE_DIR}/tool-versions.env" ]; then \
@@ -325,6 +338,7 @@ RUN set -euo pipefail; \
 # Modern tools installation from local pre-staged artifacts.
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/tool-artifacts-staging/downloads \
     set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
@@ -590,8 +604,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/lnav-extract \
         /tmp/grype-extract \
         /tmp/cdebug-extract \
-        /tmp/awscli \
-        /tmp/tool-artifacts-staging
+        /tmp/awscli
 
 # Latest PostgreSQL and Redis clients (override versions via build args)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -645,7 +658,15 @@ RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=
     python3 -m venv /home/vscode/.venv; \
     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet \
-        -r /tmp/requirements/toolkit.txt; \
+        -r /tmp/requirements/toolkit.txt
+# Aider gets its own layer, after the venv+toolkit.txt one above: it's the
+# only "venv" mode entry in ai-cli-tools.list, and its own dependency closure
+# (tree-sitter grammars, litellm, tokenizers, ...) is the single largest
+# contributor in the venv — keeping it a separate RUN makes that visible
+# directly in `docker history` instead of requiring a dependency-closure
+# probe to split it back out of a merged layer.
+RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
+    set -euo pipefail; \
     python3 /tmp/install_ai_cli_tools.py venv
 # ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
 # Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
@@ -717,11 +738,16 @@ USER root
 COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
 RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 
-# Convenience tool: run a command in the HOST's namespaces (docker-outside-of-docker
-# --privileged --pid=host nsenter), for agents/developers who need host-level access
-# from inside the devcontainer. See customization/host-escape for the mechanism.
+# Operator CLI: host-exec/host-shell (run a command / open a shell in the
+# HOST's namespaces via docker-outside-of-docker --privileged --pid=host
+# nsenter, for agents/developers who need host-level access from inside the
+# devcontainer) + doctor (the cgroup2 mount-flag self-heal that runs
+# automatically after every host-exec/host-shell — see customization/mdt and
+# host-setup/CGROUP-NOTES.md §5). host-escape is kept as a thin backward-
+# compat alias for `mdt host-exec`/`mdt host-shell`.
+COPY customization/mdt /usr/local/bin/mdt
 COPY customization/host-escape /usr/local/bin/host-escape
-RUN chmod 0755 /usr/local/bin/host-escape
+RUN chmod 0755 /usr/local/bin/mdt /usr/local/bin/host-escape
 
 # Repo-owned consumer template: agents do not auto-discover files under
 # /usr/local/share, so projects explicitly copy/adapt this as AGENTS.md and use
@@ -729,8 +755,10 @@ RUN chmod 0755 /usr/local/bin/host-escape
 COPY templates/AGENTS.md /usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example
 
 # Copy staged-artifact metadata for manifest generation (digests, source URLs).
-# Note: this is a separate COPY because build/tool-artifacts-staging/ is cleaned
-# up in an earlier RUN layer.
+# Note: this is a separate COPY because downloads/ (the bulk of
+# build/tool-artifacts-staging/) is only ever bind-mounted into the RUNs that
+# consume it, never committed to a layer — this file is the one piece of that
+# directory that a much later step (the manifest RUN) actually needs to persist.
 COPY build/tool-artifacts-staging/metadata.json /tmp/tool-artifacts-metadata.json
 
 # Canonical user-facing manifest generated directly from live probes
@@ -762,6 +790,10 @@ RUN set -euo pipefail; \
     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)"; \
     if [ -z "${shellcheck_version_output}" ]; then \
         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)"; \
+    fi; \
+    claudelink_version_output="$(claudelink --version 2>/dev/null | head -1 || true)"; \
+    if [ -z "${claudelink_version_output}" ]; then \
+        claudelink_version_output="$(npm list -g claudelink --depth=0 2>/dev/null | grep 'claudelink@' | sed -n 's/.*claudelink@//p')"; \
     fi; \
     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)"; \
     cmru_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("cmru"))' 2>/dev/null || true)"; \
@@ -805,6 +837,16 @@ RUN set -euo pipefail; \
             echo "opencode=$(opencode --version 2>&1 | head -1 || true)"; \
         else \
             echo "opencode=not-installed"; \
+        fi; \
+        if command -v claudelink >/dev/null 2>&1; then \
+            echo "claudelink=${claudelink_version_output}"; \
+        else \
+            echo "claudelink=not-installed"; \
+        fi; \
+        if command -v pi >/dev/null 2>&1; then \
+            echo "pi=$(pi --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "pi=not-installed"; \
         fi; \
         if command -v agy >/dev/null 2>&1; then \
             echo "antigravity=$(agy --version 2>&1 | head -1)"; \

@@ -137,10 +137,13 @@ Debian packages come from [`apt/packages.list`](apt/packages.list); first-party 
 Enabled by default, each controlled by an `INSTALL_*` build arg:
 
 - `aider-chat` (`INSTALL_AIDER`) — in the venv.
-- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed into the user-owned
-  `/home/vscode/.local` prefix on the image's Node 26 toolchain. OpenCode uses its resolved
-  platform package directly, because the `opencode-ai` meta-package can select mutually
-  incompatible glibc and musl optional packages under npm 11.
+- `reasonix`, `openclaw`, `opencode`, `copilot`, `claudelink`, `pi` — npm-based, installed
+  into the user-owned `/home/vscode/.local` prefix on the image's Node 26 toolchain. OpenCode
+  uses its resolved platform package directly, because the `opencode-ai` meta-package can
+  select mutually incompatible glibc and musl optional packages under npm 11. `claudelink`
+  (npm package `claudelink`) is an MCP server that coordinates multiple already-installed
+  agent CLIs (Claude Code, Codex, etc.) as one mesh; `pi` (npm package
+  `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official user-local standalone installer.
 - `claude-code`, `antigravity` — image-owned binaries.
 
@@ -284,7 +287,7 @@ Sections, and why one component can appear in two of them without duplication:
 |---|---|
 | `Base` | Debian + Python version, `OCI_VERSION`, computed tag pattern, devcontainers release (`v0.4.x`) and image version (`3.0.x`) |
 | `First-Party Wheels` | image-owned releases: `ciu`, `cmru` |
-| `AI CLI Tools` | agent CLI inventory: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity` |
+| `AI CLI Tools` | agent CLI inventory: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity`, `claudelink`, `pi` |
 | `Custom Tooling` | operational view — release-managed executables and their runtime `--version` output |
 | `Python packages` | venv inventory |
 | `System packages` | Debian package names and versions |

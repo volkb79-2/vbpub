@@ -204,6 +204,26 @@ def install_copilot() -> None:
     run_command(["npm", "install", "-g", f"@github/copilot@{version}"])
 
 
+def install_claudelink() -> None:
+    if not is_enabled("INSTALL_CLAUDELINK", True):
+        log("INFO", "INSTALL_CLAUDELINK=false; skipping ClaudeLink")
+        return
+
+    version = env_value("CLAUDELINK_VER", "CLAUDELINK_VERSION", default="latest")
+    require_command("npm", "npm is required to install ClaudeLink")
+    run_command(["npm", "install", "-g", f"claudelink@{version}"])
+
+
+def install_pi() -> None:
+    if not is_enabled("INSTALL_PI", True):
+        log("INFO", "INSTALL_PI=false; skipping Pi")
+        return
+
+    version = env_value("PI_VER", "PI_VERSION", default="latest")
+    require_command("npm", "npm is required to install Pi")
+    run_command(["npm", "install", "-g", f"@earendil-works/pi-coding-agent@{version}"])
+
+
 def install_aider(ctx: InstallerContext) -> None:
     if not is_enabled("INSTALL_AIDER", True):
         log("INFO", "INSTALL_AIDER=false; skipping Aider")
@@ -295,6 +315,10 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
         install_aider(ctx)
     elif tool == "opencode":
         install_opencode()
+    elif tool == "claudelink":
+        install_claudelink()
+    elif tool == "pi":
+        install_pi()
     else:
         log("WARN", f"Unknown AI CLI tool in {ctx.tools_file}: {tool}")
 

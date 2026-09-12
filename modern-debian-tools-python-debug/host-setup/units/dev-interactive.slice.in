@@ -23,6 +23,10 @@ MemoryMax=@DEV_INTERACTIVE_MEMORY_MAX@
 MemoryLow=@DEV_INTERACTIVE_MEMORY_LOW@
 
 CPUWeight=@DEV_INTERACTIVE_CPU_WEIGHT@
+# Absolute ceiling too, same "single tier can't alone claim the whole
+# parent budget" reasoning as dev.slice's own CPUQuota — see
+# units/dev.slice.in.
+CPUQuota=@DEV_INTERACTIVE_CPU_QUOTA@
 # CPU ratios are exact; IO ratios are NOT on a BFQ host unless the weights stay
 # <= 100 (systemd rescales IOWeight 1..10000 into BFQ's 1..1000, compressing
 # everything above 100 by ~11x). See CGROUP-NOTES.md §BFQ.
@@ -31,7 +35,15 @@ IOWeight=@DEV_INTERACTIVE_IO_WEIGHT@
 # NO absolute IO cap here — the shared parent dev.slice carries the one
 # IOPS/bandwidth ceiling for this tier AND dev-background.slice combined (host
 # dev-tier cgroup governance rollout: even interactive/IDE activity must not
-# be able to starve production I/O). See units/dev.slice.in.
+# be able to starve production I/O). See units/dev.slice.in. (Unlike CPU and
+# swap, no per-tier IOPS sub-ceiling for this tier either — that's only on
+# dev-gates.slice/dev-buildkitd.slice, see those units.)
+
+# Same swap-capacity reasoning as dev-background.slice's own MemorySwapMax:
+# auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling, itself DEV_SWAP_CASCADE_PCT% of the host
+# total) unless set explicitly — see host-setup.env.example.
+MemorySwapMax=@DEV_INTERACTIVE_MEMORY_SWAP_MAX@
 
 # Whether this tier's coldest pages may drain from zswap out to disk swap.
 # Shipped default is "yes": zswap is a cache, and letting its LRU evict the
@@ -41,6 +53,10 @@ IOWeight=@DEV_INTERACTIVE_IO_WEIGHT@
 # pool RAM on pages nobody is touching. See host-setup.env.example.
 # (Directive needs systemd >= 256; install.sh drops this line on older hosts
 # and mdt-apply-dev-caps.sh raw-writes memory.zswap.writeback as the fallback.)
+# NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's own value
+# above (or vice versa) — every tier needs its own explicit line to state its
+# own intent. Full reasoning: units/dev.slice.in's own MemoryZSwapWriteback
+# comment, CGROUP-NOTES.md "zswap writeback — who may page to disk".
 MemoryZSwapWriteback=@DEV_INTERACTIVE_ZSWAP_WRITEBACK@
 
 # Deliberately NO ManagedOOM* here: never OOM-kill the IDE tier.

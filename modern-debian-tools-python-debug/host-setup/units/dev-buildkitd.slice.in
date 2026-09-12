@@ -22,27 +22,44 @@ Before=slices.target
 # units/mdt-buildkitd.service.in). One number, one place to look.
 MemoryHigh=@DEV_BUILDKITD_MEMORY_HIGH@
 MemoryMax=@DEV_BUILDKITD_MEMORY_MAX@
+# Auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling) unless set explicitly — see
+# host-setup.env.example.
 MemorySwapMax=@DEV_BUILDKITD_MEMORY_SWAP_MAX@
 
 CPUWeight=@DEV_BUILDKITD_CPU_WEIGHT@
-# Hard cap (not just proportional share): auto-detected as (nproc - 2) cores
-# at install time when left unset in host-setup.env (mirrors the existing
-# IO_DEV_PATH auto-discovery convention), floored at 1 core. An explicit
-# value in host-setup.env always overrides the auto-detected one.
+# Hard cap (not just proportional share): auto-detected as (nproc -
+# DEV_SUBSLICE_CPU_RESERVE_CORES, default 3) cores at install time when left
+# unset in host-setup.env (mirrors the existing IO_DEV_PATH auto-discovery
+# convention), floored at 1 core. An explicit value in host-setup.env always
+# overrides the auto-detected one — same treatment every sibling child gets.
 CPUQuota=@DEV_BUILDKITD_CPU_QUOTA@
 # See the IOWeight note in dev-interactive.slice/dev-background.slice:
 # KEEP <= 100 ON A BFQ HOST or the BFQ rescaling silently changes the ratio.
 IOWeight=@DEV_BUILDKITD_IO_WEIGHT@
 
-# NO absolute IO cap here — inherits dev.slice's DEV_IO_CAP_PCT-derived
+# NO absolute bandwidth cap here — inherits dev.slice's DEV_IO_CAP_PCT-derived
 # ceiling, same "one estate ceiling, not one per child" reasoning as the
-# other two tiers. See units/dev.slice.in.
+# other tiers. See units/dev.slice.in. IOPS IS additionally capped, tighter —
+# RUNTIME-ONLY (not a static directive here): mdt-apply-dev-caps.sh applies
+# IOReadIOPSMax/IOWriteIOPSMax at DEV_SUBSLICE_IOPS_PCT% (default 60%) of
+# whatever it just derived for dev.slice itself, every time it runs (a
+# static line here can't express "a percentage of what dev.slice just
+# measured"). Bandwidth is deliberately left untouched, only IOPS gets the
+# tighter sub-ceiling. Same mechanism, same reasoning, applies to
+# dev-gates.slice — see that unit.
+
+# NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's
+# own value — every tier needs its own explicit line. Full reasoning:
+# units/dev.slice.in's own MemoryZSwapWriteback comment, CGROUP-NOTES.md
+# "zswap writeback — who may page to disk".
+MemoryZSwapWriteback=@DEV_BUILDKITD_ZSWAP_WRITEBACK@
 
 # Every property above is OPTIONAL: leaving its host-setup.env variable
 # empty drops that directive from this rendered file entirely (install.sh's
 # render() strips any line that resolves to a bare `Key=`) — "not set" means
-# "not applied," not "apply some fallback number." CPUQuota is the one
-# exception with its own auto-detect fallback, described above.
+# "not applied," not "apply some fallback number." CPUQuota/MemorySwapMax
+# are the exceptions with their own auto-detect fallback, described above.
 
 # Containers join via `docker run --cgroup-parent=dev-buildkitd.slice`
 # (mdt-buildkitd.service) — CREATE-time only, same rule as every other tier.

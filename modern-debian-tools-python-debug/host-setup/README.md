@@ -24,14 +24,18 @@ weight in `host-setup.env`.
 ## Tiering model
 
 ```
-dev.slice                    ONE absolute IOPS/bandwidth ceiling — covers
-                              every child combined, even interactive/
-                              IDE activity must not be able to starve production
+dev.slice                    ONE absolute IOPS/bandwidth/CPU/swap ceiling —
+                              covers every child combined, even interactive/
+                              IDE activity must not be able to starve
+                              production. Every child below ALSO carries its
+                              OWN tighter CPU/swap sub-ceiling so no single
+                              tier can alone claim this whole parent budget.
 ├── dev-interactive.slice    devcontainers (IDE + AI agents) via
 │                             devcontainer.json runArg
 ├── dev-gates.slice          gate and lane containers + placed lane leaves
 │                             rg-<token> — the admission capacity object;
-│                             see "dev-gates: why" below
+│                             see "dev-gates: why" below. ALSO gets a
+│                             tighter IOPS sub-ceiling (bandwidth untouched)
 ├── dev-background.slice     long-running dev stacks (dstdns, ...) — explicit
 │                            opt-in (compose cgroup_parent, docker run
 │                            --cgroup-parent) OR caught by the Docker
@@ -42,8 +46,27 @@ dev.slice                    ONE absolute IOPS/bandwidth ceiling — covers
 └── dev-buildkitd.slice      host-managed BuildKit worker (mdt-buildkitd.
                              service) — a shared, long-lived builder, not
                              a per-invocation job; see
-                             plan-buildkitd-service.md
+                             plan-buildkitd-service.md. ALSO gets the same
+                             tighter IOPS sub-ceiling as dev-gates.slice
 ```
+
+**CPU, swap, and zswap-writeback all get the same "one ceiling at dev.slice,
+one tighter sub-ceiling per child" treatment as IO:**
+- `CPUQuota`: `dev.slice` auto-detects `nproc - DEV_CPU_RESERVE_CORES`
+  (default 1); every child auto-detects `nproc - DEV_SUBSLICE_CPU_RESERVE_CORES`
+  (default 3) independently.
+- `MemorySwapMax`: auto-detected from this host's real total swap at
+  `DEV_SWAP_CASCADE_PCT`% (default 80), cascading — `dev.slice` = 80% of
+  host swap, each child = 80% of `dev.slice`'s derived number, and the
+  reactive watcher's per-container swap cap (below) = 80% again of whichever
+  child applies.
+- `MemoryZSwapWriteback`: explicit on all five. **Does not cascade from
+  `dev.slice`** — it's a plain per-cgroup toggle, verified live (2026-09-12)
+  to NOT propagate a parent's own value down; each slice states its own
+  intent. `dev.slice`'s own value is a safety anchor only, since a `0` on
+  ANY ancestor silently disables writeback for the whole subtree below it
+  (`CGROUP-NOTES.md` "zswap writeback — who may page to disk" has the full
+  mechanism).
 
 `dev.slice` holds dev LOAD only, nothing else — the host-level
 `cgprofile-host-daemon` is a host deployment, not dev load, and ships its own
@@ -56,7 +79,7 @@ DESIGN-2026-09-12-liveness-placement-admission.md`).
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
 | `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: bounded memory+swap, `systemd-oomd` kills inside the tier first — a gate is disposable, a stack is not |
 | `dev-background.slice` | long-running dev stacks (dstdns, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
-| `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - 2` cores unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's |
+| `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - DEV_SUBSLICE_CPU_RESERVE_CORES` cores (default 3, same as every other child) unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's; also gets a tighter runtime IOPS sub-ceiling (bandwidth untouched), same as `dev-gates.slice` |
 | (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
 `dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
@@ -118,28 +141,30 @@ that project's own docs, out of this project's scope. `dev.slice`'s job stays
 "contain dev load and nothing else."
 
 **Reactive per-container backstop (RW-32/D1).** `mdt-dev-cap-watcher.py`
-now also watches `dev-gates.slice` and applies a default `MemoryMax` the
-instant a new unlabelled `docker-*.scope` appears there (`DEV_CAP_GATES_
-MEMORY_MAX`, default `4G` — deliberately NOT the shared `DEV_CAP_MEMORY_MAX`
-default of `1G`, which would be below the ~2 GiB of headroom the 2026-08-04
-incident says a gate already needed and would re-create it inside the tier
-built to fix it). Today's run-gate lane containers pass no `--memory` of
-their own and are exactly the containers this watcher exists for — the
-moment any consumer honours `CGROUP_PARENT_DEV_GATES`, they land here
-instead of `dev-background.slice`, unlabelled, and this is what keeps one
-runaway lane from silently consuming the whole 6 G tier. This is the
-COARSE, tier-wide backstop — it COMPOSES with, and is not withdrawn by, a
-future daemon's per-lane placement caps (D-20/D-25): placement gives an
-exact ceiling to a lane that asks for one, this watcher still catches
-whatever a lane does not ask for.
+also watches `dev-gates.slice` and applies a default `MemoryMax`/
+`MemoryHigh`/`MemorySwapMax` the instant a new unlabelled `docker-*.scope`
+appears there (`WATCHER_PER_CONTAINER_GATES_MEMORY_MAX`, default `4G` —
+deliberately NOT the shared `WATCHER_PER_CONTAINER_MEMORY_MAX` default of
+`1G`, which would be below the ~2 GiB of headroom the 2026-08-04 incident
+says a gate already needed and would re-create it inside the tier built to
+fix it). Today's run-gate lane containers pass no `--memory` of their own
+and are exactly the containers this watcher exists for — the moment any
+consumer honours `CGROUP_PARENT_DEV_GATES`, they land here instead of
+`dev-background.slice`, unlabelled, and this is what keeps one runaway
+lane from silently consuming the whole 6 G tier. This is the COARSE,
+tier-wide backstop — it COMPOSES with, and is not withdrawn by, a future
+daemon's per-lane placement caps (D-20/D-25): placement gives an exact
+ceiling to a lane that asks for one, this watcher still catches whatever a
+lane does not ask for.
 
 **Sizing choices (RW-32/D2, D3).** `ManagedOOMSwap=kill` is deliberately
 ABSENT from `dev-gates.slice.in` (unlike `dev-background.slice`'s own,
 which keeps it): D-19 lists only the pressure kill, and this tier's
-`MemorySwapMax=32G` exists specifically to make swap a disposable lane's
-relief valve — an oomd *swap* kill triggers on host swap usage and would
-kill whichever lane is using the allowance this unit deliberately grants
-it, on a signal D-6 rejects ("swap usage is never the gate; PSI is"). See
+`MemorySwapMax` (auto-detected, see "Tiering model" above) exists
+specifically to make swap a disposable lane's relief valve — an oomd
+*swap* kill triggers on host swap usage and would kill whichever lane is
+using the allowance this unit deliberately grants it, on a signal D-6
+rejects ("swap usage is never the gate; PSI is"). See
 `units/dev-gates.slice.in`'s own comment. `CPUWeight=20`/`IOWeight=10` —
 identical to `dev-background.slice`'s own — stand as designed (D-19): a
 fourth same-weight sibling does lower interactive's share under
@@ -162,10 +187,12 @@ place (an idle sibling claims nothing); revisit once real usage data
 exists (design §7), not by guessing further.
 
 Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
-`_SWAP_MAX`/`_CPU_WEIGHT`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`, sized for a
-16 GiB host and expected to be re-tuned from real admission-usage data (design
-doc §7: "measure first"); `DEV_CAP_GATES_MEMORY_MAX` (the reactive watcher's
-own knob, above). `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same
+`_SWAP_MAX`/`_CPU_WEIGHT`/`_CPU_QUOTA`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`/
+`_ZSWAP_WRITEBACK`, sized for a 16 GiB host and expected to be re-tuned from
+real admission-usage data (design doc §7: "measure first"); also gets a
+runtime IOPS sub-ceiling from `DEV_SUBSLICE_IOPS_PCT` (dev.slice section, no
+separate gates-specific key). `WATCHER_PER_CONTAINER_GATES_MEMORY_MAX` (the
+reactive watcher's own knob, above). `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same
 export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
 `templates/devcontainer.json`'s `containerEnv` — with the same consumer
 fallback rule (D-24), precisely stated: it protects a **devcontainer that
@@ -309,7 +336,7 @@ see above) — never for a routine key pickup. `sudo ./install.sh --wizard`
 is the interactive alternative to the manual diff/edit steps above: it
 backs up the same way, then walks every section it knows with your
 EXISTING values pre-filled as defaults so Enter reproduces prior tuning
-(the new `DEV_GATES_*`/`DEV_CAP_GATES_MEMORY_MAX` keys are not walked
+(the new `DEV_GATES_*`/`WATCHER_PER_CONTAINER_GATES_MEMORY_MAX` keys are not walked
 individually — it carries them through from the example verbatim since it
 also does not re-render/activate until it falls through into the same
 render/install/daemon-reload/start/sweep pass as the plain `install.sh`
@@ -348,8 +375,13 @@ the test stacks.
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-host-slices.service` | systemd (enabled) | boot-time apply of the runtime half |
-| `units/mdt-host-slices.timer.in` | systemd (enabled) | periodic re-apply (default 5min) |
+| `units/mdt-host-slices.timer.in` | systemd (enabled) | periodic re-apply (default 5min) — now a backstop, see "Persistence model" |
+| `units/mdt-io-cap-watcher.service` | systemd (enabled, unconditional) | reactive per-container IO caps via `docker events` |
+| `units/mdt-dev-cap-watcher.service` | systemd (enabled iff `INOTIFY_OK=1`) | reactive per-container `MemoryMax` via inotify on cgroupfs |
 | `scripts/mdt-apply-dev-caps.sh` | `/usr/local/sbin/` | runtime half (see below) |
+| `scripts/mdt-io-cap-watcher.sh` | `/usr/local/sbin/` | `docker events` watcher — instant counterpart to the sweep's per-container IO caps |
+| `scripts/mdt-container-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
+| `scripts/mdt-dev-cap-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | inotify watcher — instant counterpart to the sweep's per-container `MemoryMax` |
 | `scripts/mdt-slice-audit.py` | `/usr/local/sbin/` | read-only audit — logs a `[WARN]` for any `memory.min`/`memory.low` under `dev.slice` that is a silent no-op because an ancestor lacks its own value (second `ExecStart=` on the same service/timer) |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | fio benchmark → `/var/lib/mdt/io-baseline.env` (30-day cache) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
@@ -383,12 +415,20 @@ cannot express the next:
      [BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md) — Buildx's
      `cgroup-parent` driver-opt is unreliable under the systemd cgroup driver,
      so they can never be placed under `dev.slice` via compose either; this
-     sweep is their only governance, full stop, not a backstop for a
-     placement mechanism that also works. The timer sweep catches them within
-     `SWEEP_INTERVAL`. Anything `cmru`/mdt itself spawns directly gets
-     explicit per-container flags
-     instead (see "Tiering model" above) — this sweep is only for containers
-     nobody's own code controls the invocation of;
+     is still their only *placement-independent* governance, full stop, not a
+     backstop for a placement mechanism that also works. **This sweep is the
+     BACKSTOP, not the primary mechanism:** `mdt-io-cap-watcher.service`
+     applies the same caps within the same second a matching container
+     starts, via `docker events` rather than periodic re-scanning — see
+     "Reactive counterpart" below for why `docker events` and not inotify
+     (the `mdt-dev-cap-watcher.py` pattern). The sweep still matters for
+     whatever the watcher missed across its own restart window, and it
+     shares every line of matching/application logic with the watcher
+     (`mdt-container-caps.lib.sh`) so the two can't drift apart. Anything
+     `cmru`/mdt itself spawns directly gets explicit
+     per-container flags instead (see "Tiering model" above) — this sweep
+     (and the watcher) are only for containers nobody's own code controls
+     the invocation of;
    - a **cgroup2 mount-flag check**: `memory_recursiveprot` (without which
      every slice-level `MemoryLow`/`MemoryMin` silently stops protecting the
      container pages below it) is a systemd boot default, but a runtime
@@ -402,7 +442,33 @@ cannot express the next:
      no-op if `dev.slice`/`dev-background.slice`/`dev-interactive.slice`
      themselves don't ALSO carry one (which, as shipped, they mostly don't —
      see `CGROUP-NOTES.md`). This never applies anything; it only logs to
-     the journal so the gap is discoverable instead of silent;
+     the journal so the gap is discoverable instead of silent.
+
+**Reactive counterpart to layer 2's per-container caps.**
+`mdt-io-cap-watcher.service` (`mdt-io-cap-watcher.sh`) watches `docker
+events` for container starts and applies the same
+test-runner/buildkit/devcontainer IO caps within the same second, so the
+timer sweep above is a backstop rather than the only mechanism. This is a
+DIFFERENT reactive mechanism than `mdt-dev-cap-watcher.py`'s inotify watch
+(RW-32/D1, above) on purpose, not by oversight: that watcher watches a
+FIXED, already-known cgroup path (`dev-interactive.slice`/
+`dev-background.slice`/`dev-gates.slice`) because its targets ARE reliably
+placed there at create time — it only reacts to attributes WITHIN a cgroup
+Docker already placed correctly. `buildx_buildkit_*` workers are the case
+layer 2's own bullet above already documents as NOT reliably placed
+anywhere (Buildx's `cgroup-parent` driver-opt unreliable under the systemd
+cgroup driver) — there is no fixed path to inotify-watch for them in the
+first place. Verified live 2026-09-12: one landed at a malformed, unnested
+`system.slice/dev-background.slice:docker:<id>`, a name that only *looks*
+like the real slice. `docker events` sidesteps this because it comes from
+the daemon's own bookkeeping regardless of where a container's cgroup ended
+up — the same property that makes it the right tool for `buildx_buildkit_*`
+made it the simpler choice for `*test-runner*`/devcontainer matches here
+too, rather than splitting those onto `mdt-dev-cap-watcher.py`'s mechanism
+and leaving only `buildx_buildkit_*` on this one. Both reactive watchers
+share the "restart/failure modes" mitigation the alternatives-considered
+paragraph below settled on: `Restart=always`, and the periodic sweep kept
+running as backstop for the restart window.
 3. **Create-time placement** — the one thing the host cannot do at all:
    containers join their tier only where they are *created*
    (devcontainer.json `runArgs`, compose `cgroup_parent:`, or the Docker
@@ -412,12 +478,50 @@ cannot express the next:
    (D-G8, see "What gets installed") exists specifically to put a floor under
    that failure mode.
 
+**The `daemon.json` `cgroup-parent` default does not reach BuildKit's own
+build-step execution (verified live, 2026-09-12).** It correctly places a
+normal `docker run`/`docker create` container (confirmed: the devcontainer
+itself lands at `dev.slice/dev-interactive.slice/docker-<id>.scope` with the
+expected `io.max`) — but a plain `docker build` or `docker buildx build`
+using the **default `docker` driver** (no separate buildx worker container at
+all; the build executes inside `dockerd`'s own embedded BuildKit) does not
+reliably land its RUN-step exec cgroup under the real `dev.slice` hierarchy
+either: caught one live mid-build at a malformed, unnested
+`system.slice/dev-background.slice:docker:<id>` — a flat, colon-suffixed name
+that only *looks* like the real `dev-background.slice`, sitting outside
+`dev.slice` entirely and outside any of this host's IO governance. This is
+the same class of problem already documented above for Buildx's
+`docker-container` driver (`cgroup-parent` unreliable under the systemd
+cgroup driver) — it isn't limited to separately-created buildx workers; the
+default, no-driver-specified build path has it too.
+
+**Use `mdt-buildkitd` for anything that actually needs governed build IO** —
+it's the one build path confirmed working, precisely because it sidesteps
+this: a plain `docker run --cgroup-parent=dev-buildkitd.slice`
+(`mdt-buildkitd.service`), never through any Buildx driver, so there's no
+BuildKit-internal cgroup-naming logic in the way — `dev-buildkitd.slice`
+shows the correct `io.max`/`io.weight` every time. `templates/devcontainer.json`
+ships the socket bind mount + `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`;
+once a consumer's devcontainer sets `BUILDKIT_HOST`,
+`scripts/finalize_container_environment.py`'s `setup_buildkit_builder()`
+registers the `host-buildkitd` remote builder as the buildx default
+automatically on every container start (idempotent, silent no-op if
+`BUILDKIT_HOST` is unset) — no manual `docker buildx create` step. Until a
+consumer repo's `devcontainer.json` sets `BUILDKIT_HOST`, its plain
+`docker build`/`docker buildx build` calls are not governed by any of this
+— the memory/CPU/IO caps only bind containers, not BuildKit's own internal
+build-step execution.
+
 Alternatives considered for layer 2: a boot-only oneshot misses buildkit
 workers created mid-session; a docker-events watcher daemon reacts instantly
 but is a long-running process with restart/failure modes — the idempotent
-timer sweep is the smallest thing that stays correct. If sub-interval
-enforcement ever matters, run `mdt-apply-dev-caps.sh` from a docker events
-hook and keep the timer as backstop.
+timer sweep was, for a while, the smallest thing that stays correct.
+**Sub-interval enforcement did end up mattering (2026-09-12)**:
+`mdt-io-cap-watcher.service` is exactly the docker-events hook this
+paragraph anticipated, with the timer kept as backstop — `Restart=always`
+plus that backstop is judged sufficient mitigation for the restart/failure-
+mode concern that originally held this back (systemd's own restart
+machinery, not a hand-rolled retry loop).
 
 Full reasoning for each gap, and why raw cgroupfs writes lose to
 `set-property`: [CGROUP-NOTES.md](CGROUP-NOTES.md).
@@ -481,13 +585,15 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service mdt-buildkitd.service
+sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service mdt-buildkitd.service \
+        mdt-io-cap-watcher.service mdt-dev-cap-watcher.service
 sudo docker volume rm mdt-buildkitd-cache 2>/dev/null || true
 sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-gates,dev-memory_min_guaranteed,dev-buildkitd}.slice \
         /etc/systemd/system/mdt-buildkitd.service \
+        /etc/systemd/system/mdt-io-cap-watcher.service /etc/systemd/system/mdt-dev-cap-watcher.service \
         /etc/systemd/system/docker-.scope.d/50-default-limits.conf \
         /etc/systemd/system/mdt-host-slices.{service,timer} \
-        /usr/local/sbin/{mdt-apply-dev-caps.sh,mdt-slice-audit.py,mdt-io-baseline.py,mdt-host-check.sh} \
+        /usr/local/sbin/{mdt-apply-dev-caps.sh,mdt-io-cap-watcher.sh,mdt-container-caps.lib.sh,mdt-dev-cap-watcher.py,mdt-slice-audit.py,mdt-io-baseline.py,mdt-host-check.sh} \
         /etc/modules-load.d/mdt-bfq.conf /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
 sudo systemctl daemon-reload
 sudo rm -rf /etc/mdt /var/lib/mdt        # config + cached baseline

@@ -24,13 +24,31 @@ Before=slices.target
 MemoryHigh=@DEV_GATES_MEMORY_HIGH@
 MemoryMax=@DEV_GATES_MEMORY_MAX@
 # Relaxed swap ceiling, same reasoning as dev-background.slice's own: a gate
-# that swaps just finishes slowly; one that OOMs fails outright. Size against
-# this host's own real swap capacity.
+# that swaps just finishes slowly; one that OOMs fails outright. Auto-
+# detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling) unless set explicitly — see
+# host-setup.env.example.
 MemorySwapMax=@DEV_GATES_MEMORY_SWAP_MAX@
 # See the IOWeight note in dev-background.slice.in: keep <= 100 on a BFQ
 # host, or the ratio against sibling tiers silently stops being what it says.
 CPUWeight=@DEV_GATES_CPU_WEIGHT@
 IOWeight=@DEV_GATES_IO_WEIGHT@
+# Absolute CPU ceiling too, same "single tier can't alone claim the whole
+# parent budget" reasoning as dev.slice's own CPUQuota — see
+# units/dev.slice.in.
+CPUQuota=@DEV_GATES_CPU_QUOTA@
+# Absolute IOPS sub-ceiling too, tighter than the shared dev.slice IO
+# ceiling this tier otherwise inherits — RUNTIME-ONLY (not a
+# static directive here): mdt-apply-dev-caps.sh applies
+# IOReadIOPSMax/IOWriteIOPSMax at DEV_SUBSLICE_IOPS_PCT% (default 60%) of
+# whatever it just derived for dev.slice itself, every time it runs
+# (same reason dev.slice's own IO ceiling is runtime-derived rather than a
+# static unit-file number — a static line here can't express "a percentage
+# of what dev.slice just measured"). Bandwidth is deliberately left
+# untouched — only IOPS gets the tighter sub-ceiling; a gate/lane doing a
+# few large sequential ops should not be penalized the same way a workload
+# doing many small ones is. Same mechanism, same reasoning, applies to
+# dev-buildkitd.slice — see that unit.
 
 # systemd-oomd: under sustained pressure, kill inside this tier first — a
 # gate/lane container is disposable (its history record survives it — D-28,
@@ -41,8 +59,8 @@ IOWeight=@DEV_GATES_IO_WEIGHT@
 # (install.sh installs it).
 #
 # Deliberately NO ManagedOOMSwap= here (RW-32/D1 review S1, ruled D2): D-19
-# names only the pressure kill + its limit, and MemorySwapMax=32G above
-# exists specifically to make swap this tier's relief valve for a disposable
+# names only the pressure kill + its limit, and MemorySwapMax above exists
+# specifically to make swap this tier's relief valve for a disposable
 # lane — an oomd SWAP kill would trigger on host swap usage (SwapUsedLimit,
 # not this tier's own pressure) and kill whichever lane is USING the
 # allowance this unit deliberately grants it, on a signal D-6 explicitly
@@ -51,6 +69,12 @@ IOWeight=@DEV_GATES_IO_WEIGHT@
 # between the two tiers, not an oversight.
 ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=@DEV_GATES_OOM_PRESSURE_LIMIT@
+
+# NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's own
+# value — every tier needs its own explicit line. Full reasoning:
+# units/dev.slice.in's own MemoryZSwapWriteback comment, CGROUP-NOTES.md
+# "zswap writeback — who may page to disk".
+MemoryZSwapWriteback=@DEV_GATES_ZSWAP_WRITEBACK@
 
 # Containers join via an explicit `docker run --cgroup-parent=dev-gates.slice`
 # / compose `cgroup_parent: dev-gates.slice` (run-gate's ephemeral-lane create

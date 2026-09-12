@@ -136,7 +136,6 @@ GATES_OUT="$TMP/dev-gates.slice"
 for expected in \
   "MemoryHigh=${DEV_GATES_MEMORY_HIGH:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_MEMORY_HIGH= line}" \
   "MemoryMax=${DEV_GATES_MEMORY_MAX:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_MEMORY_MAX= line}" \
-  "MemorySwapMax=${DEV_GATES_MEMORY_SWAP_MAX:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_MEMORY_SWAP_MAX= line}" \
   "CPUWeight=${DEV_GATES_CPU_WEIGHT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_CPU_WEIGHT= line}" \
   "IOWeight=${DEV_GATES_IO_WEIGHT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_IO_WEIGHT= line}" \
   "ManagedOOMMemoryPressureLimit=${DEV_GATES_OOM_PRESSURE_LIMIT:?not set after sourcing host-setup.env.example -- missing or mistyped DEV_GATES_OOM_PRESSURE_LIMIT= line}" \
@@ -144,13 +143,24 @@ for expected in \
 ; do
   grep -qxF "$expected" "$GATES_OUT" || fail "dev-gates.slice missing expected line: $expected"
 done
+# MemorySwapMax is deliberately empty in the shipped example: install.sh
+# derives it from this host's swap at install time. Preserve both directions
+# of this check — an explicit example value must render, while the auto-
+# detected form must drop the directive instead of emitting MemorySwapMax=.
+if [ -n "${DEV_GATES_MEMORY_SWAP_MAX:-}" ]; then
+  grep -qxF "MemorySwapMax=$DEV_GATES_MEMORY_SWAP_MAX" "$GATES_OUT" \
+    || fail "dev-gates.slice missing its explicit DEV_GATES_MEMORY_SWAP_MAX value: $DEV_GATES_MEMORY_SWAP_MAX"
+else
+  grep -q '^MemorySwapMax=' "$GATES_OUT" \
+    && fail "dev-gates.slice rendered MemorySwapMax with the shipped auto-detect value empty"
+fi
 # ManagedOOMSwap=kill was withdrawn from dev-gates.slice.in (RW-32/D2: an
 # oomd swap-usage kill contradicts D-19's "swap is the gates' relief valve,
 # MemorySwapMax=32G"). Assert it is ABSENT, the mirror image of the
 # presence checks above -- a regression that re-adds it should also go RED.
 grep -qx 'ManagedOOMSwap=kill' "$GATES_OUT" \
   && fail "dev-gates.slice has ManagedOOMSwap=kill -- withdrawn by RW-32/D2 (contradicts D-19/D-6, see units/dev-gates.slice.in's own comment)"
-pass "dev-gates.slice renders every DEV_GATES_* key from the shipped example, and ManagedOOMSwap=kill stays withdrawn"
+pass "dev-gates.slice renders required DEV_GATES_* values and drops auto-detected MemorySwapMax until install time; ManagedOOMSwap=kill stays withdrawn"
 
 # --- (3) dev.slice / dev-memory_min_guaranteed.slice: no MemoryMin line -----
 # (DEV_MEMORY_MIN_GUARANTEED_CEILING ships unset in the example -- evidence

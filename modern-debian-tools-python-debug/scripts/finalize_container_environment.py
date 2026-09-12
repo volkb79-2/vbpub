@@ -273,6 +273,85 @@ def setup_vscode_settings(env_type: str) -> None:
         warn(f"vscode settings: {e}")
 
 
+def setup_buildkit_builder() -> None:
+    """Register the host-managed BuildKit worker (mdt host-setup
+    plan-buildkitd-service.md) as the default buildx builder, when a consumer
+    has opted in via BUILDKIT_HOST — optional, mirrors ciu's
+    ship-and-encourage-but-never-enforce pattern (TODO.md "Principle"): a
+    devcontainer that hasn't mounted the socket / set the env var gets a
+    silent no-op here, never a failed postCreate.
+
+    Without this, plain `docker build`/`docker buildx build` fall through to
+    the daemon's embedded builder, which host-setup/README.md documents as
+    NOT reliably honoring this host's IO governance for its own build-step
+    execution (verified live 2026-09-12: a build-step exec cgroup landed at a
+    malformed, unnested name outside dev.slice entirely). The host-managed
+    worker sidesteps that because it's a plain `docker run
+    --cgroup-parent=dev-buildkitd.slice`, never created through any Buildx
+    driver.
+    """
+    endpoint = os.environ.get("BUILDKIT_HOST", "").strip()
+    if not endpoint:
+        return
+    if shutil.which("docker") is None:
+        warn("BUILDKIT_HOST is set but docker is not on PATH — skipped buildx builder setup")
+        return
+
+    builder_name = "host-buildkitd"
+    inspected = subprocess.run(
+        ["docker", "buildx", "inspect", builder_name],
+        capture_output=True, text=True,
+    )
+    exists = inspected.returncode == 0
+
+    if exists:
+        registered_endpoint = next(
+            (
+                line.partition(":")[2].strip()
+                for line in inspected.stdout.splitlines()
+                if line.lstrip().startswith("Endpoint:")
+            ),
+            "",
+        )
+        if registered_endpoint != endpoint:
+            warn(
+                f"buildx builder '{builder_name}' points at {registered_endpoint or '<unknown>'}, "
+                f"not current BUILDKIT_HOST {endpoint} — recreating it"
+            )
+            removed = subprocess.run(
+                ["docker", "buildx", "rm", builder_name],
+                capture_output=True, text=True,
+            )
+            if removed.returncode != 0:
+                warn(
+                    f"could not remove stale buildx builder '{builder_name}': "
+                    f"{removed.stderr.strip()[:200]} — plain docker build stays on the "
+                    "existing builder"
+                )
+                return
+            exists = False
+
+    if not exists:
+        created = subprocess.run(
+            ["docker", "buildx", "create", "--name", builder_name, "--driver", "remote", endpoint],
+            capture_output=True, text=True,
+        )
+        if created.returncode != 0:
+            warn(
+                f"could not create buildx builder '{builder_name}' ({endpoint}): "
+                f"{created.stderr.strip()[:200]} — plain docker build stays on the "
+                "ungoverned embedded builder"
+            )
+            return
+        ok(f"buildx builder '{builder_name}' created ({endpoint})")
+
+    used = subprocess.run(["docker", "buildx", "use", builder_name], capture_output=True, text=True)
+    if used.returncode == 0:
+        ok(f"buildx default builder set to '{builder_name}' — docker build/docker buildx build use it with no --builder flag")
+    else:
+        warn(f"could not set '{builder_name}' as the default buildx builder: {used.stderr.strip()[:200]}")
+
+
 def verify_base_tools() -> None:
     # Sanity-check a few tools the mdt base image is expected to provide.
     expected = ["bat", "fd", "rg", "fzf", "yq", "jq", "git", "docker", "python3"]
@@ -441,6 +520,7 @@ def run_generic_steps(envd: dict) -> None:
     setup_editor_links()
     setup_vscode_settings(envd["env_type"])
     repair_docker_socket_relay()
+    setup_buildkit_builder()
     verify_base_tools()
 
 

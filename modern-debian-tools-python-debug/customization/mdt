@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# mdt — modern-debian-tools operator CLI.
+#
+#   mdt host-exec [-t|--target PID] [--] <cmd> [args...]
+#   mdt host-shell [-t|--target PID]
+#   mdt doctor [--check-only]
+#
+# host-exec/host-shell: run a command (or open a shell) in the HOST's
+# namespaces from inside this devcontainer. The devcontainer talks to the
+# host's own docker daemon (docker-outside-of-docker), so a short-lived
+# --privileged --pid=host container can nsenter into a target PID's
+# mount/UTS/net/IPC namespaces and exec there — once those namespaces are
+# switched, the exec'd program resolves against the TARGET's filesystem/
+# network, not this container's. Default target is PID 1 (the host's init);
+# an explicit --target lets the same mechanism enter any other container's
+# namespace instead. This fully bypasses container isolation — a convenience
+# tool, not a safety rail.
+#
+# Switches the cgroup namespace too (-C), not just m/u/n/i: without it, the
+# escaped process stays in the *helper* container's own private cgroup
+# namespace, and /proc/*/cgroup for anything outside that helper's own tiny
+# subtree comes back as a confusing "../.."-prefixed relative escape path
+# instead of the real, absolute host path — directly breaks the cgroup
+# inspection this tool exists for per CGROUP-NOTES.md. Confirmed live
+# 2026-09-12: reading a container's cgroup path without -C returned
+# "/../../dev-interactive.slice/docker-<id>.scope"; with -C, the correct
+# "/dev.slice/dev-interactive.slice/docker-<id>.scope".
+#
+# doctor: checks (and by default self-heals) the cgroup2 mount flags a
+# --privileged/--cgroupns=host escape into the host mount namespace — this
+# command's own mechanism, or anyone else's — can silently strip from the
+# host's /sys/fs/cgroup (host-setup/CGROUP-NOTES.md §5: without
+# memory_recursiveprot, every slice's MemoryLow/MemoryMin silently protects
+# nothing, with no other symptom; `systemctl show` still reports the
+# configured value). Only a process in the host's own init cgroup namespace
+# can restore it, never anything inside a container — so this still nsenters
+# into the host to run the fix, same as host-exec. Mirrors
+# host-setup/scripts/mdt-apply-dev-caps.sh's own check exactly (same flags,
+# same remount command) so there is one definition of "what's required",
+# even though that copy runs directly on the host via systemd on a 5-minute
+# timer and this one runs on demand from inside a devcontainer.
+#
+# host-exec/host-shell always end with an automatic `mdt doctor` pass rather
+# than waiting up to 5 minutes for the host's own timer sweep: per
+# mdt-apply-dev-caps.sh's own comment, an external --privileged/
+# --cgroupns=host container touching the host mount namespace is the most
+# likely trigger for the flags going missing in the first place — and that
+# is exactly this command's own mechanism, so the exposure window it can
+# itself open needs closing immediately, not eventually.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  mdt host-exec [-t|--target PID] [--] <cmd> [args...]
+  mdt host-shell [-t|--target PID]
+  mdt doctor [--check-only]
+EOF
+    exit 1
+}
+
+# ── cgroup2 mount-flag self-heal (host-setup/CGROUP-NOTES.md §5) ────────────
+mdt_doctor() {
+    local check_only=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check-only)
+                check_only=1
+                shift
+                ;;
+            *)
+                usage
+                ;;
+        esac
+    done
+
+    # shellcheck disable=SC2016
+    local script='
+set -uo pipefail
+CG=/sys/fs/cgroup
+KVER=$(uname -r | grep -oE "^[0-9]+\.[0-9]+")
+KMAJOR=${KVER%%.*}
+KMINOR=${KVER##*.}
+HUGETLB_OPT=""
+if [ -n "$KMAJOR" ] && [ -n "$KMINOR" ] \
+   && { [ "$KMAJOR" -gt 6 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ]; }; }; then
+  HUGETLB_OPT=",memory_hugetlb_accounting"
+fi
+CG_OPTS=$(findmnt -no OPTIONS "$CG" 2>/dev/null || true)
+MISSING=""
+if [ -n "$CG_OPTS" ]; then
+  echo "$CG_OPTS" | grep -q memory_recursiveprot || MISSING="${MISSING}memory_recursiveprot "
+  [ -n "$HUGETLB_OPT" ] && { echo "$CG_OPTS" | grep -q memory_hugetlb_accounting || MISSING="${MISSING}memory_hugetlb_accounting "; }
+fi
+if [ -z "$MISSING" ]; then
+  echo "[mdt doctor] cgroup2 OK: $CG_OPTS"
+  exit 0
+fi
+echo "[mdt doctor] cgroup2 mounted WITHOUT: ${MISSING}(current opts: $CG_OPTS)" >&2
+if [ "${CHECK_ONLY:-0}" = "1" ]; then
+  echo "[mdt doctor] --check-only: not fixing. Fix: mount -o remount,nsdelegate,memory_recursiveprot${HUGETLB_OPT} $CG" >&2
+  exit 1
+fi
+if mount -o "remount,nsdelegate,memory_recursiveprot${HUGETLB_OPT}" "$CG" 2>/dev/null; then
+  echo "[mdt doctor] restored nsdelegate,memory_recursiveprot${HUGETLB_OPT}"
+  exit 0
+fi
+echo "[mdt doctor] remount failed — missing flag(s) remain missing (need real host root)" >&2
+exit 1
+'
+
+    docker run --rm --privileged --pid=host \
+        -e "CHECK_ONLY=${check_only}" \
+        debian:bookworm-slim nsenter -t 1 -m -u -n -i -C -- bash -c "$script"
+}
+
+# ── host-exec / host-shell ───────────────────────────────────────────────────
+mdt_host_run() {
+    local target=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--target)
+                target="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    echo "[mdt] running in the namespace of pid ${target}, not this devcontainer" >&2
+
+    local tty_flags=()
+    if [[ -t 0 && -t 1 ]]; then
+        tty_flags=(-it)
+    fi
+
+    local status=0
+    if [[ $# -eq 0 ]]; then
+        docker run --rm "${tty_flags[@]}" --privileged --pid=host \
+            debian:bookworm-slim nsenter -t "$target" -m -u -n -i -C -- bash || status=$?
+    else
+        # Args are passed through nsenter as an argv array (never
+        # re-interpolated into a shell string), so callers don't need to
+        # worry about a second layer of quoting.
+        docker run --rm "${tty_flags[@]}" --privileged --pid=host \
+            debian:bookworm-slim nsenter -t "$target" -m -u -n -i -C -- "$@" || status=$?
+    fi
+
+    mdt_doctor || echo "[mdt] doctor pass reported an issue — see above" >&2
+    return "$status"
+}
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+    host-exec)
+        mdt_host_run "$@"
+        ;;
+    host-shell)
+        mdt_host_run "$@"
+        ;;
+    doctor)
+        mdt_doctor "$@"
+        ;;
+    ""|-h|--help)
+        usage
+        ;;
+    *)
+        echo "[mdt] unknown subcommand: $cmd" >&2
+        usage
+        ;;
+esac

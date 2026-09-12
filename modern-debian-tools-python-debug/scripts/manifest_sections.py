@@ -17,7 +17,7 @@ from typing import Mapping, Sequence
 PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
 FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
-AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "opencode", "reasonix")
+AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "claudelink", "codex", "copilot", "openclaw", "opencode", "pi", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = (
     "crane",
     "dive",
@@ -93,10 +93,12 @@ PROJECT_HOMES = {
     "aider": "https://github.com/Aider-AI/aider",
     "antigravity": "https://github.com/antigravity/antigravity-cli",
     "claude": "https://github.com/anthropics/claude-code",
+    "claudelink": "https://github.com/RBJGlobal/claudelink",
     "codex": "https://github.com/openai/codex",
     "copilot": "https://github.com/github/copilot-cli",
     "openclaw": "https://github.com/openclaw/openclaw",
     "opencode": "https://github.com/anomalyco/opencode",
+    "pi": "https://github.com/earendil-works/pi",
     "reasonix": "https://github.com/reasonix/reasonix",
     "awscli": "https://github.com/aws/aws-cli",
     "b2": "https://github.com/Backblaze/B2_Command_Line_Tool",
