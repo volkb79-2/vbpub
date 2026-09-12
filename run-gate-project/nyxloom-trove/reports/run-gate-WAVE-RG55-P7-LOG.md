@@ -1122,3 +1122,21 @@ Continues BRIEF-9's contract; B1 (`802f0855`) was already done.
   src/assay/*.py tests/test_liveness*.py` clean.
 - HOST LOAD: every pytest invocation `nice -n 19` (+`ionice -c 3` for the
   gate), serial, one gate container at a time.
+
+### `03f42bb9` -- records, and the gate NOT launched (BLOCKED)
+
+- Tool-call counter at this commit: 102.
+- Pre-flight at 21:05Z found TWO run-gate containers already live estate-
+  wide (`run-gate-vbpub-r2-4136306-...` = P6 r2, 4 min in;
+  `run-gate-vbpub-r2-3677631-...` = P1 r2, 44 min in), each at ~168% CPU on
+  an 8-core host at loadavg 11.49, with a live production game server on
+  the same host. `/proc/pressure/memory` `full avg10` was 0.21 -- fine on
+  its own, which is precisely why the container count is a separate check.
+- BLOCKED, per the dispatch's own "<= 2 gate containers estate-wide"
+  ceiling. Default taken: do NOT launch a third. Rationale in the REPORT's
+  gate section; the ask for the controller is to schedule
+  `./run-gate.py tester-unified` on this tip when a mutation slot frees.
+  Both r2 runs are multi-hour, so waiting inside this session was not an
+  option.
+- No container was created, started, stopped or removed by this session.
+- The tip is clean and needs no further edits before that run.

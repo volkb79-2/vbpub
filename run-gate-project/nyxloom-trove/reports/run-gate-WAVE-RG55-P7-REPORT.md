@@ -955,11 +955,50 @@ leave `poll_interval_s`/`cpu_reader`/`popen` at theirs.
   string against the vocabulary rather than a bare edit. Out of this
   session's call budget; should be the first thing a follow-up picks up.
 
-### Gate (session 10)
+### Gate (session 10) -- NOT RUN: the estate-wide container cap was already full
 
-Launched from the clean tip `ef247935` after the pre-flight checks
-(`docker ps` container count, `/proc/pressure/memory` `full avg10`). No
-commit or edit touched the worktree while it ran -- HEAD movement voids the
-measurement (the incident that wasted P7's second gate run). The verdict
-line, read in a separate step, is in this session's return message and in
-the controller log.
+The repair set is complete and the worktree is clean at `03f42bb9`, but the
+registered gate was **not launched**. The pre-flight check at 21:05Z found
+the estate already at the cap:
+
+```
+run-gate-vbpub-r2-4136306-1789246893   Up 4 minutes    167.79% CPU   (P6 r2)
+run-gate-vbpub-r2-3677631-1789244480   Up 44 minutes   168.32% CPU   (P1 r2)
+/proc/pressure/memory: full avg10=0.21          # fine
+/proc/loadavg:         11.49 12.43 12.77        # 8-core host
+```
+
+Two gate containers, which is the ceiling the dispatch names ("<= 2 gate
+containers estate-wide"), and together they are already drawing ~3.4 of the
+host's 8 cores. A third container -- even `tester-unified` capped at
+`--cpus=3` under `nice -n 19`/`ionice -c 3` -- would put roughly 6.4 cores
+of gate work on a host that also runs a live production game server, which
+is the exact shape of the incident behind the standing "ONE gate container
+at a time, `docker update --cpus=3` right after launch" rule (load hit 85
+on 2026-09-02). Both r2 runs are multi-hour, so waiting for a slot inside
+this session was not possible either.
+
+**Ask for the controller (BLOCKED protocol -- default taken, flagged on
+return):** schedule P7's `./run-gate.py tester-unified` on tip `03f42bb9`
+when a mutation slot frees. Nothing else is outstanding; the tip is clean
+and every repair is committed, so the run needs no further edits. My
+default was to NOT launch rather than to exceed the cap -- the measurement
+would have been taken under contention even if it passed, and the
+production-host risk is not mine to spend.
+
+What HAS been verified on this tip, locally, without a container:
+
+- `python3 -m pytest tests/test_cli_run.py tests/test_liveness.py
+  tests/test_liveness_proc_helpers.py tests/test_liveness_runner_monitor.py
+  tests/test_mutation_progress_budget_plan.py tests/test_verify_hung_bucket.py
+  -q` -- 195 passed (before the S-item commit);
+- `python3 -m pytest tests/ -q -k "liveness or rejudge or config_judge or
+  mutation_pct"` -- 202 passed (after it);
+- `python3 -m pyflakes src/assay/*.py tests/test_liveness*.py` -- clean;
+- `liveness.py` 100% line AND branch.
+
+This is NOT a substitute for the registered gate: the gate builds and runs
+a real wheel in a container, which is exactly where sessions 7/8's five
+findings lived (`test_standalone.py`'s real-R2-through-the-wheel documents,
+the pyflakes lane, the untrusted-JSON sweep). Treat the package as
+gate-unverified on this tip until that run exists.
