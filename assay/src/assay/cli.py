@@ -103,7 +103,7 @@ from .output import (
     resolve_state_directory,
     validate_progress_destination,
 )
-from .verdict import MUTATION_BUCKETS, Evidence, EvidenceDeclaration, Verdict
+from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 

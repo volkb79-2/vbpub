@@ -16,9 +16,7 @@ one question: given a `CommandResult`, which bucket name comes out.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 
-import pytest
 from conftest import make_lane, make_plan
 
 from assay.errors import Outcome, ReasonCode

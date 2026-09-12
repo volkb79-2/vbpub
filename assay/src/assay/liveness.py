@@ -79,7 +79,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from .runner import CommandPlan, ProcessRunner
+    from .runner import CommandPlan
 
 #: The module name assay's `-p` injection asks pytest to load. Chosen to be
 #: obviously assay-owned (never collide with a real project's own plugin) and
@@ -578,7 +578,7 @@ def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
             continue
         try:
             record = json.loads(stripped)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue  # Tolerant of a torn last line.
         if isinstance(record, dict) and record.get("event") == "test":
             yield record
@@ -680,7 +680,7 @@ def _read_events_progress(events_path: Path, previous_count: int) -> tuple[int, 
             continue
         try:
             record = json.loads(stripped)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         valid += 1
         if isinstance(record, dict) and record.get("event") == "session_finish":

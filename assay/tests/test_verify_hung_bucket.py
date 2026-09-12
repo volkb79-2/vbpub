@@ -19,8 +19,6 @@ import copy
 import json
 from pathlib import Path
 
-import pytest
-
 from assay.verify import verify_document
 
 _FIXTURE = (
