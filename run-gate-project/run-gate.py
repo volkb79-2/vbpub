@@ -55,6 +55,23 @@ EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
 CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
 PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 host PSI)
+# RG-55 wiring escape hatch: `[profile] enabled = true` is the CONTRACT
+# default, so every one of this suite's ~800 pre-existing lane-execution
+# tests -- none of which declare `[profile]` at all, and every one of which
+# pins an EXACT docker call log, argv list, or stdout/stderr -- would
+# silently pick up a new `docker exec <daemon> cgprofile ctl version` probe,
+# very likely a further basic-path fallback `docker exec` (no real daemon is
+# ever running in these fixtures), a new `-e RUN_GATE_PROFILE_SESSION=`
+# argv flag, and new disclosure lines, on every run. Retrofitting every one
+# of those tests with an explicit `profile = false` is not practical in one
+# session and would also bury the ONE thing that matters (what that test was
+# actually pinning) under an unrelated new lane key. This variable is an
+# unconditional override (checked BEFORE any config table), set process-
+# wide for the whole pre-existing suite by one autouse fixture and
+# deliberately unset by the RG-55 wiring tests that mean to exercise the
+# real default. Flagged in the REPORT's "Decision asks" for controller
+# review -- it is not named in the interface contract.
+PROFILE_TEST_DISABLE_ENV_VAR = "RUN_GATE_TEST_DISABLE_PROFILING"
 SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
 
 # RG-27 lane invocation history. The store is PER (judged worktree × project):
@@ -512,6 +529,11 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     `false` disables outright; a table overrides `enabled`/`damon` only).
     `source` names where `enabled`/`daemon`/`interval`/`damon` came from
     before any lane-level override, for disclosure (R-05)."""
+    if os.environ.get(PROFILE_TEST_DISABLE_ENV_VAR):
+        return {"enabled": False, "daemon": PROFILE_DAEMON_DEFAULT,
+               "interval": PROFILE_INTERVAL_DEFAULT,
+               "damon": PROFILE_DAMON_DEFAULT,
+               "source": f"${PROFILE_TEST_DISABLE_ENV_VAR}"}
     if "profile" in cfg:
         table, source = cfg["profile"], f"[profile] in {cfg_path}"
     elif central_path is not None and "profile" in central:
@@ -1228,6 +1250,195 @@ class BasicSampler:
             raise RuntimeError("BasicSampler.finish() called with no samples taken")
         return self.accumulator.finish(self.container_id, self.cgroup,
                                        self.started_at, self.ended_at)
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / SPEC R-43: the wiring glue. Everything above this line (config,
+# ProfilerClient, ResourceAccumulator, BasicSampler) is a narrow, independently
+# testable contract. These functions are the orchestration a lane invocation
+# actually calls: resolve what to do (`start_lane_profiling`), do it once per
+# tick (`tick_lane_profiling`), close it out in the SAME `finally` that removes
+# the container (`finish_lane_profiling`), and disclose it (the `print_*`
+# helpers). A profiler STATE is a plain dict (not a class) — it is threaded
+# through await_container()/run_exec_lane() the same way `record`/`watch`
+# already are, and every field is documented at its first write below.
+# ---------------------------------------------------------------------------
+
+def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
+                 ) -> dict:
+    """Contract Sec 2.2 `--meta`. `expected` stays `null` here — filling it
+    from a `run-gate.footprint.json` manifest is C5 territory; a lane
+    invocation with no manifest yet (every one, until C5 ships) is exactly
+    what `null` already means (contract: "null or {...}")."""
+    return {"lane": lane_name, "project": str(project_dir),
+           "worktree": str(worktree), "commit": head_commit(worktree),
+           "run_gate_revision": __revision__, "kind": lane["kind"],
+           "expected": None}
+
+
+def read_host_pressure_snapshot() -> dict | None:
+    """Direct `/proc/pressure/memory` read for the host-PSI disclosure line
+    (contract Sec 4.6) — honors `RUN_GATE_PROC_ROOT` like `BasicSampler`
+    does, so a test can drive it the same way. `None` when unreadable
+    (contract Sec 1.7: absent is never zero, and a line naming numbers this
+    process could not read would be fabrication)."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        text = (root / "pressure" / "memory").read_text()
+    except OSError:
+        return None
+    return _profile_parse_pressure(text) or None
+
+
+def print_host_pressure_line(profiler_status: str | None = None) -> None:
+    """Contract Sec 4.6, line 1 — the `| slice …` segment is never emitted
+    (v1 never calls `ctl host`, RW-12) and the `| profiler …` segment only
+    when the caller already knows it (the daemon path's own `version`
+    response), never guessed."""
+    snap = read_host_pressure_snapshot()
+    if snap is None or snap.get("full_avg10") is None or snap.get("full_avg60") is None:
+        return
+    line = (f"run-gate: host memory PSI full avg10={snap['full_avg10']}% "
+           f"avg60={snap['full_avg60']}%")
+    if profiler_status:
+        line += f" | profiler {profiler_status}"
+    print(line, flush=True)
+
+
+def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
+                         worktree: Path, docker: str, plan: dict,
+                         container_name: str, container_id: str, cgroup: str,
+                         scope: str) -> dict:
+    """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
+    the container/runner id is resolved (`docker inspect`) and BEFORE the
+    caller's wait loop. Tries the daemon exactly once (`version` then
+    `start`); ANY failure at either step degrades to `BasicSampler`, which
+    takes its first sample (the baseline, contract Sec 7's `s_0`)
+    immediately — never raises, never itself decides a verdict (R-04/R-36h).
+
+    Returns a profiler STATE dict:
+      mode              "disabled" | "daemon" | "basic"
+      client            ProfilerClient | None (kept for `finish_lane_profiling`)
+      daemon            the daemon container name (for a promoted follower)
+      session           the daemon session id, or None
+      session_line      the ready-to-print profile-session line, or None
+      warning           the ONE failure reason to disclose, or None
+      sampler           BasicSampler | None
+      profiler_status   the `version` response rendered for the host-PSI
+                        line's optional segment, or None
+    """
+    state = {"mode": "disabled", "client": None, "daemon": plan.get("daemon"),
+             "session": None, "session_line": None, "warning": None,
+             "sampler": None, "profiler_status": None}
+    if not plan["enabled"]:
+        return state
+    client = ProfilerClient(docker, plan["daemon"])
+    state["client"] = client
+    version_doc, reason = client.version()
+    if version_doc is not None:
+        cgprofile_ver = version_doc.get("cgprofile", "?")
+        daemon_damon = (version_doc.get("daemon") or {}).get("damon", "unavailable")
+        state["profiler_status"] = (f"{plan['daemon']} (cgprofile "
+                                    f"{cgprofile_ver}, damon {daemon_damon})")
+        meta = profile_meta(lane, lane_name, project_dir, worktree)
+        interval = float(budget_seconds(plan["interval"]))
+        start_doc, start_reason = client.start(
+            container_id, scope, token=plan.get("token"), damon=plan["damon"],
+            interval=interval, meta=meta)
+        if start_doc is not None:
+            state["mode"] = "daemon"
+            state["session"] = start_doc["session"]
+            baseline = start_doc.get("target", {}).get("baseline_memory_bytes")
+            baseline_mib = (round(baseline / (1024 * 1024))
+                            if isinstance(baseline, (int, float))
+                            and not isinstance(baseline, bool) else "?")
+            damon_state = start_doc.get("damon", "unavailable")
+            state["session_line"] = (
+                f"run-gate: profile session {start_doc['session']} "
+                f"(scope {scope}, baseline {baseline_mib} MiB, "
+                f"damon {damon_state})")
+            return state
+        reason = start_reason
+    state["warning"] = reason
+    state["mode"] = "basic"
+    state["sampler"] = BasicSampler(docker, container_name, scope,
+                                    container_id=container_id, cgroup=cgroup)
+    state["sampler"].sample_once()   # sample 0 / the baseline, contract Sec 7
+    return state
+
+
+def tick_lane_profiling(state: dict) -> None:
+    """One `PROFILE_SAMPLE_SECONDS` tick. A no-op for the daemon path (it
+    samples itself; the daemon path does no per-tick work in v1, RW-12) and
+    for a disabled/never-started profiler — a real sample for the basic
+    path only."""
+    if state["mode"] == "basic" and state["sampler"] is not None:
+        state["sampler"].sample_once()
+
+
+def finish_lane_profiling(state: dict) -> dict:
+    """Contract Sec 4 obligation 2: called in the SAME `finally` that removes
+    the container/runner exec, BEFORE it. Returns the three record-level
+    fields (contract Sec 4.4): `{'resources', 'profile_error', 'profile_ref'}`.
+    May set `state['warning']` (daemon `stop` failing after a successful
+    `start` is a NEW, distinct failure the caller has not disclosed yet)."""
+    if state["mode"] == "daemon" and state["client"] is not None:
+        stop_doc, reason = state["client"].stop(state["session"])
+        if stop_doc is None:
+            state["warning"] = state["warning"] or reason
+            return {"resources": None, "profile_error": reason,
+                    "profile_ref": None}
+        return {"resources": stop_doc["summary"], "profile_error": None,
+                "profile_ref": {"daemon": state["daemon"],
+                                "session": state["session"],
+                                "session_dir": stop_doc.get("session_dir")}}
+    if state["mode"] == "basic" and state["sampler"] is not None:
+        state["sampler"].sample_once()   # the final sample, contract Sec 4.2
+        return {"resources": state["sampler"].finish(), "profile_error": None,
+                "profile_ref": None}
+    if state["mode"] == "disabled":
+        return {"resources": None, "profile_error": "disabled",
+                "profile_ref": None}
+    # Enabled, but neither path ever got going — e.g. a re-attach that
+    # adopted no recorded session (basic-path in-memory samples cannot
+    # survive a client restart) or a profiler state built for a container
+    # collected already-exited.
+    return {"resources": None,
+           "profile_error": state["warning"] or "no profile recorded",
+           "profile_ref": None}
+
+
+def print_profile_warning(state: dict) -> None:
+    """Contract Sec 4.6, line 4 — ONE stderr warning per lane invocation
+    (contract Sec 1.3), guarded by `state['_warned']` so a `stop` failure
+    disclosed via a second `finish_lane_profiling()` call never double-prints
+    the SAME reason (it cannot: a session either fails at `start` — the
+    'basic in-lane sampling only' case — or fails at `stop` after a
+    successful `start` — the 'no profile recorded' case — never both)."""
+    if state.get("warning") and not state.get("_warned"):
+        state["_warned"] = True
+        suffix = ("basic in-lane sampling only" if state["mode"] == "basic"
+                 else "no profile recorded")
+        print(f"run-gate: WARNING profiling: {state['warning']} — {suffix}",
+              file=sys.stderr, flush=True)
+
+
+def print_profile_session_line(state: dict) -> None:
+    if state.get("session_line"):
+        print(state["session_line"], flush=True)
+
+
+def print_profile_plan_dry_run(plan: dict, scope: str) -> None:
+    """`--dry-run` (contract Sec 4 obligation, handoff C3): the plan, never
+    a real call."""
+    if not plan["enabled"]:
+        print("run-gate: profiling disabled ([profile] enabled = false, or "
+             "this lane's own 'profile = false') — no token, no daemon "
+             "call, no sampler", flush=True)
+        return
+    print(f"run-gate: DRY RUN — profile plan: daemon {plan['daemon']!r}, "
+         f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
+         f"token env {PROFILE_TOKEN_ENV}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4858,13 +5069,22 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
 def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     project_dir: Path, repo: Path, worktree: Path,
                     watch: "ProgressWatch | None" = None,
-                    recorded: dict | None = None) -> int:
+                    recorded: dict | None = None,
+                    profiler: dict | None = None,
+                    run_record: dict | None = None,
+                    clock=time.monotonic) -> int:
     """Stream a running container's logs, wait for its status, preserve
     evidence on failure, remove it, clear its inflight record, disclose its
     artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
     re-attach, a collect of an already-exited container), because RW-1's
     "finish exactly as an attached run would" is a promise about the finish,
-    and two code paths would eventually make it false."""
+    and two code paths would eventually make it false.
+
+    `profiler` (RG-55/RW-12): a `start_lane_profiling()` state dict, or None
+    when the caller resolved no profiling for this invocation (disabled, or
+    an environment this function does not profile). `clock` is injectable
+    for tests, mirroring every other clock in this function's own review
+    history."""
     # PLAIN `docker logs -f`: it already replays the container's whole log
     # from the FIRST line and then follows, so a re-attaching client sees the
     # run from its beginning without asking for anything. Review round 1 (S1)
@@ -4911,12 +5131,31 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
     stalled: str | None = None
     code: int | None = None
     logs_code: int | None = None
+    # RG-55/RW-12: while a BASIC-path sampler is active, the wait loop's own
+    # tick shrinks to PROFILE_SAMPLE_SECONDS so a sample is taken on every
+    # timeout (reaching the timeout branch structurally proves the container
+    # is still running — RW-5's own precondition for a stall, one signal
+    # over); the daemon path does NO per-tick work in v1 (RW-12) and
+    # profiling-off is unaffected, so both keep the ORIGINAL
+    # PROGRESS_POLL_SECONDS tick. The stall/log-watch poll itself still runs
+    # only once at least PROGRESS_POLL_SECONDS has REALLY elapsed (a
+    # monotonic gate, not a second timer) — RG-36/RG-41 stall semantics are
+    # therefore unchanged either way.
+    basic_active = profiler is not None and profiler.get("mode") == "basic"
+    tick = PROFILE_SAMPLE_SECONDS if basic_active else PROGRESS_POLL_SECONDS
+    last_poll_at = clock()
     try:
         while True:
             try:
-                logs_code = proc.wait(timeout=PROGRESS_POLL_SECONDS)
+                logs_code = proc.wait(timeout=tick)
                 break
             except subprocess.TimeoutExpired:
+                if basic_active:
+                    tick_lane_profiling(profiler)
+                now = clock()
+                if now - last_poll_at < PROGRESS_POLL_SECONDS:
+                    continue
+                last_poll_at = now
                 # RG-36/RG-41: the one place a long lane is observed. Reaching
                 # here means `docker logs -f` has NOT returned, i.e. the
                 # container is still running — RW-5's precondition for a
@@ -4971,6 +5210,21 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             if code is None or code != 0:
                 saved_log = save_container_logs(docker, name)
     finally:
+        # RG-55/contract Sec 4 obligation 2: `stop` (or the basic sampler's
+        # final sample) runs BEFORE `docker rm -f`, on every exit of the try
+        # above — stalled, failed or clean — because this `finally` is the
+        # ONE place all three arrivals converge (RW-1's own reason for this
+        # being one function at all) and it runs exactly once, which is what
+        # makes this "at most once" without any extra bookkeeping (R-36h's
+        # staked-claim pattern reduces here to the same guarantee `finally`
+        # already gives every other cleanup step in this function).
+        if profiler is not None:
+            profile_result = finish_lane_profiling(profiler)
+            print_profile_warning(profiler)
+            if run_record is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
         proc.terminate()   # no-op once it has exited; ends a stalled stream
         proc.wait()
@@ -5055,6 +5309,35 @@ def promote_follower(docker: str, name: str, lane_name: str,
           f"(exit {code}), so the lane is not left with an orphaned "
           f"container and no history entry", flush=True)
     saved_log = save_container_logs(docker, name) if code != 0 else None
+    # RG-55/contract Sec 4 obligation 2: the owner's OWN `finally` never ran
+    # (it is gone) — THIS client is now the one finishing the session, using
+    # the RECORDED id (no new `start`), same rule as a re-attach's adopt,
+    # BEFORE `docker rm -f` below. A basic-path session cannot be resumed
+    # here either (its samples died with the owner's process).
+    if run_record is not None:
+        session = pending.get("profile_session")
+        daemon_name = pending.get("profile_daemon")
+        if session and daemon_name:
+            stop_doc, reason = ProfilerClient(docker, daemon_name).stop(session)
+            if stop_doc is not None:
+                run_record["resources"] = stop_doc["summary"]
+                run_record["profile_error"] = None
+                run_record["profile_ref"] = {
+                    "daemon": daemon_name, "session": session,
+                    "session_dir": stop_doc.get("session_dir")}
+            else:
+                run_record["resources"] = None
+                run_record["profile_error"] = reason
+                run_record["profile_ref"] = None
+                print(f"run-gate: WARNING profiling: {reason} — no profile "
+                      f"recorded", file=sys.stderr, flush=True)
+        elif pending.get("profile_token"):
+            run_record["resources"] = None
+            run_record["profile_error"] = ("promoted: no profiler session was "
+                                           "recorded (basic-path sampling "
+                                           "does not survive the owning "
+                                           "client's death)")
+            run_record["profile_ref"] = None
     subprocess.run([docker, "rm", "-f", name], capture_output=True)
     clear_inflight_record(project_dir, lane_name)
     if run_record is not None:
@@ -5299,9 +5582,32 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                                 repo, worktree, recorded=pending,
                                 run_record=run_record)
     adopt_inflight_start(run_record, pending)
+    profiler_state = None
     if status == "running":
         print(f"run-gate: re-attached to {name} (started {started}, running "
               f"{_fmt_age(pending.get('started_epoch'))})", flush=True)
+        # RG-55/contract Sec 4 obligation 2: adopt the recorded session — NO
+        # new `start` — so `await_container`'s finally calls `stop` with
+        # THAT id. Only the daemon path can be resumed at all: a basic-path
+        # sampler's samples live in the DEAD client's memory and cannot be
+        # recovered here, so a record with no `profile_session` (disabled,
+        # or the original run degraded to basic) gets a named `profile_error`
+        # instead of a fabricated resume.
+        session = pending.get("profile_session")
+        daemon_name = pending.get("profile_daemon")
+        if session and daemon_name:
+            profiler_state = {"mode": "daemon",
+                              "client": ProfilerClient(docker, daemon_name),
+                              "daemon": daemon_name, "session": session,
+                              "session_line": None, "warning": None,
+                              "sampler": None, "profiler_status": None}
+        elif pending.get("profile_token"):
+            profiler_state = {"mode": None, "client": None, "daemon": None,
+                              "session": None, "session_line": None,
+                              "warning": ("re-attach: no profiler session was "
+                                         "recorded (basic-path sampling does "
+                                         "not survive a client restart)"),
+                              "sampler": None, "profiler_status": None}
     else:
         print(f"run-gate: collected {name} (exited {exit_code} at {finished})",
               flush=True)
@@ -5310,6 +5616,16 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # series. Falls back to the record's `started_at` when either stamp
         # is missing or unparsable.
         adopt_container_duration(run_record, state)
+        # RG-55: this client never watched the container while it was alive
+        # (basic-path or daemon-path alike) — nothing to retroactively
+        # sample or stop. Contract Sec 4 obligation 3's own rule for a
+        # container that exited before the first sample, one level over.
+        # `run_record` is never None here: `adopt_inflight_start` above (its
+        # own signature is `run_record: dict`, non-optional) already
+        # assumes the same thing this branch is reached only through.
+        run_record["resources"] = None
+        run_record["profile_error"] = "collected after exit"
+        run_record["profile_ref"] = None
     # The usual `rev | lane | env | slice` header belongs to a run this
     # client STARTED; this run was started by another one, and the header
     # that identifies it would be a claim about mounts and a slice this
@@ -5326,6 +5642,7 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # operator at a verdict nothing wrote.
     return await_container(docker, name, lane, lane_name, project_dir,
                            repo, worktree, recorded=pending,
+                           profiler=profiler_state, run_record=run_record,
                            watch=make_progress_watch(lane, lane_name,
                                                      project_dir,
                                                      recorded=pending))
@@ -5337,7 +5654,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        dry_run: bool = False,
                        request_base: str | None = None,
                        fresh: bool = False,
-                       run_record: dict | None = None) -> int:
+                       run_record: dict | None = None,
+                       profile_plan: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
@@ -5391,6 +5709,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         value = os.environ.get(key)
         if value:  # empty string counts as ABSENT — matches log_forwarded_env
             argv += ["-e", f"{key}={value}"]
+    # RG-55/contract Sec 4.1: the token is appended in the SAME position as
+    # `forward_env` values, immediately after that loop — `enabled = false`
+    # (or the test-only kill switch) means no token at all, not an empty one.
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    if profiling:
+        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
     mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
     if mem_cap:
         argv += ["--memory", mem_cap]
@@ -5409,6 +5733,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if dry_run:
         # RG-8: the plan above IS what the live run executes — same assembly
         # code path, only the `docker run` itself skipped.
+        if profiling:
+            print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
         return 0
     started = subprocess.run(argv, capture_output=True, text=True)
@@ -5427,7 +5753,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # naming a container that was never created would send the next
     # invocation looking for a ghost.
     verdict_path, progress_path, _state_dir = assay_artifact_paths(lane, project_dir, repo)
-    write_inflight_record(project_dir, worktree, lane_name, {
+    inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
         "container": name,
@@ -5460,9 +5786,48 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "verdict": verdict_path,
         "progress": progress_path,
         "revision": __revision__,
-    })
+        # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
+        # that dies between here and `start` still leaves enough for a
+        # re-attach to know profiling was AT LEAST attempted.
+        "profile_token": profile_plan["token"] if profiling else None,
+        "profile_daemon": profile_plan["daemon"] if profiling else None,
+    }
+    write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+    # RG-55/contract Sec 4 obligation 8: disabled means NO token (already
+    # true above), NO daemon call and NO sampler — so the disabled state is
+    # built directly, without `container_state()`'s extra `docker inspect`
+    # or `start_lane_profiling` ever running at all.
+    if not profiling:
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None}
+    else:
+        # Contract Sec 4 obligation 2: `docker run -d` (above) -> `docker
+        # inspect` -> `ctl start`. `container_state()` already resolves the
+        # real id via the identical single inspect call `resolve_inflight`
+        # uses elsewhere in this file — a second, differently-shaped inspect
+        # call would duplicate that plumbing for no gain.
+        inspected = container_state(docker, name)
+        container_id = inspected["id"] if inspected else \
+            inflight_payload["container_id"]
+        cgroup = f"/{slice_name}/docker-{container_id}.scope" if slice_name else ""
+        profiler_state = start_lane_profiling(
+            lane, lane_name, project_dir, worktree, docker, profile_plan,
+            name, container_id, cgroup, "container")
+        print_profile_warning(profiler_state)
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+        if profiler_state["mode"] == "daemon":
+            # RW-14/RG-35's own pattern, one field over: the SECOND write
+            # adds the session id now that `start` succeeded (contract Sec
+            # 4.1's "and, after start, profile_session").
+            inflight_payload["profile_session"] = profiler_state["session"]
+            write_inflight_record(project_dir, worktree, lane_name,
+                                  inflight_payload)
     return await_container(docker, name, lane, lane_name, project_dir,
                            repo, worktree,
+                           profiler=profiler_state, run_record=run_record,
                            watch=make_progress_watch(lane, lane_name,
                                                      project_dir))
 
@@ -5547,7 +5912,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   container_start_remedy: str,
                   slice_name: str | None, slice_src: str,
                   dry_run: bool = False,
-                  request_base: str | None = None) -> int:
+                  request_base: str | None = None,
+                  run_record: dict | None = None,
+                  profile_plan: dict | None = None) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -5589,6 +5956,10 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         value = os.environ.get(key)
         if value:
             argv += ["-e", f"{key}={value}"]
+    # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    if profiling:
+        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
     argv += [name, "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
           f"container {name} ({name_src}) | "
@@ -5607,17 +5978,67 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if dry_run:
         # RG-8: name resolution + running-check above are rehearsed too —
         # a dry-run against a stopped runner reports the real refusal.
+        if profiling:
+            print_profile_plan_dry_run(profile_plan, "container-shared")
         print(f"run-gate: DRY RUN — the argv above is what a live run would "
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
-    code = subprocess.run(argv).returncode
+    # RG-55: disabled means no daemon call and no sampler — built directly,
+    # without the extra `docker inspect` a real attempt needs.
+    if not profiling:
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None}
+    else:
+        # Contract Sec 4 obligation 2: the container id is the PERSISTENT
+        # runner's — this exec never creates a container of its own.
+        inspected = container_state(docker, name)
+        container_id = inspected["id"] if inspected else ""
+        cgroup = f"/{slice_name}/docker-{container_id}.scope" if slice_name else ""
+        profiler_state = start_lane_profiling(
+            lane, lane_name, project_dir, worktree, docker, profile_plan,
+            name, container_id, cgroup, "container-shared")
+        print_profile_warning(profiler_state)
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+    # RG-55: rewritten from a blocking `subprocess.run` to `Popen` +
+    # `proc.wait(timeout=…)` so a BASIC-path sampler can tick mid-run
+    # (contract Sec 4, exec flow) — stdout/stderr stay inherited (Popen's
+    # default, identical to subprocess.run's) and the exit code is read the
+    # same way subprocess.run's own `.returncode` would report it. The
+    # daemon path does no per-tick work (RW-12) and profiling-off ticks
+    # never, so both simply block until the process exits, exactly as
+    # `subprocess.run(argv).returncode` did before this rewrite.
+    basic_active = profiler_state["mode"] == "basic"
+    tick = PROFILE_SAMPLE_SECONDS if basic_active else None
+    proc = subprocess.Popen(argv)
+    try:
+        while True:
+            try:
+                code = proc.wait(timeout=tick)
+                break
+            except subprocess.TimeoutExpired:
+                tick_lane_profiling(profiler_state)
+    finally:
+        # Contract Sec 4 obligation 2: finished BEFORE this function returns
+        # — there is no container of run-gate's own to remove on an exec
+        # lane, so this IS the equivalent "same finally" moment.
+        profile_result = finish_lane_profiling(profiler_state)
+        print_profile_warning(profiler_state)
+        if run_record is not None:
+            run_record["resources"] = profile_result["resources"]
+            run_record["profile_error"] = profile_result["profile_error"]
+            run_record["profile_ref"] = profile_result["profile_ref"]
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 
 
 def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   worktree: Path, dry_run: bool = False,
-                  request_base: str | None = None) -> int:
+                  request_base: str | None = None,
+                  run_record: dict | None = None,
+                  profile_plan: dict | None = None) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # bare-host lane must not quietly operate on the invocation checkout
     # either.
@@ -5635,6 +6056,17 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           flush=True)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
+    # RG-55/RG-57: a bare-host lane is NEVER profiled — there is no
+    # container/cgroup of run-gate's own to sample — but the host-PSI line
+    # is still cheap disclosure while profiling is switched on at all
+    # (gated exactly like every other new disclosure line, so the ~800
+    # pre-existing tests that run with the test kill switch see nothing new).
+    if profile_plan and profile_plan["enabled"]:
+        print_host_pressure_line()
+    if run_record is not None:
+        run_record["resources"] = None
+        run_record["profile_error"] = "bare-host lanes are not profiled (RG-57)"
+        run_record["profile_ref"] = None
     if dry_run:
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
@@ -6089,6 +6521,20 @@ def main(argv: list[str] | None = None) -> int:
             slice_name, slice_src = resolve_slice(env, env_source)
             check_slice_memory_admission(lane, args.lane, slice_name,
                                          slice_src)
+        # RG-55/contract Sec 4: resolved ONCE per invocation, like `env`
+        # above — `resolve_profile_settings` folds in the test-only kill
+        # switch (`PROFILE_TEST_DISABLE_ENV_VAR`) internally, so this is the
+        # one and only place a lane's profiling policy is decided. The token
+        # is generated regardless of `--dry-run` (RG-8: a dry run's argv IS
+        # what the live run would execute, token included) but is `None`
+        # when profiling is not enabled — contract Sec 4 obligation 8's "no
+        # token" — and this same plan is handed to `run_bare_host_lane` too,
+        # even though a bare-host lane never uses the token: RG-57 makes
+        # bare-host categorically unprofiled regardless of `[profile]`.
+        profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
+                                                central_path)
+        profile_plan["token"] = (generate_profile_token()
+                                 if profile_plan["enabled"] else None)
         locks = acquire_shared_locks(lane, args.lane, args.dry_run)
         # RG-39: the exec-mode mutex fd, closed from the SAME finally as the
         # shared-infra fds above — None until (and unless) the exec branch
@@ -6103,7 +6549,9 @@ def main(argv: list[str] | None = None) -> int:
                          # run_container_lane() below like any named env.
                 code = run_bare_host_lane(lane, args.lane, eff_proj, repo, worktree,
                                      dry_run=args.dry_run,
-                                     request_base=request_base)
+                                     request_base=request_base,
+                                     run_record=record,
+                                     profile_plan=profile_plan)
             elif env.get("mode") == "exec":
                 # Resolved HERE, not inside run_exec_lane: the lock key and
                 # the eventual `docker exec` target must be the SAME
@@ -6121,7 +6569,9 @@ def main(argv: list[str] | None = None) -> int:
                                      container_start_remedy,
                                      slice_name, slice_src,
                                      dry_run=args.dry_run,
-                                     request_base=request_base)
+                                     request_base=request_base,
+                                     run_record=record,
+                                     profile_plan=profile_plan)
             else:
                 code = run_container_lane(lane, args.lane, eff_proj, repo,
                                           worktree, env, env_source,
@@ -6129,7 +6579,8 @@ def main(argv: list[str] | None = None) -> int:
                                           dry_run=args.dry_run,
                                           request_base=request_base,
                                           fresh=args.fresh,
-                                          run_record=record)
+                                          run_record=record,
+                                          profile_plan=profile_plan)
             print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
         finally:
             # RG-39: exec lock released before the shared-infra locks below

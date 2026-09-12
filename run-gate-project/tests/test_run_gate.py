@@ -248,6 +248,23 @@ def ambient_cgroup(monkeypatch):
     monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
 
 
+@pytest.fixture(autouse=True)
+def profiling_off_by_default(monkeypatch):
+    """RG-55: `[profile] enabled = true` is the CONTRACT default (SPEC R-43),
+    so without this fixture EVERY lane-execution test in this file — none of
+    which declare `[profile]`, and most of which pin an EXACT docker call
+    log, argv list, or stdout/stderr — would silently pick up a new
+    `docker exec <daemon> cgprofile ctl version` probe, very likely a further
+    basic-path-fallback `docker exec` (no real daemon ever runs in these
+    fixtures), a new `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new
+    disclosure lines, on every single run. `run_gate.PROFILE_TEST_DISABLE_ENV_VAR`
+    is `resolve_profile_settings()`'s own unconditional override, checked
+    before any config table — it exists FOR this fixture. The RG-55 wiring
+    tests that mean to exercise the real default explicitly
+    `monkeypatch.delenv` it."""
+    monkeypatch.setenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, "1")
+
+
 SIMPLE_LANE = """\
     schema_version = 1
 
@@ -10758,6 +10775,14 @@ class TestProfileConfigValidation:
     """RG-55/R-43 config layer: `[profile]`/`[footprint]` (whole-table
     shadowing, R-09), the per-lane `profile` key, `resolve_profile_settings`."""
 
+    @pytest.fixture(autouse=True)
+    def _real_profile_resolution(self, monkeypatch):
+        """This class calls `resolve_profile_settings()` DIRECTLY to pin its
+        real config-resolution behavior — the one thing the module-level
+        `profiling_off_by_default` fixture exists to override everywhere
+        else. Unset it here, back to the real default, for this class only."""
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+
     def _cfg(self, tmp_path: Path, text: str) -> Path:
         p = tmp_path / "run-gate.toml"
         p.write_text(textwrap.dedent(text))
@@ -11497,3 +11522,802 @@ class TestBasicSampler:
         result = sampler.finish()
         assert result["memory"]["peak_bytes"] is None
         assert result["pids"]["peak"] is None
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / C3 WIRING — token injection, the daemon/basic orchestration glue
+# (start_lane_profiling/tick_lane_profiling/finish_lane_profiling and the
+# print_* disclosure helpers), await_container's RW-12 tick/poll gating,
+# run_exec_lane's Popen rewrite, run_bare_host_lane's disclosure, and
+# resolve_inflight/promote_follower's re-attach/collect/promote profiling
+# rules. Every test in this section either unsets
+# `PROFILE_TEST_DISABLE_ENV_VAR` (the module-level `profiling_off_by_default`
+# autouse fixture forces it "on" for the whole file, see that fixture's own
+# docstring) or drives `resolve_inflight`'s profiling logic directly through
+# a PLANTED inflight record, which reads `profile_session`/`profile_token`
+# off the record itself and never consults `[profile]`/the kill switch at
+# all (resolve_inflight's early return happens BEFORE run_container_lane
+# ever resolves a fresh profile_plan).
+# ---------------------------------------------------------------------------
+
+CGPROFILE_SHIM_CASE_SHIFTED = """\
+            if [ -n "$RUN_GATE_TEST_CGPROFILE_PLAN" ] && [ "$2" = "cgprofile" ] && [ "$3" = "ctl" ]; then
+              verb="$4"
+              plan="$RUN_GATE_TEST_CGPROFILE_PLAN/$verb"
+              if [ -f "$plan.sleep" ]; then sleep "$(cat "$plan.sleep")"; fi
+              if [ -f "$plan.json" ]; then cat "$plan.json"; fi
+              if [ -f "$plan.exit" ]; then exit "$(cat "$plan.exit")"; fi
+            fi"""
+
+
+def add_cgprofile_exec_case_to_stateful_shim(monkeypatch) -> None:
+    """`fake_docker_stateful`'s shim (`cmd="$1"; shift` then `case "$cmd"
+    in`) has no `exec)` case at all -- every test using it that needs one
+    patches it in the same textual way `TestExecMode` already patches a new
+    `ps)` case onto `fake_docker`'s shim. `CGPROFILE_SHIM_CASE_SHIFTED`'s
+    indices are one lower than the module-level `CGPROFILE_SHIM_CASE`'s
+    because of that shim's own `shift` -- both must answer the SAME
+    `set_cgprofile_plan` layout, so a divergence here would silently pin the
+    wrong shim to the wrong plan."""
+    shim = shim_dir_of(monkeypatch) / "docker"
+    body = shim.read_text()
+    assert "exec)" not in body, "fake_docker_stateful already has an exec case"
+    body = body.replace(
+        'case "$cmd" in',
+        f'case "$cmd" in\n          exec)\n{CGPROFILE_SHIM_CASE_SHIFTED}\n'
+        '            ;;', 1)
+    shim.write_text(body)
+
+
+class TestProfileTestKillSwitch:
+    def test_env_var_forces_disabled_regardless_of_config(self, tmp_path):
+        # `profiling_off_by_default` (module autouse) has ALREADY set this --
+        # this test exercises resolve_profile_settings()'s own unconditional
+        # override, the ONE thing standing between RG-55 and ~800 broken
+        # pre-existing assertions (see that fixture's docstring).
+        path = tmp_path / "run-gate.toml"
+        path.write_text(textwrap.dedent("""\
+            schema_version = 1
+            [profile]
+            enabled = true
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """))
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is False
+        assert settings["source"] == f"${run_gate.PROFILE_TEST_DISABLE_ENV_VAR}"
+
+
+class TestProfilingOrchestration:
+    """start_lane_profiling / tick_lane_profiling / finish_lane_profiling /
+    the print_* disclosure helpers — the RG-55 wiring GLUE, unit-tested
+    directly (no full lane run) the same way ProfilerClient/
+    ResourceAccumulator/BasicSampler already are above."""
+
+    @pytest.fixture(autouse=True)
+    def _profiling_on(self, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+
+    def _plan(self, **overrides):
+        plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+               "interval": "1s", "damon": True, "source": "test",
+               "token": "abc123token"}
+        plan.update(overrides)
+        return plan
+
+    def _lane(self):
+        return {"kind": "command", "argv": ["true"]}
+
+    def test_daemon_path_success_builds_session_line(self, tmp_path, monkeypatch):
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = (RG55_FIXTURES / "start-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           start=(start, None, None))
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, docker, self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP, "container-shared")
+        assert state["mode"] == "daemon"
+        assert state["session"] == "s-20260912T101500Z-9f01"
+        assert "profile session s-20260912T101500Z-9f01" in state["session_line"]
+        assert "scope container-shared" in state["session_line"]
+        assert "baseline 500 MiB" in state["session_line"]   # 524288000 bytes
+        assert state["warning"] is None
+        assert state["profiler_status"] == \
+            "cgprofile-host-daemon (cgprofile 1.0.0, damon available)"
+
+    def test_version_failure_degrades_to_basic_and_samples_once(self, tmp_path, monkeypatch):
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(None, 3, None))
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, docker, self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP, "container")
+        assert state["mode"] == "basic"
+        assert state["warning"] is not None
+        assert state["profiler_status"] is None
+        assert state["sampler"] is not None
+        assert len(state["sampler"].accumulator._samples) == 1   # baseline taken
+
+    def test_start_failure_degrades_to_basic_but_keeps_the_version_status(
+            self, tmp_path, monkeypatch):
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           start=(None, 2, None))
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, docker, self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP, "container")
+        assert state["mode"] == "basic"
+        assert state["profiler_status"] is not None
+
+    def test_disabled_plan_never_calls_docker(self, tmp_path, monkeypatch):
+        log = fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, docker,
+            self._plan(enabled=False, token=None),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP, "container")
+        assert state["mode"] == "disabled"
+        assert docker_execs(log) == []
+
+    def test_tick_only_samples_in_basic_mode(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        sampler = run_gate.BasicSampler(docker, "c", "container",
+                                        container_id="x", cgroup="/x")
+        state = {"mode": "basic", "sampler": sampler}
+        run_gate.tick_lane_profiling(state)
+        assert len(sampler.accumulator._samples) == 1
+        state["mode"] = "daemon"
+        run_gate.tick_lane_profiling(state)   # no-op (RW-12: no per-tick work)
+        assert len(sampler.accumulator._samples) == 1
+        state["mode"] = "disabled"
+        run_gate.tick_lane_profiling(state)   # no-op
+        assert len(sampler.accumulator._samples) == 1
+
+    def test_finish_daemon_success(self, tmp_path, monkeypatch):
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "session": "s-20260912T101500Z-9f01", "warning": None}
+        result = run_gate.finish_lane_profiling(state)
+        expected = json.loads(stop)["summary"]
+        assert result["resources"] == expected
+        assert result["profile_error"] is None
+        assert result["profile_ref"] == {
+            "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "session": "s-20260912T101500Z-9f01",
+            "session_dir": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01"}
+
+    def test_finish_daemon_stop_failure_sets_a_new_warning(self, tmp_path, monkeypatch):
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        state = {"mode": "daemon", "client": client,
+                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "session": "s-x", "warning": None}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"] is None
+        assert result["profile_error"] is not None
+        assert state["warning"] == result["profile_error"]
+
+    def test_finish_basic(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        sampler = run_gate.BasicSampler(docker, "c", "container",
+                                        container_id="x", cgroup="/x")
+        sampler.sample_once()
+        state = {"mode": "basic", "sampler": sampler, "warning": "x"}
+        result = run_gate.finish_lane_profiling(state)
+        assert result["resources"]["method"] == "basic"
+        assert result["profile_error"] is None
+        assert result["profile_ref"] is None
+
+    def test_finish_disabled(self):
+        assert run_gate.finish_lane_profiling({"mode": "disabled"}) == {
+            "resources": None, "profile_error": "disabled", "profile_ref": None}
+
+    def test_finish_never_started_reports_a_default_or_the_named_reason(self):
+        result = run_gate.finish_lane_profiling({"mode": None, "warning": None})
+        assert result["profile_error"] == "no profile recorded"
+        result2 = run_gate.finish_lane_profiling(
+            {"mode": None, "warning": "custom reason"})
+        assert result2["profile_error"] == "custom reason"
+
+    def test_warning_prints_once_with_the_basic_suffix(self, capsys):
+        state = {"mode": "basic", "warning": "daemon unreachable"}
+        run_gate.print_profile_warning(state)
+        run_gate.print_profile_warning(state)   # second call: no-op
+        err = capsys.readouterr().err
+        assert err.count("WARNING profiling") == 1
+        assert "basic in-lane sampling only" in err
+
+    def test_warning_no_profile_recorded_suffix(self, capsys):
+        state = {"mode": "daemon", "warning": "stop failed"}
+        run_gate.print_profile_warning(state)
+        assert "no profile recorded" in capsys.readouterr().err
+
+    def test_session_line_prints_only_when_set(self, capsys):
+        run_gate.print_profile_session_line({"session_line": None})
+        assert capsys.readouterr().out == ""
+        run_gate.print_profile_session_line(
+            {"session_line": "run-gate: profile session x"})
+        assert "profile session x" in capsys.readouterr().out
+
+    def test_dry_run_plan_text_enabled_and_disabled(self, capsys):
+        run_gate.print_profile_plan_dry_run(self._plan(), "container")
+        out = capsys.readouterr().out
+        assert "profile plan" in out
+        assert run_gate.PROFILE_DAEMON_DEFAULT in out
+        assert run_gate.PROFILE_TOKEN_ENV in out
+        run_gate.print_profile_plan_dry_run(self._plan(enabled=False), "container")
+        assert "profiling disabled" in capsys.readouterr().out
+
+    def test_host_pressure_line_reads_a_real_fixture_and_is_silent_when_unreadable(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        run_gate.print_host_pressure_line()
+        out = capsys.readouterr().out
+        assert "host memory PSI full avg10=" in out
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-such"))
+        run_gate.print_host_pressure_line()
+        assert capsys.readouterr().out == ""
+
+    def test_host_pressure_line_includes_the_profiler_segment_when_given(
+            self, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        run_gate.print_host_pressure_line(
+            "cgprofile-host-daemon (cgprofile 1.0.0, damon on)")
+        assert "| profiler cgprofile-host-daemon" in capsys.readouterr().out
+
+    def test_profile_meta_shape(self, tmp_path):
+        repo = make_repo(tmp_path)
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path, repo)
+        assert meta["lane"] == "suite"
+        assert meta["kind"] == "command"
+        assert meta["expected"] is None
+        assert meta["run_gate_revision"] == run_gate.__revision__
+        assert meta["commit"] is not None
+
+
+class _CountingSampler:
+    """A `BasicSampler`-shaped stub: `await_container`'s tick loop only ever
+    calls `.sample_once()`/`.finish()`, never touches docker itself, so
+    isolating the CALLER's tick/poll-gating logic (RW-12) does not need a
+    real docker-exec target at all."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def sample_once(self) -> None:
+        self.calls += 1
+
+    def finish(self) -> dict:
+        return {"schema": 1, "method": "basic", "samples": self.calls}
+
+
+class _StubProfilerClient:
+    """A `ProfilerClient`-shaped stub for `finish_lane_profiling`'s daemon
+    branch, isolating `await_container`'s finally-before-rm-f ordering from
+    needing a real `cgprofile ctl stop` answered by a shim."""
+
+    def __init__(self, stop_response):
+        self.stop_response = stop_response
+        self.stop_calls: list[str] = []
+
+    def stop(self, session):
+        self.stop_calls.append(session)
+        return self.stop_response
+
+
+class TestAwaitContainerProfilingWiring:
+    """`await_container`'s RW-12 tick-shape rewrite, tested by calling it
+    DIRECTLY (it is a plain function; `fake_docker_stateful` already answers
+    every docker call it makes — `logs`, `wait`, `rm` — with no daemon or
+    sampler shim needed when the profiler state itself is a stub)."""
+
+    def _start_container(self, state: Path, name: str) -> None:
+        (state / name).write_text("running 0\n")
+
+    def test_basic_mode_samples_on_every_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+        def _clear_hang():
+            time.sleep(0.4)
+            (state / ".hang").unlink(missing_ok=True)
+        t = threading.Thread(target=_clear_hang, daemon=True)
+        t.start()
+        sampler = _CountingSampler()
+        profiler = {"mode": "basic", "sampler": sampler, "client": None,
+                   "daemon": None, "session": None, "warning": None,
+                   "session_line": None, "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(docker, name, {"kind": "command"},
+                                        "suite", tmp_path, tmp_path, tmp_path,
+                                        profiler=profiler)
+        t.join(timeout=5)
+        assert code == 0
+        assert sampler.calls >= 4, sampler.calls
+
+    def test_daemon_mode_does_no_per_tick_work_and_stops_before_rm(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+        def _clear_hang():
+            time.sleep(0.3)
+            (state / ".hang").unlink(missing_ok=True)
+        threading.Thread(target=_clear_hang, daemon=True).start()
+        summary = json.loads((RG55_FIXTURES / "stop-v1.json").read_text())["summary"]
+        client = _StubProfilerClient(
+            ({"summary": summary, "session_dir": "/var/lib/cgprofile/sessions/s-x"},
+             None))
+        run_record: dict = {}
+        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+                   "session": "s-x", "warning": None, "session_line": None,
+                   "sampler": None, "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(docker, name, {"kind": "command"},
+                                        "suite", tmp_path, tmp_path, tmp_path,
+                                        profiler=profiler, run_record=run_record)
+        assert code == 0
+        assert client.stop_calls == ["s-x"]      # exactly once
+        assert run_record["resources"] == summary
+        assert run_record["profile_ref"]["session_dir"] == \
+            "/var/lib/cgprofile/sessions/s-x"
+        calls = [c[0] for c in _docker_calls(log)]
+        assert calls[-1] == "rm"                 # stop (our stub) before rm -f
+
+    def test_stall_path_stops_profiling_before_rm(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")   # never cleared: the lane hangs
+        client = _StubProfilerClient(
+            ({"summary": {"method": "daemon"}, "session_dir": None}, None))
+        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+                   "session": "s-x", "warning": None, "session_line": None,
+                   "sampler": None, "profiler_status": None}
+        docker = shutil.which("docker")
+        with pytest.raises(run_gate.GateInfraError):
+            run_gate.await_container(docker, name, {"kind": "command",
+                                                     "stall_timeout": "1s"},
+                                     "suite", tmp_path, tmp_path, tmp_path,
+                                     profiler=profiler)
+        assert client.stop_calls == ["s-x"]
+        calls = [c[0] for c in _docker_calls(log)]
+        assert calls[-1] == "rm"
+
+
+class TestBareHostProfilingWiring:
+    def test_host_pressure_line_and_record_fields(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "host memory PSI full avg10=" in out
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] == "bare-host lanes are not profiled (RG-57)"
+        assert latest["profile_ref"] is None
+
+    def test_disabled_prints_nothing_new(self, tmp_path, monkeypatch, capsys):
+        # kill switch is ON by default (profiling_off_by_default) -- no
+        # host-PSI line should appear even on a real, readable proc root.
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "host memory PSI" not in out
+        latest = lane_slot(proj)["latest"]
+        assert latest["profile_error"] == "bare-host lanes are not profiled (RG-57)"
+
+    def test_dry_run_has_no_run_record(self, tmp_path, monkeypatch, capsys):
+        # main() never builds a run_record for --dry-run — the ONLY way to
+        # exercise run_bare_host_lane's `run_record is not None` guard's
+        # False side.
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        assert not (proj / ".run-gate" / "history.json").exists()
+
+
+class TestEphemeralProfilingWiring:
+    """The full ephemeral flow through `main()`: token injection, the
+    inspect -> start sequence, the record's `resources`/`profile_error`/
+    `profile_ref`, and the container_state()-returns-None fallback."""
+
+    def _config(self):
+        return """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """
+
+    def test_daemon_path_ephemeral_record_matches_golden(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = (RG55_FIXTURES / "start-v1.json").read_text()
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           start=(start, None, None), stop=(stop, None, None))
+        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        expected = json.loads(stop)["summary"]
+        assert latest["resources"] == expected
+        assert latest["profile_error"] is None
+        assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
+        assert latest["profile_ref"]["daemon"] == run_gate.PROFILE_DAEMON_DEFAULT
+        # the inflight record's second write (RW: session added after start)
+        # already happened and was cleared in the same finally as `rm -f` --
+        # nothing left behind.
+        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
+    def test_disabled_lane_has_no_token_and_no_profiling_calls(
+            self, tmp_path, monkeypatch):
+        # kill switch stays ON (default) -- proves the production `disabled`
+        # shape end-to-end, through the SAME code every one of this file's
+        # ~800 other tests already exercises.
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        assert run_gate.main(["suite"]) == 0
+        exec_calls = [c for c in _docker_calls(log) if c and c[0] == "exec"]
+        assert exec_calls == []
+        run_calls = [c for c in _docker_calls(log) if c and c[0] == "run"]
+        assert not any(PROFILE_TOKEN_ENV_NEEDLE in " ".join(c) for c in run_calls)
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] == "disabled"
+        assert latest["profile_ref"] is None
+
+    def test_dry_run_prints_the_profile_plan_and_starts_nothing(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "DRY RUN — profile plan: daemon" in out
+        assert run_gate.PROFILE_TOKEN_ENV in out
+        assert docker_runs(log) == []
+
+    def test_container_state_returning_none_falls_back_to_run_output(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # plain shim: no cgprofile plan set
+        monkeypatch.setattr(run_gate, "container_state", lambda docker, name: None)
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "basic"
+        assert latest["resources"]["target"]["container_id"] == "fake-container-id"
+
+
+PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+
+
+class TestExecLaneProfilingWiring:
+    """The `run_exec_lane` Popen rewrite. The RED-FIRST proof named by the
+    wave's own test spec (§3): the PRE-wiring blocking `subprocess.run(argv)`
+    call structurally could not sample mid-run — a whole call blocks until
+    the process exits, so zero intermediate ticks are possible no matter how
+    long the command runs (only the pre-loop baseline sample from
+    `start_lane_profiling` could ever exist, i.e. at most 1). This
+    project's own LOG records that the rewrite and this test were developed
+    together rather than by literally reverting run_exec_lane and
+    re-running (the coupling between the Popen loop and the profiler-state
+    plumbing made a true revert-and-run round trip cost more than the
+    reasoning above already proves) — the assertion below (>= 2 samples,
+    which the pre-wiring shape cannot reach) is what a red run would have
+    failed."""
+
+    def test_exec_lane_samples_at_least_twice_during_a_slow_command(
+            self, tmp_path, monkeypatch):
+        # run_gate.main() IN-PROCESS, not run_tool()'s subprocess: this
+        # process's coverage.py instrumentation cannot see lines executed by
+        # a spawned `python3 run-gate.py` child, so a subprocess-only test
+        # here would pin the behavior but never satisfy the diff-coverage
+        # gate for run_exec_lane's own new lines.
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.2)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "the-runner"
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["sleep", "1.4"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite"]) == 0
+        execs = [c for c in docker_execs(log) if any("memory.current" in a for a in c)]
+        assert len(execs) >= 2, docker_execs(log)
+
+    def test_exec_lane_scope_is_container_shared(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "the-runner"
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite"]) == 0
+        run_calls = docker_runs(log)
+        assert not run_calls or PROFILE_TOKEN_ENV_NEEDLE not in " ".join(
+            a for c in run_calls for a in c)
+        execs = [c for c in docker_execs(log)
+                if any(PROFILE_TOKEN_ENV_NEEDLE in a for a in c)]
+        # the token flag was appended to the EXEC argv (persistent runner),
+        # never to a `docker run` this lane never issues.
+        assert any(a == "the-runner" for c in execs for a in c)
+
+    def test_exec_lane_dry_run_prints_the_profile_plan(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_TEST_DISABLE_ENV_VAR, raising=False)
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [environments.runner]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "the-runner"
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "DRY RUN — profile plan: daemon" in out
+        assert "scope 'container-shared'" in out
+
+    def test_run_exec_lane_tolerates_no_run_record(self, tmp_path, monkeypatch):
+        # main() never calls run_exec_lane's live (non-dry) path with
+        # run_record=None (dry-run returns before that path is ever
+        # reached) -- a direct call is the only way to exercise the
+        # defensive `run_record is not None` guard's False side, exactly
+        # like run_bare_host_lane's own dry-run test does for ITS guard.
+        repo = make_repo(tmp_path)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace('case "$1" in',
+                            'case "$1" in\n  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        docker = shutil.which("docker")
+        env = {"forward_env": []}
+        lane = {"kind": "command", "argv": ["true"]}
+        code = run_gate.run_exec_lane(
+            lane, "suite", repo, repo, repo, env, "test-env",
+            "the-runner", "test-src", "test-remedy", None, "no-slice",
+            dry_run=False, run_record=None,
+            profile_plan={"enabled": False, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                         "interval": "1s", "damon": True, "source": "test",
+                         "token": None})
+        assert code == 0
+
+
+class TestReattachProfilingWiring:
+    """RG-55: the inflight record's `profile_session`/`profile_daemon`/
+    `profile_token` govern re-attach/collect/promote independent of a FRESH
+    run's own `[profile]` resolution — `resolve_inflight`'s early return
+    happens BEFORE `run_container_lane` ever resolves a profile_plan, so
+    none of these tests need to touch the kill switch."""
+
+    def _fixture(self, tmp_path, monkeypatch, config=SIMPLE_LANE):
+        repo, proj = make_history_repo(tmp_path, config)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        return repo, proj, log, state
+
+    def test_collected_after_exit_records_null_resources(self, tmp_path, monkeypatch):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+        plant_inflight(proj, repo, state, status="exited", code=0,
+                       profile_token="tok123",
+                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
+                       profile_session="s-x")
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] == "collected after exit"
+        assert latest["profile_ref"] is None
+
+    def test_reattach_adopts_recorded_session_stop_called_with_it(
+            self, tmp_path, monkeypatch):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
+        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123",
+                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
+                       profile_session="s-20260912T101500Z-9f01")
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        expected = json.loads(stop)["summary"]
+        assert latest["resources"] == expected
+        assert latest["profile_error"] is None
+        exec_calls = [c for c in _docker_calls(log) if c and c[0] == "exec"]
+        assert any("stop" in c and "s-20260912T101500Z-9f01" in c
+                   for c in exec_calls)
+        assert not any("start" in c for c in exec_calls)   # no new start
+
+    def test_reattach_with_token_but_no_session_names_the_reason(
+            self, tmp_path, monkeypatch):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123")   # no profile_session recorded
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert "does not survive a client restart" in latest["profile_error"]
+
+    def test_promoted_follower_finishes_the_recorded_session(
+            self, tmp_path, monkeypatch):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
+        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123",
+                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
+                       profile_session="s-20260912T101500Z-9f01",
+                       **live_owner_fields())
+        answers = iter([os.getpid()])   # alive once (this client follows), then gone
+        monkeypatch.setattr(run_gate, "live_owner_pid",
+                            lambda pending: next(answers, None))
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        expected = json.loads(stop)["summary"]
+        assert latest["resources"] == expected
+        assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
+
+    def test_promoted_follower_with_no_session_names_the_reason(
+            self, tmp_path, monkeypatch):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123", **live_owner_fields())
+        answers = iter([os.getpid()])
+        monkeypatch.setattr(run_gate, "live_owner_pid",
+                            lambda pending: next(answers, None))
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert "does not survive the owning client's death" in latest["profile_error"]
+
+    def test_promoted_follower_stop_failure_names_the_reason(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
+        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123",
+                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
+                       profile_session="s-x", **live_owner_fields())
+        answers = iter([os.getpid()])
+        monkeypatch.setattr(run_gate, "live_owner_pid",
+                            lambda pending: next(answers, None))
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] is not None
+        err = capsys.readouterr().err
+        assert "WARNING profiling:" in err
+        assert "no profile recorded" in err
+
