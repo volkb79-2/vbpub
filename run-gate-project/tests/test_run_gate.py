@@ -12805,6 +12805,61 @@ class TestProfilerClient:
         assert doc is None
         assert "unparsable" in reason
 
+    # -- RG-59: `docker exec` into an ABSENT/STOPPED daemon container fails
+    # BEFORE cgprofile ever runs -- stdout is empty, so the SAME
+    # `json.JSONDecodeError` branch as "a running daemon returned garbage"
+    # fires; only docker's own stderr wording tells the two apart. Direct
+    # `subprocess.run` monkeypatches (not the shell shim) -- the shim has no
+    # stderr-injection knob and adding one would touch shared fixture
+    # infrastructure every other ProfilerClient test also depends on, for a
+    # one-off need this is simpler and more surgical.
+
+    def test_daemon_not_running_names_the_real_cause(self, tmp_path,
+                                                      monkeypatch):
+        class _FakeCompleted:
+            stdout = ""
+            stderr = ("Error response from daemon: container abc123 "
+                     "is not running")
+            returncode = 1
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "not running" in reason
+        assert "ciu up" in reason
+        assert "unparsable" not in reason
+
+    def test_no_such_container_also_names_the_real_cause(self, tmp_path,
+                                                          monkeypatch):
+        class _FakeCompleted:
+            stdout = ""
+            stderr = "Error: No such container: cgprofile-host-daemon"
+            returncode = 1
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "not running" in reason
+
+    def test_malformed_stdout_from_a_running_daemon_keeps_the_wording(
+            self, tmp_path, monkeypatch):
+        # A RUNNING daemon returning garbage must NOT be reclassified --
+        # "unparsable stdout" stays reserved for an actually malformed
+        # response, per the oracle sketch's second bullet.
+        class _FakeCompleted:
+            stdout = "not json at all"
+            stderr = ""
+            returncode = 0
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "unparsable" in reason
+        assert "not running" not in reason
+
     def test_a_response_missing_the_ok_key_entirely_degrades(
             self, tmp_path, monkeypatch):
         # `doc.get("ok", False)` -- the fail-SAFE default (assay-r2

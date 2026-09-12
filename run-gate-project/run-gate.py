@@ -1014,6 +1014,34 @@ def _last_successful(values) -> object:
     return None
 
 
+# RG-59: docker's OWN stderr wording for "the target of `docker exec`
+# is not a live container" -- case-folded (RG-44's own precedent:
+# GONE_SIGNALS above learned the hard way that a docker version's exact
+# casing is not portable across hosts/versions). Matched against
+# ProfilerClient._ctl's `stderr_tail` to tell "the daemon container itself
+# is absent/stopped" apart from "a RUNNING daemon returned genuinely
+# malformed stdout" -- the two used to collapse into the SAME generic
+# "produced unparsable stdout" reason, naming the wrong cause in the far
+# more common case (no daemon deployed at all).
+_DAEMON_NOT_RUNNING_STDERR_SIGNALS = ("no such container", "is not running")
+
+
+def _stderr_names_daemon_not_running(stderr_tail: str) -> bool:
+    lowered = stderr_tail.lower()
+    return any(sig in lowered for sig in _DAEMON_NOT_RUNNING_STDERR_SIGNALS)
+
+
+def daemon_not_running_reason(daemon_name: str) -> str:
+    """RG-59: the ONE wording both `cmd_doctor`'s "profiler daemon" WARN
+    and `ProfilerClient._ctl`'s live-run warning use for "the daemon
+    container is not running" -- factored into one function so the two
+    surfaces can never drift apart (the whole point of this backlog entry:
+    doctor already named the real cause and the right remedy, the live-run
+    warning did not)."""
+    return (f"{daemon_name!r} not running (start it: cd "
+           f"scripts/cgroup-profiler && ciu up)")
+
+
 class ProfilerClient:
     """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
     `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
@@ -1071,6 +1099,17 @@ class ProfilerClient:
         try:
             doc = json.loads(proc.stdout)
         except json.JSONDecodeError:
+            # RG-59: this `docker exec` can fail BEFORE `cgprofile` ever
+            # runs (the daemon container itself is absent/stopped) -- stdout
+            # is then empty, so this SAME exception fires for a completely
+            # different, far more common cause than "a running daemon
+            # returned garbage". `stderr_tail` is docker's own wording, not
+            # cgprofile's, and is the only place the two are told apart:
+            # named explicitly here rather than folded into the generic
+            # "unparsable stdout" reason, which stays reserved for an
+            # ACTUALLY malformed response from a daemon that IS running.
+            if _stderr_names_daemon_not_running(stderr_tail):
+                return None, daemon_not_running_reason(self.daemon)
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
                           f"(exit {proc.returncode}); stderr: {stderr_tail}")
         if not isinstance(doc, dict):
@@ -5209,10 +5248,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                              f"name=^{daemon_name}$", "--format", "{{.Names}}"],
                             capture_output=True, text=True)
         if ps.returncode != 0 or daemon_name not in ps.stdout.split():
+            # RG-59: the SAME wording ProfilerClient._ctl's live-run warning
+            # now uses (daemon_not_running_reason) -- one function, so this
+            # site and that one can never drift apart again.
             record("WARN", "profiler daemon",
-                   f"{daemon_name!r} not running — every lane falls back to "
-                   f"basic (in-lane) sampling ('cd scripts/cgroup-profiler "
-                   f"&& ciu up' starts it, vbpub estate infrastructure)")
+                   f"{daemon_not_running_reason(daemon_name)} — every lane "
+                   f"falls back to basic (in-lane) sampling")
         else:
             client = ProfilerClient(docker, daemon_name)
             version_doc, reason = client.version()

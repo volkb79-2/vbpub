@@ -126,3 +126,62 @@ $ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
     -k "Inflight or inflight or ContainerLane or container_lane" -q
 62 passed, 930 deselected, 1 warning in 8.00s
 ```
+
+Commit: `a6716422`.
+
+## Commit 2 — C2 (RG-59): live-run daemon-absent warning names the real cause
+
+`ProfilerClient._ctl`'s `json.JSONDecodeError` branch (fired both when a
+daemon container is absent/stopped — `docker exec` itself fails, stdout is
+empty — and when a RUNNING daemon returns genuinely malformed stdout) now
+tells the two apart by matching docker's own `stderr_tail` against
+`_stderr_names_daemon_not_running()` (`"no such container"`/`"is not
+running"`, case-folded per RG-44's own precedent — docker's wording casing
+is not portable across hosts/versions). New shared function
+`daemon_not_running_reason(daemon_name)` is the ONE place both
+`cmd_doctor`'s "profiler daemon" WARN and `_ctl`'s live-run reason get this
+text from, so the two surfaces cannot drift apart again. "produced
+unparsable stdout" stays reserved for the genuinely-malformed-response case.
+
+**Note on exact wording** (documented, not silently deviating): the
+backlog's own quote of `cmd_doctor`'s "already good" text
+("profiler daemon not running — basic in-lane sampling only (start it: cd
+scripts/cgroup-profiler && ciu up)") does not byte-match the code as
+written before this commit (`f"{daemon_name!r} not running — every lane
+falls back to basic (in-lane) sampling (...)"`) — confirmed by reading the
+actual source, not just the backlog prose. Treated as a paraphrase.
+`daemon_not_running_reason()`'s own text — `"'<name>' not running (start
+it: cd scripts/cgroup-profiler && ciu up)"` — carries the same cause and
+the same remedy in both places; `print_profile_warning`'s existing
+`{reason} — {suffix}` composition (suffix = `"basic in-lane sampling
+only"` for the live-run line) means embedding that suffix INSIDE the
+shared reason string too would have printed it twice on the live-run line,
+so the shared string holds the cause+remedy only and each call site
+supplies its own trailing clause.
+
+### Tests
+
+`tests/test_run_gate.py`, `TestProfilerClient` (3 new tests, direct
+`subprocess.run` monkeypatches rather than the shell-shim fixture — the
+shim has no stderr-injection knob and adding one would touch shared
+fixture infrastructure many other tests depend on):
+- `test_daemon_not_running_names_the_real_cause` — docker's real
+  "... is not running" stderr, empty stdout → reason names "not running"/
+  "ciu up", never "unparsable".
+- `test_no_such_container_also_names_the_real_cause` — the OTHER docker
+  wording ("No such container") also matches.
+- `test_malformed_stdout_from_a_running_daemon_keeps_the_wording` — a
+  RUNNING daemon's genuine garbage stdout is NOT reclassified; "unparsable"
+  stays, "not running" does not appear.
+
+### Gate verdicts (targeted)
+
+```
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
+    -k "TestProfilerClient or TestDoctorProfilerCheck" -q
+30 passed, 965 deselected, 1 warning in 3.92s
+
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
+    -k "profil or Profil" -q
+139 passed, 856 deselected, 1 warning in 7.76s
+```
