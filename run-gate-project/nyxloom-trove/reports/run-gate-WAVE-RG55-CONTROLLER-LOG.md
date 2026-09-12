@@ -940,6 +940,26 @@ under xdist); rulings for the repair; session wind-down begins
   rounds 1–2, since this session's reviewer cannot be resumed from a new
   session).
 
+### RW-58 — 2026-09-12 21:45Z — P2: the RW-56 remedy works by hand but not
+through assay; relaunch rule for the successor
+
+- P2's second by-hand baseline with `PYTEST_ADDOPTS="-p no:randomly"`
+  (bare, niced, `-rfE`): 1087 passed, 3 skipped, 153.9 s — GREEN. The
+  relaunched assay pass with the same variable exported (21:22Z) still
+  ended `FAIL/COMMAND_FAILED` in the baseline at 21:24Z. Conclusion for
+  the successor (to confirm by reading assay 6.1.1's runner): assay does
+  not propagate `PYTEST_ADDOPTS` (or the environment) into the baseline
+  command, so the order-dependent defect (RW-56) stays a per-run coin
+  flip inside assay.
+- Rule: the successor relaunches the 2-candidate `--resume` pass on the
+  tree detached at `186461de` up to THREE more times (≈6 min each; only
+  the R0 baseline is at risk; records intact); the first PASS is the
+  evidence. If all three fail in the baseline, accept run 2 (281/283
+  judged, 263 killed, 18 survivors triaged, the 2 placeholders named as
+  never executed, RG-62/RW-56 cause) as the mutation evidence with that
+  disclosure in the REPORT and CHANGES, and proceed to release 23.7.0.
+  Either way P4's branch (RW-46a) removes the defect for 23.8.0.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |

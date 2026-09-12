@@ -87,13 +87,14 @@ Order of work (each step's gate before the next; nothing else changes):
    without cleanup; pytest-randomly makes the three sibling
    `TestExecModeMutex` tests fail on a coin flip (RG-62 family; fixed on
    P4's branch by RW-46a). The second pass ran with
-   `PYTEST_ADDOPTS="-p no:randomly"` and still failed — P2's final BRIEF
-   records the by-hand re-run with that variable and the open question
-   (does assay 6.1.1 strip the environment for the baseline command?).
-   Successor: settle that (read assay's runner `env=` handling in the
-   pyz), get ONE clean pass on the tree detached at `186461de` (records
-   intact), OR — controller decision — accept run 2 with a disclosure
-   (281/283 judged, both placeholders named, RG-62 cause). Then: switch to
+   `PYTEST_ADDOPTS="-p no:randomly"` and still failed, while the same
+   baseline BY HAND with that variable is fully green (1087 passed) —
+   so assay 6.1.1 evidently does not propagate it (confirm in the pyz's
+   runner). RULE (RW-58): relaunch the pass on the tree detached at
+   `186461de` up to three more times (≈6 min each, records intact); first
+   PASS is the evidence; if all fail in the baseline, accept run 2 with a
+   disclosure (281/283 judged, both placeholders named, RG-62/RW-56 cause)
+   in the REPORT and CHANGES and release. Then: switch to
    the branch, survivor triage in the REPORT (18 survivors; candidate 105
    was SIGKILLed by the controller, RW-50 — state its classification;
    the `-p no:randomly` disclosure), final gates (`selftest`, `assay-r1`,
