@@ -1157,3 +1157,16 @@ def test_extract_follow_rejects_a_busy_loop_interval(tmp_path, capsys):
     exit_code = cli.main(["extract", str(fp), "--follow", "--interval", "0"])
     assert exit_code == 1
     assert "busy loop" in capsys.readouterr().err
+
+
+def test_follow_reports_an_unknown_notify_project_instead_of_crashing(tmp_path, capsys, monkeypatch):
+    # --notify-project resolves through the ordinary project registry, so an
+    # id that isn't registered has to be a clean error, not a traceback out of
+    # the middle of a tail.
+    from nyxloom import config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_registry", lambda: {})
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--notify-project", "nope"])
+    assert exit_code == 1
+    assert "--notify-project" in capsys.readouterr().err
