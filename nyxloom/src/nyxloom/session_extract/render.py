@@ -153,9 +153,10 @@ def _gap_inline_text(ev: NormalizedEvent, min_gap_to_annotate: int, gap_marker_m
     return text
 
 
-def _separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
+def separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
     """The block-join separator -- see config.py's insert_blank_lines
-    comment for the -1/0/N>=1 semantics. inline_text, when given, is
+    comment for the -1/0/N>=1 semantics. Public (2026-09-12) because
+    follow.py separates live-streamed blocks with the identical marker. inline_text, when given, is
     embedded between the marker's two dash groups ("--- <text> ---")
     instead of a bare "---" -- gap_marker_mode's inline/inline2/inline-short
     modes (see _gap_inline_text above)."""
@@ -188,7 +189,7 @@ def render_text(
     gap_marker_mode: str = "full",
     block_render: Callable[[str], str] | None = None,
 ) -> str:
-    plain_sep = _separator(insert_blank_lines)
+    plain_sep = separator(insert_blank_lines)
     parts: list[str] = []
     seps: list[str] = []
     pending_sep: str | None = None  # a gap-embedding separator queued by the
@@ -223,7 +224,7 @@ def render_text(
         elif gap_marker_mode != "none":
             inline_text = _gap_inline_text(ev, min_gap_to_annotate, gap_marker_mode, show_gap_marker)
             if inline_text:
-                pending_sep = _separator(insert_blank_lines, inline_text)
+                pending_sep = separator(insert_blank_lines, inline_text)
 
     body = parts[0] if parts else ""
     for text, sep in zip(parts[1:], seps):

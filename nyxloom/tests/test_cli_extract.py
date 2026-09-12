@@ -1024,3 +1024,136 @@ def test_extract_color_and_no_color_are_mutually_exclusive(tmp_path, capsys):
     exit_code = cli.main(["extract", str(fp), "--render-markdown", "--color", "--no-color"])
     assert exit_code == 2
     assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_extract_highlight_keeps_every_markdown_character(tmp_path, capsys):
+    import re
+
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--highlight", "--color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" in out  # colored
+    # ...and unlike --render-markdown, the markup itself survives, which is
+    # the whole reason this is a separate flag.
+    assert "## Status" in re.sub(r"\x1b\[[0-9;]*m", "", out)
+
+
+def test_extract_lossless_highlight_colors_the_dump(tmp_path, capsys):
+    import re
+
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--highlight", "--color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" in out
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    assert "===[a2 |" in plain and "## Status" in plain
+
+
+def test_extract_render_markdown_and_highlight_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--highlight"])
+    assert exit_code == 1
+    assert "opposite goals" in capsys.readouterr().err
+
+
+def test_extract_follow_rejects_json(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--json"])
+    assert exit_code == 1
+    assert "no JSON document to emit" in capsys.readouterr().err
+
+
+def test_extract_follow_rejects_until(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--until", "a2"])
+    assert exit_code == 1
+    assert "contradictory" in capsys.readouterr().err
+
+
+def test_extract_follow_rejects_a_task_banner(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--task", "do the next thing"])
+    assert exit_code == 1
+    assert "contradictory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--interval", "0.5"),
+    ("--bell", None),
+    ("--on-attention", "true"),
+    ("--notify-project", "someproject"),
+    ("--attention-min-chars", "100"),
+])
+def test_follow_only_flags_error_without_follow(tmp_path, capsys, flag, value):
+    # Every one of these would silently do nothing otherwise -- the trap this
+    # package consistently errors on instead.
+    fp = _write_claude_code_fixture(tmp_path)
+    argv = ["extract", str(fp), flag] + ([value] if value else [])
+    exit_code = cli.main(argv)
+    assert exit_code == 1
+    assert f"{flag} only has an effect with --follow" in capsys.readouterr().err
+
+
+def test_extract_lossless_follow_only_flags_error_without_follow(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--bell"])
+    assert exit_code == 1
+    assert "--bell only has an effect with --follow" in capsys.readouterr().err
+
+
+def test_extract_lossless_color_without_highlight_errors(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--no-color"])
+    assert exit_code == 1
+    assert "--color/--no-color only apply to --highlight" in capsys.readouterr().err
+
+
+def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkeypatch):
+    # The two-phase handoff: phase 1 prints the one-shot brief, then phase 2
+    # starts from the byte offset captured BEFORE that parse (so a record
+    # appended mid-parse is duplicated rather than lost -- see cli.py's
+    # _follow_anchor).
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_claude_code_fixture(tmp_path)
+    size_before = fp.stat().st_size
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["offset"] = self._source.tailer.offset
+        seen["lossless"] = self._lossless
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    exit_code = cli.main(["extract", str(fp), "--follow"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "please look into this" in out  # phase 1 still printed in full
+    assert seen == {"offset": size_before, "lossless": False}
+
+
+def test_extract_lossless_follow_uses_lossless_semantics_for_phase_two(tmp_path, capsys, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_claude_code_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["lossless"] = self._lossless
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    exit_code = cli.main(["extract-lossless", str(fp), "--follow"])
+    assert exit_code == 0
+    assert "Let me check." in capsys.readouterr().out
+    assert seen == {"lossless": True}
+
+
+def test_extract_follow_rejects_a_busy_loop_interval(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--interval", "0"])
+    assert exit_code == 1
+    assert "busy loop" in capsys.readouterr().err

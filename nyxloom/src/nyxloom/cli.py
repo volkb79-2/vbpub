@@ -700,6 +700,146 @@ def _resolve_session_log(args) -> tuple[Path, str | None] | None:
     return ref.path, ref.session_id or getattr(args, "opencode_session", None)
 
 
+def _block_render_for(args):
+    """The per-block prose render hook --render-markdown/--highlight ask for
+    (render.py's `block_render`), or None for today's plain text. Neither
+    library is imported unless its flag was actually passed."""
+    use_color = sys.stdout.isatty() if args.color is None else args.color
+    if getattr(args, "render_markdown", False):
+        from .session_extract.render_markdown import render_markdown
+
+        return lambda text: render_markdown(text, color=use_color)
+    if args.highlight:
+        from .session_extract.highlight import highlight_markdown
+
+        return lambda text: highlight_markdown(text, color=use_color)
+    return None
+
+
+#: --follow-only flags, by the attribute argparse stores them under, with the
+#: value that means "not passed". Each errors without --follow rather than
+#: silently doing nothing -- the trap this package keeps choosing to error on.
+_FOLLOW_ONLY_FLAGS = (
+    ("interval", None, "--interval"),
+    ("bell", False, "--bell"),
+    ("on_attention", None, "--on-attention"),
+    ("notify_project", None, "--notify-project"),
+    ("attention_min_chars", None, "--attention-min-chars"),
+)
+
+
+def _validate_render_and_follow_flags(args) -> str | None:
+    """Every cross-flag rule shared by extract and extract-lossless; returns
+    the error message, or None when the combination is coherent."""
+    if getattr(args, "render_markdown", False) and args.highlight:
+        return ("--render-markdown and --highlight are opposite goals (render markdown vs. "
+                "colorize it while keeping every markup character) -- pick one")
+    if args.color is not None and not (getattr(args, "render_markdown", False) or args.highlight):
+        modes = "--render-markdown/--highlight" if hasattr(args, "render_markdown") else "--highlight"
+        return f"--color/--no-color only apply to {modes}"
+
+    if not args.follow:
+        for attr, unset, flag in _FOLLOW_ONLY_FLAGS:
+            if getattr(args, attr, unset) != unset:
+                return f"{flag} only has an effect with --follow"
+        return None
+
+    if args.interval is not None and args.interval <= 0:
+        # A zero/negative interval is a busy loop, which on a shared host is a
+        # real cost, not just a pointless setting.
+        return "--interval must be greater than 0 (a zero interval is a busy loop)"
+    if getattr(args, "json", False):
+        return "--follow streams text as the session grows -- it has no JSON document to emit"
+    if args.until:
+        return ("--until pins the far end of a FIXED span; --follow has no end to pin -- "
+                "they are contradictory")
+    if getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None:
+        return ("--task/--task-file append a banner AFTER the finished brief, which --follow "
+                "never reaches -- they are contradictory")
+    return None
+
+
+def _follow_anchor(path: Path, fmt: str, session_id: str | None):
+    """Where phase 2 picks up, captured BEFORE phase 1 parses anything: the
+    file's current size, or opencode's newest (time_created, id) row.
+
+    Deliberately measured BEFORE rather than after. A record appended while
+    phase 1 is parsing then appears twice (once in the one-shot brief, once
+    live); measured after, such a record would be skipped by BOTH and lost
+    from the stream for good. A duplicate is visible and harmless; silent
+    loss is neither. The window is one parse long either way.
+    """
+    if fmt != "opencode":
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    import sqlite3
+
+    from .session_extract.adapters import opencode as opencode_adapter
+
+    db = opencode_adapter._db_path(path)
+    if db is None:
+        return None
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT time_created, id FROM message WHERE session_id = ? "
+            "ORDER BY time_created DESC, id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return (row[0], row[1]) if row else (-1, "")
+
+
+def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anchor,
+                 block_render, lossless_mode: bool) -> int:
+    """Phase 2: hand off to session_extract/follow.py and tail until Ctrl-C."""
+    from .session_extract import follow as follow_mod
+    from .session_extract.adapters import claude_code as claude_code_adapter
+
+    notify_config = None
+    if args.notify_project:
+        try:
+            notify_config = _cfg(args.notify_project).notify
+        except RuntimeError as e:
+            print(f"error: --notify-project: {e}", file=sys.stderr)
+            return 1
+
+    follow_config = follow_mod.FollowConfig(
+        interval=args.interval if args.interval is not None else follow_mod.DEFAULT_INTERVAL_S,
+        bell=args.bell,
+        on_attention=args.on_attention,
+        notify=notify_config,
+        attention_min_chars=args.attention_min_chars,
+    )
+
+    if fmt == "opencode":
+        from .session_extract.adapters import opencode as opencode_adapter
+
+        db = opencode_adapter._db_path(path)
+        source = follow_mod.OpencodeSource(
+            db, session_id, config, lossless_mode, cursor=anchor,
+        )
+    else:
+        source = follow_mod.JsonlSource(
+            path, fmt, anchor, config, lossless_mode,
+            has_primary_thread=(
+                claude_code_adapter.has_primary_thread(path) if fmt == "claude-code" else True
+            ),
+        )
+
+    follower = follow_mod.Follower(
+        source, harness=fmt, session_path=str(path), config=config,
+        follow_config=follow_config, out=sys.stdout, lossless_mode=lossless_mode,
+        block_render=block_render,
+        insert_blank_lines=config.insert_blank_lines,
+    )
+    return follower.run_forever()
+
+
 def cmd_extract(args) -> int:
     """extract <path> [--opencode-session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
@@ -824,15 +964,16 @@ def cmd_extract(args) -> int:
             text_only.append("--task-file")
         if args.render_markdown:
             text_only.append("--render-markdown")
+        if args.highlight:
+            text_only.append("--highlight")
         if text_only:
             print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
                   f"effect combined with --json", file=sys.stderr)
             return 1
 
-    if args.color is not None and not args.render_markdown:
-        # --color's only job is the render modes below; a flag that silently
-        # does nothing is the trap this package keeps erroring on instead.
-        print("error: --color/--no-color only apply to --render-markdown", file=sys.stderr)
+    flag_error = _validate_render_and_follow_flags(args)
+    if flag_error is not None:
+        print(f"error: {flag_error}", file=sys.stderr)
         return 1
 
     if args.redact_pattern:
@@ -873,6 +1014,22 @@ def cmd_extract(args) -> int:
         redact_patterns=tuple(args.redact_pattern) if args.redact_pattern else (),
         hide_compaction_content=not args.show_compaction_content,
     )
+    follow_fmt = None
+    anchor = None
+    if args.follow:
+        from .session_extract.adapters import detect
+
+        follow_fmt = args.format or detect(path).name
+        follow_session = session_id
+        if follow_fmt == "opencode" and follow_session is None:
+            from .session_extract.adapters import opencode as opencode_adapter
+
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                follow_session = sessions[0]
+        # Before phase 1 parses anything -- see _follow_anchor on why.
+        anchor = _follow_anchor(path, follow_fmt, follow_session)
+
     result = extract(path, config, fmt=args.format, session_id=session_id)
 
     if args.ledger:
@@ -891,11 +1048,8 @@ def cmd_extract(args) -> int:
         }
         result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
 
-    if args.render_markdown:
-        from .session_extract.render_markdown import render_markdown
-
-        use_color = sys.stdout.isatty() if args.color is None else args.color
-        result._block_render = lambda text: render_markdown(text, color=use_color)
+    block_render = _block_render_for(args)
+    result._block_render = block_render
 
     if result.stale_wakeups_stripped:
         print(f"nyxloom extract: stripped {result.stale_wakeups_stripped} stale-wakeup "
@@ -918,7 +1072,15 @@ def cmd_extract(args) -> int:
             "════════════════════════════════════════════════════════════════════════════════"
             "════\n"
         )
-    print(rendered)
+    # end="" only when following: the brief already ends in a newline, and
+    # print's own would put three blank lines between it and the first live
+    # block. Left exactly as it was for every non-follow run.
+    print(rendered, end="" if args.follow else "\n")
+    if args.follow:
+        return _run_follow(
+            args, path, follow_fmt, config, result.session_id, anchor, block_render,
+            lossless_mode=False,
+        )
     return 0
 
 
@@ -946,8 +1108,6 @@ def cmd_extract_lossless(args) -> int:
     made every one of them a silently-ignored trap. See `extract-debug` to
     compare this dump against what `extract` would actually keep from it.
     """
-    from pathlib import Path
-
     from .session_extract import lossless
     from .session_extract.adapters import detect
 
@@ -956,15 +1116,37 @@ def cmd_extract_lossless(args) -> int:
         return 1
     path, session_id = resolved
 
+    flag_error = _validate_render_and_follow_flags(args)
+    if flag_error is not None:
+        print(f"error: {flag_error}", file=sys.stderr)
+        return 1
+
     since_marker, err = _resolve_since_marker(args)
     if err is not None:
         return err
 
     fmt = args.format or detect(path).name
+    block_render = _block_render_for(args)
+
+    def _emit(text: str) -> None:
+        print(block_render(text) if block_render else text)
+
+    anchor = None
+    follow_session = session_id
+    if args.follow:
+        if fmt == "opencode" and follow_session is None:
+            from .session_extract.adapters import opencode as opencode_adapter
+
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                follow_session = sessions[0]
+        # Before phase 1 reads anything -- see _follow_anchor on why.
+        anchor = _follow_anchor(path, fmt, follow_session)
+
     if fmt == "claude-code":
-        print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
     elif fmt == "codex":
-        print(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
@@ -980,14 +1162,22 @@ def cmd_extract_lossless(args) -> int:
                     f"{path} holds {len(sessions)} opencode sessions; pass "
                     f"--opencode-session (e.g. {sessions[0]!r})"
                 )
-        print(lossless.dump_opencode(
+        _emit(lossless.dump_opencode(
             path, resolved_session, since_marker=since_marker, until_marker=args.until
         ))
+        follow_session = resolved_session
     else:
         print(f"error: extract-lossless does not support {fmt!r} -- see "
               f"session_extract/lossless.py's module docstring for what's implemented",
               file=sys.stderr)
         return 1
+    if args.follow:
+        from .session_extract import ExtractConfig
+
+        return _run_follow(
+            args, path, fmt, ExtractConfig(), follow_session, anchor, block_render,
+            lossless_mode=True,
+        )
     return 0
 
 
@@ -1007,8 +1197,6 @@ def cmd_extract_debug(args) -> int:
     complete lossless base). --color/--no-color override the isatty()
     auto-detection (color off when piped to a file by default).
     """
-    from pathlib import Path
-
     from .session_extract import ExtractConfig, extract, lossless
     from .session_extract.adapters import detect
     from .session_extract.config import PROFILES
@@ -2414,6 +2602,69 @@ _OPENCODE_SESSION_HELP = (
     "know the id."
 )
 
+# Shared verbatim by extract and extract-lossless -- the flag means the same
+# thing on both, and the rich-vs-pygments distinction is the whole reason it
+# is a second flag rather than a mode of --render-markdown.
+_HIGHLIGHT_HELP = (
+    "Syntax-color markdown SOURCE, leaving every markup character in place "
+    "(via pygments) -- for when you want to COPY real markdown back out of "
+    "the terminal, which a running agent CLI's own rendered output can never "
+    "give you. The opposite goal from --render-markdown, which renders the "
+    "markup and consumes it; the two error if combined. Works with or "
+    "without --follow"
+)
+
+# Shared verbatim by extract and extract-lossless: --follow and its
+# attention/delivery flags mean exactly the same thing on both verbs, each
+# keeping its own selection semantics live.
+_FOLLOW_HELP = (
+    "After printing the one-shot result above, keep printing new content as "
+    "the session grows (tail -f, but applying THIS verb's own selection "
+    "rules to each new record). Genuinely incremental: the file's size is "
+    "polled and only newly-appended bytes are ever read. Ctrl-C to stop"
+)
+
+
+def _add_follow_flags(parser) -> None:
+    """--follow and its attention/delivery flags, identical on extract and
+    extract-lossless (session_extract/follow.py). Every one of the
+    non---follow flags here errors if passed WITHOUT --follow rather than
+    silently doing nothing."""
+    group = parser.add_argument_group(
+        "follow mode (live tailing)",
+        "Streaming continuation of the one-shot output, plus an optional attention hook for "
+        "when a session needs you. See session_extract/follow.py for the tailing mechanism, "
+        "the checkpoint-scoring lookahead delay, and each attention signal's real basis.")
+    group.add_argument("--follow", "-f", action="store_true", help=_FOLLOW_HELP)
+    group.add_argument("--interval", type=float, default=None, metavar="SECONDS",
+                        help="Poll interval while following (default 1.0). A session log grows "
+                             "in per-turn bursts, so sub-second polling buys nothing")
+    group.add_argument("--bell", action="store_true",
+                        help="Write a terminal bell (\\a) whenever an attention signal fires: an "
+                             "unanswered AskUserQuestion (Claude Code only -- no equivalent is "
+                             "known in the Codex/opencode schema), a detected checkpoint, or "
+                             "--attention-min-chars below. Independent of --on-attention")
+    group.add_argument("--on-attention", metavar="COMMAND",
+                        help="Shell command to run on each attention signal, with "
+                             "NYXLOOM_ATTENTION_REASON (interview_pending|checkpoint_detected|"
+                             "long_block), NYXLOOM_ATTENTION_HARNESS, "
+                             "NYXLOOM_ATTENTION_SESSION_PATH and NYXLOOM_ATTENTION_EXCERPT (the "
+                             "flagged text's first ~100 chars) in its environment. YOUR script "
+                             "decides whether that reaches Telegram/Mattermost/anything -- "
+                             "nyxloom holds no credentials for this")
+    group.add_argument("--notify-project", metavar="PROJECT_ID",
+                        help="Additionally push each attention signal through this registered "
+                             "project's already-configured [notify] channel (`nyxloom project "
+                             "list`). Note: unlike every other nyxloom notification, this body "
+                             "includes the flagged text's excerpt -- a deliberate, documented "
+                             "exception to SPEC 13's template-only rule, see "
+                             "session_extract/follow.py")
+    group.add_argument("--attention-min-chars", type=int, default=None, metavar="N",
+                        help="Additionally fire an attention signal for any new block longer "
+                             "than N characters (off by default). Independent of checkpoint "
+                             "detection")
+
+
 _VERB_GROUPS: dict[str, list[str]] = {
     "project & workflow lifecycle": [
         "decide", "discuss", "gate", "leases", "merge", "pause", "project",
@@ -2774,6 +3025,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                     "markdown while leaving every character in place. Applies to "
                                     "kept blocks' prose only; separators, gap/stop-reason notes "
                                     "and the trailing marker comment are untouched")
+    render_group.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
     color_group = extract_parser.add_mutually_exclusive_group()
     color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
                               help="Force ANSI color for --render-markdown/--highlight even when "
@@ -2781,6 +3033,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
                               help="Disable ANSI color for --render-markdown/--highlight even "
                                    "when stdout is a terminal")
+    _add_follow_flags(extract_parser)
 
     handoff_group = extract_parser.add_argument_group(
         "handoff to a fresh agent",
@@ -2848,6 +3101,16 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_lossless_parser.add_argument("--until",
                                           help="Same meaning as extract's --until -- stop at this "
                                                "marker (inclusive), symmetric with --since")
+    extract_lossless_parser.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
+    lossless_color_group = extract_lossless_parser.add_mutually_exclusive_group()
+    lossless_color_group.add_argument("--color", dest="color", action="store_const", const=True,
+                                       default=None,
+                                       help="Force ANSI color for --highlight even when stdout "
+                                            "isn't a terminal (default: color iff stdout is a tty)")
+    lossless_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
+                                       help="Disable ANSI color for --highlight even when stdout "
+                                            "is a terminal")
+    _add_follow_flags(extract_lossless_parser)
 
     # extract-debug
     extract_debug_parser = subparsers.add_parser(

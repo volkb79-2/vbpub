@@ -180,6 +180,49 @@ def list_sessions(path: Path) -> list[str]:
         conn.close()
 
 
+def event_for_row(
+    conn: sqlite3.Connection, seq: int, msg_id: str, time_created: int, data_json: str
+) -> NormalizedEvent | None:
+    """One `message` row -> its NormalizedEvent, or None when the row
+    carries no prose (a non-user/assistant role, unparseable data, or no
+    text `part` rows at all).
+
+    Factored out of parse()'s own loop (2026-09-12) so follow.py can apply
+    the same rule to a row that arrived after the one-shot pass, instead of
+    reimplementing it. Takes the open connection because a message's text
+    lives in a SECOND query against `part` -- which is also why a row seen
+    mid-stream can legitimately have no text yet; see follow.py's
+    OpencodeSource for the settle rule that handles that.
+    """
+    try:
+        data = json.loads(data_json)
+    except json.JSONDecodeError:
+        return None
+    role = data.get("role")
+    if role not in ("user", "assistant"):
+        return None
+
+    part_rows = conn.execute(
+        "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
+    ).fetchall()
+    texts = []
+    for (part_json,) in part_rows:
+        try:
+            part = json.loads(part_json)
+        except json.JSONDecodeError:
+            continue
+        if part.get("type") == "text" and part.get("text"):
+            texts.append(part["text"])
+    if not texts:
+        return None
+
+    # time_created is Unix milliseconds (verified against a real row's value
+    # against its session's human-readable title).
+    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
+    kind = EventKind.OPERATOR_TEXT if role == "user" else EventKind.ASSISTANT_TEXT
+    return NormalizedEvent(seq, msg_id, ts, kind, "\n".join(texts))
+
+
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:
     db = _db_path(path)
     if db is None:
@@ -207,33 +250,9 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
 
         events: list[NormalizedEvent] = []
         for seq, (msg_id, time_created, data_json) in enumerate(rows):
-            try:
-                data = json.loads(data_json)
-            except json.JSONDecodeError:
-                continue
-            role = data.get("role")
-            if role not in ("user", "assistant"):
-                continue
-
-            part_rows = conn.execute(
-                "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
-            ).fetchall()
-            texts = []
-            for (part_json,) in part_rows:
-                try:
-                    part = json.loads(part_json)
-                except json.JSONDecodeError:
-                    continue
-                if part.get("type") == "text" and part.get("text"):
-                    texts.append(part["text"])
-            if not texts:
-                continue
-
-            # time_created is Unix milliseconds (verified against a real
-            # row's value against its session's human-readable title).
-            ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
-            kind = EventKind.OPERATOR_TEXT if role == "user" else EventKind.ASSISTANT_TEXT
-            events.append(NormalizedEvent(seq, msg_id, ts, kind, "\n".join(texts)))
+            ev = event_for_row(conn, seq, msg_id, time_created, data_json)
+            if ev is not None:
+                events.append(ev)
 
         return events
     finally:

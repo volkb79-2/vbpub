@@ -346,6 +346,14 @@ locate.py       resolve_session_ref(): a bare session id -> the file (or
                 SQLite store + session id) holding it, so no extract-* verb
                 needs a hand-constructed path -- see "Pointing at a session
                 by id alone" below.
+render_markdown.py / highlight.py
+                The two per-block render modes (`rich` and `pygments`
+                respectively), each isolated so render.py imports neither --
+                see "Render modes" below for why both exist.
+follow.py       JsonlTailer/JsonlSource/OpencodeSource/FollowSelector/
+                Follower: `--follow`'s incremental tailing, the
+                checkpoint-scoring lookahead buffer, attention detection and
+                delivery -- see "Follow mode" below.
 ```
 
 ## Pointing at a session by id alone
@@ -419,10 +427,140 @@ and the footer is machine-read back by `--since-file`, so it has to stay
 byte-exact. `render.py` therefore takes an opaque per-block `block_render`
 callable and imports neither rendering library itself.
 
+`extract --highlight` and `extract-lossless --highlight` are the *other*
+mode, and the reason there are two rendering dependencies rather than one:
+`pygments` colors markdown **source**, leaving every `#`, `**`, backtick and
+dash in place, the way an editor colors a markdown file. That matters because
+a running agent CLI only ever *renders* its own markdown — what you select in
+that pane has already lost the markup — so highlighting is what makes
+`--follow`'s stream something you can copy real markdown out of. Rendering
+and preserving are opposite goals, so the two flags error if combined.
+Verified as a property, not by eye: stripping every ANSI sequence from
+`--highlight`'s output returns the input byte-for-byte.
+
 `--color`/`--no-color` override the `isatty()` default, exactly as on
 `extract-debug`, and error if no render mode is active. `--render-markdown`
-errors combined with `--json` (a rendering flag, not a data one — the same
-rule already applied to `--insert-blank-lines` and friends).
+and `--highlight` both error combined with `--json` (rendering flags, not data
+ones — the same rule already applied to `--insert-blank-lines` and friends).
+
+## Follow mode (`--follow`/`-f`)
+
+`extract --follow` and `extract-lossless --follow` keep printing new content
+as the session grows. It is a flag on **both** verbs rather than a fourth
+verb, so each keeps its own selection semantics live: `extract --follow`
+surfaces only what its backward walk would have kept, `extract-lossless
+--follow` keeps everything, in the same block format its own dump uses.
+
+Two phases:
+
+1. **Phase 1** is exactly today's one-shot run, printed unchanged.
+2. **Phase 2** tails forward from where phase 1 started.
+
+### It is genuinely incremental (this was a real bug)
+
+The first design would have called `lossless.dump_claude_code` once per poll
+tick. That function opens the file and iterates **from byte 0 every call**,
+using `since_marker` only to decide when to start *emitting* — so against a
+growing 50MB+ log it would rescan the whole file every second. `JsonlTailer`
+does what `tail -f` actually does: keep the handle and the byte offset,
+`stat()` for a size change (**no read at all** when unchanged), `seek()` and
+read only the new bytes, and commit the offset only past complete lines,
+leaving a partial line (a writer caught mid-flush) for the next tick.
+
+Confirmed in a real process, not just asserted in a unit test: `strace` of a
+live `extract-lossless --follow` against a 314KB session file being appended
+to shows `lseek` going to `314354 → 314641 → 314990` — the anchor, then past
+each appended record — and **never to 0**, with per-tick reads of exactly the
+appended bytes. `JsonlTailer.bytes_read` exists as that bug's permanent
+regression witness, and a test pins it to the appended size.
+
+Committing the offset only past complete lines also buys a checkable
+invariant — our own offset always follows a newline — which is the only way to
+catch a file truncated *and* regrown past our offset between two ticks, a
+case no size comparison can see. The caller's *starting* anchor is exempt
+from that check on purpose: it is a raw file size taken while a live session
+may be mid-write, and validating it would re-stream the whole file as "new"
+on a perfectly normal start.
+
+The phase-1 anchor is captured **before** phase 1 parses, so a record
+appended during that parse appears twice (once in the brief, once live)
+rather than being skipped by both and lost. A visible duplicate beats silent
+loss; the window is one parse long either way.
+
+### The lookahead problem, and what actually waits
+
+`select()`'s checkpoint rule needs `classifier.score_events`'s "followed by a
+pause" bonus (+2.0 when the next real event is an operator prompt or Q&A) —
+unknowable for the newest arrival, because the pause hasn't happened yet.
+`FollowSelector` holds an `ASSISTANT_TEXT` back until a decisive next event
+arrives, but **only when the verdict actually depends on it**:
+
+| case | waits? | why |
+| --- | --- | --- |
+| shape score already ≥ threshold | no | the bonus only ever *adds* — already a checkpoint |
+| long enough, or a concrete-finding signal | no | kept regardless of score |
+| short, no finding signal, sub-threshold shape | **yes** | keep-vs-drop hinges entirely on the bonus |
+
+This refines the design's "hold exactly one pending event": identical
+keep/drop outcomes to `select()` in every case, but a checkpoint at the end of
+a turn appears **now** instead of whenever the session next moves — which
+matters, since "it just hit a checkpoint" is half of what this feature is
+for. For an immediately-printed long block whose score only crosses the
+threshold once the bonus lands, the checkpoint *attention* fires at that
+later moment; a notification arriving a beat late costs nothing, a delayed
+line on screen does. A `THINKING` event arriving behind a still-pending one is
+held in order behind it (`score_events`' own pause scan skips THINKING, so it
+isn't decisive either) — the one-event framing didn't cover that, and
+emitting it immediately would reorder the stream. On exit a still-waiting
+case-3 event is dropped, not flushed: its verdict depended on an event we
+never saw.
+
+### Attention detection — three signals
+
+| reason | basis | adapters |
+| --- | --- | --- |
+| `interview_pending` | an `AskUserQuestion` `tool_use` with no matching `tool_result` yet — genuinely structural, reusing the adapter's own pairing | **Claude Code only** |
+| `checkpoint_detected` | under `extract`, the real scored decision above; under `extract-lossless`, `classifier.shape_score` alone | all |
+| `long_block` | any new block over `--attention-min-chars N` (off by default) | all |
+
+**Honest gaps, not guessed at:** no `AskUserQuestion` equivalent has been
+identified in Codex's or opencode's schema (both adapters' own "Known gaps"
+notes say so), so signal 1 is Claude-Code-only. Signal 2's
+`extract-lossless` form is weaker than its `extract` form — no pause bonus,
+and it also scores operator/thinking text, which the scored path never does.
+"Turn end" is not a distinct marker in any adapter's schema, so it is not a
+fourth signal; the practical proxy ("the file stopped growing") is just the
+loop's idle state.
+
+### Delivery
+
+`--bell` writes `\a`. `--on-attention '<cmd>'` runs your command with
+`NYXLOOM_ATTENTION_REASON` / `_HARNESS` / `_SESSION_PATH` / `_EXCERPT` (first
+~100 chars) in its environment — your script decides whether that reaches
+Telegram, Mattermost or nothing; nyxloom holds no credentials for it.
+`--notify-project NAME` additionally pushes through that registered project's
+existing `[notify]` channel.
+
+That last one is a **deliberate, scoped exception** to `notify.py`'s SPEC §13
+rule that a notification body is built only from fixed templates over typed
+fields: this body carries the flagged text's excerpt, per explicit operator
+direction on what the payload may say. Recorded here as a departure rather
+than quietly done.
+
+Every follow-only flag errors if passed without `--follow`, and `--follow`
+errors with `--json`, `--until` and `--task`/`--task-file` (a JSON document, a
+pinned far end, and a trailing banner all presume an output that ends).
+
+### opencode follows differently
+
+No byte offsets: "what's new" is an indexed query on `(time_created, id)`.
+It has its own hazard instead — a `message` row is created when a turn starts
+and its `part` rows stream in afterwards, so a row read the instant it
+appears can have no text yet. A cursor advanced past it would lose that prose
+permanently, so `OpencodeSource` holds back the **newest** row each tick and
+re-reads it next time, committing the cursor only to rows a newer sibling
+proves are finished. Same shape of trade as the lookahead delay, for the same
+reason.
 
 ## Delta extraction
 

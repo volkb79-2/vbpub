@@ -4,6 +4,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [Unreleased] - UNRELEASED
+
+Hand-authored draft section for the session_extract wave below; fold into the
+generated section at release time (cmru KI-23: `cmru release` does not merge a
+hand-authored draft, it refuses when the heading collides and otherwise leaves
+it in place).
+
+### Added
+- feat(nyxloom-P120): `extract`/`extract-lossless`/`extract-debug`/`extract-report`/`extract-sessions` accept a bare session ID in place of a path (`session_extract/locate.py`) -- a Claude Code/Codex uuid, a 17-hex-char Claude Code sub-agent agentId, or an opencode `ses_...` id, resolved to the file/store holding it; errors rather than guessing on 0 or >1 matches
+- feat(nyxloom-P121): `extract --render-markdown` renders each kept block's markdown for reading (via `rich`), leaving separators/notes/marker footer untouched; `--color`/`--no-color` mirror extract-debug's pair
+- feat(nyxloom-P123): `--follow`/`-f` on `extract` and `extract-lossless` -- genuine incremental tailing (byte-offset seek, never a re-scan), each verb keeping its own selection semantics live, plus `--highlight` (markdown syntax coloring via `pygments` that preserves every markup character, for copy-paste), attention detection (`interview_pending`/`checkpoint_detected`/`long_block`) and delivery via `--bell`/`--on-attention`/`--notify-project`
+- deps: `rich>=15.0.0`, `pygments>=2.21.0` (floors = latest release as of 2026-09-12, both well past the estate's 14-day freshness rule; real PyPI publish dates recorded in pyproject.toml)
+
+### Fixed
+- fix(nyxloom): `lossless`'s Claude Code dumper read `block["text"]` for `thinking` blocks, whose prose actually lives under `block["thinking"]` -- every thinking block dumped empty and was discarded, contradicting the module's own "lossless means lossless" promise (verified across 5469 real thinking blocks)
+
+### Changed
+- refactor(nyxloom-P122): factored `select.decide()`, `adapters/{claude_code,codex}.parse_record()`, `opencode.event_for_row()` and `lossless.*_blocks()` out of the loops that contained them, so live-follow and one-shot paths cannot drift on what counts as content -- verified byte-identical on 53 real-session runs across all three adapters
+
 ## [0.5.0] - 2026-09-11
 <!-- cmru: generated -->
 <!-- cmru: source-end=f7abb474e43254907f4c0df52f1ab8ee09fc803e -->

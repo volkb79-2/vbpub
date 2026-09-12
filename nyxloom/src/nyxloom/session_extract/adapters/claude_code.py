@@ -484,6 +484,47 @@ class StreamState:
     askuserquestion_inputs: dict[str, list[Any]] = field(default_factory=dict)
 
 
+def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> str | None:
+    """Track unanswered AskUserQuestion tool calls across a record stream;
+    return the question text when THIS record leaves one outstanding.
+
+    `pending` maps an AskUserQuestion tool_use id -> its first question's
+    text, and is owned by the caller (follow.py) so state lives with the
+    stream, not in module scope. Uses the same pairing this adapter already
+    relies on everywhere else -- the question is a tool_use on an assistant
+    turn, its answer a LATER `user`-type tool_result carrying the matching
+    `tool_use_id` -- so "asked but not yet answered" is a real structural
+    fact here, not a heuristic on prose.
+
+    This is the one genuinely structural "needs you" signal in this adapter
+    family. **No equivalent exists in the Codex or opencode schema as
+    currently understood** (both adapters' own "Known gaps" notes say so:
+    neither has a structured-question tool this package has identified), so
+    follow.py's interview_pending signal is Claude-Code-only rather than
+    guessed at for the others.
+    """
+    rtype = rec.get("type")
+    content = (rec.get("message") or {}).get("content")
+
+    if rtype == "assistant":
+        asked: str | None = None
+        for block in content or []:
+            if (isinstance(block, dict) and block.get("type") == "tool_use"
+                    and block.get("name") == "AskUserQuestion" and block.get("id")):
+                questions = block.get("input", {}).get("questions")
+                first = questions[0] if isinstance(questions, list) and questions else None
+                text = first.get("question") if isinstance(first, dict) else None
+                pending[block["id"]] = text or "(question)"
+                asked = pending[block["id"]]
+        return asked
+
+    if rtype == "user" and isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                pending.pop(block.get("tool_use_id"), None)
+    return None
+
+
 def parse_record(
     rec: dict[str, Any], seq: int, fallback_marker: str, config: ExtractConfig, state: StreamState
 ) -> list[NormalizedEvent]:
