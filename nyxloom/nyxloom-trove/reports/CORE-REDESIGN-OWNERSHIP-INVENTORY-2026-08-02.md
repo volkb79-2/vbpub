@@ -111,6 +111,24 @@ filled-in help strings for several previously-bare flags (`finding record`,
 non-closure surface per rule 2. Responsibility text and ownership unchanged.
 Recorded value updated to 3,225 below.
 
+Re-measured 2026-09-12 for `cli.py`'s row: 3,225 -> 3,724 lines, past the
+recorded tolerance again. Same non-closure surface, same growth pattern -- the
+`session_extract/` verb family, three features: (1) bare session-ref
+resolution on all five `extract-*` verbs' shared `SESSION_LOG` positional
+(`session_extract/locate.py`), which in `cli.py` is one shared resolver
+helper the five `cmd_*` functions call; (2) `extract --render-markdown`
+(`session_extract/render_markdown.py`) plus a `--color`/`--no-color` pair
+mirroring `extract-debug`'s existing one; (3) `--follow`/`-f` with
+`--highlight`/`--bell`/`--on-attention`/`--notify-project`/
+`--interval`/`--attention-min-chars` on `extract` and `extract-lossless`,
+where all the real mechanism lives in `session_extract/follow.py` and
+`cli.py` holds only flag declaration (one shared `_add_follow_flags` group),
+cross-flag validation, and the phase-1-to-phase-2 handoff. A large share of
+the added lines is `--help` prose, continuing the 2026-09-11 clarity pass.
+No control-plane import added; still a non-closure surface per rule 2.
+Responsibility text and ownership unchanged. Recorded value updated to
+3,724 below.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and
@@ -164,7 +182,7 @@ why. The rules are deliberately structural, never line-exact:
 | `src/nyxloom/containment.py` | new | CR-13a (added 2026-08-03, D-R7): execution containment — the fail-closed requirement rule (only an explicit `trust = "operator"` on a non-free route runs uncontained), the environment ALLOWLIST that replaced `wrapper.DAEMON_ONLY_ENV`, host-path translation for a docker-out-of-docker daemon, the `docker run` plan, and the runtime probe behind the launch gate. Pure functions plus one injectable runner, so the effect boundary passes its own process port and the detached wrapper passes a plain subprocess. CR-13b adds resource and per-task policy ON this plan; it must not add a way to establish containment PARTIALLY |
 | `src/nyxloom/adapters.py` | 1,161 | Provider argv/prompt and usage adapters | CR-08, CR-10, CR-13a | Route selection must not remain at adapter call sites; preserve argv-budget tests |
 | `src/nyxloom/render.py` | 2,526 | Dashboard/operator rendering | CR-14 | Consume trace/evidence projections; do not derive authority from presentation data |
-| `src/nyxloom/cli.py` | 3,225 | Operator and recovery commands | CR-01, CR-04, CR-14, CR-15 | Keep state-changing paths on the same authoritative store/evidence rules |
+| `src/nyxloom/cli.py` | 3,724 | Operator and recovery commands | CR-01, CR-04, CR-14, CR-15 | Keep state-changing paths on the same authoritative store/evidence rules |
 
 ## Supporting boundaries
 
