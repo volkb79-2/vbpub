@@ -269,9 +269,10 @@ with sqlfluff in a command lane if the project wants it.
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
   bare-host lane without the cgroup-profiler daemon reachable gets a
-  coarser `getrusage`-based number (`method: "rusage"`, peak memory is the
-  largest SINGLE child process, not a cgroup read or a sum across
-  children; `footprint`/`doctor` disclose that caveat next to the number).
+  coarser `os.wait4()`-based number (`method: "rusage"`, peak memory is
+  that lane's own child's peak RSS, not a cgroup read, not a sum across
+  children, and never borrowed from another child; `footprint`/`doctor`
+  disclose that caveat next to the number).
   Once a lane has a handful of profiled runs, `./run-gate.py footprint
   --write` distills a COMMITTED peak-memory/CPU/stall number for it —
   size `resources.memory`/`resources.cpus` off THAT (with headroom for the

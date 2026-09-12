@@ -1725,15 +1725,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     DEVCONTAINER-WIDE ... cgroup numbers reflect the whole devcontainer,
     not lane <name> exclusively` — the daemon-path Summary otherwise flows
     through `finish_lane_profiling` unchanged. Daemon-absent path (or ANY
-    other failure — `ctl version`/`ctl start` failing): coarse
-    `resource.getrusage(RUSAGE_CHILDREN)` accounting bracketed around the
-    lane's own child, `method: "rusage"`, `scope: null` (rusage measures
-    via `wait4()`, never a cgroup read — no contract `scope` value is
-    honest here), `memory.peak_bytes = ru_maxrss * 1024` (Linux reports
-    KiB), `memory.source: "rusage-maxrss"` — the largest SINGLE child's
-    RSS, NEVER a sum across children, disclosed by `footprint`/`doctor`
-    (`R-44a`) next to any median it produces — `cpu.seconds` from the
-    `ru_utime`+`ru_stime` delta, `cpu.cores_avg` derived; every OTHER field
+    other failure — `ctl version`/`ctl start` failing): coarse process
+    accounting via `os.wait4(pid, 0)` on the LANE'S OWN child (`Popen` +
+    `wait4`, never `resource.getrusage(RUSAGE_CHILDREN)` — round-1 review
+    B1/RW-43: `RUSAGE_CHILDREN` is a monotone high-water mark over EVERY
+    child this process has ever reaped, so it credited a light lane with
+    run-gate's own already-reaped tooling children, e.g. a `["true"]` lane
+    measured ~36 MiB instead of its own true usage; `wait4()` on the
+    specific child pid returns ONLY that child's accounting, with no
+    before/after bracket to get wrong), `method: "rusage"`, `scope: null`
+    (rusage measures via `wait4()`, never a cgroup read — no contract
+    `scope` value is honest here), `memory.peak_bytes = ru.ru_maxrss *
+    1024` (Linux reports KiB) — that lane's own child's peak RSS, NEVER a
+    number from another child and NEVER a sum, disclosed by
+    `footprint`/`doctor`/`history` (`R-44a`) next to any median it
+    produces — `cpu.seconds = ru.ru_utime + ru.ru_stime` (that child's
+    total, not a delta — `wait4` hands back the whole child's accounting
+    directly), `cpu.cores_avg` derived; every OTHER field
     (`pressure`, `faults`, `pids`, `damon`, `host`, `events`, `session`,
     `daemon`, `target.*`, `samples`, `interval_seconds`) `null` (contract
     Sec 1.7: absent means unknown, never fabricated). NEVER a `BasicSampler`
@@ -1742,12 +1750,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     a basic-path sample would silently mix in run-gate's own process and
     every OTHER bare-host lane running concurrently in this devcontainer.
     `R-36h` containment applies exactly as elsewhere: self-id resolution,
-    `ctl start`, AND the `getrusage` bracket are each individually
-    guarded, so an unexpected exception in any of them degrades to a null
-    or partial record rather than aborting the lane's own run. `RUN_GATE_
-    PROFILE=off`/`profile = false` still opt out entirely (no token, no
-    daemon call, no rusage bracket); `--dry-run` rehearses the plan
-    (`container-shared`) and attempts nothing for real.
+    `ctl start`, AND the `wait4()` bracket are each individually guarded
+    (an ordinary `Exception` there degrades to a null/partial record, the
+    child still reaped via a plain `wait()` so it is never launched twice
+    and the lane's own exit code is unaffected; a `KeyboardInterrupt` or
+    similar instead kills the child and re-raises, mirroring
+    `subprocess.run`'s own Ctrl-C handling), so an unexpected exception in
+    any of them degrades to a null or partial record rather than aborting
+    the lane's own run. `RUN_GATE_PROFILE=off`/`profile = false` still opt
+    out entirely (no token, no daemon call, no `wait4()` bracket);
+    `--dry-run` rehearses the plan (`container-shared`) and attempts
+    nothing for real.
 
 - `R-44` **The footprint manifest (RG-55/C5), `run-gate.footprint.json`
   (schema 1, TRACKED — committed, unlike `.run-gate/`).** `footprint [LANE]

@@ -1273,11 +1273,13 @@ def test_no_stdlib_violations():
                # secrets.token_hex(16)) -- must be cryptographically
                # unguessable, unlike run-gate's other identifiers.
                "secrets",
-               # resource: RG-57 bare-host daemon-absent path,
-               # resource.getrusage(RUSAGE_CHILDREN) around wait() -- the
-               # only source of memory/cpu numbers when no profiler daemon
-               # is reachable (method: "rusage", source: "rusage-maxrss").
-               "resource"}
+               # resource: RG-57's bare-host daemon-absent path originally
+               # used resource.getrusage(RUSAGE_CHILDREN); RW-43/B1
+               # replaced it with `os.wait4()` on the lane's own child
+               # (exact per-child accounting, no import needed beyond
+               # `os`, already allowed above) -- "resource" deliberately
+               # NOT in this set any more: the import was removed.
+               }
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -14241,18 +14243,22 @@ class TestBareHostProfilingWiring:
         # The rusage path starts no daemon session for a token to identify
         # -- nothing would ever read it -- so, unlike the daemon path, the
         # child's environment must be unchanged from the ambient one.
+        # RW-43/B1: the rusage path launches via `Popen`, not
+        # `subprocess.run` -- spy on `Popen` (the daemon path's own spy in
+        # `test_daemon_path_targets_self_id_scope_and_injects_token` above
+        # is unaffected: it still goes through `subprocess.run`).
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         fake_docker(tmp_path, monkeypatch)
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
         captured_env = {}
 
         def spy(cmd, **kw):
             if cmd == ["true"]:
                 captured_env["env"] = kw.get("env")
-            return real_run(cmd, **kw)
-        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+            return real_popen(cmd, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "Popen", spy)
         assert run_gate.main(["suite"]) == 0
         assert "env" in captured_env
         assert captured_env["env"] is None
@@ -14286,10 +14292,13 @@ class TestBareHostProfilingWiring:
         assert latest["profile_error"] is None
 
     def test_getrusage_raising_never_aborts_the_lane(self, tmp_path, monkeypatch):
-        # The second half of R-36h's "OR the getrusage calls" clause --
-        # both getrusage() brackets are guarded individually (never left to
-        # raise through the surrounding try/finally), so a planted failure
-        # degrades to `resources: None` with the lane's own exit code
+        # R-36h's "OR the wait4 calls" clause (RW-43/B1: the rusage path
+        # now reaps its own child via `os.wait4`, not `resource.getrusage`
+        # bracketed around a separately-launched `subprocess.run`) -- the
+        # `wait4()` bracket is guarded individually (never left to raise
+        # through the surrounding try/finally), so a planted failure
+        # degrades to `resources: None` -- the child is still reaped via a
+        # plain `wait()` (never re-run) and the lane's own exit code is
         # completely unaffected.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config().replace(
@@ -14297,9 +14306,9 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
 
-        def _boom(who):
-            raise OSError("planted: getrusage exploded")
-        monkeypatch.setattr(run_gate.resource, "getrusage", _boom)
+        def _boom(pid, options):
+            raise OSError("planted: wait4 exploded")
+        monkeypatch.setattr(run_gate.os, "wait4", _boom)
         assert run_gate.main(["suite"]) == 3   # the LANE's own exit code
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None

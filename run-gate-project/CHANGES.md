@@ -17,17 +17,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   container id resolved from `/etc/hostname` + a direct `docker
   inspect`), scope ALWAYS `container-shared` (a bare-host invocation
   shares its devcontainer's cgroup with everything else in it),
-  disclosed as DEVCONTAINER-WIDE. Daemon-absent path: coarse
-  `resource.getrusage(RUSAGE_CHILDREN)` accounting bracketed around the
-  lane's own child — `method: "rusage"`, `memory.peak_bytes` is the
-  LARGEST SINGLE CHILD's RSS (`memory.source: "rusage-maxrss"`, never a
-  sum), `scope: null` (rusage measures via `wait4()`, not a cgroup read —
-  no contract `scope` value is honest), everything else `getrusage`
-  cannot supply left `null`. NEVER a `BasicSampler` fallback on this path
-  (RW-27b, deliberate: no cgroup here is safely attributable to just one
-  lane's own child). `run-gate.footprint.json`/`doctor` disclose the
-  `rusage-maxrss` caveat next to the median it qualifies. SPEC `R-43i`.
-  **Consequence:** this project's own five lanes are all bare-host, so
+  disclosed as DEVCONTAINER-WIDE. Daemon-absent path: `os.wait4(pid, 0)`
+  on the LANE'S OWN child (`Popen` + `wait4`) — `method: "rusage"`,
+  `memory.peak_bytes = ru.ru_maxrss * 1024` is that child's own peak RSS
+  (`memory.source: "rusage-maxrss"`, never a sum, never borrowed from
+  another child), `scope: null` (rusage measures via `wait4()`, not a
+  cgroup read — no contract `scope` value is honest), everything else
+  `wait4()` cannot supply left `null`. NEVER a `BasicSampler` fallback on
+  this path (RW-27b, deliberate: no cgroup here is safely attributable to
+  just one lane's own child). `run-gate.footprint.json`/`doctor` disclose
+  the `rusage-maxrss` caveat next to the median it qualifies. SPEC
+  `R-43i`. **Round-1 review (RW-43/B1):** the first cut of this path used
+  `resource.getrusage(RUSAGE_CHILDREN)` deltas instead, which is a
+  monotone high-water mark over EVERY child this process has ever reaped
+  — a `["true"]` lane was credited with run-gate's own already-reaped
+  docker/git subprocess RSS (~36 MiB) rather than its own; repaired to
+  `os.wait4()` on the specific child pid, which cannot mix in another
+  child's number by construction. **Consequence:** this project's own
+  five lanes are all bare-host, so
   `./run-gate.py selftest` now itself records a profile and `footprint
   --write` stops refusing for this project (see "The footprint manifest"
   in `CONSUMERS.md` for a real transcript).

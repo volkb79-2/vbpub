@@ -18,16 +18,27 @@ __revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
 # target is run-gate's OWN process (self container id from /etc/hostname +
 # a direct `docker inspect`, never `container_state()` -- that one raises
 # on an ambiguous docker failure), scope ALWAYS `container-shared`,
-# disclosed as DEVCONTAINER-WIDE; daemon-absent path: coarse
-# `resource.getrusage(RUSAGE_CHILDREN)` accounting (`method: "rusage"`,
-# `memory.source: "rusage-maxrss"` -- the largest SINGLE child, never a
-# sum, `scope: null` since rusage measures via wait4(), not a cgroup read),
-# NEVER a `BasicSampler` fallback on this path (RW-27b: no cgroup here is
-# safely attributable to one lane's own child). This project's own five
-# lanes are all bare-host, so its own `selftest` now records a profile and
-# `footprint --write` stops refusing for this project. RG-60: an exec lane
-# now writes the same inflight record a container lane does (client-death
-# recovery, RW-1's rule extended to the second lane kind that lacked it).
+# disclosed as DEVCONTAINER-WIDE; daemon-absent path: `os.wait4(pid, 0)` on
+# the LANE'S OWN child (`method: "rusage"`, `memory.source:
+# "rusage-maxrss"` -- that child's own peak RSS, exact, never a number
+# borrowed from some other child run-gate happened to reap first; `scope:
+# null` since rusage measures via wait4(), not a cgroup read), NEVER a
+# `BasicSampler` fallback on this path (RW-27b: no cgroup here is safely
+# attributable to one lane's own child). Round-1 review (RW-43) found the
+# FIRST cut of the daemon-absent path used `getrusage(RUSAGE_CHILDREN)`
+# deltas instead -- a monotone high-water mark over every child this
+# process had EVER reaped, so a `["true"]` lane was credited with
+# run-gate's own docker/git subprocess RSS (~36 MiB) instead of its own;
+# repaired to the `wait4()`-on-the-lane's-own-pid shape described above,
+# which cannot mix in another child's number by construction. This
+# project's own five lanes are all bare-host, so its own `selftest` now
+# records a profile and `footprint --write` stops refusing for this
+# project. RG-60: an exec lane now writes the same inflight record a
+# container lane does (client-death recovery, RW-1's rule extended to the
+# second lane kind that lacked it) -- round-1 review (RW-43/B3) found the
+# record indistinguishable from a container-written one, so the container
+# path could `docker rm -f` a shared runner it never created; both writers
+# now stamp `runner` and the container path refuses a foreign one.
 # RG-59: a live run's daemon-not-running warning names the real cause
 # (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
 # RG-59) instead of reusing "produced unparsable stdout" for two
@@ -93,7 +104,6 @@ import json
 import math
 import os
 import re
-import resource
 import secrets
 import shlex
 import shutil
@@ -1898,8 +1908,8 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     in run-gate's own process and every OTHER bare-host lane running
     concurrently in this devcontainer, which is worse than no sample, not
     better). It degrades to `mode: "rusage"` instead, for the caller to
-    finish with a `resource.getrusage(RUSAGE_CHILDREN)` bracket around its
-    own child's `wait()`.
+    finish with `os.wait4(pid, 0)` on its own child, which hands back that
+    child's exact resource accounting directly (round-1 review B1/RW-43).
 
     On `start` success this returns the SAME state shape `start_lane_
     profiling` returns (mode "daemon", client/session/session_line/
@@ -1971,45 +1981,56 @@ _RUSAGE_NULL_SECTIONS = {
 }
 
 
-def finish_bare_host_profiling(state: dict, ru_before, ru_after,
+def finish_bare_host_profiling(state: dict, ru,
                                started_at: str, ended_at: str) -> dict:
     """RG-57/RW-27b's counterpart to `finish_lane_profiling` — same
     three-field return shape (`{'resources', 'profile_error',
     'profile_ref'}`), called from `run_bare_host_lane`'s own `finally`
-    around the child's own `wait()`. `mode == 'daemon'` delegates VERBATIM
-    to `finish_lane_profiling` (the daemon-path Summary comes back from
-    `ctl stop` exactly like an exec lane's does — contract Sec 4 obligation
-    2 is unchanged by WHERE the target container id came from).
+    around the child's own `os.wait4()`. `mode == 'daemon'` delegates
+    VERBATIM to `finish_lane_profiling` (the daemon-path Summary comes back
+    from `ctl stop` exactly like an exec lane's does — contract Sec 4
+    obligation 2 is unchanged by WHERE the target container id came from).
 
-    `mode == 'rusage'` builds the schema-1 Summary BY HAND from the
-    `getrusage(RUSAGE_CHILDREN)` delta the caller bracketed around its own
-    child's `wait()`. `scope: None` is a deliberate design choice, not an
-    oversight: the contract's `scope` enum (`"container"|"container-
-    shared"`) describes a CGROUP relationship, and rusage measures via
-    `wait4()`/process accounting, never a cgroup read at all — no contract
-    value is honest here, and the handoff's own "everything getrusage
-    cannot give is null" rule extends naturally to a fact (cgroup scope)
-    getrusage structurally cannot supply. `memory.peak_bytes` is
-    `ru_maxrss` (Linux reports KiB, hence `* 1024`) — the largest SINGLE
-    child's RSS, NOT a sum across children (`source: "rusage-maxrss"`
-    discloses exactly that caveat downstream, in `footprint`/`doctor`)."""
+    `mode == 'rusage'` builds the schema-1 Summary BY HAND from `ru`, the
+    `resource.struct_rusage` that `os.wait4(pid, 0)` hands back for the
+    LANE'S OWN child and ONLY that child (round-1 review B1/RW-43: the
+    earlier `getrusage(RUSAGE_CHILDREN)`-delta shape was a monotone
+    high-water mark over EVERY child this run-gate process had ever reaped
+    -- including its own `docker inspect`/`ctl version` subprocesses --
+    so a lane smaller than something already reaped was credited with the
+    larger number; a live `["true"]` probe recorded ~36 MiB of run-gate's
+    own tooling instead of a few hundred KiB of its own). `os.wait4`
+    returns the exact accounting of the one pid it waited on, so there is
+    no before/after bracket to get wrong and no honest case where the
+    number can be stale or borrowed from another child -- `ru` is always
+    exactly this lane's own child, never `None` once the wait succeeds.
+    `scope: None` is a deliberate design choice, not an oversight: the
+    contract's `scope` enum (`"container"|"container-shared"`) describes a
+    CGROUP relationship, and rusage measures via `wait4()`/process
+    accounting, never a cgroup read at all — no contract value is honest
+    here, and the handoff's own "everything getrusage cannot give is null"
+    rule extends naturally to a fact (cgroup scope) getrusage structurally
+    cannot supply. `memory.peak_bytes` is `ru.ru_maxrss * 1024` (Linux
+    reports KiB) — the lane's own child's peak RSS (`source:
+    "rusage-maxrss"` discloses exactly that caveat downstream, in
+    `footprint`/`doctor`/`history`)."""
     if state["mode"] == "daemon":
         return finish_lane_profiling(state)
     if state["mode"] == "disabled":
         return {"resources": None,
                "profile_error": state.get("disabled_reason", "disabled"),
                "profile_ref": None}
-    if state["mode"] != "rusage" or ru_before is None or ru_after is None:
-        # Enabled and attempted, but the getrusage bracket never ran — e.g.
-        # a state built for a lane whose child never started. Same shape
-        # `finish_lane_profiling`'s own "neither path ever got going"
-        # fallback returns.
+    if state["mode"] != "rusage" or ru is None:
+        # Enabled and attempted, but `os.wait4()` never ran or raised —
+        # e.g. a state built for a lane whose child never started, or the
+        # R-36h containment around the wait4() bracket degrading a planted
+        # failure. Same shape `finish_lane_profiling`'s own "neither path
+        # ever got going" fallback returns.
         return {"resources": None,
                "profile_error": state.get("warning") or "no profile recorded",
                "profile_ref": None}
     duration_seconds = round(_parse_iso_utc(ended_at) - _parse_iso_utc(started_at), 3)
-    cpu_seconds = round((ru_after.ru_utime - ru_before.ru_utime)
-                        + (ru_after.ru_stime - ru_before.ru_stime), 3)
+    cpu_seconds = round(ru.ru_utime + ru.ru_stime, 3)
     cores_avg = (round(cpu_seconds / duration_seconds, 3)
                 if duration_seconds else None)
     resources = {
@@ -2026,7 +2047,7 @@ def finish_bare_host_profiling(state: dict, ru_before, ru_after,
         "target": {"container_id": None, "cgroup": None,
                   "token": None, "targets_seen": None},
         "memory": {
-            "peak_bytes": ru_after.ru_maxrss * 1024,
+            "peak_bytes": ru.ru_maxrss * 1024,
             "source": "rusage-maxrss",
             "baseline_bytes": None,
             "peak_over_baseline_bytes": None,
@@ -3668,10 +3689,11 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         scope, method = profiled_res.get("scope"), profiled_res.get("method")
         # RG-57/C4: same "most recent profiled entry" read as scope/method
         # above, one field over -- a rusage-mode lane's memory.peak_bytes is
-        # the largest SINGLE child, not a cgroup read, and `footprint`/
-        # `doctor` disclose that caveat next to the median it produced
-        # rather than let it look like every other lane's cgroup-measured
-        # peak.
+        # that lane's own child's peak RSS (RW-43/B1: `os.wait4()` on the
+        # lane's own pid, never a cgroup read or another child's number),
+        # and `footprint`/`doctor` disclose that caveat next to the median
+        # it produced rather than let it look like every other lane's
+        # cgroup-measured peak.
         source = (profiled_res.get("memory") or {}).get("source")
         last = hist[-1]
         peak = stats["memory_peak_bytes"]
@@ -3714,7 +3736,8 @@ def _fmt_footprint_row(name: str, lm: dict) -> str:
     # RG-57/C4: the rusage-maxrss caveat rides right next to the median it
     # qualifies — a reader comparing lanes across a table must not have to
     # cross-reference a separate doctor line to learn this one's PEAK column
-    # is "largest single child", not a cgroup-measured number.
+    # is that lane's own child's peak RSS (`os.wait4()`, RW-43/B1), not a
+    # cgroup-measured number.
     source_note = (" [source: rusage-maxrss]" if lm.get("source") == "rusage-maxrss"
                    else "")
     return (f"  {name:<20}{lm['runs']:>5}  "
@@ -5496,16 +5519,17 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         # entry was distilled from the rusage-maxrss path (bare-host,
         # daemon absent) — the drift/staleness numbers above are still
         # meaningful (they compare the SAME method against itself over
-        # time), but the PEAK figure itself is the largest single child
-        # process, never a cgroup-measured or summed number, and doctor is
-        # where an operator learns that before trusting it.
+        # time), but the PEAK figure itself is that lane's own child's peak
+        # RSS (`os.wait4()` on the lane's own pid, RW-43/B1), never a
+        # cgroup-measured or summed number, and doctor is where an operator
+        # learns that before trusting it.
         rusage_lanes = [name for name in sorted(manifest.get("lanes", {}))
                         if manifest["lanes"][name].get("source") == "rusage-maxrss"]
         if rusage_lanes:
             record("INFO", "footprint source",
                    f"{', '.join(rusage_lanes)}: memory peak is rusage-maxrss "
-                   f"(RG-57 bare-host daemon-absent path) — the largest "
-                   f"single CHILD process's RSS, not a cgroup read and not "
+                   f"(RG-57 bare-host daemon-absent path) — that lane's own "
+                   f"child's peak RSS (os.wait4), not a cgroup read and not "
                    f"a sum across children")
         distilled_at = manifest.get("distilled_at")
         age_days = None
@@ -7557,40 +7581,55 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if profiler_state["mode"] == "daemon":
         run_env = dict(os.environ)
         run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
-    # R-36h: "the WHOLE profiling attempt (self-id resolve, ctl start, OR
-    # the getrusage calls) must be wrapped so an unexpected exception never
-    # escapes to abort the lane's own subprocess.run" -- the getrusage
-    # bracket is guarded HERE, individually, rather than left to raise
-    # through the surrounding try/finally the way a literal `resource.
-    # getrusage(...) if mode == "rusage" else None` one-liner would: a
-    # getrusage() failure (unreachable in practice -- a fixed, valid `who`
-    # argument -- but this promise is "never", not "almost never") must
-    # degrade to `ru_before`/`ru_after` staying `None`, which `finish_
-    # bare_host_profiling`'s own "attempted but never got going" fallback
-    # already handles, rather than propagate out of a `finally` block and
-    # crash the lane that already finished running.
-    ru_before = None
-    if profiler_state["mode"] == "rusage":
-        try:
-            ru_before = resource.getrusage(resource.RUSAGE_CHILDREN)
-        except Exception as exc:
-            profiler_state["warning"] = profiler_state.get("warning") or \
-                f"getrusage before the lane's own child failed unexpectedly: {exc}"
+    # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
+    # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
+    # `getrusage(RUSAGE_CHILDREN)` snapshot around a plain `subprocess.run`
+    # -- `wait4` hands back the exact accounting of the ONE pid it waits
+    # on, so the recorded numbers are always this lane's own child, never a
+    # high-water mark borrowed from some other child run-gate happened to
+    # reap first (the bug the fix replaces). `Popen()` itself is NOT
+    # guarded here -- a bad argv[0]/permission error must propagate exactly
+    # as a plain `subprocess.run(argv)` raising would (a lane-execution
+    # failure, not a profiling one, out of R-36h's scope). Only the
+    # `wait4()` bracket AFTER the child is already running is guarded
+    # (R-36h: "OR the getrusage calls" extends to wait4 now): an ordinary
+    # `Exception` there (unreachable in practice -- fixed, valid arguments
+    # -- but this promise is "never", not "almost never") degrades to `ru`
+    # staying `None`, which `finish_bare_host_profiling`'s own "attempted
+    # but never got going" fallback already handles, while the child is
+    # still reaped via a plain `wait()` so the lane's own exit code is
+    # unaffected and the argv is never launched a second time. A
+    # `KeyboardInterrupt`/`SystemExit` (or anything else that is not an
+    # ordinary `Exception`) instead mirrors `subprocess.run`'s own Ctrl-C
+    # handling -- kill the child, reap it, re-raise -- so an interrupt
+    # never leaves the lane's child running detached.
     started_at = _iso_utc(time.time())
+    ru = None
     try:
-        code = subprocess.run(argv, cwd=str(project_dir), env=run_env).returncode
-    finally:
-        ended_at = _iso_utc(time.time())
-        ru_after = None
         if profiler_state["mode"] == "rusage":
+            proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env)
             try:
-                ru_after = resource.getrusage(resource.RUSAGE_CHILDREN)
+                _, status, ru = os.wait4(proc.pid, 0)
             except Exception as exc:
                 profiler_state["warning"] = profiler_state.get("warning") or \
-                    f"getrusage after the lane's own child failed unexpectedly: {exc}"
+                    (f"wait4 on the lane's own child failed unexpectedly: "
+                     f"{exc}")
+                code = proc.wait()
+                ru = None
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            else:
+                code = os.waitstatus_to_exitcode(status)
+        else:
+            code = subprocess.run(argv, cwd=str(project_dir),
+                                  env=run_env).returncode
+    finally:
+        ended_at = _iso_utc(time.time())
         try:
             profile_result = finish_bare_host_profiling(
-                profiler_state, ru_before, ru_after, started_at, ended_at)
+                profiler_state, ru, started_at, ended_at)
             print_profile_warning(profiler_state)
             print_footprint_line(lane_name, project_dir, profile_result["resources"])
             if run_record is not None:
