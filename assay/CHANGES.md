@@ -76,6 +76,58 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   regression from the `budget_per_candidate = "auto"` change above, not
   something new; fixed alongside `liveness`'s own reconstruction.
 
+- **A native R2 python/pytest lane's `LivenessRunner` now actively monitors
+  each candidate instead of only wrapping its shutdown (B091/RW-33, contract
+  item 3; `44dd12ca`, `99463ae5`, `d1540eda`).** A candidate that stops
+  making progress — no `test`/`session_finish` event AND its process tree's
+  CPU time grew less than 1.0s over the trailing 30s, or a `session_finish`
+  event seen but the process still alive 30s later — is killed
+  (`killpg(SIGKILL)`) and classified into a **new `hung` bucket**, additive
+  to the verdict's outcome enum under schema v11 (no v12 cut). `hung` scores
+  like `budget_exceeded` (excluded from `killed / (killed + survived)`) but
+  is reported as its own bucket, never `killed`, never folded into
+  `budget_exceeded` — a CPU-spinning candidate is never `hung`; it hits the
+  ordinary elapsed budget instead. Native-only: an ingested R2 report never
+  produces a `hung` entry. **A real, previously-shipping gap fixed alongside
+  this:** `judge_mutation`'s overall outcome precedence had no `hung`
+  branch at all, so a `hung`-only candidate silently verdicted `PASS` before
+  this change.
+
+- **The progress stream gains per-test detail for a native R2 python/pytest
+  lane's liveness-active run (B091 A4; `5baf2670`).** The `plan` event gains
+  `slowest_test_s` and `expect_next_event_within_s` (`max(3 x
+  slowest_test_s, 15s)`, `LivenessRunner`'s own idle-stall threshold, read
+  back from the measured baseline rather than re-derived a second way); a
+  new `test` event forwards the BASELINE's own per-test outcomes verbatim
+  (`phase: "baseline"`, `nodeid`, `outcome`, `duration_s`) — never emitted
+  for a candidate, since a `jobs`-way concurrent sweep would otherwise
+  interleave N candidates' worth of per-test lines with nothing on the wire
+  to tell them apart. Each `candidate` event gains `tests_completed` (that
+  candidate's own liveness-event count, read back from its own side file;
+  `None` when liveness never ran for the lane, `0` when it ran and
+  genuinely observed no test event yet — the two are deliberately distinct).
+  All three fields are `None`/absent whenever liveness is not active for
+  the lane.
+
+- **`assay run <lane> --resume --rejudge <id>[,...]` and
+  `--rejudge-outcome BUCKET[,...]` force specific candidates to
+  re-execute instead of replaying a trusted `--resume` record (B091 A5;
+  `c15f6040`).** Both require `--resume`. A record matching either selection
+  is dropped before the resume store is consulted, so the candidate falls
+  through to `pending_jobs` and genuinely re-executes — not a replayed
+  verdict under a new label. The two selections are a union: a candidate
+  matching both is dropped once, never twice. `--rejudge-outcome` takes the
+  real `MUTATION_BUCKETS` vocabulary plus one CLI-only alias, `"error"` →
+  `"crashed"` (never added to `MUTATION_BUCKETS` itself). An unknown
+  `--rejudge` id refuses the whole lane (`MutationStateError`) before any
+  candidate executes — cross-references B088 (resume identity), not fixed
+  here. `resume`'s progress event gains `rejudged_total`. **Documentation
+  note:** the ids `--rejudge` takes are `mutation.candidate_id()` digests,
+  not `MutantOutcome.identity` (a different, tuple-shaped identity on a
+  verdict's own bucket lists) — no verdict field today exposes the digest a
+  `--rejudge <id>` invocation needs; it must be read back from a
+  `--state-dir` state record.
+
 <!-- cmru: release history -->
 
 ## [6.1.1] - 2026-09-11

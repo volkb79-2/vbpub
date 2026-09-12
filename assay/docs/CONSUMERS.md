@@ -2070,6 +2070,69 @@ but note two consequences:
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
 
+### Liveness for a native R2 python/pytest lane: the `hung` bucket (B091/RW-33)
+
+`budget_per_candidate` (above) only catches a candidate that eventually
+returns — a mutant that leaks a non-daemon thread and idles at interpreter
+shutdown forever would otherwise consume its ENTIRE budget doing nothing
+(B090's own incident: 37 minutes lost to one candidate). For a lane whose
+`judge.mutation` is declared **natively** (not `format = "..."` ingestion),
+whose `judge.language` adapter is `python`, and whose own `argv` literally
+invokes pytest — the token `pytest`, a path ending `/pytest`, or the
+adjacent pair `-m pytest`; `assay.liveness.argv_invokes_pytest` is the exact
+check — assay now:
+
+1. materializes a small, stdlib-only pytest plugin into
+   `<project>/.assay/liveness/` (rewritten only when its content changes)
+   and injects it via `argv_appended` + a prepended `PYTHONPATH` entry
+   (**not** `allow_argv_append` — RW-36: that flag keeps its unrelated
+   CLI-passthrough-consent meaning; liveness injection is judge mechanics,
+   gated by the new key below);
+2. for every R2 **candidate** execution only (never R0, never R1), calls
+   `os._exit(rc)` from the plugin's `pytest_unconfigure(trylast=True)` hook
+   right after the terminal summary prints and pytest-cov's own data write
+   completes — bypassing the interpreter's normal thread-join-at-shutdown
+   entirely, so a leaked thread can no longer hang the candidate;
+3. runs the candidate under an active `LivenessRunner` monitoring loop
+   (`Popen(start_new_session=True)`, 1 s sampling) instead of a plain
+   blocking wait, watching the plugin's own side-file events AND the
+   process tree's `/proc` CPU time.
+
+**New lane key: `judge.mutation.liveness = "auto" | true | false`**
+(default `"auto"`):
+
+| value | behavior |
+| --- | --- |
+| `"auto"` (default, omitted key behaves identically) | liveness runs when the argv-invokes-pytest rule above holds; otherwise it is off, with one WARN naming the rule, and `budget_per_candidate` remains the only bound |
+| `true` | liveness is required; a lane whose argv does not invoke pytest is **refused at load** |
+| `false` | liveness is off unconditionally, no WARN — `budget_per_candidate` is the only bound, same as pre-B091 behavior |
+
+The mutation sweep's `plan` progress event and the verdict's
+`judgment.r2.liveness` both carry
+`{"active": bool, "reason": str, "plugin": str | None}` (additive; **absent
+under `producer = "ingested"`** — liveness is a native-execution mechanism,
+so an ingested judgment has nothing honest to put here) recording whether
+the mechanism ran for this lane and, when it did not, why.
+
+**The `hung` outcome bucket** (additive to `MUTATION_BUCKETS` under schema
+v11 — no v12 cut; a document produced before `hung` existed simply omits the
+key) is `LivenessRunner`'s own classification for a candidate that stops
+making progress, on EITHER of two branches:
+
+- no `test`/`session_finish` progress event AND the process tree's CPU time
+  grew less than 1.0 s over the trailing 30 s window, or
+- a `session_finish` event was seen (the runner completed) but the process
+  is still alive 30 s later.
+
+`hung` is scored **like** `budget_exceeded` — excluded from the
+`killed / (killed + survived)` denominator — but reported as its **own**
+bucket, never folded into `budget_exceeded` and never reported as `killed`:
+a candidate that hits its elapsed-time ceiling while genuinely CPU-spinning
+is **not** `hung` (that's an ordinary `budget_exceeded`); only an idle stall,
+or a runner that finished but never exited, is. Named in the verdict's
+survivor/triage list exactly like any other non-`killed` bucket. `hung` is
+**native-only**: an ingested R2 report never produces one.
+
 ### `budget = "unbounded"`: the recommended shape for a long mutation lane (B067)
 
 Guessing a lane-wide total for a mutation sweep is the failure mode this
@@ -2169,12 +2232,13 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
-| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived` |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `expect_next_event_within_s` (B091 A4 — `None`/`None` whenever `liveness.active` is `false`) |
+| `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s` |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
-| `shard` / `resume` | a shard was selected / records were resumed **or refused** | `selected_total` / `resumed_total` + `rejected_total` |
+| `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket`, `elapsed_seconds` |
-| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts), `reason` |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4 — that candidate's own liveness event count; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no test event yet, distinct meanings) |
+| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
 **Every record** additionally carries `emitted_at` (UTC ISO 8601) and
@@ -2219,6 +2283,69 @@ from `baseline_s`; `false` means the lane's own file already named the bound
 (an explicit duration) or explicitly declined one (`"none"`). `baseline_s` is
 the measured baseline's own wall time, present on every `plan` record
 regardless of which of the three the lane declared.
+
+**`plan` also carries the liveness half** (B091 A2–A4, see "Liveness for a
+native R2 python/pytest lane" below): `liveness` is the same
+`{active, reason, plugin}` record the verdict's `judgment.r2.liveness` field
+carries, and `slowest_test_s`/`expect_next_event_within_s` are the two
+figures `LivenessRunner`'s own idle-stall threshold was derived from —
+`slowest_test_s` read back from the measured baseline's own `test` events
+(never re-derived a second way; see `assay.liveness.baseline_slowest_test_s`),
+`expect_next_event_within_s = max(3 x slowest_test_s, 15s)` (falling back to
+`max(60s, baseline_s / 4)` when no baseline test-event data is available).
+Both are `None` whenever `liveness.active` is `false` — a non-pytest argv, a
+non-python lane, or an explicit `judge.mutation.liveness = false`.
+
+### `--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`: force specific candidates to re-execute (B091 A5)
+
+`--resume` (above) treats a matching state record as authoritative once both
+halves of its identity hold. Sometimes that is exactly what you do **not**
+want for one or a few candidates — a `hung` classification you suspect was a
+fluke, a `survived` you want a fresh run against a strengthened test, or a
+crash you want to retry after fixing the environment. `--rejudge` and
+`--rejudge-outcome` (both require `--resume`; refused `BAD_LANE_CONFIG` at
+the CLI layer otherwise, or `ValueError` from a direct `run_mutation` caller)
+drop matching state records **before** the resume store is consulted, so
+those candidates fall straight through to `pending_jobs` and genuinely
+re-execute — not a replay of the old verdict under a new label:
+
+```sh
+# re-execute two specific candidates by id
+assay run <lane> --resume --rejudge 3f9c1a...,7b2e04...
+
+# re-execute every candidate currently bucketed `hung` or `budget_exceeded`
+assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
+```
+
+- **The two selections are a union, dropped once, never twice**: a candidate
+  matching both `--rejudge` and a `--rejudge-outcome` bucket is not
+  double-executed.
+- **`--rejudge-outcome` bucket names are the real `MUTATION_BUCKETS`
+  vocabulary** (`killed`, `survived`, `crashed`, `budget_exceeded`,
+  `equivalent`, `hung`), with one CLI-only convenience alias: `"error"` is
+  accepted and resolved to `"crashed"` before `run_mutation` ever sees it —
+  `"error"` is never added to `MUTATION_BUCKETS` itself, so a verdict or a
+  state record never spells it that way.
+- **An unknown `--rejudge` id refuses the WHOLE lane**
+  (`MutationStateError`), before any candidate executes — this is the one
+  rejudge refusal that cannot be validated at CLI-parse time, because the
+  current candidate set does not exist until mutation-site collection has
+  run against the current tree.
+- **The ids `--rejudge` takes are `mutation.candidate_id()` digests — the
+  same sha256 string a state record and a `candidate`/`plan` progress event
+  key by — NOT `MutantOutcome.identity`.** `MutantOutcome.identity` (on a
+  verdict's `judgment.r2` bucket lists) is a different, tuple-shaped identity
+  (path, span, source hash, operator); no verdict field today exposes the
+  digest string a `--rejudge <id>` invocation actually needs. A consumer who
+  wants to rejudge "the candidates that survived in verdict X" cannot build
+  that invocation from the verdict alone — it has to read the id back off the
+  `--state-dir`'s own persisted state records (JSON files, one per candidate,
+  each carrying its own `candidate_id`). Filed as a documentation caveat here
+  rather than a new backlog row (see A6 REPORT for why); a future consumer
+  hitting this is the sign the row should be opened.
+- **`resume`'s own progress event gains `rejudged_total`** (above): the count
+  of records dropped by either selection on this run, `0` when neither flag
+  is given.
 
 ### `--progress-heartbeat SECONDS`
 
