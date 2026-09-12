@@ -1110,6 +1110,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     human `history` table gains a PEAK/+BASE/HOT p90/CORES/STALL line under
     each of the two existing stat lines (`-` for a series with zero
     contributing entries).
+  - **`R-36k` (RW-24, review round 2 S11) Byte-valued series report the
+    NEAREST-RANK p50, never the arithmetic midpoint.** `memory_peak_bytes`,
+    `memory_peak_over_baseline_bytes` and `hot_set_p90_bytes` — the three
+    series whose key ends `_bytes` — are excluded from `R-36d`'s plain
+    "median" on an even count: `round((a + b) / 2, 3)` can synthesize a
+    value like `100.5` that no sample ever measured, and Sec 7 says bytes
+    are never rounded. `series_stats(..., byte_valued=True)` instead calls
+    the SAME `_nearest_rank_value` helper Sec 3's own `hot_bytes.p90`/
+    `.median` already use — an actual element of the sorted series
+    (`rank = ceil(50/100 * N)`, 1-based). `cpu_cores_avg` and
+    `memory_full_stall_seconds` are not byte-valued and are UNCHANGED
+    (`R-36d`'s arithmetic median stands for both, and for `duration_stats`'s
+    own `duration_seconds`, which never routes through `series_stats` at
+    all). `_lane_stats` selects `byte_valued` structurally, from the key's
+    own `_bytes` suffix, rather than a second literal list that could drift
+    from `RESOURCE_SERIES_GETTERS` itself.
 
 - `R-37` **`doctor`/`--check-env` read scope under `--worktree` (RG-30).**
   `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree`
@@ -1676,7 +1692,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `hot_set_bytes` as `p90_median`/`p90_max`, `cpu_cores` as
     `avg_median`/`max`, `memory_full_stall_s`) reuse `R-36j`'s own
     `series_stats` machinery verbatim — median, never mean, same
-    reasoning.
+    reasoning, including `R-36k`'s (RW-24) nearest-rank-p50 rule for the
+    three byte-valued series: `run-gate.footprint.json` is the TRACKED
+    file `R-36k`'s own rationale names, so a `.5`-byte value here would be
+    a false measurement committed to git, not merely a transient one.
   - **`R-44b` `--write`.** Writes next to the EFFECTIVE project's
     `run-gate.toml` (temp file + `os.replace`, sorted keys, `indent=2`,
     trailing newline — `_write_json_atomic`'s exact pattern, reused, not

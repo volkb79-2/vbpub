@@ -28,7 +28,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   2 (SPEC `R-36j`) carries the new `resources`/`profile_error`/
   `profile_ref` fields and five new series (median peak, +baseline,
   hot-set p90, CPU cores, memory-full stall) alongside the existing
-  duration series. New ambient override `RUN_GATE_PROFILE` (`"on"|"off"`,
+  duration series. The three byte-valued series (peak, +baseline, hot-set
+  p90) report the NEAREST-RANK p50 — an actual sample, never an averaged
+  `.5` value on an even count (SPEC `R-36k`, RW-24, review round 2 S11);
+  the CPU-cores and memory-stall series are not bytes and still average.
+  New ambient override `RUN_GATE_PROFILE` (`"on"|"off"`,
   SPEC `R-43g`) for a runner without `docker exec` rights to a daemon it
   will never have. SPEC `R-43`.
 - **`footprint` verb (RG-55/C5) — a committed resource budget,

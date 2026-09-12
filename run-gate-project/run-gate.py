@@ -3096,7 +3096,7 @@ def duration_stats(entries: list[dict]) -> dict:
             "median_seconds": median, "max_seconds": values[-1]}
 
 
-def series_stats(entries: list[dict], getter) -> dict:
+def series_stats(entries: list[dict], getter, byte_valued: bool = False) -> dict:
     """`duration_stats`, generalized (RG-55/C4, contract Sec 4 obligation 4):
     median never mean, same reasoning as `duration_stats` — one slow (or
     swollen) outlier must not be read as the lane's typical cost. `getter`
@@ -3105,14 +3105,28 @@ def series_stats(entries: list[dict], getter) -> dict:
     at all — is EXCLUDED from the series, never coerced to 0 (a lane that
     was never measured is not the same fact as a lane that measured zero).
     `count` says how many entries actually contributed, which can be less
-    than `len(entries)` for exactly that reason."""
+    than `len(entries)` for exactly that reason.
+
+    `byte_valued` (RW-24, R-36k): a byte-valued series (`memory_peak_bytes`,
+    `memory_peak_over_baseline_bytes`, `hot_set_p90_bytes`) reports the
+    NEAREST-RANK p50 — an actual element of the series, the same rule
+    `_nearest_rank_value` already applies to Sec 3's own `hot_bytes.p90`/
+    `.median` — never the arithmetic midpoint of the middle two elements on
+    an even count: contract Sec 7 says "bytes are never rounded", and a
+    synthesized `100.5`-byte value is not a measurement anything ever took.
+    A non-byte series (`cpu_cores_avg`, `memory_full_stall_seconds`, and
+    `duration_stats`'s own `duration_seconds`, which never routes through
+    here) keeps the arithmetic median unchanged (`R-36d`)."""
     values = sorted(v for v in (getter(e) for e in entries)
                     if isinstance(v, (int, float)) and not isinstance(v, bool))
     if not values:
         return {"count": 0, "min": None, "median": None, "max": None}
-    mid = len(values) // 2
-    median = values[mid] if len(values) % 2 else \
-        round((values[mid - 1] + values[mid]) / 2, 3)
+    if byte_valued:
+        median = _nearest_rank_value(values, 50)
+    else:
+        mid = len(values) // 2
+        median = values[mid] if len(values) % 2 else \
+            round((values[mid - 1] + values[mid]) / 2, 3)
     return {"count": len(values), "min": values[0], "median": median,
             "max": values[-1]}
 
@@ -3151,7 +3165,14 @@ RESOURCE_SERIES_GETTERS = {
 def _lane_stats(entries: list[dict]) -> dict:
     stats = duration_stats(entries)
     for key, getter in RESOURCE_SERIES_GETTERS.items():
-        stats[key] = series_stats(entries, getter)
+        # RW-24/R-36k: byte-valued series (identified structurally by the
+        # `_bytes` suffix every one of the three carries, rather than a
+        # second literal list that could drift from `RESOURCE_SERIES_
+        # GETTERS` itself) get the nearest-rank p50; `cpu_cores_avg`/
+        # `memory_full_stall_seconds` are not bytes and keep the mean-of-
+        # two-on-even-count median `series_stats` always had.
+        stats[key] = series_stats(entries, getter,
+                                  byte_valued=key.endswith("_bytes"))
     return stats
 
 

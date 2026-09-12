@@ -6875,6 +6875,35 @@ class TestHistoryResourceSeries:
             entries, run_gate.RESOURCE_SERIES_GETTERS["cpu_cores_avg"])
         assert stats == {"count": 4, "min": 1.0, "median": 2.5, "max": 4.0}
 
+    def test_series_stats_byte_valued_even_count_uses_nearest_rank_not_the_average(
+            self):
+        """RW-24/R-36k: contract Sec 7 says bytes are never rounded, so an
+        even-count byte series must NOT take `series_stats`'s ordinary
+        mean-of-the-middle-two path (which would synthesize `100.5` for
+        `[100, 101]` -- a value no sample ever measured). `byte_valued=True`
+        routes it through `_nearest_rank_value` instead: an actual element
+        of the sorted series."""
+        entries = [{"resources": {"memory": {"peak_bytes": v}}}
+                  for v in (100, 101)]
+        stats = run_gate.series_stats(
+            entries, run_gate.RESOURCE_SERIES_GETTERS["memory_peak_bytes"],
+            byte_valued=True)
+        assert stats == {"count": 2, "min": 100, "median": 100, "max": 101}
+        assert stats["median"] in (100, 101)          # an element, never 100.5
+        assert isinstance(stats["median"], int)        # never a synthesized float
+
+    def test_series_stats_non_byte_even_count_is_unaffected_by_byte_valued_default(
+            self):
+        """The `byte_valued` default (`False`) is what every EXISTING
+        non-byte call site (`cpu_cores_avg`, `memory_full_stall_seconds`)
+        relies on -- confirms adding the parameter did not change their
+        behavior."""
+        entries = [{"resources": {"cpu": {"cores_avg": v}}}
+                  for v in (1.0, 2.0, 3.0, 4.0)]
+        stats = run_gate.series_stats(
+            entries, run_gate.RESOURCE_SERIES_GETTERS["cpu_cores_avg"])
+        assert stats["median"] == 2.5                  # unchanged: arithmetic mean
+
     def test_resource_field_walks_the_path_and_stops_at_the_first_gap(self):
         rf = run_gate._resource_field
         assert rf({"resources": {"damon": {"hot_bytes": {"p90": 5}}}},
@@ -6917,6 +6946,39 @@ class TestHistoryResourceSeries:
         hot = stats["hot_set_p90_bytes"]
         assert hot["count"] == 3
         assert hot["median"] == 195 * MIB   # same resistance, odd-count series
+
+    def test_lane_stats_routes_byte_series_through_nearest_rank_automatically(
+            self):
+        """RW-24/R-36k, end to end through `_lane_stats`/`lane_history_
+        report` (not a direct `series_stats` call): an even-count PASS
+        history whose byte fields differ by 1 must not report a `.5`
+        median, while the SAME even count on the non-byte `cpu_cores_avg`/
+        `memory_full_stall_seconds` series still averages -- proving
+        `_lane_stats`'s own `key.endswith("_bytes")` routing, not just
+        `series_stats`'s parameter, is wired correctly."""
+        entries = [
+            self._entry("a", {"memory": {"peak_bytes": 100 * MIB,
+                              "peak_over_baseline_bytes": 100 * MIB},
+                              "cpu": {"cores_avg": 1.0},
+                              "host": {"memory_full_stall_seconds": 1.0},
+                              "damon": {"hot_bytes": {"p90": 100 * MIB}}}),
+            self._entry("b", {"memory": {"peak_bytes": 101 * MIB,
+                              "peak_over_baseline_bytes": 101 * MIB},
+                              "cpu": {"cores_avg": 2.0},
+                              "host": {"memory_full_stall_seconds": 2.0},
+                              "damon": {"hot_bytes": {"p90": 101 * MIB}}}),
+        ]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        stats = run_gate.lane_history_report(store, "suite")["stats"]["passes"]
+        for key in ("memory_peak_bytes", "memory_peak_over_baseline_bytes",
+                    "hot_set_p90_bytes"):
+            median = stats[key]["median"]
+            assert median in (100 * MIB, 101 * MIB), (key, median)
+            assert isinstance(median, int), (key, median)
+        # The non-byte series on the identical even count still average.
+        assert stats["cpu_cores_avg"]["median"] == 1.5
+        assert stats["memory_full_stall_seconds"]["median"] == 1.5
 
     def test_dirty_run_never_touches_a_committed_entrys_resources(self):
         """RG-27 trap 2, re-proven for the resource series: `_apply_record`
@@ -7185,6 +7247,25 @@ class TestFootprintManifestBuild:
             "other": {"latest": None, "history": entries}}}
         m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
         assert set(m["lanes"]) == {"suite"}
+
+    def test_even_count_byte_series_yields_an_element_not_a_fractional_average(
+            self):
+        """RW-24/R-36k: `run-gate.footprint.json` is TRACKED (committed),
+        so a `.5`-byte median here is not a transient number -- it is a
+        false measurement written to git. Two PASS entries one byte apart
+        must distill to one of the two actual peaks, never their average."""
+        low = json.loads(json.dumps(SUMMARY_V1))
+        high = json.loads(json.dumps(SUMMARY_V1))
+        low["memory"]["peak_bytes"] = 100
+        high["memory"]["peak_bytes"] = 101
+        entries = [self._entry("a", low), self._entry("b", high)]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        peak = m["lanes"]["suite"]["memory_peak_bytes"]
+        assert peak["median"] in (100, 101)     # an element, never 100.5
+        assert isinstance(peak["median"], int)
+        assert peak["max"] == 101
 
 
 FOOTPRINT_LANE = """\
