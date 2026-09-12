@@ -1,39 +1,108 @@
 {
-  "distilled_at": "2026-09-12T17:00:31Z",
-  "from_commit": "e0e02dcec7cbc231e6a3e30ce37348d6b436e7d3",
+  "distilled_at": "2026-09-12T19:42:31Z",
+  "from_commit": "ec6cdc07c797a845216543dc98d1d0c5cf61f636",
   "generated_by": "run-gate",
   "keep": 10,
   "lanes": {
-    "selftest": {
+    "assay-r1": {
       "completed_runs": 3,
       "cpu_cores": {
-        "avg_median": 0.542,
-        "max": 0.542
+        "avg_median": 0.589,
+        "max": 0.612
       },
       "duration_s": {
-        "max": 172.315,
-        "median": 172.315
+        "max": 189.271,
+        "median": 179.472
       },
       "hot_set_bytes": {
         "p90_max": null,
         "p90_median": null
       },
-      "last_at": "2026-09-12T16:57:26Z",
-      "last_commit": "e0e02dcec7cbc231e6a3e30ce37348d6b436e7d3",
+      "last_at": "2026-09-12T18:45:36Z",
+      "last_commit": "50684f2ca299ab4a9f765c280950a3f2f01f50b4",
       "memory_full_stall_s": {
         "max": null,
         "median": null
       },
       "memory_peak_bytes": {
-        "max": 279969792,
-        "median": 279969792
+        "max": 279330816,
+        "median": 278118400
       },
       "memory_peak_over_baseline_bytes": {
         "max": null,
         "median": null
       },
       "method": "rusage",
-      "runs": 1,
+      "peak_at_floor": null,
+      "runs": 2,
+      "scope": null,
+      "source": "rusage-maxrss"
+    },
+    "assay-r3": {
+      "completed_runs": 4,
+      "cpu_cores": {
+        "avg_median": 0.688,
+        "max": 0.741
+      },
+      "duration_s": {
+        "max": 19.103,
+        "median": 15.857
+      },
+      "hot_set_bytes": {
+        "p90_max": null,
+        "p90_median": null
+      },
+      "last_at": "2026-09-12T18:49:00Z",
+      "last_commit": "50684f2ca299ab4a9f765c280950a3f2f01f50b4",
+      "memory_full_stall_s": {
+        "max": null,
+        "median": null
+      },
+      "memory_peak_bytes": {
+        "max": 208125952,
+        "median": 190017536
+      },
+      "memory_peak_over_baseline_bytes": {
+        "max": null,
+        "median": null
+      },
+      "method": "rusage",
+      "peak_at_floor": null,
+      "runs": 3,
+      "scope": null,
+      "source": "rusage-maxrss"
+    },
+    "selftest": {
+      "completed_runs": 9,
+      "cpu_cores": {
+        "avg_median": 0.592,
+        "max": 0.633
+      },
+      "duration_s": {
+        "max": 172.315,
+        "median": 157.614
+      },
+      "hot_set_bytes": {
+        "p90_max": null,
+        "p90_median": null
+      },
+      "last_at": "2026-09-12T19:39:49Z",
+      "last_commit": "ec6cdc07c797a845216543dc98d1d0c5cf61f636",
+      "memory_full_stall_s": {
+        "max": null,
+        "median": null
+      },
+      "memory_peak_bytes": {
+        "max": 300146688,
+        "median": 280608768
+      },
+      "memory_peak_over_baseline_bytes": {
+        "max": null,
+        "median": null
+      },
+      "method": "rusage",
+      "peak_at_floor": false,
+      "runs": 3,
       "scope": null,
       "source": "rusage-maxrss"
     }

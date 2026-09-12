@@ -998,8 +998,20 @@ run-gate rev 42 — lane resource footprint
 store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
 manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
   LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
-  selftest                1    267 MiB/267 MiB            -          -    0.54        -     172.3s [source: rusage-maxrss]
+  assay-r1                2    265 MiB/266 MiB            -          -    0.59        -     179.5s [source: rusage-maxrss]
+  assay-r3                3    181 MiB/198 MiB            -          -    0.69        -      15.9s [source: rusage-maxrss]
+  selftest                3    268 MiB/286 MiB            -          -    0.59        -     157.6s [source: rusage-maxrss]
 ```
+
+(Recaptured RW-46/session 5, after the round-2 rusage rewrite —
+`memory.peak_bytes` is now `os.wait4()`'s exact per-child accounting,
+RW-43/B1, rather than the earlier `getrusage(RUSAGE_CHILDREN)` figure the
+first capture above used; none of these three lanes' most-recently-
+profiled run is floor-bound (`peak_at_floor`, RW-46b — each one's own
+child genuinely exceeded run-gate's own resident size at spawn), so the
+manifest carries `"peak_at_floor": false`/`null` rather than `true` here —
+`LANE-AUTHORING.md`'s own footprint-budgeting section shows what a
+floor-bound entry looks like.)
 
 A lane with no profiled PASS run yet is simply OMITTED (absent means
 unknown, never zero) — `--write` REFUSES outright (exit 2, naming why) when

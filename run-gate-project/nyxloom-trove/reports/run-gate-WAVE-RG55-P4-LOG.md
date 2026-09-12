@@ -1111,3 +1111,36 @@ a `peak_at_floor: false` lane prints the source caveat alone, never a
 fabricated peak-at-floor line.
 
 Verification: `python3 -m pytest tests/test_run_gate.py -k "TestFootprintDoctorChecks" -q` → 11 passed
+
+### Commit 6 — regenerate run-gate.footprint.json + CONSUMERS transcript from a clean selftest PASS
+
+Clean tree, `selftest` re-run: **PASS** (1143 passed, 4 skipped, ZERO
+failures; `diff-coverage OK: 1066/1066 changed executable lines covered
+(100.0%); branches 394/394 taken`). This is the FIRST GREEN selftest for
+this package since round-1 review — RW-46a's lock-dir isolation holds
+under real concurrent sibling-package load (confirmed live: other
+packages' pytest/gate processes were active throughout both selftest
+attempts this session, per `ps aux`).
+
+`./run-gate.py footprint --write` (immediately after, same clean tree):
+manifest now carries THREE lanes (`assay-r1`/`assay-r3`/`selftest` — the
+first two accumulated history from earlier session activity this same
+worktree), all `source: rusage-maxrss`, `method: rusage`, `peak_at_floor:
+false` (selftest, whose most-recent run is from THIS session, post-
+RW-46b) / `null` (assay-r1/assay-r3, whose most-recent profiled entries
+predate this session's `floor_bytes` field — contract Sec 1.7: absent
+means unknown, not fabricated as `false`). `CONSUMERS.md`'s "The footprint
+manifest" transcript replaced verbatim with this fresh capture; prose
+note added explaining the corrected wait4() numbers and why none of the
+three happen to be floor-bound.
+
+`./run-gate.py doctor` (captured for the REPORT): 14 checks, 8 OK, 2
+WARN (RG-21 linked-worktree git-view note; profiler daemon not running,
+now correctly naming BOTH fallbacks per B4), 0 FAIL, 2 SKIP, 2 INFO
+(footprint source; **stale coordination locks: 2603 entries older than 1
+day under /tmp, 306 as DIRECTORIES** — real, live confirmation that OTHER
+RG-55 packages' own un-fixed test suites are still writing to host /tmp
+concurrently on this shared host, exactly the hazard RW-46a's finding
+described, growing since session 4's 493-directory snapshot; this
+package's own test suite no longer contributes to it, per the
+`test_a_real_lane_run_never_touches_host_tmp` regression test).
