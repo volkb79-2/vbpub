@@ -1,14 +1,20 @@
-# run-gate-WAVE-RG55-P2 — REPORT (partial: C1, C1-rework, C2 all DONE; C3-C8 deferred)
+# run-gate-WAVE-RG55-P2 — REPORT (C1-C8 all DONE; final gates green; assay-r2 tracked separately below)
 
-Package P2 of the RG-55 wave. This REPORT covers deliverable C1 (RG-53)
-and its RW-5 rework (DONE), and C2 (assay-r1/r2/r3 + gate-full lanes,
-DONE — RW-8 resolved the judge-table scoping decision BRIEF-2 left
-blocking); C3-C8 are deferred — see `run-gate-WAVE-RG55-P2-BRIEF-1.md`
-(first predecessor's brief), `run-gate-WAVE-RG55-P2-BRIEF-2.md` (second
-session's continuation brief, incl. the now-resolved C2 decision ask's
-full evidence trail), `run-gate-WAVE-RG55-P2-BRIEF-3.md` (this session's
-continuation brief for C3-C8), and `run-gate-WAVE-RG55-P2-LOG.md` for the
-commit-by-commit record.
+Package P2 of the RG-55 wave — the run-gate client side of cgroup-profiler
+integration. **All eight deliverables (C1-C8) are DONE and gate-verified**:
+C1 (RG-53) + its RW-5 rework, C2 (assay-r1/r2/r3 + gate-full lanes), C3
+(profiling client, config/`ProfilerClient`/`ResourceAccumulator`/
+`BasicSampler` + full wiring), RW-17 (`RUN_GATE_PROFILE` ambient
+override), C4 (history schema 2 + resource series), C6 (RG-48
+`resources.cpus`), C5 (the `footprint` verb, R-44), C7 (`doctor`'s
+"profiler" check + the R-29 private-namespace WHY), C8 (SPEC/README/
+CONSUMERS/LANE-AUTHORING/CHANGES/backlog sweep, `__revision__ = 41`).
+`__revision__ = 41` is the final commit's own revision. See
+`run-gate-WAVE-RG55-P2-BRIEF-1.md` through `-BRIEF-6.md` for each
+session's continuation state and `run-gate-WAVE-RG55-P2-LOG.md` for the
+full commit-by-commit record (this REPORT summarizes; the LOG is the
+detailed evidence trail, including the final-commit gate sweep and the
+real `footprint --write` live-probe transcript).
 
 ## C1-rework — RW-5 (0/0 diff semantics corrected)
 
@@ -638,6 +644,212 @@ Tests: 952 passed, 3 skipped (was 943/3, +9: `TestHistoryResourceSeries`
 ×5, `TestHistorySchema2Migration` ×1, `TestHistoryTableResourceColumns`
 ×3). selftest diff-coverage 568/568 lines (100.0%), 208/208 branches.
 
+## C6 — RG-48, `resources.cpus` (session 7, commit `f853fb52`)
+
+`[lanes.<n>.resources].cpus` / `[environments.<e>.resources].cpus`
+(lane wins), validated against docker's own `--cpus` grammar (a new
+`_CPUS_RE`/`_validate_cpus`: `^\d+(\.\d+)?$`, > 0). `_validate_environment`
+gains `resources` table support (previously lane-only). Ephemeral
+container lanes get a real `docker run --cpus <n>`; exec-mode lanes keep
+the pre-existing naming-only WARNING (proven this session to also cover a
+resources table declaring ONLY `cpus`, and extended to read the
+environment-level fallback the exec path had never consulted before).
+New `doctor` check: a container lane whose argv names its own worker
+count (`-n auto` / `--workers auto`) with no `resources.cpus` anywhere in
+scope gets a named WARNING — RG-48's motivating case (worker count and
+the container's real CPU ceiling decided in two places that can silently
+disagree). `usage()` documents the new `cpus=` bit.
+
+27 new tests, all in-process. One coverage round-trip (2 uncovered
+`usage()` lines, closed with 2 direct `usage()`-call tests). Tests: 981
+passed, 3 skipped (was 952 + 29). `selftest --allow-dirty` diff-coverage
+**OK 604/604 (100.0%) lines, 234/234 (100.0%) branches**.
+
+## C5 — the `footprint` verb (R-44, session 7, commit `6b9f2f0b`)
+
+`run-gate footprint [LANE] [--json] [--write] [--worktree PATH]`.
+`build_footprint_manifest` distills PASS + history-eligible entries (the
+same population `history`'s own `stats.passes`/`stats.completed` report)
+into the contract Sec 4.5 manifest shape, one entry per lane that has
+EVER had a profiled PASS (a lane never profiled is omitted, not zeroed).
+`scope`/`method` come from the MOST RECENT profiled entry
+(`next(... reversed(hist) ...)`, a no-default generator rather than a
+for/break loop — the outer guard already makes loop-exhaustion
+structurally unreachable, so a for/break shape would leave coverage.py
+flagging a branch that can never execute). `--write` writes
+`run-gate.footprint.json` (TRACKED — unlike `.run-gate/`, meant to be
+committed) next to the effective `run-gate.toml`, and REFUSES (exit 2,
+naming why) both when no lane qualifies and — an applied reading, not
+contract text — **when combined with a LANE filter**, since a partial
+write would silently drop every other lane's data from a file meant to
+be the project's whole committed budget. `footprint` joins
+`_RESERVED_POINTER_VERBS` (BREAKING per CHANGES) and reuses
+`resolve_worktree_scope`, always resolving the worktree (unlike
+`history`) since a manifest's `from_commit` is meaningless without one.
+
+`doctor` gains a footprint-freshness check (INFO when no manifest exists;
+WARN on per-lane drift past `[footprint] tolerance_pct`, default 25%;
+WARN on `distilled_at` staleness past `max_age_days`, default 30) via a
+new `resolve_footprint_policy` mirroring `resolve_history_keep`'s exact
+whole-table-shadowing precedence (R-09). `profile_meta()`'s `expected`
+field now reads the manifest's `memory_peak_bytes.median` for the current
+lane (was always `null` before this commit). `print_footprint_line`
+(contract Sec 4.6 disclosure line 3) is new, printed alongside
+`finish_lane_profiling` in both `await_container` and `run_exec_lane`.
+
+**Decision recorded because it is easy to get backwards**: the
+disclosure line's "stalled on memory (full)" figure reads
+`resources.host.memory_full_stall_seconds`, the SAME field C4's
+`RESOURCE_SERIES_GETTERS["memory_full_stall_seconds"]` already feeds for
+the "history median" figure two segments later in the same sentence —
+`resources.pressure.memory_full_stall_seconds` is a different,
+session-scoped PSI delta and was the wrong field. Caught before shipping
+by a test asserting the fixture's exact number (`host.*` = 1.8s vs.
+`pressure.*` = 4.8s), not discovered after.
+
+41 new tests, all in-process. First selftest run: 98.3% diff-coverage
+(740/753) — 7 structurally-unreachable-looking guard branches (the
+config central-fallback path, a malformed-manifest-shape guard, doctor's
+null-median/missing-`distilled_at` guards), closed with 6 targeted tests
+plus the `next()`-generator refactor above — never `# pragma: no cover`.
+4 pre-existing tests fixed (stale exact-text `--json` refusal wording).
+
+Tests: 1022 passed, 3 skipped (was 981 + 41). `selftest --allow-dirty`
+diff-coverage **OK 749/749 (100.0%) lines, 292/292 (100.0%) branches**.
+
+Both `footprint --write`'s refusal (proven live on this project's own
+bare-host store) and a real 4-sample manifest (proven live via 9 real
+docker runs against a throwaway probe project) are demonstrated in full
+in the LOG's "Session 7" section — not duplicated here; see "Decision
+asks" below for the headline numbers and `LOG.md` for the complete
+transcript and manifest JSON.
+
+## C7 — `doctor`'s "profiler" check + R-29 private-namespace WHY (session 7, commit `e14615b3`)
+
+New `doctor` check "profiler": daemon container presence via `docker ps`
+against the resolved `[profile].daemon` name; `ctl version` via the
+existing `ProfilerClient`; host + per-slice pressure via `ctl host` once
+the daemon answers — the literal workaround the amended R-29 WARN (below)
+now names. Every finding is INFO/WARN/OK/SKIP, never FAIL (profiling is
+optional infrastructure per contract Sec 4 obligation 3 — a lane with no
+reachable daemon still gets a basic in-lane profile, so `doctor` never
+blocks a project on the daemon being down). `[profile]` settings and the
+ambient `RUN_GATE_PROFILE` override (RW-17's disclosure half, explicitly
+deferred to C7 by that session's own note) get their own "profile config"
+line regardless of daemon reachability.
+
+R-29 amendment: the existing "no derivable memory ceiling" WARNING now
+appends a WHY clause when the cause is a private cgroup namespace (the
+devcontainer/CI default) — new `cgroup_namespace_is_private()` reads
+`/proc/self/cgroup` (honoring `$RUN_GATE_PROC_ROOT`) and checks for the
+exact `0::/` unified-hierarchy-root line that namespace produces, naming
+doctor's own new "profiler" check as the one remaining path to host-side
+slice truth.
+
+13 new tests, all in-process, all green first run — no fix cycle needed.
+
+Tests: 1035 passed, 3 skipped (was 1022 + 13). `selftest --allow-dirty`
+diff-coverage **OK 788/788 (100.0%) lines, 306/306 (100.0%) branches**.
+
+## C8 — SPEC/README/CONSUMERS/LANE-AUTHORING/CHANGES/backlog sweep, revision 41 (session 7, commit `ac885ed4`)
+
+`SPEC.md` gains `R-43` (profiling: token, scopes, daemon/basic paths,
+degradation, inflight fields, disclosure, config incl.
+`RUN_GATE_PROFILE`, sub-clauses a-h) and `R-44` (footprint manifest,
+`--write` refusal + lane-filter refusal, doctor staleness+drift,
+`meta.expected`, the disclosure line, sub-clauses a-e); `R-29`, `R-36`
+(new `R-36j`), `R-07`/`R-08` all amended for what C1-C7 shipped but never
+documented; `R-40c` fixed (a pre-existing, unrelated staleness — the
+"assay lanes ONLY" `stall_timeout` text had gone stale since RG-41)
+plus a new, backfilled `R-40f`. `README.md`/`CONSUMERS.md`/
+`LANE-AUTHORING.md` all updated (lane schema, footprint manifest
+subsection, RG-48 worker-count rule, stale text fixes). `CHANGES.md`
+`[Unreleased]` gains the RG-55 headline (citing session 5's live-probe
+numbers: ephemeral basic-path peak 110.17 MiB, exec peak-over-baseline
+84.51 MiB) plus `footprint`/RG-48/the profiler check. Backlog: RG-55 and
+RG-48 → FIXED; RG-56/RG-57 left untouched, as directed. `__revision__`
+40 → 41, the wave's summary note PREPENDED per this file's own
+newest-first running-history convention.
+
+Docs-only + one revision-comment line; no test-file edits this commit.
+Tests: 1035 passed, 3 skipped (unchanged). `selftest --allow-dirty`
+diff-coverage **OK 789/789 (100.0%) lines, 306/306 (100.0%) branches**.
+
+## Final-commit gate sweep and live probes (against `ac885ed4`)
+
+All four verdicts read in SEPARATE steps, never a pipe tail, per the
+binding rule:
+
+- **`selftest --allow-dirty`**: 1035 passed, 3 skipped, diff-coverage
+  **OK 789/789 (100.0%) lines, 306/306 (100.0%) branches**, exit 0.
+- **`assay-r1 --base main`**: **PASS (exit 0)** against commit
+  `ac885ed404af9d6c6aa43e3928284d17646b1eec`.
+- **`assay-r3`**: **PASS (exit 0)** — canary "median-not-mean" case: 1
+  rejected, 0 survived.
+- **`doctor`** (this project's own bare-host store): 11 checks — 6 OK, 2
+  warnings (RG-21 linked-worktree git view, pre-existing/expected;
+  profiler daemon not running, expected — no daemon container up in this
+  environment), 0 failures, 2 skipped (bare-host toolchain probes, by
+  design), 1 info (new C5 footprint-manifest line — correctly "none
+  written yet" for a store whose own `selftest`/`assay-*` lanes are all
+  bare-host and therefore never profiled, RG-57).
+
+**`footprint --write` refusal**, demonstrated live against this
+project's own bare-host store: exit 2, `run-gate: footprint --write
+refused: no lane has a completed, profiled run in its history yet — run
+a profiled lane first (bare-host lanes are never profiled, RG-57;
+profiling must be enabled — check RUN_GATE_PROFILE and [profile]/lane
+'profile')`.
+
+**`footprint --write` real manifest**, demonstrated live via a throwaway
+project (`rg55-probe`) with `run-gate.py` symlinked from this worktree
+and one container lane (`tester-unified:local`, allocating ~100 MiB for
+12s). **9 real `docker run` launches**, each capped with `docker update
+--cpus=3` immediately after launch, `docker ps` checked before every
+launch, one gate container at a time, teardown in run-gate's own
+`finally` (verified nothing leaked afterward). A real finding along the
+way: the first 3 runs landed in history and were distilled into a
+1-sample manifest, but leaving that manifest's own output file
+uncommitted between runs left the judged tree dirty for the next 3 runs —
+`history_eligible: false`, correctly excluded by RG-55's own admission
+control (not a defect; fixed by committing the manifest like any other
+tracked artifact). The final 4 clean, history-eligible runs (4 distinct
+commits) distilled into a real manifest:
+
+```json
+{
+  "probe": {
+    "completed_runs": 4, "runs": 4, "scope": "container", "method": "basic",
+    "memory_peak_bytes": {"median": 115087360.0, "max": 115372032},
+    "memory_peak_over_baseline_bytes": {"median": 907264.0, "max": 4743168},
+    "cpu_cores": {"avg_median": 0.007, "max": 0.008},
+    "memory_full_stall_s": {"median": 0.701, "max": 0.82},
+    "duration_s": {"median": 13.343, "max": 13.702},
+    "hot_set_bytes": {"p90_median": null, "p90_max": null}
+  }
+}
+```
+
+(`hot_set_bytes` null throughout: the basic-path sampler has no DAMON
+access — a daemon-path-only capability, contract Sec 4 obligation 3 —
+consistent with every prior basic-path probe this package recorded.)
+`doctor` re-run against that same probe project: 12 checks — 11 OK, 1
+warning (profiler daemon not running, same expected reason), 0 failures,
+0 skipped, 0 info; both new C5 checks fire OK against the real manifest
+(`footprint drift: 1 lane(s) within 25% ...`, `footprint staleness:
+distilled 0 day(s) ago ...`). Full transcript, container names, and the
+dirty-tree finding's root cause are in the LOG's "Session 7" section.
+
+## assay-r2 (mutation lane, 4h budget)
+
+Dispatched last, per the handoff's own explicit timing rule ("run the
+mutation lane once, at the very end"). See this REPORT's own final
+status note / the accompanying return message for its verdict — recorded
+separately since it was still running (within its 4h advisory budget, no
+survivors reported yet at time of writing) when this REPORT section was
+drafted; this file is updated again once it completes, or with a
+budget-exhaustion partial result if it does not finish within 4h.
+
 ## Decision asks
 
 **C2's `[lanes.r1]`/`[lanes.r2]` `judge.source_roots` scoping —
@@ -790,11 +1002,32 @@ visibility rather than as a blocking ask:
   keys, `lane_history_report`/`history --json`/the human table all gain
   them, RG-27 traps re-proven for the generalization. See the "C4" section
   below for the full evidence.
-- **C5 (`footprint` verb, R-44)**, **C6 (RG-48, `resources.cpus`)**, **C7
-  (`doctor` profiler check)**, **C8 (docs/spec/backlog/revision sweep,
-  `__revision__ = 41`)** — not started. C4's schema/stats they depend on
-  now exist; nothing further blocks starting C5. See `BRIEF-6.md` for the
-  concrete continuation state.
+- **C6 (RG-48, `resources.cpus`) — COMPLETE** (commit `f853fb52`,
+  session 7). `--cpus` cap on ephemeral container lanes, the exec-lane
+  naming-only WARNING proven to also cover a `cpus`-only resources table
+  plus the environment-level fallback, a new doctor worker-count-vs-cap
+  check. See the "C6" section above.
+- **C5 (`footprint` verb, R-44) — COMPLETE** (commit `6b9f2f0b`,
+  session 7). Manifest build/write/read, doctor drift+staleness checks,
+  `meta.expected` wiring, the disclosure line. Both the refusal path and
+  a real, live 4-sample manifest are demonstrated with real docker runs
+  — see the "Final-commit gate sweep and live probes" section above and
+  the LOG's "Session 7" section for the full transcript.
+- **C7 (`doctor`'s "profiler" check + R-29 WHY) — COMPLETE** (commit
+  `e14615b3`, session 7). Daemon presence/version/host-pressure check,
+  the private-cgroup-namespace WHY clause on the existing R-29 WARNING.
+  See the "C7" section above.
+- **C8 (docs/spec/backlog/revision sweep, `__revision__ = 41`) —
+  COMPLETE** (commit `ac885ed4`, session 7). `R-43`/`R-44` new, `R-29`/
+  `R-36`/`R-07`/`R-08`/`R-40c` amended, `R-40f` backfilled, README/
+  CONSUMERS/LANE-AUTHORING/CHANGES/backlog all updated, revision bumped.
+  See the "C8" section above.
+- **All C1-C8 deliverables are now DONE.** The final-commit gate sweep
+  (`selftest`/`assay-r1`/`assay-r3`/`doctor`, each read in a separate
+  step) is green against `ac885ed4`; `assay-r2` (mutation lane, run
+  exactly once per the handoff's timing rule) is tracked in its own
+  section above and in the accompanying return message, since it runs on
+  a multi-hour advisory budget independent of this REPORT's drafting.
 - RG-56 (admission control) and RG-57 (bare-host attribution) remain filed,
   untouched, per the handoff's explicit instruction not to re-file or
   design them in this package (RG-57's own text is now CITED, verbatim, in
@@ -884,3 +1117,28 @@ Records only (session 6, committed with this checkpoint):
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-6.md` (new)
+
+C6 (session 7, commit `f853fb52`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+C5 (session 7, commit `6b9f2f0b`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+C7 (session 7, commit `e14615b3`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+
+C8 (session 7, commit `ac885ed4`):
+- `run-gate-project/SPEC.md`
+- `run-gate-project/README.md`
+- `run-gate-project/CONSUMERS.md`
+- `run-gate-project/LANE-AUTHORING.md`
+- `run-gate-project/CHANGES.md`
+- `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`
+- `run-gate-project/run-gate.py` (revision-comment bump only)
+
+Records only (session 7, this checkpoint):
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
