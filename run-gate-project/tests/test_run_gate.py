@@ -7341,6 +7341,30 @@ class TestFootprintVerbCLI:
             capsys.readouterr().err
 
 
+class TestFootprintManifestLanePeakMedian:
+    """`footprint_manifest_lane_peak_median` -- the scalar `memory_peak_bytes.
+    median` lookup the footprint disclosure line's `| manifest …` tail uses
+    (contract Sec 4.6). Direct coverage: before B2 (round-1 review) this
+    function was exercised only INDIRECTLY through `profile_meta`'s own
+    tests, which B2 redirected to the new `footprint_manifest_lane_expected`
+    -- orphaning this one's "lane not in the manifest" branch."""
+
+    def test_no_manifest_returns_none(self):
+        assert run_gate.footprint_manifest_lane_peak_median(None, "suite") is None
+
+    def test_lane_not_in_manifest_returns_none(self):
+        manifest = {"schema": 1, "lanes": {"other": {
+            "memory_peak_bytes": {"median": 512 * MIB}}}}
+        assert run_gate.footprint_manifest_lane_peak_median(
+            manifest, "suite") is None
+
+    def test_lane_present_returns_the_median(self):
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "memory_peak_bytes": {"median": 512 * MIB, "max": 600 * MIB}}}}
+        assert run_gate.footprint_manifest_lane_peak_median(
+            manifest, "suite") == 512 * MIB
+
+
 class TestFootprintProfileMetaExpected:
     """`profile_meta`'s `expected` field (RG-55/C5, corrected by B2, round-1
     review): contract Sec 2.2's four-key object
