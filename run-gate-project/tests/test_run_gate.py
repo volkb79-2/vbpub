@@ -7152,6 +7152,25 @@ class TestHistoryTableResourceColumns:
         assert "+BASE -" in empty_line and "CORES -" in empty_line
         assert "STALL -" in empty_line
 
+    def test_lane_stats_source_and_floor_flags_are_any_not_all(self):
+        # S8 (round-2 review, RW-51): `_lane_stats`' own docstring rule --
+        # ANY contributing entry carrying the caveat is enough to print it,
+        # never a majority/all requirement, so a mixed-mode series (daemon
+        # became reachable partway through) never under-discloses. An
+        # any->all mutant survives unless one entry here lacks BOTH flags
+        # and the aggregate is still True.
+        entries = [
+            {"outcome": "pass",
+             "resources": {"memory": {"source": "rusage-maxrss",
+                                      "peak_at_floor": True}}},
+            {"outcome": "pass",
+             "resources": {"memory": {"source": "memory.peak",
+                                      "peak_at_floor": False}}},
+        ]
+        stats = run_gate._lane_stats(entries)
+        assert stats["memory_source_rusage"] is True
+        assert stats["memory_peak_at_floor"] is True
+
     def test_history_table_in_process_prints_the_resource_line(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path)
@@ -7702,6 +7721,27 @@ class TestFootprintDisclosureLine:
         out = capsys.readouterr().out
         assert "history median peak 700 MiB (1 runs)" in out
         assert "| manifest 800 MiB" in out
+
+    def test_rusage_source_note_appears_only_when_the_summary_says_so(
+            self, tmp_path, capsys):
+        # S8 (round-2 review, RW-51): the `[source: rusage-maxrss]` note
+        # (S1/RW-46b) was disclosed correctly but never asserted on this
+        # LIVE line -- unlike its `(peak <= floor)` sibling on the same
+        # line, which round 1's own tests already pin.
+        resources = {"memory": {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB,
+                                "source": "rusage-maxrss"},
+                    "cpu": {"cores_avg": 0.5},
+                    "host": {"memory_full_stall_seconds": 0.0}}
+        run_gate.print_footprint_line("suite", tmp_path, resources)
+        assert "[source: rusage-maxrss]" in capsys.readouterr().out
+
+        cgroup_resources = {"memory": {"peak_bytes": 100 * MIB,
+                                       "p90_bytes": 90 * MIB,
+                                       "source": "memory.peak"},
+                           "cpu": {"cores_avg": 0.5},
+                           "host": {"memory_full_stall_seconds": 0.0}}
+        run_gate.print_footprint_line("suite", tmp_path, cgroup_resources)
+        assert "[source: rusage-maxrss]" not in capsys.readouterr().out
 
 
 class TestFootprintDoctorChecks:
@@ -11987,6 +12027,12 @@ class TestInflightRecordStore:
         # name is disclosed, not attached to and not removed. Kept here only
         # as the field inventory this test is.
         assert data["container_id"] == f"sha256:fakeid-{data['container']}"
+        # S7 (round-2 review, RW-51): the container path's OWN half of the
+        # same stamp `TestExecLaneInflightRecord::test_record_exists_
+        # when_exec_begins_and_cleared_after` pins for the exec path --
+        # `resolve_inflight`'s foreign-record refusal depends on both
+        # writers stamping correctly, not just the exec side.
+        assert data["runner"] == "container"
         assert data["commit"] == head
         assert data["worktree"] == str(repo)
         assert data["project_dir"] == str(proj)
@@ -15756,6 +15802,13 @@ class TestExecLaneInflightRecord:
         assert seen["record"]["lane"] == "suite"
         assert seen["record"]["container"] == "the-runner"
         assert seen["record"]["profile_token"] == "abc123"
+        # S7 (round-2 review, RW-51): the WRITER's own stamp value, not
+        # just the guard that later reads it -- B3's protection is two
+        # halves (the stamp and `resolve_inflight`'s refusal), and only
+        # the guard had a test pinning it before this line. A
+        # string-literal mutation of "exec" is also outside `assay-r2`'s
+        # operator set, so only a direct assertion catches it.
+        assert seen["record"]["runner"] == "exec"
         # N13 half 1 (round-1 review B2): no cgprofile daemon shim is
         # installed here, so `client.version()` fails and profiling
         # degrades to the basic path -- `profile_session` must be None,
