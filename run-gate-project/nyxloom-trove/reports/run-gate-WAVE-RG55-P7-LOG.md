@@ -946,3 +946,58 @@ exists, in a small follow-up entry-only commit).
   throughout; `nice -n19`/`ionice -c3`; serial; each `standalone` fixture
   build (session-scoped, one wheel per pytest process) completed in
   seconds against the offline `--no-index` closure already present.
+
+### `802f0855` — session 9: round-1 repair B1 -- os._exit sentinel prevents false SURVIVOR
+
+- Files: `src/assay/liveness.py` (`_EXIT_STATUS = None` sentinel;
+  `pytest_unconfigure` returns without exiting when unassigned; docstring
+  wording fix), `docs/CONSUMERS.md` (same wording fix), `tests/
+  test_liveness.py` (3 new plugin-module-level unit tests: both branches
+  of the new conditional, plus the `ASSAY_LIVENESS_EXIT` unset case),
+  `tests/test_cli_run.py` (1 new real-subprocess end-to-end CLI test).
+- Round-1 review finding: `run-gate-WAVE-RG55-P7-REVIEW-round1.md` B1.
+  `pytest_unconfigure` used to `os._exit(_EXIT_STATUS)` unconditionally
+  once `ASSAY_LIVENESS_EXIT=1`, but `_EXIT_STATUS` started at `0` and was
+  only ever reassigned by `pytest_sessionfinish` -- which pytest does NOT
+  call when the session never started (a raising `conftest.
+  pytest_configure`/`pytest_sessionstart`), while `pytest_unconfigure`
+  DOES still fire (`Config._ensure_unconfigure()`). That turned a genuine
+  crash into a false `os._exit(0)` -- PASS -- and
+  `mutation._classify_mutant_result` then reported `survived` for a
+  mutant the suite actually killed.
+- Fix: three-line prescription from the review, applied verbatim.
+  `_EXIT_STATUS = None` sentinel; `pytest_unconfigure` checks
+  `if _EXIT_STATUS is None: return` before flushing/exiting, letting
+  pytest's own exit status/path stand on the diverging path.
+- Verified:
+  - `python3 -m pytest tests/test_liveness.py -k unconfigure -q` -- 3
+    passed (both branches of the new conditional exercised directly
+    against the materialized plugin module, no real pytest subprocess).
+  - `python3 -m pytest tests/test_cli_run.py -k configure_time_raise -q`
+    -- 1 passed: the reviewer's own reproduction end to end through the
+    real CLI (a `tests/conftest.py` `pytest_configure` hook that calls
+    `guard(0)` -- `True` at baseline's `x <= 0`, `False` under the
+    `python:compare-swap` mutant `x < 0` -- raising `RuntimeError` before
+    any test runs). Real `assay run`, real git repo, real `python -m
+    pytest` subprocess twice (R0 baseline + 1 R2 candidate). Asserted
+    `mutation["killed"] == [<1 entry>]`, `mutation["survived"] == []`,
+    `document["outcome"] == "PASS"` (the R2 claim itself is PASS because
+    the ONE candidate was killed, not because the crash was swallowed).
+  - Full existing liveness suite (`test_liveness.py` +
+    `test_liveness_runner_monitor.py` + `test_liveness_proc_helpers.py`,
+    87 tests) green, unaffected.
+  - `python3 -m pyflakes src/assay/liveness.py` clean.
+- Tests-first: yes for the plugin-module unit tests (written against the
+  sentinel's two branches before generalizing); the e2e CLI test is a
+  direct reproduction of the review's own measured table, written to
+  fail pre-fix (not re-run pre-fix to confirm, given the checkpoint
+  clause's time budget -- the plugin-module unit tests above DO directly
+  exercise the pre-fix `_EXIT_STATUS = 0` shape's absence of the new
+  early-return, which is the regression surface B1 names).
+- HOST LOAD: `/proc/pressure/memory` `full avg10` 2.69 before this
+  commit's test runs (well under 5.0, no gate container launched this
+  session yet); `nice -n19`/`ionice -c3` for every pytest invocation;
+  serial.
+- CHECKPOINT: session 9 stops here (ARM'd at the checkpoint clause's
+  ~60-tool-call threshold, right at this commit's own green boundary --
+  B2/B3/B4/B5 and the gate run remain unstarted). See BRIEF-9.
