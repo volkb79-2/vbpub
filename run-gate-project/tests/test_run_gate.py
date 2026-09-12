@@ -7719,6 +7719,54 @@ class TestFootprintDoctorChecks:
         assert "[OK] footprint staleness" in out
         assert code == 0
 
+    def test_peak_at_floor_lane_gets_its_own_info_line(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-46b: `floor_lanes` (the `if floor_lanes:` branch) — a lane
+        whose most-recently-profiled run was floor-bound gets a
+        consolidated "footprint peak-at-floor" INFO line, ORTHOGONAL to
+        the "footprint source" one (a lane can be rusage-sourced without
+        being floor-bound, and this manifest entry is deliberately both,
+        to prove the two INFO blocks are independent)."""
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1,
+                   "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {
+                       "source": "rusage-maxrss", "peak_at_floor": True,
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[INFO] footprint source" in out
+        assert "[INFO] footprint peak-at-floor" in out
+        floor_line = next(l for l in out.splitlines()
+                          if "footprint peak-at-floor" in l)
+        assert "suite" in floor_line
+        assert code == 0
+
+    def test_no_peak_at_floor_lane_leaves_the_info_line_out(
+            self, tmp_path, monkeypatch, capsys):
+        """The `if floor_lanes:` guard's FALSE side: a manifest with a
+        rusage-sourced but NOT floor-bound lane prints the source caveat
+        alone, never a fabricated peak-at-floor line."""
+        repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)
+        record_profiled_run(proj, repo, SUMMARY_V1)
+        manifest = {"schema": 1,
+                   "distilled_at": run_gate._iso_utc(time.time()),
+                   "lanes": {"suite": {
+                       "source": "rusage-maxrss", "peak_at_floor": False,
+                       "memory_peak_bytes": {"median": 734003200, "max": 734003200}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[INFO] footprint source" in out
+        assert "footprint peak-at-floor" not in out
+        assert code == 0
+
     def test_manifest_drifted_beyond_tolerance_warns_by_name(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path, config=FOOTPRINT_LANE)

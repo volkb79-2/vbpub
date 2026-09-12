@@ -1094,3 +1094,20 @@ one specific glob-matched entry, proving the loop skips it and keeps
 scanning rather than crashing doctor).
 
 Verification: `python3 -m pytest tests/test_run_gate.py -k "TestSelfRssBytes or TestDoctorStaleLockCheck" -q` → 11 passed
+
+### Commit 5 — second selftest diff-coverage gap (doctor's new peak-at-floor INFO block)
+
+Second selftest run: pytest still fully green (1142 passed). The
+diff-coverage judge caught one more gap: `run-gate.py:5665` (branch) +
+`5666` — `cmd_doctor`'s new `if floor_lanes:` guard around the
+"footprint peak-at-floor" INFO block never fired, because this project's
+OWN selftest lane (267-286 MiB peak) is nowhere near run-gate's own RSS
+floor, so the live dogfooding path never produces a floor-bound manifest
+entry. Two new tests in `TestFootprintDoctorChecks` (a manifest written
+directly to disk, mirroring the class's own drift/staleness-test
+precedent): a `peak_at_floor: true` lane gets its own INFO line
+(independent of, and alongside, the pre-existing "footprint source" one);
+a `peak_at_floor: false` lane prints the source caveat alone, never a
+fabricated peak-at-floor line.
+
+Verification: `python3 -m pytest tests/test_run_gate.py -k "TestFootprintDoctorChecks" -q` → 11 passed
