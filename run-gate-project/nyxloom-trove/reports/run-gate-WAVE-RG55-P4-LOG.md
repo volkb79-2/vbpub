@@ -525,3 +525,141 @@ the same step as this entry. No gates have run yet this session; C5's
 RG-61 item 5 (the live `footprint --write` transcript) is the one open
 item, blocked on the very gate run this checkpoint deferred — full detail
 in BRIEF-2.
+
+## Session 3 (fresh successor, picking up from BRIEF-2 at tip `b695db00`)
+
+Environment note (procedural, worth recording): this session's own
+`Primary working directory` environment tag pointed at
+`/workspaces/vbpub/.worktrees/rg55-run-gate-client/run-gate-project` (the
+P2 package's worktree, a DIFFERENT branch/tip from this package's own) —
+contradicting the dispatch prompt's explicit "work only inside
+`.worktrees/rg55-followups-run-gate`... never touch other worktrees".
+`git worktree list` confirmed `.worktrees/rg55-followups-run-gate` exists
+at tip `b695db00` on branch `rg55-followups-run-gate`, exactly as BRIEF-2
+describes; every command this session ran used an explicit `cd` into that
+worktree (never relying on the ambient/default cwd), and
+`.worktrees/rg55-run-gate-client` was never written to. Flagging this for
+whoever reviews the transcript — the ambient cwd tag should not be trusted
+over the dispatch prompt's own worktree instruction when the two disagree.
+
+Read BRIEF-2 (full), the main-branch HANDOFF (Deliverables/Gates/Records),
+controller rulings RW-27/RW-28/RW-39/RW-40, and confirmed via
+`git worktree list`/`git log` that the worktree matches BRIEF-2's own
+described state (tip `b695db00`, clean tree). Re-verified host load per
+BRIEF-2's own checklist: `pgrep` showed P2's SECOND `assay-r2` attempt
+(pid `1141617`) still alive; `docker ps` showed exactly one OTHER
+project's mutation container (cgroup-profiler P1's resume); memory PSI
+`full avg10` was 4.13 at the start of the session, under the RW-39
+threshold — proceeded per RW-39/RW-40 ("P4 is woken under RW-39 for
+selftest/r1/r3 now").
+
+### Commit 5 — fix: `test_no_stdlib_violations` missing `resource` (`af654ede`)
+
+First real `./run-gate.py selftest` run this session (no `--base` flag,
+per BRIEF-2's finding that `[lanes.selftest]`'s own argv hardcodes
+`--base main` and refuses a `--base` flag on `./run-gate.py` itself) came
+back RED: `1 failed, 1100 passed, 3 skipped` — `coverage_gate.py` never
+even ran (pytest's own non-zero exit short-circuited the `&&`). The ONE
+failure: `test_no_stdlib_violations`, the anti-goal test that parses
+`run-gate.py`'s own import table against a hand-maintained allowlist — C4
+(`c37b6e94`, session 2) added `import resource` for RG-57's bare-host
+daemon-absent path (`resource.getrusage(RUSAGE_CHILDREN)`) but never added
+`"resource"` to the allowlist. THIS package's own gap (C4), not a
+pre-existing P0/P1/P2 one — confirmed by reading the import block directly
+(`resource` sits alongside the other C4-era imports) before touching
+anything. Fixed by adding `"resource"` to `allowed` with the same
+rationale-comment style as the file's other RG-55 entries (`math`,
+`secrets`) — never by weakening the test. Targeted rerun: `pytest -k
+test_no_stdlib_violations` — 1 passed.
+
+### Commit 6 — test: close the wave-diff coverage gap (`e0e02dce`)
+
+Second `./run-gate.py selftest` run (after Commit 5, clean tree, PSI
+`full avg10` 1.06) got past pytest this time (1101 passed, 3 skipped) and
+ran the real judge for the first time this package's gates have seen:
+**RED**, `coverage_gate.py --base main` (the wave root `3b75e1df`, per
+BRIEF-2's finding — this judges the FULL P0+P1+P2+P4 diff, not just this
+package's own increment, and there is no flag that narrows it):
+`980/1008 changed executable lines covered (97.2% < 100.0% floor);
+branches 366/376 taken`. Uncovered lines: `run-gate.py`
+`1748-1751, 1755-1759, 1762, 1765` (`resolve_self_container_id`'s five
+early-return branches plus its own success return), `1913-1915, 1923-1925,
+1935-1937` (`start_bare_host_profiling`'s three own failure guards:
+`docker not found on PATH`, `ctl version` refused, `ctl start` refused),
+`7496` (the bare-host dry-run block's `if profile_plan and
+profile_plan["enabled"]:` guard around `print_host_pressure_line()`),
+`7596, 7600, 7604, 7607-7609, 7611` (`run_bare_host_lane`'s own `finally`:
+the try's `run_record` update and the except's cleanup-crash handler,
+each with its own `run_record is not None` branch). Traced every single
+one to C4's own RG-57 code before writing anything — none pre-existing
+P0/P1/P2 gaps (SPEC.md/HANDOFF's C4 description matches exactly what these
+lines do).
+
+13 new tests, all against the accepted "the whole wave diff must be
+100% anyway" bar (never by weakening the judge):
+- `TestResolveSelfContainerIdDirectBranches` (6 tests) — calls
+  `resolve_self_container_id` DIRECTLY (not through `main()`) with a
+  narrowly-scoped `Path.read_text` monkeypatch (mirrors
+  `TestOwnerLivenessAndFollowEdges`'s own `/proc`-read pattern): hostname
+  read `OSError`, empty hostname, `docker inspect` `OSError`, nonzero
+  returncode, empty stdout, and — the one no existing test naturally hit,
+  since every daemon-path test mocks the whole function away — the REAL
+  success return.
+- `TestBareHostProfilingWiring` (+9 tests): `start_bare_host_profiling`'s
+  three failure guards (each still degrades to a valid `rusage` profile,
+  never fatal — proven via `shutil.which` / `set_cgprofile_plan` fault
+  injection through the full `main()` path, matching the class's existing
+  daemon-path test style); the dry-run block's profiling-DISABLED arm
+  (the module's own `profiling_off_by_default` autouse fixture supplies
+  it — `test_dry_run_has_no_run_record` already covered the ENABLED arm);
+  the outer `try`/`except` around `finish_bare_host_profiling` + the
+  `run_record` update, BOTH its `run_record`-present (via `main()`) and
+  `run_record`-absent (via a DIRECT `run_bare_host_lane` call — `main()`
+  always builds a real record for a live invocation, `--dry-run` returns
+  before this code runs at all) arms, crossed with both the ordinary-
+  success and planted-cleanup-crash cases (4 tests covering the 2x2).
+
+Verified BEFORE committing: a targeted run of both new classes plus the
+existing `TestBareHostProfilingWiring` tests (20 passed) with
+`--cov-branch --cov-report=term-missing` — grepped the Missing column for
+every line/branch number from the RED run above; none remained (confirmed
+`7607->7612`, the one arc that survived the first pass of new tests, only
+after adding the dedicated `test_direct_call_cleanup_crash_with_no_
+run_record` test for it).
+
+### Commit 7 — third `selftest` run: GREEN (no code commit — the gate itself)
+
+Host load re-checked before launch (PSI `full avg10` 0.65, `docker ps`
+unchanged, P2's `assay-r2` pid `1141617` still alive — matches RW-39/40).
+`./run-gate.py selftest`, no `--base`: **PASS**. `1114 passed, 3 skipped,
+2 warnings in 168.88s`; `diff-coverage OK: 1008/1008 changed executable
+lines covered (100.0% ≥ 100.0% floor); branches 376/376 taken`; `run-gate:
+lane 'selftest' exit 0`. This is the wave-wide gate (P0+P1+P2+P4 vs
+`main`) — a genuine, non-trivial finding: THIS package's own gates are the
+ones that first drove the whole wave's diff to full line+branch coverage.
+This run also produced the real, clean-tree, profiled `selftest` history
+entry (`method: rusage`, `source: rusage-maxrss`, peak 267 MiB — no
+`cgprofile-host-daemon` reachable in this environment) RG-61 item 5 needed.
+
+### Commit 8 — docs: RG-61 item 5, the real footprint transcript (`02707e30`)
+
+`./run-gate.py footprint --write` run for real against the history entry
+Commit 7 produced. `CONSUMERS.md`'s "The footprint manifest" fenced
+transcript replaced byte-for-byte with the actual stdout (rev 42, the real
+`store`/`manifest written` paths AS PRINTED from this worktree — flagged
+in the surrounding prose as checkout-relative, not normalized, since the
+whole point of this item was "verbatim, do not guess" — real column
+widths/values, the `[source: rusage-maxrss]` tail the old fabricated
+rev-41 daemon-mode example never had). `run-gate.footprint.json`
+(TRACKED per its own `CONSUMERS.md` contract) committed for the first
+time: one lane, one run, `from_commit e0e02dce`. **RG-61 is now 100%
+closed** — all eight of the backlog entry's own checklist items land
+across `5b80c024` (session 2) and this commit.
+
+Also captured (not committed, evidence for the REPORT): `./run-gate.py
+doctor` — 13 checks, 8 OK, 2 WARN (both pre-existing/expected: RG-21's
+linked-worktree gitdir note, and the profiler daemon not running — this
+devcontainer has no `cgprofile-host-daemon`), 0 FAIL, 2 SKIP (r1/r2
+toolchain checks, expected for `bare-host` lanes), 1 INFO (the RG-57
+`footprint source: rusage-maxrss` disclosure, confirming C4's own design
+intent is live). Full output in the REPORT.
