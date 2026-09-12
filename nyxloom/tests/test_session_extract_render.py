@@ -451,3 +451,26 @@ def test_render_markdown_leaves_no_width_padding_behind():
 
     out = render_markdown("short line", color=False, width=70)
     assert out == "short line"
+
+
+def test_highlight_as_a_block_hook_leaves_the_scaffolding_alone():
+    # Same narrow scope as --render-markdown's hook, checked for the other
+    # render mode: only the event's prose is colored, and stripping the ANSI
+    # back out returns the prose byte-for-byte (the copy-paste property that
+    # is this mode's entire reason to exist).
+    import re
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    prose = "## Status\n\nDone -- **bold** and `code/path.py`."
+    events = [_ev(EventKind.ASSISTANT_TEXT, prose, marker="a1", score=5.0)]
+    text = render_text(events, fmt="claude-code", last_marker="a1",
+                        block_render=lambda t: highlight_markdown(t, color=True))
+
+    assert "\x1b[" in text
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    assert prose in plain
+    assert MARKER_FOOTER_RE.search(plain) is not None
+    # the footer is machine-read by read_since_marker(): it must not be colored
+    footer_line = [ln for ln in text.splitlines() if "nyxloom-extract:" in ln][0]
+    assert "\x1b[" not in footer_line
