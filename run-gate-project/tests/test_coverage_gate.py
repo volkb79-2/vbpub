@@ -401,6 +401,144 @@ def test_main_reports_branch_note_on_pass_and_fail(tmp_path, capsys):
     assert "branches 1/1 taken" in out
 
 
+def test_validate_cov_record_rejects_non_list_branch_key():
+    """The isinstance(val, list) guard for missing_branches/executed_branches
+    (RG-53) — present but the WRONG TYPE entirely (not even a list), the
+    sibling case to test_validate_cov_record_rejects_malformed_branch_arc's
+    "right container, wrong element shape"."""
+    added = {"run-gate-project/run-gate.py": {5}}
+    coverage_files = {
+        "run-gate-project/run-gate.py": {
+            "executed_lines": [5],
+            "missing_lines": [],
+            "missing_branches": "not-a-list",
+        },
+    }
+    import pytest
+    with pytest.raises(coverage_gate.CoverageGateError):
+        coverage_gate.evaluate(added, coverage_files,
+                               source_prefix="run-gate-project/run-gate.py")
+
+
+def test_is_ancestor_raises_on_real_git_failure(tmp_path):
+    """`merge-base --is-ancestor` exiting >1 (an invalid rev — never one of
+    the ordinary 0/1 yes-or-no outcomes `_base_relation`'s own tests already
+    cover) is a real git failure and must raise, not be misread as 'no'."""
+    import subprocess
+
+    import pytest
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                        check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "f.py")
+    git("commit", "-q", "-m", "base")
+    head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    with pytest.raises(coverage_gate.CoverageGateError):
+        coverage_gate._is_ancestor(
+            str(tmp_path), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", head)
+
+
+def test_main_reports_error_when_base_relation_fails(tmp_path, monkeypatch, capsys):
+    """The 0/0 path's own `_base_relation` call can fail for the same reason
+    `_is_ancestor` can (a real git failure, never an ordinary ancestor/
+    not-ancestor answer) — main() must map that to exit 2 with the same
+    ERROR shape every other CoverageGateError gets, not propagate a
+    traceback out of its own except-clause."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                        check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "run-gate.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "run-gate.py")
+    git("commit", "-q", "-m", "base")
+
+    cov_json = tmp_path / "coverage.json"
+    cov_json.write_text('{"files": {}}', encoding="utf-8")
+
+    def _boom(repo, base_rev, head_rev):
+        raise coverage_gate.CoverageGateError("simulated git failure")
+
+    monkeypatch.setattr(coverage_gate, "_base_relation", _boom)
+
+    rc = coverage_gate.main([
+        "--repo", str(tmp_path),
+        "--base", "main",
+        "--coverage-json", str(cov_json),
+        "--source", "run-gate.py",
+    ])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "diff-coverage ERROR: simulated git failure" in err
+
+
+def test_main_reports_fail_with_uncovered_and_unmeasured_files(tmp_path, capsys):
+    """End-to-end the FAIL branch's own rendering, which only ever executes
+    when the diff actually fails: one file with a changed line that ran but
+    left a branch untaken (rendered with the "(branch)" tag), and a second,
+    brand-new file the coverage JSON never measured at all (rendered with
+    the "[file unmeasured]" tag) — the loop body and its two tag branches
+    have no other caller."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                        check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "pkg")
+    git("commit", "-q", "-m", "base")
+    (tmp_path / "pkg" / "a.py").write_text("a = 1\nc = 2\nd = 3\n",
+                                           encoding="utf-8")
+    (tmp_path / "pkg" / "newb.py").write_text("b = 1\ne = 2\n",
+                                              encoding="utf-8")
+    git("add", "pkg/newb.py")  # staged, uncommitted — still a real new file
+
+    cov_json = tmp_path / "coverage.json"
+    cov_json.write_text(json.dumps({
+        "files": {
+            # pkg/newb.py is entirely absent -- "[file unmeasured]".
+            "pkg/a.py": {
+                "executed_lines": [2, 3],
+                "missing_lines": [],
+                # Line 3 ran but left an arm untaken -- rendered "(branch)".
+                "executed_branches": [[2, 10]],
+                "missing_branches": [[3, 11]],
+            },
+        }
+    }), encoding="utf-8")
+
+    rc = coverage_gate.main([
+        "--repo", str(tmp_path),
+        "--base", "main",
+        "--coverage-json", str(cov_json),
+        "--source", "pkg",
+    ])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "diff-coverage FAIL: 1/4 changed executable lines covered" in out
+    assert "Uncovered changed lines:" in out
+    assert "  pkg/a.py: [3(branch)]" in out
+    assert "  pkg/newb.py: [file unmeasured] [1, 2]" in out
+    assert "Add a test that exercises these lines" in out
+
+
 def test_git_added_lines_reports_the_working_trees_own_line_numbers_dirty(tmp_path):
     """RG-40: coverage.json is generated from whatever bytes are ON DISK
     (--allow-dirty runs the suite there directly), so the added-line numbers
