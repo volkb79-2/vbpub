@@ -107,6 +107,26 @@ LIVENESS_POLICIES = (LIVENESS_AUTO, LIVENESS_TRUE, LIVENESS_FALSE)
 #: hook runs and returns before `unconfigure` fires), but the process's own
 #: buffered text is lost without an explicit flush. The `sys.stdout.flush()`/
 #: `sys.stderr.flush()` pair below is that fix; do not remove it.
+#:
+#: **Real-bug fix (P7 session 5, found by the real end-to-end fixture test,
+#: never by any unit test -- every existing unit test hand-constructs its
+#: own valid-JSON event lines and so never exercised what THIS plugin
+#: actually writes).** `pytest_runtest_logreport`/`pytest_sessionfinish`
+#: used to build each NDJSON line with `%r` (`repr()`) on `nodeid`/
+#: `outcome`/`duration_s -- Python's `repr()` of a string is SINGLE-quoted,
+#: not the double-quoted JSON string syntax `json.loads` requires, and
+#: `repr(None)` is the bare token `None`, not JSON's `null`. Every line this
+#: plugin ever wrote was therefore invalid JSON -- silently swallowed by
+#: every downstream `json.loads` as a "tolerated torn line"
+#: (:func:`compute_expect_next_event_within_s`/:func:`_read_events_progress`
+#: both catch `ValueError` and skip, by design, for a genuinely torn LAST
+#: line from a plugin still writing). The practical effect: `slowest_test_s`
+#: was NEVER found (always the coarse `max(60s, baseline_s/4)` fallback,
+#: never the tight measurement-based bound), and `saw_session_finish` was
+#: NEVER true (the `session_finish`-then-still-alive `hung` branch RW-33
+#: names was live code that could never actually fire). Fixed by building a
+#: real `dict` and calling `json.dumps` (stdlib, already an implicit
+#: dependency of this file) instead of hand-rolling a JSON-shaped string.
 _PLUGIN_SOURCE = '''"""assay's own liveness plugin (B091/D-23/RW-33) -- materialized by
 assay, loaded by pytest via `-p assay_liveness_plugin`. Stdlib + pytest only;
 never imports assay (the candidate subprocess is often not running in an
@@ -114,6 +134,7 @@ environment where assay is importable). Every hook body is exception-safe:
 a bug here must never change a test outcome or crash the suite.
 """
 
+import json
 import os
 import sys
 import time
@@ -134,12 +155,15 @@ def pytest_runtest_logreport(report):
         path = _events_path()
         if not path:
             return
+        record = {
+            "event": "test",
+            "nodeid": report.nodeid,
+            "outcome": report.outcome,
+            "duration_s": report.duration,
+            "t": time.time(),
+        }
         with open(path, "a", encoding="utf-8") as stream:
-            stream.write(
-                '{"event": "test", "nodeid": %r, "outcome": %r, '
-                '"duration_s": %r, "t": %r}\\n'
-                % (report.nodeid, report.outcome, report.duration, time.time())
-            )
+            stream.write(json.dumps(record) + "\\n")
     except Exception:
         pass
 
@@ -154,11 +178,9 @@ def pytest_sessionfinish(session, exitstatus):
         path = _events_path()
         if not path:
             return
+        record = {"event": "session_finish", "exitstatus": _EXIT_STATUS, "t": time.time()}
         with open(path, "a", encoding="utf-8") as stream:
-            stream.write(
-                '{"event": "session_finish", "exitstatus": %r, "t": %r}\\n'
-                % (_EXIT_STATUS, time.time())
-            )
+            stream.write(json.dumps(record) + "\\n")
     except Exception:
         pass
 

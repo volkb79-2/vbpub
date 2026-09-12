@@ -519,6 +519,82 @@ def test_plugin_source_hash_is_stable_and_nonempty() -> None:
     assert len(first) == 64  # sha256 hex digest length
 
 
+class _FakeReport:
+    def __init__(self, *, when: str, nodeid: str, outcome: str, duration) -> None:
+        self.when = when
+        self.nodeid = nodeid
+        self.outcome = outcome
+        self.duration = duration
+
+
+def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatch) -> None:
+    """(P7 session 5, real bug found by the end-to-end fixture test, never
+    by a unit test) The materialized plugin used to build each NDJSON line
+    with `%r` (`repr()`) on `nodeid`/`outcome`/`duration_s` -- Python's
+    `repr()` of a string is SINGLE-quoted, not JSON's double-quoted string
+    syntax, and `repr(None)` is the bare token `None`, not JSON's `null`.
+    Every line the plugin ever wrote was therefore invalid JSON, silently
+    swallowed by every downstream `json.loads` as a "tolerated torn line" --
+    `compute_expect_next_event_within_s` never found a real `slowest_test_s`
+    (always the coarse fallback) and `_read_events_progress` never saw a
+    real `session_finish`. No existing test caught this because every OTHER
+    test in this package hand-constructs its own valid-JSON event fixtures
+    rather than running the plugin's own code. This test imports the
+    MATERIALIZED plugin module (the exact file a real pytest process would
+    load via `-p assay_liveness_plugin`) and calls its hooks directly --
+    real plugin code, a fake `report`/`exitstatus` only, no real pytest
+    subprocess (this file's own stated scope, see the module docstring)."""
+    import importlib.util
+
+    liveness_dir = tmp_path / "liveness"
+    plugin_path = liveness.materialize_liveness_plugin(liveness_dir)
+    spec = importlib.util.spec_from_file_location("assay_liveness_plugin_under_test", plugin_path)
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+
+    events_path = tmp_path / "events.ndjson"
+    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
+
+    # `when="setup"` must be a no-op (only `"call"` is recorded) -- and a
+    # `None` duration (a real, if rare, `TestReport.duration` value) must
+    # round-trip through `json.dumps` as JSON `null`, never the bare Python
+    # token `None` the old `%r` formatting produced.
+    plugin.pytest_runtest_logreport(_FakeReport(when="setup", nodeid="x", outcome="passed", duration=0.1))
+    plugin.pytest_runtest_logreport(
+        _FakeReport(when="call", nodeid="pkg/test_mod.py::test_it", outcome="passed", duration=0.0125)
+    )
+    plugin.pytest_runtest_logreport(_FakeReport(when="call", nodeid="y", outcome="failed", duration=None))
+    plugin.pytest_sessionfinish(session=None, exitstatus=0)
+
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3  # the "setup" report never wrote a line.
+    import json as _json
+
+    first = _json.loads(lines[0])  # Raises if this is not valid JSON.
+    assert first == {
+        "event": "test",
+        "nodeid": "pkg/test_mod.py::test_it",
+        "outcome": "passed",
+        "duration_s": 0.0125,
+        "t": first["t"],
+    }
+    assert isinstance(first["t"], float)
+    second = _json.loads(lines[1])
+    assert second["nodeid"] == "y"
+    assert second["duration_s"] is None  # JSON `null`, not the string "None".
+    third = _json.loads(lines[2])
+    assert third["event"] == "session_finish"
+    assert third["exitstatus"] == 0
+    # Every character in every line is ASCII/UTF-8 double-quoted JSON --
+    # `json.loads` above already proves this, but the explicit `"` check
+    # pins the regression symptom directly: the old format's `nodeid` field
+    # read `'pkg/test_mod.py::test_it'` (single-quoted), which this asserts
+    # can never reappear.
+    assert "'pkg/test_mod.py::test_it'" not in lines[0]
+    assert '"pkg/test_mod.py::test_it"' in lines[0]
+
+
 # --------------------------------------------------------------------------
 # integration: execute_plan's allow_argv_append refusal (RW-36)
 # --------------------------------------------------------------------------
