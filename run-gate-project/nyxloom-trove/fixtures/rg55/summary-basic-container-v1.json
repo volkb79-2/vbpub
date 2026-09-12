@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "session": "s-20260912T101500Z-9f01",
-  "daemon": {"name": "cgprofile-host-daemon", "version": "1.0.0"},
+  "session": null,
+  "daemon": null,
   "scope": "container",
-  "method": "daemon",
+  "method": "basic",
   "started_at": "2026-09-12T10:15:00Z",
   "ended_at": "2026-09-12T10:15:04Z",
   "duration_seconds": 4.0,
@@ -13,7 +13,7 @@
     "container_id": "deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233",
     "cgroup": "/dev.slice/dev-background.slice/docker-deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233.scope",
     "token": null,
-    "targets_seen": 5
+    "targets_seen": null
   },
   "memory": {
     "peak_bytes": 796917760,
@@ -46,18 +46,7 @@
     "workingset_refault_file": 2210
   },
   "pids": {"peak": 5},
-  "damon": {
-    "status": "on",
-    "reason": null,
-    "kdamond": 1,
-    "targets_seen": 5,
-    "samples": 5,
-    "hot_bytes": {"peak": 230686720, "p90": 230686720, "median": 188743680},
-    "warm_bytes": {"peak": 146800640, "p90": 146800640, "median": 125829120},
-    "cold_bytes": {"peak": 209715200, "p90": 209715200, "median": 188743680},
-    "idle_bytes": {"peak": 146800640, "p90": 146800640, "median": 136314880},
-    "thresholds": {"hot_rate_pct": 5, "warm_rate_pct": 1, "cold_age_s": 30, "idle_age_s": 120}
-  },
+  "damon": null,
   "host": {
     "start": {
       "memory_pressure": {"some_avg10": 0.50, "full_avg10": 0.10, "some_avg60": 0.60, "full_avg60": 0.12},
@@ -71,7 +60,7 @@
     },
     "memory_full_stall_seconds": 1.8,
     "memory_some_stall_seconds": 3.0,
-    "slice": {"name": "dev-background.slice", "memory_full_stall_seconds": 0.7, "memory_peak_bytes": 2411724800}
+    "slice": null
   },
   "events": {"oom_kill": 0, "limit_drift": 1, "memory_high_breach": 11}
 }

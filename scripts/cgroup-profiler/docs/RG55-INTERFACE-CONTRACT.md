@@ -8,6 +8,11 @@ implementers; nobody edits this file unilaterally. A verbatim copy lives at
 `scripts/cgroup-profiler/docs/RG55-INTERFACE-CONTRACT.md`; a test in each
 project asserts the two copies are byte-identical.
 
+**Amendments:** RW-11 (2026-09-12, §4.3 basic-path file list: +`memory.max`,
++`memory.high`, 10 → 12 files); RW-21 (2026-09-12, scope `container`:
+absolute-counter rule for `cpu`/`pressure`/`faults`/`events`, `§3`
+nullability note for `peak_over_baseline_bytes`, `§7` new subsection).
+
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
 `cgprofile-host-daemon`; **consumer** = `run-gate.py` (stdlib-only, docker
@@ -152,6 +157,14 @@ pruned.
 
 Exact key set; every leaf nullable per §1.7 unless marked `0`-counter.
 
+**Nullability note (RW-21):** in scope `container`, `memory.peak_over_baseline_bytes`
+is **always** `null` — not a read failure and not §1.7's "absent", but
+structurally not meaningful when the profiled cgroup IS the lane (see §7's
+"Scope `container`: absolute counters" subsection). Consumers (history,
+footprint manifest, disclosure lines) must render this null as "not
+applicable" (e.g. `-` in a table), never as a `profile_error` or a missing
+measurement.
+
 ```json
 {
  "schema": 1,
@@ -230,9 +243,12 @@ and the `footprint` manifest.
 3. **Basic fallback** (`method: "basic"`) when `ctl version` fails or
    `start` fails: run-gate samples the LANE container's own cgroup every
    `PROFILE_SAMPLE_SECONDS = 5` with ONE `docker exec <lane container> sh -c
-   'cat …'` reading `memory.current memory.peak memory.swap.current
-   memory.stat cpu.stat memory.pressure cpu.pressure io.pressure
-   memory.events.local pids.peak` under `/sys/fs/cgroup/`, parsed with the
+   'cat …'` reading `memory.current memory.peak memory.max memory.high
+   memory.swap.current memory.stat cpu.stat memory.pressure cpu.pressure
+   io.pressure memory.events.local pids.peak` (12 files, RW-11 — `memory.max`
+   and `memory.high` are required so the basic path can compute
+   `events.limit_drift` the same way the daemon does) under
+   `/sys/fs/cgroup/`, parsed with the
    three parsers ported verbatim from `scripts/cgroup-profiler/lib/util.py`
    (`read_int`, `read_kv`, `read_pressure` — string variants; attributed in
    a comment). The basic summary uses the §3 key set with `method:
@@ -325,3 +341,47 @@ project against `run-gate-project/nyxloom-trove/fixtures/rg55/`).
 - `damon.*_bytes` `{peak, p90, median}`: over the DAMON aggregation samples of the classified bytes per class (hot/warm/cold/idle), nearest-rank as above; `damon.samples` counts those aggregation samples.
 - Floats are `round(x, 3)`; bytes are never rounded. A field whose inputs were unreadable at either end of a delta is `null` (never a delta against nothing).
 - Basic-path (run-gate, `method: "basic"`) uses exactly these rules over its own 5-second samples; only the key set differs as §4.3 says.
+
+### Scope `container`: absolute counters (RW-21)
+
+In scope `container` the cgroup was created for the lane itself, so its
+cumulative counters already measure the lane alone from its first
+instruction; reading them as deltas from `s_0` drops everything the lane did
+between cgroup creation and the first sample (measured: a 3.3× CPU
+understatement on a real probe — a 120 MiB lane's own `cpu.stat usage_usec`
+lifetime total was 310371 usec, but the delta-from-`s_0` rule reported only
+93000 usec of it). Therefore, for scope `container` **only**, the following
+fields are the **last successful read**, not a delta. RW-7 ("last read" =
+the last read that **succeeded**, skipping trailing nulls) applies to every
+item below:
+
+- `cpu.seconds` = `usage_usec` at the last successful read / 1e6 (not a
+  delta). `throttled_seconds` (still `/1e6`) and `nr_throttled` likewise:
+  the last successful read's `cpu.stat` values, not a delta.
+- `pressure.*_stall_seconds` (memory some/full, cpu some, io some/full) =
+  the last successful read's totals / 1e6 (not a delta from `s_0`).
+- `faults.*` (`pgmajfault`, `workingset_refault_anon`,
+  `workingset_refault_file`) = the last successful read's raw values (not a
+  delta).
+- `events.oom_kill` and `events.memory_high_breach` = the last successful
+  read of `memory.events.local`'s `oom_kill` / `high` fields (not a delta).
+- `limit_drift` is **unaffected**: it stays a count of sample-pairs where
+  `memory.max` or `memory.high` changed — it was never itself a cumulative
+  counter read as a delta, so RW-21 does not touch it.
+- `cores_avg` = `cpu.seconds / duration_seconds`, using the absolute
+  `cpu.seconds` above. `cores_max` is **unaffected** (a per-interval rate,
+  already not a delta-from-`s_0` quantity).
+- `memory.peak_bytes` is **unaffected** — already the last read of
+  `memory.peak` under the original rule, not a delta.
+- `baseline_bytes` remains `memory.current` at `s_0`, now **informational
+  only**: it is not subtracted from anything in this scope.
+- `peak_over_baseline_bytes` is **always `null`** in scope `container` (see
+  §3's nullability note) — not meaningful when the profiled cgroup IS the
+  lane. The footprint manifest and history tolerate this null (rendered as
+  `-`, excluded from medians rather than counted as 0).
+
+Scope `container-shared` is **unchanged**: every field above keeps the
+original delta-from-`s_0` (or sampled-max / nearest-rank percentile) rule.
+Host fields (`host.*`) keep the delta rule in **both** scopes — host
+counters measure the whole host or slice, never the lane, so there is no
+"cgroup created for the lane" argument for them.

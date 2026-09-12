@@ -187,19 +187,83 @@ oom_kill = 0; pids.peak = 5; damon hot p90/peak = 230686720 B (220 MiB).
 
 - `summary-v1.json`: `method: "daemon"`, `scope: "container-shared"` — the
   numbers above as computed.
-- `summary-container-v1.json`: identical inputs, `scope: "container"` — only
-  `memory.peak_bytes`/`source`/`peak_over_baseline_bytes` change (see the
-  memory section above); everything else byte-identical.
-- `summary-basic-v1.json`: `method: "basic"`, `session`/`daemon`/`damon`/
-  `host.slice` all `null`, `target.targets_seen: null` — everything else
-  (including the pressure/faults/events numbers, since the basic path reads
-  the same cgroup and `/proc/pressure` files via `docker exec ... cat`)
-  identical to `summary-v1.json`. Production's basic path samples every
-  `PROFILE_SAMPLE_SECONDS = 5`; this fixture feeds it the same five
-  1-second frames instead — the §7 rules are interval-agnostic, so the
-  arithmetic is unaffected; only a real basic-path run would see
+- `summary-container-v1.json`: identical inputs, `scope: "container"`,
+  `method: "daemon"` — computed under the **RW-21 absolute-counter rule**
+  (contract §7 "Scope `container`: absolute counters"), regenerated
+  2026-09-12. See "RW-21 derivation" below for the by-hand arithmetic.
+- `summary-basic-v1.json`: `method: "basic"`, `scope: "container-shared"`,
+  `session`/`daemon`/`damon`/`host.slice` all `null`, `target.targets_seen:
+  null` — everything else (including the pressure/faults/events numbers,
+  since the basic path reads the same cgroup and `/proc/pressure` files via
+  `docker exec ... cat`) identical to `summary-v1.json`. Production's basic
+  path samples every `PROFILE_SAMPLE_SECONDS = 5`; this fixture feeds it the
+  same five 1-second frames instead — the §7 rules are interval-agnostic, so
+  the arithmetic is unaffected; only a real basic-path run would see
   `interval_seconds: 5.0` and a different sample count for the same wall
   time.
+- `summary-basic-container-v1.json` (new, RW-21/RW-11): `method: "basic"`,
+  `scope: "container"` — the basic-path nulls from `summary-basic-v1.json`
+  (`session`/`daemon`/`damon`/`host.slice`/`target.targets_seen`) combined
+  with the RW-21 absolute-counter values from `summary-container-v1.json`
+  below. Exercises RW-11 at the same time: the basic path now reads
+  `memory.max`/`memory.high` (12 files, not 10), so `events.limit_drift` and
+  `events.memory_high_breach` are populated here exactly as the daemon path
+  computes them, not `null` for lack of input.
+
+## RW-21 derivation (scope `container`, absolute counters, from the SAME frames)
+
+Contract §7's "Scope `container`" subsection reads six of the fields below
+as the **last successful read** (frame 4) instead of a delta from `s_0`;
+`limit_drift`, `cores_max`, and `memory.peak_bytes` were already
+frame-4-only quantities and are unaffected; `peak_over_baseline_bytes`
+becomes `null` (not computed at all in this scope, per §3's nullability
+note). Frame-4 raw values, from the tables above:
+
+| field | frame-4 raw value | old (delta, `container-shared`) | new (absolute, `container`) |
+|---|---|---|---|
+| `cpu.seconds` (usage_usec/1e6) | 4000000/1e6 | 4.0 (s0 usec = 0, so delta and absolute coincide) | **4.0** |
+| `cpu.throttled_seconds` | 300000/1e6 | 0.3 (s0 usec = 0) | **0.3** |
+| `cpu.nr_throttled` | 3 | 3 (s0 = 0) | **3** |
+| `pressure.memory_some_stall_seconds` | 7100000/1e6 | 6.1 (Δ from s0=1000000) | **7.1** |
+| `pressure.memory_full_stall_seconds` | 5300000/1e6 | 4.8 (Δ from s0=500000) | **5.3** |
+| `pressure.cpu_some_stall_seconds` | 14000000/1e6 | 12.0 (Δ from s0=2000000) | **14.0** |
+| `pressure.io_some_stall_seconds` | 1500000/1e6 | 1.2 (Δ from s0=300000) | **1.5** |
+| `pressure.io_full_stall_seconds` | 1000000/1e6 | 0.9 (Δ from s0=100000) | **1.0** |
+| `faults.pgmajfault` | 1032 | 32 (Δ from s0=1000) | **1032** |
+| `faults.workingset_refault_anon` | 0 | 0 (constant) | **0** |
+| `faults.workingset_refault_file` | 2210 | 210 (Δ from s0=2000) | **2210** |
+| `events.oom_kill` | 0 (`memory.events.local`) | 0 (constant) | **0** |
+| `events.memory_high_breach` | 11 (`memory.events.local high`, frame 4) | 1 (Δ from s0=10) | **11** |
+
+Unchanged (already frame-4/absolute, or unaffected by RW-21):
+`memory.peak_bytes` = 796917760 (`memory.peak`, last read — was already
+absolute); `memory.baseline_bytes` = 524288000 (`memory.current` at s0, now
+labelled informational only); `memory.peak_over_baseline_bytes` = **`null`**
+(was 272629760; RW-21 makes it not-meaningful for this scope);
+`cores_avg` = `cpu.seconds`(4.0) `/ duration_seconds`(4.0) = **1.0**
+(unchanged numerically since `cpu.seconds` is unchanged here); `cores_max` =
+**2.0** (a per-interval rate, never a delta-from-s0 quantity);
+`limit_drift` = **1** (still a count of the one s2→s3 transition, not a
+counter read absolutely); host fields (`host.memory_full_stall_seconds` =
+1.8, `host.memory_some_stall_seconds` = 3.0, `host.slice.*`, `host.start`/
+`host.end`) are **all unchanged** — host counters keep the delta rule in
+both scopes.
+
+Note the CPU fields (`cpu.seconds`/`throttled_seconds`/`nr_throttled`)
+happen to have the same numeric value old vs. new in this fixture, because
+the frame-0 `usage_usec`/`throttled_usec`/`nr_throttled` values were chosen
+as `0` — i.e. this fixture's `s_0` coincides with cgroup creation for CPU
+accounting. This is a property of the chosen frame data, not a claim that
+the two rules always agree: the live-probe evidence that motivated RW-21
+(3.3× CPU understatement) came from a real container where meaningful CPU
+work happened between cgroup creation and `s_0`. The pressure/faults/events
+fields above (whose frame-0 values are deliberately non-zero) are the ones
+that demonstrate the rule change numerically within this fixture.
+
+`summary-basic-container-v1.json` uses the identical RW-21 values (basic
+and daemon methods read the same underlying files for these fields, per
+§4.3), with the basic-path nulls layered on top exactly as in
+`summary-basic-v1.json`.
 
 ## Other golden responses
 
