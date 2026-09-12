@@ -14399,6 +14399,41 @@ class TestBareHostProfilingWiring:
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
 
+    def test_wait4_interrupted_kills_the_child_and_reraises(
+            self, tmp_path, monkeypatch):
+        # The OTHER half of the wait4() bracket's guard: a `BaseException`
+        # that is NOT an ordinary `Exception` (`KeyboardInterrupt` is the
+        # real-world case) must not be swallowed as a profiling failure --
+        # it mirrors `subprocess.run`'s own Ctrl-C handling: kill the
+        # child, reap it (never leave it running detached), and re-raise.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config().replace(
+            'argv = ["true"]', 'argv = ["sleep", "5"]'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        real_popen = subprocess.Popen
+        procs = []
+
+        def _spy_popen(argv, **kw):
+            p = real_popen(argv, **kw)
+            procs.append(p)
+            return p
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
+
+        def _boom(pid, options):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(run_gate.os, "wait4", _boom)
+        with pytest.raises(KeyboardInterrupt):
+            run_gate.main(["suite"])
+        # `Popen` is also used internally for `git`/docker plumbing --
+        # isolate the LANE's own child by its argv.
+        lane_procs = [p for p in procs if list(p.args) == ["sleep", "5"]]
+        assert len(lane_procs) == 1
+        # Reaped (poll() no longer None) -- proves `proc.kill()` +
+        # `proc.wait()` ran, not that the 5s sleep merely finished on its
+        # own (it would still be running/None if not killed).
+        assert lane_procs[0].poll() is not None
+
     def test_docker_not_found_disables_the_daemon_path(
             self, tmp_path, monkeypatch, capsys):
         # `start_bare_host_profiling`'s OWN `if not docker:` guard -- no
