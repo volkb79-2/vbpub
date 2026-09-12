@@ -935,3 +935,38 @@ REPORT "What was NOT done").
 Verify: `grep -n "docker run.*fail\|fails outright when" README.md`
 (no hits outside the withdrawal note itself); `grep -n "51.3%\|69.0%\|37.0%"
 README.md`; `grep -n "Ordering constraint" README.md`.
+
+### RC3 -- REPORT.md: Round-2 repairs table, B8/S17/S18/S19 REPORT-side fixes, operator sequence ordering sentence (hash: see next entry)
+
+REPORT.md updated for round 2, EXCEPT the Gates section's assertion
+count/output block and the `Tip:` line -- both deferred to the final
+commit of this round (S17: "update it LAST, in the final commit, and say
+so in the LOG"; the Gates section needs the real post-fix gate output,
+which itself requires a clean committed tree, i.e. this commit, first).
+
+Added: a new "## Round-2 repairs" table (finding -> commit -> one-command
+verification) covering B7, B8, S15(r2), S16, S17, S18, S19, S20(a)/(b),
+placed after the round-1 table's CPUWeight/IOWeight note and before "##
+M5"; the B7 "bogus" discrepancy note (mirrors the LOG's RC1 entry).
+
+Fixed in place: the M5 table's `tmpfiles-cgprofile.conf`/
+`/etc/tmpfiles.d/cgprofile.conf` references -> `mdt-cgprofile.conf`
+throughout, citing both the original (`83521c56`) and rename
+(`2922928c`) commits. The "dev-gates.slice -- what it is" section's own
+copy of the wrong docker-run claim (B8) -- REPORT had inherited the same
+wrong wording the round-1 README fix used, corrected to the same
+verified fail-open paragraph. The round-1 repair table's two mislabeled
+S-numbers (S18): "S7" row -> "S14" (the real TMPDIR-isolation finding);
+the row that had been mislabeled "S14" now carries no false tag, marked
+"(bookkeeping, not an S-number)"; the byte-for-byte-overclaim paragraph
+now explicitly tagged "S7" with a note explaining the correction. New
+"Ordering constraint" paragraph in the operator install/upgrade sequence
+section, matching README's own S19 addition. Intro paragraph updated to
+describe three passes (M1-M4+Gates, round-1 repairs, round-2 repairs)
+instead of two. "What was NOT done, and why" split into Round 1 / Round 2
+sub-lists; added the S19-reconciliation-not-done item and S21-not-done
+item, both explicitly noting they were not in the coordinator's
+accepted-items list for this round.
+
+Verify: `grep -n '^## Round-2 repairs' REPORT.md`; `grep -n 'mdt-cgprofile.conf' REPORT.md`;
+`grep -n 'fails OPEN' REPORT.md`; `grep -n 'S14 (test-render' REPORT.md`.

@@ -7,15 +7,19 @@ root — **not** `host-setup/`) — **exit 0**, verdict read in a separate step
 from a clean (committed) tree, ran ONCE for this repair round (budget was
 two). Full LOG: `run-gate-WAVE-RG55-P8-LOG.md`.
 
-This REPORT covers two passes: the original M1-M4+Gates package (tip
-`62927f1f` at the time), and this round's full repair-and-extend set
-following review round 1's ACCEPT-conditional verdict (RW-32) — ten
-granular commits, `244728c0`..`e6af30df`, fixing every B1-B6 blocker, every
-D1-D5 ruling, the non-blocking findings the ruling asked for by name, and
-shipping M5 (the `/run/cgprofile` template mount, new scope in this same
-round). **Claim scope:** everything below is either a command I ran this
-session with its real output shown, or a `git diff`/`grep` I ran to check a
-specific claim — nothing is asserted from memory of an earlier pass.
+This REPORT covers three passes: the original M1-M4+Gates package (tip
+`62927f1f` at the time), round-1's full repair-and-extend set following
+review round 1's ACCEPT-conditional verdict (RW-32) — ten granular
+commits, `244728c0`..`e6af30df`, fixing every B1-B6 blocker, every D1-D5
+ruling, the non-blocking findings the ruling asked for by name, and
+shipping M5 — and this round (round 2's own ACCEPT-conditional verdict):
+B7 and B8, two NEW blockers introduced by the round-1 repair set itself,
+plus five accepted non-blocking items (S15(r2), S16, S17, S18, S19,
+S20(a)/(b)). Round-2 review confirmed B1-B6 and M5 settled via the
+reviewer's own independent probes; round 3 is the last round. **Claim
+scope:** everything below is either a command I ran this session with its
+real output shown, or a `git diff`/`grep` I ran to check a specific claim
+— nothing is asserted from memory of an earlier pass.
 
 ## What shipped (original M1-M4+Gates)
 
@@ -63,16 +67,19 @@ Verification commands are runnable from
 | S3 (AGENTS.md gap) | Same as D4 | `3cd5a91c` | see D4 row |
 | S4 (name the non-adopting consumers) | README "Onward propagation" paragraph | `20d52736` | `grep -n 'Onward propagation' README.md` |
 | S5 (stale "dev-interactive + dev-background only" phrasing in 3 files) | Generalized header/log-line wording in `dev.slice.in`, `mdt-apply-dev-caps.sh`, `check.sh` | `21ca5e3f`, `6d9da520` | `git diff 11ac5d67..HEAD -- units/dev.slice.in scripts/mdt-apply-dev-caps.sh scripts/check.sh` |
-| S7 (test-render.sh doesn't verify `TMPDIR` isolation) | `export TMPDIR="$TMP"` added before any render | `244728c0` | `grep -n 'export TMPDIR' tests/test-render.sh` |
+| S14 (test-render.sh doesn't verify `TMPDIR` isolation) | `export TMPDIR="$TMP"` added before any render | `244728c0` | `grep -n 'export TMPDIR' tests/test-render.sh` |
 | S8 (DEV_GATES_* keys not fail-closed if example goes stale) | Assertion 2 rewritten to `${VAR:?message}` pattern per key | `244728c0` | `bash tests/test-render.sh` (mutation-demo run this session, confirmed RED) |
 | S9 (check.sh has no M5 coverage) | New "cgprofile socket carrier" section | `6d9da520` | `grep -n 'cgprofile socket carrier' scripts/check.sh` |
 | S10 (D-24 fallback note conflates two failure modes) | Reworded to distinguish devcontainer-not-rebuilt vs. host-not-upgraded, each with its own mechanical catch; new "Rebuild your devcontainer" paragraph | `20d52736` | `grep -n 'Rebuild your devcontainer' README.md` |
 | S11 (CPUWeight/IOWeight numbers unexplained) | Folded into D3's "Sizing choices" paragraph | `20d52736` | see D3 row |
 | S12 (mdt-slice-audit.py header stale) | Header comment now names `dev-gates.slice`, notes behavior unchanged (recursive scan already covers it) | `21ca5e3f` | `grep -n 'dev-gates.slice' scripts/mdt-slice-audit.py` |
 | S13 (TODO.md dirty-file ambiguity) | Addressed by D5 — TODO.md untouched, operator line lives in this REPORT | `20d52736` | see D5 row |
-| S14 (shellcheck severity not pinned in test-render.sh) | `-S warning` explicit in the shellcheck loop (already present, reconfirmed unchanged this round) | `244728c0` | `grep -n 'shellcheck -S warning' tests/test-render.sh` |
+| (bookkeeping, not an S-number — round-2 review S18) shellcheck severity pinned in test-render.sh | `-S warning` explicit in the shellcheck loop (already present, reconfirmed unchanged this round) | `244728c0` | `grep -n 'shellcheck -S warning' tests/test-render.sh` |
 
-**Overclaim withdrawn (self-caught, not a reviewer finding):** the original
+**Overclaim withdrawn (self-caught during round-1, S7 — round-2 review
+S18 confirmed this is where S7 actually lives, correcting this REPORT's
+own earlier mislabeling of two OTHER rows as S7/S14 in the table above):**
+the original
 REPORT's Gates section described assertion 3 (no `MemoryMin` line renders)
 as confirming the RW-30 revert "byte-for-byte" against baseline. That
 assertion only checks one rendered line's absence, not a full byte
@@ -97,13 +104,46 @@ pair — logged as an RW-9 decision, not a blocker, since the ruling asked
 for "an arithmetic sentence," not a specific pair of numbers, and a
 round-2 reviewer will recompute this regardless.
 
+## Round-2 repairs (review round 2) — finding → commit → one-command verification
+
+Round-2 review confirmed B1-B6 and M5 settled via the reviewer's own
+independent probes (not my round-1 claims re-asserted), and found two NEW
+blockers introduced by the round-1 repair set itself, plus five accepted
+non-blocking items. This is the last round; everything below lands in one
+pass.
+
+| finding | fix | commit | one-command verification |
+|---|---|---|---|
+| B7 (`check.sh`'s `_bytes_of` hard-FAILs a correctly configured host on half-GiB/percentage sizes — mdt's own wizard emits half-GiB values routinely) | Replaced bash-arithmetic parser with the reviewer's prescribed awk parser: total, returns byte count / `""` / `max` verbatim / `"?"` for anything not byte-comparable; call site treats `"?"` as `warn`, never `fail` | `2922928c` | `sed -n '/^_bytes_of() {/,/^}$/p' scripts/check.sh \| ( . /dev/stdin; _bytes_of 4.5G; _bytes_of 50%; _bytes_of bogus )` → `4831838208`, `?`, `?` |
+| B8 (README asserted `docker run` fails outright on a missing slice — verified false, fail-open, in 4 places) | Replaced with the reviewer's prescribed paragraph: fails OPEN, caught by `mdt-host-check.sh` + `LoadState=loaded` verification, not by docker; same fix applied to REPORT's own copy of this paragraph | `f3ef7b80` (README), this REPORT's own edit (records-only, no separate code commit) | `grep -n 'fails OPEN' host-setup/README.md` |
+| S15(r2) (unprefixed `cgprofile.conf` collides with the daemon package's own plausible future deployment) | Renamed to `/etc/tmpfiles.d/mdt-cgprofile.conf` throughout (source file, `install.sh`, `check.sh`, `templates/devcontainer.json`, test assertion) | `2922928c` | `grep -rln 'mdt-cgprofile.conf' host-setup templates` |
+| S16 (README's CPU/IO share numbers described only a 3-way contention, labeled "worst-case") | Recomputed from every rendered unit's own weight: CPU 4-way 69.0%, CPU 5-way 51.3%, IO 5-way 37.0% (all match the review's own cited figures); reworded "worst-case" to name the actual contention set | `f3ef7b80` | `grep -n '51.3%\|69.0%\|37.0%' host-setup/README.md` |
+| S17 (REPORT `Tip:` stale, round-1 S6 recurrence) | Fixed LAST, in the final commit of this round (see below) | (final commit) | `git log -1 --format=%H` should equal this REPORT's own `Tip:` line once the final commit lands |
+| S18 (REPORT's round-1 repair table mislabeled two S-numbers) | "S7" row relabeled S14 (the real TMPDIR-isolation finding); the row that had been mislabeled "S14" now carries no false S-number (bookkeeping only, `244728c0` already did the actual work); the byte-for-byte overclaim paragraph is now explicitly tagged S7 | this REPORT's own edit | `grep -n 'S14 (test-render' run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md` |
+| S19 (ordering constraint not stated explicitly) | New paragraph in README's "## Changes": install this host-setup version BEFORE rebuilding any devcontainer from the template, since `/run/cgprofile`'s `--mount` refuses a missing source; same sentence added to this REPORT's own operator-sequence section | `f3ef7b80` (README), this REPORT's own edit | `grep -n 'Ordering constraint' host-setup/README.md run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md` |
+| S20(a)/(b) (assertions 7/8 in `test-render.sh` could pass vacuously) | (a) assertion 7 now matches the real `install`/`systemd-tmpfiles --create` lines, comments excluded; (b) assertion 8 now requires a non-zero `doctest -v` "N passed" count | `2922928c` | `bash host-setup/tests/test-render.sh` (mutation-demoed RED for both, isolated, this round) |
+
+**B7's "bogus" discrepancy (RW-9, logged not blocking):** the coordinator's
+paraphrase said "`bogus` → FAIL"; the review file's own actual B7
+prescription (the awk regex + "not byte-comparable = warn, never fail")
+treats any string outside `\d+(\.\d+)?[KMGT]?i?B?$` — including the literal
+string `"bogus"` — identically to a percentage: `"?"`, hence `warn`. No
+scenario in the review's own lettered list (a)-(e) produces a literal
+`"bogus" → FAIL`; scenario (b) (a genuine numeric mismatch) is the
+review's own FAIL case, already covered by B3's original mismatch test.
+Implemented the reviewer's own prescribed mechanism exactly as written —
+verified via the regression test, which explicitly checks `bogus → "?"`
+— rather than inventing a special-cased "fail on unparseable garbage"
+that the prescribed code does not ask for and that would contradict its
+own stated fix intent.
+
 ## M5 — `/run/cgprofile` template mount (D-30/A2, new scope this round)
 
 | piece | what | commit |
 |---|---|---|
 | `templates/devcontainer.json` | New `mounts` entry: `source=/run/cgprofile,target=/run/cgprofile,type=bind`, with the required 4-part comment (purpose / group-access / host-prerequisite / opt-out) | `d3aa5e6a` |
-| `host-setup/units/tmpfiles-cgprofile.conf` (new file) | `d /run/cgprofile 0770 root docker -` — matches the daemon's own socket perms; extensive comment on why `tmpfiles.d` not ad hoc `mkdir` | `83521c56` |
-| `install.sh` | Installs the entry to `/etc/tmpfiles.d/cgprofile.conf` (`install -m 0644`) and applies it (`systemd-tmpfiles --create`, WARN not fail if that step itself errors) | `83521c56` |
+| `host-setup/units/mdt-cgprofile.conf` (renamed this round from `tmpfiles-cgprofile.conf` — round-2 review S15(r2), mdt- prefix like every other drop-in) | `d /run/cgprofile 0770 root docker -` — matches the daemon's own socket perms; extensive comment on why `tmpfiles.d` not ad hoc `mkdir` | `83521c56` (original), `2922928c` (renamed) |
+| `install.sh` | Installs the entry to `/etc/tmpfiles.d/mdt-cgprofile.conf` (`install -m 0644`) and applies it (`systemd-tmpfiles --create`, WARN not fail if that step itself errors) | `83521c56` (original), `2922928c` (renamed) |
 | `check.sh` | New "cgprofile socket carrier" section: hard-`fail`s if `/run/cgprofile` is missing or has the wrong mode/owner; `INFO`-only (new `info()` helper, does not affect exit code) on whether the daemon's control socket is present | `6d9da520` |
 | `tests/test-render.sh` | New assertion: `install.sh` installs the tmpfiles entry | `244728c0` |
 | README/AGENTS docs | "The socket carrier's mount" paragraph (README); no AGENTS.md change needed (M5 doesn't touch a `CGROUP_PARENT_*` var) | `20d52736` |
@@ -144,13 +184,19 @@ fixing it at the slice layer.
 `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same export path as
 the existing two vars (`templates/devcontainer.json`'s `containerEnv`),
 with D-24's fallback rule documented inline and in `host-setup/README.md`
-— **precisely stated this round (S10):** the rule protects a
-**devcontainer that was not rebuilt** (the variable is simply absent from
-its environment), **not** a **host that was not upgraded** (the slice unit
-itself missing) — that second failure mode is instead caught mechanically
-by `mdt-host-check.sh`, and independently by `docker run` itself failing
-when a named `--cgroup-parent` slice was never installed and the
-daemon-wide default can't resolve it either.
+— **corrected this round (B8):** the rule protects a **devcontainer that
+was not rebuilt** (the variable is simply absent from its environment),
+**not** a **host that was not upgraded** (the slice unit itself missing).
+That second case is **NOT self-announcing**: a `--cgroup-parent` naming a
+slice with no unit file fails **open** (systemd auto-creates an unlimited
+transient slice and the container starts normally — confirmed by this
+repository in four places: `AGENTS.md`,
+`units/docker-scope-default-limits.conf.in`, `host-setup.env.example`,
+`scripts/check.sh` — which is exactly why the `docker-.scope.d` backstop
+exists). It is caught by `mdt-host-check.sh` (a hard FAIL) and by a
+consumer that verifies `LoadState=loaded` before launch — **not** by
+docker. The round-1 repair's substitute claim (that `docker run` itself
+fails outright) was wrong in the fail-open direction and is withdrawn.
 
 ## Onward propagation (D4/S4) — named consumers that do not read `CGROUP_PARENT_DEV_GATES` yet
 
@@ -171,6 +217,16 @@ Until one of these adopts it, every gate/lane container keeps landing in
 a given host has `dev-gates.slice` installed.
 
 ## Operator install/upgrade command sequence (exact, verified against the real script)
+
+**Ordering constraint (round-2 review S19, made explicit):** install this
+version of host-setup on the host **BEFORE** anyone rebuilds a
+devcontainer from `templates/devcontainer.json`. The new `/run/cgprofile`
+mount is Docker `--mount`, which refuses to start a container at all when
+the bind source directory does not exist, and that directory only exists
+once `install.sh` has run on this host. A devcontainer rebuilt from the
+updated template against a host that has not yet upgraded will fail to
+start outright, not merely run with a feature missing — this is an
+ordering constraint of the merge itself, not only of the docs.
 
 **Fresh host, never ran mdt host-setup before:** the existing "Quick start"
 section in `host-setup/README.md` covers this end to end as of this round —
@@ -392,23 +448,37 @@ Matches the expected set exactly — no unexpected path.
 
 ## What was NOT done, and why
 
-- **A second registered-gate run.** Not needed — the first run this round
-  was green; the budget (at most two) was intentionally not spent on a
-  redundant confirmation.
+Round 1:
 - **Fixing `check.sh`'s pre-existing flat-vs-nested cgroupfs convention.**
   Deliberately left as-is; see RW-9 decision 2 above — out of scope, no
   real host available to verify either convention against (HOST LOAD).
+  Round-2 review did not ask for this either.
 - **Making any onward consumer (run-gate's default, cmru's tester-gate,
   srdm's gate script) read `$CGROUP_PARENT_DEV_GATES`.** Explicitly ruled
   out of scope by D4 ("list onward consumers in REPORT, not fix them") —
   named above under "Onward propagation," not modified.
 - **Editing `TODO.md`.** Blacklisted; D5's resolution (README Changes
-  section + this REPORT's paste-in line) used instead.
+  section + this REPORT's paste-in line) used instead, still in force.
+
+Round 2:
+- **Reconciling `templates/devcontainer.json`'s two opposite mount
+  conventions** (S19's OTHER half — the `/run/cgprofile` mount ships
+  unconditional while the BuildKit mount stays commented-out with an
+  explanatory reason, no sentence reconciling why they differ). The
+  coordinator's accepted-non-blocking list asked only for the explicit
+  ordering-constraint sentence (done, RC2/`f3ef7b80`), not this
+  reconciliation — left for a future round if the controller wants it.
+- **S21** (B4's fall-through description gets no `install.sh:NN` line
+  citation in the README). Not in the coordinator's accepted-items list
+  for round 2 either; the description itself is accurate, just uncited.
+- **A second registered-gate run.** Not needed — the run this round was
+  green; the budget (at most two) was intentionally not spent on a
+  redundant confirmation.
 - **Touching `scripts/cgroup-profiler/`, `run-gate-project/run-gate.py`,
-  `ciu/`, or `/workspaces/dstdns`.** All explicitly forbidden for M5;
-  confirmed absent from the diff surface above.
+  `ciu/`, or `/workspaces/dstdns`.** Still forbidden; confirmed absent
+  from this round's diff surface too.
 
 ## Checkpoint clause
 
-Not triggered this round either — the repair set stayed well under
-~120k context / ~60 tool calls.
+Not triggered in either round — stayed well under ~120k context / ~60
+tool calls both times.
