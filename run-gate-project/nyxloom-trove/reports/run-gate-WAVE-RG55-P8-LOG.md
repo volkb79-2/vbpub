@@ -410,3 +410,25 @@ cap watcher" section, with the reasoning the ruling asked for (one lane
 alone drives the tier into throttle, never past MemoryMax; two lanes are
 bounded by oomd; `1G` would re-create the 2026-08-04 incident) — verify:
 `grep -n DEV_CAP_GATES_MEMORY_MAX host-setup.env.example`.
+
+### C3 — mdt-dev-cap-watcher.py: B1/D1 (hash: see next entry)
+
+`WATCHED_SLICES` gains `dev-gates.slice`. New `SLICE_DEFAULT_MEMORY_MAX`
+dict maps each watched slice to its own default (`DEV_CAP_MEMORY_MAX` for
+interactive/background, `DEV_CAP_GATES_MEMORY_MAX` for gates) — deliberately
+NOT a single shared constant, so `apply_default_cap()` now takes
+`slice_name` and looks up the right one per slice; `main()` asserts every
+`WATCHED_SLICES` entry has a `SLICE_DEFAULT_MEMORY_MAX` entry at startup
+(fails loudly rather than falling back silently if the two lists ever
+drift). Module docstring extended with the full D1 reasoning (why 4G not
+1G, and that this coarse backstop COMPOSES with, is not withdrawn by, a
+future daemon's per-lane placement caps). `units/mdt-dev-cap-watcher.
+service`'s own header comment updated to match (the third of the "three
+places the slice list is written down" the review named,
+`host-setup.env.example` being the first two, C2).
+
+Verify: `python3 -m py_compile scripts/mdt-dev-cap-watcher.py` (clean);
+`grep -n WATCHED_SLICES scripts/mdt-dev-cap-watcher.py` shows all three
+slices; `python3 -c "import ast; ast.parse(open('scripts/mdt-dev-cap-
+watcher.py').read())"` (clean, confirms no syntax regression from the
+signature change touching every call site).

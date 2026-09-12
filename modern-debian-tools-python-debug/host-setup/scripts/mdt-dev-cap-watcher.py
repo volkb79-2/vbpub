@@ -3,19 +3,40 @@
 
 Everything mdt-apply-dev-caps.sh's periodic sweep does for per-container
 caps, it does up to SWEEP_INTERVAL late: a container created right after a
-sweep runs unbounded until the next one. This watches dev-interactive.slice
-and dev-background.slice directly via inotify and applies MemoryMax the
-moment a new docker-*.scope appears — proven live (2026-08-28) to fire
-within the same second a container is created, using nothing but a
-read-only inotify watch on cgroupfs (no Docker API, no plugin, no proxy).
+sweep runs unbounded until the next one. This watches dev-interactive.slice,
+dev-background.slice AND dev-gates.slice directly via inotify and applies a
+per-slice default MemoryMax the moment a new docker-*.scope appears — proven
+live (2026-08-28) to fire within the same second a container is created,
+using nothing but a read-only inotify watch on cgroupfs (no Docker API, no
+plugin, no proxy).
 
 Default MemoryMax exists to bound the blast radius of any single
-unlabelled dev/test/build container: without it, one container ballooning
-under memory pressure can force reclaim on every OTHER cgroup sharing the
-tier (including, transitively, anything memory.low/min protection on a
-sibling tier is supposed to shield) before the tier's own MemoryHigh/Max
-ever triggers. A caller's own explicit `--memory` always wins — this only
-fills in containers that didn't ask for anything.
+unlabelled dev/test/build/gate container: without it, one container
+ballooning under memory pressure can force reclaim on every OTHER cgroup
+sharing the tier (including, transitively, anything memory.low/min
+protection on a sibling tier is supposed to shield) before the tier's own
+MemoryHigh/Max ever triggers. A caller's own explicit `--memory` always
+wins — this only fills in containers that didn't ask for anything.
+
+dev-gates.slice (RG-55 D-19, RW-32/D1) gets its OWN knob,
+DEV_CAP_GATES_MEMORY_MAX, defaulting to the tier's own MemoryHigh (4G) —
+NOT the shared DEV_CAP_MEMORY_MAX (1G): today's run-gate lane containers
+land in dev-background.slice with no --memory of their own (this watcher's
+whole reason to exist), and the moment a consumer honours
+CGROUP_PARENT_DEV_GATES those same unlabelled containers move to
+dev-gates.slice. Capping them at 1G there would be BELOW the ~2 GiB of
+headroom the 2026-08-04 incident says a gate already needed — re-creating,
+inside the very tier built to fix it, the problem dev-gates.slice exists to
+solve. 4G lets one unlabelled lane alone drive the tier into MemoryHigh
+throttle but never past MemoryMax (6G); two such lanes are bounded by the
+tier's own oomd pressure kill, not by this watcher.
+
+This is the COARSE, tier-wide backstop. It COMPOSES with, and is NOT
+withdrawn by, the daemon's future per-lane placement caps (D-20/D-25,
+cgroup-profiler/run-gate packages): placement gives an exact per-lane
+memory.high/max on a leaf under dev-gates.slice for lanes that ask for one;
+this watcher still catches whatever a lane did NOT ask for, exactly as it
+already does for the other two tiers today.
 
 Cannot fix cgroup-parent placement itself (create-time only, see
 CGROUP-NOTES.md #1) — this only reacts to attributes WITHIN a cgroup
@@ -65,7 +86,23 @@ _env = load_env(CONF)
 DEV_CAP_MEMORY_MAX = os.environ.get(
     "DEV_CAP_MEMORY_MAX", _env.get("DEV_CAP_MEMORY_MAX", "1G")
 )
-WATCHED_SLICES = ["dev-interactive.slice", "dev-background.slice"]
+# dev-gates.slice's own knob (RW-32/D1) -- deliberately NOT DEV_CAP_MEMORY_MAX,
+# see the module docstring for why 1G there would re-create the 2026-08-04
+# incident inside the tier built to fix it. Default = the tier's own
+# MemoryHigh (host-setup.env.example DEV_GATES_MEMORY_HIGH=4G).
+DEV_CAP_GATES_MEMORY_MAX = os.environ.get(
+    "DEV_CAP_GATES_MEMORY_MAX", _env.get("DEV_CAP_GATES_MEMORY_MAX", "4G")
+)
+WATCHED_SLICES = ["dev-interactive.slice", "dev-background.slice", "dev-gates.slice"]
+# Per-slice default MemoryMax -- every entry in WATCHED_SLICES MUST have one
+# here (checked at startup in main()), so a slice added to one list without
+# the other fails loudly instead of silently falling back to a value nobody
+# chose for it.
+SLICE_DEFAULT_MEMORY_MAX = {
+    "dev-interactive.slice": DEV_CAP_MEMORY_MAX,
+    "dev-background.slice": DEV_CAP_MEMORY_MAX,
+    "dev-gates.slice": DEV_CAP_GATES_MEMORY_MAX,
+}
 
 # Additional cgroup properties worth capping on creation, left commented —
 # uncomment and set a value (in host-setup.env, then export it below, or
@@ -133,7 +170,7 @@ def has_explicit_memory_limit(container_id: str) -> bool:
         return False
 
 
-def apply_default_cap(slice_path: str, scope_name: str) -> None:
+def apply_default_cap(slice_path: str, slice_name: str, scope_name: str) -> None:
     container_id = resolve_container_id(scope_name)
     if container_id is None:
         return
@@ -141,7 +178,8 @@ def apply_default_cap(slice_path: str, scope_name: str) -> None:
         log(f"{scope_name}: explicit --memory already set, leaving as-is")
         return
     unit = scope_name
-    props = [f"MemoryMax={DEV_CAP_MEMORY_MAX}"]
+    default_memory_max = SLICE_DEFAULT_MEMORY_MAX[slice_name]
+    props = [f"MemoryMax={default_memory_max}"]
     # Uncomment corresponding lines above and here to also apply them:
     # if DEV_CAP_MEMORY_SWAP_MAX:
     #     props.append(f"MemorySwapMax={DEV_CAP_MEMORY_SWAP_MAX}")
@@ -178,6 +216,12 @@ def watch_slice(fd: int, slice_name: str) -> dict:
 
 
 def main() -> None:
+    missing = [s for s in WATCHED_SLICES if s not in SLICE_DEFAULT_MEMORY_MAX]
+    if missing:
+        log(f"FATAL: {missing} in WATCHED_SLICES but SLICE_DEFAULT_MEMORY_MAX "
+            f"has no default for it -- every watched slice needs a chosen "
+            f"default, add one instead of falling back silently")
+        sys.exit(1)
     check_inotify_available()
     fd = _libc.inotify_init1(0)
     if fd < 0:
@@ -188,7 +232,7 @@ def main() -> None:
     for slice_name in WATCHED_SLICES:
         watches.update(watch_slice(fd, slice_name))
 
-    log(f"default MemoryMax={DEV_CAP_MEMORY_MAX}; watched: {WATCHED_SLICES}")
+    log(f"per-slice default MemoryMax: {SLICE_DEFAULT_MEMORY_MAX}; watched: {WATCHED_SLICES}")
 
     last_retry = 0.0
     while True:
@@ -224,7 +268,7 @@ def main() -> None:
                 continue
             if not fnmatch.fnmatch(name, "docker-*.scope"):
                 continue
-            apply_default_cap(slice_path, name)
+            apply_default_cap(slice_path, slice_name, name)
 
 
 if __name__ == "__main__":
