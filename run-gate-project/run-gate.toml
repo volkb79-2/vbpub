@@ -52,3 +52,88 @@ environment = "bare-host"
 argv = ["bash", "-c", "python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
+
+# =============================================================================
+# RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
+# vendored, standalone gate (zero-install, `--source run-gate.py` only,
+# unrelated to whether assay is even reachable); these lanes are the SECOND,
+# stricter judge, same reasoning cmru/scripts-cgroup-profiler already apply
+# in this repo. Judged scope is DELIBERATELY WIDER than selftest's:
+# `assay.toml`'s `source_roots = ["."]` (RW-8, run-gate-WAVE-RG55-
+# CONTROLLER-LOG.md) judges `tools/coverage_gate.py` too, not just
+# run-gate.py — a changed line there must be covered by
+# tests/test_coverage_gate.py, exactly what "100% on every changed line"
+# means for this project once real judgment (not just diff-coverage) is in
+# the loop. `tests/` is excluded automatically by assay's own
+# `is_test_path` rule; `tools/assay/*.pyz` and `tests/fixtures/` are not
+# `.py` source under a non-test path and cannot enter the judged set either
+# way.
+#
+# `kind = "assay"`, bare-host (same reasoning as `selftest`: this project's
+# own suite is self-referential against real mountinfo/docker-orchestration
+# internals — see that lane's header — so it never runs inside a container
+# layer). `clean_tree = true` is the documented default (README "Lane
+# schema"), declared explicitly here because an assay R1+/R2 lane's own
+# DIRTY_TREE check would refuse a moment later anyway (assay/docs/
+# CONSUMERS.md) — stating the position once, at the layer that can name the
+# reason, beats a second, unexplained refusal one level down.
+# =============================================================================
+
+[lanes.assay-r1]
+kind = "assay"
+assay_lane = "r1"                   # -> assay.toml [lanes.r1]
+environment = "bare-host"
+assay_command = ["python3", "tools/assay/assay-6.1.1.pyz"]
+clean_tree = true
+budget = "30m"
+
+[lanes.assay-r1.pins.assay]
+version = "6.1.1"
+sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
+
+# Mutation (R2). Bare-host and serial (HOST LOAD §6: 8 cores shared with a
+# production game server, jobs = 1 in assay.toml's own [lanes.r2.judge.
+# mutation] — no headroom for parallel mutant workers). `stall_timeout`
+# (RG-36/R-40c): the SAME grammar as `budget`, but it bounds SILENCE in
+# `.assay/progress-r2.jsonl` (`--progress`/`--resume` are unconditional on
+# every assay lane, R-38/RG-33) — a stuck-but-still-running mutation sweep
+# is stopped after 20 minutes with no progress line, not after the whole
+# 4h budget elapses.
+[lanes.assay-r2]
+kind = "assay"
+assay_lane = "r2"                   # -> assay.toml [lanes.r2]
+environment = "bare-host"
+assay_command = ["python3", "tools/assay/assay-6.1.1.pyz"]
+clean_tree = true
+stall_timeout = "20m"
+budget = "4h"
+
+[lanes.assay-r2.pins.assay]
+version = "6.1.1"
+sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
+
+# R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, one
+# canary today — median-not-mean on `duration_stats`, the RG-27 trap). A
+# plain `kind = "command"` lane, not `kind = "assay"`: the canary script
+# runs its own disposable tar copy and pytest invocation directly (see the
+# script's own header for why it does not go through `assay run` itself).
+[lanes.assay-r3]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "exec tools/canary-run.sh"]
+budget = "15m"
+
+# The implementation/release gate for THIS project's assay lanes: proves
+# selftest AND the r1/r3 pair together. r2 (mutation, up to 4h) is
+# deliberately NOT a member — it is invoked separately, pre-merge, per the
+# handoff (§2 C2) — a conjunction that could silently take 4+ hours is not
+# something a routine "does this change gate clean" check should have to
+# pay for. cmru.toml's own release-gate step keeps pointing at `selftest`
+# alone (see its own comment for why gate-full is not the release gate
+# either).
+[lanes.gate-full]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "./run-gate.py selftest && ./run-gate.py assay-r1 && ./run-gate.py assay-r3"]
+clean_tree = false   # sub-lanes each enforce their own clean-tree check
+budget = "1h"

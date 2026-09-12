@@ -44,6 +44,44 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    generous assay `budget` + `judge.mutation.budget_per_candidate` +
    this key).
 
+## Gate and evidence
+
+This project's own `run-gate.toml` declares five lanes (dogfooding — see
+"Built deltas" above):
+
+1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
+   points at it; a release cannot be tagged unless it passes). Zero
+   install: `python3 -m pytest tests -q --cov=. --cov-branch` followed by
+   the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
+   alone — a diff-coverage floor at 100% on every executable line changed
+   since `main`, not a total-coverage floor (still ~47% total; that
+   campaign is Phase 2).
+2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
+   judge: assay (pinned `tools/assay/assay-6.1.1.pyz`) running the same
+   test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
+   — the whole project, not just `run-gate.py`. `tools/coverage_gate.py`
+   itself is IN SCOPE here (a controller ruling, RW-8: "100% on every
+   changed line" means every changed line in this project, and the
+   coverage command already measures it with `--cov=.`); `tests/` stays
+   excluded, as it is on every assay lane. The comparison base is
+   delegated to the invoking gate request (`judge.base_source =
+   "request"`), never hardcoded.
+3. **`assay-r2`** — mutation testing (R2) over the same scope, bare-host
+   and serial (`jobs = 1`, HOST LOAD §6), budget 4h with a 20-minute
+   `stall_timeout` on silence in its progress file. Run separately,
+   pre-merge — never a member of `gate-full` (below), so a routine "does
+   this gate clean" check never has to pay for a lane that can take
+   hours.
+4. **`assay-r3`** — the canary: `tools/canary-run.sh` breaks one
+   provably-covered invariant (today: `duration_stats`'s median, flipped
+   to a mean) in a disposable copy and asserts the exact test that
+   encodes it goes red. Proves the suite is a real oracle, not a green
+   checkmark that would pass on broken code too.
+5. **`gate-full`** — the conjunction: `selftest` + `assay-r1` + `assay-r3`
+   (r2 excluded for the reason above). Still not the release gate
+   (`cmru.toml`'s own comment says why): `selftest` alone remains it,
+   deliberately, for now.
+
 ## Intent — what problem this solves
 
 Every project in this estate has a gate: the command whose green verdict means

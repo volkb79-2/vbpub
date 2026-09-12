@@ -1,0 +1,108 @@
+# run-gate-project's assay lane declarations (RG-55/D-11). Consumed by
+# run-gate.toml's [lanes.assay-r1]/[lanes.assay-r2] via a pinned zipapp
+# (tools/assay/assay-6.1.1.pyz) — a downstream consumer, not an in-repo one
+# (assay/docs/INTERNAL-CONSUMERS.md's distinction; cmru/assay.toml is the
+# reference shape for a pinned-pyz consumer, scripts/cgroup-profiler/
+# assay.toml for a live-worktree one).
+#
+# RW-8 (controller ruling, run-gate-WAVE-RG55-CONTROLLER-LOG.md): both lanes
+# below judge `source_roots = ["."]` with `base_source = "request"` — the
+# whole project, tests/ excluded automatically by assay's own is_test_path
+# rule, `tools/` judged DELIBERATELY (a changed line in
+# tools/coverage_gate.py must be covered by tests/test_coverage_gate.py —
+# exactly "100% on every changed line" for this project, and the coverage
+# command already measures it via --cov=.). run-gate.py has no isolating
+# subdirectory of its own (it sits at the project root beside tests/ and
+# tools/), and restructuring it into one is explicitly OUT of this
+# package's scope (RW-8) — `judge.targets`/`mode = "whole_target"` was
+# rejected for the same reason BRIEF-2 found it unworkable: that mode
+# forbids `base`/`base_source` entirely, which this project's changed-line
+# requirement needs.
+schema_version = 2
+
+# This is a monorepo lane: assay's snapshot walks the whole resolved commit,
+# not just this project's own source roots, so a tracked hostile symlink
+# anywhere else in vbpub (Topos's fixtures) would otherwise refuse every
+# lane in every unrelated project. See assay/docs/CONSUMERS.md's "A
+# monorepo lane: omitting declared unsafe symlinks" for the full mechanism
+# and the maintenance obligation this list creates (identical list to
+# cmru/assay.toml and scripts/cgroup-profiler/assay.toml — same repository,
+# same three fixtures).
+[lanes.r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["python3", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
+        "--cov-report=json:coverage.json"]
+env = { PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.r1.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+# `source_roots = ["."]`: the whole project (RW-8). `base_source =
+# "request"` (RG-26 shape): this lane's comparison base is delegated to
+# run-gate's own `--request-base`, never a literal `base` here (see this
+# file's header). `require_branch = true`: the argv already collects branch
+# data (--cov-branch); declaring it turns a future argv edit that silently
+# dropped that flag into a refusal instead of a quiet downgrade to
+# line-only judging (README "Branch coverage is judged whenever reported").
+# `allow_excluded = false`: this project forbids `# pragma: no cover`
+# (SPEC/handoff §7) — the strict side of the dstdns/nyxloom split
+# DESIGN-GUIDE.md documents, not topos's permissive one.
+[lanes.r1.judge]
+language = "python"
+source_roots = ["."]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base_source = "request"
+
+[lanes.r1.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.r2]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["python3", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
+        "--cov-report=json:coverage.json"]
+env = { PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "4h"
+allow_argv_append = false
+
+[lanes.r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.r2.judge]
+language = "python"
+source_roots = ["."]
+base_source = "request"
+
+# Operators, jobs and max_mutants exactly as scripts/cgroup-profiler/
+# assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families,
+# jobs = 1 (serial, HOST LOAD §6: this lane is bare-host, 8 cores shared
+# with a production game server, no headroom for parallel mutant workers).
+[lanes.r2.judge.mutation]
+jobs = 1
+max_mutants = 1500
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
