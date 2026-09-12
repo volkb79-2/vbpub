@@ -432,6 +432,26 @@ never a silent edit to the contract file.
   Successor: fresh Sonnet seeded with BRIEF-1; the checkpoint clause is
   HARD this time (session 1 ran 370 calls before cutting).
 
+- **RW-34 (contract v1.1 landed — §8 of `RG55-INTERFACE-CONTRACT.md`,
+  mirrored to `scripts/cgroup-profiler/docs/`):** additive under
+  `contract: 1`: §8.1 two carriers (socket request line
+  `{"verb","args","contract"}`, `peer-refused`, `auto|exec|socket`
+  semantics, exec permanent); §8.2 `ctl watch` NDJSON (`reading` every
+  `--watch-interval` 30 s [5, 300], `verdict` on state change, one `end`;
+  consumer idle timeout 3 × interval + re-attach); §8.3 placement
+  (`--place --memory-high --memory-max --cpu-weight`, `placement
+  {requested, leaf, applied (read back), pids_moved, error}`, never fails
+  `start`, D-25 whitelist enumerated incl. `cgroup.kill` + `rmdir` on
+  `rg-*` only); §8.4 liveness block + policy options
+  (`--progress-stream`, `--idle-bound auto|s` = max(300, 3 × cadence
+  hint) with a PSI-paused clock, `--ceiling auto|s`, `--on-stall
+  kill|report`, default `report`) and the state vocabulary ok / stalled /
+  hung / runaway / throttled / over_ceiling; §8.5 `host.gates_slice` +
+  `daemon_slice`; §8.6 `version.transports`; §8.7 Summary `liveness` /
+  `placement` / `watch`; §8.8 error codes; §8.9 consumer obligations for
+  P5. Goldens: P6 adds one fixture per new shape, P5 verifies bytes; v1
+  goldens stay byte-identical. Design doc §5 now points here.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |

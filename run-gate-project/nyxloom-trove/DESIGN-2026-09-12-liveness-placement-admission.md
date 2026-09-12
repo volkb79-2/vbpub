@@ -212,7 +212,7 @@ step 4's placement, to an ephemeral lane (docker caps at create under
 
 ## 5. Contract amendment (RG55 interface contract v1.1 — controller-authored before P5/P6b)
 
-Additive under `contract: 1` (unknown keys are ignored by consumers; goldens
+**Landed 2026-09-12 as `RG55-INTERFACE-CONTRACT.md` §8 (RW-34).** Additive under `contract: 1` (unknown keys are ignored by consumers; goldens
 extended): `status` sessions gain `liveness` and `placement`; `start` gains
 `--place`, `--memory-high`, `--memory-max`, `--cpu-weight` and returns
 `placement {leaf, applied}`; `host` gains the `gates_slice` block; Summary
