@@ -14488,6 +14488,153 @@ class TestExecLaneProfilingWiring:
         assert code == 0
 
 
+class TestExecLaneInflightRecord:
+    """RG-60: `run_exec_lane` now writes the same inflight record
+    `run_container_lane` writes (R-39a's shape) -- at the equivalent point
+    in an exec lane's own lifecycle: after the persistent runner's identity
+    is known and the profiling session (if any) is established, before the
+    `docker exec` itself begins -- and clears it in the SAME `finally` that
+    finishes profiling. Unlike run_container_lane this record is NOT wired
+    into `resolve_inflight`/re-attach (RG-60's own scope is the record
+    existing to be found, not reconciliation)."""
+
+    def _cfg(self):
+        return """\
+            schema_version = 1
+            [environments.runner]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "the-runner"
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+        """
+
+    def _exec_lane_call(self, tmp_path, monkeypatch, argv, run_record,
+                        profile_plan):
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        env = {"forward_env": []}
+        lane = {"kind": "command", "argv": argv}
+        code = run_gate.run_exec_lane(
+            lane, "suite", repo, repo, repo, env, "test-env",
+            "the-runner", "test-src", "test-remedy", None, "no-slice",
+            dry_run=False, run_record=run_record, profile_plan=profile_plan)
+        return repo, code
+
+    def test_record_exists_when_exec_begins_and_cleared_after(
+            self, tmp_path, monkeypatch):
+        # The oracle sketch's own test: an inflight record is written
+        # BEFORE the `docker exec` begins and cleared in the finally.
+        # Proven by checking the record's presence on disk from INSIDE a
+        # patched `subprocess.Popen` -- the exact moment the exec begins --
+        # rather than trusting call order alone.
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        seen = {}
+        real_popen = run_gate.subprocess.Popen
+
+        def _spy_popen(argv, *a, **k):
+            path = run_gate.inflight_path(repo, "suite")
+            seen["existed_at_exec"] = path.exists()
+            if seen["existed_at_exec"]:
+                seen["record"] = run_gate.load_inflight_record(path)
+            return real_popen(argv, *a, **k)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        env = {"forward_env": []}
+        lane = {"kind": "command", "argv": ["true"]}
+        profile_plan = {"enabled": True,
+                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": "1s", "damon": True, "source": "test",
+                        "token": "abc123",
+                        "disabled_reason": "disabled"}
+        # No cgprofile daemon shim installed -- `client.version()` fails and
+        # profiling degrades to the basic path; the inflight write itself
+        # does not depend on that outcome (RW-1's own unconditional rule,
+        # reused here).
+        code = run_gate.run_exec_lane(
+            lane, "suite", repo, repo, repo, env, "test-env",
+            "the-runner", "test-src", "test-remedy", None, "no-slice",
+            dry_run=False, run_record={}, profile_plan=profile_plan)
+        assert code == 0
+        assert seen.get("existed_at_exec") is True, \
+            "inflight record must exist by the time docker exec starts"
+        assert seen["record"]["lane"] == "suite"
+        assert seen["record"]["container"] == "the-runner"
+        assert seen["record"]["profile_token"] == "abc123"
+        # Cleared in the SAME finally that finishes profiling.
+        assert not run_gate.inflight_path(repo, "suite").exists()
+
+    def test_killed_client_leaves_the_record_on_disk(self, tmp_path,
+                                                      monkeypatch):
+        # Simulated: a client that dies mid-run never reaches its own
+        # `finally`, so `clear_inflight_record` never runs -- a record
+        # written with no matching clear is exactly what survives, proven
+        # directly (the most literal way to exercise "the client died").
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        payload = {"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite",
+                  "container": "the-runner", "container_id": RG55_CONTAINER_ID,
+                  "started_at": "2026-09-12T10:00:00Z", "started_epoch": 1.0,
+                  "owner_pid": 999999, "owner_start": 1, "boot_id": "b",
+                  "pid_ns": "ns", "commit": None, "worktree": str(repo),
+                  "project_dir": str(repo), "verdict": None, "progress": None,
+                  "revision": run_gate.__revision__,
+                  "profile_token": "tok123",
+                  "profile_daemon": run_gate.PROFILE_DAEMON_DEFAULT}
+        assert run_gate.write_inflight_record(repo, repo, "suite", payload)
+        recovered = run_gate.load_inflight_record(
+            run_gate.inflight_path(repo, "suite"))
+        assert recovered is not None
+        assert recovered["profile_token"] == "tok123"
+        assert recovered["container"] == "the-runner"
+
+    def test_record_written_even_when_profiling_disabled(self, tmp_path,
+                                                          monkeypatch):
+        # RW-1's own unconditional rule, reused: the record names the
+        # container regardless of `[profile]` -- a client can die mid-run
+        # whether or not this invocation is profiled.
+        profile_plan = {"enabled": False,
+                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": "1s", "damon": True, "source": "test",
+                        "token": None, "disabled_reason": "disabled"}
+        seen = {}
+        real_popen = run_gate.subprocess.Popen
+
+        def _spy_popen(argv, *a, **k):
+            seen["saw_popen"] = True
+            return real_popen(argv, *a, **k)
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
+        repo, code = self._exec_lane_call(tmp_path, monkeypatch, ["true"],
+                                          {}, profile_plan)
+        assert code == 0
+        assert seen.get("saw_popen")
+        assert not run_gate.inflight_path(repo, "suite").exists()  # cleared
+
+
 class TestReattachProfilingWiring:
     """RG-55: the inflight record's `profile_session`/`profile_daemon`/
     `profile_token` govern re-attach/collect/promote independent of a FRESH

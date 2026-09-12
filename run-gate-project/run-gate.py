@@ -6968,8 +6968,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
     # RG-55: disabled means no daemon call and no sampler — built directly,
-    # without the extra `docker inspect` a real attempt needs.
+    # without the extra profiling attempt a real one needs. Unchanged from
+    # before RG-60: `container_state()` (a real `docker inspect`) is still
+    # called ONLY when profiling is enabled — the inflight record below
+    # degrades to an empty `container_id` rather than force every exec lane
+    # invocation, profiled or not, to depend on inspect answering (RG-60's
+    # record is a recovery AID, never a reason to fail a lane that was
+    # never going to be profiled in the first place).
     if not profiling:
+        container_id = ""
         profiler_state = {"mode": "disabled", "client": None, "daemon": None,
                           "session": None, "session_line": None,
                           "warning": None, "sampler": None,
@@ -6999,6 +7006,45 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
+    # RG-60: the same inflight record `run_container_lane` writes on a
+    # successful `docker run -d` (R-39a), written here at the equivalent
+    # point in an exec lane's own lifecycle — after the profiling session
+    # (if any) is established, before the exec begins — so a client that
+    # dies mid-run leaves a recovery record naming the profiling session
+    # exactly as a container lane's client would. Unlike run_container_lane
+    # this is NOT wired into `resolve_inflight`/re-attach (RG-60's own
+    # scope: the record exists to be found, reconciliation is a separate
+    # follow-up); written unconditionally — whether or not profiling is
+    # enabled, a client can die mid-run either way (RW-1's own rule).
+    verdict_path, progress_path, _state_dir = assay_artifact_paths(
+        lane, project_dir, repo)
+    inflight_payload = {
+        "schema": INFLIGHT_SCHEMA,
+        "lane": lane_name,
+        "container": name,
+        "container_id": container_id,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "started_epoch": time.time(),
+        "owner_pid": os.getpid(),
+        "owner_start": process_start_ticks(os.getpid()),
+        "boot_id": boot_id(),
+        "pid_ns": pid_ns_inode(),
+        "commit": head_commit(worktree),
+        "worktree": str(worktree),
+        "project_dir": str(project_dir),
+        "verdict": verdict_path,
+        "progress": progress_path,
+        "revision": __revision__,
+        "profile_token": profile_plan["token"] if profiling else None,
+        "profile_daemon": profile_plan["daemon"] if profiling else None,
+        # RW-14/RG-35's own pattern, one field over (matches
+        # run_container_lane): recorded directly here (a single write is
+        # enough — unlike run_container_lane, this write happens AFTER
+        # `start` already answered, so there is no "second write" step).
+        "profile_session": (profiler_state["session"]
+                           if profiler_state["mode"] == "daemon" else None),
+    }
+    write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
     # RG-55: rewritten from a blocking `subprocess.run` to `Popen` +
     # `proc.wait(timeout=…)` so a BASIC-path sampler can tick mid-run
     # (contract Sec 4, exec flow) — stdout/stderr stay inherited (Popen's
@@ -7058,6 +7104,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # already-reaped process are no-ops in stdlib).
         proc.kill()
         proc.wait()
+        # RG-60/RW-1: cleared in the SAME finally that just finished
+        # profiling, mirroring run_container_lane's own rule (the record's
+        # two facts — a session may exist, this client is watching it —
+        # stop being true at the same instant here too, even though there
+        # is no container of run-gate's own to remove alongside it).
+        clear_inflight_record(project_dir, lane_name)
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 

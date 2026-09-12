@@ -1590,10 +1590,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     invocation, passed as `-e RUN_GATE_PROFILE_SESSION=<token>` in the SAME
     argv position `forward_env` values already occupy (`docker run` for
     ephemeral lanes, `docker exec` for exec lanes) — recorded as
-    `profile_token` in the inflight record immediately on the `docker run`
-    path (`R-43f`; RG-60: an exec lane's client writes no inflight record
-    at all today), and as `profile_session` once `ctl start` (daemon path
-    only) confirms it.
+    `profile_token` in the inflight record immediately on both the `docker
+    run` path and the `docker exec` path (`R-43f`; RG-60), and as
+    `profile_session` once `ctl start` (daemon path only) confirms it.
   - **`R-43b` Scopes.** `container` (ephemeral: a fresh container per
     invocation, `memory.peak_bytes` read exactly from the cgroup's own
     `memory.peak`) vs `container-shared` (exec: a PERSISTENT runner,
@@ -1639,12 +1638,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     (`[profile] enabled = false`, a lane's own `profile = false`, or the
     ambient `RUN_GATE_PROFILE=off`, `R-43g`) means no token, no daemon
     call, no sampler, `resources: null`, `profile_error` naming which.
-  - **`R-43f` Inflight record fields.** `profile_token` (recorded on
-    `docker run`, before any daemon call — RG-60: NOT on `docker exec`;
-    an exec lane writes no inflight record at all today), `profile_session`
-    (added once `ctl start` confirms it). A follower that promotes itself
-    when the owning client has died (`R-39`) reads these to call `stop`
-    with the RECORDED session, never a new `start`.
+  - **`R-43f` Inflight record fields.** `profile_token` (recorded on both
+    `docker run` and `docker exec`, before any daemon call — RG-60), and
+    `profile_session` once `ctl start` confirms it (`run_exec_lane`'s own
+    record is written once, after `start` already ran, so the field is
+    filled directly rather than needing `run_container_lane`'s own
+    second-write step). A follower that promotes itself when the owning
+    client has died (`R-39`) reads these to call `stop` with the RECORDED
+    session, never a new `start` — this re-attach/promotion machinery
+    itself stays container-lane-only; an exec lane's record exists to be
+    FOUND (a recovery aid), not yet wired into `resolve_inflight`.
   - **`R-43g` Disclosure lines** (exact shapes, contract Sec 4.6): the
     host-PSI line (`| profiler <daemon> (cgprofile <ver>, damon <on|off|
     unavailable>)` appended only when a `version` call already answered
