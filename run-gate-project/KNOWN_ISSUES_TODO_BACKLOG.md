@@ -4408,7 +4408,25 @@ lane, not the conjunction wrapping it.
   key subset (no `damon`, no `host.slice`, no `pressure` beyond what
   `getrusage` cannot provide — i.e. `null`, never fabricated).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `c37b6e94`), SPEC
+`R-43i`
+
+Both halves shipped as filed (RW-27b): daemon path via self container id +
+token, scope always `container-shared`, disclosed DEVCONTAINER-WIDE;
+daemon-absent path is `resource.getrusage(RUSAGE_CHILDREN)`,
+`method: "rusage"`, `memory.source: "rusage-maxrss"`, `scope: null` (a
+design decision — rusage measures via `wait4()`, not a cgroup read, so no
+contract `scope` value is honest), everything else `getrusage` cannot
+supply left `null`, NEVER falls back to a `BasicSampler` on this path.
+`RESOURCE_SERIES_GETTERS`/`series_stats`/`_lane_stats`/
+`build_footprint_manifest` needed zero code changes; `build_footprint_
+manifest` gained one new `source` key, disclosed by `footprint`/`doctor`
+only when it is `"rusage-maxrss"`. Live acceptance: this project's own
+`footprint --write` (all five lanes bare-host) stopped refusing after one
+real profiled run (see `CONSUMERS.md` "The footprint manifest" for the
+transcript). Tests: `tests/test_run_gate.py` `TestBareHostProfilingWiring`
+(rewritten, 9 tests total incl. both R-36h exception plants) +
+`TestFootprintVerbCLI.test_bare_host_rusage_run_makes_write_stop_refusing`.
 
 ## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
 
@@ -4456,7 +4474,17 @@ explicitly did not rule on.
   time WARN naming both; option 3 needs no new oracle beyond the existing
   comment).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `e698835f`), SPEC
+`R-30c`
+
+RW-27a: option 2 (warn, never refuse). A bare-host lane declaring
+`stall_timeout` now gets ONE load-time `run-gate: WARNING lane <name>:
+stall_timeout is inert on a bare-host lane` (`_validate_lane`) and a
+matching `doctor` WARN (new "2d" per-lane check), both from the SAME
+shared `bare_host_stall_timeout_inert_reason()` so the two surfaces cannot
+drift apart. Config still loads; exit code unchanged; container/exec
+lanes untouched. Tests: `tests/test_run_gate.py`
+`TestBareHostStallTimeoutWarning` (4 tests).
 
 ## RG-59 — the live-run daemon-absent warning names the wrong cause ("produced unparsable stdout" instead of "container ... is not running")
 
@@ -4501,7 +4529,18 @@ for an ACTUALLY malformed daemon response from a daemon that IS running.
   RUNNING daemon → assert the existing "produced unparsable stdout"
   wording is preserved for that case.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `b5e4a9c6`)
+
+`ProfilerClient._ctl`'s `json.JSONDecodeError` branch now matches docker's
+own `stderr_tail` against "no such container"/"is not running"
+(case-folded) to tell a daemon-absent `docker exec` failure apart from a
+running daemon's genuinely malformed response — the daemon-absent case
+gets a new shared `daemon_not_running_reason()`, the ONE place both
+`doctor`'s "profiler daemon" WARN and this live-run reason get their text
+from, so the two surfaces cannot drift apart again; "produced unparsable
+stdout" stays reserved for the genuinely-malformed case. Tests:
+`tests/test_run_gate.py` `TestProfilerClient` +3 (both docker wordings,
+plus a running-daemon's malformed stdout keeping the old text).
 
 ## RG-60 — an exec lane's profiling session has no inflight/recovery record if the client dies mid-run
 
@@ -4541,7 +4580,20 @@ new design.
   survives on disk, matching the container-lane recovery path's existing
   behavior.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `a6716422`), SPEC
+`R-43a`/`R-43f` amended
+
+`run_exec_lane` now writes the same inflight record `run_container_lane`
+writes (schema/lane/container/container_id/owner/commit/worktree/
+profile_token/profile_daemon/profile_session), written after the
+profiling session (if any) is established and before the `docker exec`
+begins, cleared in the same `finally` that finishes profiling —
+unconditionally, profiled or not (RW-1's own rule: a client can die
+mid-run either way). Not wired into `resolve_inflight`/re-attach — RG-60's
+own scope is the record existing to be FOUND, not a new re-attach design.
+Tests: `tests/test_run_gate.py` `TestExecLaneInflightRecord` (3 tests:
+record-exists-at-exec-time via a `Popen` spy, killed-client survival via a
+planted record, and profiling-disabled coverage).
 
 ## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
 
@@ -4607,4 +4659,23 @@ None needed beyond the existing prose-consistency review this class of
 fix always gets — no behavior changes, so no new pytest coverage is
 implied by fixing any of the eight items.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, this commit)
+
+All eight items fixed in place: (1) new SPEC `R-30c` for `doctor`'s
+profiler check; (2) `R-30`'s status-line count corrected to five
+(`INFO`); (3) the RG-51 narrative's stale `0/0 -> 100%` text corrected to
+describe RW-5's actual SKIPPED-verdict design (two spots); (4)
+`CONSUMERS.md` gained full `[profile]`/`[footprint]` schema blocks and the
+`RUN_GATE_PROFILE` `on`-override + by-name-refusal behavior; (5)
+`CONSUMERS.md`'s fabricated `footprint --write` transcript replaced with a
+real one from this project's own profiled run (RG-57 makes this possible
+for the first time — see "The footprint manifest"); (6) the `[Unreleased]`
+header comment corrected and every entry under it now names its own RG id
+and the rev-42 bump; (7) `usage()` gained `RUN_GATE_PROC_ROOT`, the stale
+`R-43g`/`R-43h` lane-schema cross-reference fixed, the "both had shipped
+in code" claim corrected for `resources.cpus`; (8) this package's own five
+FIXED entries (RG-57/58/59/60/61) got commit hashes above, and its own
+LOG file's test-count claims were audited and TWO real mismatches were
+found and corrected (`TestBareHostStallTimeoutWarning`: claimed 4,
+actually 3; `TestBareHostProfilingWiring`: claimed 9, actually 7) — this
+entry's own "physician heal thyself" invitation, taken literally.

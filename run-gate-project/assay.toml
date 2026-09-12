@@ -105,6 +105,17 @@ base_source = "request"
 # candidates do not share state and jobs=2 leaves 6 cores of headroom.
 [lanes.r2.judge.mutation]
 jobs = 2
+# budget_per_candidate = "900s" (RW-28, mandatory for every R2 lane from
+# now on): a mutant flipping a thread's daemon=True to non-daemon makes
+# pytest finish its tests and hang at interpreter exit on the thread join
+# (0% CPU, no crash, no timeout signal of its own) -- assay has no default
+# per-candidate bound, so a single such candidate blocks the WHOLE run
+# forever (P1 hit this for real 2026-09-12 13:22Z, cgroup-profiler's own
+# r2 lane; filed to assay's backlog per the cross-repo convention). 900s
+# is ~7x this lane's own measured per-candidate cost (~130s, RW-25) --
+# generous headroom for a genuinely slow candidate, still a real bound on
+# a hung one.
+budget_per_candidate = "900s"
 max_mutants = 1500
 operators = [
   "python:compare-swap",

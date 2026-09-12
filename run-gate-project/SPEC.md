@@ -46,9 +46,11 @@ the pre-existing "no derivable memory ceiling" WARNING); `R-36` amended
 per entry, five new `series_stats` series); `R-08` amended (`profile` lane
 key, `resources.cpus`, `footprint` joins the reserved lane names — a
 LOAD-TIME BREAKING change; the duplicated key-list paragraph from an
-earlier rev removed); `R-07` amended (`mode`, `container_name`,
-`resources.cpus` — both had shipped in code, undocumented here, since
-RG-39/RG-43); `R-40c`/`R-08` amended (the "assay lanes ONLY"
+earlier rev removed); `R-07` amended (`mode` and `container_name` — BOTH
+had already shipped in code, undocumented here, since RG-39/RG-43;
+`resources.cpus` is NOT one of those two — it is new in this SAME rev 10,
+RG-48, not a backfill for an older undocumented feature); `R-40c`/`R-08`
+amended (the "assay lanes ONLY"
 `stall_timeout` text was stale since RG-41 (rev 36) made it legal on
 `command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
 log-stream liveness mechanism the rule id it shipped without).
@@ -175,7 +177,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
   `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
   profiling for this lane outright, or a table `{enabled, damon}`
-  overriding `[profile]`'s own defaults — `R-43g`), `description` (optional
+  overriding `[profile]`'s own defaults — `R-43h`), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -552,7 +554,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   namespace (RG-55/C7, rev 10: `/proc/self/cgroup` reading exactly `0::/`,
   the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
   host-side slice truth is then reachable ONLY through the cgroup-profiler
-  daemon, `doctor`'s own "profiler" check (`R-44`) being exactly that path.
+  daemon, `doctor`'s own "profiler" check (`R-30c`) being exactly that path.
   This counts EVERYTHING in the slice (kernel truth), so no cross-process
   bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
   the environment fallback) → a real `docker run --cpus <n>` on ephemeral
@@ -586,7 +588,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
   writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
   (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
-  `[FAIL]`/`[SKIP]` line per check plus a summary counting all four; exit 2
+  `[FAIL]`/`[SKIP]`/`[INFO]` line per check plus a summary counting all
+  five (`INFO`, `R-44c`, names a NEXT STEP rather than a defect — e.g. "no
+  footprint manifest yet"); exit 2
   iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
   it **does start containers**: short-lived read-only probes, bounded at ONE
   inventory probe per (environment, `assay_command`) plus ONE batched
@@ -752,9 +756,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       merged-but-not-torn-down worktree has a real `base_ref = "main"` that
       local `main` has since absorbed, so `merge-base` is HEAD and the lane
       judges NOTHING: an assay lane reaches assay's own `BASE_IS_HEAD`
-      refusal three layers down, and a `kind = "command"` lane has no such
-      guard while its diff-coverage judge scores `0/0` as 100% — a silent
-      false green. It neither subsumes the fork-point clause above nor is
+      refusal three layers down, and (pre-RW-5/RG-53) a `kind = "command"`
+      lane had no such guard while its diff-coverage judge scored `0/0` as
+      `100.0% OK` — a silent false green; RW-5 replaced
+      that with a distinct `diff-coverage SKIPPED: 0 changed executable
+      lines ...` verdict (`"verdict": "skipped"`, never `100.0% OK`), so
+      the zero is now visible and named rather than silent. The gap this
+      clause exists to close is unchanged either way — a stale base still
+      hides real source changes from the judge, honestly-reported SKIP or
+      not — which is why this clause stays. It neither subsumes the
+      fork-point clause above nor is
       subsumed by it: a worktree that has committed nothing of its own has
       `fork == merge-base == HEAD`, which PASSES equality and is caught only
       here — verified against the real function rather than derived. The
@@ -766,8 +777,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       question, which is not the same question as "is there anything to
       judge": a branch that committed work and then REVERTED it has a real
       fork point, an unmoved merge-base and ancestry in neither direction,
-      and still produces an empty diff that a changed-line floor scores as
-      `0/0 = 100%`. No work ESCAPES the judge there, so this is not the
+      and still produces an empty diff that a changed-line floor reports
+      as a distinct `SKIPPED` verdict (post-RW-5; pre-RW-5, `0/0 =
+      100%`). No work ESCAPES the judge there, so this is not the
       false-green class the clauses above exist for; it is another inlet
       into `RG-53`, and refusing costs only a fall back to a base that has
       something to judge. This clause DOES subsume the one above
@@ -888,6 +900,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   it still answers for a lane whose environment failed to resolve. With at
   least one container command lane and nothing to flag it records one
   `[OK]`, so a reader can tell it ran (`R-30a`'s precedent).
+
+- `R-30c` **The profiler check (RG-55/C7).** `doctor` resolves the
+  PROJECT-level `[profile]` settings (a synthetic empty lane — no
+  lane-specific override) and discloses them (`enabled`, `daemon`,
+  `interval`, `damon`, `source`, and any `RUN_GATE_PROFILE` override) as
+  one `[OK]`/`[WARN]` "profile config" line — `WARN` only when profiling
+  is disabled outright, never a `FAIL`: profiling is OPTIONAL
+  infrastructure (`R-43e`'s own degradation ladder), so `doctor` never
+  blocks a project on it being unavailable. When enabled: `[WARN]` naming
+  the SAME `daemon_not_running_reason()` a live run's own warning uses
+  (`R-43e`) when the named daemon container is absent or unreachable;
+  `[OK]` naming `cgprofile`/contract/DAMON versions when it answers. A
+  reachable daemon additionally answers `ctl host` for host- and
+  slice-level pressure (`[WARN]` if unreachable, one `[OK]` line per slice
+  otherwise) — the WORKAROUND `R-29`'s own private-cgroup-namespace WARN
+  points to, since a private namespace (the devcontainer/CI default)
+  cannot read that truth directly but the daemon, outside that namespace,
+  can. RG-58's bare-host `stall_timeout` load-time warning (`_validate_
+  lane`) gets a matching per-lane `[WARN]` here too, from the SAME shared
+  `bare_host_stall_timeout_inert_reason()` both sites use so the two
+  surfaces cannot drift apart.
 
 - `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
   fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
@@ -1082,7 +1115,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     an empty store is an answer, not a failure. `history` joins `doctor`,
     `validate-pointers` and (rev 10) `footprint` as a reserved lane name
     (R-08).
-  - **`R-36j` Schema 2 (RG-55/C4, rev 10).** Every entry (`latest` and each
+  - **`R-36j` Schema 2 (RG-55/C4, rev 10; `method` gains `"rusage"` at
+    rev 42, RG-57/`R-43i`).** Every entry (`latest` and each
     `history` element) gains three fields: `resources` (the contract's
     Summary object, or `null` — unprofiled, disabled, or a profile error),
     `profile_error` (string | null), `profile_ref` (`{daemon, session,
@@ -1578,12 +1612,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   valid as an outer lock (consistent acquisition order) and becomes optional
   for correctness, not required.
 
-- `R-43` **Per-lane resource profiling (RG-55), against the cgroup-profiler
-  daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract 1).** run-gate
-  NEVER depends on the daemon being present: every lane still gets a
-  profile — "daemon" (precise, DAMON hot-set included) when the daemon
-  answers, "basic" (in-lane cgroup sampling) when it does not — and no
-  profile at all only when profiling is disabled outright. A profile never
+- `R-43` **Per-lane resource profiling (RG-55/RG-57), against the
+  cgroup-profiler daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
+  1).** run-gate NEVER depends on the daemon being present: every lane
+  still gets a profile — "daemon" (precise, DAMON hot-set included) when
+  the daemon answers, "basic" (in-lane cgroup sampling, container/exec
+  lanes only) or "rusage" (`getrusage`-based process accounting,
+  bare-host lanes only, RG-57/`R-43i`) when it does not — and no profile
+  at all only when profiling is disabled outright. A profile never
   changes a lane's verdict (`R-04`/`R-36h`'s rule, one more place it
   applies).
   - **`R-43a` Token.** `secrets.token_hex(16)` generated per lane
@@ -1597,9 +1633,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     invocation, `memory.peak_bytes` read exactly from the cgroup's own
     `memory.peak`) vs `container-shared` (exec: a PERSISTENT runner,
     `memory.peak_bytes` is the max of SAMPLED `memory.current` because the
-    runner's own lifetime `memory.peak` predates this invocation).
-    Bare-host lanes are categorically unprofiled (`RG-57`) — there is no
-    container or cgroup of run-gate's own to sample.
+    runner's own lifetime `memory.peak` predates this invocation). A
+    bare-host lane's OWN daemon path is ALSO `container-shared` (`R-43i`,
+    RG-57) — run-gate's own devcontainer, when it is one; its daemon-absent
+    fallback is `method: "rusage"`, not `container`/`container-shared` at
+    all (`scope: null` — rusage is not a cgroup concept, `R-43i`).
   - **`R-43c` Daemon path.** `docker run -d`/`docker exec` → `docker
     inspect` for the real container id → `ctl version` (once per
     invocation) → `ctl start --scope <scope> [--token …] [--damon on|off]
@@ -1663,7 +1701,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     class of knob as `$RUN_GATE_CGROUPFS_ROOT`/`$RUN_GATE_PROC_ROOT` — a CI
     runner without `docker exec` rights to a profiler daemon it will never
     have sets `off`; `on` force-enables even over a lane's own `profile =
-    false`. `doctor`'s "profiler" check (`R-44`) discloses the effective
+    false`. `doctor`'s "profiler" check (`R-30c`) discloses the effective
     `[profile]` settings AND whether `RUN_GATE_PROFILE` is overriding them.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
     `R-09`'s rule): `enabled` (bool, default true), `daemon` (container
@@ -1673,6 +1711,43 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     name, a no-op typo for "delete this key") or a table
     `[lanes.<n>.profile] { enabled, damon }` overriding those two only.
     Unknown keys refuse at load like every other table.
+  - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
+    profiled once `[profile]` is enabled — it is NOT categorically
+    unprofiled (superseded RG-55 v1 text). Daemon path: the target is
+    resolved via `resolve_self_container_id()` — `/etc/hostname`, then a
+    DIRECT `docker inspect` (never `container_state()`, which raises on an
+    ambiguous docker failure and must never be allowed to abort a
+    bare-host lane's own run); a read failure or an inspect miss is the
+    ORDINARY "not running in a container" case, not an error, and degrades
+    to the rusage path with a disclosed reason. On success, scope is
+    ALWAYS `container-shared` (`R-43b`) and the profile session is
+    disclosed as an EXTRA, bare-host-only line: `profile session <id> is
+    DEVCONTAINER-WIDE ... cgroup numbers reflect the whole devcontainer,
+    not lane <name> exclusively` — the daemon-path Summary otherwise flows
+    through `finish_lane_profiling` unchanged. Daemon-absent path (or ANY
+    other failure — `ctl version`/`ctl start` failing): coarse
+    `resource.getrusage(RUSAGE_CHILDREN)` accounting bracketed around the
+    lane's own child, `method: "rusage"`, `scope: null` (rusage measures
+    via `wait4()`, never a cgroup read — no contract `scope` value is
+    honest here), `memory.peak_bytes = ru_maxrss * 1024` (Linux reports
+    KiB), `memory.source: "rusage-maxrss"` — the largest SINGLE child's
+    RSS, NEVER a sum across children, disclosed by `footprint`/`doctor`
+    (`R-44a`) next to any median it produces — `cpu.seconds` from the
+    `ru_utime`+`ru_stime` delta, `cpu.cores_avg` derived; every OTHER field
+    (`pressure`, `faults`, `pids`, `damon`, `host`, `events`, `session`,
+    `daemon`, `target.*`, `samples`, `interval_seconds`) `null` (contract
+    Sec 1.7: absent means unknown, never fabricated). NEVER a `BasicSampler`
+    fallback on this path — no cgroup here is safely attributable to just
+    this lane's own child the way a fresh ephemeral container's cgroup is;
+    a basic-path sample would silently mix in run-gate's own process and
+    every OTHER bare-host lane running concurrently in this devcontainer.
+    `R-36h` containment applies exactly as elsewhere: self-id resolution,
+    `ctl start`, AND the `getrusage` bracket are each individually
+    guarded, so an unexpected exception in any of them degrades to a null
+    or partial record rather than aborting the lane's own run. `RUN_GATE_
+    PROFILE=off`/`profile = false` still opt out entirely (no token, no
+    daemon call, no rusage bracket); `--dry-run` rehearses the plan
+    (`container-shared`) and attempts nothing for real.
 
 - `R-44` **The footprint manifest (RG-55/C5), `run-gate.footprint.json`
   (schema 1, TRACKED — committed, unlike `.run-gate/`).** `footprint [LANE]
@@ -1689,10 +1764,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     silently reported at zero). `runs` counts every history-eligible PASS
     entry (profiled or not); `completed_runs` additionally counts fails
     (the SAME two populations `R-36j`'s `stats.passes`/`stats.completed`
-    report). `scope`/`method` come from the MOST RECENT profiled entry
-    (a lane's profiling method can change — the daemon becomes available,
-    `[profile]` changes — and the manifest should describe how it is
-    profiled NOW). `last_commit`/`last_at` name the single most recent
+    report). `scope`/`method`/`source` (RG-57, C4: `source` pulled from
+    `memory.source` of that same most-recent-profiled entry) come from the
+    MOST RECENT profiled entry (a lane's profiling method can change — the
+    daemon becomes available, `[profile]` changes — and the manifest should
+    describe how it is profiled NOW); `source` is disclosed downstream
+    (`_fmt_footprint_row`, `doctor`'s footprint section) ONLY when it is
+    `"rusage-maxrss"` (`R-43i`) — every other method's row is unchanged.
+    `last_commit`/`last_at` name the single most recent
     completed run overall, pass or fail. The five numeric series
     (`duration_s`, `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,
     `hot_set_bytes` as `p90_median`/`p90_max`, `cpu_cores` as

@@ -12,7 +12,38 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 41  # rev 41: RG-55 wave, package P2 (the run-gate client side
+__revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+# third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
+# where rev 41 shipped them categorically unprofiled. Daemon path: the
+# target is run-gate's OWN process (self container id from /etc/hostname +
+# a direct `docker inspect`, never `container_state()` -- that one raises
+# on an ambiguous docker failure), scope ALWAYS `container-shared`,
+# disclosed as DEVCONTAINER-WIDE; daemon-absent path: coarse
+# `resource.getrusage(RUSAGE_CHILDREN)` accounting (`method: "rusage"`,
+# `memory.source: "rusage-maxrss"` -- the largest SINGLE child, never a
+# sum, `scope: null` since rusage measures via wait4(), not a cgroup read),
+# NEVER a `BasicSampler` fallback on this path (RW-27b: no cgroup here is
+# safely attributable to one lane's own child). This project's own five
+# lanes are all bare-host, so its own `selftest` now records a profile and
+# `footprint --write` stops refusing for this project. RG-60: an exec lane
+# now writes the same inflight record a container lane does (client-death
+# recovery, RW-1's rule extended to the second lane kind that lacked it).
+# RG-59: a live run's daemon-not-running warning names the real cause
+# (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
+# RG-59) instead of reusing "produced unparsable stdout" for two
+# structurally different failures. RG-58: a bare-host lane declaring
+# `stall_timeout` (silently inert -- no watch of any kind exists on that
+# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
+# `R-30c` for the doctor profiler check, R-30's status count, the stale
+# 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,
+# [profile]/[footprint] CONSUMERS schema blocks, a real footprint
+# transcript, RUN_GATE_PROC_ROOT in usage(), two stale cross-references).
+# RW-28: assay.toml's r2 lane sets `budget_per_candidate = "900s"`
+# (mandatory for every R2 lane from now on -- a hung mutation candidate
+# blocks the whole run otherwise, nothing else bounds ONE candidate).
+# rev 41: RG-55 wave, package P2 (the run-gate client side
 # of the cgroup-profiler integration; contract-first against
 # RG55-INTERFACE-CONTRACT.md, alongside P1's daemon in a separate worktree)
 # -- per-lane resource profiling: peak memory (+baseline, p90, DAMON
@@ -7771,6 +7802,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
         "                                (default /sys/fs/cgroup; override in namespaces",
         "                                that hide the host cgroup or in tests)",
+        f"  {PROC_ROOT_ENV_VAR}                 /proc root for the host-PSI disclosure line",
+        "                                and the private-cgroup-namespace check (RG-55)",
+        "                                (default /proc; override in namespaces that hide",
+        "                                the host /proc or in tests)",
         f"  {PROFILE_AMBIENT_ENV_VAR}                 ambient override for [profile] enabled",
         "                                ('on'|'off', RG-55/SPEC R-43g); absent = config",
         "                                decides. 'off' disables profiling for EVERY lane",

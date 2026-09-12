@@ -206,10 +206,15 @@ this ships with zero new noise on `./run-gate.py doctor` here).
 ### Tests
 
 `tests/test_run_gate.py`, new class `TestBareHostStallTimeoutWarning`
-(4 tests): load-time warning present exactly once (naming the lane and
-"bare-host"), config still loads with the key intact; `doctor` WARN with
-the SAME wording, exit code 0 (never FAIL); container-lane and exec-lane
-configs declaring the same key produce NO such warning at load.
+(3 tests — corrected 2026-09-12, RG-61 item 8's own audit: this entry
+originally claimed 4, `git show e698835f` and a direct `ast` count both
+confirm 3 `test_` methods were actually added):
+`test_load_time_warning_present_exactly_once` (warning present exactly
+once, naming the lane and "bare-host"; config still loads with the key
+intact), `test_doctor_warns_too_same_wording` (`doctor` WARN with the SAME
+wording, exit code 0, never FAIL), `test_container_and_exec_lanes_are_
+untouched` (container-lane and exec-lane configs declaring the same key
+produce NO such warning at load).
 
 ### Gate verdicts (targeted)
 
@@ -372,8 +377,10 @@ Implemented BRIEF-1's design exactly as worked out, both sub-paths:
 ### Tests
 
 `tests/test_run_gate.py`:
-- `TestBareHostProfilingWiring` REWRITTEN (3 pre-existing tests updated for
-  the new behavior + 6 new): `test_daemon_absent_falls_back_to_rusage_and_
+- `TestBareHostProfilingWiring` REWRITTEN (7 tests total: 3 pre-existing
+  updated for the new behavior + 4 new — corrected 2026-09-12, RG-61 item
+  8's own audit caught this same entry first claiming "6 new"/9 total; a
+  direct `ast` count over the final file confirms 7): `test_daemon_absent_falls_back_to_rusage_and_
   discloses_why` (the natural, UNMOCKED `resolve_self_container_id` path —
   `fake_docker`'s shim has no `inspect)` case, so real stdout is empty
   regardless of this test process's own `/etc/hostname`, deterministic by
@@ -438,3 +445,68 @@ a continuation of the same session thread under an updated model identity,
 not a different session). C4/C5 use the current reminder's trailer text;
 flagging the visible difference here so a reviewer diffing commit messages
 across this package does not read it as an authorship error.
+
+## Live coordinator message (mid-session, after C4)
+
+Received while investigating the `selftest` lane's own coverage_gate.py
+base — a genuine finding, recorded below before the coordinator's message
+arrived: **run-gate.toml's `[lanes.selftest]` argv hardcodes
+`--base main`** (a literal string inside `tools/coverage_gate.py`'s own
+CLI invocation, NOT a `{base}` token substitution) — this lane does NOT
+delegate its comparison base (R-35: a non-delegating lane REFUSES a
+`--base` flag passed to `./run-gate.py` itself), so there is no way to
+make `./run-gate.py selftest` judge only P4's own changed lines via any
+flag. `git merge-base main HEAD` (before AND after the merge below,
+unaffected by it) is `3b75e1df` — the ROOT of the whole RG-55 wave, not
+`186461de`/`rg55-run-gate-client` — so `tools/coverage_gate.py --base
+main` judges the FULL P0+P1+P2+P4 diff (~2825 changed lines in
+`run-gate.py` alone), not just this package's own increment. This is a
+real, structural fact about the current lane config, not a bug I
+introduced or can fix by passing a flag; recorded here in case the
+"vs `--base rg55-run-gate-client`" phrasing in the handoff/BRIEF-1
+(and the coordinator's own message below) was describing the SPIRIT of
+what should be judged rather than a literal invocation this lane's
+current argv supports. Selftest below is run AS-IS (no `--base`, since
+one would be refused) and the verdict is reported for exactly the diff
+it actually judged.
+
+The coordinator then sent (verbatim, summarized): PID 2415767 exited
+because P2's `assay-r2` hit its 4h lane BUDGET and is being RESUMED as a
+second run on run-gate-project's own `r2` lane — treat run-gate-project's
+`r2` as STILL occupied. Controller ruling RW-39 relaxes sequencing:
+bare-host, non-mutation lanes may run now even while other mutation runs
+are live elsewhere, one lane at a time, `nice -n 19 ionice -c 3`, only
+when memory `full avg10` < 5. Instructed: (1) `git merge
+rg55-run-gate-client` now (P2 not yet merged to `main`; merge `main` later
+when announced); (2) finish C5 (`budget_per_candidate = "900s"` under
+`[lanes.r2.judge.mutation]` in `assay.toml` — already landed there before
+this message arrived, confirmed correctly placed by `tomllib` parsing and
+matching `jobs`/`max_mutants`'s own table; `__revision__ = 42` — already
+landed); (3) run `selftest`, then `assay-r1`, then `assay-r3`, verdicts in
+SEPARATE steps; (4) do NOT start `assay-r2` while `pgrep`/`docker ps`
+shows another run-gate-project mutation run — write "r2 pending" here and
+return to the coordinator with the tip hash + the three verdict lines
+once selftest/r1/r3 are done, rather than attempting r2 myself.
+
+**`git merge rg55-run-gate-client`:** at merge time the branch tip was
+`647a2cc6` (moved well past my `186461de` fork point — RW-38/39/40 +
+a P8 merge + P2's own T6 log entry, none of it in this project's own
+`run-gate-project/` tree except P2's own
+`run-gate-WAVE-RG55-P2-LOG.md`, +106 lines, no overlap with anything C1-C4
+touched). Stashed this session's own uncommitted C5 work first
+(`git stash push -u`), merged cleanly (`git merge rg55-run-gate-client`,
+"Merge made by the 'ort' strategy", zero conflicts — confirmed by the
+diff-stat before merging: exactly one file touched, and it was P2's own),
+then `git stash pop` — restored cleanly, zero conflicts, confirmed by
+`python3 -c "import ast; ast.parse(...)"` and both `tomllib.load()` calls
+on `assay.toml`/`run-gate.toml` succeeding afterward. This merge did NOT
+change the `--base main`/wave-wide-diff finding above (merging a branch
+that itself has not merged to `main` cannot move `merge-base(main,
+HEAD)`).
+
+**r2 pending:** run-gate-project's own `r2` (mutation) lane is occupied by
+P2's SECOND `assay-r2` attempt (resumed after a 4h budget timeout on its
+first). Per the coordinator's explicit instruction, this package does NOT
+attempt `assay-r2` in this session — `pgrep -af 'assay-r2|assay.cli run
+r2'`/`docker ps` will be re-checked and this LOG updated the moment the
+coordinator signals P2's run is clear.

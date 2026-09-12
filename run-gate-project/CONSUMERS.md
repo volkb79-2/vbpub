@@ -54,10 +54,11 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    checklist. Only the last of these is self-enforcing — run-gate refuses
    to write an un-ignored history store and names the remedy ("What each
    lane costs" below).
-6. **Profiling (RG-55) needs nothing from a consumer to be SAFE, but one
-   thing to be PRECISE.** run-gate profiles a lane's peak memory (and CPU,
-   hot-set, stall) with no consumer action at all — a coarse in-lane
-   cgroup sample when no daemon answers, every time, unless
+6. **Profiling (RG-55/RG-57) needs nothing from a consumer to be SAFE, but
+   one thing to be PRECISE.** run-gate profiles EVERY lane kind — container,
+   exec, AND bare-host (RG-57) — with no consumer action at all: a coarse
+   in-lane sample (cgroup-based for container/exec lanes, `getrusage`-based
+   for bare-host, RG-57) when no daemon answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
    path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
    is host infrastructure, started once from the vbpub checkout** — `cd
@@ -72,6 +73,39 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    `.run-gate/` itself (still gitignored, per-instance telemetry): the
    manifest is a distilled, portable BUDGET meant to travel with the
    config it describes, not a fact about this one checkout.
+
+   `RUN_GATE_PROFILE` (`"on"|"off"`, checked BEFORE any config table) is
+   the ambient override: `off` disables profiling for EVERY lane
+   unconditionally — no token, no daemon call, no sampler, regardless of
+   `[profile]`/a lane's own `profile =` — and `on` FORCE-ENABLES it even
+   over a lane's own `profile = false` (checked LAST, after config and the
+   lane override, so it always wins). Any other value refuses at load, by
+   name — a mistyped override is a refusal, never a silent no-op.
+
+   ```toml
+   # run-gate.toml — [profile]: central/project, whole-table shadowing
+   # (the SAME rule [history] uses — a project's own [profile] REPLACES a
+   # central one entirely, never a per-key merge)
+   [profile]
+   enabled = true                # default true; false disables every lane
+                                  # (a lane's own `profile = false` disables
+                                  # just that one; RUN_GATE_PROFILE=on/off
+                                  # overrides both, see above)
+   daemon = "cgprofile-host-daemon"  # the daemon CONTAINER NAME (default shown)
+   interval = "1s"                # the `budget` grammar; basic/daemon sample tick
+   damon = true                   # default true; DAMON hot-set classification
+                                  # when the daemon supports it (basic-path
+                                  # sampling never has DAMON data either way)
+
+   # run-gate.toml — [footprint]: same whole-table shadowing rule; consumed
+   # by `doctor`'s staleness/drift check and by `footprint --write`
+   [footprint]
+   tolerance_pct = 25             # default 25; doctor WARNs when the live
+                                  # history median peak differs from the
+                                  # committed manifest by more than this
+   max_age_days = 30              # default 30; doctor WARNs when the
+                                  # manifest's distilled_at is older than this
+   ```
 
 ## Central defaults (vbpub monorepo)
 
