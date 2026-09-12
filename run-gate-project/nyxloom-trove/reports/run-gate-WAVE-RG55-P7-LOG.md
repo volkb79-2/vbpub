@@ -851,3 +851,98 @@ exists, in a small follow-up entry-only commit).
   appeared in `docker ps`. Gate containers estate-wide at the time: 2
   (`flamboyant_nobel` + P1's own long-running `run-gate-vbpub-r2-680904-
   ...`) — at, not over, the `<= 2` limit.
+
+### `95d02f50` — session 8 gate finding fix: pyflakes unused imports + RecursionError guard (liveness.py's 2 untrusted JSON parse sites)
+
+- Files: `src/assay/cli.py`, `src/assay/liveness.py`,
+  `tests/test_verify_hung_bucket.py`, `tests/test_mutation_hung_bucket.py`.
+- The real gate's first full run (captured by session 7, read by session 8
+  in a separate step from any launch) ended RED: `5 failed, 4681 passed,
+  20 skipped`. This commit fixes 2 of the 5, both genuinely new gaps this
+  package's own B091 work introduced, neither previously exercised by A6's
+  deferred sweep (`mutation*/runner*/verdict*/verify*/cli*` only):
+  `test_distribution_gate.py::test_the_shipped_source_tree_is_pyflakes_clean`
+  and
+  `test_untrusted_json_parse_sweep.py::test_every_untrusted_json_parse_site_catches_RecursionError`.
+- pyflakes: 5 unused imports, each confirmed zero call sites before
+  removal (`grep` first) — `cli.py`'s `MUTATION_BUCKETS` (the runner-side
+  validation in `mutation.py` is the one live consumer), `liveness.py`'s
+  `TYPE_CHECKING`-only `ProcessRunner` (named only in a Sphinx `:class:`
+  docstring cross-reference, which pyflakes does not parse), `pytest` in
+  both `test_verify_hung_bucket.py` and `test_mutation_hung_bucket.py`,
+  and `pathlib.PurePosixPath` in the latter.
+- RecursionError sweep: `liveness.py`'s `_iter_test_events` and
+  `_read_events_progress` each parse the materialized pytest plugin's own
+  NDJSON side-file events, written by a process running inside the
+  CANDIDATE's (a consumer project's) own interpreter — untrusted per this
+  project's own bar (B072/B074/`provenance.py`: assay's own bytes vs a
+  consumer's). Both caught only `ValueError`; `json.loads`'s recursive-
+  descent parser raises `RecursionError` (a `RuntimeError` subclass, not a
+  `ValueError`) on a deeply-nested but well-formed document. Widened both
+  to `except (ValueError, RecursionError):`, matching the one-line shape
+  already used at every other guarded site in this codebase.
+- Verified: `python3 -m pyflakes src/assay <tests, fixtures/ excluded>`
+  clean (matches `run_lint_phase`'s own scope exactly, confirmed by
+  reading `tools/tester-unified-gate.sh` first); both previously-red tests
+  green alone; `test_liveness.py` + `test_liveness_proc_helpers.py` +
+  `test_liveness_runner_monitor.py` + `test_mutation_hung_bucket.py` +
+  `test_verify_hung_bucket.py` + `test_runner_run_lane_r2.py` +
+  `test_runner_execute.py` + `test_mutation_progress_budget_plan.py` +
+  `test_config_mutation.py` + `test_verdict_conformance.py` +
+  `test_errors.py` (410 tests) green with `liveness.py` at 100%
+  line+branch coverage (`--cov=assay.liveness --cov-branch`);
+  `test_cli_run.py` + `test_cli_lanes(_json).py` +
+  `test_cli_provenance_and_request_base.py` (106 tests) green.
+- Tests-first: n/a (findings from the real gate's own first run; fixes are
+  a lint cleanup and a guard widening, not new production behavior).
+- HOST LOAD: `/proc/pressure/memory` `full avg10` 0.08-2.13 throughout
+  this commit's own work (well under 5.0); `nice -n19`/`ionice -c3` for
+  every pytest invocation; serial.
+
+### `ee24ced6` — session 8 gate finding fix: test_standalone.py's real-wheel expected-artifact drift (3 R2 tests)
+
+- Files: `tests/test_standalone.py`.
+- The remaining 3 of the gate's 5 failures, all in the same file, all the
+  same shape: `_expected_r2_artifact`'s hand-built expected documents were
+  stale against two of this package's own additive fields, because none
+  of `test_standalone.py`'s real-wheel R2 tests were ever run (by any
+  session, in or out of the gate) since A1/A3 shipped them.
+  1. A3's `hung` bucket — added `"hung": []` to the 3 affected
+     `r2_claim["mutation"]` literals (nothing in these fixtures ever
+     hangs).
+  2. RW-36's `judgment.r2.liveness` record (`{active, reason, plugin}`,
+     present unconditionally) — added `liveness_active`/`liveness_reason`/
+     `liveness_plugin` parameters to `_expected_r2_artifact`, defaulted to
+     the injection rule's own "off" shape (`argv-does-not-invoke-pytest`),
+     since every lane this module's real-wheel tests run is a plain shell
+     script (`grep`, `exit 0`, …), never pytest.
+  3. A1's `judgment.r2.budget_per_candidate_derived_s` — measured from
+     THIS run's own real baseline wall-clock time, so no fixture can
+     hand-inject it (same class as the pre-existing top-level `volatile`
+     set: `assay_version`/`started`/`ended`). `_assert_complete` now pops
+     it from a COPY of the filtered real document (never mutating the
+     caller's own `real`/nested dicts) after sanity-checking it
+     (`is not None` implied by presence, `> 0`, `math.isfinite`) when
+     present — matching `test_runner_run_lane_r2.py`'s own existing
+     `is not None`/`> 0` precedent for the same field — and leaves it
+     genuinely absent (no check) when `candidate_count == 0`, since no
+     baseline-derived budget is ever computed in that case.
+  `test_a_real_r2_lane_propagates_an_adverse_baseline_verbatim` (the
+  module's 4th `_expected_r2_artifact` caller) needed no change — it
+  passes `operators=None`, so `_expected_r2_artifact` never builds a
+  `judgment` at all for it, which is also why it was never one of the
+  five failures.
+- Verified: all three previously-red tests green alone (`-k "... or ... or
+  ..."`, `-vv`, full diffs read directly — the `-q`/`-vv` combination
+  otherwise truncates; the CI log's own truncation is why this session
+  reproduced locally rather than trusting the captured log's shortened
+  diff); the whole `test_standalone.py` file green (20 passed, 1 skipped),
+  run both before this commit (reproducing the exact 3 CI failures) and
+  after (all green).
+- Tests-first: n/a (test-fixture-only fix responding to a real gate
+  failure against genuinely additive production fields, not new
+  production behavior).
+- HOST LOAD: `/proc/pressure/memory` `full avg10` stayed under 2.2
+  throughout; `nice -n19`/`ionice -c3`; serial; each `standalone` fixture
+  build (session-scoped, one wheel per pytest process) completed in
+  seconds against the offline `--no-index` closure already present.

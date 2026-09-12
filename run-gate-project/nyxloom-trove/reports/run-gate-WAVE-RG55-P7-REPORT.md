@@ -818,3 +818,63 @@ reviewer should ask whether there are OTHER places (not just `nyxloom-
 trove/carve-assets/`) that hand-mirror schema/vocabulary content B091
 touched and were never gate-checked this session because they sit outside
 both the regression-sweep glob AND the one gate lane this package has.
+
+## Session 8 — gate repairs (the real gate's FIRST run, 5 failed / 4681 passed / 20 skipped)
+
+A6 (session 7) launched the real registered gate for the first time in the
+package's life, fixed the one finding it observed live (W7 schema drift,
+`b3f31506`), then cut at BRIEF-7 with the gate still running its long
+self-hosted container phase. That run finished RED after the cut:
+`5 failed, 4681 passed, 20 skipped` (log captured at
+`.../scratchpad/p7-gate2.log`, read in a separate step from any launch).
+All five were genuine, previously-undetected gaps — none were flaky or
+environment-only — because the two files that caught them
+(`test_distribution_gate.py`, `test_untrusted_json_parse_sweep.py`) and the
+real-wheel `test_standalone.py` R2 tests were never part of A6's own
+2077-test deferred sweep (`mutation*/runner*/verdict*/verify*/cli*` only).
+
+### Gate repairs table
+
+| # | Failing test | Root cause | Fix | Commit | Proof |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `test_distribution_gate.py::test_the_shipped_source_tree_is_pyflakes_clean` | 5 real unused imports: `cli.py`'s `MUTATION_BUCKETS` (dead -- runner-side validation is the one live consumer), `liveness.py`'s `TYPE_CHECKING`-only `ProcessRunner` (named only in a docstring, pyflakes doesn't parse those), `pytest` in `test_verify_hung_bucket.py` and `test_mutation_hung_bucket.py`, `pathlib.PurePosixPath` in the latter -- all confirmed zero call sites before removal | Removed each dead name from its import line | `95d02f50` | `python3 -m pyflakes src/assay <tests-excluding-fixtures>` clean (matches `run_lint_phase`'s own scope exactly); `test_the_shipped_source_tree_is_pyflakes_clean` green alone |
+| 2 | `test_standalone.py::test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wheel` | `_expected_r2_artifact`'s hand-built `judgment.r2`/`mutation` dicts were stale against two of this package's own additive fields: A3's `hung` bucket (never added to any `r2_claim["mutation"]` literal) and RW-36's `judgment.r2.liveness` record (never emitted at all) -- neither test file was ever run against the real wheel until this gate's first run | Added `"hung": []` to the 3 affected `r2_claim["mutation"]` literals; added `liveness_active`/`liveness_reason`/`liveness_plugin` params to `_expected_r2_artifact`, defaulted to the injection rule's "off" shape (every lane this module runs is a plain shell script) | `ee24ced6` | green alone and as part of the full `test_standalone.py` (20 passed, 1 skipped) |
+| 3 | `test_standalone.py::test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive` | same as #2, plus: `judgment.r2.budget_per_candidate_derived_s` (A1) is measured from the run's own real baseline wall-clock time -- a value no fixture can hand-inject, same class as the existing `volatile` top-level fields (`assay_version`/`started`/`ended`), just nested under `judgment`; genuinely absent here (`candidate_count == 0`, no baseline-derived budget computed) | Same `hung`/`liveness` fix as #2; `_assert_complete` now pops+sanity-checks (`is not None`/`> 0`/finite, matching `test_runner_run_lane_r2.py`'s existing precedent) `judgment.r2.budget_per_candidate_derived_s` from a COPY before the exact-match assertion, instead of requiring it be hand-stated | `ee24ced6` | green alone and as part of the full `test_standalone.py` |
+| 4 | `test_standalone.py::test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket` | same as #3, with `budget_per_candidate_derived_s` genuinely present (`candidate_count == 2`) | same fix as #3 | `ee24ced6` | green alone and as part of the full `test_standalone.py` |
+| 5 | `test_untrusted_json_parse_sweep.py::test_every_untrusted_json_parse_site_catches_RecursionError` | `liveness.py`'s `_iter_test_events` and `_read_events_progress` each parse the materialized pytest plugin's own NDJSON side-file events -- written by a process running inside the CANDIDATE's (a consumer project's) own interpreter, untrusted per this project's own bar (B072/B074/`provenance.py`) -- and each caught only `ValueError`, missing `RecursionError` (`json.loads`'s recursive-descent parser hits the real C-stack boundary on a deeply-nested but well-formed document; `RecursionError` is a `RuntimeError` subclass, not a `ValueError`) | Widened both `except ValueError:` to `except (ValueError, RecursionError):`, the same one-line shape B072/B074 already established at every other guarded site | `95d02f50` | the sweep test green alone (13 passed); zero remaining unguarded sites for `liveness.py`'s two real `json.loads` call sites |
+
+### Verification beyond the five tests themselves
+
+- `liveness.py` at **100% line+branch coverage**
+  (`--cov=assay.liveness --cov-branch`) against the full liveness-relevant
+  suite: `test_liveness.py`, `test_liveness_proc_helpers.py`,
+  `test_liveness_runner_monitor.py`, `test_mutation_hung_bucket.py`,
+  `test_verify_hung_bucket.py`, `test_runner_run_lane_r2.py`,
+  `test_runner_execute.py`, `test_mutation_progress_budget_plan.py`,
+  `test_config_mutation.py`, `test_verdict_conformance.py`,
+  `test_errors.py` — 410 passed.
+- `cli.py`'s changed import verified against its own direct suites:
+  `test_cli_run.py`, `test_cli_lanes.py`, `test_cli_lanes_json.py`,
+  `test_cli_provenance_and_request_base.py` — 106 passed.
+- No test was weakened, skipped, or had an assertion removed to reach
+  green; every fix is a production-code or test-fixture correction against
+  a real, previously-undetected drift.
+
+### Why the deferred sweep missed all five
+
+A6's own 2077-test sweep (`mutation*/runner*/verdict*/verify*/cli*`) never
+included `test_distribution_gate.py`, `test_untrusted_json_parse_sweep.py`,
+or `test_standalone.py` — the three files that caught all five findings
+here. All three build/install a real wheel or shell out to a real lint
+venv, which is presumably why they were excluded from a "fast" deferred
+sweep; the cost is that this gate's very first real run was also the
+first time this package's own B091 work ran against any of them. A future
+session doing a "deferred sweep" for a similarly-scoped package should
+either include these wheel/lint-venv-building files explicitly or record
+them as a known, deliberate gap rather than an oversight.
+
+### Gate re-run
+
+Committed at `ee24ced6`. Relaunched `./run-gate.py tester-unified` from
+this tip after a PSI check (see the gate verdict below / this session's
+own return message for the outcome and elapsed time).
