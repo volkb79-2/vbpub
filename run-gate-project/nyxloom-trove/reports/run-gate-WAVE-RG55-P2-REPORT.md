@@ -873,6 +873,40 @@ reported yet at time of writing) when this REPORT section was drafted;
 this file is updated again once it completes, or with a
 budget-exhaustion partial result if it does not finish within 4h.
 
+**RW-25 stop (session 7 close-out): partial verdict, not a full run.**
+The tip this run was mutating (`62d9a66a`) went stale once the parallel
+review round landed real fixes (tip `a7a84e09`, ACCEPTed) — at the
+measured pace (67/256 candidates in ~2h42m, the whole pytest suite
+re-run per candidate against `source_roots = ["."]`) the stale run would
+have needed another ~9h to finish testing code already superseded.
+Controller ruling RW-25 stopped it here (graceful `SIGINT` to the assay
+process itself, state flushed, no leftover process) rather than let it
+keep grinding on a stale target; a close-out implementer runs r2 ONE
+more time on the close-out tip with `jobs = 2`, resuming from
+`.assay/mutation-state/` (left in place, 67 per-candidate files).
+
+**Partial tally (read from `.assay/progress-r2.jsonl`; no
+`verdict-r2.json` was ever written — the interrupt landed before assay's
+verdict-assembly step): 67/256 candidates judged, 57 killed, 10
+survived.** 9 of the 10 survivors were killed with new, direct unit
+tests this session (committed as they were found, commits `d57c3634`
+through `098cf24c`); the 10th (`ProfilerClient._ctl`'s `text=True`
+keyword, candidate 50, run-gate.py:1010) is justified rather than killed
+— `json.loads()` accepts both `str`/`bytes`, and the only observable
+difference (bytes-repr in `stderr_tail`'s f-string) is invisible whenever
+stderr is empty, the only case the current test shim can produce; the
+snapshot under test also predates this session's own concurrent
+`errors="replace"`/broadened-`except` fix, which already makes this
+distinction moot on the close-out tip. Full per-candidate table (id,
+file:line, operator, description, disposition) plus the two proactive
+sibling tests added beyond the observed survivors is in `LOG.md`'s
+"Session 7 close: stale r2 run stopped under RW-25" section — not
+duplicated here. No production code was changed to kill any of the 9;
+every fix was a genuine missing test, several for pre-existing (pre-
+session-7) code that RW-8's whole-project mutation scope surfaced for
+the first time. 189 candidates remain unjudged — the close-out
+implementer's job, not re-derived or assumed here.
+
 ## Decision asks
 
 **C2's `[lanes.r1]`/`[lanes.r2]` `judge.source_roots` scoping —

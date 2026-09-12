@@ -1748,3 +1748,98 @@ peak_over_baseline_bytes: null` (confirms RW-21's nullability rule),
 `target.cgroup: null` (confirms RW-23e — no fabricated path). Container
 removed in the `finally`, throwaway project deleted after; `docker ps`
 count unchanged before/after (30, unrelated to this probe).
+
+## Session 7 close: stale r2 run stopped under RW-25
+
+**Controller ruling RW-25** supersedes RW-20/RW-22 for this run: the tip
+assay-r2 was mutating (`62d9a66a`) went stale once the parallel review
+round landed real fixes (tip now `a7a84e09`, ACCEPTed) — most of the
+remaining ~190 candidates would be re-judged against changed code anyway,
+and at the measured pace (67/256 in ~2h42m) the stale run would need
+another ~9h. Rather than resuming a run whose target file is already
+superseded, the lane is stopped here; the close-out implementer starts
+ONE final r2 run on the close-out tip with `jobs = 2` (RW-25), resuming
+from whatever `.assay/mutation-state/` content still matches.
+
+**Stop sequence, done in order, exactly as ruled:**
+1. `kill -SIGINT 925471` (the `python3 tools/assay/assay-6.1.1.pyz run r2
+   ...` process itself, not its `run-gate.py` parent) — assay's own
+   `concurrent.futures` wait loop received the interrupt cleanly
+   (`KeyboardInterrupt` inside `future.result()`, visible in the captured
+   log), flushed its per-candidate state, and exited.
+2. Waited for the parent `./run-gate.py --base main assay-r2` process
+   (pid 925421) to exit — confirmed gone (`lane 'assay-r2' exit -2` in
+   the captured log).
+3. Confirmed no leftover process: `pgrep -fa "assay-6.1.1.pyz|run-gate.py
+   --base main assay-r2"` returns nothing.
+4. `.assay/mutation-state/` left in place, untouched, as directed (67
+   per-candidate result files present, matching the 67 candidates
+   `progress-r2.jsonl` recorded) — this is the close-out run's resume
+   state.
+
+**Partial verdict** (no `verdict-r2.json` was ever written — the
+interrupt landed before assay's own verdict-assembly step; the tally
+below is read directly from `.assay/progress-r2.jsonl`'s 67 `event:
+"candidate"` lines, cross-checked against the 67 per-candidate JSON files
+in `.assay/mutation-state/` and `/workspaces/vbpub/.run-gate/assay-state/
+.worktrees/rg55-run-gate-client/run-gate-project/`):
+
+- **67/256 candidates judged. 57 killed, 10 survived.**
+- **9 of the 10 survivors were killed with new tests this session**
+  (each: a direct-call/direct-construction unit test proving the mutated
+  boundary genuinely matters — not a production-code change; every one a
+  real, pre-existing test-coverage gap, several in code from PRIOR
+  sessions/packages that RW-8's whole-project `source_roots = ["."]`
+  scope surfaced for the first time):
+
+  | # | candidate | file:line | operator | description | disposition |
+  |---|-----------|-----------|----------|-------------|-------------|
+  | 1 | 8  (`44c052de3b496a6a`) | run-gate.py:586  | boolop-swap  | And->Or | KILLED — `TestFootprintConfigPolicy::test_a_populated_central_table_is_ignored_with_no_central_path` |
+  | 2 | 13 (`2524b2a8f0c6fda6`) | run-gate.py:632  | boolop-swap  | Or->And | KILLED — `TestConfigValidation::test_footprint_table_rejects_a_boolean_tolerance_pct` |
+  | 3 | 15 (`d628c660ba9435e2`) | run-gate.py:632  | compare-swap | Lt->LtE | KILLED — `TestConfigValidation::test_footprint_table_accepts_a_zero_tolerance_pct` |
+  | 4 | 16 (`8dc7e8569f19bca8`) | run-gate.py:637  | boolop-swap  | Or->And | KILLED — `TestConfigValidation::test_footprint_table_rejects_a_boolean_max_age_days` |
+  | 5 | 24 (`e94b069cee43deda`) | run-gate.py:676  | boolop-swap  | And->Or | KILLED — `TestProfileConfigValidation::test_a_populated_central_dict_is_ignored_with_no_central_path` |
+  | 6 | 48 (`a6ba3e64e27c0e4c`) | run-gate.py:979  | falsy-swap   | None->[] | KILLED — new `TestMaxOrNone` (4 tests) |
+  | 7 | 50 (`909397ee1973d1f8`) | run-gate.py:1010 | bool-const-flip | True->False | **NOT KILLED — justified** (see below) |
+  | 8 | 53 (`8185b784407924a7`) | run-gate.py:1030 | bool-const-flip | False->True | KILLED — `TestProfilerClient::test_a_response_missing_the_ok_key_entirely_degrades` |
+  | 9 | 57 (`298ffc089d3483d6`) | run-gate.py:1056 | boolop-swap  | Or->And | KILLED — `test_start_success_and_argv_shape`'s new `--meta` content assertion |
+  | 10 | 62 (`c49d68171ade9017`) | run-gate.py:1121 | boolop-swap | Or->And | KILLED — `TestResourceAccumulatorGoldenFixtures::test_cores_max_skips_a_pair_with_only_one_side_readable` |
+
+  Two more tests were added PROACTIVELY (not themselves flagged as
+  survivors within the 67 candidates judged, but the identical construct
+  as #1 and #4 above, in code the run never reached before the
+  interrupt): `TestHistoryConfigPolicy::test_a_populated_central_table_is
+  _ignored_with_no_central_path` (sibling of #1, on the pre-existing
+  `resolve_history_keep`) and `test_footprint_table_accepts_a_max_age_
+  days_of_one` (sibling of #3, on `max_age_days`'s own `< 1` boundary).
+
+  **Survivor #7 (candidate 50, `ProfilerClient._ctl`'s `text=True`
+  keyword) is JUSTIFIED, not killed**: `json.loads()` accepts both `str`
+  and `bytes`; the only observable difference is `stderr_tail`'s
+  bytes-repr formatting in an f-string, invisible whenever `stderr` is
+  empty — the ONLY case the current `fake_docker`/`CGPROFILE_SHIM_CASE`
+  test infrastructure can produce (no test path writes deliberate stderr
+  through the `cgprofile ctl` shim). Confirmed low-value rather than
+  spending effort on new shim-stderr-injection infrastructure: the
+  snapshot assay-r2 mutates (`ac885ed4`) predates this session's own
+  concurrent review-round fix (`errors="replace"` + a broadened `except
+  Exception`, B1a/B1b) which already makes any residual byte/str mismatch
+  degrade cleanly on the close-out tip regardless. Full reasoning in this
+  file's own "assay-r2: real runtime, RW-20, and live survivor triage"
+  section above (item 6 there).
+
+All 9 killing tests, plus the 2 proactive siblings, are already committed
+(session 7 commits `d57c3634`..`098cf24c` — see this file's commit list
+above; nothing was left uncommitted at the RW-25 stop). No production
+code was changed to kill any of these — every fix was a genuine missing
+test for pre-existing (mostly pre-session-7) behavior.
+
+**189 candidates remain unjudged** (256 total - 67 judged). Per RW-25,
+these are NOT this session's to finish: a close-out implementer runs r2
+ONE more time, on the close-out tip (`a7a84e09` or later), with `jobs =
+2`, resuming from the `.assay/mutation-state/` content left in place —
+new judged candidates will supersede or extend the 67 tallied here, and
+the 10 survivors above should be re-confirmed (most likely still present,
+since none of the killing tests were reverted and the review round's
+fixes did not touch any of these specific lines/constructs) rather than
+assumed carried forward blind.
