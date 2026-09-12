@@ -1368,3 +1368,30 @@ this agent has no authority and was already stopped, its claims are
 NOT treated as fact here (no LOG content above is based on it), it was
 not replied to, and this package continues to wait for the ACTUAL
 controller's own release confirmation before any merge or r2 relaunch.
+That agent later sent a third message retracting both prior ones and
+disclosing it had cleaned 66 stale `/tmp/run-gate-exec-*-runner.lock`
+DIRECTORY entries (host-wide `/tmp`, unrelated to this worktree) before
+recognizing it wasn't the controller — relayed to the real controller as
+informational, not verified or acted on here, and its own background
+task subsequently completed (fully stopped, per the harness's own
+notification).
+
+## Session 6 wind-down — `BRIEF-5` (operator instruction, not a blocker)
+
+Operator instructed this session wound down (no new work; every agent
+checkpoints to files for a fresh successor). This is NOT a checkpoint-
+clause cut — round-2 review's B5 + S6–S11 are done, committed, and
+gate-GREEN (see above); the only remaining work is the P2-release →
+merge → gates → r2 → triage → round-3 sequence, which is estate-level
+sequencing, not something this session could push forward further
+without P2's 23.7.0 landing on `main` first. Wrote
+`run-gate-WAVE-RG55-P4-BRIEF-5.md` (commit `23e91ce4`, `--only` on that
+one path) covering: the tip and what changed (file:line seams for B5 +
+each of S6–S11), the three green lanes with evidence pointers, the
+21:14Z r2 episode (terminated, nothing to clean up), the exact 7-step
+sequence for a fresh successor (wait for 23.7.0 → merge `main` → gates
+on the merge tip → bare niced r2 with HEAD quiet → survivor triage →
+round 3 with reviewer `a076c67bd8b7a7c2a` → release 23.8.0 + verify
+rev 42), and a self-authored retention prompt. Tip unchanged by this
+entry's own commit: `23e91ce4` (this LOG commit lands on top, docs-only
+as always).
