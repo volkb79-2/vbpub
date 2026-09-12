@@ -452,11 +452,29 @@ never a silent edit to the contract file.
   P5. Goldens: P6 adds one fixture per new shape, P5 verifies bytes; v1
   goldens stay byte-identical. Design doc §5 now points here.
 
+- **RW-35 (P6 dispatched now; three settled details):** P6 (cgprofile
+  follow-ups, handoff `scripts/cgroup-profiler/nyxloom-trove/reports/
+  cgprofile-P6-FOLLOWUPS-HANDOFF.md`) starts from the P1 branch tip
+  before P1 merges (targeted pytest only while the two mutation runs live;
+  merges `rg55-profiler-daemon`/`main` when told). (a) D-25 whitelist
+  gains ONE non-leaf write: `+memory +cpu +pids` into the gates slice's
+  `cgroup.subtree_control` (never `-`), because a manually created leaf
+  cannot take `memory.high` unless its parent delegates the controller.
+  (b) Socket group = the mounted directory's gid (the host `tmpfiles.d`
+  entry is the source of truth; a root:root directory means root-only
+  socket until host-setup is installed — exec unaffected). (c) The
+  singleton `cgprofile-host-daemon` is the controller's; P6 probes with
+  its own `cgprofile-p6-probe` instance on a scratch `/tmp/cgprofile-p6`
+  mount (CIU-104 name-collision lesson applied). The socket carrier is
+  backlog row CP-2 (already filed by P0); CP-8 watch and CP-9 placement
+  are filed by P6.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
+| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); release cgprofile 1.1.0 after review |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 dispatched ~15:05Z (RW-33) for A2–A6 |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 folded (RW-32), round 2 pending; operator installs on the host |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
