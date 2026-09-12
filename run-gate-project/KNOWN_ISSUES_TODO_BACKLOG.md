@@ -4086,29 +4086,60 @@ Both directions landed together, in `tools/coverage_gate.py`:
   and `branch_partial_lines` (which uncovered lines ran but had a missed
   arm, vs. never ran at all); the CLI's OK/FAIL lines print the branch
   tally and mark branch-partial lines `(branch)` in the FAIL listing.
-- `total_changed_exec == 0` is now REFUSED by the CLI (`main()`, exit 2)
-  unless `--allow-empty-diff` is passed, naming the resolved base, HEAD,
-  and the three known routes to a false 0/0 named above (merge-commit
-  first-parent, stale base ref, reverted work). `evaluate()` itself is
-  UNCHANGED in this respect (still a pure 0/0-is-100% classifier) — the
-  refusal is deliberately CLI-level so existing direct callers of
-  `evaluate()` are unaffected; `_check_nonempty_diff` is the small pure
-  helper the CLI calls, tested independently of git/subprocess.
-  `run-gate.toml`'s `selftest` argv is UNCHANGED (still no
-  `--allow-empty-diff`) — a 0/0 selftest now goes red here too, like every
-  other consumer.
+- `total_changed_exec == 0` is now reported as **SKIPPED** by the CLI
+  (`main()`, exit 0) — `Verdict.verdict == "skipped"`, never `"ok"`, never
+  a bare `100.0%` line — naming the resolved base and how HEAD relates to
+  it. `evaluate()` itself is UNCHANGED in this respect (still a pure
+  0/0-is-100% classifier producing the same `pct`/`passed`; only the new
+  `Verdict.skipped`/`.verdict` fields distinguish the case) — the SKIPPED
+  reporting is deliberately CLI-level so existing direct callers of
+  `evaluate()` are unaffected; `_base_relation` (git ancestry/count) and
+  `_empty_diff_notice` (pure formatter) are the two small helpers the CLI
+  calls, each tested independently. Hard refusal (exit 2, naming the three
+  known routes to a false 0/0) is OPT-IN via the new `--refuse-empty-diff`
+  flag; `--allow-empty-diff` no longer exists. `run-gate.toml`'s `selftest`
+  argv is UNCHANGED — on `main` itself it now prints SKIPPED and exits 0;
+  on a branch whose diff touches `run-gate.py` it judges those lines
+  normally, same as every other consumer.
 
-Evidence: `tests/test_coverage_gate.py` grew from 8 to 20 tests (branch-
-partial-line uncovered/covered pairs, branch totals scoped to changed lines
-only, malformed branch-arc shape rejection, `--allow-empty-diff` default +
-override, an end-to-end `main()` pair proving the refusal AND the
-override-allowed pass, and the CLI's branch-note text) — `pytest
-tests/test_coverage_gate.py -q` → 20 passed. **BREAKING** for every
-consumer of the vendored judge (topos pattern, RG-53's own analysis above):
-re-copying `tools/coverage_gate.py` picks up both stricter semantics; see
-`CHANGES.md` `[Unreleased]` for the consumer-facing note. SPEC amendment
-(a rule id under the R-33 diff-coverage floor family) lands with this
-wave's other spec/backlog pass.
+### Rework — RW-5 (2026-09-12, RG-55 wave controller ruling)
+
+This entry's FIRST landing (above) made a `changed_executable == 0`
+verdict a hard refusal (exit 2) by default, gated behind
+`--allow-empty-diff`. That put THIS PROJECT'S OWN `selftest` lane
+permanently red on `main` (merge-base(main, HEAD) == HEAD there, so the
+diff-coverage phase is always 0/0) and would have blocked every
+`cmru release` of this project, whose release gate IS the selftest lane.
+RW-5 corrected the design: the false-green hazard RG-51/RG-54 describe is
+a WRONG BASE hiding real source changes, and the judge cannot tell that
+apart from "this change genuinely touches no source line under
+`--source`" by the zero alone — so instead of either silently passing
+(the pre-RG-53 bug) or refusing outright (this entry's first landing),
+the zero is made VISIBLE and NAMED: a distinct `diff-coverage SKIPPED: ...`
+stdout line (exit 0) naming the resolved base and the exact base/HEAD
+relationship (`HEAD is on the base`, or `HEAD is N commits ahead of the
+base; the diff touches no executable source line`). The hard refusal
+becomes opt-in (`--refuse-empty-diff`) for a consumer that wants it. The
+wrong-base guard for a case that DOES matter stays RG-51's fork-point
+rule, unaffected by this rework.
+
+Evidence: `tests/test_coverage_gate.py` grew from 20 to 23 tests (net —
+5 tests from the first landing tied to `--allow-empty-diff`/
+`_check_nonempty_diff` were removed and replaced with 8 covering the new
+design: `Verdict.verdict` tri-state for both the 0/0 and nonzero cases,
+`_base_relation`'s two shapes against a real tmp_path repo, the
+`_empty_diff_notice` pure formatter for both the default SKIPPED and
+`--refuse-empty-diff` outcomes, an end-to-end `main()` pair proving the
+default exit-0/stdout SKIPPED behavior and the opt-in exit-2/stderr
+refusal, and the arg-parser default for the renamed flag) — `pytest
+tests/test_coverage_gate.py -q` → 23 passed. **BREAKING** for every
+consumer of the vendored judge (topos pattern, RG-53's own analysis
+above): re-copying `tools/coverage_gate.py` picks up all three semantic
+changes (branch awareness, the SKIPPED 0/0 design, and the renamed/
+inverted-default empty-diff flag); see `CHANGES.md` `[Unreleased]` for the
+consumer-facing note. SPEC amendment (a rule id under the R-33
+diff-coverage floor family) lands with this wave's other spec/backlog
+pass (C8).
 
 ## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
 

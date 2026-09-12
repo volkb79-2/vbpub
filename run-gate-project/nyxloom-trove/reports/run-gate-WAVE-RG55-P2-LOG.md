@@ -145,3 +145,126 @@ lanes: vendoring a `.pyz`, `assay.toml`, `run-gate.toml` lane tables,
 deliverable) are substantial enough that starting them without a fresh
 budget risks a worse cut point later. See
 `run-gate-WAVE-RG55-P2-BRIEF-1.md` for the successor's continuation brief.
+
+## Session 2 (fresh successor) — orientation
+
+Read, per BRIEF-1's lean-orientation instruction: BRIEF-1 (full), this
+LOG/REPORT (full, both already above), the handoff (full, re-read fresh
+per the dispatch prompt), `RG55-INTERFACE-CONTRACT.md` and
+`fixtures/rg55/README.md` were NOT re-read this session (the dispatch
+prompt's own instructions said the brief already distills what the
+predecessor learned; C2/C3 have not started yet, so the contract/fixtures
+detail they'd inform is deferred to when C2/C3 actually start). Then
+`tools/coverage_gate.py` (whole, current state) and
+`tests/test_coverage_gate.py` (targeted regions: the `--allow-empty-diff`/
+`_check_nonempty_diff` tests) to plan the RW-5 rework, plus
+`run-gate.toml`'s `selftest` lane argv (confirmed unchanged, no
+allow/refuse flag) and a repo-wide grep for `allow-empty-diff`/
+`allow_empty_diff` to find every reference needing an update (found: the
+tool itself, its test file, `CHANGES.md`, `KNOWN_ISSUES_TODO_BACKLOG.md`,
+and this session's own prior-session records — the WAVE-PLAN document was
+deliberately left untouched, it is FROZEN P0 material superseded by the
+CONTROLLER-LOG's RW-n rulings, not this package's file to edit).
+
+Orientation call count: ~10 tool calls before the first edit (lean, per
+the dispatch prompt's explicit instruction not to re-read what the brief
+already distilled).
+
+## Commit 2 — C1-rework (RW-5)
+
+Per the controller's RW-5 ruling (quoted in full in the dispatch prompt):
+the RG-53 landing's `changed_executable == 0` → refuse (exit 2) unless
+`--allow-empty-diff` made `./run-gate.py selftest` on `main` itself
+permanently red (merge-base(main, HEAD) == HEAD there → 0/0, every time)
+and would have blocked every `cmru release` of this project. Reworked to:
+0/0 → **SKIPPED**, exit 0, a distinct stdout line naming the resolved base
+and how HEAD relates to it, never presented as a plain 100% OK; hard
+refusal becomes opt-in via the new `--refuse-empty-diff` (replacing
+`--allow-empty-diff`, which no longer exists).
+
+`tools/coverage_gate.py`:
+- `Verdict` gains `skipped: bool` (set by `evaluate()` to
+  `total_changed_exec == 0`) and a `verdict` property (`"skipped"` /
+  `"ok"` / `"fail"`) — the RW-5 text's "any JSON/report output carries
+  `verdict: skipped`" requirement, given concrete, tested form even though
+  this tool has no JSON report output today: `evaluate()`'s own `pct`/
+  `passed` numbers are UNCHANGED (still the pure 0/0-is-100% classifier —
+  existing direct callers/tests of `evaluate()` see identical numbers),
+  `.verdict` is the field any future or existing caller must read to avoid
+  treating a 0/0 as a plain pass.
+- `_check_nonempty_diff` removed; replaced by `_is_ancestor` (a
+  `git merge-base --is-ancestor` wrapper that treats exit 0/1 as ordinary
+  yes/no, not `_git`'s any-nonzero-is-an-error convention — only >1 is a
+  real git failure), `_base_relation` (renders `"HEAD is on the base"`
+  when HEAD is an ancestor of/equal to the resolved base, else `"HEAD is
+  N commits ahead of the base; the diff touches no executable source
+  line"` via `git rev-list --count`), and `_empty_diff_notice` (pure:
+  takes the already-resolved `relation` string, returns `("skipped", msg)`
+  by default or `("error", msg)` under `--refuse-empty-diff`, the error
+  message keeping the same three-routes text as the RG-53 landing).
+- `main()`: when `v.changed_executable == 0`, resolves the relation,
+  gets the notice, prints to stdout (skipped, exit 0) or stderr (error,
+  exit 2) — this branch runs BEFORE the OK/FAIL branch/print, so a 0/0
+  case never reaches the `diff-coverage OK: 0/0 ... 100.0%` line at all.
+- `--allow-empty-diff` replaced by `--refuse-empty-diff` (default False,
+  inverted meaning) in `_build_arg_parser`.
+- Module docstring and inline comments updated to describe the SKIPPED
+  design and cite RW-5.
+
+`tests/test_coverage_gate.py`: net 20 → 23 (5 removed — the old
+`--allow-empty-diff`/`_check_nonempty_diff`/refusal-by-default tests no
+longer describe the shipped behavior — 8 added: `Verdict.verdict` for both
+the 0/0 and nonzero cases, `_base_relation`'s two shapes against a real
+`tmp_path` git repo (ancestor/equal → "HEAD is on the base"; one unrelated
+commit ahead → "HEAD is 1 commits ahead..."), `_empty_diff_notice`'s two
+outcomes as a pure unit test, the renamed arg-parser default, and an
+end-to-end `main()` pair on a real degenerate-base repo proving the
+default SKIPPED/exit-0/stdout path (asserting `"OK"` and `"100.0%"` do
+NOT appear in stdout) and the `--refuse-empty-diff` opt-in/exit-2/stderr
+path in the same test.
+
+`CHANGES.md` `[Unreleased]`'s RG-53 entry: reworded per RW-5 (SKIPPED
+design, `Verdict.verdict`, the renamed flag, an explicit "Reworked
+2026-09-12 by RW-5" note explaining why the first landing changed).
+
+`KNOWN_ISSUES_TODO_BACKLOG.md` RG-53: kept the FIXED entry's original text
+(historical accuracy — that is what actually shipped in commit `607950fd`)
+and appended a new `### Rework — RW-5` subsection describing what changed
+and why, rather than rewriting history in place.
+
+### Gate verdicts
+
+- `pytest tests/test_coverage_gate.py -q` (targeted): **23 passed**, 0.41s
+  (`nice -n 19 ionice -c 3`).
+- `nice -n 19 ionice -c 3 ./run-gate.py selftest --allow-dirty` (whole
+  suite, from `<worktree>/run-gate-project`), verdict read in a separate
+  step from the captured log (not a pipe tail): pytest phase **830
+  passed, 3 skipped** (same pre-existing wheel-packaging skip; +3 over the
+  post-C1 827 matches the net +3 in `test_coverage_gate.py`), 103.67s.
+  diff-coverage phase:
+  ```
+  diff-coverage SKIPPED: 0 changed executable lines under 'run-gate.py' between e499a16806 and HEAD (HEAD is 2 commits ahead of the base; the diff touches no executable source line)
+  run-gate: lane 'selftest' exit 0
+  ```
+  **This is the exact self-referential proof RW-5 exists for**: this
+  branch is 2 commits ahead of `main` (the C1 commit `607950fd` + the
+  checkpoint-docs commit `1dc201ab`), neither of which touches
+  `run-gate.py` — under the PRE-RW-5 design this would have `exit 2`
+  (blocking every gate run on this branch until `run-gate.py` itself is
+  touched, which is exactly the false-positive-refusal bug RW-5 fixes);
+  under the PRE-RG-53 design entirely it would have silently printed
+  `diff-coverage OK: 0/0 ... (100.0% >= 100.0% floor)` and exit 0 (the
+  original false-green bug). This run instead prints a distinct SKIPPED
+  line, exits 0, and names exactly why (2 commits ahead, no executable
+  lines touched) — a human or gate reading the log cannot mistake it for
+  a real 100% pass.
+
+Commit: (recorded after the commit lands — see the git log for the hash;
+subject `fix(rw5): coverage_gate.py 0/0 diff reports SKIPPED, not refused
+or silently OK`).
+
+## Checkpoint (mid-session, not final)
+
+C1-rework is a coherent boundary (green targeted tests + green selftest +
+LOG/REPORT + commit) but NOT the session's stopping point — continuing to
+C2 next per the dispatch prompt's deliverable order, budget permitting.

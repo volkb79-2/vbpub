@@ -21,27 +21,42 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
      ever measured, never intersected with the changed-line set. `Verdict`
      gains `branches_total`/`branches_missed`/`branch_partial_lines`,
      reported beside the line counts in both the OK and FAIL CLI lines.
-  2. `total_changed_exec == 0` is now REFUSED (exit 2) unless
-     `--allow-empty-diff` is passed, naming the resolved base, HEAD, and
-     the three known routes to a false 0/0 (a merge commit's first-parent
-     base already containing every changed line, RG-54; a stale
-     worktree/base ref; reverted work that cancels out the lines it
-     re-touches, RG-51 round 5) — closing the `0/0 -> 100%` silent-pass
-     trap RG-53/RG-51 found. `evaluate()` itself stays a pure 0/0-is-100%
-     classifier (existing direct callers/tests of `evaluate()` are
-     unaffected); the refusal is CLI-level, in `main()`.
+  2. `total_changed_exec == 0` is now reported as **SKIPPED** — exit 0,
+     `Verdict.verdict == "skipped"` (never `"ok"`, never a bare `100.0%`
+     line) — naming the resolved base and how HEAD relates to it (`HEAD is
+     on the base` or `HEAD is N commits ahead of the base; the diff
+     touches no executable source line`), closing the `0/0 -> 100%`
+     SILENT-pass trap RG-53/RG-51 found without turning every gate run
+     that happens not to touch the judged file (e.g. this project's own
+     `selftest` on `main` itself) into a hard failure. `evaluate()` itself
+     stays a pure 0/0-is-100% classifier (existing direct callers/tests of
+     `evaluate()` see identical `pct`/`passed` numbers; only the new
+     `Verdict.skipped`/`.verdict` fields distinguish the case) — the
+     SKIPPED reporting is CLI-level, in `main()`. Hard refusal (exit 2,
+     naming the three known routes to a false 0/0) is now OPT-IN via the
+     new `--refuse-empty-diff` flag; `--allow-empty-diff` no longer exists.
+     **Reworked 2026-09-12 by RG-55 wave controller ruling RW-5** — this
+     package's first landing of RG-53 made the 0/0 case a hard refusal by
+     default, which put this project's own `selftest` lane permanently red
+     on `main`; RW-5 corrected it to the SKIPPED design above.
   **BREAKING for every consumer of the vendored judge (topos pattern):
   re-copying `tools/coverage_gate.py` picks up BOTH stricter semantics —
-  a lane that was previously green on an uncovered branch, or on a
-  degenerate 0/0 diff, now fails or refuses at load-time-adjacent points.
-  Consumers re-copy on their own; this file does not push the change.**
-  `run-gate.toml`'s own `selftest` argv is UNCHANGED (no `--allow-empty-diff`
-  passed) — this project's own gate now goes red on a 0/0 diff too, same as
-  every other consumer. `tools/coverage_gate.py`'s docstring records both
-  changes; `tests/test_coverage_gate.py` covers both (branch-partial lines
+  a lane that was previously green on an uncovered branch now fails, and
+  one that was silently `0/0 -> 100% OK` now prints a loud, distinct
+  SKIPPED notice (still exit 0) instead — plus `--allow-empty-diff` is
+  gone (`--refuse-empty-diff` is its opt-in replacement, inverted
+  default). Consumers re-copy on their own; this file does not push the
+  change.** `run-gate.toml`'s own `selftest` argv is UNCHANGED — on `main`
+  it now prints SKIPPED and exits 0; on a branch whose diff touches
+  `run-gate.py` it judges those lines normally, same as every other
+  consumer. `tools/coverage_gate.py`'s docstring records all three
+  changes; `tests/test_coverage_gate.py` covers them (branch-partial lines
   staying/leaving covered, branch totals scoped to changed lines only,
-  malformed branch-arc shape rejection, the `--allow-empty-diff` default and
-  override, and an end-to-end `main()` refusal + allowed-pass pair).
+  malformed branch-arc shape rejection, `Verdict.verdict` tri-state for
+  both the 0/0 and nonzero cases, the base/HEAD relation text for both
+  shapes, the `_empty_diff_notice` pure formatter for both the default and
+  `--refuse-empty-diff` outcomes, and an end-to-end `main()` pair proving
+  the default SKIPPED exit-0/stdout behavior and the opt-in refusal).
 
 <!-- cmru: release history -->
 

@@ -1,13 +1,49 @@
-# run-gate-WAVE-RG55-P2 — REPORT (partial, C1 only)
+# run-gate-WAVE-RG55-P2 — REPORT (partial, C1-rework only so far)
 
 Package P2 of the RG-55 wave. This REPORT covers deliverable C1 (RG-53)
-only; C2-C8 are deferred to a successor implementer — see
-`run-gate-WAVE-RG55-P2-BRIEF-1.md` for the continuation brief and
-`run-gate-WAVE-RG55-P2-LOG.md` for the commit-by-commit record.
+and its RW-5 rework; C2-C8 are in progress/deferred — see
+`run-gate-WAVE-RG55-P2-BRIEF-1.md` (predecessor's continuation brief) and
+`run-gate-WAVE-RG55-P2-LOG.md` for the commit-by-commit record, including
+this session's "Session 2" orientation and "Commit 2 — C1-rework (RW-5)".
 
-## C1 — RG-53 (`tools/coverage_gate.py` branch-aware diff judge + 0/0 refusal)
+## C1-rework — RW-5 (0/0 diff semantics corrected)
 
-**Status: DONE.** See the LOG for the full change description. Summary:
+**Status: DONE**, superseding part of C1 below. The controller's RW-5
+ruling found that C1's original design — refuse (exit 2) a
+`changed_executable == 0` verdict unless `--allow-empty-diff` — made this
+project's OWN `selftest` lane permanently red on `main` itself
+(merge-base(main, HEAD) == HEAD there → always 0/0) and would have
+blocked every `cmru release` of this project. Reworked: 0/0 now reports
+**SKIPPED** (exit 0, a distinct stdout line naming the resolved base and
+HEAD's relationship to it — `HEAD is on the base`, or `HEAD is N commits
+ahead of the base; the diff touches no executable source line`), never a
+plain `100.0% OK`; `Verdict` gains a `skipped` flag and a `verdict`
+tri-state property (`"skipped"`/`"ok"`/`"fail"`) so any current or future
+caller has a field that cannot mistake a 0/0 for a pass. Hard refusal
+(the original exit-2 behavior, naming the three known false-0/0 routes)
+becomes opt-in via the new `--refuse-empty-diff`; `--allow-empty-diff` no
+longer exists. `evaluate()`'s pure `pct`/`passed` computation is
+UNCHANGED — still 0/0-is-100% for any direct caller — only the CLI
+(`main()`) and the new `Verdict.skipped`/`.verdict` fields distinguish the
+case, same separation-of-concerns C1 established (the 0/0 policy lives at
+the CLI boundary, not inside the pure classifier).
+
+Full change description, gate verdicts (including the self-referential
+proof — this branch is 2 commits ahead of `main`, neither commit touching
+`run-gate.py`, and the selftest now exits 0 with a SKIPPED line naming
+exactly that) and files touched are in the LOG's "Commit 2 — C1-rework
+(RW-5)" section — not duplicated here to avoid drift between two copies of
+the same evidence. `CHANGES.md` `[Unreleased]` and
+`KNOWN_ISSUES_TODO_BACKLOG.md` RG-53 (new `### Rework — RW-5` subsection,
+original FIXED text left intact for historical accuracy) were both
+updated per the ruling's explicit instructions.
+
+## C1 — RG-53 original landing (`tools/coverage_gate.py` branch-aware diff judge + 0/0 refusal)
+
+**Status: DONE** (2026-09-12, prior session), **partially reworked by
+RW-5 above** — the branch-awareness half (item 1 below) is UNCHANGED; the
+0/0 handling half (item 2) is what RW-5 replaced. Kept here verbatim as
+the historical record of what C1 originally shipped. Summary:
 
 1. Branch awareness: `_validate_cov_record` validates the optional
    `missing_branches`/`executed_branches` keys (verified against the

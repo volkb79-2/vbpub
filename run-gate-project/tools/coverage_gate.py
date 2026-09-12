@@ -31,9 +31,21 @@ RG-53 (2026-09-12): a changed line that ran but left an `if`/`for`/etc. arm
 untaken now counts as uncovered too (`missing_branches`, populated whenever
 the coverage JSON was produced with `--cov-branch` — this project's own
 `selftest` lane already passes it, so the floor was previously decorative
-for branches). A diff that changes zero executable lines under `--source`
-is refused (exit 2) unless `--allow-empty-diff` is passed — three known
-routes reach 0/0 without the diff genuinely being empty (RG-53/RG-54).
+for branches).
+
+RW-5 (2026-09-12, RG-55 wave controller ruling, reworking RG-53's first
+landing): a diff that changes zero executable lines under `--source` is
+reported as SKIPPED (exit 0, `verdict: "skipped"` — never `"ok"`, never a
+bare `100.0%`), not silently treated as a 100% pass and not refused by
+default either. The false-green hazard RG-51/RG-54 describe is a WRONG
+BASE hiding real source changes; the judge cannot tell that apart from
+"this change genuinely touches no source line" by the zero alone, so the
+zero is made visible and NAMED (which base, and how HEAD relates to it)
+instead of being hidden behind a plain `100.0% OK` or blocking every
+gate run that happens not to touch the judged file (e.g. `./run-gate.py
+selftest` on `main` itself, where merge-base(main, HEAD) == HEAD). Hard
+refusal (exit 2, naming the three known routes to a false 0/0) is now
+OPT-IN via `--refuse-empty-diff`; `--allow-empty-diff` no longer exists.
 """
 
 from __future__ import annotations
@@ -188,10 +200,26 @@ class Verdict:
     # `uncovered`, kept separately so callers can distinguish "never ran"
     # from "ran, one branch didn't" without re-deriving it.
     branch_partial_lines: dict[str, set[int]] = field(default_factory=dict)
+    # RW-5: True exactly when `changed_executable == 0` — a diff that
+    # touches no executable line under `--source`. `pct`/`passed` stay the
+    # pure 0/0-is-100% classification (unchanged, so existing callers of
+    # `evaluate()` see identical numbers); THIS is the flag a caller must
+    # check first, because a 0/0 must never be reported or serialized as a
+    # plain 100% pass.
+    skipped: bool = False
 
     @property
     def passed(self) -> bool:
         return self.pct >= self.fail_under
+
+    @property
+    def verdict(self) -> str:
+        """Machine-readable tri-state for any JSON/report surface: never
+        derive pass/fail from `pct`/`passed` alone for that purpose — a 0/0
+        diff must always read `"skipped"` here, never `"ok"` (RW-5)."""
+        if self.skipped:
+            return "skipped"
+        return "ok" if self.passed else "fail"
 
 
 def _branch_maps(cov: dict) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
@@ -297,6 +325,7 @@ def evaluate(
         branches_total=branches_total,
         branches_missed=branches_missed,
         branch_partial_lines=branch_partial_lines,
+        skipped=total_changed_exec == 0,
     )
 
 
@@ -353,37 +382,87 @@ def _load_coverage(path: str) -> dict[str, dict]:
     return files
 
 
-def _check_nonempty_diff(
-    base_rev: str,
-    head_rev: str,
-    source: str,
-    changed_executable: int,
-    allow_empty_diff: bool,
-) -> str | None:
-    """RG-53: refuse a `0/0 -> 100%` verdict unless explicitly allowed.
+def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
+    """`True` iff `ancestor` is an ancestor of (or equal to) `descendant`.
 
-    Returns the exit-2 stderr message when `changed_executable == 0` and
-    `allow_empty_diff` was not passed; `None` otherwise (including the
-    genuinely-empty-diff-but-allowed case). Kept OUT of `evaluate()`, which
-    stays a pure 0/0-is-100% classifier for its own callers/tests — this is
-    a CLI-level policy, because none of the three known routes to 0/0 is
-    "there is nothing to judge": a merge commit's first-parent base already
-    containing every changed line (RG-54), a stale worktree/base ref that no
-    longer reflects real history (RG-51), or reverted work that cancels out
-    the very lines it re-touches (RG-51 round 5).
+    `git merge-base --is-ancestor` exits 0 (yes) or 1 (no) as ordinary,
+    non-error outcomes — only >1 is a real git failure — so this does NOT
+    go through `_git`, which treats any nonzero exit as `CoverageGateError`.
     """
-    if changed_executable != 0 or allow_empty_diff:
-        return None
+    proc = subprocess.run(
+        ["git", "-C", repo, "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True, text=True,
+    )
+    if proc.returncode in (0, 1):
+        return proc.returncode == 0
+    raise CoverageGateError(
+        f"git merge-base --is-ancestor failed ({proc.returncode}): "
+        f"{proc.stderr.strip()[:200]}"
+    )
+
+
+def _base_relation(repo: str, base_rev: str, head_rev: str) -> str:
+    """Describe HEAD's relationship to the resolved base, for the 0/0
+    notice (RW-5). "HEAD is on the base" when HEAD is an ancestor of (or
+    equal to) the resolved base — the exact shape `./run-gate.py selftest`
+    hits on `main` itself, where merge-base(main, HEAD) == HEAD. Otherwise
+    HEAD is some N commits ahead of the base and none of those N commits
+    touched an executable source line under `--source`.
+    """
+    if _is_ancestor(repo, head_rev, base_rev):
+        return "HEAD is on the base"
+    count = _git(repo, ["rev-list", "--count", f"{base_rev}..{head_rev}"]).strip()
     return (
-        f"diff-coverage ERROR: 0 changed executable lines under {source!r} "
-        f"between base {base_rev} and HEAD {head_rev} -- refusing an "
-        "empty-diff PASS. Known routes to 0/0, none of them \"nothing to "
-        "judge\": (1) HEAD is a merge commit and first-parent base "
-        "resolution already contains every changed line (RG-54); (2) a "
-        "stale worktree/base ref that no longer reflects real history "
-        "(RG-51); (3) reverted work that cancels out the very lines it "
-        "re-touches (RG-51 round 5). If this run genuinely changes no "
-        "executable line, pass --allow-empty-diff."
+        f"HEAD is {count} commits ahead of the base; the diff touches no "
+        "executable source line"
+    )
+
+
+def _empty_diff_notice(
+    base_rev: str,
+    source: str,
+    relation: str,
+    refuse_empty_diff: bool,
+) -> tuple[str, str]:
+    """RW-5: describe a 0/0 changed-executable-lines verdict.
+
+    Caller must already know `changed_executable == 0` before calling this
+    (it does no such check itself). Returns `(verdict, message)`:
+
+    - Default (`refuse_empty_diff=False`): `("skipped", <line>)` — the CLI
+      prints `<line>` to STDOUT and exits 0. The false-green hazard RG-51/
+      RG-54 describe is a WRONG BASE hiding real source changes; the judge
+      cannot tell that apart from "this change genuinely touches no source
+      line" by the zero alone, so the zero is made VISIBLE and named
+      (which base, how HEAD relates to it) rather than silently printing a
+      plain 100% pass OR blocking every gate run that happens not to touch
+      the judged file.
+    - Opt-in (`refuse_empty_diff=True`, `--refuse-empty-diff`): `("error",
+      <line>)` — the CLI prints `<line>` to STDERR and exits 2, naming the
+      three known routes to a false 0/0 (none of them "nothing to judge"):
+      a merge commit's first-parent base already containing every changed
+      line (RG-54), a stale worktree/base ref that no longer reflects real
+      history (RG-51), or reverted work that cancels out the very lines it
+      re-touches (RG-51 round 5).
+
+    Pure: takes the already-resolved `relation` string (see `_base_relation`)
+    rather than doing git I/O itself, so it is unit-testable without a repo.
+    """
+    base_short = base_rev[:10]
+    if refuse_empty_diff:
+        return "error", (
+            f"diff-coverage ERROR: 0 changed executable lines under {source!r} "
+            f"between base {base_short} and HEAD ({relation}) -- refusing an "
+            "empty-diff PASS (--refuse-empty-diff). Known routes to 0/0, none "
+            "of them \"nothing to judge\": (1) HEAD is a merge commit and "
+            "first-parent base resolution already contains every changed "
+            "line (RG-54); (2) a stale worktree/base ref that no longer "
+            "reflects real history (RG-51); (3) reverted work that cancels "
+            "out the very lines it re-touches (RG-51 round 5)."
+        )
+    return "skipped", (
+        f"diff-coverage SKIPPED: 0 changed executable lines under {source!r} "
+        f"between {base_short} and HEAD ({relation})"
     )
 
 
@@ -402,9 +481,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",
                     help="git repo/worktree (default: cwd)")
-    p.add_argument("--allow-empty-diff", action="store_true", default=False,
-                   help="permit a 0/0 changed-executable-lines verdict to "
-                        "pass (default: refused, exit 2 -- RG-53)")
+    p.add_argument("--refuse-empty-diff", action="store_true", default=False,
+                   help="treat a 0/0 changed-executable-lines diff as a hard "
+                        "failure (exit 2), naming the three known routes to "
+                        "a false 0/0, instead of the default SKIPPED notice "
+                        "(exit 0) -- opt-in (RW-5)")
     return p
 
 
@@ -425,12 +506,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2
 
-    empty_diff_msg = _check_nonempty_diff(
-        base_rev, head_rev, args.source, v.changed_executable, args.allow_empty_diff
-    )
-    if empty_diff_msg is not None:
-        print(empty_diff_msg, file=sys.stderr)
-        return 2
+    if v.changed_executable == 0:
+        try:
+            relation = _base_relation(args.repo, base_rev, head_rev)
+        except CoverageGateError as exc:
+            print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
+            return 2
+        kind, message = _empty_diff_notice(
+            base_rev, args.source, relation, args.refuse_empty_diff
+        )
+        print(message, file=sys.stderr if kind == "error" else sys.stdout)
+        return 2 if kind == "error" else 0
 
     branch_note = (
         f"; branches {v.branches_total - v.branches_missed}/{v.branches_total} taken"

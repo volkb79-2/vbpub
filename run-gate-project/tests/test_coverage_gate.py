@@ -202,42 +202,121 @@ def test_validate_cov_record_rejects_malformed_branch_arc():
                                source_prefix="run-gate-project/run-gate.py")
 
 
-def test_arg_parser_allow_empty_diff_defaults_false():
+def test_arg_parser_refuse_empty_diff_defaults_false():
     args = coverage_gate._build_arg_parser().parse_args(
         ["--coverage-json", "x.json"])
-    assert args.allow_empty_diff is False
+    assert args.refuse_empty_diff is False
     args2 = coverage_gate._build_arg_parser().parse_args(
-        ["--coverage-json", "x.json", "--allow-empty-diff"])
-    assert args2.allow_empty_diff is True
+        ["--coverage-json", "x.json", "--refuse-empty-diff"])
+    assert args2.refuse_empty_diff is True
 
 
-def test_check_nonempty_diff_none_when_lines_changed():
-    assert coverage_gate._check_nonempty_diff(
-        "base", "head", "run-gate.py", changed_executable=3,
-        allow_empty_diff=False) is None
+def test_verdict_zero_zero_is_skipped_never_ok():
+    """RW-5: a 0/0 diff's Verdict.verdict must read "skipped", never "ok" —
+    `pct`/`passed` stay the pure, UNCHANGED 0/0-is-100% classification
+    (existing direct callers of `evaluate()` see identical numbers); the
+    tri-state `verdict` property is what a caller must check first, so a
+    0/0 is never reported or serialized as a plain 100% pass."""
+    v = coverage_gate.evaluate({}, {}, source_prefix="run-gate-project/run-gate.py")
+    assert v.changed_executable == 0
+    assert v.skipped is True
+    assert v.pct == 100.0 and v.passed is True
+    assert v.verdict == "skipped"
 
 
-def test_check_nonempty_diff_none_when_allowed():
-    assert coverage_gate._check_nonempty_diff(
-        "base", "head", "run-gate.py", changed_executable=0,
-        allow_empty_diff=True) is None
+def test_verdict_nonzero_diff_is_ok_or_fail():
+    added = {"run-gate-project/run-gate.py": {5}}
+    ok = coverage_gate.evaluate(
+        added,
+        {"run-gate-project/run-gate.py": {"executed_lines": [5], "missing_lines": []}},
+        source_prefix="run-gate-project/run-gate.py")
+    assert ok.skipped is False
+    assert ok.verdict == "ok"
+    fail = coverage_gate.evaluate(
+        added,
+        {"run-gate-project/run-gate.py": {"executed_lines": [], "missing_lines": [5]}},
+        source_prefix="run-gate-project/run-gate.py")
+    assert fail.skipped is False
+    assert fail.verdict == "fail"
 
 
-def test_check_nonempty_diff_refuses_zero_by_default():
-    msg = coverage_gate._check_nonempty_diff(
-        "deadbeef", "cafef00d", "run-gate.py", changed_executable=0,
-        allow_empty_diff=False)
-    assert msg is not None
-    assert "deadbeef" in msg and "cafef00d" in msg
-    assert "--allow-empty-diff" in msg
+def test_base_relation_ancestor_reads_head_is_on_the_base(tmp_path):
+    """The exact shape `./run-gate.py selftest` hits on `main` itself:
+    merge-base(main, HEAD) == HEAD."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args],
+                               check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "f.py")
+    git("commit", "-q", "-m", "base")
+    head = git("rev-parse", "HEAD").strip()
+    assert (coverage_gate._base_relation(str(tmp_path), head, head)
+            == "HEAD is on the base")
+
+
+def test_base_relation_ahead_names_commit_count(tmp_path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args],
+                               check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "f.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "f.py")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD").strip()
+    (tmp_path / "other.txt").write_text("x\n", encoding="utf-8")
+    git("add", "other.txt")
+    git("commit", "-q", "-m", "unrelated, does not touch f.py")
+    head = git("rev-parse", "HEAD").strip()
+    relation = coverage_gate._base_relation(str(tmp_path), base, head)
+    assert relation == (
+        "HEAD is 1 commits ahead of the base; the diff touches no "
+        "executable source line"
+    )
+
+
+def test_empty_diff_notice_skipped_by_default():
+    kind, msg = coverage_gate._empty_diff_notice(
+        "deadbeefcafe", "run-gate.py", "HEAD is on the base",
+        refuse_empty_diff=False)
+    assert kind == "skipped"
+    assert msg == (
+        "diff-coverage SKIPPED: 0 changed executable lines under "
+        "'run-gate.py' between deadbeefca and HEAD (HEAD is on the base)"
+    )
+
+
+def test_empty_diff_notice_error_when_refused():
+    kind, msg = coverage_gate._empty_diff_notice(
+        "deadbeefcafe", "run-gate.py",
+        "HEAD is 3 commits ahead of the base; the diff touches no "
+        "executable source line",
+        refuse_empty_diff=True)
+    assert kind == "error"
+    assert msg.startswith(
+        "diff-coverage ERROR: 0 changed executable lines under 'run-gate.py'"
+    )
+    assert "--refuse-empty-diff" in msg
     # Names the three known routes, so a reader does not have to guess.
     assert "RG-54" in msg and "RG-51" in msg
 
 
-def test_main_refuses_zero_changed_diff_without_flag(tmp_path, capsys):
-    """End-to-end: a repo where base == HEAD (merge-base(base, HEAD) == HEAD,
-    the RG-51/RG-54 degenerate-base shape) must exit 2, not print a `0/0
-    100%` pass, unless --allow-empty-diff is given."""
+def test_main_reports_skipped_on_zero_changed_diff_by_default(tmp_path, capsys):
+    """End-to-end: a repo where base == HEAD (merge-base(base, HEAD) ==
+    HEAD, both the RG-51/RG-54 degenerate-base shape and the ordinary
+    `main`-itself shape) prints a SKIPPED notice on STDOUT and exits 0 by
+    default — never a silent `0/0 100%` OK, and never refused unless
+    --refuse-empty-diff is passed (RW-5)."""
     import subprocess
 
     def git(*args):
@@ -260,21 +339,26 @@ def test_main_refuses_zero_changed_diff_without_flag(tmp_path, capsys):
         "--coverage-json", str(cov_json),
         "--source", "run-gate.py",
     ])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "0 changed executable lines" in err
-    assert "--allow-empty-diff" in err
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "diff-coverage SKIPPED: 0 changed executable lines" in captured.out
+    assert "HEAD is on the base" in captured.out
+    assert "OK" not in captured.out
+    assert "100.0%" not in captured.out
 
-    rc_allowed = coverage_gate.main([
+    rc_refused = coverage_gate.main([
         "--repo", str(tmp_path),
         "--base", "main",
         "--coverage-json", str(cov_json),
         "--source", "run-gate.py",
-        "--allow-empty-diff",
+        "--refuse-empty-diff",
     ])
-    assert rc_allowed == 0
-    out = capsys.readouterr().out
-    assert "diff-coverage OK" in out
+    assert rc_refused == 2
+    err = capsys.readouterr().err
+    assert "diff-coverage ERROR" in err
+    assert "--refuse-empty-diff" in err
+    assert "RG-54" in err and "RG-51" in err
 
 
 def test_main_reports_branch_note_on_pass_and_fail(tmp_path, capsys):
