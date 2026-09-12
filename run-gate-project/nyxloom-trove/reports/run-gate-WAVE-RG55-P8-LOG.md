@@ -494,3 +494,62 @@ B3's WARN mechanism cannot be exercised without root/`/etc/mdt` (HOST LOAD:
 no host mutation) — its companion `check.sh` FAIL mechanism (next commit)
 IS exercised, via a mocked cgroupfs, and is the actual enforcement; this
 WARN is the early, loud, install-time signal.
+
+### C6 — check.sh: B3 fail mechanism, M5 verification, S9 note, leftover S5 (hash: see next entry)
+
+(B3/S9) `dev-gates.slice`'s effective-values block now compares live
+`memory.max`/`memory.high` against configured `DEV_GATES_MEMORY_MAX`/
+`_HIGH`, byte for byte (a small local `_bytes_of()` — install.sh's own was
+withdrawn with `dev-infra.slice`, re-declared here since check.sh has no
+render-time helper to source from): `fail` on a mismatch (either
+direction), `warn` only when `$CONF` genuinely has no value for the key.
+This is the SAME convention the `MemoryMin` ancestor-chain check below
+already uses (a fail-open invariant gets a hard `fail`, not a printout) —
+the gap S9 named ("reports … but never checks") is closed by extending
+that existing convention here, not inventing a new one.
+
+Simulated against a MOCKED cgroupfs (`CG=`/`CONF=` pointed at scratch
+dirs+files — no root, no `/etc`, no real `systemctl`/host mutation):
+unbounded slice + configured value → **FAIL** on both `memory.max` and
+`memory.high` (the exact B3 defect); bounded slice matching config →
+**OK** on both; unbounded slice + genuinely-unset config → **WARN**, not
+FAIL, on both. All three scenarios behaved exactly as prescribed.
+
+(M5/D-30) New "cgprofile socket carrier" section: `fail`s if `/run/
+cgprofile` is missing, or exists with mode/owner other than `0770 root:
+docker` (this directory's own fail-open invariant, same convention);
+`info()` helper added (neither pass nor fail, disclosure only, not counted
+toward the exit-code total) prints "socket carrier available" when `ctl.
+sock` exists, "exec carrier only (daemon socket absent)" when it does not
+— simulated all four branches (missing dir → FAIL; wrong owner → FAIL;
+correct dir + no socket → OK + INFO exec-only; correct dir + socket
+present → OK + INFO socket-available, the last two confirmed via a
+logic-only harness since this sandbox cannot `chown root:docker`).
+
+(S5, leftover from C4) `check.sh`'s own "dev.slice IO caps" section header
+— the one line of this finding not yet committed when C4 landed — now
+reads "shared by every dev.slice child" too.
+
+Verify: `bash -n scripts/check.sh` clean; `shellcheck -S warning
+scripts/check.sh` clean; the four mocked-cgroupfs scenarios above are
+reproducible with `CG=<scratch>/cg CONF=<scratch>/etc/host-setup.env bash
+scripts/check.sh` against a hand-built `$CG/dev-gates.slice/{memory.max,
+memory.high,...}` tree (flat under `$CG`, matching the SAME convention
+`dev-interactive.slice`'s pre-existing effective-values block already
+uses, deliberately not changed to a nested `$CG/dev.slice/dev-gates.slice`
+path — see "considered and rejected" note below).
+
+**Considered and rejected:** nesting `check.sh`'s cgroupfs reads under
+`$CG/dev.slice/dev-gates.slice/...` to match systemd's real hierarchical
+cgroup layout more literally. Not done: `dev-interactive.slice`'s own
+pre-existing block (unchanged by this package, predates it entirely) reads
+`$CG/dev-interactive.slice` flat, and the round-1 review's own "claims I
+could not verify" #1 explicitly declined to verify this convention against
+a real host either way, treating the new `dev-gates.slice` code as fine
+"because it is structurally identical to the existing siblings." Changing
+only the NEW code to a different, nested convention would create a fresh
+inconsistency next to the unchanged sibling rather than resolve one; if the
+flat convention is wrong on a real host, that is a pre-existing question
+this package inherited, not one it introduced, and fixing it belongs to
+whoever owns `dev-interactive.slice`'s own block, with a real host to
+verify against (this package had none, per HOST LOAD).
