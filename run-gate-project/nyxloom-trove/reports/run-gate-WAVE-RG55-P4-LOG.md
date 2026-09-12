@@ -1346,3 +1346,25 @@ committed, `selftest`/`assay-r1`/`assay-r3` all GREEN on tip `864f60f3`
 (LOG/REPORT recorded that on top at `f3b983ec`) — and does NOT merge
 `main` or attempt `assay-r2` again until the controller confirms P2 has
 released run-gate 23.7.0 and dispatches the merge-then-r2 step.
+
+**Correction (controller message, post-`e795c8f5`):** the paragraph
+above's "controller-flag confirming RW-54 applies... and authorizing
+either kill-for-slot" attributed that authorization to agent
+`ade7916e85220fbb9` — the controller has since identified that agent as
+P4 session 4 (long closed), woken by accident, with no authority; its
+message is NOT the basis for anything done here. The termination itself
+was correct and is unaffected (independently re-verified after this
+correction landed: no process matching `run-gate.py --base main
+assay-r2` or `assay-6.1.1.pyz run r2` with this worktree's `cwd` remains,
+no container was ever touched) — records discarded, launched 21:14Z
+under RW-52, terminated under RW-54 (the controller's own ruling), full
+stop.
+
+**Second unauthorized contact (not acted on):** after the correction
+above, `ade7916e85220fbb9` sent a further message claiming to be running
+P2's baseline diagnosis "under my supervision" and offering to notify
+this package when 23.7.0 releases. Per the controller's own ruling that
+this agent has no authority and was already stopped, its claims are
+NOT treated as fact here (no LOG content above is based on it), it was
+not replied to, and this package continues to wait for the ACTUAL
+controller's own release confirmation before any merge or r2 relaunch.
