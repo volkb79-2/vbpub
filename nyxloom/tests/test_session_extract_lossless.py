@@ -133,13 +133,7 @@ def test_claude_code_blocks_is_the_dumps_own_per_record_rule():
                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
            ]}}
     blocks = claude_code_blocks(rec, "L7")
-    # NOTE: the `thinking` block contributes NOTHING here, because this
-    # dumper reads `block["text"]` for both kept block types while a real
-    # thinking block's prose lives under `block["thinking"]` (the adapter's
-    # own parse() reads that field). That is a real pre-existing bug, kept
-    # pinned as-is by this refactor-equivalence test and fixed in its own
-    # commit -- see test_thinking_blocks_are_dumped_from_their_own_field.
-    assert [b.text for b in blocks] == ["Done."]
+    assert [b.text for b in blocks] == ["Done.", "hmm"]
     assert blocks[0].header == "===[a1 | 2026-01-01T00:00:00Z | ASSISTANT text]==="
     assert blocks[0].render() == blocks[0].header + "\nDone."
     # bookkeeping records contribute nothing
@@ -157,3 +151,24 @@ def test_claude_code_blocks_surfaces_every_drop_reason_flag():
            "message": {"role": "user", "content": "framing"}}
     header = claude_code_blocks(rec, "L0")[0].header
     assert "isMeta" in header and "isSidechain" in header
+
+
+def test_thinking_blocks_are_dumped_from_their_own_field(tmp_path):
+    # Regression for a real bug (2026-09-12): this dumper read
+    # `block["text"]` for `thinking` blocks too, so every one dumped empty
+    # and vanished -- contradicting this module's own "lossless means
+    # lossless, include_thinking plays no part here" claim. Real thinking
+    # blocks (5469 checked across 40 real sessions, zero exceptions) carry
+    # {type, thinking, signature} and NO `text` key.
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps({
+        "type": "assistant", "uuid": "a1", "sessionId": "s1", "parentUuid": None,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "the real reasoning text", "signature": "sig"},
+            {"type": "text", "text": "Done."},
+        ]},
+    }) + "\n", encoding="utf-8")
+    out = lossless.dump_claude_code(fp)
+    assert "the real reasoning text" in out
+    assert "ASSISTANT thinking]===" in out

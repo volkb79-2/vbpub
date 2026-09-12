@@ -154,7 +154,19 @@ def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
         for block in content:
             if not isinstance(block, dict) or block.get("type") not in _KEEP_BLOCK_TYPES:
                 continue
-            text = block.get("text", "")
+            # A thinking block's prose is under `thinking`, NOT `text` -- a
+            # real bug found 2026-09-12: this dumper read `text` for both
+            # kept block types, so every thinking block dumped as empty and
+            # was silently discarded, contradicting this module's own
+            # "lossless means lossless, include_thinking plays no part"
+            # claim (see dump_codex's docstring, which states it outright).
+            # Verified against 5469 real thinking blocks across 40 real
+            # sessions: EVERY one has keys {type, thinking, signature} and
+            # no `text` key at all. Practical impact on this corpus was
+            # small only by luck -- Claude Code stores an empty `thinking`
+            # string for all but 2 of those 5469 -- which is exactly why
+            # nothing surfaced it before.
+            text = block.get("text") or block.get("thinking") or ""
             if text.strip():
                 blocks.append(LosslessBlock(f"===[{marker} | {ts} | {tag} {block['type']}]===", text))
     return blocks
