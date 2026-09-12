@@ -1,16 +1,17 @@
-"""B091/D-23/RW-33 -- :mod:`assay.liveness`: the materialized pytest plugin,
-the pytest-argv detection rule, the plan-injection function, and
+"""B091/D-23/RW-33/RW-36 -- :mod:`assay.liveness`: the materialized pytest
+plugin, the pytest-argv detection rule, the plan-injection function, and
 :class:`~assay.liveness.LivenessRunner`'s v1 (env-stamping only) scope.
 
 Every test here is a UNIT test against `liveness.py` directly -- no real
-subprocess, no real pytest run (that lives in this session's spike transcript,
+subprocess, no real pytest run (that lives in session 2's spike transcript,
 recorded in the P7 LOG/REPORT, and in a real end-to-end CLI test added
 separately). The negative this file defends: a plan whose argv does not
 literally invoke pytest must come back byte-identical and unWARNed-when-
 `diagnostics=None`; a plan that does must gain EXACTLY the `-p`/`PYTHONPATH`
-pair and nothing else; `LivenessRunner` must stamp both liveness env vars and
-pass everything else through untouched, with a events path that is a
-deterministic function of `cwd` alone.
+pair -- appended, per RW-36, never declared -- and nothing else;
+`LivenessRunner` must stamp both liveness env vars and pass everything else
+through untouched, with a events path that is a deterministic function of
+`cwd` alone.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from assay import liveness
-from assay.runner import CommandPlan
+from assay.errors import Outcome
+from assay.runner import CommandPlan, execute_plan
 
 
 def _plan(
@@ -149,11 +151,13 @@ def test_inject_returns_plan_unchanged_when_argv_is_not_pytest(
 ) -> None:
     plan = _plan(argv=("go", "test", "./..."))
     diagnostics = io.StringIO()
-    new_plan, injected = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=tmp_path / "liveness", diagnostics=diagnostics
     )
-    assert injected is False
-    assert new_plan is plan
+    assert injection.active is False
+    assert injection.plan is plan
+    assert injection.reason == "argv-does-not-invoke-pytest"
+    assert injection.plugin is None
     assert "WARN" in diagnostics.getvalue()
     assert "pytest" in diagnostics.getvalue()
     assert not (tmp_path / "liveness").exists()
@@ -163,54 +167,90 @@ def test_inject_with_diagnostics_none_does_not_raise_and_stays_silent(
     tmp_path: Path,
 ) -> None:
     plan = _plan(argv=("go", "test", "./..."))
-    new_plan, injected = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=tmp_path / "liveness", diagnostics=None
     )
-    assert injected is False
-    assert new_plan is plan
+    assert injection.active is False
+    assert injection.plan is plan
 
 
-def test_inject_adds_plugin_flag_and_pythonpath_when_no_existing_pythonpath(
+def test_inject_adds_plugin_flag_to_argv_appended_never_argv_declared(
     tmp_path: Path,
 ) -> None:
+    """(RW-36) The lane's own declared argv is the lane's own words: liveness
+    must land in `argv_appended`, and `argv_declared` must stay byte-for-byte
+    what the lane wrote -- this is the exact regression session 2's original
+    (pre-RW-36) `argv_declared`-mutating cut would fail.
+    """
     plan = _plan(argv=("pytest", "-q"), env_effective={})
     liveness_dir = tmp_path / "liveness"
-    new_plan, injected = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=liveness_dir, diagnostics=None
     )
-    assert injected is True
-    assert new_plan.argv_declared == ("pytest", "-q", "-p", "assay_liveness_plugin")
-    assert new_plan.argv_effective == new_plan.argv_declared
+    assert injection.active is True
+    assert injection.reason == "auto-pytest-argv"
+    assert injection.plugin == str(liveness_dir / liveness.LIVENESS_PLUGIN_FILENAME)
+    new_plan = injection.plan
+    assert new_plan.argv_declared == ("pytest", "-q")
+    assert new_plan.argv_appended == ("-p", "assay_liveness_plugin")
+    assert new_plan.argv_effective == (
+        "pytest",
+        "-q",
+        "-p",
+        "assay_liveness_plugin",
+    )
     assert new_plan.env_effective["PYTHONPATH"] == str(liveness_dir)
     assert (liveness_dir / liveness.LIVENESS_PLUGIN_FILENAME).exists()
+
+
+def test_inject_sets_cli_argv_appended_to_the_pre_injection_appended_tuple(
+    tmp_path: Path,
+) -> None:
+    """(RW-36) `cli_argv_appended` must freeze whatever `argv_appended` held
+    BEFORE liveness added its own tokens -- an empty tuple here, since this
+    plan declared no CLI passthrough -- so `execute_plan`'s
+    `allow_argv_append` refusal keeps testing only the CLI's own tokens.
+    """
+    plan = _plan(argv=("pytest",))
+    assert plan.cli_argv_appended is None
+    injection = liveness.inject_liveness_plugin(
+        plan, liveness_dir=tmp_path / "liveness", diagnostics=None
+    )
+    assert injection.plan.cli_argv_appended == ()
 
 
 def test_inject_prepends_to_an_existing_pythonpath(tmp_path: Path) -> None:
     plan = _plan(argv=("pytest",), env_effective={"PYTHONPATH": "/already/here"})
     liveness_dir = tmp_path / "liveness"
-    new_plan, injected = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=liveness_dir, diagnostics=None
     )
-    assert injected is True
-    assert new_plan.env_effective["PYTHONPATH"] == f"{liveness_dir}:/already/here"
+    assert injection.active is True
+    assert injection.plan.env_effective["PYTHONPATH"] == f"{liveness_dir}:/already/here"
 
 
-def test_inject_preserves_argv_appended_and_recomputes_effective(
+def test_inject_preserves_the_lanes_own_appended_tokens_and_recomputes_effective(
     tmp_path: Path,
 ) -> None:
     plan = _plan(argv=("pytest",), argv_appended=("--maxfail=1",))
-    new_plan, injected = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=tmp_path / "liveness", diagnostics=None
     )
-    assert injected is True
-    assert new_plan.argv_appended == ("--maxfail=1",)
-    assert new_plan.argv_declared == ("pytest", "-p", "assay_liveness_plugin")
+    assert injection.active is True
+    new_plan = injection.plan
+    assert new_plan.argv_declared == ("pytest",)
+    assert new_plan.argv_appended == ("--maxfail=1", "-p", "assay_liveness_plugin")
     assert new_plan.argv_effective == (
         "pytest",
+        "--maxfail=1",
         "-p",
         "assay_liveness_plugin",
-        "--maxfail=1",
     )
+    # (RW-36) `cli_argv_appended` names exactly the lane's own pre-existing
+    # CLI-consented tokens -- liveness's own `-p ...` pair is NOT part of it,
+    # which is what lets `execute_plan` run this plan even when
+    # `allow_argv_append` is false (liveness never requires that consent).
+    assert new_plan.cli_argv_appended == ("--maxfail=1",)
     # (A-036 transparency invariant, preserved by construction) allow_argv_append
     # travels through byte-for-byte -- liveness injection never touches the
     # CLI passthrough gate.
@@ -219,12 +259,117 @@ def test_inject_preserves_argv_appended_and_recomputes_effective(
 
 def test_inject_other_env_keys_survive_untouched(tmp_path: Path) -> None:
     plan = _plan(argv=("pytest",), env_effective={"FOO": "bar"})
-    new_plan, _ = liveness.inject_liveness_plugin(
+    injection = liveness.inject_liveness_plugin(
         plan, liveness_dir=tmp_path / "liveness", diagnostics=None
     )
-    assert new_plan.env_effective["FOO"] == "bar"
+    assert injection.plan.env_effective["FOO"] == "bar"
     # the ORIGINAL plan's env_effective must not have been mutated in place
     assert "PYTHONPATH" not in plan.env_effective
+
+
+# --------------------------------------------------------------------------
+# inject_liveness_plugin -- judge.mutation.liveness policy (RW-36)
+# --------------------------------------------------------------------------
+
+
+def test_inject_liveness_false_is_off_unconditionally_no_warn(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(argv=("pytest", "-q"))
+    diagnostics = io.StringIO()
+    injection = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=tmp_path / "liveness",
+        diagnostics=diagnostics,
+        liveness_policy=liveness.LIVENESS_FALSE,
+    )
+    assert injection.active is False
+    assert injection.plan is plan
+    assert injection.reason == "declared-false"
+    assert injection.plugin is None
+    # an explicit, written-down opt-out is not a surprise -- no WARN.
+    assert diagnostics.getvalue() == ""
+    assert not (tmp_path / "liveness").exists()
+
+
+def test_inject_liveness_true_forces_injection_when_argv_invokes_pytest(
+    tmp_path: Path,
+) -> None:
+    plan = _plan(argv=("pytest", "-q"))
+    injection = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=tmp_path / "liveness",
+        diagnostics=None,
+        liveness_policy=liveness.LIVENESS_TRUE,
+    )
+    assert injection.active is True
+    assert injection.reason == "declared-true"
+    assert injection.plan.argv_appended == ("-p", "assay_liveness_plugin")
+
+
+def test_inject_liveness_true_on_a_non_pytest_argv_is_off_with_a_warn(
+    tmp_path: Path,
+) -> None:
+    """Defensive only -- `config._load_mutation` already refuses this
+    combination at load time -- but this function's own contract must not
+    depend on the loader never being bypassed by a hand-built `Lane`.
+    """
+    plan = _plan(argv=("tox",))
+    diagnostics = io.StringIO()
+    injection = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=tmp_path / "liveness",
+        diagnostics=diagnostics,
+        liveness_policy=liveness.LIVENESS_TRUE,
+    )
+    assert injection.active is False
+    assert injection.reason == "argv-does-not-invoke-pytest"
+    assert "WARN" in diagnostics.getvalue()
+
+
+def test_inject_liveness_true_on_a_non_pytest_argv_with_diagnostics_none(
+    tmp_path: Path,
+) -> None:
+    """Same defensive case, `diagnostics=None` -- must not raise, and must
+    stay silent (nothing to print to)."""
+    plan = _plan(argv=("tox",))
+    injection = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=tmp_path / "liveness",
+        diagnostics=None,
+        liveness_policy=liveness.LIVENESS_TRUE,
+    )
+    assert injection.active is False
+    assert injection.reason == "argv-does-not-invoke-pytest"
+
+
+@pytest.mark.parametrize("policy", [None, liveness.LIVENESS_AUTO])
+def test_inject_liveness_auto_and_omitted_policy_behave_identically(
+    tmp_path: Path, policy: str | None
+) -> None:
+    plan = _plan(argv=("pytest",))
+    injection = liveness.inject_liveness_plugin(
+        plan,
+        liveness_dir=tmp_path / "liveness",
+        diagnostics=None,
+        liveness_policy=policy,
+    )
+    assert injection.active is True
+    assert injection.reason == "auto-pytest-argv"
+
+
+def test_liveness_injection_to_wire_shape(tmp_path: Path) -> None:
+    plan = _plan(argv=("pytest",))
+    injection = liveness.inject_liveness_plugin(
+        plan, liveness_dir=tmp_path / "liveness", diagnostics=None
+    )
+    wire = injection.to_wire()
+    assert wire == {
+        "active": True,
+        "reason": "auto-pytest-argv",
+        "plugin": str(tmp_path / "liveness" / liveness.LIVENESS_PLUGIN_FILENAME),
+    }
+    assert set(wire) == {"active", "reason", "plugin"}
 
 
 # --------------------------------------------------------------------------
@@ -309,3 +454,73 @@ def test_plugin_source_hash_is_stable_and_nonempty() -> None:
     second = liveness.plugin_source_hash()
     assert first == second
     assert len(first) == 64  # sha256 hex digest length
+
+
+# --------------------------------------------------------------------------
+# integration: execute_plan's allow_argv_append refusal (RW-36)
+# --------------------------------------------------------------------------
+
+
+def test_liveness_injected_plan_runs_through_execute_plan_despite_no_consent(
+    tmp_path: Path,
+) -> None:
+    """The whole point of `cli_argv_appended` (RW-36): a plan whose ONLY
+    appended tokens are liveness's own `-p ...` pair must NOT be refused by
+    `execute_plan`'s `allow_argv_append` check, even though `allow_argv_append`
+    is `False` and `argv_appended` is genuinely non-empty. Before this
+    session's `cli_argv_appended` field existed, routing liveness through
+    `argv_appended` (as RW-36 requires) would have made EVERY liveness-active
+    candidate refuse with ERROR/EXEC_FAILED -- this is the regression test
+    for that.
+    """
+    plan = _plan(argv=("pytest", "-q"))
+    assert plan.allow_argv_append is False
+    injection = liveness.inject_liveness_plugin(
+        plan, liveness_dir=tmp_path / "liveness", diagnostics=None
+    )
+    assert injection.active is True
+
+    def _fake_runner(argv, *, env, cwd, timeout):
+        import subprocess
+
+        assert "-p" in argv and "assay_liveness_plugin" in argv
+        return subprocess.CompletedProcess(args=list(argv), returncode=0, stdout="", stderr="")
+
+    result = execute_plan(
+        injection.plan,
+        cwd=tmp_path,
+        timeout=30.0,
+        process_runner=_fake_runner,
+    )
+    assert result.outcome is Outcome.PASS
+
+
+def test_a_plan_with_real_unconsented_cli_appended_argv_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """The other half of the same property: liveness's own bypass must NOT
+    also swallow a genuine unconsented CLI `--` append -- `allow_argv_append`
+    keeps meaning exactly what it always meant for tokens that are not
+    liveness's own.
+    """
+    plan = CommandPlan(
+        argv_declared=("pytest", "-q"),
+        argv_appended=("--maxfail=1",),
+        argv_effective=("pytest", "-q", "--maxfail=1"),
+        env_declared={},
+        env_effective={},
+        env_passthrough=(),
+        allow_argv_append=False,
+        budget_seconds=60.0,
+        project_prefix=PurePosixPath("."),
+    )
+    result = execute_plan(
+        plan,
+        cwd=tmp_path,
+        timeout=30.0,
+        process_runner=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("process_runner must not be called")
+        ),
+    )
+    assert result.outcome is Outcome.ERROR
+

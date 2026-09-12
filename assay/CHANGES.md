@@ -41,19 +41,40 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   off for that lane with one WARN naming the rule, and `budget_per_candidate`
   remains the only bound), assay now materializes a small stdlib-only pytest
   plugin into `<project>/.assay/liveness/` (rewritten only when its content
-  changes) and injects it into the shared command plan via `-p
-  assay_liveness_plugin` + a prepended `PYTHONPATH` entry. For every R2
-  candidate execution ONLY (never the R0 baseline, never R1) the plugin's
+  changes) and injects it into the shared command plan's `argv_appended` +
+  a prepended `PYTHONPATH` entry. For every R2 candidate execution ONLY
+  (never the R0 baseline, never R1) the plugin's
   `pytest_unconfigure(trylast=True)` hook now calls `os._exit(rc)` right
   after the terminal summary prints and pytest-cov's own data write
   completes, bypassing the interpreter's normal thread-join-at-shutdown
   sequence entirely -- the mutant SURVIVES instead of hanging the run, and
   must be killed by an honest assertion. Every other lane (non-native-R2,
   non-python, or whose argv does not invoke pytest) is byte-for-byte
-  unaffected. **Not yet shipped in this entry:** the active liveness-
-  monitoring loop and the new `hung` outcome bucket that distinguishes an
-  idle stall from a genuine CPU-bound runaway (`budget_exceeded`) -- tracked
-  as open work on B091.
+  unaffected. New lane key `judge.mutation.liveness = "auto" | true | false`
+  (default `"auto"`, the rule above; `true` on a lane whose argv does not
+  invoke pytest is refused at LOAD with a clear message; `false` turns
+  liveness off unconditionally, no WARN) -- gates injection on its own,
+  never on `allow_argv_append` (RW-36: that flag keeps its unrelated
+  CLI-passthrough-consent meaning; a new `CommandPlan.cli_argv_appended`
+  field keeps `execute_plan`'s consent refusal testing only the CLI's own
+  tokens even though liveness's own append now shares `argv_appended` with
+  it). The mutation sweep's `plan` progress event and the verdict's
+  `judgment.r2` both gain `liveness: {active, reason, plugin}` (additive)
+  recording whether the mechanism ran for this lane and, when it did not,
+  why. **Not yet shipped in this entry:** the active liveness-monitoring
+  loop and the new `hung` outcome bucket that distinguishes an idle stall
+  from a genuine CPU-bound runaway (`budget_exceeded`) -- tracked as open
+  work on B091.
+
+- **Fixed: `assay verify` raised a spurious "unknown judgment.r2 field(s):
+  ['budget_per_candidate_derived_s']" on every real document the
+  `budget_per_candidate = "auto"` default above produces.** Found while
+  wiring the `liveness` field beside it: `_reconstruct_judgment_r2` never
+  read the key back off the raw document at all, so the reconstructed
+  object's own `to_dict()` omitted it and the unknown-key check compared it
+  against a `raw` document that legitimately carried it. A real, if latent,
+  regression from the `budget_per_candidate = "auto"` change above, not
+  something new; fixed alongside `liveness`'s own reconstruction.
 
 <!-- cmru: release history -->
 

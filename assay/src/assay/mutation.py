@@ -1807,6 +1807,19 @@ def run_mutation(
     #: derivations of it (B088's own "how a reader and a writer drift
     #: apart").
     budget_per_candidate_auto: bool = False,
+    #: (B091/RW-36) The liveness record `assay.liveness.inject_liveness_plugin`
+    #: already computed, BEFORE this function was even called (the caller,
+    #: `runner._run_prepared_lane`, injects the plugin into the shared plan
+    #: ahead of the baseline run) -- passed straight through, never
+    #: recomputed, so the `plan` progress event and `judgment.r2.liveness`
+    #: (built by the caller from the SAME `LivenessInjection`) can never
+    #: disagree. `False`/`None`/`None` for every non-native, non-python, or
+    #: liveness-off lane -- byte-identical to a pre-RW-36 `plan` event's
+    #: absence of the key would have been, except the key is always present
+    #: now (additive: a reader that does not know it yet simply ignores it).
+    liveness_active: bool = False,
+    liveness_reason: str | None = None,
+    liveness_plugin: str | None = None,
     progress_artifact: Path | str | None = None,
     #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
     #: runner opens the stream once, high up, so the R0/R1 phase records and
@@ -2001,6 +2014,16 @@ def run_mutation(
                     "baseline_s": round(measured_baseline_wall, 3),
                     "budget_per_candidate_s": budget_per_candidate_seconds,
                     "derived": budget_per_candidate_derived,
+                    # (B091/RW-36) so a reader of ONLY this stream, before
+                    # any candidate line has arrived, already knows whether
+                    # the os._exit wrapper/hung detection ran for this lane
+                    # and why -- the same three fields judgment.r2.liveness
+                    # carries on the verdict, from the same computation.
+                    "liveness": {
+                        "active": liveness_active,
+                        "reason": liveness_reason,
+                        "plugin": liveness_plugin,
+                    },
                 }
             )
         from .runner import execute_plan

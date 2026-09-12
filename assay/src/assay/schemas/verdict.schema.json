@@ -1671,6 +1671,25 @@
           "type": "number",
           "exclusiveMinimum": 0
         },
+        "liveness": {
+          "description": "B091/RW-36: whether the os._exit/hung-detection mechanism ran for this lane's R2 candidates, and why not when it did not (a non-pytest argv, a non-python language, or an explicit judge.mutation.liveness = false). Optional under producer = 'native'; FORBIDDEN under 'ingested' on budget_per_candidate_derived_s's own footing -- liveness is a native-execution mechanism (RW-33: applied ONLY to native R2 lanes).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["active", "reason", "plugin"],
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "plugin": {
+              "type": ["string", "null"],
+              "minLength": 1
+            }
+          }
+        },
         "kill_attribution": {
           "description": "Whether kills in this run are attributed to a declared mechanism or merely observed. 'unattributed' is honest and common: it means a killed mutant proves only that the suite failed, not that it failed for the reason the mutant created. Assay cannot verify a database's causality, so v5 makes the weakness visible rather than absent (A-220).",
           "enum": [
@@ -1827,7 +1846,8 @@
               {"not": {"required": ["max_mutants"]}},
               {"not": {"required": ["operators"]}},
               {"not": {"required": ["equivalence_artifact"]}},
-              {"not": {"required": ["budget_per_candidate_derived_s"]}}
+              {"not": {"required": ["budget_per_candidate_derived_s"]}},
+              {"not": {"required": ["liveness"]}}
             ]
           }
         }

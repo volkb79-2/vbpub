@@ -695,6 +695,17 @@ class CommandPlan:
     argv_declared: tuple[str, ...]
     argv_appended: tuple[str, ...]
     argv_effective: tuple[str, ...]
+    #: (B091/RW-36) `None` -- and only `None` -- means "all of `argv_appended`
+    #: requires `allow_argv_append` consent (A-095)", which is byte-identical
+    #: to every pre-RW-36 `CommandPlan` and to every plan `assay.liveness`
+    #: never touches. `assay.liveness.inject_liveness_plugin` is the ONLY
+    #: function that ever sets this explicitly, to the value `argv_appended`
+    #: held BEFORE it added its own unconditional infrastructure tokens --
+    #: so `execute_plan`'s refusal check keeps testing only what the CLI's
+    #: own `--` passthrough contributed, and liveness's own append (gated by
+    #: `judge.mutation.liveness`, never by lane consent) is not caught by a
+    #: gate whose entire meaning is "the lane permitted THIS".
+    cli_argv_appended: tuple[str, ...] | None = None
     #: exactly ``lane.env``, verbatim (A-019: declared-only).
     env_declared: Mapping[str, str]
     #: ``env_declared`` plus whichever ``env_passthrough`` names were actually
@@ -1148,7 +1159,15 @@ def execute_plan(
         )
     child_timeout: float | None = None if timeout == math.inf else timeout
     started_at = clock()
-    if plan.argv_appended and not plan.allow_argv_append:
+    # (B091/RW-36) `consent_scoped_appended` is `argv_appended` itself for
+    # every plan `assay.liveness` never touched (`cli_argv_appended is None`)
+    # -- unchanged behaviour, byte for byte. A liveness-augmented plan sets
+    # `cli_argv_appended` to the CLI-only subset, so this refusal continues
+    # to test ONLY the tokens `allow_argv_append` actually governs.
+    consent_scoped_appended = (
+        plan.argv_appended if plan.cli_argv_appended is None else plan.cli_argv_appended
+    )
+    if consent_scoped_appended and not plan.allow_argv_append:
         return CommandResult(
             plan=plan,
             outcome=Outcome.ERROR,
@@ -3485,12 +3504,28 @@ def _run_prepared_lane(
     # `process_runner` unchanged either way (`ASSAY_LIVENESS_EXIT` is never
     # set for it; see `liveness.py`'s own docstring).
     liveness_injected = False
+    # (B091/RW-36) A real string always -- never `None` -- so
+    # `judgment.r2.liveness.reason`/the `plan` event's own copy are never a
+    # bare `active: false` with no explanation. Overwritten below only when
+    # this lane actually reaches `inject_liveness_plugin`. `r2_ingested` is
+    # never true here (the ingested path never reaches `run_mutation`/
+    # `_build_judgment_r2` at all -- `_build_ingested_judgment_r2` handles
+    # that branch and never sets `liveness`, which is exactly "forbidden
+    # under producer = ingested"), so the only live reason this default
+    # ever actually reports is "language-not-python".
+    liveness_reason: str = "language-not-python" if r2_declared else "not-applicable"
+    liveness_plugin_path: str | None = None
     if r2_declared and not r2_ingested and adapter is not None and adapter.name == "python":
-        plan, liveness_injected = liveness.inject_liveness_plugin(
+        liveness_injection = liveness.inject_liveness_plugin(
             plan,
             liveness_dir=project_root / ".assay" / "liveness",
             diagnostics=diagnostics,
+            liveness_policy=lane.judge.mutation.liveness,
         )
+        plan = liveness_injection.plan
+        liveness_injected = liveness_injection.active
+        liveness_reason = liveness_injection.reason
+        liveness_plugin_path = liveness_injection.plugin
     # B031/A-320. This used to be an UNCONDITIONAL
     # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
     # a CWD-relative path in the CONSUMER's live worktree, built by
@@ -4172,6 +4207,9 @@ def _run_prepared_lane(
                     operators=lane.judge.mutation.operators,
                     process_runner=candidate_process_runner,
                     clock=clock,
+                    liveness_active=liveness_injected,
+                    liveness_reason=liveness_reason,
+                    liveness_plugin=liveness_plugin_path,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,
@@ -4246,6 +4284,16 @@ def _run_prepared_lane(
                         budget_per_candidate_derived_s=(
                             r2_claim.mutation.budget_per_candidate_derived_s
                         ),
+                        # (B091/RW-36) Straight from THIS function's own
+                        # local variables, not read back off `Mutation` --
+                        # unlike `budget_per_candidate_derived_s`, nothing
+                        # about liveness is computed inside `run_mutation`;
+                        # `inject_liveness_plugin` already decided all three
+                        # before `run_mutation` was even called, so there is
+                        # no second derivation here to drift from the first.
+                        liveness_active=liveness_injected,
+                        liveness_reason=liveness_reason,
+                        liveness_plugin=liveness_plugin_path,
                     )
         ended = iso_utc(clock())
 
@@ -4639,6 +4687,15 @@ def _build_judgment_r2(
     #: duration or the `"none"` opt-out. See `JudgmentR2.
     #: budget_per_candidate_derived_s`'s own docstring.
     budget_per_candidate_derived_s: float | None = None,
+    #: (B091/RW-36) The SAME three-field record the `plan` progress event
+    #: carries, straight from `assay.liveness.LivenessInjection` -- `False`/
+    #: `None`/`None` for every lane liveness never touched (non-python,
+    #: ingested, or no R2 at all), so a reader sees a real `{active: false,
+    #: reason: ..., plugin: null}` object rather than an absent key even on
+    #: those lanes (RW-36's own "a reader sees what ran").
+    liveness_active: bool = False,
+    liveness_reason: str | None = None,
+    liveness_plugin: str | None = None,
 ) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
@@ -4692,6 +4749,11 @@ def _build_judgment_r2(
         shard_index=shard_index,
         shard_count=shard_count,
         budget_per_candidate_derived_s=budget_per_candidate_derived_s,
+        liveness={
+            "active": liveness_active,
+            "reason": liveness_reason,
+            "plugin": liveness_plugin,
+        },
     )
 
 

@@ -16,6 +16,7 @@ from assay import config as config_module
 from assay import verdict as verdict_module
 from assay.config import load_lane_file
 from assay.errors import LaneConfigError
+from assay.liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE
 from assay.mutation import MUTATION_OPERATORS
 from assay.vocabulary import (
     MUTATION_OPERATORS_BY_LANGUAGE,
@@ -417,3 +418,98 @@ def test_config_and_verdict_shard_count_bounds_stay_equal():
     equality guard is exactly the drift risk this constant exists to close;
     this is that guard."""
     assert config_module.MAX_SHARD_COUNT == verdict_module.MAX_SHARD_COUNT
+
+
+# --------------------------------------------------------------------------
+# judge.mutation.liveness (B091/RW-36)
+# --------------------------------------------------------------------------
+
+
+def test_liveness_omitted_stays_none_the_omission_is_the_default(project: Project):
+    """The same 'omission is a real, meaningful default' idiom as
+    `budget_per_candidate`: the stored value is `None`, and `assay.liveness.
+    inject_liveness_plugin` treats `None` identically to an explicit
+    `"auto"` at run time -- this test pins the LOAD-time half only."""
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        "operators = [\"python:compare-swap\"]\n"
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.liveness is None
+
+
+@pytest.mark.parametrize(
+    "declared,stored",
+    [
+        ('"auto"', LIVENESS_AUTO),
+        ("true", LIVENESS_TRUE),
+        ("false", LIVENESS_FALSE),
+    ],
+)
+def test_liveness_declared_spellings_are_accepted_and_normalized(
+    project: Project, declared: str, stored: str
+):
+    """`R0_LANE`'s own default argv (`["pytest", "tests/unit", "-q"]`)
+    invokes pytest, so every one of the three closed spellings -- including
+    `true` -- is legal on this fixture without also changing argv."""
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        f"operators = [\"python:compare-swap\"]\nliveness = {declared}\n"
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.liveness == stored
+
+
+def test_liveness_true_is_refused_at_load_when_argv_does_not_invoke_pytest(
+    project: Project,
+):
+    """RW-36's own load-time half: `true` forced on a lane whose argv is
+    not pytest can never actually turn liveness on, so the refusal happens
+    here, in writing, rather than as a runtime WARN a human editing
+    assay.toml would have to go looking for."""
+    lane = set_key(
+        _lane_with_mutation(
+            "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+            "operators = [\"python:compare-swap\"]\nliveness = true\n"
+        ),
+        "argv",
+        '["tox"]',
+    )
+    with pytest.raises(LaneConfigError, match="judge.mutation.liveness = true"):
+        load_lane_file(project.write(lane))
+
+
+def test_liveness_auto_on_a_non_pytest_argv_loads_without_refusal(project: Project):
+    """Unlike `true`, `auto` (and omission) never refuses at load -- the
+    lane simply gets liveness OFF at run time, WARNed there, not here."""
+    lane = set_key(
+        _lane_with_mutation(
+            "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+            "operators = [\"python:compare-swap\"]\nliveness = \"auto\"\n"
+        ),
+        "argv",
+        '["tox"]',
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+    assert judge is not None and judge.mutation is not None
+    assert judge.mutation.liveness == LIVENESS_AUTO
+
+
+def test_liveness_rejects_an_unknown_spelling(project: Project):
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        "operators = [\"python:compare-swap\"]\nliveness = \"sometimes\"\n"
+    )
+    with pytest.raises(LaneConfigError, match="judge.mutation.liveness"):
+        load_lane_file(project.write(lane))
+
+
+def test_liveness_declared_value_round_trips_through_as_declared(project: Project):
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        "operators = [\"python:compare-swap\"]\nliveness = false\n"
+    )
+    loaded = load_lane_file(project.write(lane)).lane("package")
+    assert loaded.as_declared()["judge"]["mutation"]["liveness"] == LIVENESS_FALSE

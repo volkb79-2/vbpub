@@ -2469,6 +2469,17 @@ class JudgmentR2:
     #: declares this key at all (`config._load_ingested_mutation` refuses
     #: it), so assay derived no bound for a run it did not orchestrate.
     budget_per_candidate_derived_s: float | None = None
+    #: (B091/RW-36) ``{"active": bool, "reason": str, "plugin": str | None}``
+    #: -- ``assay.liveness.LivenessInjection.to_wire()`` verbatim, recording
+    #: whether the ``os._exit``/hung-detection mechanism ran for this lane's
+    #: R2 candidates and, when it did not, WHY (a non-pytest argv, a
+    #: non-python language, or an explicit ``judge.mutation.liveness =
+    #: false``). **Optional under `producer = "native"`, FORBIDDEN under
+    #: `"ingested"`** on :attr:`budget_per_candidate_derived_s`'s own
+    #: footing: liveness is a native-execution mechanism (RW-33: "applied
+    #: ONLY to native R2 lanes"), so an ingested judgment has nothing
+    #: honest to put here.
+    liveness: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # B046: the producer fork, checked FIRST -- every field below is
@@ -2584,10 +2595,12 @@ class JudgmentR2:
         "max_mutants",
         "operators",
         "equivalence_artifact",
-        # (B091/D-23) Trailing, on `equivalence_artifact`'s own footing:
-        # native-only but OPTIONAL, never required -- see
-        # `_check_producer_fork`'s own trailing-slice comment.
+        # (B091/D-23, and RW-36's `liveness` trailing beside it) Trailing, on
+        # `equivalence_artifact`'s own footing: native-only but OPTIONAL,
+        # never required -- see `_check_producer_fork`'s own trailing-slice
+        # comment.
         "budget_per_candidate_derived_s",
+        "liveness",
     )
     #: (B046) facts derived FROM an ingested report -- absent from a native
     #: document, which would otherwise claim a computation that never ran.
@@ -2612,11 +2625,11 @@ class JudgmentR2:
         """
         if self.producer == "native":
             present, forbidden_label = self._INGESTED_ONLY_FIELDS, "native"
-            # (B091/D-23) `[:-2]`: the two TRAILING entries of
-            # `_NATIVE_ONLY_FIELDS` -- `equivalence_artifact` and
-            # `budget_per_candidate_derived_s` -- are native-only but
-            # OPTIONAL, never required of a native document.
-            required = self._NATIVE_ONLY_FIELDS[:-2]
+            # (B091/D-23/RW-36) `[:-3]`: the three TRAILING entries of
+            # `_NATIVE_ONLY_FIELDS` -- `equivalence_artifact`,
+            # `budget_per_candidate_derived_s` and `liveness` -- are
+            # native-only but OPTIONAL, never required of a native document.
+            required = self._NATIVE_ONLY_FIELDS[:-3]
         else:                                         # is OPTIONAL natively
             present, forbidden_label = self._NATIVE_ONLY_FIELDS, "ingested"
             required = self._INGESTED_ONLY_FIELDS
@@ -2694,6 +2707,44 @@ class JudgmentR2:
                 f"positive finite number or None, got "
                 f"{self.budget_per_candidate_derived_s!r}"
             )
+        if self.liveness is not None:
+            if (
+                not isinstance(self.liveness, Mapping)
+                or set(self.liveness) != {"active", "reason", "plugin"}
+            ):
+                raise ValueError(
+                    "judgment.r2.liveness must be a mapping with exactly "
+                    f"the keys active/reason/plugin, or None, got "
+                    f"{self.liveness!r}"
+                )
+            active = self.liveness["active"]
+            reason = self.liveness["reason"]
+            plugin = self.liveness["plugin"]
+            if not isinstance(active, bool):
+                raise ValueError(
+                    f"judgment.r2.liveness.active must be a bool, got {active!r}"
+                )
+            if not isinstance(reason, str) or not reason:
+                raise ValueError(
+                    "judgment.r2.liveness.reason must be a non-empty string, "
+                    f"got {reason!r}"
+                )
+            if plugin is not None and (not isinstance(plugin, str) or not plugin):
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be a non-empty string "
+                    f"or None, got {plugin!r}"
+                )
+            if active and plugin is None:
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be present when "
+                    "active is true -- an active mechanism materialised a "
+                    "real plugin file"
+                )
+            if not active and plugin is not None:
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be None when active "
+                    "is false -- nothing was materialised"
+                )
 
     def _check_ingested_record(self) -> None:
         """(B046) The shape of the four fields an ingested judgment carries.
@@ -2818,6 +2869,8 @@ class JudgmentR2:
             payload["budget_per_candidate_derived_s"] = (
                 self.budget_per_candidate_derived_s
             )
+        if self.liveness is not None:
+            payload["liveness"] = dict(self.liveness)
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count

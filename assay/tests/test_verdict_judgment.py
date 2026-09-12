@@ -528,6 +528,94 @@ def test_judgment_r2_forbids_budget_per_candidate_derived_s_under_ingested():
         JudgmentR2(**_minimal_ingested_r2(budget_per_candidate_derived_s=60.0))
 
 
+# --------------------------------------------------------------------------
+# judgment.r2.liveness (B091/RW-36)
+# --------------------------------------------------------------------------
+
+
+def test_judgment_r2_liveness_round_trips_when_present():
+    r2 = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        liveness={
+            "active": True,
+            "reason": "auto-pytest-argv",
+            "plugin": ".assay/liveness/assay_liveness_plugin.py",
+        },
+        **BASE_R2_POLICY,
+    )
+    assert r2.to_dict()["liveness"] == {
+        "active": True,
+        "reason": "auto-pytest-argv",
+        "plugin": ".assay/liveness/assay_liveness_plugin.py",
+    }
+
+
+def test_judgment_r2_liveness_inactive_form_round_trips():
+    r2 = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        liveness={
+            "active": False,
+            "reason": "language-not-python",
+            "plugin": None,
+        },
+        **BASE_R2_POLICY,
+    )
+    assert r2.to_dict()["liveness"]["active"] is False
+    assert r2.to_dict()["liveness"]["plugin"] is None
+
+
+def test_judgment_r2_liveness_absent_by_default():
+    r2 = JudgmentR2(
+        jobs=1, max_mutants=50, operators=("python:compare-swap",), **BASE_R2_POLICY
+    )
+    assert "liveness" not in r2.to_dict()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"active": True, "reason": "x"},  # missing 'plugin'
+        {"active": "yes", "reason": "x", "plugin": None},  # active not a bool
+        {"active": False, "reason": "", "plugin": None},  # empty reason
+        {"active": False, "reason": "x", "plugin": ""},  # empty plugin string
+        # active True requires a real plugin path
+        {"active": True, "reason": "x", "plugin": None},
+        # active False forbids a plugin path
+        {"active": False, "reason": "x", "plugin": "p.py"},
+        "not-a-mapping",
+    ],
+)
+def test_judgment_r2_refuses_a_malformed_liveness(bad):
+    with pytest.raises(ValueError, match="judgment.r2.liveness"):
+        JudgmentR2(
+            jobs=1,
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            liveness=bad,
+            **BASE_R2_POLICY,
+        )
+
+
+def test_judgment_r2_forbids_liveness_under_ingested():
+    """(B091/RW-36) Liveness is a native-execution mechanism (RW-33:
+    applied ONLY to native R2 lanes) -- forbidden under `ingested` on
+    `budget_per_candidate_derived_s`'s own footing.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"records producer 'ingested' beside \['liveness'\]",
+    ):
+        JudgmentR2(
+            **_minimal_ingested_r2(
+                liveness={"active": False, "reason": "x", "plugin": None}
+            )
+        )
+
+
 def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
     """A-223(b): attribution is DERIVED from `kill_signal_artifact`'s
     presence, so the model refuses the two states in which they disagree --

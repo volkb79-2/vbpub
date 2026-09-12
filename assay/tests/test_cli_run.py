@@ -400,6 +400,16 @@ operators = ["python:compare-swap"]
         # wall-clock measurement (this process's own `/bin/sh -c` cost),
         # checked structurally just below rather than pinned here.
         "budget_per_candidate_derived_s": r2_judgment["budget_per_candidate_derived_s"],
+        # (B091/RW-36) This lane's own argv (`/bin/sh -c "grep ..."`) never
+        # literally invokes pytest, so liveness stays OFF by the same
+        # auto-policy rule that would refuse an explicit
+        # `judge.mutation.liveness = true` at load time -- a real, honest
+        # answer from a real end-to-end run, not a mocked one.
+        "liveness": {
+            "active": False,
+            "reason": "argv-does-not-invoke-pytest",
+            "plugin": None,
+        },
     }
     assert r2_judgment["budget_per_candidate_derived_s"] > 0
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --

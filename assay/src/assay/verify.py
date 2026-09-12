@@ -1773,6 +1773,22 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         fail_under=raw.get("fail_under"),
         shard_index=raw.get("shard_index"),
         shard_count=raw.get("shard_count"),
+        # (B091/D-23/A1, real bug found and fixed by THIS session while
+        # wiring RW-36's `liveness` beside it: this reconstruction never
+        # read `budget_per_candidate_derived_s` back at all, so `assay
+        # verify` raised a spurious "unknown judgment.r2 field(s):
+        # ['budget_per_candidate_derived_s']" on every real document A1's
+        # own auto-budget default produces -- `r2.to_dict()` omitted the
+        # field entirely (it stayed at its `None` default), and
+        # `_reject_unknown_keys` below compares `raw`'s keys against
+        # exactly that. `.get` for the same reason every other optional
+        # `judgment.r2` field above is read with it.
+        budget_per_candidate_derived_s=raw.get("budget_per_candidate_derived_s"),
+        # (B091/RW-36) `.get`: absent under `producer = "ingested"` and on
+        # every pre-RW-36 document (additive schema). Already the exact
+        # `{"active", "reason", "plugin"}` shape `JudgmentR2.__post_init__`
+        # validates -- JSON's own dict, no separate reconstruction needed.
+        liveness=raw.get("liveness"),
     )
     _reject_unknown_keys(raw, r2.to_dict(), "judgment.r2")
     return r2
