@@ -262,3 +262,130 @@ those two batches). Full gate still deferred to A6.
 
 **Not run this session:** the real registered gate; A3's own tests
 (A3 not started — see BRIEF-3).
+
+## A3 (session 4) — active `LivenessRunner` monitoring loop, `hung` bucket
+
+**Contract item satisfied:** RW-33's active-monitoring half of B091 contract
+item 3 — a native R2 python/pytest candidate that stops making progress
+(no `test`/`session_finish` event AND no process-tree CPU growth, or a
+`session_finish` seen with the process still alive 30s later) is killed and
+reported as a NEW `hung` bucket, distinct from `budget_exceeded` (a
+CPU-spinning mutant is never `hung`, it hits the ordinary elapsed budget).
+
+**Oracle → test mapping:**
+
+| Oracle | Test(s) |
+| --- | --- |
+| No progress for `expect_next_event_within_s` AND CPU tree grew < 1.0s over the trailing 30s → `hung` | `tests/test_liveness_runner_monitor.py::test_idle_with_flat_cpu_is_hung` |
+| A CPU-spinning candidate (steady growth) is NEVER `hung`, even while idle — hits the budget ceiling instead | `tests/test_liveness_runner_monitor.py::test_cpu_growing_prevents_hung_even_when_idle` |
+| ANY `/proc` read failure reads as "still growing", never proof of a stall | `tests/test_liveness_runner_monitor.py::test_proc_read_failure_never_declares_hung` |
+| `session_finish` seen + still alive 30s later → `hung`, regardless of CPU (this branch never consults it) | `tests/test_liveness_runner_monitor.py::test_session_finish_then_still_alive_is_hung_regardless_of_cpu` |
+| Normal completion returns a real `CompletedProcess`, no kill, no exception | `tests/test_liveness_runner_monitor.py::test_normal_completion_returns_completed_process` |
+| `timeout=None` (unbounded, B067) never expires on elapsed budget alone | `tests/test_liveness_runner_monitor.py::test_unbounded_timeout_never_expires_on_budget_alone` |
+| The REAL Popen/killpg/reap path, against a genuine child process (not a fake) | `tests/test_liveness_runner_monitor.py::test_real_subprocess_thread_join_style_hang_is_killed_and_classified_hung` (real `sleep 300`, real default `tree_cpu_seconds`, only the clock faked) |
+| The REAL stdout-file capture path on normal completion | `tests/test_liveness_runner_monitor.py::test_real_subprocess_normal_completion_captures_real_output` |
+| `tree_cpu_seconds` sums a real live child's CPU via the default task-API path; falls back to ppid-scan (at the root AND per-child) when the task API fails; skips an already-exited/duplicate pid without raising | `tests/test_liveness_proc_helpers.py::test_tree_cpu_seconds_walks_a_real_live_child`, `::test_tree_cpu_seconds_falls_back_to_ppid_scan_when_task_api_unavailable`, `::test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails`, `::test_tree_cpu_seconds_skips_a_child_that_already_exited`, `::test_tree_cpu_seconds_skips_a_duplicate_pid_already_visited`, `::test_tree_cpu_seconds_root_read_failure_raises` |
+| `_pid_children_via_ppid_scan` skips unreadable/malformed `/proc` entries without raising | `tests/test_liveness_proc_helpers.py::test_pid_children_via_ppid_scan_finds_a_real_child`, `::test_pid_children_via_ppid_scan_skips_unreadable_and_malformed_entries` |
+| `expect_next_event_within_s = max(3 x slowest_test_s, 15s)` from real baseline event data; falls back to `max(60s, baseline_s/4)` when unavailable/torn/malformed | `tests/test_liveness_proc_helpers.py::test_compute_expect_next_event_within_s_reads_slowest_test`, `::test_compute_expect_next_event_within_s_tolerates_a_torn_last_line`, `::test_compute_expect_next_event_within_s_ignores_non_test_and_malformed_duration`, `::test_compute_expect_next_event_within_s_none_path_uses_fallback`, `::test_compute_expect_next_event_within_s_missing_file_uses_fallback` |
+| `_read_events_progress` counts valid lines, detects `session_finish`, tolerates blank/torn lines, never mistakes a plain `test` event for `session_finish` | `tests/test_liveness_proc_helpers.py::test_read_events_progress_counts_valid_lines_and_session_finish`, `::test_read_events_progress_a_test_event_alone_never_reports_session_finish`, `::test_read_events_progress_skips_blank_and_torn_lines`, `::test_read_events_progress_missing_file` |
+| `LivenessRunner._kill` tolerates a process that vanished between `getpgid`/`killpg` and between `killpg`/`wait` | `tests/test_liveness_proc_helpers.py::test_kill_tolerates_killpg_process_lookup_error`, `::test_kill_tolerates_wait_raising` |
+| `LivenessHungExpired` maps to `ReasonCode.CANDIDATE_HUNG`; a plain `TimeoutExpired` still maps to `LANE_TIMEOUT` (the negative) | `tests/test_runner_execute.py::test_liveness_hung_expired_is_budget_exceeded_candidate_hung`, `::test_budget_expiry_is_budget_exceeded_lane_timeout_via_injection` (pre-existing, the negative) |
+| `_classify_mutant_result`/`_classify_mutant_result_with_equivalence` map `CANDIDATE_HUNG` → `"hung"`, `LANE_TIMEOUT` → unchanged `"budget_exceeded"` | `tests/test_mutation_hung_bucket.py` (5 tests, both functions) |
+| **`judge_mutation`'s OVERALL outcome precedence** also reports `hung` — the real gap this session found (a `hung`-only candidate used to fall through to `PASS`) | `tests/test_mutation_judge.py::test_a_hung_candidate_alone_is_budget_exceeded_candidate_hung`, `::test_budget_exceeded_outranks_hung_when_both_are_present` |
+| `hung` is additive: a document with no `hung` key still verifies; one WITH a `hung` entry verifies and its arithmetic/identity-uniqueness rules apply exactly like every other bucket | `tests/test_verify_hung_bucket.py` (4 tests) |
+| The new `(BUDGET_EXCEEDED, CANDIDATE_HUNG)` pair is schema-valid and independently re-derivable | `tests/fixtures/verdicts/r2_budget_exceeded_candidate_hung.json` + `tests/test_verdict_conformance.py`'s existing parametrized sweep over `FIXTURE_PATHS` |
+
+**Files touched:** `src/assay/liveness.py` (the monitoring loop itself —
+see the LOG's `44dd12ca` entry for the full list of new names),
+`src/assay/errors.py`, `src/assay/runner.py`, `src/assay/mutation.py`,
+`src/assay/verdict.py`, `src/assay/schemas/verdict.schema.json`,
+`src/assay/verify.py`, `docs/DESIGN-GUIDE.md`; 9 pre-existing hand-written
+verdict fixtures (`"hung": []` added), 1 new one
+(`r2_budget_exceeded_candidate_hung.json`); tests as tabulated above.
+
+**Design decisions made without stopping (RW-9 does not apply — these are
+BRIEF-3's own decisions, implemented as written, not re-litigated):**
+- `LivenessHungExpired`/`CANDIDATE_HUNG`/the one-line `isinstance` check:
+  BRIEF-3's own text, verbatim. The ONE thing BRIEF-3 left slightly open
+  ("reuse `runner._bounded_tail` directly ... or ask/flag if that feels
+  wrong") turned out not to be a real question: `_execute_plan_inner`
+  already applies `_bounded_tail`/`_decode_timeout_stream` GENERICALLY to
+  whatever ANY `process_runner` returns or raises, so `LivenessRunner`
+  needed zero private imports — it just returns a full-text
+  `CompletedProcess` or raises with full raw bytes, and the existing
+  generic post-processing does the truncation. Not a BLOCKED-protocol
+  question in the end, but recorded here because BRIEF-3 explicitly named
+  it as one.
+- `LivenessRunner`'s constructor DROPS the v1 `inner=` parameter entirely
+  rather than keeping it unused — the active loop launches its own
+  `Popen` directly and never delegates to another `ProcessRunner`, so a
+  vestigial `inner` would be dead weight implying a delegation that no
+  longer happens. The four pre-existing `inner=`-based tests in
+  `test_liveness.py` were REWRITTEN (not deleted-and-replaced) for the new
+  `popen=` fake contract, preserving what each one originally proved (env
+  stamping, events-path determinism, timeout passthrough).
+- The CPU-growth trailing-window search (`_monitor`'s `cpu_samples` scan)
+  is written newest-to-oldest with an explicit `break`, not oldest-to-
+  newest with an implicit fallthrough — the first draft's oldest-to-newest
+  version had a coverage-tool-flagged branch (`for`-loop exhaustion
+  without `break`) that turned out to be STRUCTURALLY UNREACHABLE given
+  `_HUNG_CPU_WINDOW_S > 0` (the just-appended sample's own diff is always
+  0, so the loop always breaks eventually). Rewritten rather than
+  suppressed/ignored: the newest-to-oldest shape makes "not enough history
+  yet" (loop exhausts, no `break`) the COMMON early-monitoring case
+  instead of a dead branch, with identical output for every real input
+  (verified: both directions find "the newest sample still >= 30s old").
+
+**Two real, pre-existing gaps found and fixed this session** — see the
+LOG's `44dd12ca` entry for the full account: `mutation.judge_mutation`'s
+outcome-precedence chain had no `hung` branch at all (the largest finding:
+a hung-only candidate silently verdicted `PASS`), and four independent
+hand-written vocabulary transcriptions (`DESIGN-GUIDE.md`, `test_errors.
+py`, `test_verdict_conformance.py`, `test_verdict_reason_codes.py`) needed
+updating to match — each caught by a real test failure across three
+successive regression sweeps, not by grepping for every occurrence up
+front.
+
+**Coverage self-check:** `src/assay/liveness.py` — **100% line+branch**
+(285 statements, 78 branches, 0 missing; `coverage run --branch
+--source=assay.liveness -m pytest tests/test_liveness.py tests/
+test_liveness_runner_monitor.py tests/test_liveness_proc_helpers.py`, 67
+tests). Not run for `mutation.py`/`runner.py`/`verdict.py`/`verify.py`/
+`errors.py` this session (BRIEF-3's explicit 100% requirement named only
+`liveness.py`).
+
+**Regression (targeted, GREEN):** every `mutation`/`runner`/`verdict`/
+`verify`/`liveness`/`errors`-named test file, one serial sweep — **2107
+passed**. Plus `test_cli_run.py` (full file, real end-to-end subprocess) +
+`test_config_mutation.py` + `test_config_ingested_mutation.py` +
+`test_docs_examples_and_vocabulary.py` — **148 passed**. Full gate still
+deferred to A6.
+
+**Not done this session (honest gaps, BRIEF-4's own first items):**
+- **The real end-to-end fixture-project test BRIEF-3 names explicitly**:
+  a thread-join-style hang → `hung` within ~45s, and a busy-loop →
+  `budget_exceeded` (not `hung`), BOTH through the real installed `assay
+  run` CLI against a tiny real pytest project with a real compare-swap
+  mutant (`x <= 0` → `x < 0` is the concrete, verified-available direction
+  — `_COMPARE_SWAP` in `adapters/python.py` maps `LtE` → `Lt`; at `x = 0`
+  the baseline is `True` and the mutant is `False`, which is what needs to
+  differ for the mutant to change behaviour at all). NOT attempted — a
+  checkpoint-budget decision, not a design gap: by the time A3's
+  implementation, its full closed-vocabulary threading, and the two
+  real-pre-existing-gap fixes above were green, the session was already
+  well past the checkpoint clause's own ~90-call ceiling.
+- **The ≥3-planted-mutant table for the monitoring loop.** The 100%
+  line+branch self-check above is real and done; a planted-mutant table
+  is BRIEF-3's OWN, separate, additional ask on top of it (prove a real
+  mutation of the loop's own logic is actually caught by a real test, not
+  merely that every line/branch executes at least once) — not done this
+  session.
+- A4 (progress-stream fields: `test` events to the stream for the
+  baseline, `plan.slowest_test_s`/`expect_next_event_within_s`,
+  `candidate.tests_completed`, `"test"` in `PROGRESS_EVENTS`) — untouched.
+  `compute_expect_next_event_within_s` and the baseline
+  `ASSAY_LIVENESS_EVENTS` wiring A3 shipped are A4's own shared
+  prerequisite, already done; A4's remaining work is reading `tests_
+  completed`/`slowest_test_s` back onto the wire, which this session did
+  not reach.
+- A5/A6 — untouched, unchanged from BRIEF-3.

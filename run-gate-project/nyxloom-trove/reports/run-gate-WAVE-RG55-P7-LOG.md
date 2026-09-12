@@ -217,3 +217,198 @@ exists, in a small follow-up entry-only commit).
   (`run-gate-vbpub-r2-2315801-1789214565`, watcher PID 2415767) were
   confirmed still alive before AND after this commit's work — no
   whole-suite run and no assay R2 lane attempted, per the binding rule.
+
+### `44dd12ca` — A3: active `LivenessRunner` monitoring loop, `hung` bucket (session 4)
+
+- **First and only substantive commit of session 4** (fresh Sonnet
+  successor, seeded from BRIEF-3). Implements BRIEF-3's decided A3
+  mechanism in full: the active Popen-based monitoring loop, the
+  `LivenessHungExpired`/`CANDIDATE_HUNG` classification path, and the
+  `hung` bucket's full threading through every closed vocabulary this
+  codebase has. A3 is functionally COMPLETE and tested; the real
+  end-to-end fixture-project test and the planted-mutant table BRIEF-3
+  itself asks for are NOT done this session (see "What's OPEN" below and
+  BRIEF-4).
+- Files: `src/assay/liveness.py` (rewritten `LivenessRunner`: `inner=`
+  dropped, replaced with `expect_next_event_within_s=` [required] and
+  `monotonic=`/`sleep=`/`poll_interval_s=`/`cpu_reader=`/`popen=`
+  [all injectable, real defaults] — `__call__` now launches
+  `Popen(start_new_session=True, stdout=<file>, stderr=<file>)` and hands
+  off to a new `_monitor` loop; new module-level `LivenessHungExpired`
+  [a `subprocess.TimeoutExpired` subclass], `tree_cpu_seconds` +
+  `_pid_cpu_ticks`/`_pid_children_via_task`/`_pid_children_via_ppid_scan`
+  [the `/proc` tree-CPU sampler, task-API primary + ppid-scan fallback,
+  per-pid not just at the root], `compute_expect_next_event_within_s`
+  [reads a baseline events NDJSON for the slowest `test` event's
+  `duration_s`, `max(3x, 15s)`; falls back to `max(60s,
+  baseline_s/4)`], `_read_events_progress`/`_safe_size`/`_read_bytes`
+  [small side-file helpers, each individually unit-tested for its own
+  `OSError`/torn-line tolerance]), `src/assay/errors.py`
+  (`ReasonCode.CANDIDATE_HUNG` under `Outcome.BUDGET_EXCEEDED`, beside
+  `LANE_TIMEOUT`), `src/assay/runner.py` (`_execute_plan_inner`'s
+  `except subprocess.TimeoutExpired` gains a one-line `isinstance(exc,
+  liveness.LivenessHungExpired)` → `reason_code` selection; the baseline
+  call site gains `ASSAY_LIVENESS_EVENTS` stamping [never `_EXIT`] via a
+  plan COPY used only for that one `_execute_snapshot_unit` call, never
+  mutating the shared `plan` the R2 dispatch reads further down;
+  `expect_next_event_within_s` computed once, right beside `result = unit.
+  result`, from `mutation.baseline_wall_seconds(result)` — the SAME
+  function A1 already uses, never a second derivation; `LivenessRunner`
+  construction updated to the new keyword-only contract), `src/assay/
+  mutation.py` (`_classify_mutant_result`/`_classify_mutant_result_with_
+  equivalence` gain the `reason_code is CANDIDATE_HUNG` → `"hung"` branch;
+  `_execute_mutation_jobs`'s bucket-dict literal and final `Mutation(...)`
+  construction converted from five hand-written keys to a
+  `MUTATION_BUCKETS`-driven comprehension [A-228's own "reaches some
+  layers and not others" lesson — this WAS a five-entry literal that would
+  have `KeyError`'d the moment `hung` was returned]; **`judge_mutation`
+  gains a `mutation.hung` branch between `budget_exceeded` and `survived`
+  — this is the real gap this session found**: without it, a `hung`-only
+  candidate's OVERALL R2 claim status fell all the way through to `PASS`,
+  silently losing the fact that a candidate never finished, even though
+  the PER-candidate bucket was correctly `hung`), `src/assay/verdict.py`
+  (`MUTATION_BUCKETS` gains `"hung"`, sixth entry; `Mutation.hung: tuple[
+  MutantOutcome, ...] = ()` — every generic `MUTATION_BUCKETS`-driven site
+  in this file [`to_dict`, `__post_init__`'s per-bucket checks,
+  `_check_identities_are_unique`, `_check_kill_signal_is_killed_only`,
+  `_check_arithmetic`] picked it up with NO further edit), `src/assay/
+  schemas/verdict.schema.json` (`mutation.hung` property added [array of
+  `mutant_outcome`, same shape as `budget_exceeded`] — deliberately NOT in
+  `mutation`'s `required` list, so a document produced before this bucket
+  existed still validates; the `MUTANT_LIMIT_EXCEEDED` pre-submission
+  sentinel's own conditional gains `"hung": {"maxItems": 0}`; the flat
+  `reason_code` enum and the `reason_codes.BUDGET_EXCEEDED` cross-check
+  both gain `"CANDIDATE_HUNG"` — found by a real test failure, not by
+  inspection), `src/assay/verify.py` (`_mutation_of` normalizes a missing
+  `"hung"` key to `[]` ONCE, so every raw check downstream
+  [`_mutant_entries`, the arithmetic size check, `_check_identities_are_
+  unique`] sees the same shape a native post-this-session document always
+  has; `_reconstruct_mutation` special-cases `"hung"` to `raw.get(name,
+  [])` while the five original buckets keep strict `raw[name]` — a
+  document missing one of THOSE is genuinely malformed, not merely old).
+- **Design decision NOT re-litigated, implemented exactly as BRIEF-3
+  wrote it down**: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG` +
+  the one-line `isinstance` check, reusing 100% of the existing
+  tail-decoding/truncation logic (`_bounded_tail`/`_decode_timeout_stream`
+  in `runner.py`) with ZERO changes to either — `_execute_plan_inner`'s
+  generic post-processing already truncates whatever ANY `process_runner`
+  returns (the normal-completion path) or raises (the `TimeoutExpired`
+  except-clause), so `LivenessRunner` never needed to import
+  `_bounded_tail` at all (BRIEF-3's own "ask/flag if this feels wrong"
+  concern about reaching across a private name — resolved by finding it
+  was never actually necessary, not by asking).
+- **Two real, pre-existing gaps found and fixed this session, both by a
+  test failure rather than by inspection:**
+  1. `mutation.judge_mutation`'s outcome-precedence chain (documented
+     above) — the single most important functional finding this session:
+     without it, `hung` would have been a real, threaded, TESTED bucket
+     that nonetheless never actually changed a verdict's overall outcome
+     for the one shape B091 exists to fix (a candidate that hangs and
+     nothing else goes wrong). Caught by a dedicated fixture
+     (`r2_budget_exceeded_candidate_hung.json`) failing
+     `test_verdict_conformance.py`'s own re-derivation check, not by
+     reading the function.
+  2. Every hand-written oracle transcription of the reason-code/mutation-
+     bucket vocabulary needed its own update once `errors.py`/`verdict.py`
+     changed: `docs/DESIGN-GUIDE.md` §6's table, `tests/test_errors.py`'s
+     `EXPECTED_REASON_CODES`, `tests/test_verdict_conformance.py`'s
+     `VOCABULARY` (plus its own completeness check, which required the new
+     fixture above), `tests/test_verdict_reason_codes.py`'s hardcoded `32`
+     counts (now `33`). Each was found by running the FULL targeted
+     regression sweep, not by grepping for every occurrence up front —
+     three separate rounds of "run the suite, read the failure, fix the
+     one hand-written table it names" were needed before the sweep came
+     back clean.
+- Every pre-existing hand-written verdict fixture carrying a `mutation`
+  payload (`inconclusive.json`, `r2_budget_exceeded_lane_timeout.json`,
+  `r2_budget_exceeded_mutant_limit_exceeded.json`,
+  `r2_error_exec_failed_mutant_crashed.json`,
+  `r2_fail_mutants_survived.json`,
+  `r2_inconclusive_all_mutants_equivalent.json`,
+  `r2_inconclusive_no_mutants.json`, `r2_pass.json`,
+  `r2_pass_with_judgment.json`) gained `"hung": []` — `Mutation.to_dict()`
+  now emits it unconditionally, so a strict-equality
+  "matches-the-hand-written-fixture" test (A-041/A-067's own independent-
+  oracle discipline) needs the oracle updated, not the code relaxed;
+  patched mechanically (a small script asserting the exact bucket-key
+  shape before inserting, never a blind sed) then verified by re-running
+  every fixture-equality test green.
+- Tests: `tests/test_liveness.py` rewritten for the new `LivenessRunner`
+  launch contract (`_FakePopen`/`_FakeProc`, no more `_FakeInner`) — 38
+  tests, all still green, same count (the v1 blocking-delegate tests were
+  REWRITTEN for the new contract, not deleted or added-to). New:
+  `tests/test_liveness_runner_monitor.py` (8 tests: idle+flat-CPU→hung,
+  CPU-growing-prevents-hung [BRIEF-1's "other optional parameter at its
+  default" lesson, the direct regression for RW-33's "a CPU-spinning
+  mutant is NOT hung"], `/proc`-failure-never-hung,
+  session_finish+30s-alive→hung [never consults CPU], normal completion,
+  `timeout=None` never expires on budget alone, plus TWO tests using a
+  REAL `subprocess.Popen` [`sleep 300` → real `killpg`-and-reap; a real
+  `printf` → real stdout capture] with only the clock/sleep faked — every
+  other test uses a fully fake `popen`/`monotonic`/`sleep`/`cpu_reader`,
+  so none waits out a real 15s/30s/60s threshold). New:
+  `tests/test_liveness_proc_helpers.py` (21 tests: direct unit tests for
+  `tree_cpu_seconds`'s task-API/ppid-scan fallback [both at the root AND
+  per-child], a duplicate-pid-already-visited skip, a fabricated-dead-
+  child skip, `compute_expect_next_event_within_s`'s slowest-test/torn-
+  line/malformed-duration/missing-file cases, `_read_events_progress`'s
+  blank/torn-line/non-session-finish cases, `_safe_size`/`_read_bytes`'s
+  missing-file cases, `LivenessRunner._kill`'s two independent `except`
+  clauses via a fake proc + monkeypatched `os.killpg`). New:
+  `tests/test_mutation_hung_bucket.py` (5, the per-candidate classify
+  split, both classifier functions, the `LANE_TIMEOUT`-still-
+  `budget_exceeded` regression). New: `tests/test_verify_hung_bucket.py`
+  (4: a document missing `hung` still verifies; a document WITH a `hung`
+  entry verifies AND flips the overall status to `BUDGET_EXCEEDED`/
+  `CANDIDATE_HUNG`; an uncounted `hung` entry is refused by the arithmetic
+  check; a `hung` entry duplicating another bucket's identity is refused
+  by the uniqueness check). `tests/test_mutation_judge.py` +2 (the
+  `judge_mutation` gap, and its own regression: `budget_exceeded` still
+  outranks `hung` when both buckets are non-empty). `tests/
+  test_runner_execute.py` +1 (`LivenessHungExpired` → `CANDIDATE_HUNG`,
+  with the existing plain-`TimeoutExpired`→`LANE_TIMEOUT` test right above
+  it as the negative). `tests/test_verdict_reason_codes.py`/`tests/
+  test_verdict_conformance.py`/`tests/test_errors.py` updated (see "gaps
+  found" above).
+- **Coverage self-check: `src/assay/liveness.py` — 100% line+branch** (285
+  statements, 78 branches, 0 missing — `coverage run --branch
+  --source=assay.liveness -m pytest tests/test_liveness.py tests/
+  test_liveness_runner_monitor.py tests/test_liveness_proc_helpers.py`,
+  67 tests). No diff-coverage self-check run on `mutation.py`/`runner.py`/
+  `verdict.py`/`verify.py`/`errors.py` this session — only `liveness.py`
+  carried BRIEF-3's explicit 100% requirement; the other files' new lines
+  are each exercised by at least one dedicated test (see above) but not
+  measured for branch completeness.
+- Regression, GREEN: every `mutation`/`runner`/`verdict`/`verify`/
+  `liveness`/`errors`-named test file in one serial sweep (**2107
+  passed**), plus `test_cli_run.py` (full file, real end-to-end
+  subprocess) + `test_config_mutation.py` + `test_config_ingested_
+  mutation.py` + `test_docs_examples_and_vocabulary.py` (148 passed) — the
+  latter run specifically because `DESIGN-GUIDE.md` was touched. Full
+  gate (`tools/tester-unified-gate.sh`) still deferred to A6 per the
+  handoff's own ordering.
+- **What's OPEN (this session's own honest gaps, not previously flagged):**
+  the real end-to-end fixture-project test BRIEF-3 names explicitly (a
+  thread-join-style hang → `hung` within ~45s through the REAL `assay run`
+  CLI on a tiny real pytest project; a busy-loop → `budget_exceeded`,
+  NOT `hung`) — NOT attempted this session, purely a checkpoint-budget
+  decision (session was already well past the checkpoint clause's ~90-call
+  ceiling by the time A3's threading work was done and green); the
+  ≥3-planted-mutant table for the monitoring loop BRIEF-3 asks for,
+  recorded with its catching test — NOT done (the 100% line+branch
+  self-check is real and done, but a planted-mutant table is a DIFFERENT,
+  additional proof BRIEF-3 asks for on top of it, and it is not done).
+  Both are BRIEF-4's own first items.
+- HOST LOAD: `/proc/pressure/memory` `full avg10` stayed ≤4.5 throughout
+  (one `some avg10` reading at 4.46, `full` itself never approached the
+  5.0 back-off threshold); `nice -n 19 ionice -c 3` used for every pytest
+  invocation; every run serial, targeted files only (three sweeps did
+  spill past the Bash tool's own 120s foreground timeout and were moved
+  to background, per the harness's own mechanism — not a second
+  concurrent invocation). Two other wave tracks' own mutation-lane
+  containers/launchers were confirmed alive at both the start
+  (`run-gate.py --base main assay-r2`, watcher PID 2415767/launcher
+  2415766) and later in the session (P1's `cgroup-profiler` R2 resume,
+  PID 680903/680904 joined partway through) — this session never ran
+  the shared assay R2 mutation-lane gate itself, only targeted pytest,
+  which does not conflict with either per the handoff's own binding rule.
