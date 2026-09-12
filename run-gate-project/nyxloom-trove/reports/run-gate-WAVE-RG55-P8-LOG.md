@@ -608,3 +608,26 @@ Verify: every claim above is a grep-able string in the rendered README
 socket carrier's mount\|## Changes" host-setup/README.md`); the B4 claim
 is independently checkable by reading `install.sh:82-90` for the missing
 `exit`.
+
+### C8 — AGENTS.md: declare CGROUP_PARENT_DEV_GATES (RW-32/D4, S3) (hash: see next entry)
+
+Root `AGENTS.md`'s "which slice name" bullet list gained a fourth entry for
+`$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24), stating plainly that it is a
+SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s tier, not a child of it, and
+pointing at the README's "dev-gates: why" section rather than re-explaining
+the placement rationale in two places. Per the ruling (D4: "declare all
+three placement vars, list onward consumers in the REPORT, do not fix
+them here"), this entry ALSO names the three concrete spawners that do not
+read it yet -- run-gate's own default, cmru's `tester-gate`
+(`cmru/src/cmru/tester_gate.py`), and srdm's gate script
+(`shared-ramdisk-depot-manager/tools/cgroup-parent.sh`) -- and states the
+practical consequence plainly: every gate/lane container keeps landing on
+`dev-background.slice` (today's placement, matching D-24's fallback rule)
+until each adopts the new variable, with adoption tracked per-tool, not in
+this file. No consumer code touched -- that is explicitly out of scope for
+this ruling and this package.
+
+Verify: `grep -n "CGROUP_PARENT_DEV_GATES" AGENTS.md` shows the new bullet;
+`diff /workspaces/vbpub/AGENTS.md AGENTS.md` (run from this worktree)
+confirms this is the same root file the shared checkout also has dirty,
+not a worktree-only copy.
