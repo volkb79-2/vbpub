@@ -338,3 +338,63 @@ Verdict read in a separate step (not a pipe tail): `run-gate: lane 'smoke'
 exit 0`. `docker ps -a --filter name=run-gate-vbpub-smoke` afterward, in
 its own separate step: no leftover container. REPORT written next with the
 final tip and the exact operator command sequence.
+
+## Round-1 repair set (RW-32, coordinator message after 7bd2f03c)
+
+Verified the coordinator's re-scope before acting (same discipline as the
+RW-30 re-scope): read `run-gate-WAVE-RG55-P8-REVIEW-round1.md` in full
+(untracked in the shared checkout, matches the established per-wave
+convention for review files at this stage — same pattern already seen for
+P2's own round1/round2 reports); confirmed `RW-32` genuinely exists in the
+controller log and `A2`/`D-30` genuinely exist in the design doc, both on
+`main` (`git show main:...`), content matching the coordinator's message
+exactly, including this package's own tip hash `7bd2f03c`.
+
+### C1 — test-render.sh: B2, B6, S7, S8, S14 (hash: see next entry)
+
+`tests/test-render.sh` rewritten: (B2) end-anchor guard
+(`tail -n1 | grep -q 'SWEEP_INTERVAL"$'` for RENDER_VARS, an equivalent
+`}`-line guard for `render()`) PLUS a fail-closed content scan
+(`systemctl|apt-get|install |mkdir |modprobe|udevadm|python3 |/etc/systemd/
+system|/etc/docker`) that refuses to `source` an over-run snippet even if
+both anchors still match; `export TMPDIR="$TMP"` (S14). (B6) three new
+assertions: install.sh actually renders + (for `*.slice`) starts every
+`units/*.in` (continuation-lines joined via `sed ':a;N;$!ba;s/\\\n/ /g'`
+first, so a name on the `systemctl start ... \` continuation is still
+found), every `@VAR@` used in any template has a matching `host-setup.env.
+example` line, install.sh installs the cgprofile tmpfiles.d entry (M5, adds
+before M5 lands so the assertion exists and goes green together with it),
+and the wizard's earmark-sum doctest actually runs (S2, added here since
+it's the same "run something real, not just py_compile" principle). (S7)
+the file header comment's claim 3 no longer says "byte-for-byte" — it now
+says explicitly that this test asserts only the no-MemoryMin-line behavior,
+and that the byte-for-byte claim rests on `git diff` established
+independently. (S8) assertion 2's `${VAR}` references now use
+`${VAR:?msg}` naming `host-setup.env.example` as the likely fault, not a
+bare `${VAR}` that crashes with "line N: VAR: unbound variable" under
+`set -u`.
+
+Mutation-verified (scratch copies under this session's scratchpad, restored
+after each, never the real worktree files):
+- B2's own demonstration (append a var to the last `RENDER_VARS` line) →
+  **RED**: `FAIL: RENDER_VARS end anchor no longer matches install.sh`.
+- B6 mutation 1 (delete the `dev-gates.slice.in` render call) → **RED**:
+  `FAIL: install.sh never renders units/dev-gates.slice.in`.
+- B6 mutation 2 (drop `dev-gates.slice` from the `systemctl start` list,
+  precisely — buildkitd's own entry left untouched) → **RED**: `FAIL:
+  install.sh never starts dev-gates.slice`.
+- B6 mutation 3 (add `@DEV_GATES_NEWKEY@` to the unit + `RENDER_VARS`, not
+  the example — B3's own upgrade-shape failure) → **RED**: `FAIL:
+  @DEV_GATES_NEWKEY@ has no DEV_GATES_NEWKEY= line in host-setup.env.
+  example`.
+- S8's own demonstration (typo `DEV_GATES_MEMORY_HIGH` → `..._HIG` in the
+  example) → **RED**, message now names `host-setup.env.example` as the
+  fault, not the test script.
+
+`shellcheck -S warning` flagged a NEW issue introduced by the S8 fix itself
+(SC1011: an apostrophe in "typo'd" inside a `${VAR:?msg}` string breaks
+shellcheck's own quote parsing) — reworded every occurrence to "mistyped"
+(no apostrophe); re-ran clean. `bash -n` clean. Full green run afterward:
+`test-render: ALL OK`, exit 0 (this run is BEFORE B1/M5 land, so it does
+not yet cover the cap-watcher/tmpfiles assertions for real — re-run at the
+end of the whole repair set, see the final gate verdict entry).
