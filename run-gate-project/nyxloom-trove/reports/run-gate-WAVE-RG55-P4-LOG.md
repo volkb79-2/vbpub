@@ -185,3 +185,40 @@ $ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
     -k "profil or Profil" -q
 139 passed, 856 deselected, 1 warning in 7.76s
 ```
+
+Commit: `b5e4a9c6`.
+
+## Commit 3 — C3 (RG-58): bare-host `stall_timeout` load-time + doctor WARN
+
+RW-27a's ruling: D5's option 2 (warn, never refuse). New shared function
+`bare_host_stall_timeout_inert_reason(lane_name)` — the ONE wording both
+`_validate_lane` (a load-time `run-gate: WARNING ...` on every invocation
+that loads a bare-host lane declaring `stall_timeout`) and `cmd_doctor`
+(a new "2d" per-lane check, WARN severity, never FAIL) use. Pure string
+comparison (`table.get("environment") == BARE_HOST_ENV`) — `bare-host` is
+a reserved built-in name resolved directly by `resolve_environment`, no
+`[environments.bare-host]` table lookup needed at validation time.
+Config still loads; exit code unchanged; container/exec lanes untouched
+(confirmed this project's own `run-gate.toml` already has no
+`stall_timeout` on any of its bare-host lanes — RW-23b's prior fix — so
+this ships with zero new noise on `./run-gate.py doctor` here).
+
+### Tests
+
+`tests/test_run_gate.py`, new class `TestBareHostStallTimeoutWarning`
+(4 tests): load-time warning present exactly once (naming the lane and
+"bare-host"), config still loads with the key intact; `doctor` WARN with
+the SAME wording, exit code 0 (never FAIL); container-lane and exec-lane
+configs declaring the same key produce NO such warning at load.
+
+### Gate verdicts (targeted)
+
+```
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
+    -k "TestBareHostStallTimeoutWarning or TestStallTimeoutLaneKey or TestDoctorProfilerCheck" -q
+21 passed, 977 deselected, 1 warning in 4.18s
+
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py \
+    -k "TestConfigValidation or Doctor or TestHostLane" -q
+74 passed, 924 deselected, 1 warning in 9.81s
+```

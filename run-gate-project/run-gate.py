@@ -374,6 +374,21 @@ def _validate_cpus(value: object, where: str) -> None:
              f"or '1.5' (docker's own --cpus grammar; got {value!r})")
 
 
+def bare_host_stall_timeout_inert_reason(lane_name: str) -> str:
+    """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
+    both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
+    WARN use for a bare-host lane declaring `stall_timeout`:
+    `run_bare_host_lane` is a plain `subprocess.run` with no ProgressWatch,
+    no LogStreamWatch, no timer of any kind (R-40 applies to container/exec
+    lanes only, where `await_container` actually tails logs/polls
+    progress) — the key is accepted at load and then silently inert for
+    the lane's entire run, exactly the "copied a container lane's config
+    as a template" trap the backlog entry describes."""
+    return (f"lane {lane_name!r}: stall_timeout is inert on a bare-host "
+           f"lane (no watch, no timer; R-40 applies to container/exec "
+           f"lanes only)")
+
+
 def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
     kind = table.get("kind")
@@ -420,6 +435,17 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # container lane) rather than the assay progress file — the two
         # sources are disclosed by name at run time (print_lane_bounds), not
         # distinguished here. Nothing left to refuse by kind alone.
+        # RG-58 (RW-27a): a BARE-HOST lane is the one exception — there is
+        # no watch of any kind on that runner (run_bare_host_lane's own
+        # plain subprocess.run), so the key loads clean and then does
+        # nothing all run. Config-shape questions belong at load time
+        # (R-30a's own precedent for a cheap, load-time-computable
+        # warning); this is one load-time WARNING per declaring lane, never
+        # a refusal (D5's option 1 was explicitly NOT chosen).
+        if table.get("environment") == BARE_HOST_ENV:
+            print(f"{PROG}: WARNING "
+                 f"{bare_host_stall_timeout_inert_reason(name)}",
+                 file=sys.stderr, flush=True)
     if "memory" in table:
         _validate_memory(table["memory"], f"{where} [lanes.{name}]")
     if "resources" in table:
@@ -5081,6 +5107,17 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         record("OK", "lane worker count vs CPU cap (RG-48)",
                f"{len(checked)} lane(s) spawning workers by name: every one "
                f"declares 'resources.cpus' (lane or environment)")
+
+    # 2d. RG-58 (RW-27a): a bare-host lane declaring `stall_timeout` — no
+    # watch, no timer on that runner — gets a matching doctor WARN alongside
+    # the load-time one `_validate_lane` already prints; SAME shared reason
+    # function, so the two can never drift apart.
+    stall_bare_host = [n for n in sorted(lanes)
+                       if lanes[n].get("stall_timeout")
+                       and lanes[n].get("environment") == BARE_HOST_ENV]
+    for name in stall_bare_host:
+        record("WARN", f"lane {name!r} stall_timeout (RG-58)",
+               bare_host_stall_timeout_inert_reason(name))
 
     # 3. physical-path derivability + git health
     try:

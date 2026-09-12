@@ -10853,6 +10853,81 @@ class TestStallTimeoutLaneKey:
         assert "stall_timeout  optional lane key" in out
 
 
+class TestBareHostStallTimeoutWarning:
+    """RG-58 (RW-27a): D5's option 2 -- warn, never refuse. A bare-host
+    lane's `run_bare_host_lane` is a plain `subprocess.run` with no watch
+    of any kind, so a `stall_timeout` key there loads clean and then does
+    nothing for the lane's whole run; a future author copying a container
+    lane's config as a template can reasonably believe it is enforced."""
+
+    def _cfg(self, kind="command"):
+        body = ('argv = ["true"]' if kind == "command"
+               else 'assay_lane = "x"\n            '
+                    'assay_command = ["./a.pyz"]')
+        return f"""\
+            schema_version = 1
+            [lanes.selftest]
+            kind = "{kind}"
+            environment = "bare-host"
+            {body}
+            stall_timeout = "5m"
+            clean_tree = false
+        """
+
+    def test_load_time_warning_present_exactly_once(self, tmp_path, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        cfg, _, _, _ = run_gate.load_config(proj)
+        err = capsys.readouterr().err
+        lines = [ln for ln in err.splitlines()
+                if "stall_timeout is inert" in ln]
+        assert len(lines) == 1, err
+        assert "lane 'selftest'" in lines[0]
+        assert "bare-host" in lines[0]
+        # Config still loads, exit code / behavior otherwise unchanged.
+        assert cfg["lanes"]["selftest"]["stall_timeout"] == "5m"
+
+    def test_doctor_warns_too_same_wording(self, tmp_path, monkeypatch,
+                                           capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        assert "[WARN] lane 'selftest' stall_timeout (RG-58)" in out
+        assert "stall_timeout is inert on a bare-host lane" in out
+        assert code == 0   # WARN only, never FAIL (D5's option 1 rejected)
+
+    def test_container_and_exec_lanes_are_untouched(self, tmp_path, capsys):
+        repo = make_repo(tmp_path)
+        cfg_text = """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [environments.runner]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "the-runner"
+            [lanes.container-lane]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            stall_timeout = "5m"
+            clean_tree = false
+            [lanes.exec-lane]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            stall_timeout = "5m"
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg_text)
+        run_gate.load_config(proj)
+        err = capsys.readouterr().err
+        assert "stall_timeout is inert" not in err
+
+
 class TestStallEndToEnd:
     """The stall through `main()`, with a real container loop: a fake docker
     whose `logs -f` blocks while the progress file sits frozen."""
