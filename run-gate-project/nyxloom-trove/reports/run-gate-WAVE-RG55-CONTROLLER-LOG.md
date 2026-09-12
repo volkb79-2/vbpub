@@ -814,6 +814,39 @@ controller runs the gate as a third container (RW-39); round 2 dispatched
   settled, gate log to be read in a separate step, no second gate
   container). Round 3 is the last under the cap.
 
+### RW-54 — 2026-09-12 21:20Z — P2's final pass failed at the R0 baseline;
+diagnose by hand first, relaunch on a stated condition; P4's r2 moves
+behind P2's release
+
+- P2's short `--resume` pass (pid `4137438`) ended `FAIL/COMMAND_FAILED`
+  (exit 1) at 21:05Z INSIDE the baseline pytest — no candidate ran, the
+  281-record cache is intact, the tree is still detached at `186461de`
+  and clean. assay 6.1.1 keeps no raw output on `COMMAND_FAILED`, so the
+  failing tests are unknown. At the time: three `tester-unified:local`
+  containers (P1 r2, P6 r2, the P7 gate), P4's bare r1 pytest, CPU PSI
+  `some avg10` ≈ 45, memory `full avg10` 3.5. P2 correctly did not
+  relaunch (RW-41's pre-authorised relaunch covered budget trips, not
+  FAIL) and reported.
+- Controller check: the `/tmp/run-gate-shared-*-<pid>.lock` and
+  `run-gate-exec-*-<pid>-runner.lock` entries are pid-scoped, so the
+  stale-lock hazard P4 fixed (RW-46a) cannot hit a fresh process;
+  `/tmp/run-gate/` holds only lane logs (5661). Contention is the
+  leading hypothesis, unproven.
+- Ruling: P2 runs the baseline by hand (bare, serial, `-rfE`, no
+  coverage) to get the names, classifies (a) timing/contention,
+  (b) environmental, (c) genuine; relaunches the pass for (a) or a clean
+  by-hand pass only once the P7 gate container is gone, memory PSI < 5
+  and CPU PSI `some avg10` < 25; (b) needs the foreign state named to the
+  controller first; (c) no relaunch. A second baseline failure under
+  that condition stops the track for a controller decision on accepting
+  the run-2 verdict (281/283 judged) with a disclosure.
+- P4 (supersedes the RW-52 launch condition): no r2 until P2 has
+  released 23.7.0; then merge `main` into `rg55-followups-run-gate`,
+  re-run selftest/r1/r3 on the merge tip and judge THAT tree — the
+  reviewed tree and the merged tree stay one tree, and P2's short pass
+  is not contended by a 4 h sibling. P4 returns after B5 + the
+  non-blocking items + selftest/r1/r3.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
