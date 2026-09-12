@@ -81,3 +81,111 @@ passed) then diffed against `git diff HEAD -- <the 5 changed src files>`:
 **0 missing lines, 0 missing branches among changed/added lines** in all five
 files. This is a self-check ahead of the real gate (below), not a
 substitute for it.
+
+
+## A2 (session 2) — materialized pytest liveness plugin + candidate `os._exit` wrapper
+
+**Contract item satisfied:** B091 contract item 3 (the python runner exits
+via `os._exit(rc)` after the suite finishes, so a leaked non-daemon thread
+cannot hang the candidate at interpreter shutdown -- the mutant then
+SURVIVES and must be killed honestly). Partial progress toward contract item
+2 (the plugin/events plumbing item 4's `hung` detection needs exists, but
+the active monitoring loop and the `hung` bucket itself are NOT yet built --
+see "What's still open" below).
+
+**Design (RW-33, decided, not re-litigated):** one mechanism, two parts, for
+native R2 python/pytest lanes only (`lane.judge.mutation is not None and not
+is_ingested`, `adapter.name == "python"`, and the lane's own declared argv
+literally invokes pytest -- otherwise liveness is off with one WARN naming
+the rule, D-23's derived `budget_per_candidate` remains the only bound).
+Part 1: `assay.liveness.materialize_liveness_plugin` writes a stdlib-only
+pytest plugin into `<project>/.assay/liveness/assay_liveness_plugin.py`
+(rewrite-only-if-content-differs); `assay.liveness.inject_liveness_plugin`
+extends the shared `CommandPlan`'s `argv_declared` with `-p
+assay_liveness_plugin` and prepends the liveness dir onto `PYTHONPATH` in
+`env_effective`. Part 2: `assay.liveness.LivenessRunner`, a `ProcessRunner`
+used ONLY at the R2 candidate call site inside `runner._run_prepared_lane`
+(the baseline, one function-call earlier in the SAME function, keeps using
+`process_runner` unmodified) -- v1 scope stamps
+`ASSAY_LIVENESS_EVENTS`/`ASSAY_LIVENESS_EXIT=1` into the child env and
+delegates to `inner`.
+
+**Oracle -> test mapping:**
+
+| Oracle | Test(s) |
+| --- | --- |
+| A lane whose argv does not literally invoke pytest gets liveness OFF, unchanged plan, one WARN naming the rule | `tests/test_liveness.py::test_inject_returns_plan_unchanged_when_argv_is_not_pytest`, `::test_inject_with_diagnostics_none_does_not_raise_and_stays_silent` |
+| `argv_invokes_pytest`'s three matching shapes (bare `pytest`, path ending `/pytest`, adjacent `-m pytest`) and their negatives | `tests/test_liveness.py::test_argv_invokes_pytest_true_cases`, `::test_argv_invokes_pytest_false_cases` (parametrized, 6 cases each) |
+| The plugin is materialized once and re-materialized only when its content differs (never rewritten when unchanged, even across an unreadable pre-existing file) | `tests/test_liveness.py::test_materialize_creates_dir_and_file_when_absent`, `::test_materialize_overwrites_when_content_differs`, `::test_materialize_skips_write_when_content_already_matches`, `::test_materialize_treats_an_unreadable_existing_file_as_a_rewrite` |
+| Injection adds exactly `-p assay_liveness_plugin` to `argv_declared`, prepends (never replaces) an existing `PYTHONPATH`, leaves every other env key untouched, and leaves `argv_appended`/`allow_argv_append` byte-identical (the A-036 exception's own transparency requirement) | `tests/test_liveness.py::test_inject_adds_plugin_flag_and_pythonpath_when_no_existing_pythonpath`, `::test_inject_prepends_to_an_existing_pythonpath`, `::test_inject_preserves_argv_appended_and_recomputes_effective`, `::test_inject_other_env_keys_survive_untouched` |
+| `LivenessRunner` stamps both liveness env vars, forwards argv/cwd/timeout unchanged, derives a stable per-candidate events path from `cwd` alone (same cwd -> same path, different cwd -> different path), and creates its events dir eagerly | `tests/test_liveness.py::test_liveness_runner_creates_events_dir_on_init`, `::test_liveness_runner_stamps_env_and_forwards_everything_else`, `::test_liveness_runner_events_path_is_deterministic_per_cwd`, `::test_liveness_runner_none_timeout_passes_through` |
+| A real leaked non-daemon thread hangs WITHOUT the plugin and exits cleanly (fast, full summary, coverage report intact) WITH it | SPIKE transcript (LOG entry `f4fa1788`), not a committed test -- a fixture-project end-to-end version of this exact scenario (a tiny project whose mutant blocks on a thread join) is explicitly named in the handoff's own ORDER as part of the FULL A2+A3 cluster and is deferred to the next session alongside the `hung` bucket itself (see below) |
+| A real end-to-end R2 mutation run still passes with the plugin injected and the candidate wrapper active | `tests/test_cli_run.py::test_run_evaluates_a_real_r2_pass_end_to_end` (pre-existing, real subprocess, real pytest -- run as a regression check, not extended with new assertions this session) |
+
+**Files touched:** `src/assay/liveness.py` (new), `tests/test_liveness.py`
+(new, 28 tests), `src/assay/runner.py` (import + two call sites in
+`_run_prepared_lane`), `CHANGES.md`.
+
+**Design decisions made without stopping (BLOCKED-protocol default, per
+LOG's `f4fa1788` entry -- both flagged for reviewer attention):**
+1. Liveness injection extends `CommandPlan.argv_declared` directly rather
+   than `argv_appended`, bypassing the CLI's `allow_argv_append` consent
+   gate entirely for assay's own infrastructure -- a documented exception
+   to `mutation.py`'s own stated A-036 principle. Reasoned through in
+   `liveness.py`'s module docstring; not settled by any existing ruling.
+2. `LivenessRunner` derives each candidate's events-file path from the
+   child's OWN `cwd` (already unique per candidate via P22's own
+   replacement-snapshot mechanism) rather than threading a new
+   candidate-id parameter through `_execute_mutation_jobs`/`execute_plan`
+   -- keeps `ProcessRunner`'s existing signature and every OTHER call site
+   completely unchanged.
+
+**A real bug found and fixed by the spike, before any production code was
+written:** `os._exit` from `pytest_unconfigure` silently drops pytest's
+buffered terminal summary and pytest-cov's printed report table (though the
+underlying `.coverage` data file is written correctly regardless) unless
+`sys.stdout`/`sys.stderr` are explicitly flushed immediately beforehand.
+Fixed in the shipped plugin source; see LOG `f4fa1788` for the before/after
+transcript.
+
+**A real bug found and fixed by running the existing test suite, not by
+review:** the first cut gated injection on `adapter.language`, which does
+not exist on `LanguageAdapter` (the real attribute is `.name`) --
+`AttributeError`, caught immediately by 24/42 failures in
+`test_runner_run_lane_r2.py`. Fixed; both files corrected.
+
+**Coverage self-check:** `coverage run --branch --source=assay.liveness -m
+pytest tests/test_liveness.py` -- **0 missing lines, 0 missing branches**,
+100% on `src/assay/liveness.py` (59 statements, 14 branches). `runner.py`'s
+own two changed call sites were NOT run through the diff-coverage self-check
+this session (budget) -- covered only by the targeted regression run below,
+which exercises both the `liveness_injected = True` path (the real R2 e2e
+test, whose lane argv is `pytest`-invoking) and, per
+`test_runner_run_lane_r2.py`'s existing fixtures, likely the `False` path
+too, but this was not individually confirmed line-by-line against the diff.
+
+**Mutation-check (self, 3 planted mutants in `liveness.py`, each reverted
+immediately after its run):**
+
+| # | Mutant | Caught by |
+| --- | --- | --- |
+| 1 | `argv_invokes_pytest`'s `-m`/`pytest` adjacency check forced to always match | `test_argv_invokes_pytest_false_cases` (`("-m", "unittest")`, `("python", "-m")`) |
+| 2 | `materialize_liveness_plugin`'s content-match early-return forced off (always rewrite) | `test_materialize_skips_write_when_content_already_matches` (forbidden-write monkeypatch) |
+| 3 | `LivenessRunner.__call__` no longer stamps `ASSAY_LIVENESS_EXIT_ENV` | `test_liveness_runner_stamps_env_and_forwards_everything_else` (`KeyError`) |
+
+All three caught by an existing test; no gap found.
+
+**Regression check (targeted, NOT the full gate; full gate deferred to
+A6):** `tests/test_mutation_judge.py` + `tests/test_runner_run_lane_r2.py`
+(42 passed) and `tests/test_cli_run.py::test_run_evaluates_a_real_r2_pass_end_to_end`
+(1 passed, real subprocess).
+
+**What's still open for A2/A3 (not done this session):** the ACTIVE
+Popen-based monitoring loop (non-blocking launch, 1s poll, `/proc/<pid>/stat`
+process-TREE CPU sampling including children, the `hung`-vs-`budget_exceeded`
+decision rule from RW-33), the `hung` `MUTATION_BUCKETS` member and every
+place the closed vocabulary is checked (`verdict.py`, `verdict.schema.json`,
+`verify.py`), and the fixture-project end-to-end tests the handoff's ORDER
+names explicitly (a mutant that blocks on a non-daemon thread join ->
+`hung`; a mutant that busy-loops -> `budget_exceeded`). See BRIEF-2 for the
+exact next steps.
