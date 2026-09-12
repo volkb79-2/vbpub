@@ -100,6 +100,7 @@ from . import (
     diff,
     git,
     isolation,
+    liveness,
     measurability,
     mutation,
     mutation_parsers,
@@ -3472,6 +3473,24 @@ def _run_prepared_lane(
     # both present or both absent.
     r2_ingested = r2_declared and lane.judge.mutation.is_ingested
     mutation_artifact = lane.judge.mutation.artifact if r2_ingested else None
+    # (B091/D-23/RW-33) Liveness applies ONLY to a native (non-ingested) R2
+    # python lane. `plan` is shadowed for the REST of this function -- the
+    # baseline call below and the R2 dispatch further down both read this
+    # same rebound name, exactly like the pre-existing shared-plan behaviour
+    # this session's BRIEF-1 found (baseline and every R2 candidate already
+    # ran the identical `CommandPlan`; this only changes WHAT that plan is,
+    # never introduces a second one). `liveness_injected` gates whether the
+    # R2 dispatch below hands candidates a `liveness.LivenessRunner` instead
+    # of the lane's own `process_runner` -- the baseline keeps using
+    # `process_runner` unchanged either way (`ASSAY_LIVENESS_EXIT` is never
+    # set for it; see `liveness.py`'s own docstring).
+    liveness_injected = False
+    if r2_declared and not r2_ingested and adapter is not None and adapter.name == "python":
+        plan, liveness_injected = liveness.inject_liveness_plugin(
+            plan,
+            liveness_dir=project_root / ".assay" / "liveness",
+            diagnostics=diagnostics,
+        )
     # B031/A-320. This used to be an UNCONDITIONAL
     # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
     # a CWD-relative path in the CONSUMER's live worktree, built by
@@ -4124,6 +4143,22 @@ def _run_prepared_lane(
                 explicit_budget_per_candidate_seconds = parse_duration(
                     declared_budget_per_candidate
                 )
+            # (B091/D-23/RW-33) Candidates ONLY get the liveness-stamping
+            # runner -- constructed fresh per lane run, never reused across
+            # lanes -- so `ASSAY_LIVENESS_EXIT=1` is set for every candidate
+            # while the baseline just above (already executed by this point,
+            # via `process_runner` unchanged) never sees it. When liveness
+            # was not injected into `plan` (non-pytest argv, non-python
+            # language, or an ingested lane), `process_runner` is used
+            # verbatim -- byte-for-byte the pre-B091 candidate path.
+            candidate_process_runner = (
+                liveness.LivenessRunner(
+                    events_dir=project_root / ".assay" / "liveness" / "candidates",
+                    inner=process_runner,
+                )
+                if liveness_injected
+                else process_runner
+            )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -4135,7 +4170,7 @@ def _run_prepared_lane(
                     jobs=lane.judge.mutation.jobs,
                     max_mutants=lane.judge.mutation.max_mutants,
                     operators=lane.judge.mutation.operators,
-                    process_runner=process_runner,
+                    process_runner=candidate_process_runner,
                     clock=clock,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,

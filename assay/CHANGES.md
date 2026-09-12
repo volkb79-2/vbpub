@@ -32,6 +32,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   rather than crashing on `"auto"`/`"none"`, since planning never executes
   anything to measure from.
 
+- **A native R2 python/pytest lane's mutant candidates no longer hang at
+  interpreter shutdown on a leaked non-daemon thread (B091/D-23, contract
+  item 3; RW-28's own incident class).** For a lane whose `judge.mutation`
+  is declared natively (not ingested), whose language adapter is `python`,
+  and whose own argv literally invokes pytest (a token `pytest`, a path
+  ending `/pytest`, or the adjacent pair `-m pytest` -- otherwise liveness is
+  off for that lane with one WARN naming the rule, and `budget_per_candidate`
+  remains the only bound), assay now materializes a small stdlib-only pytest
+  plugin into `<project>/.assay/liveness/` (rewritten only when its content
+  changes) and injects it into the shared command plan via `-p
+  assay_liveness_plugin` + a prepended `PYTHONPATH` entry. For every R2
+  candidate execution ONLY (never the R0 baseline, never R1) the plugin's
+  `pytest_unconfigure(trylast=True)` hook now calls `os._exit(rc)` right
+  after the terminal summary prints and pytest-cov's own data write
+  completes, bypassing the interpreter's normal thread-join-at-shutdown
+  sequence entirely -- the mutant SURVIVES instead of hanging the run, and
+  must be killed by an honest assertion. Every other lane (non-native-R2,
+  non-python, or whose argv does not invoke pytest) is byte-for-byte
+  unaffected. **Not yet shipped in this entry:** the active liveness-
+  monitoring loop and the new `hung` outcome bucket that distinguishes an
+  idle stall from a genuine CPU-bound runaway (`budget_exceeded`) -- tracked
+  as open work on B091.
+
 <!-- cmru: release history -->
 
 ## [6.1.1] - 2026-09-11
