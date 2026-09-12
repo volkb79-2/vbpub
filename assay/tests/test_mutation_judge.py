@@ -89,6 +89,59 @@ def test_crashed_outranks_survived_and_budget_exceeded_when_all_three_are_presen
     assert judge_mutation(baseline, mutation) == (Outcome.ERROR, ReasonCode.EXEC_FAILED)
 
 
+def test_a_hung_candidate_alone_is_budget_exceeded_candidate_hung():
+    """(B091/RW-33, P7 A3) The gap this session found and fixed: without a
+    `hung`-aware branch, `judge_mutation` fell all the way through to `PASS`
+    for a run whose ONLY unresolved candidate was `hung` (`killed`/`survived`
+    both otherwise clean) -- silently losing the fact that a candidate never
+    finished. `hung` must render `BUDGET_EXCEEDED`/`CANDIDATE_HUNG`, never a
+    clean pass.
+    """
+    from assay.verdict import Mutation, MutantOutcome
+
+    killed = MutantOutcome(
+        path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11,
+        replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE",
+    )
+    stuck = MutantOutcome(
+        path="pkg/mod.py", lineno=2, start_byte=20, end_byte=21,
+        replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE",
+    )
+    mutation = Mutation(candidate_count=2, total=2, killed=(killed,), hung=(stuck,))
+    baseline = _baseline(Outcome.PASS, None)
+    assert judge_mutation(baseline, mutation) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.CANDIDATE_HUNG,
+    )
+
+
+def test_budget_exceeded_outranks_hung_when_both_are_present():
+    """The OTHER optional parameter at its default (BRIEF-1's own lesson):
+    with BOTH `budget_exceeded` and `hung` non-empty, the existing
+    `budget_exceeded` branch (checked first) must still win -- proving the
+    new branch was inserted AFTER it, not in a way that could shadow the
+    pre-existing precedence.
+    """
+    from assay.verdict import Mutation, MutantOutcome
+
+    timed_out = MutantOutcome(
+        path="pkg/mod.py", lineno=1, start_byte=10, end_byte=11,
+        replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE",
+    )
+    stuck = MutantOutcome(
+        path="pkg/mod.py", lineno=2, start_byte=20, end_byte=21,
+        replacement_sha256=_SHA_LTE, operator="python:compare-swap", description="Lt->LtE",
+    )
+    mutation = Mutation(
+        candidate_count=2, total=2, budget_exceeded=(timed_out,), hung=(stuck,)
+    )
+    baseline = _baseline(Outcome.PASS, None)
+    assert judge_mutation(baseline, mutation) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    )
+
+
 def test_budget_exceeded_outranks_survived_when_both_are_present():
     from assay.verdict import Mutation, MutantOutcome
 

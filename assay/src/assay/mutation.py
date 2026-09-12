@@ -1583,6 +1583,16 @@ def _classify_mutant_result(result: CommandResult) -> str:
     if result.outcome is Outcome.FAIL:
         return "killed"
     if result.outcome is Outcome.BUDGET_EXCEEDED:
+        # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises the
+        # SAME `subprocess.TimeoutExpired` a genuine elapsed-budget timeout
+        # does for the "CPU-spinning mutant" case (RW-33 is explicit: that
+        # is NOT hung), but raises its own `LivenessHungExpired` subclass for
+        # an idle stall -- `runner._execute_plan_inner`'s except-clause reads
+        # that `isinstance` once and records it as `reason_code`, so this is
+        # the one place that distinction becomes a different BUCKET rather
+        # than a different exception type.
+        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
+            return "hung"
         return "budget_exceeded"
     return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
@@ -1622,6 +1632,11 @@ def _classify_mutant_result_with_equivalence(
             return "crashed"
         return "equivalent" if equivalence_bytes == baseline_equivalence else "killed"
     if result.outcome is Outcome.BUDGET_EXCEEDED:
+        # (B091/RW-33, P7 A3) Same `hung`/`budget_exceeded` split as
+        # `_classify_mutant_result` -- the equivalence artifact is never
+        # consulted for either, unchanged from before this bucket existed.
+        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
+            return "hung"
         return "budget_exceeded"
     return "crashed"  # Outcome.ERROR -- unchanged.
 
@@ -2509,13 +2524,14 @@ def _execute_mutation_jobs(
     if fatal is not None:
         raise fatal
 
-    buckets: dict[str, list[MutantOutcome]] = {
-        "killed": [],
-        "survived": [],
-        "crashed": [],
-        "budget_exceeded": [],
-        "equivalent": [],
-    }
+    # (B091/RW-33, P7 A3) Built generically from `MUTATION_BUCKETS`, matching
+    # the ingested path's own construction a few hundred lines down --
+    # A-228's own root cause was a hand-written literal list reaching some
+    # of the sites that must agree with the closed vocabulary and not
+    # others, and this is exactly the site that used to be a five-entry
+    # literal missing the sixth (`hung`) bucket entirely, which would have
+    # KeyError'd the moment `_classify_mutant_result` returned it.
+    buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
         # and `collect_mutation_sites` guarantees that list is
@@ -2552,11 +2568,7 @@ def _execute_mutation_jobs(
     return Mutation(
         candidate_count=candidate_count,
         total=total,
-        killed=tuple(buckets["killed"]),
-        survived=tuple(buckets["survived"]),
-        crashed=tuple(buckets["crashed"]),
-        budget_exceeded=tuple(buckets["budget_exceeded"]),
-        equivalent=tuple(buckets["equivalent"]),
+        **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
     )
 
 
@@ -3256,6 +3268,17 @@ def judge_mutation(
         return Outcome.ERROR, ReasonCode.EXEC_FAILED
     if mutation.budget_exceeded:
         return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
+    if mutation.hung:
+        # (B091/RW-33, P7 A3) Ranked immediately beside `budget_exceeded`
+        # (a genuine elapsed-time expiry still takes precedence when BOTH
+        # are non-empty -- an arbitrary but stable tie-break, never load-
+        # bearing since `judge_mutation` returns on the first non-empty
+        # bucket it finds either way): a `hung` candidate is, like
+        # `budget_exceeded`, evidence the run did not finish, never
+        # evidence about what the suite caught. `mutation_pct` never reads
+        # this bucket (only `killed`/`survived`), so scoring is unaffected
+        # by construction -- this is the OUTCOME precedence only.
+        return Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG
     if mutation.survived and mutation_pct(mutation) < fail_under:
         # B050/A-427/DA-R22. At the default floor of 100.0 this is the v9
         # branch verbatim -- any survivor puts the score below 100 -- so a

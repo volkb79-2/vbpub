@@ -1,6 +1,7 @@
 """B091/D-23/RW-33/RW-36 -- :mod:`assay.liveness`: the materialized pytest
 plugin, the pytest-argv detection rule, the plan-injection function, and
-:class:`~assay.liveness.LivenessRunner`'s v1 (env-stamping only) scope.
+:class:`~assay.liveness.LivenessRunner`'s LAUNCH shape (env stamping, events
+path determinism, argv/cwd/timeout forwarding into `Popen`).
 
 Every test here is a UNIT test against `liveness.py` directly -- no real
 subprocess, no real pytest run (that lives in session 2's spike transcript,
@@ -9,9 +10,14 @@ separately). The negative this file defends: a plan whose argv does not
 literally invoke pytest must come back byte-identical and unWARNed-when-
 `diagnostics=None`; a plan that does must gain EXACTLY the `-p`/`PYTHONPATH`
 pair -- appended, per RW-36, never declared -- and nothing else;
-`LivenessRunner` must stamp both liveness env vars and pass everything else
-through untouched, with a events path that is a deterministic function of
-`cwd` alone.
+`LivenessRunner` must stamp both liveness env vars into the launched child's
+env, with an events path that is a deterministic function of `cwd` alone.
+
+**A3's own monitoring-loop CLASSIFICATION logic** (hung vs. budget_exceeded
+vs. normal completion, the CPU-tree sampling, the `/proc` failure-is-growth
+rule) is a SEPARATE module, `test_liveness_runner_monitor.py` -- this file
+stays about what `__call__` launches WITH, that one about what the loop
+DECIDES once it is running.
 """
 
 from __future__ import annotations
@@ -373,47 +379,87 @@ def test_liveness_injection_to_wire_shape(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# LivenessRunner (v1: env-stamping only, delegates to `inner`)
+# LivenessRunner -- env stamping + launch (A3: active Popen loop; the
+# CLASSIFICATION logic itself -- hung/budget_exceeded/normal-completion --
+# is covered in `test_liveness_runner_monitor.py`, a separate module so this
+# one stays focused on "what does __call__ launch with").
 # --------------------------------------------------------------------------
 
 
-class _FakeInner:
-    def __init__(self) -> None:
+class _FakeProc:
+    """A fake ``subprocess.Popen`` handle: exits with *returncode* after
+    *poll_after_ticks* `poll()` calls have returned `None` -- `0` means "the
+    very first poll already reports done", which is all these launch-shape
+    tests need (the monitor loop checks `poll()` BEFORE it ever reads the
+    events file, samples CPU, or sleeps, so a zero-tick fake never touches
+    any of that machinery).
+    """
+
+    def __init__(self, pid: int, *, returncode: int = 0, poll_after_ticks: int = 0) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._remaining_ticks = poll_after_ticks
+
+    def poll(self):
+        if self._remaining_ticks > 0:
+            self._remaining_ticks -= 1
+            return None
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class _FakePopen:
+    def __init__(self, *, returncode: int = 0, poll_after_ticks: int = 0) -> None:
         self.calls: list[dict[str, object]] = []
+        self._returncode = returncode
+        self._poll_after_ticks = poll_after_ticks
+        self.procs: list[_FakeProc] = []
 
-    def __call__(self, argv, *, env, cwd, timeout):
+    def __call__(self, argv, *, env, cwd, stdout, stderr, start_new_session):
         self.calls.append(
-            {"argv": tuple(argv), "env": dict(env), "cwd": cwd, "timeout": timeout}
+            {
+                "argv": tuple(argv),
+                "env": dict(env),
+                "cwd": cwd,
+                "start_new_session": start_new_session,
+            }
         )
-        import subprocess
-
-        return subprocess.CompletedProcess(
-            args=list(argv), returncode=0, stdout="", stderr=""
+        proc = _FakeProc(
+            pid=1000 + len(self.procs),
+            returncode=self._returncode,
+            poll_after_ticks=self._poll_after_ticks,
         )
+        self.procs.append(proc)
+        return proc
 
 
 def test_liveness_runner_creates_events_dir_on_init(tmp_path: Path) -> None:
     events_dir = tmp_path / "candidates"
     assert not events_dir.exists()
-    liveness.LivenessRunner(events_dir=events_dir, inner=_FakeInner())
+    liveness.LivenessRunner(events_dir=events_dir, expect_next_event_within_s=60.0)
     assert events_dir.is_dir()
 
 
 def test_liveness_runner_stamps_env_and_forwards_everything_else(
     tmp_path: Path,
 ) -> None:
-    inner = _FakeInner()
-    runner = liveness.LivenessRunner(events_dir=tmp_path / "candidates", inner=inner)
-    cwd = tmp_path / "candidate-a"
-    result = runner(
-        ("pytest", "-q"), env={"AMBIENT": "1"}, cwd=cwd, timeout=42.0
+    popen = _FakePopen()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=60.0,
+        popen=popen,
     )
+    cwd = tmp_path / "candidate-a"
+    cwd.mkdir()
+    result = runner(("pytest", "-q"), env={"AMBIENT": "1"}, cwd=cwd, timeout=42.0)
     assert result.returncode == 0
-    assert len(inner.calls) == 1
-    call = inner.calls[0]
+    assert len(popen.calls) == 1
+    call = popen.calls[0]
     assert call["argv"] == ("pytest", "-q")
     assert call["cwd"] == cwd
-    assert call["timeout"] == 42.0
+    assert call["start_new_session"] is True
     assert call["env"]["AMBIENT"] == "1"
     assert call["env"][liveness.ASSAY_LIVENESS_EXIT_ENV] == "1"
     events_path = Path(call["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV])
@@ -423,25 +469,42 @@ def test_liveness_runner_stamps_env_and_forwards_everything_else(
 def test_liveness_runner_events_path_is_deterministic_per_cwd(
     tmp_path: Path,
 ) -> None:
-    inner = _FakeInner()
-    runner = liveness.LivenessRunner(events_dir=tmp_path / "candidates", inner=inner)
+    popen = _FakePopen()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=60.0,
+        popen=popen,
+    )
     cwd_a = tmp_path / "a"
     cwd_b = tmp_path / "b"
+    cwd_a.mkdir()
+    cwd_b.mkdir()
     runner(("pytest",), env={}, cwd=cwd_a, timeout=None)
     runner(("pytest",), env={}, cwd=cwd_a, timeout=None)
     runner(("pytest",), env={}, cwd=cwd_b, timeout=None)
-    path_a1 = inner.calls[0]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
-    path_a2 = inner.calls[1]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
-    path_b = inner.calls[2]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
+    path_a1 = popen.calls[0]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
+    path_a2 = popen.calls[1]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
+    path_b = popen.calls[2]["env"][liveness.ASSAY_LIVENESS_EVENTS_ENV]
     assert path_a1 == path_a2
     assert path_a1 != path_b
 
 
 def test_liveness_runner_none_timeout_passes_through(tmp_path: Path) -> None:
-    inner = _FakeInner()
-    runner = liveness.LivenessRunner(events_dir=tmp_path / "candidates", inner=inner)
-    runner(("pytest",), env={}, cwd=tmp_path, timeout=None)
-    assert inner.calls[0]["timeout"] is None
+    """`timeout=None` (an unbounded lane, B067) must never make the loop
+    treat the budget as expired -- the elapsed-budget check is skipped
+    entirely when `timeout is None`, so a zero-tick fake process still
+    completes normally rather than being killed on the very first poll.
+    """
+    popen = _FakePopen()
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "candidates",
+        expect_next_event_within_s=60.0,
+        popen=popen,
+    )
+    cwd = tmp_path / "candidate-a"
+    cwd.mkdir()
+    result = runner(("pytest",), env={}, cwd=cwd, timeout=None)
+    assert result.returncode == 0
 
 
 # --------------------------------------------------------------------------

@@ -1436,7 +1436,20 @@ def _check_interval_is_ordered(document: dict, failures: list[str]) -> None:
 
 
 def _mutation_of(claim: Any) -> Any:
-    return claim.get("mutation") if isinstance(claim, dict) else None
+    mutation = claim.get("mutation") if isinstance(claim, dict) else None
+    if isinstance(mutation, dict) and "hung" not in mutation:
+        # (B091/RW-33, P7 A3) `hung` is additive under schema v11 (no v12
+        # cut) -- a document produced before this bucket existed omits the
+        # key entirely. Every raw check downstream iterates
+        # `MUTATION_BUCKETS` uniformly (the sizes/arithmetic check below,
+        # `_mutant_entries`, `_check_identities_are_unique`) and must see the
+        # same "attempted and empty" shape a native document written AFTER
+        # this bucket landed always has -- normalized here, ONCE, at this
+        # module's one raw-accessor for the mutation payload, rather than at
+        # each of those call sites (A-228's own "reaches some layers and not
+        # others" lesson, applied to a MISSING key instead of a new one).
+        mutation = {**mutation, "hung": []}
+    return mutation
 
 
 def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
@@ -1897,14 +1910,30 @@ def _reconstruct_mutation(raw: dict) -> Mutation:
     # (`assay verify: schema: unknown mutation field(s): ['candidate_ids']`
     # on a document that passed JSON Schema validation cleanly).
     candidate_ids = raw.get("candidate_ids")
+    bucket_kwargs = {
+        name: tuple(
+            _reconstruct_mutant_outcome(item)
+            for item in (
+                # (B091/RW-33, P7 A3) `hung` is additive under schema v11
+                # (no v12 cut, matching A1's own `budget_per_candidate_
+                # derived_s` precedent): a document produced before this
+                # bucket existed omits the key entirely and must still
+                # reconstruct. The five ORIGINAL buckets keep their strict
+                # `raw[name]` -- a document missing one of THOSE is
+                # genuinely malformed, not merely old, and this must still
+                # raise `KeyError` for it exactly as before.
+                raw.get(name, [])
+                if name == "hung"
+                else raw[name]
+            )
+        )
+        for name in MUTATION_BUCKETS
+    }
     mutation = Mutation(
         candidate_count=raw["candidate_count"],
         total=raw["total"],
         candidate_ids=None if candidate_ids is None else tuple(candidate_ids),
-        **{
-            name: tuple(_reconstruct_mutant_outcome(item) for item in raw[name])
-            for name in MUTATION_BUCKETS
-        },
+        **bucket_kwargs,
     )
     _reject_unknown_keys(raw, mutation.to_dict(), "mutation")
     return mutation

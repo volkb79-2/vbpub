@@ -623,6 +623,7 @@
         "LANE_TIMEOUT",
         "MUTANT_LIMIT_EXCEEDED",
         "SNAPSHOT_LIMIT_EXCEEDED",
+        "CANDIDATE_HUNG",
         "NO_MUTANTS",
         "MUTATION_UNSUPPORTED",
         "CANARY_INCONCLUSIVE",
@@ -671,7 +672,8 @@
         "enum": [
           "LANE_TIMEOUT",
           "MUTANT_LIMIT_EXCEEDED",
-          "SNAPSHOT_LIMIT_EXCEEDED"
+          "SNAPSHOT_LIMIT_EXCEEDED",
+          "CANDIDATE_HUNG"
         ]
       },
       "INCONCLUSIVE": {
@@ -1408,6 +1410,24 @@
         },
         "equivalent": {
           "description": "Mutants proven to produce no change in the judged artifact, established by byte comparison of judgment.r2.equivalence_artifact against the baseline run's. NOT survived: a no-op mutant is evidence about the mutation, not about the tests. Excluded from the mutation-score denominator (arithmetic is cross-object and belongs to the model and raw verifier).",
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "hung": {
+          "description": "B091/RW-33 (P7 A3): mutants a LivenessRunner monitoring loop killed for an idle stall (no test/session_finish progress and no process-tree CPU growth, or session_finish seen with the process still alive 30s later) -- distinct from budget_exceeded's genuine elapsed-time expiry (a CPU-spinning mutant is never hung). Scored like budget_exceeded (excluded from the mutation-score denominator). Native-only, like liveness itself: an ingested report never populates this bucket. ADDITIVE under schema v11 (no v12 cut) -- NOT in this object's 'required' list, so a document produced before this bucket existed, which omits the key entirely, still validates; a native document produced by this build always includes it (possibly empty).",
           "type": "array",
           "items": {
             "allOf": [
@@ -2602,6 +2622,9 @@
                     "maxItems": 0
                   },
                   "equivalent": {
+                    "maxItems": 0
+                  },
+                  "hung": {
                     "maxItems": 0
                   }
                 }

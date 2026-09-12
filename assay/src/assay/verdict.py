@@ -665,17 +665,27 @@ MAX_CANDIDATE_CEILING = 10_001
 #: three call sites later.
 MAX_SHARD_COUNT = 10_000
 
-#: (P33/V5-3) `Mutation`'s identity buckets, in wire order. FIVE since v5.
-#: Named once rather than transcribed at each of the five sites that iterate
-#: them: A-228's own root cause was a new bucket reaching some of the layers
-#: that constrain the others and not the rest, and a literal list repeated
-#: per call site is exactly how that happens again.
+#: (P33/V5-3, extended B091/RW-33 P7 A3) `Mutation`'s identity buckets, in
+#: wire order. SIX since this session: `equivalent` (P33) added a fifth,
+#: `hung` (B091/RW-33) a sixth -- a `LivenessRunner`-classified idle stall,
+#: scored like `budget_exceeded` (excluded from `killed/(killed+survived)`)
+#: but reported as its own bucket, NATIVE-ONLY (an ingested report never
+#: produces one; `INGESTED_STATUS_BUCKETS` in `mutation.py` has no entry that
+#: maps to it). Named once rather than transcribed at each of the sites that
+#: iterate them: A-228's own root cause was a new bucket reaching some of the
+#: layers that constrain the others and not the rest, and a literal list
+#: repeated per call site is exactly how that happens again. **Additive under
+#: schema v11 (no v12 cut)**: a document produced before `hung` existed omits
+#: the key entirely -- `verify.py`'s `_mutation_of`/`_reconstruct_mutation`
+#: both default a missing `hung` to empty, matching how `budget_per_
+#: candidate_derived_s` (A1) was read back additively.
 MUTATION_BUCKETS: tuple[str, ...] = (
     "killed",
     "survived",
     "crashed",
     "budget_exceeded",
     "equivalent",
+    "hung",
 )
 
 
@@ -1654,6 +1664,17 @@ class Mutation:
     #: :attr:`candidate_count` like every other attempted mutant — they WERE
     #: attempted; what they failed to do is change anything.
     equivalent: tuple[MutantOutcome, ...] = ()
+    #: (B091/RW-33, P7 A3) mutants a `LivenessRunner` monitoring loop killed
+    #: for an idle stall (no `test`/`session_finish` progress AND no process-
+    #: tree CPU growth, or a `session_finish` seen with the process still
+    #: alive 30s later) -- distinct from `budget_exceeded`'s genuine elapsed-
+    #: time expiry (a CPU-spinning mutant is NEVER `hung`, it hits the
+    #: ordinary budget ceiling instead). Scored exactly like `budget_exceeded`
+    #: (excluded from the `killed/(killed+survived)` denominator, by
+    #: construction: `mutation.mutation_score` never reads this field).
+    #: NATIVE-only, like `liveness` itself (RW-33: applied only to native R2
+    #: python lanes) -- an ingested report never populates this bucket.
+    hung: tuple[MutantOutcome, ...] = ()
     #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
     #: never empty, so non-shard v6 payloads are unchanged.
     candidate_ids: tuple[str, ...] | None = None

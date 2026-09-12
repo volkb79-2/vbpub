@@ -1246,10 +1246,24 @@ def _execute_plan_inner(
         # contract stays accurate everywhere else.
         stdout_tail, stdout_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stdout))
         stderr_tail, stderr_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stderr))
+        # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
+        # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
+        # subclass -- ONLY for an idle-stall kill, never for a genuine
+        # elapsed-budget timeout (which still raises the plain base class,
+        # unchanged). This is the ONE place that distinction becomes a
+        # `reason_code`: every other `process_runner` (R0/R1/R3, every non-
+        # liveness R2 call site) never raises the subclass, so this branch
+        # is unreachable dead code for them and `reason_code` is `LANE_TIMEOUT`
+        # exactly as before this session.
+        reason_code = (
+            ReasonCode.CANDIDATE_HUNG
+            if isinstance(exc, liveness.LivenessHungExpired)
+            else ReasonCode.LANE_TIMEOUT
+        )
         return CommandResult(
             plan=plan,
             outcome=Outcome.BUDGET_EXCEEDED,
-            reason_code=ReasonCode.LANE_TIMEOUT,
+            reason_code=reason_code,
             returncode=None,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
@@ -3549,6 +3563,36 @@ def _run_prepared_lane(
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
+    #
+    # (B091/RW-33, P7 A3/A4 shared prerequisite) The baseline runs the SAME
+    # plugin every candidate does (RW-33's materialized module is on
+    # `PYTHONPATH`/`-p` for the whole lane, injected once above), but never
+    # got `ASSAY_LIVENESS_EVENTS` -- so it wrote no side file at all, fully
+    # INERT, exactly A2's own contract (`ASSAY_LIVENESS_EXIT` is NEVER set
+    # for it, unchanged here). Wiring `ASSAY_LIVENESS_EVENTS` (never
+    # `_EXIT`) onto the baseline's OWN env -- a plan copy used ONLY for this
+    # one call, never mutating the shared `plan` the R2 dispatch below still
+    # reads -- lets `expect_next_event_within_s` be computed from what the
+    # baseline's tests actually measured (`slowest_test_s`) instead of
+    # always falling back to `baseline_s / 4`.
+    liveness_baseline_events_path: Path | None = None
+    baseline_plan = plan
+    if liveness_injected:
+        liveness_baseline_events_path = project_root / ".assay" / "liveness" / "baseline.ndjson"
+        liveness_baseline_events_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            liveness_baseline_events_path.unlink()
+        except FileNotFoundError:
+            pass
+        baseline_plan = replace(
+            plan,
+            env_effective=MappingProxyType(
+                {
+                    **plan.env_effective,
+                    liveness.ASSAY_LIVENESS_EVENTS_ENV: str(liveness_baseline_events_path),
+                }
+            ),
+        )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
         if progress_stream is not None:
             progress_stream.emit(
@@ -3559,7 +3603,7 @@ def _run_prepared_lane(
                 }
             )
         unit = _execute_snapshot_unit(
-            plan=plan,
+            plan=baseline_plan,
             snapshot=baseline_snapshot,
             deadline=deadline,
             wants_coverage=r1_declared,
@@ -3590,6 +3634,22 @@ def _run_prepared_lane(
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
+        # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
+        # measurement A1's own `budget_per_candidate_derived_s` already
+        # reads (`mutation.baseline_wall_seconds`, the SAME function, never
+        # a second derivation of "how long did the baseline take") -- fed to
+        # the R2 dispatch's `LivenessRunner` further down, which never
+        # recomputes it either. `None` when liveness was never injected
+        # (`LivenessRunner` is never constructed in that case, so nothing
+        # reads this).
+        liveness_expect_next_event_within_s: float | None = (
+            liveness.compute_expect_next_event_within_s(
+                liveness_baseline_events_path,
+                mutation.baseline_wall_seconds(result),
+            )
+            if liveness_injected
+            else None
+        )
 
         if unit.post_reason is not None:
             # (B053/DA-R8) Say WHY, once, before the claims are built --
@@ -4186,14 +4246,14 @@ def _run_prepared_lane(
             # was not injected into `plan` (non-pytest argv, non-python
             # language, or an ingested lane), `process_runner` is used
             # verbatim -- byte-for-byte the pre-B091 candidate path.
-            candidate_process_runner = (
-                liveness.LivenessRunner(
+            if liveness_injected:
+                assert liveness_expect_next_event_within_s is not None
+                candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
                     events_dir=project_root / ".assay" / "liveness" / "candidates",
-                    inner=process_runner,
+                    expect_next_event_within_s=liveness_expect_next_event_within_s,
                 )
-                if liveness_injected
-                else process_runner
-            )
+            else:
+                candidate_process_runner = process_runner
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,

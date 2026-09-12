@@ -406,7 +406,7 @@ must stop and ask, never invent one:
 | `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED`, `RED_FIRST_UNPROVEN` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
 | `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED` |
-| `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
+| `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED`, `CANDIDATE_HUNG` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
 
 **Two codes join the table at schema v10 (Wave D), and both are RESERVED —
@@ -436,6 +436,22 @@ free, rather than costing a second cut of its own.**
   could not say which side failed. Every failure of the MECHANISM itself
   (snapshot, overlay, deadline, unreadable output) keeps the code its own
   substrate already raises.
+
+**A third code joins the table without a schema-version bump (B091/RW-33,
+additive under v11):**
+
+- **`BUDGET_EXCEEDED`/`CANDIDATE_HUNG`** — a `LivenessRunner`-classified
+  idle stall for a native R2 mutation candidate: no `test`/`session_finish`
+  progress AND no process-tree CPU growth (or a `session_finish` seen with
+  the process still alive 30s later). Distinct from `LANE_TIMEOUT`'s genuine
+  elapsed-budget expiry so `mutation._classify_mutant_result` can report
+  `hung` as a bucket separate from `budget_exceeded` — the two score
+  identically (both excluded from `killed/(killed+survived)`) but are never
+  the same sentence (RW-33: a CPU-spinning mutant is NOT hung, it hits the
+  ordinary budget ceiling instead). Raised only via
+  `assay.liveness.LivenessHungExpired`, a `subprocess.TimeoutExpired`
+  subclass; every other `process_runner` never raises it, so this code is
+  unreachable for R0/R1/R3 and every non-liveness R2 call site.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an
