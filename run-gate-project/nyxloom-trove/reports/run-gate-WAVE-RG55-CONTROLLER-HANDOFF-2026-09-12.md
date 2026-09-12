@@ -55,7 +55,7 @@ each BRIEF commit moved its branch HEAD past the judged tree — for a resume,
 | P1 | `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-BRIEF-7.md` | `a9bfc748` | `637b8c09` |
 | P6 | `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-BRIEF-10.md` (P6 counted 484 r2 candidates → ~15.7 h against the lane's 4 h budget: the first attempt ends `BUDGET_EXCEEDED` by design, resume until judged; its `-REVIEW-HANDOFF.md` is on `main`, not on the branch) | `99ec0572` | `d4f51bbc` |
 | P4 | `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P4-BRIEF-5.md` | `2ca41a02` | (no run pending) |
-| P2 | `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-<latest>.md` (see the branch) | see the branch | `186461de` |
+| P2 | `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-7.md` (all four verdicts, both by-hand results, the verified 18-survivor list with line/operator/context, candidate 105 = `killed`, RW-58 rule, retention prompt) | `c1f70000` | `186461de` (detach there for the final pass; never commit while detached) |
 | P7 | no brief — `-LOG.md`/`-REPORT.md` session 10 sections + the reviewer's round-2 file are the state | `6f3aefad` | `6f3aefad` (gate) |
 
 Estate rules in force: memory PSI is the launch gate (`full avg10` > 5 →
