@@ -750,3 +750,123 @@ the four forbidden M5 paths present.
 
 Committed together with this entry: REPORT-only commit (no code
 changes), since C10 already landed everything else.
+
+## Round 2 repairs (RW-32 round-2 review, ACCEPT-conditional -> B7/B8 + accepted non-blocking items)
+
+Round-2 review (`run-gate-WAVE-RG55-P8-REVIEW-round2.md`, read in full)
+confirmed B1-B6 and M5 settled (reviewer's own independent probes, not my
+claims re-asserted) and found two NEW blockers introduced by the round-1
+repair set itself, plus five accepted non-blocking items. Round 3 is the
+last round; landing everything below in one pass on `mdt-dev-slices`.
+
+### RC1 -- B7: check.sh's _bytes_of hard-FAILed a correctly configured host on half-GiB/percentage sizes, plus the mdt-cgprofile.conf rename (S15(r2)) and the S20(a)/(b) vacuous-assertion fixes (hash: see next entry)
+
+**B7.** `_bytes_of` (round-1 repair C6) used bash integer arithmetic,
+which is a syntax error on any non-integer mantissa -- and mdt's own
+wizard (`kib_to_size_str`, rounds to the nearest half-GiB) emits exactly
+this form routinely (`4.5G`, `7.5G`, `10.5G`); a percentage (`50%`, also
+legal systemd `MemoryMax`/`MemoryHigh` syntax) fell through unparsed and
+was compared verbatim against a byte count. Both hard-FAILed a CORRECTLY
+configured host. Replaced with the reviewer's prescribed awk parser
+(floating point natively, no bash arithmetic) which is TOTAL: every input
+either resolves to a byte count, passes `""`/`max` through verbatim, or
+returns the literal string `"?"` for anything not byte-comparable
+(percentages, "infinity", garbage). Call site treats `"?"` as a `warn`
+naming the form, never a `fail` -- "not byte-comparable" and
+"byte-comparable but does not match" are different findings, not one
+exit path.
+
+RED-before (scratch copy of the pre-fix function, extracted verbatim):
+```
+6G -> 6442450944
+512M -> 536870912
+4.5G -> bash: 4.5: syntax error: invalid arithmetic operator (error token is ".5")
+50% -> 50%
+```
+GREEN-after (same extraction, post-fix):
+```
+6G -> 6442450944
+512M -> 536870912
+4.5G -> 4831838208
+50% -> ?
+bogus -> ?
+max -> max
+'' ->
+infinity -> ?
+```
+End-to-end verified against the real `check.sh` running against a mocked
+cgroupfs + fake `$CONF` (stubbed `findmnt`/`systemctl`/`docker` on
+`PATH`), the reviewer's own two scenarios: config `4.5G` + kernel
+`4831838208` (a correct host) -> `OK dev-gates.slice memory.max=4831838208
+matches DEV_GATES_MEMORY_MAX=4.5G`; config `50%` + kernel has a value ->
+`WARN DEV_GATES_MEMORY_MAX=50% is not byte-comparable ... not checked`,
+never a FAIL.
+
+**Discrepancy noted and resolved (RW-9, logged not blocking):** the
+coordinator's paraphrase of the regression case said "bogus -> FAIL".
+The review file's own actual B7 prescription -- the awk regex and the
+"not byte-comparable = warn, never fail" call-site rule -- treats ANY
+string outside `\d+(\.\d+)?[KMGT]?i?B?$`, including `"bogus"`, identically
+to a percentage: `"?"`, hence `warn`, not `fail`. There is no scenario in
+the review file's own lettered list (a)-(e) that produces a literal
+`"bogus" -> FAIL`; scenario (b) (a genuine numeric mismatch, config `6G`
+vs. kernel `max`) is the review's own FAIL case. Implemented the
+reviewer's own prescribed mechanism exactly as written (verified in
+regression tests below, including the literal string `"bogus"` -> `"?"`
+-> warn) rather than a special-cased "fail on unparseable garbage" that
+the prescribed code does not ask for and that would contradict its own
+stated fix intent ("make 'not byte-comparable' a warn, never a fail").
+
+Added the reviewer-requested regression case to `tests/test-render.sh`
+(new assertion 9): extracts `_bytes_of` out of `check.sh` verbatim with
+the same guarded-sed anchors as `render()`'s own extraction (start/end
+anchor + host-mutation content scan), then checks `6G`/`4.5G`/`50%`/
+`bogus`/`max`/`""` against their expected outputs in a subshell. Mutation
+demo: reintroduced the bash-arithmetic bug for the `G` suffix on a
+scratch copy -> `FAIL: _bytes_of '4.5G' -> '', want '4831838208'`, real
+exit 1.
+
+**S15(r2), rename.** `/etc/tmpfiles.d/cgprofile.conf` was the wrong name
+for an mdt-owned file -- unprefixed, while every other mdt-owned drop-in
+on this host is namespaced (`mdt-bfq.conf`, `50-mdt-dedicated-api-
+socket.conf`), and the daemon package's own future deployment would
+plausibly want to ship exactly `cgprofile.conf` into the same directory,
+with whichever installs last silently winning. Renamed source file
+`units/tmpfiles-cgprofile.conf` -> `units/mdt-cgprofile.conf` (`git mv`,
+preserves history) and the installed destination to
+`/etc/tmpfiles.d/mdt-cgprofile.conf` throughout: `install.sh`'s `install`/
+`systemd-tmpfiles --create` lines, `check.sh`'s two remediation-hint
+strings and one comment, `templates/devcontainer.json`'s mount comment.
+Full-tree grep after the rename (`grep -rn tmpfiles-cgprofile .`) found
+only one remaining hit -- a `tests/test-render.sh` comment describing the
+OLD assertion text for historical context, correct as written, not a
+residue.
+
+**S20(a)/(b), vacuous-assertion fixes.** (a) Assertion 7 was `grep -qF
+'tmpfiles-cgprofile.conf' "$INSTALL_SH"` -- would pass on a comment alone.
+Rewritten to match the real `install ... units/mdt-cgprofile.conf ...
+/etc/tmpfiles.d/mdt-cgprofile.conf` line and, symmetric with assertion 5,
+the real `systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf`
+line, both with comment lines excluded (`grep -v '^\s*#'`). Mutation demo:
+commented out the real `install` line on a scratch copy -> `FAIL:
+install.sh has no real 'install ... units/mdt-cgprofile.conf ...
+/etc/tmpfiles.d/mdt-cgprofile.conf' line`, real exit 1 (confirmed
+in isolation, i.e. without B7's assertion 9 present to interfere). (b)
+Assertion 8 was a bare `python3 -m doctest FILE`, which exits 0 on a file
+with ZERO doctests too. Rewritten to run `-v` and require a line matching
+`^[1-9][0-9]* passed`. Mutation demo (isolated scratch copy, doctest body
+removed from the docstring): `0 tests in 42 items. / 0 passed.` ->
+`FAIL: mdt-host-setup-wizard.py doctest reported 0 tests (would pass
+vacuously on a deleted doctest, S20(b))`, real exit 1.
+
+Also extended this test's own header comment to describe all 9
+assertions (it previously only listed 1-6, a pre-existing gap from when
+7/8 were added without updating it) and the extraction paragraph to
+mention both `install.sh`'s and `check.sh`'s extractions.
+
+Verify: `bash tests/test-render.sh` (all 9 assertions green,
+`test-render: ALL OK`); `grep -rn "tmpfiles-cgprofile" .` from
+`modern-debian-tools-python-debug/` shows only the one historical
+comment; `grep -n "mdt-cgprofile.conf" install.sh scripts/check.sh
+templates/../templates/devcontainer.json` (run from `host-setup/`, with
+`../templates/devcontainer.json`) shows the renamed references throughout.

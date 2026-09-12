@@ -201,16 +201,23 @@ install -m 0644 "$HERE/units/docker-api-socket.conf" \
 # /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
 # templates/devcontainer.json bind-mounts to reach the cgroup-profiler
 # daemon's control socket. No template variables, installed directly like
-# docker-api-socket.conf above — see units/tmpfiles-cgprofile.conf for the
-# full reasoning. `systemd-tmpfiles --create` applies it immediately
-# (idempotent — a directory that already has the right mode/owner is a
-# no-op) rather than waiting for the next boot's automatic
+# docker-api-socket.conf above — see units/mdt-cgprofile.conf for the
+# full reasoning. Named with the mdt- prefix (round-2 review S15(r2)),
+# matching every other mdt-owned drop-in on this host
+# (/etc/modules-load.d/mdt-bfq.conf, docker.socket.d's own
+# 50-mdt-dedicated-api-socket.conf above) rather than the unprefixed
+# "cgprofile.conf" the daemon package's own future deployment would also
+# plausibly want to ship into the same directory -- an unprefixed name
+# invites two independent packages fighting over one file, silently, with
+# whichever installs last winning. `systemd-tmpfiles --create` applies it
+# immediately (idempotent — a directory that already has the right
+# mode/owner is a no-op) rather than waiting for the next boot's automatic
 # systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
 # exist" requirement is satisfied the moment this script finishes, not
 # after a reboot.
-install -m 0644 "$HERE/units/tmpfiles-cgprofile.conf" /etc/tmpfiles.d/cgprofile.conf
-systemd-tmpfiles --create /etc/tmpfiles.d/cgprofile.conf \
-  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
+install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
+  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.

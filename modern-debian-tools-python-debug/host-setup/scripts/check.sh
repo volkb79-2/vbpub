@@ -66,17 +66,35 @@ echo "== dev-gates.slice effective values (gate/lane containers, the admission c
 # systemd resource-control K/M/G/T suffixes are base-1024, same as
 # install.sh's own render-time helper (withdrawn with dev-infra.slice, so
 # re-declared locally here rather than sourced from anywhere).
-_bytes_of() { # _bytes_of "6G"|""|"max" -> byte count, or the input verbatim
-              # for "" and "max" (not numeric, compared specially below)
-  local v="${1:-}" num
+#
+# round-2 review B7: bash integer arithmetic (the original implementation)
+# is a syntax error on any legal-systemd non-integer mantissa ("4.5G" --
+# and mdt's own wizard, kib_to_size_str(), rounds to the nearest half-GiB
+# and emits exactly this form routinely), and a percentage ("50%", also
+# legal systemd MemoryMax/MemoryHigh syntax) fell through unparsed and was
+# then compared verbatim against a byte count -- both cases hard-FAILed a
+# CORRECTLY configured host. Replaced with an awk parser (awk does floating
+# point natively, no bash arithmetic involved) that is TOTAL: every input
+# either resolves to a byte count, passes "" / "max" through verbatim, or
+# -- for anything not byte-comparable, i.e. not \d+(\.\d+)?[KMGT]?i?B?$
+# (percentages, "infinity", garbage) -- returns the literal string "?".
+# The call site below treats "?" as "cannot check this form" (a `warn`
+# naming it), never as a byte value to compare (never a `fail`) --
+# "not byte-comparable" and "byte-comparable but does not match" are
+# different findings and must not share an exit path.
+_bytes_of() { # _bytes_of "6G"|"4.5G"|""|"max"|"50%" -> byte count, "", "max"
+              # verbatim, or "?" for anything not byte-comparable
+  local v="${1:-}"
   case "$v" in
     ""|max) printf '%s' "$v"; return ;;
-    *K) num="${v%K}"; printf '%s' "$(( num * 1024 ))"; return ;;
-    *M) num="${v%M}"; printf '%s' "$(( num * 1024 * 1024 ))"; return ;;
-    *G) num="${v%G}"; printf '%s' "$(( num * 1024 * 1024 * 1024 ))"; return ;;
-    *T) num="${v%T}"; printf '%s' "$(( num * 1024 * 1024 * 1024 * 1024 ))"; return ;;
-    *)  printf '%s' "$v"; return ;;
   esac
+  awk -v v="$v" 'BEGIN{
+    if (v !~ /^[0-9]+(\.[0-9]+)?[KMGT]?i?B?$/) { print "?"; exit }
+    m = 1
+    if (v ~ /K/) m = 1024; else if (v ~ /M/) m = 1024^2
+    else if (v ~ /G/) m = 1024^3; else if (v ~ /T/) m = 1024^4
+    printf "%d", (v + 0) * m
+  }'
 }
 if [ -d "$CG/dev-gates.slice" ]; then
   for f in memory.high memory.max memory.swap.max cpu.weight io.weight io.bfq.weight; do
@@ -98,7 +116,14 @@ if [ -d "$CG/dev-gates.slice" ]; then
       warn "$var not set in $CONF -- dev-gates.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
     else
       cfg_bytes="$(_bytes_of "$cfg")"
-      if [ "$eff" = "$cfg_bytes" ]; then
+      if [ "$cfg_bytes" = "?" ]; then
+        # round-2 review B7: not byte-comparable (a percentage, "infinity",
+        # or anything else outside \d+(\.\d+)?[KMGT]?i?B?$) is a DIFFERENT
+        # finding from "byte-comparable but does not match" -- warn naming
+        # the form, never fail, since we genuinely cannot tell whether this
+        # is correct or not from here.
+        warn "$var=$cfg is not byte-comparable (percentage or non-size form) -- effective $prop=$eff not checked"
+      elif [ "$eff" = "$cfg_bytes" ]; then
         ok "dev-gates.slice $prop=$eff matches $var=$cfg"
       else
         fail "dev-gates.slice $prop=$eff but $var=$cfg (${cfg_bytes} bytes) -- config says bounded, the kernel's effective value differs (a stale unit, a partial install, or \$CONF predating this key, B3). Re-run install.sh."
@@ -160,7 +185,7 @@ fi
 echo "== cgprofile socket carrier (/run/cgprofile, RG-55 A2/D-30, M5) =="
 # The devcontainer template bind-mounts this directory (Docker --mount,
 # which refuses a missing source) to reach the profiler daemon's control
-# socket. install.sh installs + applies units/tmpfiles-cgprofile.conf; this
+# socket. install.sh installs + applies units/mdt-cgprofile.conf; this
 # is this directory's own fail-open invariant, so like MemoryMin above it
 # gets a hard `fail`, not a printout.
 CGPROFILE_DIR=/run/cgprofile
@@ -170,7 +195,7 @@ if [ -d "$CGPROFILE_DIR" ]; then
   if [ "$cg_mode" = "770" ] && [ "$cg_owner" = "root:docker" ]; then
     ok "$CGPROFILE_DIR exists, mode 0770, owner root:docker"
   else
-    fail "$CGPROFILE_DIR exists but mode=${cg_mode:-?} owner=${cg_owner:-?} (expected 770 root:docker) -- /etc/tmpfiles.d/cgprofile.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/cgprofile.conf' or install.sh"
+    fail "$CGPROFILE_DIR exists but mode=${cg_mode:-?} owner=${cg_owner:-?} (expected 770 root:docker) -- /etc/tmpfiles.d/mdt-cgprofile.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' or install.sh"
   fi
   # Disclosure only (INFO, not WARN/FAIL): the daemon owns the socket's own
   # lifecycle (a separate package, out of this project's scope) -- its
@@ -183,7 +208,7 @@ if [ -d "$CGPROFILE_DIR" ]; then
     info "exec carrier only (daemon socket absent) -- docker exec still works; the daemon may not be installed, may predate the listener, or has not started it yet"
   fi
 else
-  fail "$CGPROFILE_DIR does not exist -- /etc/tmpfiles.d/cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/cgprofile.conf' directly)"
+  fail "$CGPROFILE_DIR does not exist -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
 fi
 
 echo "== docker-.scope.d default-limits backstop (D-G8) =="

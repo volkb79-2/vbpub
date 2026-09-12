@@ -80,7 +80,7 @@
     // puts this container in that same group (the same principals who can
     // `docker exec` can reach the socket).
     // HOST PREREQUISITE: host-setup >= the version that ships this mount
-    // (host-setup/units/tmpfiles-cgprofile.conf, applied by install.sh) —
+    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
     // `mounts` entries are Docker `--mount`, which REFUSES to start the
     // container at all if the bind SOURCE does not exist (unlike `-v`, which
     // would silently create one owned by the wrong user). Upgrade the host

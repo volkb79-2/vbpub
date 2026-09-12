@@ -31,18 +31,31 @@
 #      assignment line in host-setup.env.example (the general form of B3's
 #      failure mode: a key added to a template's RENDER_VARS without ever
 #      being added to the example renders as silently dropped/unbounded on
-#      an upgraded host, round-1 review B6).
+#      an upgraded host, round-1 review B6);
+#   7. install.sh both installs AND applies the cgprofile tmpfiles.d entry
+#      (D-30/M5) -- matched against the real `install`/`systemd-tmpfiles
+#      --create` lines, comments excluded, so a stale comment alone cannot
+#      hold this assertion up (round-2 review S20(a));
+#   8. the wizard's propose_memory_min_guaranteed_suggestion() doctest
+#      actually runs a non-zero test count, not merely exits 0 -- a file
+#      with zero doctests also exits 0 (round-2 review S20(b));
+#   9. check.sh's _bytes_of parses legal-systemd non-integer sizes (mdt's
+#      own wizard emits half-GiB values routinely, e.g. "4.5G") to the
+#      correct byte count, and returns "?" -- never a bash syntax error,
+#      never a silent mis-compare -- for anything not byte-comparable
+#      (a percentage, garbage) (round-2 review B7).
 #
-# Extracts install.sh's OWN render() function + RENDER_VARS list verbatim
-# (byte range, not a hand-copied duplicate) so this test can never silently
-# drift from what install.sh actually runs. The extraction is guarded on
-# BOTH ends (round-1 review B2): if the RENDER_VARS end-anchor ever stops
-# matching, sed would otherwise range to EOF and the "snippet" becomes the
-# rest of install.sh -- root, apt-get, every render() call, the
-# /etc/docker/daemon.json merge, modprobe, and every systemctl call. This
-# test refuses to `source` anything containing a host-mutating statement,
-# checked before the `.` on line ~64, not merely "did the start anchor
-# match" (which a truncated-but-still-anchored snippet would still pass).
+# Extracts install.sh's OWN render() function + RENDER_VARS list, and
+# check.sh's OWN _bytes_of function, verbatim (byte range, not a
+# hand-copied duplicate) so this test can never silently drift from what
+# install.sh/check.sh actually run. Both extractions are guarded on BOTH
+# ends (round-1 review B2): if an end-anchor ever stops matching, sed would
+# otherwise range to EOF and the "snippet" becomes the rest of the file --
+# for install.sh that is root, apt-get, every render() call, the
+# /etc/docker/daemon.json merge, modprobe, and every systemctl call. Both
+# extractions refuse to `source` anything containing a host-mutating
+# statement, not merely "did the start anchor match" (which a
+# truncated-but-still-anchored snippet would still pass).
 #
 # Usage: bash host-setup/tests/test-render.sh   (from anywhere; self-locates)
 set -euo pipefail
@@ -186,18 +199,84 @@ for v in $(grep -ohE '@[A-Z_][A-Z0-9_]*@' "$HERE"/units/*.in | tr -d '@' | sort 
 done
 pass "every @VAR@ placeholder used in a template has a matching assignment in host-setup.env.example"
 
-# --- (7) install.sh installs the cgprofile tmpfiles.d entry (D-30/M5) ------
-grep -qF 'tmpfiles-cgprofile.conf' "$INSTALL_SH" \
-  || fail "install.sh does not install the cgprofile tmpfiles.d entry (D-30/M5, units/tmpfiles-cgprofile.conf)"
-pass "install.sh installs the cgprofile tmpfiles.d entry"
+# --- (7) install.sh installs + applies the cgprofile tmpfiles.d entry (D-30/M5) --
+# round-2 review S20(a): the original assertion was `grep -qF
+# 'tmpfiles-cgprofile.conf'`, which would pass just as happily if the only
+# remaining mention were a comment -- match the actual `install` line (the
+# real installed name, round-2 S15(r2): mdt-cgprofile.conf, mdt- prefixed
+# like every other drop-in this host ships) and, for symmetry with
+# assertion (5)'s systemctl-start check, the `systemd-tmpfiles --create`
+# call too -- excluding comment lines from both so a stale comment alone
+# cannot hold this assertion up.
+grep -v '^\s*#' "$INSTALL_SH" | grep -qE 'install[[:space:]].*units/mdt-cgprofile\.conf.*/etc/tmpfiles\.d/mdt-cgprofile\.conf' \
+  || fail "install.sh has no real 'install ... units/mdt-cgprofile.conf ... /etc/tmpfiles.d/mdt-cgprofile.conf' line (D-30/M5) -- a comment mentioning the filename is not enough"
+grep -v '^\s*#' "$INSTALL_SH" | grep -qE 'systemd-tmpfiles[[:space:]]+--create[[:space:]]+/etc/tmpfiles\.d/mdt-cgprofile\.conf' \
+  || fail "install.sh never applies the cgprofile tmpfiles.d entry with 'systemd-tmpfiles --create' (D-30/M5)"
+pass "install.sh installs and applies the cgprofile tmpfiles.d entry"
 
 # --- (8) the wizard's earmark-sum doctest actually runs (round-1 review S2) --
 # propose_memory_min_guaranteed_suggestion()'s own doctest demonstrates the
 # leftover/suggested-ceiling BEFORE vs AFTER dev-gates.slice's MemoryHigh
 # enters the earmark sum -- run it for real, not just py_compile the file.
-python3 -m doctest "$HERE/mdt-host-setup-wizard.py" \
-  || fail "mdt-host-setup-wizard.py doctest failed (propose_memory_min_guaranteed_suggestion's before/after earmark-sum demonstration, S2)"
-pass "wizard's earmark-sum doctest (before/after dev-gates.slice's MemoryHigh) passes"
+# round-2 review S20(b): `python3 -m doctest FILE` exits 0 on a file with
+# ZERO doctests too -- a deleted doctest would not go red. Run with -v and
+# require a non-zero "N passed" count, so an empty doctest run itself fails
+# this assertion.
+DOCTEST_OUT="$(python3 -m doctest -v "$HERE/mdt-host-setup-wizard.py" 2>&1)" \
+  || fail "mdt-host-setup-wizard.py doctest failed (propose_memory_min_guaranteed_suggestion's before/after earmark-sum demonstration, S2):
+$DOCTEST_OUT"
+printf '%s\n' "$DOCTEST_OUT" | grep -qE '^[1-9][0-9]* passed' \
+  || fail "mdt-host-setup-wizard.py doctest reported 0 tests (would pass vacuously on a deleted doctest, S20(b)):
+$DOCTEST_OUT"
+pass "wizard's earmark-sum doctest (before/after dev-gates.slice's MemoryHigh) passes, and actually ran a non-zero test count"
+
+# --- (9) check.sh's _bytes_of parses legal-systemd non-integer sizes (round-2 review B7) --
+# B7: the original _bytes_of used bash integer arithmetic, which is a
+# SYNTAX ERROR on any legal-systemd non-integer mantissa ("4.5G" -- and
+# mdt's own wizard, kib_to_size_str(), rounds to the nearest half-GiB and
+# emits exactly this form routinely), and silently mis-handled a
+# percentage ("50%", also legal systemd syntax) by comparing it verbatim
+# against a byte count -- both cases hard-FAILed a CORRECTLY configured
+# host. Extracts _bytes_of out of check.sh verbatim (same guarded-sed
+# extraction style as render()/RENDER_VARS above, anchors included) so
+# this test can never silently drift from what check.sh actually runs.
+CHECK_SH="$HERE/scripts/check.sh"
+BYTES_SNIPPET="$TMP/bytes-of-snippet.sh"
+sed -n '/^_bytes_of() {/,/^}$/p' "$CHECK_SH" > "$BYTES_SNIPPET"
+grep -q '^_bytes_of() {' "$BYTES_SNIPPET" \
+  || fail "could not extract _bytes_of from check.sh -- anchor pattern is stale, update this test"
+tail -n1 "$BYTES_SNIPPET" | grep -qx '}' \
+  || fail "_bytes_of() end anchor no longer matches check.sh -- extraction over-ran, update this test's anchor patterns before trusting anything below"
+if grep -nE '^(systemctl|apt-get|install |mkdir |modprobe|udevadm|python3 )|/etc/systemd/system|/etc/docker' "$BYTES_SNIPPET"; then
+  fail "extracted _bytes_of snippet contains a host-mutating statement (see above) -- refusing to source it"
+fi
+(
+  # shellcheck disable=SC1090
+  . "$BYTES_SNIPPET"
+  check() { # check <input> <expected>
+    got="$(_bytes_of "$1")"
+    [ "$got" = "$2" ] || { echo "FAIL: _bytes_of '$1' -> '$got', want '$2'" >&2; exit 1; }
+  }
+  check "6G" "6442450944"                 # sanity: existing integer form unaffected
+  check "4.5G" "4831838208"                # B7's own regression case: the exact
+                                            # kernel byte value the round-2 review
+                                            # cited for a CORRECTLY configured host
+  check "50%" "?"                          # B7: not byte-comparable -> "?", never
+                                            # a bash syntax error, never compared
+                                            # verbatim against a byte count
+  check "bogus" "?"                        # confirmed real behaviour, round 3: an
+                                            # unparseable string takes the SAME "?"
+                                            # path as a percentage (the awk regex
+                                            # cannot distinguish "valid-but-not-a-
+                                            # size" from "garbage", and B7's own
+                                            # prescription does not ask it to) --
+                                            # so this warns, it does not fail; see
+                                            # the LOG for why this differs from a
+                                            # literal reading of "bogus -> FAIL"
+  check "max" "max"
+  check "" ""
+) || fail "_bytes_of regression case failed (B7) -- see stderr above"
+pass "check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the correct byte count and returns ? (never a bash syntax error, never a silent mis-compare) for non-byte-comparable forms (50%, bogus)"
 
 # --- bash -n + shellcheck (if available) on every shell script this package touches --
 SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-apply-dev-caps.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-dev-cap-watcher.py" "${BASH_SOURCE[0]}")
