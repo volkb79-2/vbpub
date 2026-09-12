@@ -274,6 +274,29 @@ never a silent edit to the contract file.
   mutation runs are live: targeted pytest only until P2's `assay-r2` pid
   exits; one mutation run per project at a time.
 
+- **RW-28 (hung mutation candidate; `budget_per_candidate` mandatory):**
+  P1's r2 (orphaned container, RW-26) stalled 37 min on candidate 47
+  (`lib/serve.py:479`, `True->False`: the session-loop
+  `threading.Thread(daemon=True)` flipped to non-daemon → pytest finishes
+  its tests and hangs at interpreter exit on the thread join; futex wait,
+  0 % CPU). cgprofile's `assay.toml` r2 lane set no `budget_per_candidate`
+  (assay B012's optional key), so assay waited indefinitely — and with the
+  run-gate owner dead (RW-26) nothing enforced the 4 h lane budget either.
+  13:22Z: the controller SIGKILLed that pytest inside the container; the
+  run resumed at once (candidate id `30262744b91e83a5…`, whatever assay
+  recorded for it is not an honest verdict). Ruling: (1) every r2 lane in
+  this wave sets `budget_per_candidate` (cgprofile `600s`, run-gate `900s`
+  via P4); (2) the mutant is killed HONESTLY by a test asserting the
+  thread is a daemon thread, never by a hang or by the kill; (3) before
+  the resume under run-gate ownership the agent deletes that candidate's
+  `.assay/mutation-state/<id>.json` so it is re-judged — assay B088:
+  `--resume` keys candidate identity on the mutant's source bytes, not the
+  test suite, so a test-only fix would replay the stale verdict; (4) the
+  tool finding (no default per-candidate budget → one hung mutant blocks
+  the whole run; nothing warns when the key is unset) is filed in assay's
+  backlog per the cross-repo convention. Both agents told (P1 addendum,
+  P4 addendum).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
