@@ -650,3 +650,58 @@ all GREEN this session (two unrelated pre-existing flakes diagnosed and
 filed as RG-62, not fixed — out of this package's own RG-57..61 scope).
 `assay-r2` remains controller-scheduled. Package is DONE modulo `assay-r2`
 and reviewer round 2.
+
+## Session 6 — Round-2 repairs (RW-51: B5 open, S6-S11 non-blocking)
+
+| finding | commit | one-command verification |
+|---|---|---|
+| B5 — `meta.expected` missing `source` (contract §3a) | `07ae3a47` | `python3 -m pytest tests/test_run_gate.py -k TestFootprintProfileMetaExpected -q` |
+| S7 — exec/container `runner` stamp value unasserted (mutant MH) | `459d07a5` | `python3 -m pytest tests/test_run_gate.py -k "test_record_exists_when_exec_begins_and_cleared_after or test_the_record_names_the_container_commit_and_tree" -q` |
+| S8 — footprint `[source:…]` note + history any/all unasserted (mutants MN, MO) | `459d07a5` | `python3 -m pytest tests/test_run_gate.py -k "test_rusage_source_note_appears_only_when_the_summary_says_so or test_lane_stats_source_and_floor_flags_are_any_not_all" -q` |
+| S9 — host-/tmp test flakes on a concurrent foreign writer | `0680d6d8` | `python3 -m pytest tests/test_run_gate.py -k test_a_real_lane_run_never_touches_host_tmp -q` |
+| S10 — `Popen.returncode` never set after `wait4` (ResourceWarning) | `cf043dda` | `python3 -m pytest tests/test_run_gate.py -k test_returncode_is_set_after_wait4_reaps_the_child -q` |
+| S11 — RG-59's 126/127 arm mislabels a running-but-broken daemon as "not running" | `89eb7e38` | `python3 -m pytest tests/test_run_gate.py -k "test_docker_reserved_exit_code_names_the_real_cause_even_with_no_recognizable_prefix or test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one" -q` |
+| S6 — manifest/CONSUMERS transcript one generation stale (mixed pre-/post-wait4 rows) | `864f60f3` | `python3 -c "import json; d=json.load(open('run-gate.footprint.json')); print({k: v['peak_at_floor'] for k, v in d['lanes'].items()})"` (expect `False` for all three, not `None`) |
+
+All six mutants/gaps (MH-exec, MH-container, MN, MO, S10's own
+ResourceWarning, S11's 126/127 swap) were verified by planting the exact
+revert against the worktree's own `run-gate.py` (single-line `sed -i`),
+confirming the new/changed test FAILS, then restoring byte-for-byte
+(`diff -q` against a pre-edit backup) before the next mutant — never two
+mutants live at once, per package (see LOG Session 6 for each result).
+
+### Regenerated transcript (this session, tip `864f60f3`)
+
+```console
+$ ./run-gate.py footprint --write
+run-gate rev 42 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+  LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
+  assay-r1                4    266 MiB/289 MiB            -          -    0.61        -     179.5s [source: rusage-maxrss]
+  assay-r3                5    198 MiB/201 MiB            -          -    0.74        -      15.9s [source: rusage-maxrss]
+  selftest                5    285 MiB/286 MiB            -          -    0.56        -     172.3s [source: rusage-maxrss]
+```
+
+Full transcript + the corrected prose (why every row is now
+`peak_at_floor: false`, never `null`) live in `CONSUMERS.md`'s "The
+footprint manifest" section, "Recaptured RW-51/session 6" paragraph.
+
+### Gate verdicts (final, tip `864f60f3`, verdict read in a SEPARATE step)
+
+- **`./run-gate.py selftest` (bare): PASS** — 1149 passed, 3 skipped, 0
+  failures; `diff-coverage OK: 1076/1076 changed executable lines covered
+  (100.0%); branches 398/398 taken`; `lane 'selftest' exit 0`.
+- **`./run-gate.py --base rg55-run-gate-client assay-r1`: PASS** — first
+  attempt, exit 0, `commit: 864f60f3d8925d35bc25cf3619c92e2452565b49`.
+- **`./run-gate.py assay-r3` (bare): PASS** — first attempt, exit 0;
+  `canary: 2 rejected, 0 survived`.
+
+### Status
+
+Tip **`864f60f3`** on branch `rg55-followups-run-gate`. Working tree
+clean, all six commits pushed to the branch. B5 and all six non-blocking
+findings (S6-S11) closed. `assay-r2` launch condition changed mid-session
+by controller ruling RW-52 (no longer gated on P1/P6's container lanes,
+memory PSI alone) — see the r2 status note this session appends below
+before the final return.

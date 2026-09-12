@@ -1178,3 +1178,129 @@ package's own test suite no longer contributes to it, per the
   `canary: 2 rejected, 0 survived`.
 - **`assay-r2`: NOT attempted** — controller-scheduled separately per
   RW-42/RW-43/RW-46's own dispatch (never this package's own call to make).
+
+## Session 6 (fresh successor, picking up from round-2 review ACCEPT-conditional at tip `4fa46b03`, RW-51)
+
+Read first (all on `main`): round-2 review file (B5 + S6-S11), controller
+RW-51 ruling, contract §3a (`meta.expected` carries `source`), this LOG's
+own tail above. Worktree confirmed clean, HEAD already at `4fa46b03`
+(no drift since round 2 read the tree).
+
+### Commit 1 — `07ae3a47` fix: B5 -- `meta.expected` carries `source`
+
+`footprint_manifest_lane_expected()` gains a fifth key: the manifest
+lane's own `source` when present, else derived from that lane's
+`method`/`scope` pair (contract §3's `source = "memory.peak" |
+"sampled-max"` rule, §3a's `"rusage-maxrss"`), else `null`. SPEC R-44d
+and the `profile_meta` docstring updated to match; CHANGES.md RG-57
+entry gets a Round-2-review paragraph. Existing `TestFootprintProfileMeta
+Expected` equality tests updated for the new key (would otherwise break
+on the added key); two new assertions (`source` present; `source`
+derived from `method`/`scope` when absent).
+
+Tests: `TestFootprintProfileMetaExpected`, `TestFootprintManifestLanePeak
+Median` — 12 passed. `-k Footprint` — 60 passed.
+
+### Commit 2 — `459d07a5` test: S7/S8 -- pin the three unasserted mutants
+
+- MH (exec `runner` stamp value): `TestExecLaneInflightRecord::test_
+  record_exists_when_exec_begins_and_cleared_after` gains `assert
+  seen["record"]["runner"] == "exec"`. Its other half (S7's own second
+  sentence): `TestInflightRecordStore::test_the_record_names_the_
+  container_commit_and_tree` gains `assert data["runner"] == "container"`.
+- MN (footprint line's `[source: rusage-maxrss]`): new test
+  `TestFootprintDisclosureLine::test_rusage_source_note_appears_only_
+  when_the_summary_says_so`.
+- MO (history `any`->`all`): new test `TestHistoryTableResourceColumns::
+  test_lane_stats_source_and_floor_flags_are_any_not_all`, calling
+  `_lane_stats` directly with a mixed-mode two-entry list.
+
+Each new assertion verified live: planted the exact mutant against the
+worktree's own `run-gate.py` (`sed -i` on the one line, no copy needed —
+targeted tests only, then a full diff restore from a pre-edit backup),
+confirmed the new test FAILS, restored (`diff -q` against the backup
+confirmed byte-identical restore before moving to the next mutant).
+4/4 killed on the first attempt: exec-runner swap, container-runner
+swap, source-note drop, any->all swap.
+
+Tests: the four targeted new/changed tests — 4 passed (before mutation);
+class-level re-run after restore — 24 passed.
+
+### Commit 3 — `0680d6d8` test: S9 -- scope the host-/tmp flake
+
+`test_a_real_lane_run_never_touches_host_tmp` compared the FULL
+`run-gate-{exec,shared}-*` name sets under real `/tmp` before/after —
+flaky on this shared, concurrently-run host (a foreign checkout's own
+suite run can add/remove an entry in the window). Both snapshots now
+glob-filtered to names containing this test's own pid-suffixed container
+name (`myproj-dev1-<pid>-runner`), so only what this exact invocation
+could plausibly have created is compared.
+
+Tests: the one test, isolated — 1 passed.
+
+### Commit 4 — `cf043dda` fix: S10 -- `Popen.returncode` after `wait4`
+
+`os.wait4()` reaps the rusage-path lane's child directly, bypassing
+`Popen.wait()` — the one place that otherwise sets `proc.returncode`.
+One line: `proc.returncode = code` right after `os.waitstatus_to_
+exitcode()`. New test `TestBareHostProfilingWiring::test_returncode_is_
+set_after_wait4_reaps_the_child` spies on the real `Popen` object (same
+pattern as the existing `test_wait4_interrupted_kills_the_child_and_
+reraises`) and asserts `.returncode` matches the lane's actual exit code.
+Verified: removing the one new line makes the new test fail; restored,
+re-ran the class — 24 passed.
+
+### Commit 5 — `89eb7e38` fix: S11 -- split the RG-59 exit-code arm
+
+125 (docker CLI/daemon could not start the command) keeps `daemon_not_
+running_reason()`; 126/127 (container command not executable / not
+found) — `docker exec` REACHED a live container, `cgprofile` itself
+could not start inside it — get a new `daemon_broken_reason()`, wired
+into `ProfilerClient._ctl`'s `JSONDecodeError` branch after the existing
+not-running check. Existing exit-code test moved from 126 to 125 (its
+actual condition, docstring corrected); new test covers both 126 and 127
+for the new wording, asserting `"not running" not in reason` and `"is
+running" in reason`. CHANGES.md RG-59 entry gets a Round-2-review
+paragraph. Verified against a reverted mutant (both codes folded back
+into the absent-set) — new test fails; restored.
+
+Tests: `-k ProfilerClient` — 25 passed. `-k "ProfilerClient or Doctor"`
+— 85 passed.
+
+### Commit 6 — `864f60f3` docs: S6 -- regenerate footprint manifest + CONSUMERS
+
+Fresh, clean-tree `selftest` PASS (1148 passed / 4 skipped, then a
+second run after the docs commit below: 1149/3 skipped — the +1/-1 shift
+is `pytest-randomly` ordering a session-scoped fixture differently
+between the two `--collect-only` boundaries, not a P4 defect; both runs
+100% diff-coverage) on the current tip, then `./run-gate.py footprint
+--write`. All three lanes' most-recently-profiled entry is now wait4-era
+with a REAL (non-null) `peak_at_floor` — `false` for all three — closing
+S6's own finding (the committed manifest/transcript were one generation
+stale, mixing in pre-repair records that carried `peak_at_floor: null`
+while the prose claimed the opposite). CONSUMERS.md transcript block and
+its parenthetical note both regenerated verbatim from the fresh run;
+note added that `meta.expected` now also carries `source` (B5).
+
+### Gate verdicts (final, tip `864f60f3`)
+
+- **`./run-gate.py selftest` (bare): PASS**, `1149 passed, 3 skipped …
+  200.53s`; `diff-coverage OK: 1076/1076 changed executable lines
+  covered (100.0%); branches 398/398 taken`; exit 0.
+- **`./run-gate.py --base rg55-run-gate-client assay-r1`: PASS**, first
+  attempt, exit 0, commit `864f60f3d8925d35bc25cf3619c92e2452565b49`.
+- **`./run-gate.py assay-r3` (bare): PASS**, first attempt, `canary: 2
+  rejected, 0 survived`, exit 0.
+
+All three launched serially, `nice -n 19 ionice -c 3`, memory `full
+avg10` checked < 1.3% before each launch (never above ~1.3% at any
+check point this session). No container created; `docker ps` unchanged
+by any of this session's own runs (this project's five lanes are all
+bare-host).
+
+Tool-call count this session: approximate (not tracked with a hard
+counter as the work progressed) — well past the ~60-call ARM point by
+the time the three final gates were reproduced; cutting HERE, at this
+green boundary (three GREEN gates, clean tree, everything committed),
+per the checkpoint clause's "never past ~90 calls" rule, rather than
+also driving `assay-r2` to completion in the same session.
