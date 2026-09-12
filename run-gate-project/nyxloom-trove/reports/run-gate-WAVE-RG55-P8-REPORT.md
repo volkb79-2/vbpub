@@ -1,11 +1,22 @@
 # run-gate-WAVE-RG55-P8 — REPORT
 
-**Tip:** `e6af30df` (branch `mdt-dev-slices`, worktree `.worktrees/mdt-dev-slices`,
-base `main`@`11ac5d67`). **Gate:** `modern-debian-tools-python-debug`'s
-registered `smoke` lane (`python3 run-gate.py smoke`, run from the project
-root — **not** `host-setup/`) — **exit 0**, verdict read in a separate step
-from a clean (committed) tree, ran ONCE for this repair round (budget was
-two). Full LOG: `run-gate-WAVE-RG55-P8-LOG.md`.
+**Tip:** this commit itself (branch `mdt-dev-slices`, worktree
+`.worktrees/mdt-dev-slices`, base `main`@`11ac5d67`) — round-1 S6 and
+round-2 S17 both found a stale `Tip:` line here, because a REPORT commit
+describing its own hash is a self-reference git cannot resolve ahead of
+time. Stated verifiably instead: run `git -C .worktrees/mdt-dev-slices
+log -1 --format=%H` for the literal hash; it will equal this commit's own
+hash by construction, since no commit follows it in this round. The last
+CODE commit (what the gate below actually ran against) is `96a737d1`
+(RC3, records-only, landed no code — the last commit that touched
+`host-setup/`/`templates/` is `f3ef7b80`, RC2). **Gate:**
+`modern-debian-tools-python-debug`'s registered `smoke` lane (`python3
+run-gate.py smoke`, run from the project root — **not** `host-setup/`) —
+**exit 0**, verdict read in a separate step from a clean (committed) tree
+at `96a737d1`, ran ONCE this round (budget was two — a first attempt
+before `96a737d1` landed was refused by run-gate itself, "refusing to
+judge a dirty tree", and does not count as a run). Full LOG:
+`run-gate-WAVE-RG55-P8-LOG.md`.
 
 This REPORT covers three passes: the original M1-M4+Gates package (tip
 `62927f1f` at the time), round-1's full repair-and-extend set following
@@ -303,21 +314,22 @@ Registered gate: `modern-debian-tools-python-debug/run-gate.toml`
 `[lanes.smoke]` (a host lane; `argv` runs `py_compile` over every tracked
 `.py` file, then `host-setup/tests/test-render.sh`, then an `echo`).
 
-**`host-setup/tests/test-render.sh`** (bash, extended this round to 8
-assertions — see the Round-1 repairs table above for B2/B6/S7/S8/S14's
-contributions): extracts `install.sh`'s own `render()` function and
-`RENDER_VARS` list verbatim (a guarded `sed` byte-range on two stable
-anchor patterns, now fail-closed on a drifted anchor and scanned for any
-host-mutating statement before ever being sourced), sources that plus
-`host-setup.env.example` itself (no root, no `/etc/mdt/`, no host
-mutation), renders every `units/*.in` template, and asserts all 8 items
-listed inline in the script's own header comment plus a `bash -n`/
-`py_compile` loop and a `shellcheck -S warning` loop over every script this
-package touches.
+**`host-setup/tests/test-render.sh`** (bash, extended this round to 9
+assertions — see the Round-2 repairs table above for B7/S20(a)/S20(b)'s
+contributions, the Round-1 repairs table for B2/B6/S8/S14's): extracts
+`install.sh`'s own `render()` function and `RENDER_VARS` list, AND
+`check.sh`'s own `_bytes_of` function, verbatim (guarded `sed` byte-ranges
+on stable anchor patterns, fail-closed on a drifted anchor and scanned for
+any host-mutating statement before ever being sourced), sources
+`install.sh`'s extraction plus `host-setup.env.example` itself (no root,
+no `/etc/mdt/`, no host mutation), renders every `units/*.in` template,
+and asserts all 9 items listed inline in the script's own header comment
+plus a `bash -n`/`py_compile` loop and a `shellcheck -S warning` loop over
+every script this package touches.
 
 **Ran directly this session** (`nice -n 19 ionice -c 3 bash
-tests/test-render.sh`): all 8 assertions pass, `test-render: ALL OK`,
-exit 0. Full output:
+tests/test-render.sh`, after all round-2 fixes landed): all 9 assertions
+pass, `test-render: ALL OK`, exit 0. Full output:
 ```
 ok: render()/RENDER_VARS extracted from install.sh and guarded (anchors + host-mutation scan)
 ok: every rendered unit is free of unresolved @VAR@ placeholders
@@ -326,8 +338,9 @@ ok: dev.slice and dev-memory_min_guaranteed.slice render with no MemoryMin (opt-
 ok: no units/*.in template mentions the withdrawn dev-infra.slice
 ok: install.sh renders every units/*.in, and starts every *.slice
 ok: every @VAR@ placeholder used in a template has a matching assignment in host-setup.env.example
-ok: install.sh installs the cgprofile tmpfiles.d entry
-ok: wizard's earmark-sum doctest (before/after dev-gates.slice's MemoryHigh) passes
+ok: install.sh installs and applies the cgprofile tmpfiles.d entry
+ok: wizard's earmark-sum doctest (before/after dev-gates.slice's MemoryHigh) passes, and actually ran a non-zero test count
+ok: check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the correct byte count and returns ? (never a bash syntax error, never a silent mis-compare) for non-byte-comparable forms (50%, bogus)
 ok: bash -n / py_compile clean on every touched script
 ok: shellcheck (warning severity+) clean on every touched shell script
 test-render: ALL OK
@@ -335,19 +348,26 @@ test-render: ALL OK
 
 **Ran the registered gate this session** (`nice -n 19 ionice -c 3 python3
 run-gate.py smoke`, run from `modern-debian-tools-python-debug/` — the
-project root, NOT `host-setup/` — from a clean committed tree at tip
-`e6af30df`, verdict read in a separate step afterward, never a pipe tail):
+project root, NOT `host-setup/`): a first attempt from a tree that still
+had this REPORT's own round-2 edits uncommitted was correctly REFUSED by
+run-gate itself — `run-gate: refusing to judge a dirty tree:
+.../mdt-dev-slices has 1 uncommitted change(s) ... — commit or pass
+--allow-dirty` — and does not count as a run (no code executed). Committed
+RC3 (records-only, `96a737d1`) to reach a clean tree, then ran again from
+that clean tree, verdict read in a separate step afterward, never a pipe
+tail:
 ```
 run-gate: lane 'smoke' exit 0
 ```
-with `smoke: OK` and the full `test-render: ALL OK` block reproduced
-inside the gate container's own output. Notable in the transcript:
-run-gate's own container launched with `--cgroup-parent
+with `smoke: OK` and the full 9-assertion `test-render: ALL OK` block
+reproduced inside the gate container's own output. Notable in the
+transcript: run-gate's own container launched with `--cgroup-parent
 dev-background.slice -e CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice`
-— confirms it is not yet reading `$CGROUP_PARENT_DEV_GATES` (expected,
+— confirms it is still not reading `$CGROUP_PARENT_DEV_GATES` (expected,
 future consumer work per D4/S4 above) and correctly falls back to today's
-placement per D-24. This was gate run **1 of the 2 allowed** for this
-repair round; it passed cleanly, so no second run was made.
+placement per D-24. This was gate run **1 of the 2 allowed** this round
+(the refused dirty-tree attempt does not count); it passed cleanly, so no
+second run was made.
 
 **Python coverage:** this round touches exactly one `.py` file,
 `mdt-host-setup-wizard.py` (plus `mdt-dev-cap-watcher.py`, touched in C3).
@@ -445,6 +465,25 @@ modern-debian-tools-python-debug/templates/devcontainer.json
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-LOG.md
 ```
 Matches the expected set exactly — no unexpected path.
+
+Full diff surface, round 2 (`git diff ae38d55a..HEAD --name-status`, i.e.
+everything RC1-RC3 touched together):
+```
+M	modern-debian-tools-python-debug/host-setup/README.md
+M	modern-debian-tools-python-debug/host-setup/install.sh
+M	modern-debian-tools-python-debug/host-setup/scripts/check.sh
+M	modern-debian-tools-python-debug/host-setup/tests/test-render.sh
+R100	modern-debian-tools-python-debug/host-setup/units/tmpfiles-cgprofile.conf	modern-debian-tools-python-debug/host-setup/units/mdt-cgprofile.conf
+M	modern-debian-tools-python-debug/templates/devcontainer.json
+M	run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-LOG.md
+M	run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md
+```
+No `AGENTS.md`, `host-setup.env.example`, `mdt-host-setup-wizard.py`, or
+any `units/*.slice.in` touched this round — matches expectation (round 2's
+findings were all in `check.sh`, `README.md`, `install.sh`,
+`test-render.sh`, the tmpfiles unit, and `devcontainer.json`'s one
+comment). No forbidden path (`scripts/cgroup-profiler/`,
+`run-gate-project/run-gate.py`, `ciu/`, `/workspaces/dstdns`) present.
 
 ## What was NOT done, and why
 

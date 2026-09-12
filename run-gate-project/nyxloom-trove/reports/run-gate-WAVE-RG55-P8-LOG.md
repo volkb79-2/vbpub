@@ -970,3 +970,46 @@ accepted-items list for this round.
 
 Verify: `grep -n '^## Round-2 repairs' REPORT.md`; `grep -n 'mdt-cgprofile.conf' REPORT.md`;
 `grep -n 'fails OPEN' REPORT.md`; `grep -n 'S14 (test-render' REPORT.md`.
+
+### RC4 (final) -- test-render.sh full re-run, registered gate, REPORT Gates section + Tip refresh (hash: see below)
+
+`nice -n 19 ionice -c 3 bash tests/test-render.sh` (from `host-setup/`,
+after RC1-RC3): exit 0, all 9 assertions green, `test-render: ALL OK`.
+
+Registered gate: first attempt (`nice -n 19 ionice -c 3 python3
+run-gate.py smoke` from `modern-debian-tools-python-debug/`) was
+CORRECTLY REFUSED by run-gate itself -- `run-gate: refusing to judge a
+dirty tree: .../mdt-dev-slices has 1 uncommitted change(s) (first: ' M
+run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md')
+-- commit or pass --allow-dirty`, exit 2 -- because this REPORT's own
+in-progress round-2 edits were still uncommitted. Did not pass
+`--allow-dirty` (that would defeat the gate's own point); committed RC3
+(records-only) to reach a clean tree instead, per the established
+records-commit pattern. Re-ran from the clean tree at `96a737d1`: exit 0,
+verdict read in a separate step, `run-gate: lane 'smoke' exit 0`,
+`smoke: OK`, the full 9-assertion `test-render: ALL OK` block reproduced
+inside the container. This is gate run 1 of the 2 allowed this round (the
+refused dirty-tree attempt executed no code and does not count); it
+passed cleanly, so no second run was made.
+
+REPORT's Gates section rewritten with this fresh output (9 assertions,
+not 8) and the corrected gate-run narrative (refused-then-clean). `Tip:`
+line rewritten to avoid the self-reference paradox a REPORT commit
+describing its own not-yet-created hash cannot resolve (round-1 S6 and
+round-2 S17 both flagged the previous approach -- citing the prior
+commit's hash as "Tip" -- as stale/misleading): states the verifiable
+command (`git -C .worktrees/mdt-dev-slices log -1 --format=%H`) instead
+of a hardcoded value, and separately names the last CODE commit
+(`f3ef7b80`, RC2) for "what the gate ran against" clarity. Added a
+round-2 diff-surface block (`git diff ae38d55a..HEAD --name-status`,
+verified against the real command output before writing it into the
+REPORT) confirming no unexpected path and no forbidden path touched.
+
+Committed together with this entry: REPORT-only commit, no code changes
+(RC1-RC3 already landed everything else this round).
+
+**This is the last commit of round 2.** Final tip (fill in after this
+commit lands, so the LOG's own record is self-consistent once read
+after the fact): see `git -C .worktrees/mdt-dev-slices log -1
+--format=%H`, or the commit immediately following this LOG line in
+`git log --oneline`.
