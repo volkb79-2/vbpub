@@ -12697,6 +12697,21 @@ class TestProfilerClient:
         assert doc is None
         assert "unparsable" in reason
 
+    def test_a_response_missing_the_ok_key_entirely_degrades(
+            self, tmp_path, monkeypatch):
+        # `doc.get("ok", False)` -- the fail-SAFE default (assay-r2
+        # mutation lane: a `False`-to-`True` swap on exactly this default
+        # survived, since every prior test's fixture named "ok" explicitly
+        # either way; none omitted it). A well-formed JSON object missing
+        # the key entirely must be treated as NOT ok, never as a silent
+        # success.
+        body = json.dumps({"contract": 1})
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(body, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert reason is not None and "refused" in reason
+
     def test_wrong_contract_returns_reason(self, tmp_path, monkeypatch):
         body = json.dumps({"ok": True, "contract": 2})
         set_cgprofile_plan(tmp_path, monkeypatch, version=(body, None, None))
