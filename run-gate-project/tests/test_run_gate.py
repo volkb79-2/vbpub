@@ -12658,6 +12658,12 @@ class TestProfilerClient:
         assert "container-shared" in argv
         assert "abc123" in argv
         assert "--json" in argv
+        # `meta or {}` (assay-r2 mutation lane: an `or`-vs-`and` swap here
+        # survived until this assertion existed -- the mutant still puts
+        # SOME `--meta` value on argv, just never the CALLER'S actual
+        # dict content, only `{}`/`null` depending on truthiness).
+        meta_value = json.loads(argv[argv.index("--meta") + 1])
+        assert meta_value == {"lane": "suite"}
 
     def test_start_with_minimal_args_omits_optional_flags(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "start-v1.json").read_text()
