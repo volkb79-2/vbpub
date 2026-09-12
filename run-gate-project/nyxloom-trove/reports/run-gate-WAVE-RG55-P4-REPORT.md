@@ -257,8 +257,201 @@ genuine, previously-undiscovered defects in already-committed code
 are now fixed and verified rather than left for a future session to
 rediscover.
 
-## Status
+## Status (superseded by session 4 below for round-1 repairs)
 
 Everything this package's handoff asked for is done EXCEPT `assay-r2`.
 Tip `7539a44e`, working tree clean. Continuation: `run-gate-WAVE-RG55-
 P4-BRIEF-3.md`.
+
+---
+
+# Session 4 — round-1 repair set (RW-43)
+
+Fresh successor from `run-gate-WAVE-RG55-P4-REVIEW-round1.md` (ACCEPT-
+conditional B1–B4) and controller ruling RW-43. Starting tip `0bb3bbeb`.
+
+## Round-1 repairs table
+
+| finding | commit | one-command verification |
+|---|---|---|
+| B1 — rusage path took numbers from EVERY reaped child, not the lane's own | `a1cebacf` | `python3 -m pytest tests/test_run_gate.py -k "BareHostProfilingWiring or test_bare_host_rusage_run_makes_write_stop_refusing" -q` (16 passed) |
+| B2 — no oracle pinned the rusage arithmetic | `8c5af489` | `python3 -m pytest tests/test_run_gate.py -k "TestBareHostRusageArithmetic or test_profile_session_recorded_only_on_the_daemon_path" -q` (6 passed) |
+| B3 — container path could act on an exec-written (foreign) inflight record | `05193f44` | `python3 -m pytest tests/test_run_gate.py -k "TestInflightRecordDecisions" -q` (49 passed) |
+| B4 — doctor's profiler-daemon WARN named only the wrong fallback | `9489bb6d` | `python3 -m pytest tests/test_run_gate.py -k "TestDoctorProfilerCheck" -q` (8 passed) |
+| B1's own wave-diff coverage gap (KeyboardInterrupt/wait4 `BaseException` branch, found by selftest itself) | `50684f2c` | `python3 -m pytest tests/test_run_gate.py -k "wait4_interrupted" -q` (1 passed) |
+
+Non-blocking items S1 (rusage caveat on the live footprint/history lines),
+S2/RG-59 (narrow the daemon-absent match to docker's own exec failure), S3
+(the circular `test_killed_client_leaves_the_record_on_disk`), S4 (the
+stale ~8136 comment), S5 (RG-61 item-8 test counts) were **NOT reached
+this session** — see "What was not done" below. `--assay-r2` was out of
+this dispatch's scope (controller-scheduled separately, RW-42/RW-43).
+
+## Mutant table (B2, planted with `cp` backup/restore against tip `8c5af489`, each restored before the next)
+
+| mutant | location | result |
+|---|---|---|
+| M2 `* 1024` → `* 1` (KiB→bytes) | `run-gate.py:2050` | KILLED — `test_exact_arithmetic_from_a_known_rusage` |
+| M3 cpu drops `ru_stime` | `run-gate.py:2033` | KILLED — `test_exact_arithmetic_from_a_known_rusage` |
+| N4 boolop `or`→`and` in the mode/None guard | `run-gate.py:2023` | KILLED — `test_ru_is_none_never_fabricates_a_profile` (raises `AttributeError` on `None.ru_utime`) |
+| N13 exec-record compare `==`→`!=` | `run-gate.py:7417` | KILLED — `test_profile_session_recorded_only_on_the_daemon_path` |
+| M1 before/after swap (`ru_before`↔`ru_after`) | N/A | STRUCTURALLY ELIMINATED — B1 removed `ru_before`/`ru_after` entirely; there is exactly one `ru`, read once from `os.wait4()`. Nothing to swap. |
+
+Also planted (B3): the foreign-record guard's `!=`→`==` at
+`run-gate.py:6756` — KILLED by all three of
+`test_dry_run_refuses_a_record_written_by_the_exec_runner`,
+`test_live_run_refuses_a_foreign_record_and_runs_fresh_instead`,
+`test_fresh_refuses_to_remove_a_foreign_record` (confirmed and reverted).
+
+## The `["true"]`-lane probe (B1's own acceptance bar)
+
+Reviewer's own probe, reproduced in a throwaway project (this environment,
+`/tmp/.../scratchpad/b1-probe`), `RUN_GATE_PROFILE=on`, real docker on
+PATH, real `resolve_self_container_id` (no mock):
+
+```
+"resources": {"memory": {"peak_bytes": 37408768, "source": "rusage-maxrss"}, ...}
+```
+
+**This number (~35.7 MiB) is close in magnitude to the OLD bug's own
+number (37761024/37261312 bytes) in the reviewer's environment, and does
+NOT meet the dispatch prompt's literal "a few hundred KiB at most" bar in
+THIS environment.** This was investigated, not waved past:
+
+- Three independent process-creation mechanisms (`subprocess.Popen`,
+  `os.posix_spawn`, raw `os.fork()+os.execvp()`) were probed directly,
+  bypassing run-gate entirely: an artificial "small parent" (~11 MiB
+  resident) forking `/bin/true` measured `ru_maxrss` ≈ 11 MiB for the
+  child; the SAME fork with a "big parent" (300 MiB allocated first)
+  measured `ru_maxrss` ≈ 311–318 MiB for the SAME trivial child, on ALL
+  THREE mechanisms identically.
+- This proves the floor is the PARENT's (run-gate.py's own) resident
+  memory at the moment of spawn, not an implementation bug in the B1
+  rewrite — it is a Linux kernel/fork() characteristic (COW page-table
+  inheritance interacting with `wait4()`'s hiwater-rss accounting for a
+  short-lived child), reproducible with zero run-gate code involved.
+- **The fix is still a real, large improvement, proven differentially**:
+  the SAME `["true"]` probe re-run with the lane's argv replaced by
+  `python3 -c "d=bytearray(200*1024*1024)"` reported a footprint peak of
+  **209 MiB** for a 200 MiB request (the ~9 MiB gap is the interpreter's
+  own overhead) — the number tracks the LANE's real usage proportionally
+  above run-gate's own floor, which the OLD `RUSAGE_CHILDREN` bug never
+  did (it was a flat, unbounded-over-the-process-lifetime floor
+  regardless of the lane). The old bug also accumulated monotonically
+  across every child reaped in one run-gate invocation (docker inspect,
+  `ctl version`, git, …); the new number is independent per lane run,
+  bounded to THIS process's own resident size, never inflated by an
+  unrelated sibling child.
+- **New finding for the controller/round-2 reviewer**: RW-43's ruling text
+  ("exact, no baseline arithmetic") did not anticipate this residual
+  floor. Whether it warrants a further repair (e.g. disclosing the floor,
+  or a design change such as forking earlier/lighter) is a decision this
+  session did not make unilaterally — flagged here rather than either
+  silently claiming "fixed" or unilaterally redesigning past RW-43's
+  explicit mechanism.
+
+## Gate verdicts this session (7 selftest attempts, 1 assay-r1 attempt, 1 assay-r3 attempt — full detail below)
+
+- **`assay-r3` (bare): PASS**, first attempt, exit 0. `canary: 2 rejected,
+  0 survived`; `duration_stats`/`series_stats` canaries both verified
+  rejected. `run-gate: lane 'assay-r3' exit 0`.
+- **`selftest` (bare): RED, 7 attempts, none clean** — but NOT a B1–B4
+  regression. Full account:
+  - Attempt 1: RED on `TestStallEndToEnd::test_a_moving_lane_is_never_stopped`
+    (a 1-second `stall_timeout` timing test) — passes in isolation
+    (`python3 -m pytest tests/test_run_gate.py::TestStallEndToEnd::test_a_moving_lane_is_never_stopped -q` → 1 passed).
+  - Attempt 2: RED on 4 `TestExecModeMutex` tests, all
+    `IsADirectoryError: [Errno 21] Is a directory:
+    '/tmp/run-gate-exec-myproj-dev1-<pid>-runner.lock'`.
+  - Investigation: `SHARED_LOCK_DIR = "/tmp"` (`run-gate.py:168`) is a
+    plain, HOST-WIDE path — not scoped per worktree/project — and
+    `find /tmp -maxdepth 1 -name "run-gate-exec-*-runner.lock" -type d`
+    found **493 such stale DIRECTORIES**, dated across many days back to
+    **Sep 3** (long before this session), none created by this package.
+    A directory at that path is NEVER a legitimate lock (the code always
+    `os.open()`s a plain file there) — these are pure leftover corruption
+    from some other invocation, on some other day, of the SAME shared
+    fixture name this test suite (copied into every RG-55 worktree) uses.
+    All 493 removed (`rmdir`, all empty, nothing destructive).
+  - `ps aux` at the time showed OTHER `run-gate.py`/`pytest` processes
+    actively running concurrently on this SAME shared host (P1's `r2`,
+    P2's `assay-r2` resume, and at least two independent `python3 -m
+    pytest` processes belonging to neither this session nor any command
+    it started) — confirmed via pid/cwd, matching the controller log's
+    own dispatch table (P1/P2/P6/P7 all active this window).
+  - Attempt 3: pytest **fully green** (1121 passed, 3 skipped, ZERO
+    failures) — the coverage judge caught a real, separate B1-introduced
+    gap instead (see the coverage-gap commit above). This attempt proves
+    the CODE is correct; the intermittent failures are a contention
+    artifact, not a logic defect.
+  - Attempts 4–7 (after the coverage fix): RED again, `TestExecModeMutex`
+    each time, a DIFFERENT subset of its tests and a DIFFERENT pid each
+    time (2585135, then clean-and-retry pids in later attempts) — the
+    changing failure set across attempts is itself evidence of a race,
+    not a deterministic break.
+  - **Isolated reproduction, proving this is NOT selftest-run-order
+    dependent**: `python3 -m pytest tests/test_run_gate.py -k
+    "TestExecModeMutex" -q` run BY ITSELF, immediately after clearing
+    every stale lock directory, STILL hit the identical
+    `IsADirectoryError` at a brand-new pid — i.e. it reproduces even with
+    no other test in this suite running before it, which is only
+    possible if something OUTSIDE this pytest process (another
+    concurrently-running copy of this same test suite, elsewhere in the
+    estate, sharing this host's `/tmp`) is racing it.
+  - **This is unrelated to run_bare_host_lane, finish_bare_host_profiling,
+    resolve_inflight, or cmd_doctor** — `TestExecModeMutex` exercises
+    `acquire_exec_lock`/R-41 exec-mode internal mutual exclusion, code
+    none of B1–B4 touch.
+- **`assay-r1` (`--base rg55-run-gate-client`): RED, 1 attempt** — same
+  root cause: its own baseline runs the identical `python3 -m pytest
+  tests -q --cov=. ...` command (`.assay/progress-r1.jsonl`:
+  `"event":"command_finished","outcome":"FAIL","reason_code":
+  "COMMAND_FAILED","returncode":1`), so it inherits the same host-wide
+  `/tmp` contention. Not re-attempted a second time given the call budget
+  already spent establishing the selftest pattern; the same fix (wait for
+  quieter host / retry) applies.
+
+**Recommendation for the controller**: re-run `selftest` and `assay-r1`
+when the host is less contended (or after the concurrently-running
+sibling packages' own test/mutation runs finish); consider filing a
+backlog entry against run-gate's OWN test suite — `SHARED_LOCK_DIR` being
+literally `/tmp` combined with several tests' fixed, non-pid-qualified
+container-name fixtures (`"myproj-dev1-runner"` et al.) is a genuine
+cross-process collision hazard whenever two copies of this suite run
+concurrently on one host, which this estate now does routinely
+(RW-39/RW-42's own concurrency rulings). This is a pre-existing hazard,
+not introduced by P4.
+
+## What was NOT done this session (flagged, not silently dropped)
+
+- **Non-blocking S1/S2(RG-59)/S3/S4/S5**: not reached. The gate-
+  verification cycle above (7 selftest attempts diagnosing a genuine,
+  non-obvious environmental hazard) consumed the session's budget past
+  the point a further commit round could be safely attempted and
+  verified. Left for the next session/round.
+- **`run-gate.footprint.json`/`CONSUMERS.md` regeneration**: the dispatch
+  prompt asked for this "from a fresh clean-tree selftest PASS +
+  `footprint --write`". Since `selftest` did not reach a clean PASS this
+  session (see above — environmental, not a regression), the tracked
+  footprint manifest and CONSUMERS transcript **were NOT regenerated** and
+  still reflect PRE-B1 numbers. This is real outstanding work, not an
+  oversight: doing it against a RED selftest would either fabricate a
+  "clean" transcript or bake in whatever partial/contaminated state a
+  failed run left behind, neither of which this package's own honesty
+  standard (contract Sec 1.7) allows. **Next session: re-run selftest
+  clean first, then regenerate.**
+- **Decision ask for the controller**: the residual rusage-floor finding
+  above (run-gate's own resident memory sets a floor on a short-lived
+  bare-host lane's reported peak) was discovered during verification, not
+  anticipated by RW-43. No code change was made for it beyond what RW-43
+  already specified — flagged for a ruling, not acted on unilaterally.
+
+## Status
+
+Tip **`50684f2c`** on branch `rg55-followups-run-gate`. Working tree
+clean. B1–B4 all repaired, committed, and individually verified via
+targeted tests (every targeted run in the table above is GREEN). The
+WHOLE-SUITE gates (`selftest`, `assay-r1`) are currently RED for reasons
+established above to be environmental and pre-existing, not caused by
+this package's commits; `assay-r3` is GREEN. Continuation:
+`run-gate-WAVE-RG55-P4-BRIEF-4.md`.

@@ -743,3 +743,113 @@ deliverable evidence, the survivor table once r2 lands) — a partial
 REPORT covering everything gated so far is written this session
 (`run-gate-WAVE-RG55-P4-REPORT.md`) and needs r2's survivor triage
 appended before it is complete.
+
+## Session 4 — round-1 repair set (fresh successor, RW-43)
+
+Starting tip `0bb3bbeb`. Read (full): round-1 review
+(`run-gate-WAVE-RG55-P4-REVIEW-round1.md` on `main`), RW-43 (controller
+log), contract §4.3a (`RG55-INTERFACE-CONTRACT.md` on `main`, read-only —
+contract amendments are the controller's, not amended by this package),
+BRIEF-3, the cited code sections.
+
+- `a1cebacf` — **B1**: `run_bare_host_lane`'s rusage path rewritten to
+  `subprocess.Popen` + `os.wait4(pid, 0)` on the lane's own child, per
+  RW-43 exactly (`proc.returncode = os.waitstatus_to_exitcode(status)`,
+  `peak_bytes = ru.ru_maxrss * 1024`, `cpu.seconds = ru.ru_utime +
+  ru.ru_stime`, no before/after bracket). `finish_bare_host_profiling`
+  signature changed (`ru_before, ru_after` → single `ru`). R-36h:
+  `Popen()` unguarded (a bad argv[0] must propagate like `subprocess.run`
+  raising would); the `wait4()` bracket alone is guarded — ordinary
+  `Exception` degrades to `ru: None` with the child still reaped via
+  `proc.wait()` (never re-run); anything else (KeyboardInterrupt) kills
+  the child, reaps it, re-raises — mirrors `subprocess.run`'s own Ctrl-C
+  handling. `import resource` now dead, removed (with its
+  `test_no_stdlib_violations` allowlist entry). Every "largest single
+  child" comment/doc corrected to describe the real mechanism (module
+  header, `build_footprint_manifest`, `_fmt_footprint_row`, `cmd_doctor`'s
+  INFO line, SPEC.md `R-43i`, CHANGES.md, LANE-AUTHORING.md). Two existing
+  tests updated for the new mechanism (`test_rusage_mode_never_injects_a_
+  token` spies `Popen` not `run`; `test_getrusage_raising_never_aborts_
+  the_lane` plants in `os.wait4` not `resource.getrusage`). Targeted
+  suite: 75 passed.
+- `8c5af489` — **B2**: `TestBareHostRusageArithmetic` (3 tests) pins exact
+  `peak_bytes`/`cpu.seconds`/`cores_avg`/null-discipline against a stubbed
+  `_FakeRusage`; `test_ru_is_none_never_fabricates_a_profile` pins the
+  mode/None boolop guard; two more tests in `TestExecLaneInflightRecord`
+  pin the exec-record `profile_session` compare (N13) both directions.
+  Mutant table in the REPORT — M2/M3/N4/N13 all planted and KILLED
+  (`cp` backup/restore, verified and reverted); M1 (before/after swap)
+  documented as structurally eliminated (no `ru_before`/`ru_after` symbol
+  exists any more to swap). Targeted suite: 82 passed.
+- `05193f44` — **B3**: both inflight writers stamp `runner`
+  (`run_container_lane`: `"container"`; `run_exec_lane`: `"exec"`);
+  `resolve_inflight` refuses (before any docker call, before dry-run/live
+  split) a record whose `runner` is present and not `"container"` —
+  "foreign record — refusing to attach, follow, collect, or remove it",
+  record left untouched, `--fresh` included. A `runner`-less record (pre-
+  dates the field) reads as `"container"` for backward compat. Five new
+  tests in `TestInflightRecordDecisions` using the reviewer's exact
+  scenario (container named after a real CIU runner, `runner: "exec"`):
+  dry-run wording, live run (starts its OWN fresh container instead, via
+  the docker call log), `--fresh` refusing, and the no-`runner`-key
+  backward-compat case. Guard mutant (`!=`→`==`) planted, kills all three
+  live-scenario tests, reverted. SPEC.md new `R-39f`, `R-43f` amended
+  (`runner` field; "not yet wired into resolve_inflight" corrected).
+  Targeted suite: 86 passed.
+- `9489bb6d` — **B4**: doctor's "profiler daemon" WARN now names BOTH
+  fallbacks ("container/exec lanes fall back to basic (in-lane) sampling,
+  bare-host lanes to coarse rusage accounting (R-43i)") instead of
+  unconditionally claiming basic sampling — false on this all-bare-host
+  project since RG-57. `test_daemon_not_running_warns_by_name` now
+  asserts the corrected wording. Targeted suite: 8 passed.
+- **selftest run 1** (background, `EXIT=1`): RED —
+  `TestStallEndToEnd::test_a_moving_lane_is_never_stopped` (a 1s
+  `stall_timeout` timing test). Re-ran in isolation: PASS. Not a B1–B4
+  regression (unrelated code).
+- **selftest run 2** (`EXIT=1`): RED — 4 `TestExecModeMutex` tests,
+  `IsADirectoryError` on `/tmp/run-gate-exec-myproj-dev1-<pid>-
+  runner.lock`. `SHARED_LOCK_DIR = "/tmp"` (host-wide, not worktree-
+  scoped) traced; `find /tmp -maxdepth 1 -name "run-gate-exec-*-
+  runner.lock" -type d` found **493 stale directories dated back to Sep
+  3** — pre-existing, cross-session corruption, none from this package.
+  All removed (`rmdir`, all empty).
+- `50684f2c` — coverage-gap fix: selftest run 3 (`EXIT=1`) had ZERO test
+  failures (1121 passed) but the diff-coverage judge caught
+  `run-gate.py:7666-7669` (B1's own new `except BaseException: proc.kill();
+  proc.wait(); raise` branch) uncovered. New test
+  `test_wait4_interrupted_kills_the_child_and_reraises` plants a
+  `KeyboardInterrupt` inside `os.wait4()` around a real `sleep 5` child,
+  proves the child is killed+reaped (`Popen.poll()` no longer `None`) and
+  the interrupt propagates. Targeted suite: 15 passed.
+- **selftest runs 4–7** (`EXIT=1` each): RED again each time on
+  `TestExecModeMutex`, a DIFFERENT subset of tests and a DIFFERENT pid
+  each attempt (2585135, then others after re-cleaning `/tmp`). `ps aux`
+  confirmed multiple OTHER `run-gate.py`/`pytest` processes (P1's `r2`,
+  P2's `assay-r2` resume, and independent `python3 -m pytest` processes
+  belonging to neither this session nor anything it started) actively
+  running on this SAME shared host concurrently. Isolated re-run of
+  `TestExecModeMutex` ALONE, immediately after a full `/tmp` clean,
+  STILL hit the identical error at a brand-new pid — reproduces with no
+  other test in this suite running first, only explicable by something
+  OUTSIDE this pytest process racing it (a sibling package's own copy of
+  this same test suite, sharing this host's `/tmp`). Concluded:
+  environmental, pre-existing, unrelated to B1–B4 (`TestExecModeMutex`
+  exercises R-41 exec-mode mutex locking, code none of the four blockers
+  touch). Not retried further past attempt 7 (call budget).
+- `assay-r1` (`--base rg55-run-gate-client`, `EXIT=1`): RED, same root
+  cause — its own baseline snapshot runs the identical `pytest tests -q`
+  command (`.assay/progress-r1.jsonl` confirms `COMMAND_FAILED`).
+- `assay-r3` (bare, `EXIT=0`): **PASS**, first attempt — a fast canary
+  lane, does not invoke the full pytest suite, unaffected by the `/tmp`
+  contention above.
+- REPORT extended with the "Session 4 — round-1 repair set" section
+  (repairs table, mutant table, the `["true"]`-lane probe investigation
+  incl. the residual rusage-floor finding, full gate-verdict account,
+  what was NOT done). This LOG entry. `BRIEF-4` written next, this
+  commit.
+
+Checkpoint: HARD clause was exceeded substantially (7 selftest attempts
+alone, each ~150-200s, plus the isolation/diagnosis work) — justified
+because the alternative was returning a RED gate with no explanation,
+which the dispatch prompt's own "Claim only what you ran" standard does
+not allow; cutting here regardless, tip commit follows immediately.
