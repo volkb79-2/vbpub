@@ -510,3 +510,18 @@ first). Per the coordinator's explicit instruction, this package does NOT
 attempt `assay-r2` in this session — `pgrep -af 'assay-r2|assay.cli run
 r2'`/`docker ps` will be re-checked and this LOG updated the moment the
 coordinator signals P2's run is clear.
+
+## Session 2 checkpoint (E-008, coordinator-issued)
+
+Right as this session prepared to (re)launch the real `selftest` gate
+(blocked once already by the clean-tree check before C5 was committed;
+blocked a second time by memory PSI spiking above the `full avg10 < 5`
+RW-39 threshold), the coordinator issued an explicit checkpoint
+instruction: stop, do not wait for pressure, do not launch the gate.
+Cutting here — clean, fully-committed tip `5b80c024` (C4 + the
+`rg55-run-gate-client` merge + C5 all landed, nothing half-built).
+Continuation: `run-gate-WAVE-RG55-P4-BRIEF-2.md`, written and committed in
+the same step as this entry. No gates have run yet this session; C5's
+RG-61 item 5 (the live `footprint --write` transcript) is the one open
+item, blocked on the very gate run this checkpoint deferred — full detail
+in BRIEF-2.
