@@ -1468,3 +1468,60 @@ suite/selftest re-run this session holds until the FINAL verdict per
 RW-20. This section is updated live as further survivors are found and
 closed, and again with the terminal verdict, the final gate re-run, and
 the closing commit hash once assay-r2 actually finishes.
+
+4. **`resolve_profile_settings`, line 676, `And->Or`** (candidate 24/256):
+   the identical `central_path is not None and "profile" in central`
+   construct, same gap class as items 1-2 above, in the pre-existing
+   `[profile]` resolver. New test
+   `TestProfileConfigValidation::test_a_populated_central_dict_is_ignored_with_no_central_path`.
+5. **`_max_or_none`, line 979, `None->[]`** (candidate 48/256): the
+   `is not None` filter's `None` literal swapped for `[]` — no direct
+   unit test existed for this helper at all (only indirect exercise
+   through `ResourceAccumulator`, never with a MIXED readable/`None`
+   input, the case that actually distinguishes the two). New class
+   `TestMaxOrNone`, sibling in spirit to the pre-existing `TestNearestRank
+   Value` (itself a prior round-1-review B3 fix for the identical
+   0-vs-`None` substitution class on a neighboring helper).
+6. **`ProfilerClient._ctl`, line 1010, `True->False`** (candidate
+   50/256): `subprocess.run(argv, capture_output=True, text=True, ...)` —
+   specifically the `text=True` keyword (a SIBLING candidate, 49/256, on
+   the same line's `capture_output=True` WAS killed already). **Justified,
+   not killed**: `json.loads()` accepts both `str` and `bytes`
+   transparently, and the only place `text=`'s value could show
+   observably is `stderr_tail`'s bytes-repr when embedded in an f-string
+   — invisible whenever `stderr` is empty, which is the ONLY case the
+   current `fake_docker`/`CGPROFILE_SHIM_CASE` test infrastructure can
+   produce (no test path ever writes deliberate stderr through the
+   `cgprofile ctl` shim). Confirmed low-value rather than genuinely
+   equivalent: the snapshot assay-r2 mutates (`ac885ed4`) predates this
+   session's own concurrent review-round fix (`errors="replace"` plus a
+   broadened `except Exception`, B1a/B1b below) which already makes any
+   residual `text=` byte/str mismatch degrade cleanly regardless. Not
+   worth a new shim-stderr-injection test-infrastructure addition for a
+   formatting-only difference that is itself about to be superseded.
+
+### A shared-worktree concurrency finding (not a defect in this package's own work)
+
+While waiting on assay-r2, `git log` in this same worktree showed SIX new
+commits land with no action from this session: `70b0bba3`/`8452914d`
+(controller log: P2 adversarial review round 1 REJECT, rulings RW-19/
+RW-20/RW-21/RW-22/RW-23), `3b75e1df` (RW-21 contract/golden regeneration),
+`a55e4d3e` (`Merge branch 'main'`), `5f91f308` (round-1 review fix,
+B1-B5 + RW-21 adoption + RW-23 items), `8faaf969` (one more assay-r1-
+finding test fix) — all authored by the SAME git identity
+(`nyxloom-carver`) this session uses, co-authored `Claude Fable 5.1`
+(the controller/carver model per this estate's own doctrine), landing
+DIRECTLY in this session's own worktree rather than a separate one.
+`5f91f308`'s own diff shows it swept up this session's THEN-uncommitted
+edits (the LOG/REPORT updates and the first two survivor-fix tests above,
+items 1-2) alongside its own — confirmed by `git show 5f91f308 --
+tests/test_run_gate.py` naming both this session's test method names and
+the reviewer's own B1-B5 fixes in one diff. Nothing was lost (`git status`
+stayed clean throughout, content verified present after each discovery),
+but authorship/attribution for those specific hunks is now blended into
+that commit's message rather than a separate one of this session's own.
+Recorded here for the audit trail, not actioned further — this session's
+OWN remaining work (assay-r2 survivor triage, the eventual final gate
+sweep) continues exactly as RW-20 directs, against whatever HEAD is
+current at each step, and commits its own remaining changes as promptly
+as each is verified from here on to avoid a repeat.
