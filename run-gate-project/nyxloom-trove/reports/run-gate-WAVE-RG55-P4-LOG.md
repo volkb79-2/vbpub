@@ -1304,3 +1304,45 @@ the time the three final gates were reproduced; cutting HERE, at this
 green boundary (three GREEN gates, clean tree, everything committed),
 per the checkpoint clause's "never past ~90 calls" rule, rather than
 also driving `assay-r2` to completion in the same session.
+
+### `assay-r2` — launched, then killed (RW-52 superseded by RW-54, both
+mid-session)
+
+After the LOG/REPORT commit (`f3b983ec`) landed with HEAD quiet, a live
+coordinator message (RW-52) reported the r2 slot rule had loosened
+(container lanes no longer count against this package's own bare-host
+r2) and gave two launch conditions: P2's own r2 pass exited its
+`rg55-run-gate-client` tree, and memory PSI `full avg10` < 5. Both
+checked true (`pgrep`/cwd check found no matching P2 process; PSI
+0.44%), so `--base main assay-r2` was launched untracked, bare-host, no
+container: wrapper pid `12419`, `assay-6.1.1.pyz run r2` child pid
+`12723`, log `/tmp/claude-1003/-workspaces-vbpub/5d55184a-d2df-482e-
+aa2b-541cae13c0ad/scratchpad/p4-r2.log` (not in-repo — scratchpad-only,
+gone with this session).
+
+Two further coordinator messages arrived in quick succession, BOTH after
+the launch: **RW-54** (P2's own baseline had just FAILED under host
+contention and was being hand-diagnosed; P4's r2 must not run ahead of
+a `main` merge that has not happened yet — "the reviewed tree and the
+merged tree stay one tree") and a controller-flag confirming RW-54
+applies to this already-launched run specifically and authorizing either
+kill-for-slot or run-for-information-only. Killed by exact pid
+(`kill -TERM 12723` then `12419`, NOT a broad `pkill` pattern — RW-47's
+own exact-name/pid discipline), confirmed both gone, confirmed no
+docker container was ever created (bare-host lane, `docker ps` shows
+only P1's/P6's own r2 containers, neither touched), confirmed the
+worktree's own git status is still clean at `f3b983ec` (the mutation
+run's own candidate trees are assay's internal temp checkouts, never
+this worktree's HEAD). `.assay/progress-r2.jsonl` has a partial,
+never-verdicted run recorded — harmless, resumable, NOT `verdict-r2.json`
+(never written) — left in place; assay's own resume semantics will pick
+it up or discard it on the next real r2 run from this tree.
+
+**For round 3: this session's own `assay-r2` attempt produced NO
+survivor table and must not be treated as satisfying RW-54's r2
+requirement.** Per the corrected order (RW-54, superseding RW-52 and
+this package's original item 8): P4 STOPS here — B5 + S6-S11 done and
+committed, `selftest`/`assay-r1`/`assay-r3` all GREEN on tip `864f60f3`
+(LOG/REPORT recorded that on top at `f3b983ec`) — and does NOT merge
+`main` or attempt `assay-r2` again until the controller confirms P2 has
+released run-gate 23.7.0 and dispatches the merge-then-r2 step.
