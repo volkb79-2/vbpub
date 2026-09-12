@@ -41,10 +41,22 @@ this session's scratchpad
 |---|---|---|---|---|---|---|
 | P1 full r2 (208 candidates) | `.worktrees/rg55-profiler-daemon` @ `637b8c09` | 3677631 | `run-gate-vbpub-r2-3677631-1789244480` | 20:20Z | ~01:30Z 09-13 | relaunch `./run-gate.py r2` from `scripts/cgroup-profiler/` in that worktree on the UNCHANGED tree — assay resumes the judged records (identity is per tree, RW-41); if P1 committed a BRIEF after this (HEAD moved), detach at `637b8c09` for the relaunch |
 | P6 r2 | `.worktrees/rg55-followups-cgprofile` @ `d4f51bbc` | 4136306 | `run-gate-vbpub-r2-4136306-1789246893` | 21:01Z | ~04:00Z 09-13 | same rule, tree `d4f51bbc` |
-| P7 gate `tester-unified` | `.worktrees/assay-liveness` @ `6f3aefad` | 4180329 | anonymous (`vibrant_gagarin`, `--cpus=2`) | 21:08Z | ~21:50Z | log `p7-gate6.log`, final line `run-gate: lane 'tester-unified' exit <n>`; if absent, re-run `python3 run-gate.py tester-unified` from `assay/` in that worktree (needs a container slot) |
+| P7 gate `tester-unified` | `.worktrees/assay-liveness` @ `6f3aefad` | 4180329 | anonymous (`vibrant_gagarin`, `--cpus=2`) | 21:08Z | FINISHED 21:36Z, `exit 0` | recorded in `assay/.run-gate/history.json` (`latest` = `6f3aefad`, pass) and RW-57 |
 
 Verdict/progress files: `<worktree>/<project>/.assay/{verdict,progress}-r2.json[l]`
 (P2: `.run-gate/…` state under the run-gate-project dir, 281 records).
+
+BRIEF files written at the wind-down (each ends with a retention prompt;
+each BRIEF commit moved its branch HEAD past the judged tree — for a resume,
+`git switch --detach <judged tree>` in that worktree, relaunch, switch back):
+
+| track | brief | branch tip after the brief | judged tree |
+|---|---|---|---|
+| P1 | `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P1-DAEMON-BRIEF-7.md` | `a9bfc748` | `637b8c09` |
+| P6 | `scripts/cgroup-profiler/nyxloom-trove/reports/cgprofile-P6-FOLLOWUPS-BRIEF-10.md` (P6 counted 484 r2 candidates → ~15.7 h against the lane's 4 h budget: the first attempt ends `BUDGET_EXCEEDED` by design, resume until judged; its `-REVIEW-HANDOFF.md` is on `main`, not on the branch) | `99ec0572` | `d4f51bbc` |
+| P4 | `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P4-BRIEF-5.md` | `2ca41a02` | (no run pending) |
+| P2 | `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-<latest>.md` (see the branch) | see the branch | `186461de` |
+| P7 | no brief — `-LOG.md`/`-REPORT.md` session 10 sections + the reviewer's round-2 file are the state | `6f3aefad` | `6f3aefad` (gate) |
 
 Estate rules in force: memory PSI is the launch gate (`full avg10` > 5 →
 launch nothing); ≤ 2 CONTAINER mutation lanes estate-wide, `docker update
@@ -94,18 +106,25 @@ Order of work (each step's gate before the next; nothing else changes):
 2. **P7 — assay 6.2.0 (B091 liveness).** Branch `assay-liveness`, tip
    `6f3aefad`, worktree `.worktrees/assay-liveness`. Round 1 REJECT (B1–B5,
    RW-49) repaired: B1 `802f0855`, B2 `07e121d9`, B3 `5c1b9ef8`, B4+B5
-   `4ef3985f`, S-items `ef247935`. Gate on `6f3aefad`: see §2 (exit line).
-   Reviewer `a6018b6be13b42937` was resumed for round 2 at 21:10Z; its
-   record lands at `reports/run-gate-WAVE-RG55-P7-REVIEW-round2.md` in the
-   worktree (commit it to main if it exists and is not committed). Deferrals
-   S1/S3/S5/S6 must be rows in `assay/nyxloom-trove/4-backlog.md` (RW-53) —
-   add any missing row (docs commit) before the merge. On ACCEPT + gate
-   exit 0: merge --no-ff, `cmru release --project assay --set-version
-   6.2.0` (the release mutation gate judges the whole since-last-release
-   diff — long; PSI/slot rules apply), then drop `.assay-inbox/release.json`
-   for dstdns (sha256; include the schema-11 disclosure sentence from
-   CHANGES). REJECT → fresh Opus repair successor seeded with the round-2
-   file; round 3 is the last.
+   `4ef3985f`, S-items `ef247935`. Gate on `6f3aefad`: GREEN `exit 0`
+   (1691.6 s). Review round 2 (`run-gate-WAVE-RG55-P7-REVIEW-round2.md`,
+   committed `792fc1ba`): REJECT on ONE new blocker B6 — B1–B5 verified.
+   B6 = false `hung` when the events file is written by several pytest
+   processes (xdist): the `session_finish` disjunct at `liveness.py:1214-1217`
+   arms the 30 s grace at the FIRST `session_finish` without consulting
+   CPU. Rulings RW-57: merge-blocking; repair = the idle conjunct
+   (`and idle_for >= _HUNG_SESSION_FINISH_GRACE_S`) + an xdist-shape
+   regression test; pid-stamped events/per-pid parsing = a filed follow-up
+   row; D3's trailing gap as implemented is accepted with that guard; the
+   repair commit files the backlog rows for S1/S3/S5/S6, pid-stamping and
+   N3 (`crashed` in `mutation_pct`). Next session: FRESH Opus repair
+   successor seeded with the round-2 file + P7's LOG/REPORT session-10
+   sections; ONE gate run on a quiet tip (no commits during it); round 3
+   (the last) by a FRESH reviewer seeded with rounds 1–2. On ACCEPT: merge
+   --no-ff, `cmru release --project assay --set-version 6.2.0` (the release
+   mutation gate judges the whole since-last-release diff — long; PSI/slot
+   rules apply), then drop `.assay-inbox/release.json` for dstdns (sha256;
+   include the schema-11 disclosure sentence from CHANGES).
 3. **P4 — run-gate 23.8.0 (RG-57..61).** Branch `rg55-followups-run-gate`,
    tip `1f8d9ca3` (B5 + S6–S11; selftest/r1/r3 GREEN; its 21:14Z r2 was
    terminated, RW-54/55). BRIEF: `run-gate-WAVE-RG55-P4-BRIEF-<latest>.md`.
