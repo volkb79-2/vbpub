@@ -5,6 +5,33 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the instant that release is cut -- do not trust the "cleared" comment alone, verify against every dated section below `<!-- cmru: release history -->` first. Two independent instances of this exact staleness were found and fixed in this file and in run-gate-project's on 2026-09-11; the second one was caught only because a dispatched agent re-checked its own merged work after the fact. Verified empty as of 2026-09-11's 6.1.1 release. -->
 
+### Fixed (detail)
+
+- **`judge.mutation.budget_per_candidate` now defaults to `"auto"` instead of
+  no bound at all (B091/D-23, mitigates B090).** An omitted key used to leave
+  every mutant command genuinely unbounded -- exactly the shape that hung a
+  whole vbpub RG-55 lane for 37 minutes on one candidate that lost a
+  termination condition (B090), with nobody enforcing anything because the
+  lane's own budget was also unenforced. Omission now means the same thing as
+  declaring `budget_per_candidate = "auto"` explicitly: assay derives
+  `max(3 x measured baseline wall time, baseline + 60s)` the moment the
+  lane's real baseline PASSes -- D-17's "derived ceiling" layer, computed on
+  the host the lane happens to be running on rather than guessed ahead of a
+  measurement, so a slower host never fails a healthy suite the way a fixed
+  number would. The resolved value is printed on the mutation sweep's own new
+  `plan` progress event (`baseline_s`, `budget_per_candidate_s`, `derived`)
+  and recorded in the verdict as `judgment.r2.budget_per_candidate_derived_s`
+  (additive; absent when the lane declared an explicit duration or the new
+  `"none"` opt-out). `"none"` is the explicit, written-down way to keep
+  today's genuinely-unbounded shape -- it prints a WARN naming the B090
+  incident rather than passing through silently, and (unlike an omitted key)
+  it still trips `budget = "unbounded"`'s own "every unit must carry its own
+  bound" admission rule, which an omitted/`"auto"` key no longer does.
+  Explicit durations are unchanged. `assay plan`'s runtime estimate keeps its
+  pre-existing 60s-per-candidate fallback for every non-duration spelling
+  rather than crashing on `"auto"`/`"none"`, since planning never executes
+  anything to measure from.
+
 <!-- cmru: release history -->
 
 ## [6.1.1] - 2026-09-11

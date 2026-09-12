@@ -109,6 +109,8 @@ from . import (
 from .adapters.base import LanguageAdapter
 from .config import (
     MAX_INFRASTRUCTURE_VALUE_BYTES,
+    MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+    MUTATION_BUDGET_PER_CANDIDATE_NONE,
     IsolationConfig,
     Lane,
     ResultReportConfig,
@@ -4079,6 +4081,49 @@ def _run_prepared_lane(
             ended = iso_utc(clock())
         else:
             assert targets is not None
+            # (B091/D-23) The three closed shapes `judge.mutation.
+            # budget_per_candidate` can now take, resolved HERE -- the one
+            # place that both reads the raw declaration and prints a WARN a
+            # human can see. `None`/`"auto"` (an omitted key defaults to
+            # "auto", config.py's own doc on `MutationConfig.
+            # budget_per_candidate`) asks `run_mutation` to derive the bound
+            # itself from the measured baseline; `"none"` is the explicit
+            # opt-out B090 could previously only reach by SILENCE, so it gets
+            # a WARN here rather than passing through unremarked; anything
+            # else is an explicit duration, parsed exactly as before.
+            declared_budget_per_candidate = lane.judge.mutation.budget_per_candidate
+            budget_per_candidate_auto = declared_budget_per_candidate in (
+                None,
+                MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            )
+            budget_per_candidate_none = (
+                declared_budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
+            )
+            explicit_budget_per_candidate_seconds: float | None = None
+            if budget_per_candidate_none:
+                # (B053/DA-D2's own convention: `diagnostics is None` means
+                # the caller asked for no diagnosis and is not an error --
+                # never a fallback to a stream nobody asked for.) Whether or
+                # not there is somewhere to print the WARN, "none" is never
+                # a duration -- checked as its OWN branch, never folded into
+                # the `elif` below, so a `diagnostics=None` caller cannot
+                # accidentally fall through into `parse_duration("none")`.
+                if diagnostics is not None:
+                    print(
+                        f"assay: WARN: lane {lane.name!r} declares "
+                        f"judge.mutation.budget_per_candidate = 'none' -- "
+                        f"every mutant command runs genuinely unbounded "
+                        f"(B090: this is exactly the shape that hung a "
+                        f"whole lane for 37 minutes on an unenforced "
+                        f"candidate); prefer the default 'auto' or an "
+                        f"explicit duration",
+                        file=diagnostics,
+                    )
+            elif not budget_per_candidate_auto:
+                assert declared_budget_per_candidate is not None
+                explicit_budget_per_candidate_seconds = parse_duration(
+                    declared_budget_per_candidate
+                )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -4095,11 +4140,8 @@ def _run_prepared_lane(
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,
-                    budget_per_candidate_seconds=(
-                        parse_duration(lane.judge.mutation.budget_per_candidate)
-                        if lane.judge.mutation.budget_per_candidate is not None
-                        else None
-                    ),
+                    budget_per_candidate_seconds=explicit_budget_per_candidate_seconds,
+                    budget_per_candidate_auto=budget_per_candidate_auto,
                     progress_stream=progress_stream,
                     # A sharded run needs the same authoritative state root
                     # `run_mutation` requires for `resume` (its own guard:
@@ -4158,6 +4200,17 @@ def _run_prepared_lane(
                         lane,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        # (B091/D-23) `run_mutation` is the one place the
+                        # derived number was actually computed, against the
+                        # measured baseline; read back here (via the CLAIM's
+                        # own `Mutation`, already narrowed non-`None` by the
+                        # `if` above -- unlike `mutation_result`, whose
+                        # static type also admits `"UNSUPPORTED"`) rather
+                        # than recomputed, exactly the reason the field's own
+                        # docstring gives.
+                        budget_per_candidate_derived_s=(
+                            r2_claim.mutation.budget_per_candidate_derived_s
+                        ),
                     )
         ended = iso_utc(clock())
 
@@ -4542,7 +4595,15 @@ def _build_ingested_judgment_r2(
 
 
 def _build_judgment_r2(
-    lane: Lane, *, shard_index: int | None = None, shard_count: int | None = None
+    lane: Lane,
+    *,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+    #: (B091/D-23) The bound `run_mutation` actually derived from this run's
+    #: own measured baseline, or `None` when the lane declared an explicit
+    #: duration or the `"none"` opt-out. See `JudgmentR2.
+    #: budget_per_candidate_derived_s`'s own docstring.
+    budget_per_candidate_derived_s: float | None = None,
 ) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
@@ -4595,6 +4656,7 @@ def _build_judgment_r2(
         targets=lane.judge.targets,
         shard_index=shard_index,
         shard_count=shard_count,
+        budget_per_candidate_derived_s=budget_per_candidate_derived_s,
     )
 
 
@@ -5019,17 +5081,35 @@ def _run_higher_rigor_lane(
 
 
 def _declared_budget_per_candidate_seconds(lane: Lane) -> float | None:
-    """(B065) The lane's declared per-candidate bound in seconds, or ``None``.
+    """(B065) The lane's EXPLICITLY declared per-candidate bound in seconds,
+    or ``None``.
 
     The progress ``run`` header carries it so a reader knows the bounds the
     run is operating under WITHOUT opening the lane file -- which is the
     whole point of a header on an artifact that travels on its own. Under
     ``budget = "unbounded"`` (B067) it is also the only bound there is.
+
+    **(B091/D-23) ``None`` now covers two different declarations, and this
+    function cannot tell them apart -- deliberately.** An omitted key or an
+    explicit ``"auto"`` derives its number from the measured baseline
+    (:func:`assay.mutation.auto_budget_per_candidate_seconds`), which has not
+    run yet at the point this is called (the ``run`` header is emitted
+    before HEAD's own command, let alone a baseline); the explicit
+    ``"none"`` opt-out has no number at all. Both are honestly ``None``
+    here, same as before B091 shipped -- the resolved auto number is
+    reported later, once it exists, by the mutation sweep's own ``plan``
+    progress event and by ``judgment.r2.budget_per_candidate_derived_s`` in
+    the verdict, never guessed early by this function.
     """
     if lane.judge is None or lane.judge.mutation is None:
         return None
     declared = lane.judge.mutation.budget_per_candidate
-    return parse_duration(declared) if declared is not None else None
+    if declared is None or declared in (
+        MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+        MUTATION_BUDGET_PER_CANDIDATE_NONE,
+    ):
+        return None
+    return parse_duration(declared)
 
 
 def run_lane(

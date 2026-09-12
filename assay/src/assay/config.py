@@ -355,6 +355,18 @@ _DURATION_HINT = "expected a duration such as '90s', '5m' or '1h30m'"
 #: RG-36) to compute staleness. assay gains no stall threshold of its own.
 UNBOUNDED_BUDGET = "unbounded"
 
+#: (B091/D-23) `judge.mutation.budget_per_candidate`'s two closed
+#: non-duration spellings. "auto" derives D-17's layer-3 ceiling --
+#: ``max(3 x measured baseline, baseline + 60s)`` (:func:`assay.mutation.
+#: auto_budget_per_candidate_seconds`), computed once the baseline has
+#: actually run, never guessed ahead of a measurement -- and is also what an
+#: OMITTED key now means (B090: an r2 lane that declared none of this ran a
+#: hung candidate for 37 minutes with nobody enforcing anything). "none"
+#: keeps today's genuinely-unbounded candidate, as an explicit opt-out
+#: rather than a silent omission, and gets a WARN at run time.
+MUTATION_BUDGET_PER_CANDIDATE_AUTO = "auto"
+MUTATION_BUDGET_PER_CANDIDATE_NONE = "none"
+
 
 def parse_duration(text: str) -> float:
     """Parse a duration string to seconds (A-052 — at LOAD, not at run time).
@@ -508,9 +520,17 @@ class MutationConfig:
     #: (DESIGN-GUIDE §5). Native R2 has no such field and needs none: it
     #: fails on any survivor at all.
     fail_under: float | None = None
-    #: (B012) Optional per-candidate wall-clock bound. ``None`` preserves the
-    #: existing lane-wide-only behavior; a declared value bounds each mutant's
-    #: command independently without changing the lane deadline.
+    #: (B012, reshaped B091/D-23) Per-candidate wall-clock bound, as the
+    #: consumer declared it -- ``None`` when the key is OMITTED, which is no
+    #: longer "no bound": it now means the same as declaring
+    #: :data:`MUTATION_BUDGET_PER_CANDIDATE_AUTO` explicitly, and callers
+    #: that need the resolved number derive it from the measured baseline
+    #: (:func:`assay.mutation.auto_budget_per_candidate_seconds`) -- this
+    #: field alone can never carry it, since it is unknown until a baseline
+    #: has actually run. :data:`MUTATION_BUDGET_PER_CANDIDATE_NONE` is the
+    #: explicit, written-down opt-out (genuinely unbounded, WARNed at run
+    #: time); any other string is a duration and bounds that one mutant's
+    #: command independently, without changing the lane deadline.
     budget_per_candidate: str | None = None
     #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
     #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
@@ -1880,6 +1900,15 @@ def _refuse_unbounded_without_unit_bounds(
     the lane's work carries its own bound. Refuse at LOAD otherwise, naming
     the unit that has none.
 
+    **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
+    longer such a unit with no bound.** It now means ``"auto"`` -- see
+    :data:`MUTATION_BUDGET_PER_CANDIDATE_AUTO` -- so a native R2 lane
+    declaring ``budget = "unbounded"`` and simply not mentioning
+    ``budget_per_candidate`` at all now LOADS, where it used to be refused;
+    only the explicit ``"none"`` opt-out still trips this function, because
+    that is the one spelling that actually asks for an unbounded mutant
+    command.
+
     **The predicate is about the lane's own TOP-LEVEL COMMAND, and is
     orthogonal to which other tiers are declared** (round-1 blocker B1).
     Every lane runs its own ``argv`` once, and ``budget`` is the only thing
@@ -1963,16 +1992,27 @@ def _refuse_unbounded_without_unit_bounds(
             f"(rigor declared here: {list(rigor)})"
         )
     missing: list[str] = []
+    # (B091/D-23) An OMITTED `budget_per_candidate` no longer leaves a
+    # candidate unbounded -- it now means "auto" (see
+    # `MUTATION_BUDGET_PER_CANDIDATE_AUTO`'s own docstring), so it no longer
+    # violates this function's own invariant ("every unit of the lane's work
+    # carries its own bound") and is no longer refused here. Only the
+    # EXPLICIT `"none"` opt-out still does: it is the one spelling that asks
+    # for a genuinely unbounded mutant command on a lane that just declared
+    # every unit of its work must be bounded.
     if (
         r2
         and not ingested_r2
         and (
             judge is None
             or judge.mutation is None
-            or judge.mutation.budget_per_candidate is None
+            or judge.mutation.budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
         )
     ):
-        missing.append("judge.mutation.budget_per_candidate (one mutant command)")
+        missing.append(
+            "judge.mutation.budget_per_candidate (declared 'none': every "
+            "mutant command would be unbounded)"
+        )
     if r3 and (
         judge is None
         or judge.canary is None
@@ -2905,12 +2945,28 @@ def _load_mutation(
                 f"{where}: 'judge.mutation.budget_per_candidate' must be a "
                 f"non-empty string, got {_type_name(budget_per_candidate)}"
             )
-        try:
-            parse_duration(budget_per_candidate)
-        except ValueError as exc:
-            raise LaneConfigError(
-                f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
-            ) from exc
+        # (B091/D-23) The two closed non-duration spellings, checked BEFORE
+        # `parse_duration` so neither is refused as a malformed duration.
+        # "auto" is also what an OMITTED key now means at run time
+        # (`MutationConfig.budget_per_candidate` stays `None` for that case
+        # -- see the field's own docstring); a lane may still spell it
+        # explicitly. "none" is the opt-out this loader used to have no way
+        # to express: before B091 the only way to run a candidate genuinely
+        # unbounded was to omit the key, which is also the exact shape B090
+        # measured hanging a whole lane for 37 minutes. Omission now means
+        # bounded (auto); "none" means the author asked for unbounded, in
+        # writing, so `run_mutation` can WARN about it instead of it being
+        # silent.
+        if budget_per_candidate not in (
+            MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            MUTATION_BUDGET_PER_CANDIDATE_NONE,
+        ):
+            try:
+                parse_duration(budget_per_candidate)
+            except ValueError as exc:
+                raise LaneConfigError(
+                    f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
+                ) from exc
     shard_index = value.get("shard_index")
     shard_count = value.get("shard_count")
     shard_specified = "shard_index" in value or "shard_count" in value

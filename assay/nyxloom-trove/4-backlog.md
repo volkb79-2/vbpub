@@ -9343,6 +9343,11 @@ hardware; judge progress mechanically). Follows B090 (the incident) and
 B088 (resume identity ignores the test suite).
 
 **Status:** OPEN — dispatched as RG-55 wave package P7 (`assay-liveness`).
+**Progress:** contract item 1 (auto/`"none"` `budget_per_candidate`, the
+`plan` progress event's budget fields, `judgment.r2.
+budget_per_candidate_derived_s`) landed and gate-verified on the
+`assay-liveness` branch. Items 2-5 (per-test cadence hints, the `os._exit`
+runner wrapper, the `hung` outcome, `--rejudge`) remain open.
 
 ### Contract
 1. `judge.mutation.budget_per_candidate` accepts `"auto"` (the default when

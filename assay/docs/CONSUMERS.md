@@ -2002,9 +2002,10 @@ same adapter, and the same `max_mutants`/operator selection.
 
 `estimated_serial_seconds`/`estimated_wall_seconds` are a **declaration-derived upper bound, not a
 measurement**: they are `candidate_count x budget_per_candidate` (falling back to 60 s per candidate
-when the lane declares no bound), divided by declared `jobs` for the wall figure. Assay never times a
-baseline to produce them. Treat them as "no longer than", not "about". Use those facts to choose an
-optional per-candidate bound:
+whenever the declaration is not a numeric duration — an omitted key, `"auto"`, or `"none"`, see below),
+divided by declared `jobs` for the wall figure. Assay never times a baseline to produce them (`assay
+plan` never executes anything at all). Treat them as "no longer than", not "about". Use those facts to
+choose an optional per-candidate bound:
 
 <!-- assay-doc-example:skip reason="mutation sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
 ```toml
@@ -2014,6 +2015,35 @@ max_mutants = 100
 operators = ["python:compare-swap"]
 budget_per_candidate = "300s"
 ```
+
+### `budget_per_candidate = "auto"` (the default, B091/D-23)
+
+An omitted `budget_per_candidate` is no longer "no bound" — it means the same thing as declaring
+`"auto"` explicitly. **This is a real behavior change** (B090: an r2 lane that named none of this ran
+one hung mutant for 37 minutes with nothing enforcing anything): assay now derives a bound the moment
+`assay run` actually measures the lane's own baseline —
+
+```
+budget_per_candidate = max(3 x measured baseline wall time, baseline wall time + 60s)
+```
+
+— D-17's own "derived ceiling" layer: a safety bound computed from an ACTUAL measurement on the host
+the lane happens to be running on, never a fixed number that fails a healthy suite on slower hardware.
+The `3x` multiplier gives a fast baseline (sub-second unit tests) headroom against ordinary variance;
+the `+60s` floor keeps a near-instant baseline from deriving a near-instant bound that would flag the
+very next candidate whose own mutation cost it one extra import. The resolved number is printed in the
+mutation sweep's own `plan` progress event (below) and recorded in the verdict as
+`judgment.r2.budget_per_candidate_derived_s` — never guessed ahead of the measurement, and never
+present when the lane declared an explicit duration (that duration is already on the wire, as the lane
+file itself) or the `"none"` opt-out below.
+
+`budget_per_candidate = "none"` is the explicit, written-down opt-out: every mutant command genuinely
+runs unbounded, exactly as an OMITTED key used to behave before B091. Declaring it prints a WARN
+(`assay: WARN: lane ... declares judge.mutation.budget_per_candidate = 'none' ...`) naming the B090
+incident, because the whole point of B091 is that this shape should be a deliberate choice a human can
+see, not a silent default. `budget = "unbounded"` (below) still refuses a lane that declares `"none"`
+for this reason — genuinely no per-mutant bound is exactly what that admission rule exists to catch —
+but admits an omitted key or an explicit `"auto"` on the same terms as an explicit duration.
 
 `python:uuid-equality-swap` and `python:enum-comparison-swap` are **withdrawn**
 (A-326). They shipped in 2.3.0 and were measured to produce a byte-identical
@@ -2058,8 +2088,8 @@ other tiers the lane declares**:
 | R0/R1 | **refused** — one command, whose only bound *is* `budget` |
 | ingested R2 (`judge.mutation.format`) | **refused** — likewise one command; assay runs no units of its own |
 | either of the above **plus R3** | **still refused** — see below |
-| native R2 | **admitted**; requires `judge.mutation.budget_per_candidate` |
-| native R2 **plus R3** | **admitted**; requires both `budget_per_candidate` and `judge.canary.budget_per_attempt` |
+| native R2 | **admitted**; an omitted (or explicit `"auto"`) `judge.mutation.budget_per_candidate` satisfies this on its own (B091/D-23 — see below); only the explicit `"none"` opt-out still leaves a mutant command unbounded and is refused |
+| native R2 **plus R3** | **admitted** on the same terms, plus `judge.canary.budget_per_attempt` |
 
 **Declaring an R3 canary does not make a lane unbounded.**
 `judge.canary.budget_per_attempt` bounds one canary *probe* and nothing else —
@@ -2139,6 +2169,7 @@ never says `coverage_parsed`.
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
 | `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
+| `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived` |
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** | `selected_total` / `resumed_total` + `rejected_total` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
@@ -2175,6 +2206,19 @@ exists and the sites have been collected — the header has to come first, since
 it is what attributes every later record to a run in an append-only file. The
 real total arrives on `candidates`, and rides on `baseline` and every
 `candidate` record.
+
+**`plan` is where `budget_per_candidate_s` is actually known** (B091/D-23).
+The `run` header's own `budget_per_candidate_s` is `null` whenever the lane's
+declaration is `"auto"` (or omitted) or `"none"`, because at stream-open time
+no baseline has run yet to derive a number from — the SAME field on `plan`,
+emitted the instant the baseline PASSes, carries the real one: a positive
+number when a bound applies (derived or explicit), `null` for the `"none"`
+opt-out. `derived` disambiguates the two `null`-`budget_per_candidate_s`
+histories a `run` header alone cannot: `true` means assay computed the number
+from `baseline_s`; `false` means the lane's own file already named the bound
+(an explicit duration) or explicitly declined one (`"none"`). `baseline_s` is
+the measured baseline's own wall time, present on every `plan` record
+regardless of which of the three the lane declared.
 
 ### `--progress-heartbeat SECONDS`
 

@@ -824,6 +824,8 @@ PROGRESS_EVENTS = frozenset(
         "baseline",
         "candidate",
         "resume_merged",
+        # --- mutation sweep, judged by progress not by time (B091/D-23) ---
+        "plan",  # the sweep's own first record: what the baseline measured
     }
 )
 
@@ -1735,6 +1737,41 @@ def _snapshot_left_dirt(
     return None
 
 
+def baseline_wall_seconds(baseline: CommandResult) -> float:
+    """(B091/D-23) The baseline command's own measured wall time, in
+    seconds -- ``baseline.ended - baseline.started``, the two ISO-8601
+    instants every :class:`CommandResult` already carries. Never negative
+    (P21/A-182's own ``ended >= started`` invariant is enforced upstream of
+    every :class:`CommandResult` this function is ever handed; clamped to
+    ``0.0`` here anyway rather than trusting that at a distance, because a
+    formula downstream -- :func:`auto_budget_per_candidate_seconds` -- would
+    otherwise silently shrink a derived bound from a negative input).
+    """
+    started = datetime.fromisoformat(baseline.started)
+    ended = datetime.fromisoformat(baseline.ended)
+    return max(0.0, (ended - started).total_seconds())
+
+
+def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
+    """(B091/D-23) The auto per-candidate bound: ``max(3 x baseline,
+    baseline + 60s)``.
+
+    D-17's layer-3 "derived ceiling" -- safety only, computed on the host at
+    run time from an ACTUAL measurement rather than guessed ahead of one, so
+    it scales with the hardware the lane happens to be running on instead of
+    failing every candidate on a slower host than whoever picked a fixed
+    number was thinking of. ``3x`` gives a fast baseline (sub-second unit
+    tests) enough headroom that ordinary variance never trips it; ``+60s``
+    keeps a near-instant baseline (a handful of asserts) from deriving a
+    near-instant bound that would flag the very next candidate whose own
+    mutation cost it one extra import. Never a detector of "the mutant is
+    slow" on its own -- it is the ceiling B090 measured missing entirely,
+    not a replacement for the liveness/cadence layers D-17 puts ABOVE it
+    (A2/A3/A4 in this same package).
+    """
+    return max(3.0 * baseline_wall, baseline_wall + 60.0)
+
+
 def run_mutation(
     *,
     baseline: CommandResult,
@@ -1753,6 +1790,23 @@ def run_mutation(
     kill_signal_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
     budget_per_candidate_seconds: float | None = None,
+    #: (B091/D-23) Whether *budget_per_candidate_seconds* should be DERIVED
+    #: from the measured baseline (:func:`auto_budget_per_candidate_seconds`)
+    #: rather than taken as given -- the "auto" default `config.py` now
+    #: applies to an omitted/``"auto"``-spelled ``judge.mutation.
+    #: budget_per_candidate``. The caller (:mod:`assay.runner`) resolves
+    #: WHICH of the three closed shapes (auto / an explicit duration /
+    #: ``"none"``) the lane declared; this function is where the one that
+    #: actually needs a measurement -- auto -- gets it, because this is the
+    #: only place both the resolved baseline and the per-candidate
+    #: enforcement live together. *budget_per_candidate_seconds* is ignored
+    #: (and must be ``None``) when this is ``True``: the two are mutually
+    #: exclusive so there is exactly one source for the number that both
+    #: bounds every candidate AND is reported back (the ``plan`` progress
+    #: event, and the caller's own verdict field) -- never two independent
+    #: derivations of it (B088's own "how a reader and a writer drift
+    #: apart").
+    budget_per_candidate_auto: bool = False,
     progress_artifact: Path | str | None = None,
     #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
     #: runner opens the stream once, high up, so the R0/R1 phase records and
@@ -1866,6 +1920,18 @@ def run_mutation(
             "run_mutation budget_per_candidate_seconds must be a positive "
             f"finite number or None, got {budget_per_candidate_seconds!r}"
         )
+    if not isinstance(budget_per_candidate_auto, bool):
+        raise ValueError(
+            "run_mutation budget_per_candidate_auto must be a boolean, got "
+            f"{budget_per_candidate_auto!r}"
+        )
+    if budget_per_candidate_auto and budget_per_candidate_seconds is not None:
+        raise ValueError(
+            "run_mutation budget_per_candidate_auto=True derives its own "
+            "budget_per_candidate_seconds from the measured baseline; "
+            "passing both is two sources for the one number that bounds "
+            "every candidate, and the caller must pick exactly one"
+        )
     if not isinstance(resume, bool):
         raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
     shard_specified = shard_index is not None or shard_count is not None
@@ -1883,6 +1949,21 @@ def run_mutation(
 
     if baseline.outcome is not Outcome.PASS:
         return None
+
+    # (B091/D-23) Resolved HERE, once, the instant the baseline is known
+    # good and before any candidate is submitted: the derived ceiling is a
+    # function of the SAME measurement every candidate is about to be
+    # compared against, and this is the earliest point that measurement
+    # exists. `budget_per_candidate_derived` rides on the return value
+    # (below) and on the `plan` progress event so a caller/reader learns the
+    # resolved number from exactly one place, never a second computation of
+    # it (B088's own "how a reader and a writer drift apart").
+    measured_baseline_wall = baseline_wall_seconds(baseline)
+    budget_per_candidate_derived = budget_per_candidate_auto
+    if budget_per_candidate_auto:
+        budget_per_candidate_seconds = auto_budget_per_candidate_seconds(
+            measured_baseline_wall
+        )
 
     # (B064) The stream is opened HERE only when nobody upstream owns one --
     # the direct library-caller path. `runner.run_lane` opens it for the
@@ -1903,6 +1984,24 @@ def run_mutation(
                 commit=prepared.spec.commit,
                 lane=None,
                 budget_per_candidate_s=budget_per_candidate_seconds,
+            )
+        if write_progress is not None:
+            # (B091/D-23) The sweep's own first record: what the baseline
+            # actually measured, and the per-candidate bound it produced --
+            # printed here (never guessed ahead of the measurement) so a
+            # reader of ONLY this stream, before ANY candidate line has
+            # arrived, already knows what "no progress" is being judged
+            # against. `derived: false` names an explicit duration or the
+            # `"none"` opt-out equally; the value each of those two carries
+            # in `budget_per_candidate_s` -- a real number, or `None` for
+            # `"none"` -- already tells the two apart.
+            write_progress(
+                {
+                    "event": "plan",
+                    "baseline_s": round(measured_baseline_wall, 3),
+                    "budget_per_candidate_s": budget_per_candidate_seconds,
+                    "derived": budget_per_candidate_derived,
+                }
             )
         from .runner import execute_plan
 
@@ -2096,6 +2195,19 @@ def run_mutation(
             result_payload = _dataclass_replace(
                 result_payload,
                 candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
+            )
+        if budget_per_candidate_derived:
+            # (B091/D-23) Rides on the return value exactly like
+            # `candidate_ids` above: the ONE computation, from measured
+            # baseline_wall_seconds up in this same function, read back by
+            # the caller (`assay.runner._build_judgment_r2`) rather than
+            # recomputed. `None` -- the dataclass default -- for every other
+            # path (explicit duration, `"none"`, or a legacy caller that
+            # passed neither new kwarg at all), matching `budget_per_
+            # candidate_s: null` on the `plan` progress event above.
+            result_payload = _dataclass_replace(
+                result_payload,
+                budget_per_candidate_derived_s=budget_per_candidate_seconds,
             )
         if write_progress is not None:
             # (B065) The sweep's own terminal. Without it a reader cannot

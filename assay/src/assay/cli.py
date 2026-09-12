@@ -87,7 +87,15 @@ from .adapters.go import GoAdapter
 from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
-from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
+from .config import (
+    MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+    MUTATION_BUDGET_PER_CANDIDATE_NONE,
+    Lane,
+    LaneFile,
+    find_lane_file,
+    load_lane_file,
+    parse_duration,
+)
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import (
     VerdictOutput,
@@ -1608,7 +1616,21 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         by_operator = Counter(job.site.operator for job in jobs)
         by_file = Counter(job.path for job in jobs)
         per_candidate = lane.judge.mutation.budget_per_candidate
-        per_candidate_seconds = parse_duration(per_candidate) if per_candidate else 60.0
+        # (B091/D-23) `assay plan` never executes anything, so it cannot
+        # measure the baseline "auto" would derive from -- an omitted key,
+        # an explicit "auto", and the explicit "none" opt-out all fall back
+        # to the same 60s-per-candidate estimate an undeclared bound always
+        # used, which is honestly an upper-bound GUESS either way (this
+        # function's own docstring already says so). Only an explicit
+        # duration is a real number to multiply by.
+        if per_candidate in (
+            None,
+            MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            MUTATION_BUDGET_PER_CANDIDATE_NONE,
+        ):
+            per_candidate_seconds = 60.0
+        else:
+            per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
         payload = {

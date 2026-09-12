@@ -7,10 +7,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pytest
 
-from conftest import GitRepo, Project, make_deadline, make_lane, make_plan, prepared_snapshot
+from conftest import (
+    GitRepo,
+    Project,
+    make_deadline,
+    make_lane,
+    make_plan,
+    make_r2_judge,
+    prepared_snapshot,
+)
 
 from assay.adapters.python import PythonAdapter
-from assay.config import LaneConfigError
+from assay.config import LaneConfigError, MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay import mutation
 from assay.mutation import (
@@ -21,7 +29,7 @@ from assay.mutation import (
     run_mutation,
 )
 from assay import mutation as mutation_module
-from assay.runner import execute_command
+from assay.runner import CommandResult, execute_command
 
 
 _TEXT = (
@@ -101,8 +109,17 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     # `run_mutation` call has no Lane in view, which is the reader's signal
     # that the header's lane-level bounds are UNKNOWN, not unbounded.
     assert events[0]["lane"] is None
-    assert events[1] == {
-        **events[1],
+    # (B091/D-23) The sweep's OWN first record, ahead of `candidates`: what
+    # the baseline actually measured, and the per-candidate bound it
+    # produced. This lane passed no `budget_per_candidate_seconds` and no
+    # `budget_per_candidate_auto`, so the legacy shape applies -- nothing
+    # derived, nothing bounded.
+    assert events[1]["event"] == "plan"
+    assert events[1]["baseline_s"] >= 0.0
+    assert events[1]["budget_per_candidate_s"] is None
+    assert events[1]["derived"] is False
+    assert events[2] == {
+        **events[2],
         "event": "candidates",
         "candidate_total": 2,
         "selected_total": 2,
@@ -111,7 +128,7 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert events[-1]["event"] == "end"
     assert events[-1]["buckets"]["killed"] == 1
     assert events[-1]["buckets"]["survived"] == 1
-    events = events[2:-1]
+    events = events[3:-1]
     assert [event["candidate_index"] for event in events] == [-1, 0, 1]
     assert all(event["candidate_total"] == 2 for event in events[1:])
     assert events[0]["event"] == "baseline"
@@ -597,6 +614,233 @@ def test_per_candidate_budget_marks_one_mutant_and_continues(tmp_path):
     assert result.total == 2
 
 
+# --- B091/D-23: judge candidates by progress, not by time (A1) -------------
+
+
+def test_auto_budget_per_candidate_seconds_formula():
+    """(B091/D-23) `max(3 x baseline, baseline + 60s)` -- both regimes."""
+    # A slow baseline: 3x dominates (3*100=300 > 100+60=160).
+    assert mutation_module.auto_budget_per_candidate_seconds(100.0) == 300.0
+    # A near-instant baseline: the +60s floor dominates (3*1=3 < 1+60=61).
+    assert mutation_module.auto_budget_per_candidate_seconds(1.0) == 61.0
+    # The exact crossover (3x == x+60 at x=30) -- either formula agrees.
+    assert mutation_module.auto_budget_per_candidate_seconds(30.0) == 90.0
+    assert mutation_module.auto_budget_per_candidate_seconds(0.0) == 60.0
+
+
+def test_baseline_wall_seconds_reads_started_and_ended():
+    baseline_plan = make_plan(make_lane(argv=("pytest", "-q")))
+    result = CommandResult(
+        plan=baseline_plan,
+        outcome=Outcome.PASS,
+        reason_code=None,
+        returncode=0,
+        started="2026-09-12T00:00:00+00:00",
+        ended="2026-09-12T00:01:30+00:00",
+    )
+    assert mutation_module.baseline_wall_seconds(result) == 90.0
+
+
+def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
+    """(B091/D-23, A1) `budget_per_candidate_auto=True` derives the number
+    from the measured baseline, uses it to bound every candidate exactly as
+    an explicit duration would, and reports it back on both the `plan`
+    progress event and `Mutation.budget_per_candidate_derived_s` -- one
+    computation, read twice, never two independent ones.
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        if "a = False" in text:
+            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    assert baseline.outcome is Outcome.PASS
+    expected = mutation_module.auto_budget_per_candidate_seconds(
+        mutation_module.baseline_wall_seconds(baseline)
+    )
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=30.0),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            budget_per_candidate_auto=True,
+            progress_artifact=progress_path,
+        )
+
+    assert result is not None and not isinstance(result, str)
+    # The pre-existing "a = False" -> TimeoutExpired candidate still trips
+    # `budget_exceeded` regardless of the DERIVED number's exact value: this
+    # fake runner decides on file content, not on the timeout it was handed
+    # -- the SAME evidence `test_per_candidate_budget_marks_one_mutant_and_
+    # continues` reads for an explicit duration, reused here to prove the
+    # derived path enforces exactly the same way.
+    assert len(result.budget_exceeded) == 1
+    assert len(result.survived) == 1
+    assert result.budget_per_candidate_derived_s == expected
+
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    plan_event = next(event for event in events if event["event"] == "plan")
+    assert plan_event["derived"] is True
+    assert plan_event["budget_per_candidate_s"] == expected
+    assert plan_event["baseline_s"] >= 0.0
+
+
+def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):
+    """(B091/D-23) The two are mutually exclusive: exactly one source for
+    the number that both bounds every candidate and is reported back.
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(ValueError, match="two sources for the one number"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                budget_per_candidate_seconds=5.0,
+                budget_per_candidate_auto=True,
+            )
+
+
+def test_run_mutation_refuses_a_non_boolean_auto_flag(tmp_path):
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        with pytest.raises(ValueError, match="budget_per_candidate_auto must be a boolean"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=lambda: datetime.now(timezone.utc),
+                budget_per_candidate_auto="yes",  # type: ignore[arg-type]
+            )
+
+
+@pytest.mark.parametrize(
+    "declared,expected",
+    [
+        (None, None),
+        ("auto", None),
+        ("none", None),
+        ("45s", 45.0),
+    ],
+)
+def test_declared_budget_per_candidate_seconds_treats_auto_and_none_as_unknown(
+    declared, expected, tmp_path
+):
+    """(B091/D-23) `runner._declared_budget_per_candidate_seconds` backs the
+    progress `run` header, emitted before any baseline has run -- an omitted
+    key and the explicit `"auto"`/`"none"` spellings are all honestly
+    unknown/absent THERE (the real auto number is reported later, by the
+    `plan` event); only an explicit duration is a real number this early.
+    """
+    from assay import runner as runner_module
+
+    mutation_config = MutationConfig(
+        jobs=1,
+        max_mutants=10,
+        operators=("python:compare-swap",),
+        budget_per_candidate=declared,
+    )
+    judge = make_r2_judge(
+        source_root_paths=(tmp_path / "pkg",), mutation=mutation_config
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge)
+    assert runner_module._declared_budget_per_candidate_seconds(lane) == expected
+
+
+def test_plan_event_reports_none_derived_false_when_budget_per_candidate_is_unset(
+    tmp_path,
+):
+    """Neither `budget_per_candidate_seconds` nor `budget_per_candidate_auto`
+    passed at all (the legacy direct-call shape) -- the `plan` event still
+    fires, honestly reporting no bound and `derived: false`.
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+        )
+    assert result is not None and not isinstance(result, str)
+    assert result.budget_per_candidate_derived_s is None
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    plan_event = next(event for event in events if event["event"] == "plan")
+    assert plan_event["budget_per_candidate_s"] is None
+    assert plan_event["derived"] is False
+
+
 def test_plan_reports_candidates_without_executing(tmp_path):
     project = Project(root=tmp_path / "proj")
     project.root.mkdir()
@@ -859,10 +1103,16 @@ operators = ["python:bool-const-flip"]
     assert target in message
 
 
-def _write_plan_fixture(tmp_path: Path) -> Path:
+def _write_plan_fixture(
+    tmp_path: Path, *, budget_per_candidate_line: str = 'budget_per_candidate = "30s"\n'
+) -> Path:
     """Same fixture as `test_plan_reports_candidates_without_executing`,
     factored out so the `--shard`/`--operators` CLI-level tests below don't
-    duplicate its setup."""
+    duplicate its setup. *budget_per_candidate_line* defaults to the
+    original explicit "30s" so every pre-existing caller is byte-unchanged;
+    B091/D-23 callers pass `""` (omitted) or an explicit `"auto"`/`"none"`
+    line instead.
+    """
     project = Project(root=tmp_path / "proj")
     project.root.mkdir()
     (project.root / "pkg").mkdir()
@@ -898,8 +1148,8 @@ base = "base"
 jobs = 2
 max_mutants = 10
 operators = ["python:bool-const-flip"]
-budget_per_candidate = "30s"
-""",
+"""
+        + budget_per_candidate_line,
     )
     repo.write("pkg/flags.py", _TEXT)
     repo.commit_all("add flags")
@@ -1006,3 +1256,31 @@ budget_per_candidate = "nonsense"
 
     with pytest.raises(LaneConfigError, match="budget_per_candidate"):
         load_lane_file(project.root / "assay.toml")
+
+
+@pytest.mark.parametrize(
+    "budget_per_candidate_line", ["", 'budget_per_candidate = "auto"\n', 'budget_per_candidate = "none"\n']
+)
+def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
+    tmp_path, budget_per_candidate_line
+):
+    """(B091/D-23) `assay plan` never executes anything, so it cannot measure
+    the baseline "auto" would derive from -- an omitted key, an explicit
+    "auto", and the explicit "none" opt-out must all fall back to the same
+    60s-per-candidate ESTIMATE an undeclared bound always used, rather than
+    crashing inside `parse_duration` on a spelling that was never a
+    duration.
+    """
+    from assay.cli import main
+
+    path = _write_plan_fixture(
+        tmp_path, budget_per_candidate_line=budget_per_candidate_line
+    )
+    out = io.StringIO()
+    exit_code = main(["plan", "package", "--file", str(path)], stdout=out)
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["status"] == "ok"
+    # 1 candidate x 60s fallback, / 2 jobs for the wall estimate.
+    assert payload["estimated_serial_seconds"] == 60.0
+    assert payload["estimated_wall_seconds"] == 30.0

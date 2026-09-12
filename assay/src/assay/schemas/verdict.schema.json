@@ -1666,6 +1666,11 @@
           "type": "string",
           "minLength": 1
         },
+        "budget_per_candidate_derived_s": {
+          "description": "B091/D-23: the per-candidate bound run_mutation actually DERIVED from this run's own measured baseline (max(3 x baseline, baseline + 60s)), when judge.mutation.budget_per_candidate was omitted or declared 'auto'. Absent when the lane declared an explicit duration or the 'none' opt-out. Optional under producer = 'native'; FORBIDDEN under 'ingested' on equivalence_artifact's own footing -- an ingested lane never declares budget_per_candidate at all, so assay derived no bound for a run it did not orchestrate.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "kill_attribution": {
           "description": "Whether kills in this run are attributed to a declared mechanism or merely observed. 'unattributed' is honest and common: it means a killed mutant proves only that the suite failed, not that it failed for the reason the mutant created. Assay cannot verify a database's causality, so v5 makes the weakness visible rather than absent (A-220).",
           "enum": [
@@ -1821,7 +1826,8 @@
               {"not": {"required": ["jobs"]}},
               {"not": {"required": ["max_mutants"]}},
               {"not": {"required": ["operators"]}},
-              {"not": {"required": ["equivalence_artifact"]}}
+              {"not": {"required": ["equivalence_artifact"]}},
+              {"not": {"required": ["budget_per_candidate_derived_s"]}}
             ]
           }
         }

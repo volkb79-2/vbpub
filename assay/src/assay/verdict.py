@@ -56,6 +56,7 @@ cherry-picks keys. assay carries its own names.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1656,6 +1657,22 @@ class Mutation:
     #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
     #: never empty, so non-shard v6 payloads are unchanged.
     candidate_ids: tuple[str, ...] | None = None
+    #: (B091/D-23) The `budget_per_candidate` value
+    #: :func:`assay.mutation.run_mutation` actually DERIVED from the measured
+    #: baseline, when it derived one -- `None` whenever the lane declared an
+    #: explicit duration or the `"none"` opt-out, matching every other
+    #: "declared, not this run's business" optional field on this object.
+    #: **Internal carrier, not wire state**: unlike :attr:`candidate_ids`,
+    #: :meth:`to_dict` never emits this field -- the derived number is a
+    #: POLICY fact (what bound applied), which is `JudgmentR2`'s footing
+    #: (`jobs`/`max_mutants`/`operators` all live there, not here), and
+    #: `assay.runner._build_judgment_r2` is what actually places it on the
+    #: wire, as `judgment.r2.budget_per_candidate_derived_s`. This field
+    #: exists only so the one place that measures the baseline
+    #: (`run_mutation`) is also the one place that computes the derived
+    #: number, with the caller reading it back rather than recomputing it
+    #: (B088's own "how a reader and a writer drift apart").
+    budget_per_candidate_derived_s: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("candidate_count", "total"):
@@ -1700,6 +1717,17 @@ class Mutation:
                         f"mutation.candidate_ids entry must be a 64-character "
                         f"hexadecimal digest, got {candidate!r}"
                     )
+        if self.budget_per_candidate_derived_s is not None and (
+            isinstance(self.budget_per_candidate_derived_s, bool)
+            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
+            or not math.isfinite(self.budget_per_candidate_derived_s)
+            or self.budget_per_candidate_derived_s <= 0
+        ):
+            raise ValueError(
+                "mutation.budget_per_candidate_derived_s must be a positive "
+                f"finite number or None, got "
+                f"{self.budget_per_candidate_derived_s!r}"
+            )
         self._check_identities_are_unique()
         self._check_arithmetic()
         self._check_kill_signal_is_killed_only()
@@ -2429,6 +2457,18 @@ class JudgmentR2:
     shard_index: int | None = None
     #: (B012) The declared shard cardinality. Required with ``shard_index``.
     shard_count: int | None = None
+    #: (B091/D-23) The per-candidate bound :func:`assay.mutation.
+    #: run_mutation` actually DERIVED from the run's own measured baseline
+    #: (``max(3 x baseline, baseline + 60s)``), when ``judge.mutation.
+    #: budget_per_candidate`` was omitted or declared ``"auto"``. `None`
+    #: when the lane declared an explicit duration (the bound it declared is
+    #: already on the wire, one level up, as the lane file itself) or the
+    #: `"none"` opt-out (genuinely no bound). **Optional under
+    #: `producer = "native"`, FORBIDDEN under `"ingested"`** on
+    #: :attr:`equivalence_artifact`'s own footing: an ingested lane never
+    #: declares this key at all (`config._load_ingested_mutation` refuses
+    #: it), so assay derived no bound for a run it did not orchestrate.
+    budget_per_candidate_derived_s: float | None = None
 
     def __post_init__(self) -> None:
         # B046: the producer fork, checked FIRST -- every field below is
@@ -2544,6 +2584,10 @@ class JudgmentR2:
         "max_mutants",
         "operators",
         "equivalence_artifact",
+        # (B091/D-23) Trailing, on `equivalence_artifact`'s own footing:
+        # native-only but OPTIONAL, never required -- see
+        # `_check_producer_fork`'s own trailing-slice comment.
+        "budget_per_candidate_derived_s",
     )
     #: (B046) facts derived FROM an ingested report -- absent from a native
     #: document, which would otherwise claim a computation that never ran.
@@ -2568,7 +2612,11 @@ class JudgmentR2:
         """
         if self.producer == "native":
             present, forbidden_label = self._INGESTED_ONLY_FIELDS, "native"
-            required = self._NATIVE_ONLY_FIELDS[:-1]  # equivalence_artifact
+            # (B091/D-23) `[:-2]`: the two TRAILING entries of
+            # `_NATIVE_ONLY_FIELDS` -- `equivalence_artifact` and
+            # `budget_per_candidate_derived_s` -- are native-only but
+            # OPTIONAL, never required of a native document.
+            required = self._NATIVE_ONLY_FIELDS[:-2]
         else:                                         # is OPTIONAL natively
             present, forbidden_label = self._NATIVE_ONLY_FIELDS, "ingested"
             required = self._INGESTED_ONLY_FIELDS
@@ -2634,6 +2682,17 @@ class JudgmentR2:
             raise ValueError(
                 f"judgment.r2.operators contains a duplicate: "
                 f"{list(self.operators)}"
+            )
+        if self.budget_per_candidate_derived_s is not None and (
+            isinstance(self.budget_per_candidate_derived_s, bool)
+            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
+            or not math.isfinite(self.budget_per_candidate_derived_s)
+            or self.budget_per_candidate_derived_s <= 0
+        ):
+            raise ValueError(
+                "judgment.r2.budget_per_candidate_derived_s must be a "
+                f"positive finite number or None, got "
+                f"{self.budget_per_candidate_derived_s!r}"
             )
 
     def _check_ingested_record(self) -> None:
@@ -2755,6 +2814,10 @@ class JudgmentR2:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
         if self.equivalence_artifact is not None:
             payload["equivalence_artifact"] = self.equivalence_artifact
+        if self.budget_per_candidate_derived_s is not None:
+            payload["budget_per_candidate_derived_s"] = (
+                self.budget_per_candidate_derived_s
+            )
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count

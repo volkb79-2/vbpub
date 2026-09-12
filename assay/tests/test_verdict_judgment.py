@@ -28,6 +28,7 @@ from assay.verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    MutationProducerTool,
     SnapshotPolicy,
     Verdict,
 )
@@ -468,6 +469,63 @@ def test_judgment_r2_untouched_form_builds():
     assert "kill_signal_artifact" not in r2.to_dict()
     assert "equivalence_artifact" not in r2.to_dict()
     assert "targets" not in r2.to_dict()
+    # (B091/D-23) On `equivalence_artifact`'s own footing: native-only,
+    # optional, and omitted -- never nulled -- when this run derived nothing.
+    assert "budget_per_candidate_derived_s" not in r2.to_dict()
+
+
+def test_judgment_r2_budget_per_candidate_derived_s_round_trips_when_present():
+    r2 = JudgmentR2(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        budget_per_candidate_derived_s=292.2,
+        **BASE_R2_POLICY,
+    )
+    assert r2.to_dict()["budget_per_candidate_derived_s"] == 292.2
+
+
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf"), True, "292"])
+def test_judgment_r2_refuses_a_malformed_budget_per_candidate_derived_s(bad):
+    with pytest.raises(
+        ValueError, match="budget_per_candidate_derived_s must be a positive"
+    ):
+        JudgmentR2(
+            jobs=1,
+            max_mutants=50,
+            operators=("python:compare-swap",),
+            budget_per_candidate_derived_s=bad,
+            **BASE_R2_POLICY,
+        )
+
+
+def _minimal_ingested_r2(**overrides) -> dict:
+    base = dict(
+        producer="ingested",
+        producer_tool=MutationProducerTool(
+            name="stryker", version="8.0.0", report_schema_version="1"
+        ),
+        survived_uncovered=(),
+        discarded=(),
+        lines_without_candidates=(),
+        fail_under=100.0,
+        kill_attribution="unattributed",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_judgment_r2_forbids_budget_per_candidate_derived_s_under_ingested():
+    """(B091/D-23) An ingested lane never declares `budget_per_candidate` at
+    all (`config._load_ingested_mutation` refuses it) -- assay derived no
+    per-candidate bound for a run it did not orchestrate, on `jobs`/
+    `max_mutants`/`operators`/`equivalence_artifact`'s own footing.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"records producer 'ingested' beside \['budget_per_candidate_derived_s'\]",
+    ):
+        JudgmentR2(**_minimal_ingested_r2(budget_per_candidate_derived_s=60.0))
 
 
 def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():

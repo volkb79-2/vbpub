@@ -371,7 +371,8 @@ operators = ["python:compare-swap"]
     assert killed["operator"] == "python:compare-swap"
     assert killed["start_byte"] < killed["end_byte"]
     assert len(killed["replacement_sha256"]) == 64
-    assert document["judgment"]["r2"] == {
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment == {
         # B046/schema v9: the REAL producer's own value through the CLI --
         # this lane runs assay's own mutation engine, so `native` is what a
         # genuine end-to-end run puts on the wire, beside the jobs/
@@ -392,7 +393,15 @@ operators = ["python:compare-swap"]
         # declaration. It is what makes the `base` this same document carries
         # checkable for an `R0,R2` lane at all.
         "mode": "changed_lines",
+        # (B091/D-23) This lane declares no `judge.mutation.
+        # budget_per_candidate` at all -- the OMITTED-means-"auto" default --
+        # so a real end-to-end run derives one from the real baseline this
+        # test just measured. The exact value is a real, non-deterministic
+        # wall-clock measurement (this process's own `/bin/sh -c` cost),
+        # checked structurally just below rather than pinned here.
+        "budget_per_candidate_derived_s": r2_judgment["budget_per_candidate_derived_s"],
     }
+    assert r2_judgment["budget_per_candidate_derived_s"] > 0
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --
     # exactly the hole v4 had, since `judgment.r1` is absent here and there
     # was nowhere else for a language, source roots or a comparison commit

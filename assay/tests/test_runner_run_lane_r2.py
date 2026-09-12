@@ -212,6 +212,124 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     assert verdict.claims[1].mutation.total == 1, "only the compare-swap site exists"
     assert verdict.judgment.r2.jobs == 3
     assert verdict.judgment.r2.operators == ("python:falsy-swap", "python:compare-swap")
+    # (B091/D-23) `declared` above names no `budget_per_candidate` at all --
+    # the OMITTED-means-"auto" default -- so `run_lane` must have derived one
+    # from the real baseline `_kill_on_mutation()` just ran, and recorded it
+    # here rather than leaving the field silently absent.
+    assert verdict.judgment.r2.budget_per_candidate_derived_s is not None
+    assert verdict.judgment.r2.budget_per_candidate_derived_s > 0
+
+
+def test_judgment_r2_budget_per_candidate_none_warns_and_derives_nothing(
+    git_repo: GitRepo,
+):
+    """(B091/D-23) The explicit `"none"` opt-out: every mutant command runs
+    genuinely unbounded, `judgment.r2.budget_per_candidate_derived_s` stays
+    absent (nothing was derived), and the run prints a WARN naming B090's own
+    incident rather than passing through silently.
+    """
+    import io
+
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    declared = MutationConfig(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        budget_per_candidate="none",
+    )
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+    diagnostics = io.StringIO()
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(),
+        diagnostics=diagnostics,
+    )
+
+    assert verdict.claims[1].mutation.total == 1
+    assert verdict.judgment.r2.budget_per_candidate_derived_s is None
+    warning = diagnostics.getvalue()
+    assert "budget_per_candidate = 'none'" in warning
+
+
+def test_judgment_r2_budget_per_candidate_none_without_diagnostics_still_runs_unbounded(
+    git_repo: GitRepo,
+):
+    """(B091/D-23 regression guard) `diagnostics=None` (the library-caller
+    default, B053/DA-D2's own "no diagnosis" convention) must not fall
+    through into treating `"none"` as an explicit duration -- an earlier cut
+    of this resolution folded the WARN print and the "is this none at all"
+    question into ONE `if`, so a caller that passed no diagnostics stream at
+    all hit `parse_duration("none")` and crashed. `run_lane`'s own default
+    is `diagnostics=None`, so this is the ordinary no-`--verdict-json`-
+    diagnostics library shape, not an edge case.
+    """
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    declared = MutationConfig(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        budget_per_candidate="none",
+    )
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(),
+    )
+
+    assert verdict.claims[1].mutation.total == 1
+    assert verdict.judgment.r2.budget_per_candidate_derived_s is None
+    assert "B090" in warning
+
+
+def test_judgment_r2_explicit_budget_per_candidate_is_declared_not_derived(
+    git_repo: GitRepo,
+):
+    """(B091/D-23) An explicit duration is unchanged from before B091:
+    `judgment.r2.budget_per_candidate_derived_s` stays absent, because
+    nothing was DERIVED -- the lane's own file already names the bound.
+    """
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    declared = MutationConfig(
+        jobs=1,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+        budget_per_candidate="45s",
+    )
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(),
+    )
+
+    assert verdict.claims[1].mutation.total == 1
+    assert verdict.judgment.r2.budget_per_candidate_derived_s is None
 
 
 def test_the_lanes_command_runs_exactly_once_against_the_unmodified_tree(
