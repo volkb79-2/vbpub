@@ -596,3 +596,212 @@ Re-ran `./run-gate.py --base main assay-r1` after this commit — verdict
 recorded in the REPORT once the second run's log is read back (started
 before this LOG entry was written; a separate step per SPEC's own "read
 the verdict in a SEPARATE step" rule).
+
+## Session 4 (fresh successor) — orientation
+
+Read, in order: BRIEF-3.md (full — the continuation brief carrying the
+drafted `ProfilerClient`/`ResourceAccumulator` code, the ported-parser
+source, the fixture-shape notes, and the two named await_container
+wiring-shape options); the handoff (full, from the main-checkout path
+since it does not exist in the worktree); the interface contract (full,
+all 7 sections, re-read per BRIEF-3's own instruction to keep §7's
+formulas "at hand" rather than trust memory); `fixtures/rg55/README.md`
+(full, the by-hand arithmetic proof and its two documented gotchas).
+Orientation call count: ~6 (worktree git log/status, the four documents
+above).
+
+Then, per BRIEF-3's own "Read run_gate.py regions only as C3 needs them"
+instruction: `run-gate.py` lines 1-135 (constants/GateError), 152-437
+(LANE_KEYS, `_validate_lane`, `_validate_history_policy`/
+`resolve_history_keep`, `_validate_config`, `load_config`), 440-655
+(`merge_lanes`, `resolve_environment`, `lane_environment_name` — the exact
+seam BRIEF-3 did not name but where the new profiling section landed),
+`scripts/cgroup-profiler/lib/util.py`'s three parsers were NOT re-read —
+BRIEF-3's own quoted source (verified byte-for-byte reproducible, see
+below) was trusted directly per its own "you do not have to re-derive
+this" framing. Verified BRIEF-3's line-number map against HEAD before
+editing (`grep -n` for `_validate_history_policy`/`resolve_history_keep`/
+`lane_environment_name`) — all matched exactly (C1/C1-rework/C2 never
+touched `run-gate.py`, confirmed by every prior session's own diff-coverage
+SKIPPED verdict).
+
+Did NOT read this session (deferred, C3's wiring half — see "Checkpoint"
+below): `run-gate.py` 900-1250 (history store), 3908-4300
+(`LogStreamWatch`/`await_container`), 4331-4930 (`follow_container`/
+`resolve_inflight`/`run_container_lane`/`run_exec_lane`/
+`run_bare_host_lane`), 4960-5442 (`usage()`/`main`) — none of these were
+touched this session; the next successor reads them fresh per BRIEF-4.
+
+## Commit 5 — C3 (partial): config + ProfilerClient + ResourceAccumulator + BasicSampler
+
+Per BRIEF-3's own "checkpoint suggestion" (three sub-commits: config+
+parsers / client+accumulator / sampler+wiring) and the dispatch prompt's
+explicit sanctioned cut point ("cut after a green sub-cluster — config +
+client + accumulator + sampler with their tests, before the wiring"):
+landed all four in ONE commit rather than three, since none of them
+independently reaches a green `selftest` on their own (the diff-coverage
+gate judges the WHOLE accumulated diff against `main`, not per-sub-commit,
+so splitting would only have produced intermediate RED commits with no
+real revert value — a judgment call, recorded for the reviewer).
+
+**Config layer**: `PROFILE_DAEMON_DEFAULT`, `PROFILE_SAMPLE_SECONDS = 5`
+(reasoned: docker-exec overhead per tick vs. sample resolution, HOST LOAD
+§6), `PROFILE_CTL_TIMEOUTS` (contract §1.5 verbatim), `PROFILE_CONTRACT =
+1`, `PROFILE_TOKEN_ENV`, `PROFILE_BASIC_FILES` (see "Contract drift" below).
+Top-level `[profile]`/`[footprint]` (whole-table shadowing, R-09,
+unknown-key refusal) via `_validate_profile_policy`/
+`_validate_footprint_policy`, mirroring `_validate_history_policy` exactly
+in shape. Per-lane `profile = false` / `[lanes.<n>.profile]` table
+(`enabled`/`damon`) inside `_validate_lane`; `profile = true` refused BY
+NAME (redundant with the enabled-by-default policy). `LANE_KEYS` gains
+`"profile"`. `resolve_profile_settings(lane, cfg, cfg_path, central,
+central_path) -> dict` mirrors `resolve_environment`'s shape (always
+fully populated, `source` disclosed).
+
+**Parsers** (`_profile_parse_int`/`_profile_parse_raw_limit`/
+`_profile_parse_kv`/`_profile_parse_pressure`/`_split_basic_dump`): ported
+from `scripts/cgroup-profiler/lib/util.py`'s `read_int`/`read_kv`/
+`read_pressure` (string variants, attributed in each docstring).
+`_profile_parse_raw_limit` is new (not in BRIEF-3's draft) — needed
+because `_profile_parse_int` folds `"max"` to `None`, which loses the
+"max" vs integer distinction `events.limit_drift` needs to detect a
+transition.
+
+**ProfilerClient**: matches BRIEF-3's drafted design almost verbatim (the
+JSON-first, exit-code-second design that collapses every failure mode
+into one `(None, reason)` code path) — `version`/`host`/`status`/`start`/
+`stop`, each one `docker exec <daemon> cgprofile ctl <verb> ... --json`
+via `subprocess.run(timeout=PROFILE_CTL_TIMEOUTS[verb])`.
+
+**ResourceAccumulator**: contract §7's arithmetic, implemented and
+VERIFIED (standalone, bypassing BasicSampler/docker entirely, per BRIEF-3's
+own "test this class FIRST" instruction) against the golden fixtures
+BEFORE writing a single pytest test — a throwaway script read the golden
+frames directly, fed them through `ResourceAccumulator`, and compared the
+result to `summary-basic-v1.json` (scope `container-shared`) and to the
+README's hand-derived numbers (scope `container`): both matched
+byte-for-byte / value-for-value on the first attempt, confirming BRIEF-3's
+worked-out formula subtleties (nearest-rank on sampled `memory.current`
+NEVER `memory.peak`; `peak_over_baseline` floored at 0; `limit_drift` ORs
+`memory.max`/`memory.high` per sample-pair; `host.slice` always null for
+basic) translated correctly into code.
+
+**BasicSampler**: owns the `docker exec <lane container> sh -c 'for f in
+...; do echo "== $f"; cat /sys/fs/cgroup/$f 2>/dev/null; done'` invocation
+(one call per tick, matching the handoff's literal shape) and the direct
+host-PSI read (`/proc/pressure/{memory,cpu}` + `/proc/loadavg`, honoring a
+new `RUN_GATE_PROC_ROOT` env var mirroring `RUN_GATE_CGROUPFS_ROOT`'s own
+pattern). `clock`/`wall_clock` are injectable (tests drive both
+deterministically).
+
+**Contract drift found (decision ask, resolved per RW-9's "pick the
+reading the fixtures imply" rule, NOT left blocking):** contract §4.3's
+literal basic-path file list (`memory.current memory.peak
+memory.swap.current memory.stat cpu.stat memory.pressure cpu.pressure
+io.pressure memory.events.local pids.peak` — 10 files) omits
+`memory.max`/`memory.high`. But §7's `events.limit_drift` rule ("number of
+sample pairs where `memory.max` or `memory.high` changed") and the golden
+`summary-basic-v1.json` fixture (`limit_drift: 1`, identical to the
+daemon-path fixture) both REQUIRE reading them — the basic path cannot
+reproduce the golden fixture without them. `PROFILE_BASIC_FILES` reads 12
+files, not 10, with the drift documented at the constant's own definition
+and flagged here for the controller/P1 daemon-side reviewer to confirm
+independently (a real spec inconsistency, not a P2-side misreading —
+verified by re-reading contract §4.3 and §7 side by side twice before
+concluding this).
+
+**Token generation**: `generate_profile_token()` (`secrets.token_hex(16)`)
+written and tested, but NOT yet wired into `run_container_lane`/
+`run_exec_lane` — that append-after-`forward_env` wiring, the inflight
+record's `profile_token`/`profile_session` fields, and the
+`await_container`/`run_exec_lane` per-tick call sites are ALL deferred to
+the next session (BRIEF-4), per the sanctioned "before the wiring" cut.
+
+**Fixtures**: `tests/fixtures/rg55/` vendored byte-identical from
+`nyxloom-trove/fixtures/rg55/` (`cp -r`, `diff -r` confirmed identical
+before writing the byte-identity test; `git ls-files
+run-gate-project/tests/fixtures/ | wc -l` = 185, matching a plain `find`
+count exactly — no `.gitignore` rule silently dropped anything, unlike
+C2's `*.pyz` precedent this session did not need to touch).
+
+**Tests**: 76 new tests added to `tests/test_run_gate.py` across seven new
+classes (`TestRG55FixtureByteIdentity`, `TestProfileParsers`,
+`TestProfileConfigValidation`, `TestResourceAccumulatorGoldenFixtures`,
+`TestProfilerClient`, `TestGenerateProfileToken`, `TestBasicSampler`), plus
+two lines added to the pre-existing `test_no_stdlib_violations`
+allowlist (`math`, `secrets` — a real, correctly-firing anti-goal test
+this session's new imports tripped on the first whole-suite run, fixed by
+extending the documented allowlist with a reasoned comment per its own
+existing style, not by weakening the assertion). The fake docker shim
+(`fake_docker` in `tests/test_run_gate.py`) gained a `cgprofile ctl`
+branch (`CGPROFILE_SHIM_CASE`, shared source so `fake_docker_executing`
+can reuse it verbatim when the wiring session needs both simultaneously)
+driven by a new `set_cgprofile_plan()` helper (per-verb JSON/exit/sleep
+response files under `$RUN_GATE_TEST_CGPROFILE_PLAN`).
+
+### Gate verdicts
+
+- `pytest tests/test_run_gate.py -q -k "<the seven new classes>"`
+  (targeted, iterating): 45 passed on first pass; grew to 63 after fixing
+  three test-authoring bugs found while iterating (a dead loop line, a
+  wall-clock iterator with the wrong element count, an unused variable);
+  the FIRST whole-suite run then found the real `test_no_stdlib_violations`
+  gap above (not a test bug — a real missing-allowlist-entry issue), fixed,
+  re-run: **65 passed** for the targeted set after the max_age_days/
+  tolerance_pct branch-coverage additions below.
+- `nice -n 19 ionice -c 3 python3 -m pytest tests/ -q` (whole suite,
+  `nice`/`ionice` throughout): first run **879 passed, 3 skipped** (before
+  the branch-coverage-closing tests below); final run **898 passed, 3
+  skipped** (same pre-existing wheel-packaging skip), ~114s.
+- `nice -n 19 ionice -c 3 ./run-gate.py selftest --allow-dirty` (whole
+  suite, verdict read in a SEPARATE step from the captured log, not a pipe
+  tail): FIRST run (before closing coverage gaps) — pytest phase 897
+  passed, diff-coverage **FAIL: 294/336 (87.5%)**, branches 107/128, one
+  named gap list. Fixed with ~19 additional targeted tests closing every
+  named line/branch (see the diff — the `_validate_lane`/
+  `_validate_profile_policy`/`_validate_footprint_policy`/
+  `resolve_profile_settings` branch matrix, the two parser edge cases,
+  `ProfilerClient`'s OSError-on-exec and `start()`'s optional-flag
+  branches, `ResourceAccumulator.add_sample`'s default-clock branch and
+  `_cores_max`'s zero-delta-t guard, `BasicSampler._read_container`'s
+  OSError-on-exec branch). SECOND run (after 498(branch) alone remained —
+  the `max_age_days` presence check's "absent" arm, closed by one more
+  test with only `tolerance_pct` set): **diff-coverage OK: 336/336
+  (100.0%) lines, 128/128 (100.0%) branches, exit 0**; pytest phase **898
+  passed, 3 skipped**, 113.61s.
+- `./run-gate.py doctor`: 8 checks, 5 OK, 1 WARN (the same pre-existing
+  linked-worktree host-lane git-view note every prior session has seen), 0
+  FAIL, 2 SKIP (unchanged, bare-host toolchain checks). No new failures.
+- `./run-gate.py --base main assay-r1` (dirty tree first — correctly
+  REFUSED, `NO_MEASUREMENT/DIRTY_TREE`, since assay's own higher-rigor
+  lanes measure a resolved COMMIT, not a working tree — this is the
+  designed behavior, not a bug; committed, then re-ran): **PASS, exit 0**,
+  100.0% (613/613 lines, 158/158 branches, `considered: 2` files) against
+  commit `4d684920`.
+- `./run-gate.py assay-r3 --allow-dirty`: **PASS, exit 0** — the canary
+  correctly proves the gate rejects a broken `duration_stats`
+  (`median-not-mean ok (assay-r1 would reject it)`, `canary: 1 rejected, 0
+  survived`).
+- `assay-r2` deliberately NOT run — handoff's own timing rule: run it once,
+  at the very end of the whole package, by whichever session makes the
+  final commit. C4-C8 remain, so this is not that session.
+
+Commit: `4d684920` — `feat(rg55-p2): C3 (partial) -- profiling config +
+client + accumulator + sampler`.
+
+## Checkpoint
+
+Stopping here at the exact boundary the dispatch prompt itself names as
+sanctioned mid-C3 cut point ("config + client + accumulator + sampler with
+their tests, before the wiring"): green `selftest` (100% line+branch),
+green whole suite, green `assay-r1`/`assay-r3`, one commit, LOG/REPORT
+updated, `BRIEF-4.md` written for the successor. Remaining in C3: token
+generation wiring into `run_container_lane`/`run_exec_lane`; the
+`await_container` polling-granularity decision (BRIEF-3's own two named
+shapes, still unmade); the ephemeral/exec/bare-host flow wiring; disclosure
+lines (contract §4.6); `--dry-run` profile-plan text; the
+enabled=false/lane-opt-out degradation wiring at the lane-run level (the
+CONFIG layer for this already exists and is tested — `resolve_profile_settings`
+— only the RUNTIME consequence of `enabled: False` remains unwired). Then
+C4 (history schema 2) through C8 (docs/spec/backlog/revision) are entirely
+untouched. See `BRIEF-4.md`.

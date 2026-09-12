@@ -299,6 +299,69 @@ budget overhead makes it a poor use of this checkpoint's remaining
 window; left for whichever session makes the final commit of this
 package.
 
+## C3 (partial) — profiling config + ProfilerClient + ResourceAccumulator + BasicSampler (R-43)
+
+Delivered, gate-verified: the config layer (`[profile]`/`[footprint]`,
+per-lane `profile` key, `resolve_profile_settings`), the three ported
+cgroupfs parsers plus a new `_profile_parse_raw_limit`, `ProfilerClient`
+(daemon RPC client), `ResourceAccumulator` (contract §7 arithmetic), and
+`BasicSampler` (the in-lane fallback's docker-exec plumbing + direct host
+PSI reads). NOT delivered: wiring any of this into
+`run_container_lane`/`run_exec_lane`/`await_container`/
+`run_bare_host_lane`/`follow_container`/`resolve_inflight` — no lane run
+today does anything different than before this commit. See the LOG's
+"Commit 5" section for full narrative; this section is the evidence
+digest.
+
+**ResourceAccumulator proof (the single highest-value test per BRIEF-3's
+own framing):** fed the golden `frames/0..4/` cgroupfs tree directly
+(bypassing BasicSampler/docker entirely), for both `scope` values:
+
+- `scope="container-shared"`: byte-for-byte dict equality against
+  `summary-basic-v1.json` — every field, including the `events.limit_drift
+  = 1` / `memory_high_breach = 1` transition-detection case and the `p90 ==
+  peak` N=5 nearest-rank gotcha.
+- `scope="container"`: `memory.peak_bytes == 796917760`, `source ==
+  "memory.peak"`, `memory.peak_over_baseline_bytes == 272629760` (all three
+  match `fixtures/rg55/README.md`'s own hand-derived numbers exactly); every
+  OTHER field verified identical to the `container-shared` fixture after
+  patching just those three memory keys — proving the implementation's
+  scope-independence claim empirically, not just by code inspection.
+
+Both checks passed on the FIRST attempt against the real implementation
+(verified via a throwaway script before any pytest test was written), then
+re-proven as permanent pytest tests
+(`TestResourceAccumulatorGoldenFixtures`).
+
+**ProfilerClient proof:** a new `cgprofile ctl` branch in the shared fake
+docker shim (`CGPROFILE_SHIM_CASE`), driven by golden fixture files for
+`version`/`host`/`status`/`stop`/`start`, plus per-test error injection
+(exit 2 + `error-v1.json`, exit 3 + a synthetic daemon-fault body, garbage
+stdout, `contract: 2`, a real subprocess timeout via a shrunk
+`PROFILE_CTL_TIMEOUTS` entry, a nonexistent docker binary raising OSError,
+non-object JSON). Every failure mode returns `(None, reason)` and was
+proven not to raise.
+
+**BasicSampler proof:** a dedicated fake-docker shim answering each `exec`
+call with the k-th golden frame's concatenated dump (in construction order,
+matching the handoff's "the shim serves frame k's contents on the k-th
+call" test spec at the per-invocation granularity BasicSampler actually
+uses — one invocation samples ALL files in one call, not one `cat` per
+file); five ticks reproduce `summary-basic-v1.json` byte-for-byte end to
+end (docker-exec parsing + host-PSI reads + `ResourceAccumulator`
+arithmetic, no shortcuts).
+
+### Contract drift found (see also LOG's Commit 5 + this report's Decision asks)
+
+Contract §4.3's basic-path file list literally names 10 files, omitting
+`memory.max`/`memory.high` — but §7's `limit_drift` rule and the golden
+`summary-basic-v1.json` fixture both require them. `PROFILE_BASIC_FILES`
+reads 12 files. This is a genuine spec inconsistency (confirmed by
+re-reading contract §4.3 and §7 side by side), not a misreading on this
+package's part — flagged for the P0 controller and the P1 (daemon) session
+to confirm independently, since the contract is described as FROZEN and
+shared verbatim between both packages.
+
 ## Decision asks
 
 **C2's `[lanes.r1]`/`[lanes.r2]` `judge.source_roots` scoping —
@@ -357,6 +420,25 @@ fallback instruction (apply the narrowest exclusion assay 6.1.1 supports,
 never widen to excluding `tools/`) is recorded in `assay.toml`'s header
 comment for that day.
 
+**New decision ask, C3 (not blocking, RW-9 process): the contract §4.3
+basic-path file-list vs. §7/golden-fixture drift** (`memory.max`/
+`memory.high` omitted from the literal list but required by
+`limit_drift`). Read as "the golden fixture is the tie-breaker" (per the
+handoff's own read-order: contract, then fixtures, and the fixtures
+README frames itself as the arithmetic PROOF) — `PROFILE_BASIC_FILES`
+reads both files anyway. A controller/P1 ruling confirming this reading
+(or correcting the contract's own §4.3 text) is welcome but was not
+required before proceeding.
+
+**Open, unmade decision carried forward from BRIEF-3, NOT resolved this
+session (deferred to the wiring session, C3's remainder):**
+`await_container`'s polling-granularity shape — shrink the shared
+`proc.wait(timeout=...)` interval when profiling is active (option 1) vs.
+a separate background-thread sampler mirroring `LogStreamWatch` (option
+2). BRIEF-3's own lean favors option 2 (lower regression risk against
+`await_container`'s heavily adversarially-reviewed stall/re-attach logic);
+this session did not need to decide it since no wiring was attempted.
+
 None raised for C1 — RG-53's implementation directions were fully
 DECIDED in the backlog's own "Directions, not picked here" list (both were
 picked: read `missing_branches`, and refuse the zero). One judgment call
@@ -390,15 +472,18 @@ visibility rather than as a blocking ask:
   a real coverage-gap fix `assay-r1`'s first live run surfaced. `assay-r1`
   and `assay-r3` both PASS; `assay-r2` deliberately deferred to "the very
   end" per the handoff's own timing rule.
-- **C3 (profiling client, R-43)** — not started. By far the largest
-  remaining deliverable (§7's byte-exact arithmetic against three golden
-  fixtures, `ProfilerClient`, `ResourceAccumulator`, `BasicSampler`, and
-  wiring into `await_container`/`run_container_lane`/`run_exec_lane`/
-  `follow_container`/`resolve_inflight` — five of the most heavily
-  adversarially-reviewed functions in this file, per `__revision__ = 40`'s
-  own changelog). See `BRIEF-3.md` for the concrete data shapes, exact
-  parser designs, and file:line wiring points this session located but did
-  not yet turn into code.
+- **C3 (profiling client, R-43) — PARTIAL.** Config layer, `ProfilerClient`,
+  `ResourceAccumulator` (proven byte-exact against the golden fixtures),
+  `BasicSampler`, and `generate_profile_token()` are DONE and gate-verified
+  (commit `4d684920`, 100% line+branch diff-coverage, assay-r1/r3 PASS).
+  NOT done: wiring any of it into `await_container`/`run_container_lane`/
+  `run_exec_lane`/`run_bare_host_lane`/`follow_container`/
+  `resolve_inflight` — five of the most heavily adversarially-reviewed
+  functions in this file, per `__revision__ = 40`'s own changelog — plus
+  disclosure lines (contract §4.6), `--dry-run` profile-plan text, and the
+  runtime consequence of `enabled: false`/lane opt-out (the config exists
+  and is tested; nothing reads it at run time yet). See `BRIEF-4.md` for
+  the concrete continuation state.
 - **C4 (history schema 2, R-36)**, **C5 (`footprint` verb, R-44)**, **C6
   (RG-48, `resources.cpus`)**, **C7 (`doctor` profiler check)**, **C8
   (docs/spec/backlog/revision sweep, `__revision__ = 41`)** — not started;
@@ -449,8 +534,19 @@ Coverage-gap fix found by the first live assay-r1 run (this session,
 commit `45f2aa5a`):
 - `run-gate-project/tests/test_coverage_gate.py`
 
+Records only (prior session, commit `62f8a18f`):
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-3.md` (new)
+
+C3 partial (this session, commit `4d684920`):
+- `run-gate-project/run-gate.py`
+- `run-gate-project/tests/test_run_gate.py`
+- `run-gate-project/tests/fixtures/rg55/**` (new, 185 files, vendored
+  byte-identical from `run-gate-project/nyxloom-trove/fixtures/rg55/`)
+
 Records only (this session, uncommitted at time of writing, committed
 with this checkpoint):
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-LOG.md`
 - `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`
-- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-3.md` (new)
+- `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-BRIEF-4.md` (new)
