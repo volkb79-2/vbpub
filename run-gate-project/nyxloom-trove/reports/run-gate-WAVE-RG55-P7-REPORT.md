@@ -527,16 +527,129 @@ AND `runner.py`'s baseline/candidate dispatch, and A6's own close-out
 still owes the full sweep once before the real gate, unchanged from every
 prior session's own note.
 
-## Not done yet — A5/A6
+## A5 (session 6): `--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`
 
-- A5 (`--rejudge`/`--rejudge-outcome`) — untouched, unchanged from
-  BRIEF-1/BRIEF-2's own sketch; `--rejudge-outcome hung` is implementable
-  now that the bucket exists (session 4), same as BRIEF-4 already noted.
+Commit `c15f6040`.
+
+**Oracle → test mapping (handoff's own A5 contract items):**
+
+| Oracle | Test(s) |
+| --- | --- |
+| `run --resume --rejudge <id>[,…]` drops matching state records before resuming | `test_rejudge_ids_drops_only_the_named_record_and_reexecutes_it` |
+| `--rejudge-outcome hung,budget_exceeded,error`-style bucket selection | `test_rejudge_outcome_drops_records_matching_the_named_bucket` (uses `"survived"`; the same mechanism BRIEF's own `hung`/`budget_exceeded` names) |
+| refuse an unknown id | `test_rejudge_unknown_id_refuses_before_any_execution` (a raising `process_runner` proves the refusal fires before any candidate runs) |
+| cross-reference B088 | done in the refusal's own message text (`MutationStateError`'s wording names B088 explicitly) and in this report's own "Design note" below, not a separate implementation item — B088 is CLOSED for the judging-suite axis (`judge_sha256`, already automatic on every resume); this item is the mutant's-own-source-bytes axis, which the pre-existing candidate-id-folds-in-source-bytes mechanism (B066) already made structurally sound — A5 only had to make an EXPLICIT `--rejudge` request respect that same structural fact rather than silently accepting a stale/foreign id |
+| the two selections (`--rejudge`, `--rejudge-outcome`) compose | `test_rejudge_ids_and_rejudge_outcomes_are_a_union` (same candidate named both ways, executed exactly once) |
+| CLI surface: flags exist, parse, validate, refuse cleanly | 5 tests in `test_runner_run_lane.py` (`test_run_lane_refuses_a_malformed_rejudge_with_no_ids`, `_refuses_a_rejudge_outcome_with_no_buckets`, `_refuses_an_unknown_rejudge_outcome_bucket`, `_refuses_rejudge_without_resume`, `_rejudge_outcome_error_alias_for_crashed_is_accepted`) |
+
+**Design note — where each refusal lives, and why** (flagged per BLOCKED
+protocol; every judgment call here proceeded on its own default, no ask
+made):
+
+1. **"Unknown `--rejudge` id" lives in `mutation.py`, as `MutationStateError`
+   (an `AssayError`), never in `runner.py`'s CLI-level parsing.** This is
+   the one rejudge refusal that genuinely CANNOT be validated ahead of
+   time: whether an id is "known" depends on the current candidate set,
+   which does not exist until `run_mutation` has collected mutation sites
+   against the CURRENT source tree — information `run_lane`'s own
+   pre-dispatch parsing point (where `--shard`'s malformed-string check
+   and my other two rejudge refusals live) does not have yet. Because
+   `MutationStateError` is an `AssayError` subclass, it is caught by
+   `runner.py`'s pre-existing `except AssayError as exc:` around the
+   `run_mutation` call and rendered as a proper refused `Claim`, never an
+   uncaught exception — the SAME mechanism the pre-existing "stale
+   `source_sha256`" resume refusal already uses, so this is not a new
+   error-handling shape, just a new reason inside an existing one.
+2. **"Requires `--resume`" and "unknown `--rejudge-outcome` bucket name"
+   live in BOTH layers** — a clean `BAD_LANE_CONFIG` refusal in
+   `runner.py`'s `run_lane` (reachable from the CLI, before any command
+   runs) AND a defensive `ValueError` in `mutation.py`'s `run_mutation`
+   (reachable only by a direct library caller bypassing the CLI, matching
+   every other top-of-function `ValueError` already there for `jobs`/
+   `max_mutants`/`budget_per_candidate_auto`). Two checks for the SAME
+   two facts, deliberately: the CLI-level one is what an actual operator
+   ever sees (a clean verdict, not a traceback); the library-level one
+   is what protects `run_mutation`'s own contract for a caller that
+   skips the CLI entirely — the identical two-layer shape B091/D-23's
+   OWN A1 `budget_per_candidate_auto` validation already established for
+   a different pair of facts, reused here rather than invented fresh.
+3. **`"error"` as an alias for `"crashed"` is a CLI-surface-only
+   translation** (`runner.py`'s own `_REJUDGE_OUTCOME_ALIASES` dict,
+   applied before `mutation.run_mutation` ever sees the value) — the
+   handoff's own literal example spelling
+   (`--rejudge-outcome hung,budget_exceeded,error`) uses a word that
+   does not appear in `verdict.MUTATION_BUCKETS` at all (the real bucket
+   `_classify_mutant_result` produces for `Outcome.ERROR` is `"crashed"`,
+   never `"error"`). Rather than either (a) silently refusing the
+   handoff's own example as an unknown bucket, or (b) adding a fifth
+   spelling to the closed `MUTATION_BUCKETS` vocabulary itself (which
+   would then need threading through the verdict schema, `CONSUMERS.md`'s
+   bucket table, and every other `MUTATION_BUCKETS` consumer for a name
+   that means exactly what `"crashed"` already means), the alias is
+   resolved at the ONE place a human types it — the CLI flag — so
+   `mutation.py`'s own vocabulary stays exactly as narrow as it already
+   was. Flag: a future reviewer preferring option (b) would need a
+   schema-version discussion this session did not attempt to have.
+4. **A candidate named by BOTH `--rejudge` and a matching
+   `--rejudge-outcome` bucket is dropped exactly once, not twice** — the
+   `or` in `if candidate_id(job) in rejudge_ids or record.get(
+   "outcome_bucket") in rejudge_outcomes:` short-circuits to a single
+   `continue`, and `test_rejudge_ids_and_rejudge_outcomes_are_a_union`
+   pins the observable consequence (`len(calls) == 1`) rather than
+   trusting the boolean logic by inspection alone.
+
+**A real, if minor, discovery while writing the first test**:
+`verdict.MutantOutcome.identity` is a DIFFERENT, tuple-shaped identity
+(`(path, start_byte, end_byte, replacement_sha256, operator)` — confirmed
+empirically, not merely read off a docstring) from the sha256 hex digest
+`mutation.candidate_id()` computes and `--rejudge`/`rejudge_ids` actually
+take. A naive `--rejudge <survived-candidate's .identity>` would silently
+be treated as an "unknown id" (refused) rather than working — this
+session's OWN first test attempt hit exactly that refusal before
+switching to reading the real digest back off the persisted state record
+(`_candidate_id_by_outcome_bucket`, a small test-only helper). **A6's
+docs pass should say this explicitly**: a consumer wanting to build a
+`--rejudge <id>` invocation from a prior verdict's own
+`judgment.r2`/`Mutation.survived` list needs the PERSISTED state record's
+`candidate_id` field (or a to-be-decided verdict-level digest field), not
+`MutantOutcome.identity` — today's verdict schema does not expose the
+digest at all on `MutantOutcome` itself, which is worth a documented
+caveat at minimum and possibly a follow-up backlog row (not filed this
+session — flagged here for A6 to decide, call-budget permitting).
+
+**Coverage:** every new/changed line in `mutation.py` and `runner.py`
+confirmed absent from either file's own coverage-report `missing_lines`
+(direct line-number cross-reference against the JSON report, the same
+discipline A4 used), against a 144-test combined run. Both branches of
+every new conditional confirmed covered, including the plain
+argument-threading lines (`rejudge_ids=rejudge_ids,` etc.) through
+`_run_higher_rigor_lane`/`_run_prepared_lane`/`run_lane`'s own progress-
+stream re-entry call — exercised at their DEFAULT empty-frozenset value
+by the pre-existing `test_state_dir_resume.py`/`test_mutation_judge_
+identity.py` full-CLI resume tests (neither of which passes `--rejudge`
+itself), and at a real non-default value by this session's own new
+tests.
+
+**Regression:** 228 tests green (the four rejudge-relevant files plus
+the three liveness files, confirming A4's own work is undisturbed by
+A5's changes to the shared `run_mutation`/`run_lane` call chains).
+
+## Not done yet — A6
+
 - A6 (close-out: docs, `CHANGES.md`, backlog rows, the real gate) —
-  untouched; still needs A5 first, per the handoff's own ordering.
-  `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4), A3(session 5)
-  AND A4 in one pass — never touched for any of the four. **New item for
-  A6, from the controller mid-session (not in the original handoff)**:
-  file backlog row **B092** — "`--resume` identity (B088, per-tree) is
-  invalidated by commits to non-judged paths" (RG-55 wave, RW-41,
-  2026-09-12) — row only, do not implement.
+  untouched; unblocked now that A4 and A5 are both done.
+  `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4), A3(session 5),
+  A4 AND A5 in one pass — never touched for any of the five. **New item
+  for A6, from the controller mid-session (not in the original
+  handoff)**: file backlog row **B092** — "`--resume` identity (B088,
+  per-tree) is invalidated by commits to non-judged paths" (RG-55 wave,
+  RW-41, 2026-09-12) — row only, do not implement. **Also new, from this
+  session's own A5 work** (optional for A6, call-budget permitting): a
+  possible follow-up backlog row on `MutantOutcome.identity` vs.
+  `candidate_id()`'s digest being two different, easily-confused
+  identities for the same candidate, with no verdict-level field exposing
+  the digest a consumer would need to build a `--rejudge <id>`
+  invocation from a prior verdict alone — see the "real discovery" note
+  above for the full account; not filed as a backlog row itself this
+  session (A6's own judgment call whether this rises to a filed row or a
+  documentation-only caveat in CONSUMERS.md's `--rejudge` section).

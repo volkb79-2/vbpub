@@ -660,3 +660,74 @@ exists, in a small follow-up entry-only commit).
   the 920-test combined run (real e2e subprocesses included) ran ~97s,
   well within the "whole suite at most once per commit that needs it"
   rule (run twice total: once narrow, once combined for coverage).
+
+### `c15f6040` — A5: `--rejudge`/`--rejudge-outcome` (session 6)
+
+- `mutation.py`: `run_mutation` gains `rejudge_ids: frozenset[str]` and
+  `rejudge_outcomes: frozenset[str]`, both empty by default (byte-
+  identical resume behaviour when neither given). Requires `resume=True`
+  (`ValueError` otherwise); `rejudge_outcomes` validated against the real
+  `MUTATION_BUCKETS` vocabulary. Inside the resume loop, BEFORE any
+  record loads: refuses (`MutationStateError`) an unknown `--rejudge` id
+  — one that does not match any of THIS run's own current candidate
+  identities, cross-referencing B088 (ids fold in the mutant's own
+  source bytes by construction, B066, so a changed source makes the old
+  id simply disappear from the current set — indistinguishable from
+  "never existed" at the id level). A record matching either selection
+  (a union) is dropped before reaching `resumed_records`, falling
+  straight through to `pending_jobs` — the same effect as a candidate
+  with no record at all, no special code path. `"resume"` progress event
+  gains `rejudged_total`.
+- `runner.py`: `run_lane` gains `rejudge`/`rejudge_outcome` (raw
+  comma-separated strings, unparsed — mirrors `shard`'s own
+  `"INDEX/COUNT"` string exactly). Parsed and refused at the SAME point
+  `shard`'s own malformed-string check fires — before the R0/higher-
+  rigor dispatch, so even an R0-only lane hits it, no command execution
+  needed. `"error"` accepted as a documented CLI-level alias for the
+  real bucket name `"crashed"` (`Outcome.ERROR` → that bucket via
+  `_classify_mutant_result`) — `run_mutation` itself only ever sees
+  canonical `MUTATION_BUCKETS` names. Threaded through
+  `_run_higher_rigor_lane` → `_run_prepared_lane` → `run_mutation`
+  exactly like `resume`/`shard_index`/`shard_count` already are,
+  including `run_lane`'s own progress-stream re-entry call.
+- `cli.py`: `--rejudge`/`--rejudge-outcome` added to the `run`
+  subparser, passed straight through as raw strings.
+- Tests-first: yes. 7 new `run_mutation`-level tests in
+  `test_mutation_progress_budget_plan.py`: drop-by-id + genuine
+  re-execution against a strengthened suite (a `process_runner` that now
+  kills what the FIRST run recorded `survived`, proving real execution
+  rather than a replayed stale verdict); drop-by-outcome; both selections
+  together as a union (not double-executed); unknown id refuses before
+  ANY execution (a raising `process_runner` proves nothing ran); the
+  `"resume"` event's `rejudged_total`; both `ValueError` paths. 5 new
+  `run_lane`-level tests in `test_runner_run_lane.py`, all via the
+  file's existing minimal-R0-lane pattern (no real command execution for
+  any of them): malformed `--rejudge`, empty `--rejudge-outcome`, an
+  unknown bucket name, missing `--resume`, the `"error"`→`"crashed"`
+  alias accepted without refusing. One real bug found while writing the
+  first rejudge test: `MutantOutcome.identity` is a DIFFERENT,
+  tuple-shaped identity (path/span/hash/operator), not the digest string
+  `candidate_id()`/`--rejudge` actually take — a test helper
+  (`_candidate_id_by_outcome_bucket`) reads the real digest back off the
+  PERSISTED state record instead of guessing a conversion between the
+  two; flagged here since a future `--rejudge` consumer reading
+  `judgment.r2`/`Mutation.survived` for an id to pass back in would hit
+  the identical confusion (A6's docs pass should say this explicitly).
+- Coverage: every new/changed line in both files confirmed present in
+  neither file's own coverage-report `missing_lines` (direct line-number
+  cross-reference), against a 144-test combined run (the two new tests'
+  own files plus `test_state_dir_resume.py`/`test_mutation_judge_
+  identity.py` for the full-CLI threading path — those two exercise the
+  new `rejudge_ids=`/`rejudge_outcomes=` argument-passing lines at their
+  DEFAULT empty value on every resume-capable run, even though neither
+  file passes `--rejudge` itself, which is exactly the "OTHER optional
+  parameter at its default" bar for the plumbing layer).
+- Regression, GREEN: 228 tests (`test_mutation_progress_budget_plan.py`,
+  `test_state_dir_resume.py`, `test_mutation_judge_identity.py`,
+  `test_runner_run_lane.py`, `test_liveness.py`, `test_liveness_proc_
+  helpers.py`, `test_liveness_runner_monitor.py`).
+- HOST LOAD: `/proc/pressure/memory` `full avg10` briefly read 2.91 mid-
+  session (the `some avg10` companion figure spiked to 6.26, but the
+  binding rule is `full avg10 > 5` — stayed under it throughout);
+  `nice -n19`/`ionice -c3` for every invocation; targeted files, run
+  twice (once at 228, once for the coverage cross-check).
