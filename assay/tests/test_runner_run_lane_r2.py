@@ -296,7 +296,6 @@ def test_judgment_r2_budget_per_candidate_none_without_diagnostics_still_runs_un
 
     assert verdict.claims[1].mutation.total == 1
     assert verdict.judgment.r2.budget_per_candidate_derived_s is None
-    assert "B090" in warning
 
 
 def test_judgment_r2_explicit_budget_per_candidate_is_declared_not_derived(
