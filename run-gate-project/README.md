@@ -31,18 +31,25 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    reachable). nyxloom's dev gate migrated OFF its hardcoded
    `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
-   overrides), `clean_tree` (default TRUE — refusals are the doctrine;
-   nyxloom adopts `false` explicitly until NL-1), `assay_command` REQUIRED
-   and explicit (the tool never invents an assay invocation), `budget`
-   advisory-only, `stall_timeout` (rev 34, RG-36/`R-40c`: same `\d+[smh]`
-   grammar as `budget` and read beside it, but it bounds SILENCE in the
-   lane's `.assay/progress-<assay_lane>.jsonl` — the lane is stopped only
-   while its container is still RUNNING and the file has not advanced for
-   that long, never on total elapsed time. assay lanes only; refused on a
-   `kind = "command"` lane, which writes no progress file and could never
-   stall by this rule. The documented shape for a mutation lane is a
-   generous assay `budget` + `judge.mutation.budget_per_candidate` +
-   this key).
+   overrides; superseded by `resources.memory`), `resources` (`R-29`: a
+   table — `memory`, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
+   `docker run --cpus`, with an environment-level fallback
+   `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
+   refusals are the doctrine; nyxloom adopts `false` explicitly until
+   NL-1), `assay_command` REQUIRED and explicit (the tool never invents an
+   assay invocation), `budget` advisory-only, `stall_timeout` (rev 34,
+   RG-36/`R-40c`: same `\d+[smh]` grammar as `budget` and read beside it,
+   but it bounds SILENCE in the lane's liveness signal — an assay lane's
+   progress file, or (RG-41, rev 36) a command lane's own log-stream
+   arrival times, `SPEC` `R-40f` — never total elapsed time. Legal on both
+   `assay` and `command` lanes since RG-41; meaningless, but accepted, on
+   host/exec lanes, which start nothing to watch. The documented shape for
+   a mutation lane is a generous assay `budget` +
+   `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
+   `false` to opt a lane out of profiling entirely, or a table
+   `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
+   `R-43h`).
 
 ## Gate and evidence
 
@@ -257,6 +264,17 @@ the tool's reason to exist and MUST be implemented + tested:
   names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
   (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
+- **Lane cost is PROFILED too, when a cgroup-profiler daemon is reachable
+  (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
+  memory-full stall join `history`'s own duration series (schema 2, SPEC
+  `R-36j`) — precisely from the daemon (`cgprofile-host-daemon`, `docker
+  exec ... cgprofile ctl ...`), or a coarser in-lane cgroup sample when it
+  is absent; never nothing, unless profiling is disabled outright
+  (`RUN_GATE_PROFILE=off`, `[profile] enabled = false`, or a lane's own
+  `profile = false`). `./run-gate.py footprint [LANE] [--json] [--write]`
+  distills that history into a COMMITTED `run-gate.footprint.json` —
+  budgets other projects and `doctor` can compare against, not just this
+  invocation's own number (SPEC `R-44`).
 
 ### Distribution — symlink inside vbpub, copy outside
 

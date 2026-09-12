@@ -9,6 +9,60 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
 
+### Added
+- **RG-55 — per-lane resource profiling, against the cgroup-profiler daemon
+  contract (`RG55-INTERFACE-CONTRACT.md`).** Every lane invocation gets a
+  resource profile — peak memory (+baseline, p90, DAMON hot-set), CPU
+  cores, memory-full stall — from the daemon (`cgprofile-host-daemon`,
+  `docker exec ... cgprofile ctl ...`) when reachable, or a coarser
+  in-lane cgroup sample (`method: "basic"`) when it is not; never nothing,
+  unless profiling is disabled outright (`RUN_GATE_PROFILE=off`,
+  `[profile] enabled = false`, or a lane's own `profile = false`). Live
+  acceptance, real docker, no daemon present (basic-path fallback): an
+  ephemeral lane allocating ≥ 100 MiB measured a peak of **115523584 bytes
+  (110.17 MiB)**; an exec-mode (`container-shared`) lane allocating 80 MiB
+  on a persistent runner measured `peak_over_baseline_bytes` of
+  **88612864 bytes (84.51 MiB)** over a 90.14 MiB baseline, with ≥ 2
+  samples taken mid-run — both against this package's own numeric
+  acceptance criteria (≥ 100 MiB / ≥ 70 MiB respectively). History schema
+  2 (SPEC `R-36j`) carries the new `resources`/`profile_error`/
+  `profile_ref` fields and five new series (median peak, +baseline,
+  hot-set p90, CPU cores, memory-full stall) alongside the existing
+  duration series. New ambient override `RUN_GATE_PROFILE` (`"on"|"off"`,
+  SPEC `R-43g`) for a runner without `docker exec` rights to a daemon it
+  will never have. SPEC `R-43`.
+- **`footprint` verb (RG-55/C5) — a committed resource budget,
+  `run-gate.footprint.json`.** `./run-gate.py footprint [LANE] [--json]
+  [--write]` distills history into a manifest TRACKED next to
+  `run-gate.toml` (unlike `.run-gate/`, still gitignored); `--write`
+  REFUSES (exit 2, naming why) when no lane has a completed, profiled run
+  yet. `doctor` warns on drift (`[footprint] tolerance_pct`, default 25%)
+  or staleness (`max_age_days`, default 30) against the live history; the
+  run path reads it to fill the daemon's `expected` meta field and the
+  footprint disclosure line's `| manifest <n> MiB` tail. **BREAKING
+  (load-time):** `footprint` joins `doctor`/`validate-pointers`/`history`
+  as a RESERVED lane name — a copied-script repo with a lane by that name
+  must rename it. SPEC `R-44`.
+- **RG-48 — `resources.cpus` → `docker run --cpus`.** Lane
+  `[lanes.<n>.resources].cpus` or an environment-level fallback
+  `[environments.<e>.resources].cpus` (lane wins), a decimal string
+  matching docker's own grammar (`^\d+(\.\d+)?$`, > 0). Exec lanes get the
+  pre-existing naming-only WARNING (docker exec can neither place nor cap
+  work) rather than a refusal. `doctor` warns when a container lane's
+  argv spawns workers by name (`-n auto`/`--workers auto`) and neither the
+  lane nor its environment declares `cpus`. SPEC `R-29` amended.
+- **`doctor`'s "profiler" check (RG-55/C7).** Daemon container
+  present/running (`docker ps`), `ctl version` (contract/cgprofile
+  version/DAMON state), the effective `[profile]` settings incl. whether
+  `RUN_GATE_PROFILE` is overriding them, and — once the daemon answers —
+  host and per-slice pressure via `ctl host`. Every finding is
+  INFO/WARN/OK/SKIP, never FAIL: profiling is optional infrastructure.
+  The pre-existing R-29 "no derivable memory ceiling" WARNING now names
+  WHY when the cause is a PRIVATE cgroup namespace (the devcontainer/CI
+  default: `/proc/self/cgroup` reads exactly `0::/`) rather than a
+  misconfigured `$RUN_GATE_CGROUPFS_ROOT` — host-side slice truth is then
+  reachable only through this same "profiler" check.
+
 ### Fixed (detail)
 - **RG-53 — BREAKING: `tools/coverage_gate.py` now reads `missing_branches`
   and refuses a 0/0 diff.** Two independent semantic changes to the vendored

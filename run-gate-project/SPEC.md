@@ -33,6 +33,25 @@ amended): both passed `None` to `resolve_repo_and_worktree` instead of the
 caller's override, so `doctor --worktree B` silently reported the INVOKING
 tree's answers under B's name — the same read-scope hazard `R-36i` (RG-27
 B1) closed for `history`, closed here for the last remaining instance.
+Rev 10: RG-55 wave (per-lane resource profiling against the cgroup-profiler
+daemon contract) — new `R-43` (profiling: token, scopes, daemon/basic
+paths, degradation, inflight fields, disclosure, config incl.
+`RUN_GATE_PROFILE`) and `R-44` (the `run-gate.footprint.json` manifest,
+`footprint` verb, `doctor` staleness/drift, the run path's `meta.expected`
+and footprint disclosure line); `R-29` amended (RG-48 — lane/environment
+`resources.cpus` → real `docker run --cpus`, a `doctor` warning for
+undeclared worker-count-vs-cap, and the private-cgroup-namespace WHY on
+the pre-existing "no derivable memory ceiling" WARNING); `R-36` amended
+(`R-36j` — history schema 2: `resources`/`profile_error`/`profile_ref`
+per entry, five new `series_stats` series); `R-08` amended (`profile` lane
+key, `resources.cpus`, `footprint` joins the reserved lane names — a
+LOAD-TIME BREAKING change; the duplicated key-list paragraph from an
+earlier rev removed); `R-07` amended (`mode`, `container_name`,
+`resources.cpus` — both had shipped in code, undocumented here, since
+RG-39/RG-43); `R-40c`/`R-08` amended (the "assay lanes ONLY"
+`stall_timeout` text was stale since RG-41 (rev 36) made it legal on
+`command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
+log-stream liveness mechanism the rule id it shipped without).
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -118,9 +137,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   not silently read as 1); a project `[history]` shadows the central one
   entirely, per R-09's rule.
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
-  `cgroup_slice` (optional non-empty string), `forward_env` (optional,
-  unique list of valid environment-variable names; values are forwarded to
-  container lanes only when set). Redefining `host` or `bare-host` → error.
+  `cgroup_slice` (optional non-empty string), `mode` (`"ephemeral"`
+  (default) | `"exec"` — RG-39/RG-43: ephemeral starts a fresh container
+  per invocation, exec runs inside a PERSISTENT runner this tool never
+  starts or stops), `container_name` (optional non-empty string — an
+  exec-mode environment's persistent runner, when it is not derivable from
+  `ciu.global.toml`; declaring it on an ephemeral environment is legal but
+  inert), `forward_env` (optional, unique list of valid environment-variable
+  names; values are forwarded to container lanes only when set),
+  `resources` (RG-48, rev 10: a table accepting `cpus` ONLY — `R-29`'s
+  environment-level fallback for a lane's own `resources.cpus`). Redefining
+  `host` or `bare-host` → error.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
@@ -138,28 +165,29 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   tolerated; review fix) — declaring it asserts
   the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
-  advisory only), `stall_timeout` (`\d+[smh]`, assay lanes ONLY — bounds
-  SILENCE in the lane's progress file, never total elapsed time; `R-40c`),
-  `memory` (`\d+[bkmg]?`, docker `--memory`),
-  `description` (optional non-empty string, one line, shown by `--help`),
-  `required_env` (optional unique list of valid environment-variable names
-  this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
-  NON-EMPTY list of non-empty path strings the lane is expected to leave
-  behind — disclosed after every run per R-18; `{worktree}` tokens are
-  substituted, relative entries resolve against the effective project dir).
-  Lane names `doctor`, `validate-pointers` and `history` are RESERVED (they
-  collide with CLI verbs) and refused at load; a lane named like a verb
-  could never be invoked anyway. `history` joined the set in rev 30 -- a
-  LOAD-TIME breaking change for any consumer that had declared
-  `[lanes.history]` (no estate project had; flagged in CHANGES and CONSUMERS
-  for copied-script repos).
-  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
-  `description` (optional non-empty string, one line, shown by `--help`),
-  `required_env` (optional unique list of valid environment-variable names
-  this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
-  NON-EMPTY list of non-empty path strings the lane is expected to leave
-  behind — disclosed after every run per R-18; `{worktree}` tokens are
-  substituted, relative entries resolve against the effective project dir).
+  advisory only), `stall_timeout` (`\d+[smh]` — bounds SILENCE in the
+  lane's liveness signal, never total elapsed time; legal on BOTH `assay`
+  and `command` lanes since RG-41 (rev 36 dropped the earlier assay-only
+  restriction — a command lane's liveness signal is its own log stream,
+  `R-40f`), meaningless on host/exec lanes, which start nothing to watch;
+  `R-40c`), `memory` (`\d+[bkmg]?`, docker `--memory` — superseded by
+  `resources.memory`, declaring both is refused), `resources` (`R-29`: a
+  table — `memory`, `memory_swap`, `cpu_weight`, `io_weight`, `shared`,
+  `cpus` (RG-48, rev 10)), `profile` (RG-55, rev 10: `false` to disable
+  profiling for this lane outright, or a table `{enabled, damon}`
+  overriding `[profile]`'s own defaults — `R-43g`), `description` (optional
+  non-empty string, one line, shown by `--help`), `required_env` (optional
+  unique list of valid environment-variable names this lane's tests
+  REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
+  non-empty path strings the lane is expected to leave behind — disclosed
+  after every run per R-18; `{worktree}` tokens are substituted, relative
+  entries resolve against the effective project dir). Lane names `doctor`,
+  `validate-pointers`, `history` and `footprint` (RG-55/C5, rev 10) are
+  RESERVED (they collide with CLI verbs) and refused at load; a lane named
+  like a verb could never be invoked anyway. `history` joined the set in
+  rev 30 and `footprint` in rev 10 — each a LOAD-TIME BREAKING change for
+  any consumer that had declared a lane by that name (no estate project
+  had either; flagged in CHANGES and CONSUMERS for copied-script repos).
 - `R-08a` **Pin tables carry two keys, and `budget` is not one of them
   (RG-32).** `[lanes.<name>.pins.<pin>]` accepts `sha256` and `version`
   ONLY. A `budget` key there is refused at load, by name, with the message
@@ -497,35 +525,55 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   a caller actually relies on. `doctor`'s probes (`R-34`) are the same class
   of read-only preflight.
 
-- `R-29` **Resource-aware admission (RG-20):** gates are admitted by RAM
-  headroom and shared-infra collision, not serialized globally. Lane key
-  `[lanes.<name>.resources]`: `memory` (size; supersedes top-level
-  `memory` — declaring both is refused), `memory_swap` (size → docker
-  `--memory-swap`; tight RAM + ample swap per cmru's proven pattern),
-  `cpu_weight`/`io_weight` (integers 1..10000 — VALIDATED and PRINTED as
-  advisory; `docker run` has no portable cgroup-v2 flag for them, and
-  pretending otherwise would be enforcement theater), `shared` (list of
-  service names). **Memory half:** ephemeral container lanes account
-  against their slice's cgroupfs truth at admission time —
+- `R-29` **Resource-aware admission (RG-20); CPU cap (RG-48, rev 10).**
+  gates are admitted by RAM headroom and shared-infra collision, not
+  serialized globally. Lane key `[lanes.<name>.resources]`: `memory` (size;
+  supersedes top-level `memory` — declaring both is refused), `memory_swap`
+  (size → docker `--memory-swap`; tight RAM + ample swap per cmru's proven
+  pattern), `cpu_weight`/`io_weight` (integers 1..10000 — VALIDATED and
+  PRINTED as advisory; `docker run` has no portable cgroup-v2 flag for
+  them, and pretending otherwise would be enforcement theater), `shared`
+  (list of service names), **`cpus`** (RG-48: a decimal string matching
+  docker's own `--cpus` grammar, `^\d+(\.\d+)?$`, strictly > 0 — `--cpus 0`
+  is a Docker refusal, not "no limit"). `cpus` ALSO has an
+  environment-level fallback, `[environments.<name>.resources] cpus = …`
+  (the ONLY resources key an environment accepts) — the lane's own value
+  wins when both declare one; nothing else in `resources` has an
+  environment-level counterpart (RAM budget and shared-infra collision are
+  per-invocation facts, not properties of an environment many lanes with
+  different footprints share). **Memory half:** ephemeral container lanes
+  account against their slice's cgroupfs truth at admission time —
   `memory.current + declared <= memory.max` read from
   `$RUN_GATE_CGROUPFS_ROOT` (default `/sys/fs/cgroup`; systemd dash-nesting:
   `dev-background.slice` → `dev.slice/dev-background.slice`). Over budget →
   refusal naming current usage, budget, declared need, and the overage. No
   derivable ceiling (`max`, hidden cgroupfs) → loud WARNING, admission by
-  shared-infra rules only. This counts EVERYTHING in the slice (kernel
-  truth), so no cross-process bookkeeping can drift. **Shared-infra half:**
-  lanes declaring the same `shared` name serialize on a per-name flock
-  (`/tmp/run-gate-shared-<name>.lock`) — the second gate WAITS with a
-  notice, then proceeds; fully isolated instances never meet and run
-  concurrently. Locks are acquired AFTER all fast-fail preflights (a
-  blocking wait never precedes refusals — slice-memory admission runs
-  before any wait) and released in `finally`; acquisition is in
-  sorted-name order, a canonical global order that makes hold-and-wait
-  cycles impossible regardless of how each project lists its services.
-  `--dry-run` plans the serialization but never blocks. Host/exec lanes get
-  shared-infra rules only — their RAM does not land in this tool's slice.
-  On an exec lane a `cgroup_slice`/`resources.memory` declaration draws a
-  loud naming-only WARNING (docker exec has neither placement nor caps;
+  shared-infra rules only — naming WHY when the cause is a PRIVATE cgroup
+  namespace (RG-55/C7, rev 10: `/proc/self/cgroup` reading exactly `0::/`,
+  the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
+  host-side slice truth is then reachable ONLY through the cgroup-profiler
+  daemon, `doctor`'s own "profiler" check (`R-44`) being exactly that path.
+  This counts EVERYTHING in the slice (kernel truth), so no cross-process
+  bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
+  the environment fallback) → a real `docker run --cpus <n>` on ephemeral
+  container lanes, mirroring `--memory`'s own argv position. `doctor` warns
+  when a container lane's argv spawns workers BY NAME (`-n auto` or
+  `--workers auto`, pytest-xdist's own flags) and neither the lane nor its
+  environment declares `cpus` — the worker count and the container's real
+  CPU budget are then decided in two places that can silently disagree.
+  **Shared-infra half:** lanes declaring the same `shared` name serialize
+  on a per-name flock (`/tmp/run-gate-shared-<name>.lock`) — the second
+  gate WAITS with a notice, then proceeds; fully isolated instances never
+  meet and run concurrently. Locks are acquired AFTER all fast-fail
+  preflights (a blocking wait never precedes refusals — slice-memory
+  admission runs before any wait) and released in `finally`; acquisition
+  is in sorted-name order, a canonical global order that makes
+  hold-and-wait cycles impossible regardless of how each project lists its
+  services. `--dry-run` plans the serialization but never blocks.
+  Host/exec lanes get shared-infra rules only — their RAM does not land in
+  this tool's slice. On an exec lane a `cgroup_slice`/`resources.memory`/
+  `resources.cpus` declaration (lane OR environment) draws a loud
+  naming-only WARNING (docker exec has neither placement nor caps;
   pretending otherwise would be enforcement theater), never a refusal.
 
 - `R-30` **Doctor (RG-9):** `doctor` recomposes the implemented preflights
@@ -1022,16 +1070,46 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     is not a git work tree refuses (exit 3, carrying git's own line) -- a read
     has no downstream to fail in, so falling back to the invoking checkout
     here would reintroduce the same substitution through the error path.
-    `--json` is honored by this verb ALONE; every other invocation refuses it
-    by name (exit 2) rather than silently printing its human form.
+    `--json` is honored by this verb AND `footprint` (`R-44`, rev 10); every
+    other invocation refuses it by name (exit 2) rather than silently
+    printing its human form.
     Default output is a human table (store path, `keep` + its source, and
     per lane: `latest` with its exclusion reason when it has one, the
     bounded series oldest-first, and the split stats); `--json` emits the
     same data machine-readably (`schema`, `revision`, `store`, `keep`,
     `keep_source`, per-lane `latest`/`history`/`stats`). The verb runs no
     lane, starts no container, and exits 0 whenever the QUERY succeeded —
-    an empty store is an answer, not a failure. `history` joins `doctor` and
-    `validate-pointers` as a reserved lane name (R-08).
+    an empty store is an answer, not a failure. `history` joins `doctor`,
+    `validate-pointers` and (rev 10) `footprint` as a reserved lane name
+    (R-08).
+  - **`R-36j` Schema 2 (RG-55/C4, rev 10).** Every entry (`latest` and each
+    `history` element) gains three fields: `resources` (the contract's
+    Summary object, or `null` — unprofiled, disabled, or a profile error),
+    `profile_error` (string | null), `profile_ref` (`{daemon, session,
+    session_dir}` | null). A schema-1 store loads and reads AS-IS
+    (`.get("resources")` everywhere an entry is read, never a bare
+    subscript, so an old entry with none of the three keys reads as
+    `resources: null` rather than raising) and is written back as schema 2
+    the moment ANY lane in it next records an invocation — `schema` is a
+    STORE-level field, not a per-entry one, so an entry that is never
+    re-run stays schema-1-shaped in the JSON forever; that is the
+    documented, permanent steady state, not a transient one. `stats.passes`
+    and `stats.completed` each gain FIVE new series, `series_stats`
+    generalizing `R-36d`'s own `duration_stats` (median, never mean, same
+    reasoning) over `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,
+    `hot_set_p90_bytes` (from `resources.damon.hot_bytes.p90` — `null`
+    when DAMON was unavailable for that run), `cpu_cores_avg`,
+    `memory_full_stall_seconds` (from `resources.host.memory_full_stall_
+    seconds`, host-scoped, NOT `resources.pressure.memory_full_stall_
+    seconds`, session-scoped — the two are different fields in the
+    contract's Summary and only the host-scoped one feeds this series). A
+    `null` value (unprofiled run, profile error, or a schema-1 entry with
+    no `resources` at all) is EXCLUDED from a series, never coerced to 0 —
+    `count` on each series says how many entries actually contributed,
+    which can be less than the entry count for exactly that reason. The
+    human `history` table gains a PEAK/+BASE/HOT p90/CORES/STALL line under
+    each of the two existing stat lines (`-` for a series with zero
+    contributing entries).
 
 - `R-37` **`doctor`/`--check-env` read scope under `--worktree` (RG-30).**
   `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree`
@@ -1385,17 +1463,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       disappearance; a file that comes back reports normally again.
   - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
     grammar.** The lane is stopped ONLY when the container is STILL RUNNING
-    and the progress file has not advanced for that long — `docker rm -f`,
+    and its liveness signal has not advanced for that long — `docker rm -f`,
     evidence saved (`R-26`), exit 3, naming the stall, the last event seen
     and the age. **NEVER on total elapsed time**: `budget` stays advisory and
     its disclosure is unchanged. The "still running" half is structural, not
     asserted: the check only ever runs in the poll of a `docker logs -f` that
-    has not returned. A lane whose file never appears cannot stall by this
-    rule (`R-40b` says so out loud), which is what keeps the key from killing
-    R0/R1 containers. Declared on a `kind = "command"` lane it is REFUSED at
-    load — a command lane writes no progress file, so the key could never do
-    anything, and an inert key that reads like a real one is the defect
-    `R-08a` was filed for one key over.
+    has not returned. A lane whose progress file never appears cannot stall
+    by this rule (`R-40b` says so out loud), which is what keeps the key
+    from killing R0/R1 containers. **Legal on both `assay` and `command`
+    lanes since RG-41 (rev 36) — `R-40f`.** Before RG-41 it was refused at
+    load on a `kind = "command"` lane (a command lane writes no progress
+    file, so the key could never do anything); RG-41 gave command lanes
+    their OWN liveness signal (the arrival time of their log lines,
+    `LogStreamWatch`, `R-40f`), which is what makes the key meaningful
+    there now. Meaningless — accepted, but inert — on a host/exec lane,
+    which runs inline (host) or execs into a runner this tool started
+    nothing of its own to watch (exec).
     - **Where the silence is measured FROM: the FILE.** Real movement
       restarts the clock; the watch's FIRST observation is not movement —
       there is no earlier event for it to have moved from; it is the
@@ -1434,6 +1517,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `budget` + `judge.mutation.budget_per_candidate` + run-gate
     `stall_timeout`. For R0/R1: `budget` is the command's own bound and
     there is nothing to add.
+  - **`R-40f` (rev 10, backfilled — RG-41 shipped rev 36 without a rule id)
+    `stall_timeout` on a `kind = "command"` lane is judged from the ARRIVAL
+    TIME of its own log lines, not a progress file (`LogStreamWatch`) — the
+    only liveness signal available where no progress file exists. The SAME
+    rule `R-40c` gives an assay lane's progress-file mtime applies
+    identically: silence, never total elapsed time. `await_container`
+    invokes `docker logs -f --timestamps` for a watched command lane; each
+    line's own RFC3339Nano stamp is translated into the watch's clock
+    domain (the same arithmetic `R-40a`'s `ProgressWatch` uses for a file's
+    mtime) so a re-attach's REPLAYED backlog (`docker logs -f` re-emits a
+    hung container's entire history in a burst) does not hand it a fresh
+    stall window — the exact case `R-40c`'s "seeded from re-attach" clause
+    exists for, one signal over. The timestamp prefix is stripped before
+    the line is re-printed, so a lane declaring no `stall_timeout` sees
+    byte-identical output. `print_lane_bounds` (R-05) names WHICH signal is
+    judging the lane — "its progress file" or "its own log output" — so an
+    operator never has to guess which of the two mechanisms a given
+    `stall_timeout` bounds.
 
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the
@@ -1460,6 +1561,163 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   by construction. The caller-side `flock` of dstdns `GUIDE.md` §1 stays
   valid as an outer lock (consistent acquisition order) and becomes optional
   for correctness, not required.
+
+- `R-43` **Per-lane resource profiling (RG-55), against the cgroup-profiler
+  daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract 1).** run-gate
+  NEVER depends on the daemon being present: every lane still gets a
+  profile — "daemon" (precise, DAMON hot-set included) when the daemon
+  answers, "basic" (in-lane cgroup sampling) when it does not — and no
+  profile at all only when profiling is disabled outright. A profile never
+  changes a lane's verdict (`R-04`/`R-36h`'s rule, one more place it
+  applies).
+  - **`R-43a` Token.** `secrets.token_hex(16)` generated per lane
+    invocation, passed as `-e RUN_GATE_PROFILE_SESSION=<token>` in the SAME
+    argv position `forward_env` values already occupy (`docker run` for
+    ephemeral lanes, `docker exec` for exec lanes) — recorded as
+    `profile_token` in the inflight record immediately, and as
+    `profile_session` once `ctl start` (daemon path only) confirms it.
+  - **`R-43b` Scopes.** `container` (ephemeral: a fresh container per
+    invocation, `memory.peak_bytes` read exactly from the cgroup's own
+    `memory.peak`) vs `container-shared` (exec: a PERSISTENT runner,
+    `memory.peak_bytes` is the max of SAMPLED `memory.current` because the
+    runner's own lifetime `memory.peak` predates this invocation).
+    Bare-host lanes are categorically unprofiled (`RG-57`) — there is no
+    container or cgroup of run-gate's own to sample.
+  - **`R-43c` Daemon path.** `docker run -d`/`docker exec` → `docker
+    inspect` for the real container id → `ctl version` (once per
+    invocation) → `ctl start --scope <scope> [--token …] [--damon on|off]
+    --interval <n> --meta <json>` → NOTHING per-tick (the daemon samples
+    itself; `RW-12`) → in the SAME `finally` that removes the container,
+    BEFORE `docker rm -f`: `ctl stop <session>`, whose response IS the
+    Summary, copied verbatim into the record's `resources`. A re-attach
+    (`R-39`) adopts the inflight record's `profile_session` and calls
+    `stop` with it — no new `start`; a container collected already-exited
+    records `resources: null`, `profile_error: "collected after exit"`
+    (the basic path's in-memory samples cannot survive a client restart
+    either — same fact, same field).
+  - **`R-43d` Basic path (fallback), one `docker exec <lane container>` per
+    `PROFILE_SAMPLE_SECONDS = 5` tick, reading `memory.current memory.peak
+    memory.swap.current memory.max memory.high memory.stat cpu.stat
+    memory.pressure cpu.pressure io.pressure memory.events.local pids.peak`
+    under `/sys/fs/cgroup/`** (twelve files — the contract's own literal
+    list names ten; `memory.max`/`memory.high` are read too, both
+    implementations agree, because `events.limit_drift` and the golden
+    basic-path fixture both require them; flagged as a contract-text drift,
+    not a behavior one). Parsed with three string parsers PORTED from
+    `scripts/cgroup-profiler/lib/util.py` (`read_int`, `read_kv`,
+    `read_pressure`, attributed in a comment). `method: "basic"`,
+    `session`/`daemon`/`damon`/`host.slice`/`target.targets_seen` all
+    `null` — the fields ONLY the daemon can fill; host PSI comes from
+    `/proc/pressure/{memory,cpu}` read directly (`$RUN_GATE_PROC_ROOT`
+    override for tests, like `$RUN_GATE_CGROUPFS_ROOT`). A container that
+    exits before the first sample records `resources: null` with a named
+    `profile_error`.
+  - **`R-43e` Degradation, ONE warning per lane invocation.** `ctl version`
+    failing, `ctl start` failing, contract mismatch, timeout, or garbage
+    stdout ALL degrade to the basic path (or to no profile at all if the
+    basic path also cannot sample); the caller prints exactly one `run-gate:
+    WARNING profiling: <reason> — basic in-lane sampling only` or `— no
+    profile recorded`, never a traceback, never a verdict change. Disabled
+    (`[profile] enabled = false`, a lane's own `profile = false`, or the
+    ambient `RUN_GATE_PROFILE=off`, `R-43g`) means no token, no daemon
+    call, no sampler, `resources: null`, `profile_error` naming which.
+  - **`R-43f` Inflight record fields.** `profile_token` (recorded on
+    `docker run`/`exec`, before any daemon call), `profile_session` (added
+    once `ctl start` confirms it). A follower that promotes itself when the
+    owning client has died (`R-39`) reads these to call `stop` with the
+    RECORDED session, never a new `start`.
+  - **`R-43g` Disclosure lines** (exact shapes, contract Sec 4.6): the
+    host-PSI line (`| profiler <daemon> (cgprofile <ver>, damon <on|off|
+    unavailable>)` appended only when a `version` call already answered
+    it), the profile-session line (daemon path only), the ONE warning line
+    (`R-43e`), and the footprint line (`R-44`). `--dry-run` prints the plan
+    (daemon name, scope, damon, token env) and starts nothing — UNCONDITIONAL
+    on whether profiling is enabled, so a disabled lane's dry run still
+    names WHY (a fix in the same commit that shipped this: gating the print
+    call on `profiling` as well as inside the function made the
+    disabled-disclosure branch of `print_profile_plan_dry_run` dead code).
+    The ambient override `RUN_GATE_PROFILE` (`"on"|"off"`, checked BEFORE
+    any config table; any other value refuses by name at load) is the same
+    class of knob as `$RUN_GATE_CGROUPFS_ROOT`/`$RUN_GATE_PROC_ROOT` — a CI
+    runner without `docker exec` rights to a profiler daemon it will never
+    have sets `off`; `on` force-enables even over a lane's own `profile =
+    false`. `doctor`'s "profiler" check (`R-44`) discloses the effective
+    `[profile]` settings AND whether `RUN_GATE_PROFILE` is overriding them.
+  - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
+    `R-09`'s rule): `enabled` (bool, default true), `daemon` (container
+    name, default `cgprofile-host-daemon`), `interval` (the `budget`
+    grammar, default `"1s"`), `damon` (bool, default true). Per lane:
+    `profile = false` (opt out entirely — `profile = true` is REFUSED by
+    name, a no-op typo for "delete this key") or a table
+    `[lanes.<n>.profile] { enabled, damon }` overriding those two only.
+    Unknown keys refuse at load like every other table.
+
+- `R-44` **The footprint manifest (RG-55/C5), `run-gate.footprint.json`
+  (schema 1, TRACKED — committed, unlike `.run-gate/`).** `footprint [LANE]
+  [--json] [--write] [--worktree PATH]` reads the SAME history store
+  `history` reads (no lock — a query), distills PASS + history-eligible
+  entries into ONE manifest object per lane (the exact shape `--write`
+  persists is also what plain `footprint`/`--json` print — a preview of
+  what would be written), and joins `doctor`/`validate-pointers`/`history`
+  as a reserved lane name (`R-08`).
+  - **`R-44a` Per-lane distillation.** A lane with no history-eligible PASS
+    entry that was ever actually PROFILED (`resources` not null) is
+    OMITTED entirely (`R-43e`'s degradation and a schema-1 entry both leave
+    `resources: null`; absent means unknown, contract Sec 1.7, never a lane
+    silently reported at zero). `runs` counts every history-eligible PASS
+    entry (profiled or not); `completed_runs` additionally counts fails
+    (the SAME two populations `R-36j`'s `stats.passes`/`stats.completed`
+    report). `scope`/`method` come from the MOST RECENT profiled entry
+    (a lane's profiling method can change — the daemon becomes available,
+    `[profile]` changes — and the manifest should describe how it is
+    profiled NOW). `last_commit`/`last_at` name the single most recent
+    completed run overall, pass or fail. The five numeric series
+    (`duration_s`, `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,
+    `hot_set_bytes` as `p90_median`/`p90_max`, `cpu_cores` as
+    `avg_median`/`max`, `memory_full_stall_s`) reuse `R-36j`'s own
+    `series_stats` machinery verbatim — median, never mean, same
+    reasoning.
+  - **`R-44b` `--write`.** Writes next to the EFFECTIVE project's
+    `run-gate.toml` (temp file + `os.replace`, sorted keys, `indent=2`,
+    trailing newline — `_write_json_atomic`'s exact pattern, reused, not
+    re-implemented). REFUSES (exit 2) when no lane in the (possibly
+    LANE-filtered) selection has an eligible profiled run, naming why.
+    REFUSES (exit 2) when combined with a LANE filter — a partial write
+    would silently drop every other lane's distilled data from the file on
+    disk; query one lane's numbers without `--write` instead. Unlike
+    `history`, `footprint` ALWAYS resolves the judged worktree (never
+    `history`'s "stay git-free when unflagged") — a manifest's
+    `from_commit` is meaningless without one.
+  - **`R-44c` `doctor` staleness and drift.** `[footprint] tolerance_pct`
+    (int, default 25) and `max_age_days` (int, default 30) — the SAME
+    whole-table shadowing (`R-09`) `[history]`/`[profile]` already use. No
+    manifest → one INFO line naming `footprint --write`. A manifest exists
+    → per lane, WARN when the LIVE history's median peak differs from the
+    manifest's own by more than `tolerance_pct`; one WARN when
+    `distilled_at` is older than `max_age_days`. Neither ever FAILS
+    doctor — a stale or drifted manifest is a fact to re-measure, not a
+    defect to block on.
+  - **`R-44d` The run path reads the manifest.** When one exists and names
+    the invoked lane, `profile_meta()`'s `expected` field (contract Sec
+    2.2 `--meta`) is filled with `memory_peak_bytes.median` (`null`
+    otherwise — no manifest, or the lane is not in it yet); the footprint
+    disclosure line's `| manifest <n> MiB` tail reads the same value.
+  - **`R-44e` The disclosure line** (contract Sec 4.6, exact shape):
+    `run-gate: footprint <lane>: peak <n> MiB[ (+<n> MiB over baseline)],
+    p90 <n> MiB, <c> cores avg, <s> s stalled on memory (full)[, hot-set
+    p90 <n> MiB]; history median peak <n> MiB (<k> runs)[ | manifest <n>
+    MiB]` — printed once per lane invocation in the SAME `finally` as
+    `finish_lane_profiling`, a no-op when this invocation recorded no
+    `resources` at all (disabled, or a profile error the warning line
+    already named). `<s> s stalled on memory (full)` reads
+    `resources.host.memory_full_stall_seconds` — the SAME field
+    `R-36j`'s series feeds, deliberately NOT `resources.pressure.*`
+    (session-scoped, a different field): one name, one source, in one
+    sentence, or the two stall numbers in it would silently describe
+    different things. `history median peak` and its run count are read
+    from the STANDING history BEFORE this run's own flush — a comparison
+    ("this run measured X; the trend has been Y"), not this run's own
+    number folded into itself.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

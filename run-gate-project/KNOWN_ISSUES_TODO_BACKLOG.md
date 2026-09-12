@@ -3419,6 +3419,31 @@ when a lane's argv contains `-n auto` while its environment declares no cpu
 bound, since that is precisely the configuration whose behaviour depends on
 what an operator does to the container out-of-band after launch.
 
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2)
+
+Both halves this entry's own "possible shapes" named, landed together.
+`resources.cpus` (lane `[lanes.<n>.resources]`, decimal string, docker's
+own `--cpus` grammar) → a real `docker run --cpus <n>` on ephemeral
+container lanes — the SAME argv position `--memory` already occupies. An
+environment-level fallback, `[environments.<e>.resources] cpus = …` (the
+ONLY resources key an environment accepts), so a project can own the
+number in ONE place when every lane on an environment should share it,
+without repeating it per lane; a lane's own value still wins when both
+declare one. The cheaper interim ALSO landed, not instead: `doctor` warns
+by name when a container lane's argv contains `-n auto`/`--workers auto`
+and neither the lane nor its environment declares `cpus` — the exact
+"configuration whose behaviour depends on what an operator does to the
+container out-of-band" this entry named. Exec lanes get the pre-existing
+naming-only WARNING (`R-29`'s rule — docker exec can neither place nor cap
+work) rather than a refusal, extended to cover a `cpus`-only declaration
+(the check already fired on any truthy `resources`, but had never been
+proven against `cpus` alone before this landing). SPEC `R-29` amended.
+This entry's OWN measured 2.7x-disagreement case (`-n auto` against an
+uncapped environment) is exactly what a project now closes by declaring
+`resources.cpus` on `[environments.tester-unified]` — the FIX is
+available; whether nyxloom's own config adopts it is a separate,
+per-consumer step this entry does not track.
+
 ## RG-49 — RG-38's `--state-dir` fix `mkdir -p`s against a root-owned synthetic parent in a Mode-B (partial-bind-mount) worktree container
 
 **Found by:** dstdns-P175 implementer dispatch, 2026-09-09, worker-io
@@ -4232,30 +4257,48 @@ are not yet wired into any lane-execution path: `scripts/cgroup-profiler/`
 consumed by `topos`'s own CLI dispatch — `topos/src/topos/damon`). Neither
 speaks to run-gate/assay's lane-execution machinery today.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2)
 
-Not yet scoped as an implementation plan, filed as the concrete need
-rather than a design:
+Scoped and shipped as a TWO-package wave (contract-first, per the plan of
+record `WAVE-PLAN-2026-09-12-rg55-profiling.md`): P1, the cgroup-profiler
+daemon (`cgprofile serve`/`ctl`, its own worktree/backlog), and P2, this
+package — the run-gate CLIENT. Answers the three open design questions
+this entry originally left open:
 
-- A lane's resource profile should be captured wrapping the lane's actual
-  process tree (via `cgroup-profiler` and/or `damon-analysis`) and
-  persisted alongside — or as an extension of — the existing
-  `verdict-<lane>.json`/`progress-<lane>.jsonl` mechanism, ideally as a
-  short history rather than only the latest run, so a scheduler can use a
-  stable estimate rather than one noisy sample.
-- The consumer-facing use case is admission control: before starting
-  lane N concurrently with already-running lanes, check the *live* PSI
-  reading (`/proc/pressure/memory`) plus each running lane's own measured
-  footprint, and only admit N if doing so is not expected to push memory
-  pressure into a rising state. Swap usage itself is not the gate — PSI
-  is.
-- Whether this belongs in run-gate proper, in assay (which already owns
-  the per-lane verdict/progress files), or as a thin wrapper script that
-  both consume is an open design question — filed here first because
-  run-gate owns the lane-dispatch entry point every consumer already
-  calls.
-- dstdns's own applied policy, once this exists: `docs/testing/RIGOR-COVERAGE-POLICY.md`
-  "Resource-profiling and scheduling" section.
+- **Where it lives:** run-gate proper, per the entry's own reasoning
+  (it owns the lane-dispatch entry point) — NOT assay, NOT a thin wrapper.
+- **What is captured, and how:** a resource profile (peak memory
+  [+baseline, p90], DAMON hot-set, CPU cores, memory-full stall) wrapping
+  the lane's actual cgroup — precisely via the daemon (`docker exec
+  cgprofile-host-daemon cgprofile ctl ...`, `RG55-INTERFACE-CONTRACT.md`)
+  when reachable, or a coarser in-lane cgroup sample (`method: "basic"`)
+  when it is not — never nothing, short of profiling being disabled
+  outright. Persisted as an EXTENSION of the existing history mechanism
+  (RG-27's `history.json`, schema 2 — `resources`/`profile_error`/
+  `profile_ref` per entry, five new series alongside duration), exactly
+  the "short history, not one noisy sample" shape this entry asked for.
+  `run-gate.footprint.json` (SPEC `R-44`) is the distilled, COMMITTED
+  form — a stable estimate a scheduler (or a human sizing
+  `resources.memory`/`resources.cpus`) reads instead of one run.
+- **Live acceptance, real docker** (this package's own numeric criteria):
+  an ephemeral lane allocating ≥ 100 MiB, no daemon present (basic-path
+  fallback), measured a peak of **115523584 bytes (110.17 MiB)**,
+  `source: "memory.peak"`. An exec-mode (`container-shared`) lane
+  allocating 80 MiB on a persistent runner measured
+  `peak_over_baseline_bytes` of **88612864 bytes (84.51 MiB)** over a
+  90.14 MiB baseline (`source: "sampled-max"`), with ≥ 2 samples taken
+  mid-run. Both against this package's own acceptance thresholds (≥ 100
+  MiB / ≥ 70 MiB respectively) — full transcripts in
+  `nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`.
+
+Admission control on top of this data (the PSI-gated "wait/refuse before
+starting lane N" mechanism this entry's own bullets sketched) is
+DELIBERATELY not part of this fix — filed forward as **RG-56**, the next
+wave, once real footprint data exists to set a threshold against instead
+of a guessed one (the same "measure first, decide later" posture RG-27
+itself was filed under). This entry's dstdns cross-reference
+(`docs/testing/RIGOR-COVERAGE-POLICY.md` "Resource-profiling and
+scheduling") is RG-56's to apply, not this package's.
 
 ## RG-56 — admission control on the profiler registry (next wave after RG-55)
 
