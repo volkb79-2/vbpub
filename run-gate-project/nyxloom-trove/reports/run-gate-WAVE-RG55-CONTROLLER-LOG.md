@@ -116,6 +116,24 @@ never a silent edit to the contract file.
   computed). CP-4 (pre-existing `test_store.py` birthday-collision flake)
   was filed by P1 session 4.
 
+- **RW-17 (P2 C3 wiring):** no test-only switch in production code. The
+  `RUN_GATE_TEST_DISABLE_PROFILING` kill switch becomes a documented,
+  operator-facing ambient override `RUN_GATE_PROFILE` (`on`|`off`; absent →
+  config decides; other values refused by name), the same class of knob as
+  `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT` (a CI runner without
+  `docker exec` rights). `off` → no token, no calls, `resources: null`,
+  `profile_error: "disabled (RUN_GATE_PROFILE=off)"`; disclosed by
+  `--dry-run` and `doctor`; the test suite's autouse fixture uses it.
+- **RW-18 (P2):** accepted — container id resolved through the existing
+  `container_state()` inspect call (`{{.Id}}` = full 64-hex), not a second
+  inspect; pure refactor.
+- Noted from P2 session 5: the basic path's final sample ALWAYS failed on
+  an ephemeral lane (`docker exec` refuses an exited container), nulling
+  `memory.peak_bytes` — found only by the live probe, fixed as
+  `sample_final()` (`38089fe6`). A fake-docker construction test could not
+  have caught it (AGENTS.md's "argv proves construction, not acceptance"
+  again). The P2 reviewer must re-run that probe.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
