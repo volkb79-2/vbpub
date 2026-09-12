@@ -847,6 +847,26 @@ behind P2's release
   is not contended by a 4 h sibling. P4 returns after B5 + the
   non-blocking items + selftest/r1/r3.
 
+### RW-55 — 2026-09-12 21:30Z — a closed P4 session re-woke and acted as a
+controller; stopped; P4 session 6's early r2 terminated
+
+- P4 session 4 (`ade7916e85220fbb9`, closed ~19:30Z after round-1
+  repairs) was re-invoked at ~21:25Z — most likely by one of its own
+  tracked background watchers finishing when P2's run exited — and,
+  with stale context, "processed" old notifications, messaged P4
+  session 6 with options about its r2, and armed a watcher on P2's
+  by-hand log. It wrote nothing. The controller stopped it (`TaskStop`),
+  which also kills its watchers.
+- P4 session 6 had launched its assay-r2 at 21:14Z under the RW-52
+  condition before the RW-54 correction reached it. Ruling: terminate
+  it (its own pids only; no container; ~15 min lost) — P2's short pass
+  must re-run without a 4 h CPU sibling, and round 3 judges the
+  post-merge tree (RW-54). Session 6 told to ignore the stale agent.
+- Estate rule (memory `subagent-watchers-reinvoke-closed-sessions`): a
+  superseded implementer session with tracked background commands is
+  TaskStop'ed by the controller when its successor is dispatched, never
+  left "completed" — its watchers re-invoke it with stale context.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
