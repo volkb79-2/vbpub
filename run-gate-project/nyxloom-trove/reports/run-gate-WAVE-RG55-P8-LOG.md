@@ -286,3 +286,45 @@ in this commit to cite D-28 instead (same underlying claim, still true, just
 under the daemon-enforced mechanism rather than the detached-owner one).
 Grepped every dev-gates-touching file for D-18/D-21/D-24/D-6/D-19/D-20/D-25
 citations first — this was the only stale one found.
+
+### Gates — renderer test, wired into the registered gate (hash: see next entry)
+
+Found the registered gate: `modern-debian-tools-python-debug/run-gate.toml`
+`[lanes.smoke]`, a host lane doing `py_compile` over every tracked `.py`
+file only — no host-setup-specific test existed (confirmed: no
+`test_*`/`*_test.py`/`conftest.py` anywhere under `host-setup/`, and the
+outer project's own `scripts/test_*.py` files are for the ai-cli-tools
+installer, unrelated).
+
+`host-setup/tests/test-render.sh` (new, bash — matches this project's
+existing "no python here beyond a few specific scripts" shape, and sidesteps
+the python-coverage bar entirely rather than writing throwaway product-less
+Python just to satisfy it): extracts `install.sh`'s own `render()` function
++ `RENDER_VARS` list VERBATIM (a sed byte-range on two stable anchor
+patterns, not a hand-copied duplicate that could silently drift), sources
+that plus `host-setup.env.example` itself (no root, no `/etc/mdt/`, no host
+mutation — pure text substitution), renders every `units/*.in` template, and
+asserts: (1) no rendered unit keeps an unresolved `@VAR@` token — the exact
+bug class CGROUP-NOTES.md's "Status corrected 2026-09-08" note describes for
+a past `DEV_MEMORY_MIN_GUARANTEED_CEILING` `RENDER_VARS` omission, checked
+for every unit, not just the new one; (2) `dev-gates.slice` renders every
+`DEV_GATES_*` key to its shipped example value; (3) `dev.slice` and
+`dev-memory_min_guaranteed.slice` render with NO `MemoryMin=` line at all
+(confirms the RW-30/A1 revert restored the original opt-in-only behaviour
+byte-for-byte, not just by eyeball diff); (4) no `units/*.in` file mentions
+`dev-infra`/`DEV_INFRA_` (confirms the withdrawal); then `bash -n` and
+`shellcheck -S warning` (not default severity — see the script's own
+comment: the three pre-existing files carry SC2015/SC2181 info/style
+findings on lines this package's diff never touches, verified earlier by
+line number against `git diff 11ac5d67`; fixing decades of pre-existing
+style debt is out of this package's scope, `-S warning`+ is a real
+correctness bar and passes clean) on every shell script this package
+touches, itself included.
+
+Ran the script directly first (`bash host-setup/tests/test-render.sh`):
+all 6 assertions pass, `test-render: ALL OK`, exit 0.
+
+Wired into `run-gate.toml`'s `[lanes.smoke]` `argv` (after the `py_compile`
+step, before the final `echo`) so it is part of the actual registered gate,
+not a standalone script nobody runs — updated the lane's header comment to
+describe it.
