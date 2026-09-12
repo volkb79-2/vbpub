@@ -20,11 +20,13 @@ Before=slices.target
 # ceiling -- this slice's own value is the static side of that design; ciu
 # is the consumer-side admission-check half.
 #
-# THIS VALUE MUST STAY EXACTLY EQUAL to dev.slice's own MemoryMin below --
-# see CGROUP-NOTES.md "the one invariant that actually matters". Both are
-# rendered from the SAME env var (DEV_MEMORY_MIN_GUARANTEED_CEILING) on
-# purpose: two independently-set variables that happen to start out equal
-# invites exactly the drift this design depends on not happening.
+# THIS VALUE is one of two terms dev.slice's own MemoryMin (units/dev.slice.in)
+# sums at render time -- see CGROUP-NOTES.md "the one invariant that
+# actually matters" (now extended: dev.slice hands down protection for
+# EVERY declared child, not only this one -- dev-infra.slice's always-on
+# DEV_INFRA_MEMORY_MIN is the other term). This slice's own MemoryMin still
+# reads DEV_MEMORY_MIN_GUARANTEED_CEILING directly and only from here --
+# never a third, independently-set value for this slice's own claim.
 MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
 
 # No MemoryHigh/Max here deliberately. Those stay per-container (ciu's

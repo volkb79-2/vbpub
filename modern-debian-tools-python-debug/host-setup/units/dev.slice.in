@@ -16,16 +16,21 @@ Before=slices.target
 # tiers combined rather than being duplicated (and potentially summed past a
 # safe total) on each child separately.
 #
-# MemoryMin below exists ONLY to back dev-memory_min_guaranteed.slice's own
-# floor -- cgroup v2's ancestor-chain rule means a child's MemoryMin is
-# inert unless every ancestor up to here also carries an adequate value
-# (CGROUP-NOTES.md "Per-container memory.min guarantees"). It MUST stay
-# exactly equal to that slice's own MemoryMin, never more: any surplus here
-# beyond what the guaranteed tier actually claims leaks, via cgroup v2's
-# proportional redistribution, to dev-interactive.slice and
-# dev-background.slice too -- both rendered from the SAME
-# DEV_MEMORY_MIN_GUARANTEED_CEILING env var for exactly this reason.
-MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
+# MemoryMin below exists ONLY to back the memory.min floors declared by its
+# own children -- cgroup v2's ancestor-chain rule means a child's MemoryMin
+# is inert unless every ancestor up to here also carries an adequate value
+# (CGROUP-NOTES.md "Per-container memory.min guarantees"). Two children
+# currently declare one: dev-memory_min_guaranteed.slice (opt-in,
+# DEV_MEMORY_MIN_GUARANTEED_CEILING, default unset=0) and dev-infra.slice
+# (always-on, DEV_INFRA_MEMORY_MIN, default 256M -- the estate's liveness
+# oracle needs a real floor even under pressure, D-18). This value MUST stay
+# exactly equal to the SUM of both, never more: any surplus here beyond what
+# those two tiers actually claim leaks, via cgroup v2's proportional
+# redistribution, to dev-interactive.slice and dev-background.slice too --
+# computed once at render time by install.sh from those same two env vars
+# (never a third, independently-set number -- same anti-drift discipline as
+# the two-var case this extends).
+MemoryMin=@DEV_SLICE_MEMORY_MIN@
 #
 # Static boot-window fallbacks (deliberately tight — mdt-host-slices.service
 # overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the
