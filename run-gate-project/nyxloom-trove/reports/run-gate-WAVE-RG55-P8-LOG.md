@@ -148,3 +148,64 @@ section (written next, M4). Did NOT touch
 `modern-debian-tools-python-debug/README.md` (top-level) — that file is in
 the handoff's explicit "never touch, someone else's uncommitted edits"
 list.
+
+## Controller re-scope (RW-30, design amendment A1) — not a decision ask
+
+Received mid-package, after M3 committed (1de4c93c), before M4 was written.
+Verified before acting: the message named a specific commit (`main` HEAD
+moved from `11ac5d67` to `5edec58c`) and a specific new `## A1` section in
+the design doc; both checked out for real against `main` (`git log`/
+`git show main:...DESIGN-....md`) with content matching the message exactly
+(D-27/D-28/D-29, `cgprofile.slice`, "dev-infra.slice and
+CGROUP_PARENT_DEV_INFRA are withdrawn", P8 = dev-gates.slice only) before any
+file was touched.
+
+Ruling (D-29): `dev.slice` contains dev LOAD only. `dev-gates.slice` stays
+(gates ARE dev load, the admission capacity object). `cgprofile-host-daemon`
+is a HOST DEPLOYMENT, not dev load — it ships its own top-level
+`cgprofile.slice` with the `cgroup-profiler` package (P6's job), authoring
+`cgroup_parent: cgprofile.slice` directly with no environment-variable
+indirection. `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are withdrawn
+from mdt entirely.
+
+### Revert commit — withdraw dev-infra.slice (hash: see next entry)
+
+Removed `units/dev-infra.slice.in` entirely. `host-setup.env.example`:
+removed the whole `DEV_INFRA_*` section; restored `dev-memory_min_guaranteed.
+slice`'s "THE ONE RULE THAT MATTERS" comment to its original 1:1-pin wording.
+`units/dev.slice.in`: `MemoryMin` reverted from `@DEV_SLICE_MEMORY_MIN@` back
+to the original direct `@DEV_MEMORY_MIN_GUARANTEED_CEILING@` reference.
+`units/dev-memory_min_guaranteed.slice.in`: cross-reference comment reverted
+to its original wording. `install.sh`: removed the `_bytes_of()` helper and
+`DEV_SLICE_MEMORY_MIN` computation entirely, removed every `DEV_INFRA_*`/
+`DEV_SLICE_MEMORY_MIN` entry from `RENDER_VARS` and the `dev-infra.slice.in`
+render call and its `systemctl start` entry (dev-gates.slice's own render
+call/start entry, added in M2, is untouched). `scripts/mdt-apply-dev-caps.sh`:
+removed the whole cgprofile-host-daemon placement-report block and its
+header bullet (per the re-scope: "drop the cgprofile-host-daemon placement
+check" — the daemon is no longer this project's concern at all).
+`scripts/check.sh`: removed `dev-infra` from the slice-existence loop and
+the whole "dev-infra.slice effective values" section; the `dev.slice`
+MemoryMin ancestor-chain check reverted from the 3-way sum back to the
+original 2-way exact-pin check (byte-for-byte the M1-baseline text);
+container-placement hint text's "cgprofile-host-daemon should show
+dev-infra.slice" line dropped (the "gate/lane containers should show
+dev-gates.slice" line, added in M2, stays). `templates/devcontainer.json`:
+removed `CGROUP_PARENT_DEV_INFRA`; `containerEnv` comment rewritten to
+explain D-19/D-24 for `CGROUP_PARENT_DEV_GATES` only, with an explicit note
+that the daemon is NOT a consumer of this block per A1/D-29.
+`DEVCONTAINER-LIFECYCLE.md`: "all four dev-tier slices" reverted to "three".
+
+Verified byte-for-byte against `main`@`11ac5d67` (`git diff 11ac5d67 --
+<path>`) that `units/dev.slice.in` and `units/dev-memory_min_guaranteed.
+slice.in` are now IDENTICAL to their pre-P8 baseline (empty diff both), and
+that `scripts/mdt-apply-dev-caps.sh` is fully identical too (empty diff) —
+confirming the revert left no residue in files that should have zero
+dev-gates-unrelated change. `bash -n` + `shellcheck` re-run on all touched
+shell scripts after the revert: clean, zero new findings (same pre-existing
+SC2015/SC2181 set as before, confirmed by line number). `templates/
+devcontainer.json` re-validated as parseable JSON after JSONC comment
+stripping (same ad hoc python check as M3), `CGROUP_PARENT_DEV_INFRA`
+confirmed absent from the parsed object, `CGROUP_PARENT_DEV_GATES` confirmed
+present with the correct value, `runArgs`'s `--cgroup-parent=
+dev-interactive.slice` confirmed unchanged.

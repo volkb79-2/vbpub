@@ -126,29 +126,29 @@
     "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
-    // This is the ONE place every tier name is declared — every tool that
-    // spawns a container (cmru's tester-gate, ciu's governance mechanism,
-    // run-gate, cgprofile-host-daemon's own compose template, ...) reads
-    // these instead of hardcoding a slice name. The first two MUST stay in
-    // sync with the --cgroup-parent value in runArgs below (two keys, one
-    // file — there is no cross-reference between containerEnv and runArgs
-    // substitution contexts: runArgs is evaluated host-side, containerEnv
-    // applies inside the running container); this devcontainer itself never
-    // joins dev-infra.slice/dev-gates.slice, so those two have no runArgs
-    // counterpart.
+    // This is the ONE place every dev-tier slice name is declared — every
+    // tool that spawns a container (cmru's tester-gate, ciu's governance
+    // mechanism, run-gate, ...) reads these instead of hardcoding a slice
+    // name. The first two MUST stay in sync with the --cgroup-parent value
+    // in runArgs below (two keys, one file — there is no cross-reference
+    // between containerEnv and runArgs substitution contexts: runArgs is
+    // evaluated host-side, containerEnv applies inside the running
+    // container); this devcontainer itself never joins dev-gates.slice, so
+    // that one has no runArgs counterpart.
     //
-    // CGROUP_PARENT_DEV_INFRA / CGROUP_PARENT_DEV_GATES (RG-55 D-18/D-19/
-    // D-24): host-level daemons (cgprofile-host-daemon) and gate/lane
-    // containers respectively — see host-setup/README.md "dev-infra and
-    // dev-gates: why". Consumer fallback rule (D-24): a consumer that reads
-    // an unset value (the var absent, or the host not yet re-run through
-    // host-setup/install.sh) falls back to TODAY's placement — the daemon
-    // to CGROUP_PARENT_DEV_INTERACTIVE, run-gate to
+    // CGROUP_PARENT_DEV_GATES (RG-55 D-19/D-24): gate/lane containers, the
+    // admission capacity object — see host-setup/README.md "dev-gates: why".
+    // Consumer fallback rule (D-24): a consumer that reads an unset value
+    // (the var absent, or the host not yet re-run through
+    // host-setup/install.sh) falls back to TODAY's placement,
     // CGROUP_PARENT_DEV_BACKGROUND. Nothing breaks before a host opts in;
-    // `doctor` on each consumer says which slice is actually in effect.
+    // `doctor` on each consumer says which slice is actually in effect. Note
+    // the host-level cgprofile-host-daemon is NOT a consumer of this block —
+    // per design amendment A1/D-29 it is a host deployment with its own
+    // top-level `cgprofile.slice`, authored directly in its own compose
+    // template, not one of mdt's dev-tier slices.
     "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
     "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
-    "CGROUP_PARENT_DEV_INFRA": "dev-infra.slice",
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice"
     // Host-managed BuildKit worker (see the matching OPTIONAL mount above).
     // Uncomment both together (and add a trailing comma to the line above):

@@ -20,9 +20,6 @@
 #     only ever be done at runtime, never declaratively in a unit file.
 #   - cgroup2 mount-flag check: without memory_recursiveprot every slice-level
 #     MemoryLow/MemoryMin silently stops protecting container pages
-#   - cgprofile-host-daemon placement report (RG-55 D-18/D-24): WARNs if a
-#     container named cgprofile-host-daemon, when present, is not sitting in
-#     dev-infra.slice -- read-only, placement is create-time only
 # Idempotent; tolerant of missing docker/baseline/slices. Config:
 # /etc/mdt/host-setup.env (see host-setup.env.example). Run by
 # mdt-host-slices.service at boot + mdt-host-slices.timer periodically.
@@ -254,25 +251,6 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   done
 else
   log "docker unavailable — skipped per-container sweep"
-fi
-
-# --- cgprofile-host-daemon placement (RG-55 D-18/D-24, read-only report) ----
-# Placement is CREATE-TIME ONLY (CGROUP-NOTES.md #1) -- this never moves the
-# container, it only names where it actually landed. A daemon started before
-# dev-infra.slice existed, or without --cgroup-parent=dev-infra.slice /
-# $CGROUP_PARENT_DEV_INFRA, keeps running in whatever slice it started in
-# (commonly dev-interactive.slice, D-24's documented fallback) until it is
-# recreated -- and while it is, its MemoryHigh/MemoryMax/CPUWeight/IOWeight
-# come from that OTHER tier, not from dev-infra.slice's D-18 sizing.
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  if docker inspect cgprofile-host-daemon >/dev/null 2>&1; then
-    daemon_parent=$(docker inspect -f '{{.HostConfig.CgroupParent}}' cgprofile-host-daemon 2>/dev/null)
-    if [ "$daemon_parent" = "dev-infra.slice" ]; then
-      log "cgprofile-host-daemon: placed in dev-infra.slice (expected)"
-    else
-      log "WARN: cgprofile-host-daemon is placed in '${daemon_parent:-<daemon default>}', not dev-infra.slice -- recreate it with --cgroup-parent=dev-infra.slice (or \$CGROUP_PARENT_DEV_INFRA) to fix; placement is create-time only, this sweep only reports"
-    fi
-  fi
 fi
 
 log "done"
