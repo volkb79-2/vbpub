@@ -731,3 +731,85 @@ exists, in a small follow-up entry-only commit).
   binding rule is `full avg10 > 5` — stayed under it throughout);
   `nice -n19`/`ionice -c3` for every invocation; targeted files, run
   twice (once at 228, once for the coverage cross-check).
+
+### `afda58fd` — A6 docs + backlog close-out (session 7)
+
+- Fresh successor (session 7), continuing from BRIEF-6. Single pass over
+  ALL FIVE prior deliverables (A2, A3 session 4, A3 session 5, A4, A5) per
+  BRIEF-6's own explicit instruction, not incremental.
+- `docs/CONSUMERS.md`: progress-stream table gains `plan.liveness`/
+  `slowest_test_s`/`expect_next_event_within_s`, a new `test` event row,
+  `candidate.tests_completed`, `resume.rejudged_total`, `hung` noted in
+  `candidate.outcome_bucket`/`end.buckets`. New section "Liveness for a
+  native R2 python/pytest lane" (the `judge.mutation.liveness` policy
+  table, `argv_invokes_pytest` rule verbatim from `liveness.py`, the
+  `hung` bucket's two detection branches, native-only scope). New section
+  "`--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`" (union/
+  drop-once semantics, the `MUTATION_BUCKETS` vocabulary + `"error"`→
+  `"crashed"` CLI-only alias, the unknown-id refusal cross-referencing
+  B088, and the `candidate_id()`-vs-`MutantOutcome.identity` caveat A5's
+  own REPORT section flagged as a judgment call for A6 to resolve —
+  resolved here as a documentation caveat, not a new backlog row, per
+  that section's own instruction to decide one way).
+- `README.md`: one paragraph near the existing B073 discussion noting
+  B091 delivered a SCOPED per-test liveness capability (native R2
+  python/pytest only) without resolving B073 itself (the general,
+  per-language live-progress-parsing feature) — B073 stays open.
+- `CHANGES.md` `[Unreleased]`: three new entries (A3, A4, A5) under the
+  existing `### Fixed (detail)` header, matching A1/A2's own already-
+  present entries' voice and level of detail; checked first per BRIEF-6's
+  instruction — A1/A2/RW-36 entries were already present, untouched.
+- `docs/DESIGN-GUIDE.md`: read in full (the "Six outcomes" vocabulary
+  table and its `BUDGET_EXCEEDED`/`CANDIDATE_HUNG` row, added by session
+  4's `44dd12ca`); no gap found — already current, no edit made.
+- `assay/nyxloom-trove/4-backlog.md`: **B091 → FIXED 2026-09-12**, all 5
+  contract items with their commit hashes (`de32bb91`, `f4fa1788`,
+  `e27b107b`, `44dd12ca`, `99463ae5`, `d1540eda`, `5baf2670`, `c15f6040`)
+  and a pointer to this LOG/REPORT for the oracle → test mapping.
+  **B090 → mitigated-by-B091 note**, explaining how each of its two
+  original observations (no default bound; SIGKILLed-candidate
+  reclassification/re-judging) is now addressed by which B091 item.
+  **B092 filed** (new, end of file) per controller ruling RW-41: the
+  `--resume` per-tree identity (B088) is invalidated by a commit to a
+  path the lane never judges — the live RG-55 P2 incident (a
+  records-only LOG commit at `647a2cc6` rejected all 174 of P2's judged
+  candidates) reconstructed in full from RW-41's own text on `main`,
+  plus the P1 `5ce232d1` companion instance from the same ruling.
+  Mechanism proposed: `judge.mutation.identity_exclude` (path-glob list,
+  opt-in, excluded from the tree-content half of `judge_sha256` only —
+  never from `argv`/`env`/`cwd`/`link_paths`). Oracles and a severity
+  rating (medium) included; NOT implemented, row only, per BRIEF-6's own
+  instruction.
+- Tests-first: n/a (docs/backlog only, no production code touched this
+  commit).
+- Gate: not yet run this session — deferred to after the regression
+  sweep, per the handoff's own ordering (docs/backlog/sweep committed
+  BEFORE the gate starts, so a checkpoint cut stays clean either way).
+- HOST LOAD: `/proc/pressure/memory` checked immediately before this
+  commit's own work and again before staging: `full avg10` 3.79 (`some
+  avg10` 5.24) — under the 5.0 `full` back-off threshold throughout; no
+  heavy command run this commit (docs/backlog edits + `git commit` only).
+
+### Deferred full regression sweep (no commit — all green, nothing to fix)
+
+- Ran the handoff's own deferred sweep (BRIEF-6: "no session in this
+  package has yet run in full"): `tests/test_mutation*.py`,
+  `tests/test_runner*.py`, `tests/test_verdict*.py`, `tests/test_verify*.py`,
+  `tests/test_cli*.py` (68 files, including every `test_cli*.py` file, not
+  only `test_cli_run.py` as session 4's own 2107-test sweep covered).
+  `nice -n 19 ionice -c 3`, serial, single pytest invocation, launched
+  backgrounded (task exceeded the 120s foreground limit) with a cheap
+  watcher; result read in a separate step from the launch, never a pipe
+  tail.
+- **Result: 2077 passed, 1 warning, 403.63s (0:06:43).** The one warning is
+  a pre-existing `schemathesis`/`jsonschema` `RefResolutionError`
+  deprecation notice (a third-party dependency chain, unrelated to this
+  package's own changes) — not a new warning this session introduced.
+  Nothing red; nothing to fix.
+- HOST LOAD: `/proc/pressure/memory` `full avg10` touched 6.38 briefly
+  right after the sweep started (other estate sessions' own concurrent
+  gate work visible via `ps`: P1/P6-project pytest+coverage runs), settled
+  back to 4.24 and then lower within a few checks; never re-checked as a
+  reason to abort an already-running sweep (the back-off rule gates
+  STARTING new heavy work, not an in-flight one) — no new heavy command
+  was started while `full avg10` was above 5.
