@@ -324,12 +324,29 @@ never a silent edit to the contract file.
   run-gate backlog file is under edit on two unmerged branches; appending
   on main now would conflict).
 
+- **RW-30 (boundaries corrected — design amendment A1, D-27..D-29):**
+  operator ~14:25Z: mdt is a devcontainer/cockpit template whose `dev*`
+  slices CONTAIN dev load; the root daemon is a host DEPLOYMENT consumed
+  by run-gate / ciu gate from devcontainers; the watcher should be a
+  service with the daemon. Ruling: (1) the daemon is the singleton
+  watcher — run-gate authors the stall policy at `ctl start`, the daemon
+  judges liveness + cadence and enforces with `cgroup.kill`, records the
+  verdict; the run-gate client is disposable (D-21 detached owner
+  DROPPED); (2) `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are
+  WITHDRAWN — the daemon ships its own top-level `cgprofile.slice` with
+  its deployment (P6), authored `cgroup_parent`, implicit unbounded slice
+  when the unit is not installed (reported by `ctl host`/`doctor`);
+  (3) `dev-gates.slice` stays in mdt (gates are dev load; capacity
+  object). P8 re-scoped by message (dev-gates only; drop the dev-infra
+  unit it already committed in M1); P6/P5 handoffs will carry D-27..D-29;
+  SPEC-V8 D.7 item (5) corrected.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29) |
-| P8 — mdt host-setup dev-infra/dev-gates slices | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); operator installs on the host |
+| P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); operator installs on the host |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |

@@ -53,7 +53,7 @@ reported completion, process alive). The clock that measures N PAUSES while
 host or gates-slice memory PSI is above threshold: time during which the CPU
 was not actually available is not evidence of a stall.
 
-**D-18 — The daemon is the estate's liveness oracle and cgroup actuator.**
+**D-18 — The daemon is the estate's liveness oracle and cgroup actuator.** *(superseded in part by A1/D-27: the daemon is also the WATCHER and lives in its own `cgprofile.slice`, not under `dev.slice`.)*
 It already samples every session's cgroup at 1 s; `ctl status` gains a
 per-session `liveness` block (`last_activity_at`, `idle_for_seconds`,
 `cpu_seconds`, `io_bytes`) computed from the samples it has. It survives the
@@ -92,7 +92,7 @@ the devcontainer, run-gate into a tester) would fail with `EBUSY`. Moving a
 pid OUT of a container's scope is safe: it stays in the container's pid and
 mount namespaces (pid-1 death still kills it), only its accounting moves.
 
-**D-21 — run-gate's owner is detached from the first byte.** `run-gate <lane>`
+**D-21 — run-gate's owner is detached from the first byte.** *(DROPPED by A1/D-28: enforcement and the verdict record live in the daemon; the client is disposable.)* `run-gate <lane>`
 forks the owner into its own session (`setsid`), writes the R-39 inflight
 record (owner pid, token, log path), and the CLI merely ATTACHES (streams the
 log; Ctrl-C detaches; `run-gate attach <lane>` re-attaches; `--foreground`
@@ -121,7 +121,7 @@ never `killed`; `run --resume --rejudge <id>,…` / `--rejudge-outcome
 hung,budget_exceeded,error` re-judges without hand-deleting state files.
 
 **D-24 — Host slices are mdt host-setup's; every consumer degrades to today's
-placement when the new env is unset.** `dev-infra.slice` and `dev-gates.slice`
+placement when the new env is unset.** *(amended by A1/D-29: only `dev-gates.slice` is mdt's; `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are withdrawn.)* `dev-infra.slice` and `dev-gates.slice`
 are rendered/installed by `modern-debian-tools-python-debug/host-setup/`
 (operator-installed, as every other slice). The daemon's compose template
 uses `$CGROUP_PARENT_DEV_INFRA` when set, else `$CGROUP_PARENT_DEV_INTERACTIVE`
@@ -240,3 +240,74 @@ socket transport (CP-2); nested cgroups inside container scopes (rejected,
 D-20). Admission POLICY numbers stay "measure first": the thresholds above
 are defaults with a documented reason, expected to be re-tuned from the first
 weeks of footprint data.
+
+## A1 — Amendment (RW-30, operator review ~14:25Z): boundaries corrected
+
+The operator: "mdt is supposed to be only a devcontainer / cockpit. the `dev*`
+slices are there to guarantee *load* is contained and limited to not interfere
+with the rest of the host. on the other hand run-gate (ciu v8?) would gain a
+root-daemon which would/should run as a deployment on the host and be consumed
+by deployed run-gate (ciu v8?) in the devcontainer. who is the watcher which
+needs guarantees? is it singleton or per-lane? i was thinking to place it as
+service with the daemon." All three points are right; §2/§3/§6 above are
+amended as follows (the original text stays so the reasoning trail is
+visible).
+
+**D-27 — The watcher is a singleton and it is the daemon.** A lane is a
+SESSION inside the daemon (state, not a process). At `ctl start` run-gate
+authors the policy: `--progress-stream <path as the lane sees it>` (the
+daemon reads it through `/proc/<lane pid>/root/…`, no extra mounts),
+`--idle-bound auto|<s>`, `--ceiling auto|<s>`, `--on-stall kill|report`. The
+daemon judges liveness (its own cgroup samples) and cadence (the stream's own
+hint), pauses its clock under gates-slice/host memory PSI, and ENFORCES:
+`kill` = `cgroup.kill` on the lane's leaf (placed lanes) or the pid subtree,
+then records `watch {state, verdict, readings}` in the session; `ctl status`
+and `ctl stop` return it. run-gate maps the verdict to its exit codes and
+history record. Without a daemon, run-gate's in-process ProgressWatch (D-22)
+is the best-effort fallback.
+
+**D-28 — run-gate's client is disposable (D-21 dropped).** With the daemon
+enforcing, a client killed by any guard loses only its live log: the lane is
+still bounded, the verdict is still recorded, and the next invocation
+reconciles from the daemon's session record (R-39 reconcile → `ctl status`
+/ `gc`). No detached owner, no `attach` verb; today's process model stays.
+
+**D-29 — Slice boundaries follow ownership of the LOAD.**
+- `dev.slice` (mdt host-setup) contains dev load and nothing else:
+  `dev-gates.slice` (D-19) lives there because gates ARE dev load and the
+  slice is their containment and the admission capacity object. mdt stays a
+  devcontainer/cockpit template plus the host-side containment it always
+  carried.
+- The daemon is a HOST DEPLOYMENT, not dev load: it ships its own top-level
+  **`cgprofile.slice`** with its deployment (`scripts/cgroup-profiler/infra/
+  cgprofile.slice`, installed by the operator with the stack, precedent
+  `srdm.slice` and nyxloom's `infra/slices/nyxloom-daemon.slice`):
+  `MemoryMin=128M`, `MemoryHigh=768M`, `MemoryMax=1G`, `CPUWeight=100`,
+  `IOWeight=50`, no ManagedOOM kill. The compose template authors
+  `cgroup_parent: cgprofile.slice` outright (no environment variable; ciu
+  honours an authored key). If the unit is not installed, systemd creates the
+  slice implicitly without bounds and the daemon runs unprotected; `ctl host`
+  and run-gate `doctor` say "cgprofile.slice has no unit: no memory floor".
+  `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are withdrawn.
+- Consumers of the daemon: run-gate now, `ciu gate` in v8, both from
+  devcontainers via `docker exec` (D-2; CP-2 socket transport later).
+
+Corrected layout:
+
+```
+cgprofile.slice          NEW, shipped by cgroup-profiler   cgprofile-host-daemon (watcher + oracle + actuator)
+dev.slice                mdt host-setup — dev LOAD containment only
+├── dev-interactive.slice   devcontainers, IDE, agents (unchanged)
+├── dev-gates.slice   NEW   lane containers + placed lane leaves rg-<token> — capacity object
+├── dev-background.slice    long-running dev stacks (unchanged; gates leave it)
+├── dev-buildkitd.slice / dev-memory_min_guaranteed.slice (unchanged)
+```
+
+Package consequences: **P8** = `dev-gates.slice` only (env `CGROUP_PARENT_DEV_
+GATES`, install/check/sweep/docs); **P6** adds `infra/cgprofile.slice`, the
+authored `cgroup_parent`, the `ctl host` slice report, and CP-8 becomes the
+WATCH role (`start --progress-stream/--idle-bound/--ceiling/--on-stall`,
+`watch` block in `status`/`stop`, `cgroup.kill` enforcement, D-25 whitelist
+gains `cgroup.kill` on `rg-*` leaves only); **P5** shrinks to RG-56 admission
++ RG-62 as policy author/consumer/reconciler with the in-process fallback
+watch; SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
