@@ -71,7 +71,7 @@ from .errors import LaneConfigError
 # imports only `assay.errors` and `assay.vocabulary`, both leaves, so this
 # does not open the `config -> mutation -> config` cycle that would exist if
 # the registry lived in `assay.mutation`.
-from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_POLICIES, LIVENESS_TRUE, argv_invokes_pytest
+from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
@@ -3014,9 +3014,14 @@ def _load_mutation(
         liveness = LIVENESS_AUTO
     else:
         raise LaneConfigError(
-            f"{where}: 'judge.mutation.liveness' must be true, false or "
-            f"{LIVENESS_AUTO!r}, got {liveness_raw!r}; known spellings: "
-            f"{', '.join(LIVENESS_POLICIES)}"
+            # (Round-1 S4) The accepted TOML spellings, not the internal
+            # normalized vocabulary: `liveness = "true"` and
+            # `liveness = "false"` (QUOTED) are both refused, so echoing
+            # `LIVENESS_POLICIES` here advertised two spellings this very
+            # refusal rejects.
+            f"{where}: 'judge.mutation.liveness' must be the bare boolean "
+            f"true or false, or the string {LIVENESS_AUTO!r}, got "
+            f"{liveness_raw!r} (a QUOTED \"true\"/\"false\" is not accepted)"
         )
     # (B091/RW-36) The load-time half of the refusal RW-36 asks for: `true`
     # forced on a lane whose own argv does not literally invoke pytest, or

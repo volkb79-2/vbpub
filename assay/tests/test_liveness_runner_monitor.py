@@ -657,3 +657,46 @@ def test_a_setup_phase_record_counts_as_progress(tmp_path: Path) -> None:
     )
     completed = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=300.0)
     assert completed.returncode == 0
+
+
+def test_stdout_file_growth_alone_counts_as_progress(tmp_path: Path) -> None:
+    """(B091/RW-33, and round-1 B2's disclosure) The plugin-inactive
+    fallback: growth of the candidate's stdout or stderr FILE is progress
+    even with no events file at all. It is measured to be inert for a real
+    pytest lane (default global capture writes nothing to the real fds until
+    the run ends, which is why CONSUMERS.md now says a plugin-less lane gets
+    coarse liveness only) -- but the signal itself must work, or the
+    fallback would be a claim rather than a mechanism.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=404)
+    events_dir = tmp_path / "candidates"
+    cwd = tmp_path / "cand"
+    cwd.mkdir()
+    stdout_path = liveness.candidate_events_path(events_dir, cwd).with_suffix(".stdout")
+    written = {"n": 0}
+
+    def reader(pid: int) -> float:
+        # A candidate that prints, unbuffered, every tick until t=60 -- and
+        # then goes silent. No events file is ever created.
+        if clock.t <= 60.0:
+            written["n"] += 1
+            with stdout_path.open("a", encoding="utf-8") as stream:
+                stream.write("still here\n")
+        return 3.0  # flat CPU throughout.
+
+    runner = liveness.LivenessRunner(
+        events_dir=events_dir,
+        expect_next_event_within_s=15.0,
+        monotonic=clock.now,
+        sleep=clock.advance,
+        cpu_reader=reader,
+        popen=_FakePopen(proc),
+    )
+    with pytest.raises(liveness.LivenessHungExpired):
+        runner(("pytest", "-q"), env={}, cwd=cwd, timeout=500.0)
+    assert written["n"] > 30  # it really did keep printing for 60 virtual s.
+    # Not killed while it was still printing: the 15s idle bound would have
+    # fired at ~30s (once the CPU window filled) if file growth were not
+    # counted as progress.
+    assert clock.t >= 75.0

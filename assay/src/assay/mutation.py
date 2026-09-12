@@ -3354,11 +3354,15 @@ def mutation_pct(mutation: Mutation) -> float:
     """(B046) The mutation score: ``killed / (killed + survived)``, percent.
 
     The denominator is deliberately NOT ``total``. ``budget_exceeded`` says
-    the experiment did not finish and ``equivalent`` says the mutant could
-    never have been caught -- neither is evidence about the tests, so
-    including them would move the score for reasons that have nothing to do
-    with what the suite does. ``discarded`` is not in the payload at all, for
-    the same reason one field over.
+    the experiment did not finish, ``hung`` (B091) says a `LivenessRunner`
+    stopped it because it had gone idle -- another way of saying the
+    experiment did not finish -- and ``equivalent`` says the mutant could
+    never have been caught. None of the three is evidence about the tests,
+    so including them would move the score for reasons that have nothing to
+    do with what the suite does. ``discarded`` is not in the payload at all,
+    for the same reason one field over. (Round-1 S7: the arithmetic below
+    already excluded ``hung`` by construction; this enumeration of the
+    closed vocabulary had simply not been updated for the new bucket.)
 
     A zero denominator is ``0.0``, never ``100.0``: this is A-026/A-035's
     0/0-is-100% bug, and the only caller reaches this function on a branch

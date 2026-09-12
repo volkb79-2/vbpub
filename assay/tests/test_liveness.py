@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from assay import liveness
-from assay.errors import Outcome
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.runner import CommandPlan, execute_plan
 
 
@@ -66,10 +66,9 @@ def _plan(
         ("./venv/bin/pytest",),
         ("python", "-m", "pytest", "-q"),
         ("python3.11", "-m", "pytest"),
-        # A bare "pytest" token matches WHEREVER it appears (the spec is "a
-        # token equal to pytest", not "the first token") -- this is a
-        # deliberately permissive rule, not a positional one.
-        ("python", "script.py", "pytest"),
+        # The `-m pytest` pair still matches wherever the interpreter's own
+        # flags put it -- that pair IS a pytest invocation.
+        ("python", "-X", "dev", "-m", "pytest", "-q"),
     ],
 )
 def test_argv_invokes_pytest_true_cases(argv: tuple[str, ...]) -> None:
@@ -85,6 +84,18 @@ def test_argv_invokes_pytest_true_cases(argv: tuple[str, ...]) -> None:
         ("python", "-m"),
         ("-m", "unittest"),
         ("tox",),
+        # (Round-1 S2) A bare `pytest` token NOT in argv[0] is not a pytest
+        # invocation -- these three used to qualify, and assay then appended
+        # `-p assay_liveness_plugin` to `make`/`tox`/a script's own argv,
+        # which is not their argument to take. This file previously asserted
+        # `("python", "script.py", "pytest")` was True, with a docstring
+        # calling the rule "deliberately permissive"; the reviewer's measured
+        # `tox -e pytest` case (which even passed the `liveness = true`
+        # load-time refusal) is what settles it, and the production
+        # docstring always claimed the positional rule this now implements.
+        ("python", "script.py", "pytest"),
+        ("make", "pytest"),
+        ("tox", "-e", "pytest"),
     ],
 )
 def test_argv_invokes_pytest_false_cases(argv: tuple[str, ...]) -> None:
@@ -776,3 +787,23 @@ def test_a_plan_with_real_unconsented_cli_appended_argv_is_still_refused(
     )
     assert result.outcome is Outcome.ERROR
 
+
+
+def test_materialize_refuses_an_unwritable_directory_with_a_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(Round-1 S9) An unwritable project root must surface as a typed
+    refusal naming the directory, not as a bare `OSError` escaping
+    `runner._run_prepared_lane` as a traceback.
+    """
+    target_dir = tmp_path / "liveness"
+
+    def _denied(self: Path, *_a: object, **_k: object) -> int:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "write_text", _denied)
+    with pytest.raises(AssayError) as excinfo:
+        liveness.materialize_liveness_plugin(target_dir)
+    assert excinfo.value.reason_code is ReasonCode.OUTPUT_WRITE_FAILED
+    assert str(target_dir) in str(excinfo.value)
+    assert "judge.mutation.liveness = false" in str(excinfo.value)

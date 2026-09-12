@@ -9393,9 +9393,21 @@ Evidence: `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P7-
 {LOG,REPORT}.md` (vbpub) carry the full oracle → test mapping, mutation-check
 transcripts and coverage self-checks for every item above. Docs
 (`docs/CONSUMERS.md`, `README.md`, `CHANGES.md`) updated to match in the
-same close-out pass (A6). The real registered gate (`./run-gate.py
-tester-unified`) re-run green after the docs/backlog pass; see the same
-REPORT for the verdict.
+same close-out pass (A6).
+
+Gate history, corrected (round-1 S8 — the sentence here previously claimed
+the registered gate "re-run green after the docs/backlog pass", which is not
+what happened, and the hash list omitted the two commits that actually made
+it green). The first real `./run-gate.py tester-unified` run after the
+docs/backlog pass was **RED** (5 failed / 4681 passed): five dead imports
+tripping pyflakes, a `RecursionError` reachable on the two untrusted JSON
+parse sites, and three real-R2-through-the-wheel `test_standalone.py`
+expectations that had drifted. Those five root causes were fixed in
+`95d02f50` and `ee24ced6`, and the gate was green only on the tip carrying
+them. Add both to the hash list above. Review round 1 then rejected on five
+blockers, repaired in `802f0855` (B1), `5c1b9ef8` (B3), `07e121d9` (B2) and
+`4ef3985f` (B4/B5); see the REPORT for each one's verification command and
+the gate verdict on the repair tip.
 
 A real, if minor, documentation-only gap surfaced while shipping item 5 and
 is recorded as a `CONSUMERS.md` caveat rather than a new contract item: the

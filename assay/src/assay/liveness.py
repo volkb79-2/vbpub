@@ -87,6 +87,8 @@ from typing import (
     TextIO,
 )
 
+from .errors import AssayError, Outcome, ReasonCode
+
 if TYPE_CHECKING:
     from .runner import CommandPlan
 
@@ -264,34 +266,62 @@ def materialize_liveness_plugin(liveness_dir: Path) -> Path:
 
     Returns the plugin file's path. Never returns before the directory and
     file exist -- a caller can rely on the path being real once this returns.
+
+    (Round-1 S9) An unwritable project root raises a typed refusal naming
+    the directory, never a bare `OSError`: this runs inside
+    `runner._run_prepared_lane`, where an untyped `OSError` escapes as a
+    traceback (or, worse, is relabelled by a broad `except OSError` two
+    frames up) rather than as an honest cause.
     """
-    liveness_dir.mkdir(parents=True, exist_ok=True)
     target = liveness_dir / LIVENESS_PLUGIN_FILENAME
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except OSError:
-            existing = None
-        if existing == _PLUGIN_SOURCE:
-            return target
-    target.write_text(_PLUGIN_SOURCE, encoding="utf-8")
+    try:
+        liveness_dir.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            try:
+                existing = target.read_text(encoding="utf-8")
+            except OSError:
+                existing = None
+            if existing == _PLUGIN_SOURCE:
+                return target
+        target.write_text(_PLUGIN_SOURCE, encoding="utf-8")
+    except OSError as exc:
+        raise AssayError(
+            f"could not materialize the liveness plugin into {liveness_dir}: "
+            f"{exc}. Liveness needs to write "
+            f"{LIVENESS_PLUGIN_FILENAME} under the judged project's own "
+            "'.assay/liveness/' directory; make that directory writable, or "
+            "declare 'judge.mutation.liveness = false' on the lane.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
+        ) from exc
     return target
 
 
 def argv_invokes_pytest(argv: Sequence[str]) -> bool:
-    """RW-33's own rule, verbatim: a native Python R2 lane's argv must
-    literally invoke pytest for liveness to apply. True iff *argv* contains a
-    token equal to ``"pytest"``, a token ending in ``"/pytest"``, or the
-    adjacent pair ``"-m", "pytest"``. Never a substring match (a lane
-    argument that merely MENTIONS pytest, e.g. a `--pytest-args=...` value
-    for some other tool, must not trip this) and never order-independent
-    (the `-m`/`pytest` pair must be adjacent, matching how a shell would
-    actually invoke `python -m pytest`).
+    """RW-33's own rule: a native Python R2 lane's argv must literally invoke
+    pytest for liveness to apply. True iff *argv* STARTS with a token equal to
+    ``"pytest"`` or ending in ``"/pytest"``, or carries the adjacent pair
+    ``"-m", "pytest"``.
+
+    Never a substring match (a lane argument that merely MENTIONS pytest,
+    e.g. a `--pytest-args=...` value for some other tool, must not trip
+    this) and never order-independent: the `-m`/`pytest` pair must be
+    adjacent, matching how a shell would actually invoke `python -m pytest`.
+
+    (Round-1 S2) The bare-token half is POSITIONAL, which is what the
+    docstring always claimed and what the rule is for. Before this it
+    matched a `pytest` token at ANY index, so ``["make", "pytest"]`` and
+    ``["tox", "-e", "pytest"]`` both qualified -- and assay then appended
+    ``-p assay_liveness_plugin`` to `make`/`tox`, which is not their
+    argument to take. It failed loudly (the baseline broke, and the argv is
+    disclosed as `(appended: ...)`), but it was never the rule. A pytest
+    invocation puts pytest first; the `-m pytest` pair covers
+    `python -m pytest`, wherever the interpreter's own flags sit.
     """
     tokens = list(argv)
+    if tokens and (tokens[0] == "pytest" or tokens[0].endswith("/pytest")):
+        return True
     for index, token in enumerate(tokens):
-        if token == "pytest" or token.endswith("/pytest"):
-            return True
         if (
             token == "-m"
             and index + 1 < len(tokens)

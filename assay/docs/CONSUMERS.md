@@ -2087,7 +2087,13 @@ check — assay now:
    and injects it via `argv_appended` + a prepended `PYTHONPATH` entry
    (**not** `allow_argv_append` — RW-36: that flag keeps its unrelated
    CLI-passthrough-consent meaning; liveness injection is judge mechanics,
-   gated by the new key below);
+   gated by the new key below). The injection rides on the lane's shared
+   command plan, so on an `R0/R1/R2/R3` lane the R3 **canary probes** run
+   with the `-p` pair on their argv too. It is inert there —
+   `ASSAY_LIVENESS_EVENTS` and `ASSAY_LIVENESS_EXIT` are never set for a
+   canary, so the plugin records nothing and never calls `os._exit` — but
+   the argv is not byte-identical to a `liveness = false` run, which is
+   worth knowing if you diff canary command lines (round-1 S10);
 2. for every R2 **candidate** execution only (never R0, never R1), calls
    `os._exit(rc)` from the plugin's `pytest_unconfigure(trylast=True)` hook
    right after the terminal summary prints and pytest-cov's own data write
