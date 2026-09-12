@@ -115,3 +115,36 @@ Verification before commit: `bash -n` on all three scripts (clean) and
 `shellcheck` (default severity) on all three — zero NEW findings; every
 finding shellcheck reports (SC2015 x7, SC2181 x1) is on a pre-existing line
 outside my diff, confirmed by line number against `git diff`.
+
+### M3 — export CGROUP_PARENT_DEV_INFRA/_GATES to devcontainers + doc (hash: 22049949 = M2)
+
+Orientation step 3 (`grep -rn CGROUP_PARENT_DEV_BACKGROUND` outside
+`.worktrees/`) confirmed the actual export path within this project's own
+scope is exactly one file: `templates/devcontainer.json`'s `containerEnv`
+block (the file's own comment already calls it "the ONE place both tier
+names are declared"). `host-setup.env.example`/`units/dev-background.slice.in`
+only mention the var in prose comments, never as a key. Other consumers
+found by that grep (srdm's `tools/gate.sh`, cmru's `tester_gate.py`,
+run-gate itself, ciu governance) are OUT of this package's scope (P5/other
+packages' job to actually read the new vars) — D-24's "consumer fallback
+rule" is what I document, not what I implement for them.
+
+`templates/devcontainer.json`: added `CGROUP_PARENT_DEV_INFRA":
+"dev-infra.slice"` and `CGROUP_PARENT_DEV_GATES": "dev-gates.slice"` to
+`containerEnv`, same path/pattern as the two existing keys; expanded the
+block's own comment to name D-24's fallback rule explicitly (daemon ->
+CGROUP_PARENT_DEV_INTERACTIVE, run-gate -> CGROUP_PARENT_DEV_BACKGROUND when
+unset) and to note the devcontainer's own `runArgs --cgroup-parent=` is
+UNCHANGED (dev-interactive.slice) — this devcontainer never itself joins
+dev-infra/dev-gates, only spawns containers that do. Verified the edited
+file is still valid JSON after JSONC comment-stripping (python, ad hoc, both
+new keys and the unchanged runArgs value present) — jsonc has no standard
+CLI validator in this project, this was the fastest honest check available.
+
+`DEVCONTAINER-LIFECYCLE.md` "Host resource governance": light-touch edit,
+"containerEnv vars naming both tiers" -> "naming all four dev-tier slices"
+with the two new var names and a pointer to host-setup/README.md's new
+section (written next, M4). Did NOT touch
+`modern-debian-tools-python-debug/README.md` (top-level) — that file is in
+the handoff's explicit "never touch, someone else's uncommitted edits"
+list.

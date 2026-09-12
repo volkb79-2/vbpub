@@ -97,8 +97,12 @@ On hosts that tier resources via systemd slices (cgroup v2) — for example a sh
 runs a production workload alongside devcontainers and best-effort test/build containers — this
 devcontainer should land in its own tier instead of the host's default (usually unlimited) cgroup.
 `templates/devcontainer.json` ships a `--cgroup-parent=dev-interactive.slice` runArg for this
-(plus `containerEnv` vars naming both tiers — see below — for any in-container tool that spawns
-its own containers); this section explains the mechanism so you can reason about safety on hosts
+(plus `containerEnv` vars naming all four dev-tier slices — `CGROUP_PARENT_DEV_INTERACTIVE`,
+`CGROUP_PARENT_DEV_BACKGROUND`, and, for host-level daemons and gate/lane containers respectively,
+`CGROUP_PARENT_DEV_INFRA`/`CGROUP_PARENT_DEV_GATES` — see below — for any in-container tool that
+spawns its own containers, each falling back to today's placement when unset,
+[host-setup/README.md](host-setup/README.md) "dev-infra and dev-gates: why"); this section
+explains the mechanism so you can reason about safety on hosts
 that do **not** opt in.
 See also [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) for how this fits the doctrine's
 layering (host/orchestration concern, not image content).
