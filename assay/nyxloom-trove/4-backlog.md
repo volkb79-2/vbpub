@@ -9294,3 +9294,43 @@ parser and try to reproduce the same four files' coverage record directly
 (vitest/istanbul version pinned in dstdns's `webapp-ui-react` at the time of
 this filing) to find what's actually inconsistent about the source maps or
 arc positions for these specific components.
+
+## B090 — `judge.mutation.budget_per_candidate` has no default, so one hung mutant blocks a whole R2 run indefinitely, and nothing warns when the key is unset
+
+Observed live 2026-09-12 13:22Z in vbpub's `scripts/cgroup-profiler` r2 lane
+(assay from the `tester-unified:local` source tree, run-gate rev 40, RG-55
+wave P1): candidate 47 mutated `lib/serve.py:479` `threading.Thread(...,
+daemon=True)` → `daemon=False`. The suite ran to completion and then the
+pytest process hung at interpreter exit joining the non-daemon session-loop
+thread (futex wait, 0 % CPU). The lane's `assay.toml` set `budget = "4h"`
+and `jobs = 2` but no `judge.mutation.budget_per_candidate`, so assay waited
+37 minutes on that one candidate with the second job slot idle, and would
+have waited until the lane budget (which, with the run-gate owner process
+dead — RG-55 controller log RW-26 — nobody was enforcing). The controller
+SIGKILLed the pytest inside the container; the run resumed immediately.
+
+Two things here, both in assay's court:
+
+1. **No default per-candidate bound.** B012 shipped `budget_per_candidate`
+   as optional, and the R2-admission table (CONSUMERS "native R2 …
+   requires `judge.mutation.budget_per_candidate`") already treats it as
+   required for admission — but an r2 lane without it is accepted and
+   runs unbounded per candidate. Any mutant that removes a termination
+   condition (daemon flag, loop bound, timeout argument, `join(timeout)`)
+   produces exactly this hang; those mutants are common in daemon/thread
+   code. Proposal: default `budget_per_candidate` to
+   `max(5 × measured baseline, 300 s)` when unset, print the derived value
+   in the plan line, and mark such candidates `budget_exceeded` (never
+   `killed`, per the B012 classification) so the lane's verdict names them
+   for triage.
+2. **A SIGKILLed candidate's classification.** What assay recorded for the
+   killed pytest (signal death, non-zero returncode) is not an honest
+   verdict either way; the honest kill is a test asserting `thread.daemon`.
+   Combined with B088 (resume identity ignores the test suite), the only
+   way to re-judge it after the test fix is to delete the candidate's
+   `.assay/mutation-state/<id>.json` by hand — worth a `--rejudge <id>`
+   or `--rejudge-outcome budget_exceeded,error` flag on `run … --resume`.
+
+Consumer-side mitigation applied in the RG-55 wave (controller ruling
+RW-28): every r2 lane sets `judge.mutation.budget_per_candidate`
+(cgprofile `600s`, run-gate `900s`).
