@@ -117,59 +117,175 @@ top-level `cgprofile.slice` with the `cgroup-profiler` stack instead — see
 that project's own docs, out of this project's scope. `dev.slice`'s job stays
 "contain dev load and nothing else."
 
+**Reactive per-container backstop (RW-32/D1).** `mdt-dev-cap-watcher.py`
+now also watches `dev-gates.slice` and applies a default `MemoryMax` the
+instant a new unlabelled `docker-*.scope` appears there (`DEV_CAP_GATES_
+MEMORY_MAX`, default `4G` — deliberately NOT the shared `DEV_CAP_MEMORY_MAX`
+default of `1G`, which would be below the ~2 GiB of headroom the 2026-08-04
+incident says a gate already needed and would re-create it inside the tier
+built to fix it). Today's run-gate lane containers pass no `--memory` of
+their own and are exactly the containers this watcher exists for — the
+moment any consumer honours `CGROUP_PARENT_DEV_GATES`, they land here
+instead of `dev-background.slice`, unlabelled, and this is what keeps one
+runaway lane from silently consuming the whole 6 G tier. This is the
+COARSE, tier-wide backstop — it COMPOSES with, and is not withdrawn by, a
+future daemon's per-lane placement caps (D-20/D-25): placement gives an
+exact ceiling to a lane that asks for one, this watcher still catches
+whatever a lane does not ask for.
+
+**Sizing choices (RW-32/D2, D3).** `ManagedOOMSwap=kill` is deliberately
+ABSENT from `dev-gates.slice.in` (unlike `dev-background.slice`'s own,
+which keeps it): D-19 lists only the pressure kill, and this tier's
+`MemorySwapMax=32G` exists specifically to make swap a disposable lane's
+relief valve — an oomd *swap* kill triggers on host swap usage and would
+kill whichever lane is using the allowance this unit deliberately grants
+it, on a signal D-6 rejects ("swap usage is never the gate; PSI is"). See
+`units/dev-gates.slice.in`'s own comment. `CPUWeight=20`/`IOWeight=10` —
+identical to `dev-background.slice`'s own — stand as designed (D-19): a
+fourth same-weight sibling does lower interactive's worst-case share under
+simultaneous contention (the shared non-interactive weight rises from 20,
+dev-background alone, to 40 once dev-gates.slice joins it, so interactive's
+CPUWeight share drops from `200/220` (~91%) to `200/240` (~83%) — the same
+ratio on the IOWeight side, `100/110` to `100/120`, since both tiers scale
+interactive's own weight by the same 10x). Accepted because gates and a
+long-running stack are rarely both saturating CPU/IO at once; revisit once
+real usage data exists (design §7), not by guessing further.
+
 Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
 `_SWAP_MAX`/`_CPU_WEIGHT`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`, sized for a
 16 GiB host and expected to be re-tuned from real admission-usage data (design
-doc §7: "measure first"). `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels
-the same export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
+doc §7: "measure first"); `DEV_CAP_GATES_MEMORY_MAX` (the reactive watcher's
+own knob, above). `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same
+export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
 `templates/devcontainer.json`'s `containerEnv` — with the same consumer
-fallback rule (D-24): a consumer that reads it unset falls back to today's
-placement, `CGROUP_PARENT_DEV_BACKGROUND`; nothing breaks on a host that has
-not re-run `install.sh` yet.
+fallback rule (D-24), precisely stated: it protects a **devcontainer that
+was not rebuilt** (the variable is simply absent from its environment until
+recreated), **not** a **host that was not upgraded** (the slice unit
+missing) — that failure mode is instead caught mechanically by `mdt-host-
+check.sh` (see "Quick start"/"Upgrading a host that already runs mdt
+host-setup" below) and, independently, by
+`docker run` itself failing outright when a named `--cgroup-parent` slice
+was never installed and the daemon-wide default cannot resolve it either,
+which run-gate reports (round-1 review S10).
 
-**Upgrading a host that already runs mdt host-setup** (installed before
-`dev-gates.slice` existed): a plain re-run of `install.sh` alone will NOT add
-it correctly — `install.sh` never touches an already-existing
-`/etc/mdt/host-setup.env` except to render units *from* it, so the new
-`DEV_GATES_*` keys simply have no value there yet, and `render()`'s own rule
-("not set" → the whole directive is dropped, not replaced with a fallback)
-would render `dev-gates.slice` with no `MemoryHigh`/`MemoryMax`/
-`MemorySwapMax`/`ManagedOOMMemoryPressureLimit` at all — effectively
-unbounded except for the literal `ManagedOOMMemoryPressure=kill`/
-`ManagedOOMSwap=kill` lines. Pick up the new keys first (the file's own
-top comment already documents this exact "newly-added variables" case):
+**Rebuild your devcontainer.** `containerEnv` changes only take effect on
+container **recreate** — `CGROUP_PARENT_DEV_GATES` is not visible inside an
+already-running devcontainer until it is rebuilt, even on a host that has
+fully upgraded. Both operator sequences below end at `mdt-host-check.sh`;
+after that, rebuild/recreate the devcontainer too so the new variable
+actually reaches whatever tool inside it reads it (round-1 review S10).
+
+**Onward propagation — declared here, not yet read anywhere (round-1
+review S4, RW-32/D4).** `CGROUP_PARENT_DEV_GATES` is exported by this
+package; no downstream consumer reads it yet — each is its own future work,
+filed to the controller's backlog after this package merges, not part of
+this package:
+- `run-gate`'s own default `--cgroup-parent` (`run-gate-project/{SPEC.md,
+  CONSUMERS.md}`) — still documents only the interactive/background pair;
+- `cmru`'s tester-gate (`cmru/src/cmru/tester_gate.py`) — forwards only
+  `CGROUP_PARENT_DEV_BACKGROUND` into spawned gate containers;
+- `srdm`'s gate script (`shared-ramdisk-depot-manager/tools/
+  cgroup-parent.sh`) — exports only the old pair.
+
+Until one of these adopts it, every gate/lane container keeps landing in
+`dev-background.slice` (today's placement, per D-24) regardless of whether
+a host has `dev-gates.slice` installed — which is exactly what this
+session's own `run-gate.py smoke` gate run shows in its argv (`--cgroup-
+parent dev-background.slice`).
+
+**The socket carrier's mount (RW-31/A2, D-30, M5).** `templates/
+devcontainer.json` bind-mounts `/run/cgprofile` (the profiler daemon's
+control-socket directory, `ctl.sock`) into the devcontainer; run-gate's
+`transport = auto` prefers it when present and answering, else falls back
+to `docker exec` — nothing breaks on a devcontainer that predates the
+mount, `auto` simply resolves to exec forever for it. Group access needs no
+new plumbing: the existing `--group-add ${localEnv:DOCKER_GID}` runArg is
+exactly the socket's own group (`root:docker`, mode `0660`). Host
+prerequisite: `mounts` entries are Docker `--mount`, which refuses a
+missing bind source, so host-setup ships and applies a `tmpfiles.d` entry
+that creates `/run/cgprofile` (mode `0770`, owner `root:docker`) — see
+"Quick start"/"Upgrading a host that already runs mdt host-setup" below;
+`mdt-host-check.sh` reports the
+directory's own mode/owner and separately whether the daemon's socket is
+present (`INFO socket carrier available`) or not yet (`INFO exec carrier
+only (daemon socket absent)` — a live daemon that predates the listener, or
+none installed at all, are both this state and both fine, exec is the
+permanent fallback). The daemon package (P6) re-asserts the directory's own
+owner/mode at its own start as belt-and-braces; this package only creates
+it and gets out of the way. Opt out by deleting the `mounts` line.
+
+## Changes
+
+**2026-09-12 (RG-55 P8, round-1 repairs + M5):** `dev-gates.slice` shipped
+(this section); round-1 review B1-B6 fixed (cap-watcher coverage,
+renderer-test host-mutation guard, unbounded-upgrade detection in
+`install.sh`/`check.sh`, corrected upgrade sequence below, a withdrawn-
+design residue, renderer-test coverage of `install.sh`'s own wiring);
+`ManagedOOMSwap=kill` dropped from `dev-gates.slice.in` (D2); M5 lands the
+`/run/cgprofile` devcontainer mount + host-setup's `tmpfiles.d` entry
+(D-30/A2). `TODO.md` is NOT edited by this package (dirty in the shared
+checkout, see round-1 review S13/RW-32 D5) — the operator paste-in line is
+in this package's own REPORT
+(`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md`,
+"Operator: add to TODO.md").
+
+**Fresh host, never ran mdt host-setup before:** the existing "Quick start"
+section below already covers you end to end — it now seeds/renders
+`dev-gates.slice` and the `/run/cgprofile` tmpfiles.d entry along with
+everything else, one pass, nothing additional to do. Only a host that ran
+`install.sh` BEFORE `dev-gates.slice` existed needs the different sequence
+immediately below.
+
+## Upgrading a host that already runs mdt host-setup
+
+**From before `dev-gates.slice` existed:** a plain re-run of `install.sh`
+alone renders `dev-gates.slice` UNBOUNDED, not merely "using old defaults" —
+verified by reading `install.sh` end to end (round-1 review B4): its
+`--force` branch (`cp` to back up, `cp` the example over `/etc/mdt/
+host-setup.env`, echo "REVIEW IT and re-run to apply edits") has **no
+`exit`** and falls straight through into sourcing the fresh config and
+running apt-get, every unit render, the `daemon.json` merge, `daemon-
+reload`, `systemctl start` of every slice and `systemctl enable --now` of
+the timer/buildkitd/watcher — i.e. `--force` doesn't just re-seed the file,
+it ACTIVATES the example's 16 GiB-host numbers estate-wide, live, in the
+same run. On a host that isn't 16 GiB that is a real, if brief,
+misconfiguration of every OTHER tier too, not only the new one — avoid it
+for a routine key-pickup. `install.sh` now also prints a named `WARN` for
+every key your `/etc/mdt/host-setup.env` predates (see below), so this is
+no longer a silent trap even if you do forget a step. The additive sequence
+below is one render pass and never discards existing tuning:
 
 ```bash
-sudo ./install.sh --force          # backs up /etc/mdt/host-setup.env, then
-                                    # re-seeds it wholesale from the current
-                                    # example (which now has the dev-gates.slice
-                                    # section) -- this DISCARDS your prior
-                                    # per-host tuning, on purpose; diff the
-                                    # backup against the fresh file next
-sudo vi /etc/mdt/host-setup.env    # reapply whatever you had customized
-                                    # (memory tiers, IO caps, ...) from the
-                                    # backup; size DEV_GATES_MEMORY_HIGH/_MAX/
-                                    # _SWAP_MAX/_CPU_WEIGHT/_IO_WEIGHT for THIS
-                                    # host if the 16 GiB-host defaults do not fit
-sudo ./install.sh                  # renders every unit including
-                                    # dev-gates.slice.in, installs it,
-                                    # daemon-reload, starts every slice
-                                    # (dev-gates.slice included), enables +
-                                    # runs the sweep (mdt-host-slices.service)
-                                    # once immediately
-sudo mdt-host-check.sh             # verify: dev-gates.slice exists and is
-                                    # active, effective memory.high/max/
-                                    # swap.max/cpu.weight/io.weight match what
-                                    # you set
+sudo cp /etc/mdt/host-setup.env /etc/mdt/host-setup.env.bak-$(date +%F)
+diff <(grep -oE '^[A-Z_]+=' host-setup/host-setup.env.example | sort) \
+     <(grep -oE '^[A-Z_]+=' /etc/mdt/host-setup.env | sort)      # shows the
+                                                                   # new keys
+sudo vi /etc/mdt/host-setup.env    # paste in the missing keys (the
+                                    # dev-gates.slice block, DEV_CAP_GATES_
+                                    # MEMORY_MAX); size them for this host
+sudo ./install.sh                  # ONE render/install/activate pass --
+                                    # also prints a WARN naming any key
+                                    # you're still missing
+sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
+                                    # memory.max/high now FAIL loudly (not
+                                    # print unbounded silently) if a key is
+                                    # still missing; /run/cgprofile exists
 ```
+Then rebuild/recreate your devcontainer (above).
 
-(`sudo ./install.sh --wizard` is the interactive alternative to the first two
-steps above — it backs up the same way, then walks every section it knows
-with your EXISTING values pre-filled as defaults so Enter reproduces prior
-tuning; it does not walk the new `DEV_GATES_*` keys individually, so review
-`/etc/mdt/host-setup.env`'s new "dev-gates.slice" section afterwards the same
-way. Either path falls through into the same render/install/daemon-reload/
-start/sweep sequence as the plain `sudo ./install.sh` step above.)
+`sudo ./install.sh --force` remains available, but only for a scheduled
+maintenance window (it re-renders and ACTIVATES every tier from the
+example's own numbers live, across the whole estate, the instant it runs —
+see above) — never for a routine key pickup. `sudo ./install.sh --wizard`
+is the interactive alternative to the manual diff/edit steps above: it
+backs up the same way, then walks every section it knows with your
+EXISTING values pre-filled as defaults so Enter reproduces prior tuning
+(the new `DEV_GATES_*`/`DEV_CAP_GATES_MEMORY_MAX` keys are not walked
+individually — it carries them through from the example verbatim since it
+also does not re-render/activate until it falls through into the same
+render/install/daemon-reload/start/sweep pass as the plain `install.sh`
+step above; review `/etc/mdt/host-setup.env`'s new sections afterwards the
+same way).
 
 ## Quick start
 

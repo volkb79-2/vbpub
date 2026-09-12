@@ -553,3 +553,58 @@ flat convention is wrong on a real host, that is a pre-existing question
 this package inherited, not one it introduced, and fixing it belongs to
 whoever owns `dev-interactive.slice`'s own block, with a real host to
 verify against (this package had none, per HOST LOAD).
+
+### C7 — README.md: B4 sequence rewrite, D1/D2/D3/S1/S4/S10/S11 docs, D5 Changes (hash: see next entry)
+
+(B4) Verified the actual claim before rewriting anything: read
+`install.sh`'s `--force` branch end to end (`cp` backup, `cp` example over
+`/etc/mdt/host-setup.env`, echo "REVIEW IT…") — it has **no `exit`** and
+falls straight through into sourcing the fresh config and running
+apt-get, every unit render, the `daemon.json` merge, `daemon-reload`,
+`systemctl start` of every slice and `systemctl enable --now` of the
+timer/buildkitd/watcher, i.e. it ACTIVATES the example's 16 GiB-host
+numbers estate-wide, live, in the same run — not merely "re-seeds a file".
+The README's operator sequence is rewritten as the additive path (backup,
+`diff` to show new keys, hand-edit, ONE `install.sh` pass, `mdt-host-
+check.sh`) with `--force` demoted to "a scheduled maintenance window only,
+never a routine key pickup" and `--wizard` promoted to the recommended
+interactive alternative (it is the only variant that renders the
+operator's own prior values on the first pass). Removed a redundant
+"Fresh install" section I had drafted before this round arrived — it only
+duplicated the pre-existing "Quick start" section; pointed to that instead
+and fixed two stale forward-references left by the removal.
+
+(D1/D2/D3/S1/S11) New "Reactive per-container backstop" and "Sizing
+choices" paragraphs in "dev-gates: why": the cap-watcher's own coverage
+and its 4G-not-1G reasoning (D1); why `ManagedOOMSwap=kill` is absent
+(D2/S1); the CPUWeight/IOWeight arithmetic the ruling asked for —
+recomputed from this file's OWN shipped numbers rather than copied
+verbatim from the coordinator's message, since my own computation
+(`200/220` ≈ 91% two-way → `200/240` ≈ 83% three-way, matching S11's own
+"40 against interactive's 200" arithmetic exactly) did not reproduce the
+message's stated "83%→71%" pair and I was not willing to ship an
+unverifiable number into docs a round-2 reviewer will recompute (RW-9,
+logged not blocking).
+
+(S4) "Onward propagation" paragraph: the three concrete consumers that do
+NOT yet read `CGROUP_PARENT_DEV_GATES` (run-gate's own default,
+`cmru/src/cmru/tester_gate.py`, `shared-ramdisk-depot-manager/tools/
+cgroup-parent.sh`), with file paths, matching the round-1 review's own
+grep. (S10) "Rebuild your devcontainer" paragraph, and the D-24 fallback
+note reworded to the coordinator's exact given text (devcontainer-not-
+rebuilt vs. host-not-upgraded are different failure modes with different
+mechanical catches).
+
+(M5/D-30) "The socket carrier's mount" paragraph: purpose/group-access/
+host-prerequisite/opt-out, matching the coordinator's four-part spec.
+
+(D5) New "Changes" section, dated 2026-09-12, naming everything this round
+shipped and pointing at the REPORT's "Operator: add to TODO.md" line
+instead of touching `TODO.md` itself (still blacklisted, still dirty in
+the shared checkout, unchanged since P8's own M4).
+
+Verify: every claim above is a grep-able string in the rendered README
+(`grep -n "Sizing choices\|Onward propagation\|Rebuild your devcontainer\|
+socket carrier's mount\|## Changes" host-setup/README.md`); the B4 claim
+is independently checkable by reading `install.sh:82-90` for the missing
+`exit`.
