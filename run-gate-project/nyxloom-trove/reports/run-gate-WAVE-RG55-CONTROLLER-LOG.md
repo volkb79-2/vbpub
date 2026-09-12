@@ -38,9 +38,9 @@ never a silent edit to the contract file.
   worth avoiding in advance.
 
 - **RW-4:** the contract is FROZEN at the P0 commit hash
-  **`<FILL-IN-AFTER-COMMIT>`** (this line is updated by a second, tiny
-  commit immediately after the P0 commit lands — see that package's commit
-  message for why the hash cannot be known before committing). Any change
+  **`63b928da0770c79409f8ad5faff0b840a6e0cf30`** (`vbpub@63b928da`; this
+  line was updated by a second, tiny commit immediately after the P0
+  commit landed — the hash could not be known before committing). Any change
   to the contract after this point is a new numbered ruling here, delivered
   to both implementers; nobody edits `RG55-INTERFACE-CONTRACT.md`
   unilaterally.
