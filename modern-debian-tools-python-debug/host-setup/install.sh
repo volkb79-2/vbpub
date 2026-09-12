@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # mdt host-setup installer — prepares a host for tiered devcontainer/test work
 # (dev.slice root ceiling + dev-interactive.slice + dev-background.slice +
+# dev-infra.slice + dev-gates.slice + dev-memory_min_guaranteed.slice +
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
@@ -90,6 +91,31 @@ fi
 # shellcheck disable=SC1091
 . /etc/mdt/host-setup.env
 
+# dev.slice's own MemoryMin (host dev-tier cgroup governance, RG-55 D-18/
+# D-19/D-24): a render-time SUM of every child that declares its own
+# MemoryMin, computed here so host-setup.env keeps two independent,
+# human-set knobs instead of a third value an operator would have to keep in
+# sync by hand -- see CGROUP-NOTES.md "the one invariant that actually
+# matters" and units/dev.slice.in's own comment. DEV_INFRA_MEMORY_MIN is
+# always-on (256M default); DEV_MEMORY_MIN_GUARANTEED_CEILING is opt-in
+# (empty=0 by default). Bytes, not a K/M/G-suffixed string -- systemd
+# resource-control values accept a bare byte count, and staying in bytes
+# avoids re-deriving a suffix for a sum that rarely lands on a round unit.
+_bytes_of() { # _bytes_of "256M"|"800M"|"0"|"" -> byte count (0 for empty)
+  local v="${1:-}" num
+  case "$v" in
+    "")  echo 0; return ;;
+    *K) num="${v%K}"; echo $(( num * 1024 )); return ;;
+    *M) num="${v%M}"; echo $(( num * 1024 * 1024 )); return ;;
+    *G) num="${v%G}"; echo $(( num * 1024 * 1024 * 1024 )); return ;;
+    *T) num="${v%T}"; echo $(( num * 1024 * 1024 * 1024 * 1024 )); return ;;
+    *)  echo "$v"; return ;;
+  esac
+}
+DEV_SLICE_MEMORY_MIN=$(( $(_bytes_of "${DEV_MEMORY_MIN_GUARANTEED_CEILING:-}") \
+                        + $(_bytes_of "${DEV_INFRA_MEMORY_MIN:-}") ))
+echo "dev.slice MemoryMin: ${DEV_SLICE_MEMORY_MIN} bytes (DEV_MEMORY_MIN_GUARANTEED_CEILING=${DEV_MEMORY_MIN_GUARANTEED_CEILING:-<unset>} + DEV_INFRA_MEMORY_MIN=${DEV_INFRA_MEMORY_MIN:-<unset>})"
+
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
 if [ -z "${IO_DEV_PATH:-}" ]; then
@@ -134,7 +160,11 @@ RENDER_VARS="DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACT
 DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
 DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_IO_WEIGHT DEV_BACKGROUND_OOM_PRESSURE_LIMIT \
-DEV_MEMORY_MIN_GUARANTEED_CEILING \
+DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_SLICE_MEMORY_MIN \
+DEV_INFRA_MEMORY_MIN DEV_INFRA_MEMORY_HIGH DEV_INFRA_MEMORY_MAX \
+DEV_INFRA_CPU_WEIGHT DEV_INFRA_IO_WEIGHT \
+DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
+DEV_GATES_CPU_WEIGHT DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
 DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
@@ -157,6 +187,8 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
+render "$HERE/units/dev-infra.slice.in"        /etc/systemd/system/dev-infra.slice
+render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
@@ -243,7 +275,8 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
-systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-buildkitd.slice 2>/dev/null || true
+systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
+  dev-infra.slice dev-gates.slice dev-buildkitd.slice 2>/dev/null || true
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
 systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker

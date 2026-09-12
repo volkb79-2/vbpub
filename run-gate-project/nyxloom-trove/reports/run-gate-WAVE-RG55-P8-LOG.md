@@ -80,3 +80,38 @@ ancestor-chain rule. `units/dev-memory_min_guaranteed.slice.in`'s
 cross-reference comment updated to describe the sum instead of a 1:1 pin
 (its own MemoryMin directive is unchanged — still reads
 DEV_MEMORY_MIN_GUARANTEED_CEILING directly).
+
+### M2 — install.sh render/install + placement report + check.sh (hash: 16f3a476 = M1)
+
+`install.sh`: `_bytes_of()` helper (K/M/G/T -> bytes, base 1024, matching
+systemd's own unit-file suffix convention) + `DEV_SLICE_MEMORY_MIN` computed
+before any rendering happens; both new slices added to `RENDER_VARS`,
+rendered (`units/dev-infra.slice.in` -> `/etc/systemd/system/dev-infra.slice`,
+same for `dev-gates`), and started alongside the existing tiers. Top-of-file
+description comment updated to list every installed slice.
+
+`scripts/mdt-apply-dev-caps.sh`: a new read-only report block (placement is
+create-time only, CGROUP-NOTES.md #1 — this never moves anything) — if a
+container named `cgprofile-host-daemon` is present, WARN naming its actual
+`HostConfig.CgroupParent` when it is not `dev-infra.slice`.
+
+`scripts/check.sh`: `dev-infra`/`dev-gates` added to the existence/
+ActiveState loop; two new "effective values" sections printing
+`memory.min`/`memory.high`/`memory.max`/`cpu.weight`/`io.weight`/
+`io.bfq.weight` (dev-infra) and `memory.high`/`memory.max`/
+`memory.swap.max`/... (dev-gates) straight from cgroupfs. The
+`dev-memory_min_guaranteed.slice` ancestor-chain check is generalized from a
+1:1 pin to a 3-way sum (`dev.slice` MemoryMin == `dev-infra.slice` +
+`dev-memory_min_guaranteed.slice`, FAIL naming the actual mismatch direction
+either way) — matches the M1 `DEV_SLICE_MEMORY_MIN` change. Container-
+placement informational section's hint text updated to name the two new
+tiers' expected occupants.
+
+`systemd-analyze verify` was NOT added — grepped the whole host-setup/ tree
+first (M2 text: "if it is there already"); it is not used anywhere in this
+project today, so nothing to extend.
+
+Verification before commit: `bash -n` on all three scripts (clean) and
+`shellcheck` (default severity) on all three — zero NEW findings; every
+finding shellcheck reports (SC2015 x7, SC2181 x1) is on a pre-existing line
+outside my diff, confirmed by line number against `git diff`.
