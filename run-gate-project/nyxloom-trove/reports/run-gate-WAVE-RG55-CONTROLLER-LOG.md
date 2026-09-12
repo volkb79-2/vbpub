@@ -549,6 +549,27 @@ never a silent edit to the contract file.
   per project). Monitor `bvlfxll3r` ended; the P1 resume container is
   watched by `b5fc67sgd`.
 
+- **RW-41 (P2 resume rejected every record — per-tree identity; re-run
+  at the original tree; assay B092 filed):** the 16:31Z relaunch printed
+  `resume: rejected_total=174, resumed_total=0` — assay 6.1.1's B088 fix
+  keys resume on the WHOLE judged tree, and the only commit between the
+  two runs (`647a2cc6`) added `run-gate-WAVE-RG55-P2-LOG.md` under the
+  project's own `nyxloom-trove/reports/`; a records-only commit
+  invalidated 4 h of judging. run-gate's lane `budget` is advisory; the
+  enforcing one is assay's `budget_s`, which is itself in the tree, so a
+  budget bump would also invalidate. Ruling: P2 runs the r2 lane with the
+  worktree detached at `186461de` (the tree the 174 records were judged
+  on) so 109 candidates remain; started now despite P1's concurrent
+  container (worst case a short third resume at the same tree); after
+  the verdict the worktree returns to the branch. Post-triage rule: if
+  survivor triage adds tests, the final r2 re-executes every candidate
+  (B088's correct semantics) — once, alone on the host; equivalent-mutant
+  justifications alone need no re-run. **B092 (assay, filed via P7):**
+  resume identity must exclude non-judged paths (records, docs, the
+  `nyxloom-trove/` tree) or honour an ignore list — a LOG commit must
+  not cost a mutation run. Also noted: P1's container "resume" re-ran
+  all 208 for the same reason (`5ce232d1` changed `assay.toml`).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
