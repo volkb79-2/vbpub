@@ -2639,3 +2639,70 @@ grep for the "never background" sentence) is live practice in dstdns's controlle
 existing recommendation in `design-controller-checkpoint-reset.md` §5 — it adds a concrete "why the
 trigger must be proactive, not reactive" argument for the idle/boundary-gating that section (and V5.2/
 F10) already calls for.
+
+## E-017 · 2026-09-12 · session-log location, presentation, and live following
+
+**Problem.** The extraction tool had three separate operator-facing gaps:
+session IDs are useful after a terminal restart but the corresponding files
+are buried under harness-specific paths; a plain delimited brief is useful as
+an input artifact but awkward to read; and a user watching several agent panes
+has no way to keep one extracted stream visible or be told that it needs
+attention. These are one product surface, not three unrelated parsers: each
+starts from the same raw session log and must preserve the extraction's
+existing correctness boundaries.
+
+**Decision: resolve IDs strictly, with no invented fallback.** Every
+`extract-*` session-log positional accepts an existing path or a bare Claude
+Code/Codex UUID, Claude Code sub-agent ID, or opencode session ID. The resolver
+searches the harness's authoritative locations and returns exactly one match;
+zero matches and multiple matches are errors that explain how to disambiguate.
+The cwd-matching Claude project directory is checked first as a speed
+optimization, but a unique result is the correctness condition. A guessed
+"nearest" session would be especially dangerous for a resume brief, where a
+valid-looking extraction from the wrong conversation is worse than a refusal.
+
+**Decision: keep reading and copying as opposite render modes.**
+`--render-markdown` uses Rich per prose block, leaving nyxloom's separators,
+gap notes, stop notes, and machine-readable marker footer untouched. It is for
+human reading and consumes markdown syntax. `--highlight` uses Pygments to
+color markdown source while retaining every source character, so a copied
+follow stream remains valid markdown. A single whole-output renderer was
+rejected because it would reinterpret or erase the scaffolding and footer that
+`--since-file` reads back.
+
+**Decision: make following a flag on both existing dump verbs.**
+`extract --follow` applies the existing per-event selection predicate to new
+records; `extract-lossless --follow` keeps every new prose/thinking block.
+The one-shot result is printed first, then files are tailed by byte offset and
+opencode is queried by its indexed `(time_created, id)` cursor. Complete JSONL
+lines are the commit boundary, partial lines are retained, and rotation or
+truncation reopens from zero. Opencode holds back the newest row because its
+parts can arrive after the message row. The score rule's pause bonus requires
+one pending assistant event when its keep/drop decision genuinely depends on
+the next event; stable long/finding/checkpoint decisions are not delayed.
+
+A standalone `extract-follow` verb was rejected: it would need a second copy of
+selection and rendering rules and would drift from `extract` or
+`extract-lossless`. Repeatedly invoking the existing lossless dumper was also
+rejected after measuring that it rescans the whole growing file from byte zero
+on every poll. The implementation's regression test and live `strace`
+verification pin the forward-only read behavior.
+
+**Decision: attention is typed, opt-in, and honest about schema gaps.** The
+signals are `interview_pending` (Claude Code's unmatched
+`AskUserQuestion`), `checkpoint_detected` (the real extractor score, or the
+documented shape-score fallback in lossless mode), and opt-in `long_block`.
+Codex and opencode do not get a guessed interview signal because their current
+schemas provide no verified equivalent. Delivery is separate from detection:
+`--bell` writes to stderr, `--on-attention` receives typed environment
+variables, and `--notify-project` is an explicit exception allowing a short
+flagged-text excerpt in the configured notification. Follow is incompatible
+with finite-output assumptions such as `--json`, `--until`, and trailing task
+instructions, so those combinations refuse instead of silently doing less.
+
+**Status:** shipped in the session-extract wave. The implementation and
+consumer-facing examples are documented in
+[`src/nyxloom/session_extract/README.md`](../src/nyxloom/session_extract/README.md)
+and [`docs/CONSUMERS.md`](CONSUMERS.md); the product surface above is the
+short description, while this entry records the rationale and rejected
+alternatives.

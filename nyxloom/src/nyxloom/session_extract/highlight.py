@@ -31,7 +31,12 @@ def highlight_markdown(text: str, color: bool = True) -> str:
     from pygments.formatters import TerminalFormatter
     from pygments.lexers import MarkdownLexer
 
-    # pygments appends a trailing newline of its own; block joining is the
-    # caller's business (render.py's separators, follow.py's stream), same
-    # convention as render_markdown.py.
-    return highlight(text, MarkdownLexer(), TerminalFormatter()).rstrip("\n")
+    # Pygments normalizes trailing newlines before appending its own formatter
+    # terminator. Preserve the source suffix ourselves, then remove exactly
+    # that generated terminator.
+    trailing_count = len(text) - len(text.rstrip("\n"))
+    body = text[:-trailing_count] if trailing_count else text
+    rendered = highlight(body, MarkdownLexer(), TerminalFormatter())
+    if rendered.endswith("\n"):
+        rendered = rendered[:-1]
+    return rendered + ("\n" * trailing_count)

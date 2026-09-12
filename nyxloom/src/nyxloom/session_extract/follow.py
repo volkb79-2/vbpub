@@ -103,9 +103,11 @@ is created when a turn starts and its `part` rows stream in afterwards, so a
 row read the instant it appears can have no text yet, or only some of it --
 and a cursor advanced past it would lose that prose permanently. So
 OpencodeSource holds back the NEWEST row every tick and re-reads it next
-time, committing the cursor only to rows that a newer sibling proves are
-finished. Same shape of trade as the one-event delay above, for the same
-reason.
+time, committing the cursor to rows that a newer sibling proves are
+finished. When a session has no newer sibling, two unchanged observations
+are the only available end signal, so a stable final row is emitted rather
+than held forever. Same shape of trade as the one-event delay above, for the
+same reason.
 """
 
 from __future__ import annotations
@@ -207,6 +209,7 @@ class JsonlTailer:
         if st.st_size <= self.offset:
             return []
 
+        previous_offset = self.offset
         self._handle.seek(self.offset)
         chunk = self._handle.read()
         if not chunk:
@@ -216,7 +219,14 @@ class JsonlTailer:
         parts = chunk.split(b"\n")
         trailing = parts[-1]  # incomplete -- left for the next tick
         self.offset += len(chunk) - len(trailing)
-        self._own_offset = True
+        # A caller-supplied anchor may be mid-line. Reading only another
+        # partial fragment must not turn that unverified offset into one of
+        # our own newline-boundary offsets: on the next poll _rewritten()
+        # would otherwise mistake the original line for a rewrite and replay
+        # the whole file. Ownership starts only after a complete line moved
+        # the offset forward.
+        if self.offset > previous_offset:
+            self._own_offset = True
         return [p.decode("utf-8", "replace") for p in parts[:-1] if p.strip()]
 
 
@@ -265,6 +275,11 @@ class JsonlSource:
         self._lossless = lossless_mode
         self._seq = 0
         self._state = claude_code.StreamState(has_primary_thread=has_primary_thread)
+        if self._fmt == "claude-code":
+            # The first live answer may refer to an AskUserQuestion whose
+            # tool_use was already in phase 1. Rehydrate that small
+            # cross-record state once; later polls remain tail-only.
+            claude_code.prime_stream_state(path, self._state, offset)
 
     def close(self) -> None:
         self.tailer.close()
@@ -298,14 +313,29 @@ class JsonlSource:
         return arrivals
 
 
+@dataclass(frozen=True)
+class OpencodeAnchor:
+    """The pre-phase-1 boundary for an opencode follow.
+
+    The cursor identifies the newest message row that phase 1 saw. Its part
+    fingerprint lets phase 2 notice text parts appended to that same row
+    while phase 1 was reading it; a cursor alone would skip those updates.
+    """
+
+    cursor: tuple[int, str]
+    fingerprint: tuple | None = None
+
+
 class OpencodeSource:
     """New opencode `message` rows, by indexed `(time_created, id)` cursor,
     with the newest row held back until a newer sibling proves its `part`
-    rows are done streaming -- see the module docstring."""
+    rows are done streaming. A row with no newer sibling is emitted after
+    two unchanged observations -- see the module docstring."""
 
     def __init__(
         self, db: Path, session_id: str, config: ExtractConfig, lossless_mode: bool,
         cursor: tuple[int, str] | None = None,
+        anchor_fingerprint: tuple | None = None,
     ):
         self._conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         self._session_id = session_id
@@ -313,11 +343,63 @@ class OpencodeSource:
         self._lossless = lossless_mode
         self._cursor = cursor or (-1, "")
         self._seq = 0
+        self._anchor_cursor = self._cursor if anchor_fingerprint is not None else None
+        self._anchor_fingerprint = anchor_fingerprint
+        self._pending_key: tuple[int, str] | None = None
+        self._pending_fingerprint: tuple | None = None
+        self._pending_stable = False
 
     def close(self) -> None:
         self._conn.close()
 
+    def _fingerprint(self, msg_id: str, data_json: str) -> tuple:
+        parts = self._conn.execute(
+            "SELECT id, time_updated, data FROM part WHERE message_id = ? ORDER BY id ASC",
+            (msg_id,),
+        ).fetchall()
+        return (data_json, tuple(parts))
+
+    def _arrival(self, msg_id: str, time_created: int, data_json: str) -> Arrival | None:
+        if self._lossless:
+            blocks = opencode_blocks(self._conn, msg_id, time_created, data_json)
+            arrival = Arrival(blocks=blocks) if blocks else None
+        else:
+            ev = opencode.event_for_row(self._conn, self._seq, msg_id, time_created, data_json)
+            arrival = Arrival(events=[ev]) if ev is not None else None
+        self._seq += 1
+        return arrival
+
+    def _poll_anchor(self) -> list[Arrival]:
+        """Emit a changed phase-boundary row without re-emitting it unchanged."""
+        if self._anchor_cursor is None:
+            return []
+        anchor_time, anchor_id = self._anchor_cursor
+        row = self._conn.execute(
+            "SELECT id, time_created, data FROM message WHERE session_id = ? "
+            "AND time_created = ? AND id = ?",
+            (self._session_id, anchor_time, anchor_id),
+        ).fetchone()
+        if row is None:
+            return []
+        fingerprint = self._fingerprint(row[0], row[2])
+        if fingerprint == self._anchor_fingerprint:
+            return []
+        self._anchor_fingerprint = fingerprint
+        arrival = self._arrival(row[0], row[1], row[2])
+        return [arrival] if arrival is not None else []
+
+    def _remember_pending(self, row) -> None:
+        key = (row[1], row[0])
+        fingerprint = self._fingerprint(row[0], row[2])
+        if key == self._pending_key and fingerprint == self._pending_fingerprint:
+            self._pending_stable = True
+        else:
+            self._pending_key = key
+            self._pending_fingerprint = fingerprint
+            self._pending_stable = False
+
     def poll(self) -> list[Arrival]:
+        arrivals = self._poll_anchor()
         last_time, last_id = self._cursor
         rows = self._conn.execute(
             "SELECT id, time_created, data FROM message WHERE session_id = ? "
@@ -325,22 +407,35 @@ class OpencodeSource:
             "ORDER BY time_created ASC, id ASC",
             (self._session_id, last_time, last_time, last_id),
         ).fetchall()
-        if len(rows) < 2:
-            return []
+        if not rows:
+            return arrivals
 
-        arrivals: list[Arrival] = []
+        if len(rows) == 1:
+            row = rows[0]
+            self._remember_pending(row)
+            if not self._pending_stable:
+                return arrivals
+            arrival = self._arrival(row[0], row[1], row[2])
+            if arrival is None:
+                return arrivals
+            self._cursor = (row[1], row[0])
+            self._anchor_cursor = None
+            self._pending_key = None
+            self._pending_fingerprint = None
+            self._pending_stable = False
+            arrivals.append(arrival)
+            return arrivals
+
         for msg_id, time_created, data_json in rows[:-1]:
-            if self._lossless:
-                blocks = opencode_blocks(self._conn, msg_id, time_created, data_json)
-                if blocks:
-                    arrivals.append(Arrival(blocks=blocks))
-            else:
-                ev = opencode.event_for_row(self._conn, self._seq, msg_id, time_created, data_json)
-                if ev is not None:
-                    arrivals.append(Arrival(events=[ev]))
-            self._seq += 1
+            arrival = self._arrival(msg_id, time_created, data_json)
+            if arrival is not None:
+                arrivals.append(arrival)
         settled_id, settled_time, _ = rows[-2]
         self._cursor = (settled_time, settled_id)
+        self._anchor_cursor = None
+        self._pending_key = None
+        self._pending_fingerprint = None
+        self._pending_stable = False
         return arrivals
 
 
@@ -464,7 +559,16 @@ def deliver(att: AttentionEvent, config: FollowConfig, bell_out) -> None:
             "NYXLOOM_ATTENTION_EXCERPT": att.excerpt,
         })
         try:
-            subprocess.run(config.on_attention, shell=True, env=env, check=False)
+            # A hook is a side effect, not part of the extracted content. Its
+            # stdout must not corrupt `--follow | another-agent`; capture both
+            # streams and keep any diagnostic output visible on stderr.
+            completed = subprocess.run(
+                config.on_attention, shell=True, env=env, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for diagnostic in (completed.stdout, completed.stderr):
+                if diagnostic:
+                    print(diagnostic, end="", file=sys.stderr)
         except OSError as e:
             print(f"nyxloom follow: --on-attention command failed: {e}", file=sys.stderr)
 

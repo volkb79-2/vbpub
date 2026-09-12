@@ -484,6 +484,53 @@ class StreamState:
     askuserquestion_inputs: dict[str, list[Any]] = field(default_factory=dict)
 
 
+def _remember_askuserquestion(rec: dict[str, Any], state: StreamState) -> None:
+    """Carry the question metadata needed by a later tool_result."""
+    if rec.get("type") != "assistant":
+        return
+    for block in rec.get("message", {}).get("content", []) or []:
+        if (isinstance(block, dict) and block.get("type") == "tool_use"
+                and block.get("name") == "AskUserQuestion" and block.get("id")):
+            questions = block.get("input", {}).get("questions")
+            state.askuserquestion_inputs[block["id"]] = (
+                questions if isinstance(questions, list) else []
+            )
+
+
+def prime_stream_state(path: Path, state: StreamState, upto_bytes: int) -> None:
+    """Seed forward-only parsing with question metadata before its anchor.
+
+    A follow stream starts after phase 1, but Claude Code can answer an
+    AskUserQuestion in a newly-appended record whose tool_use was already in
+    the phase-1 prefix. Replaying only that prefix's tiny cross-record state
+    prevents the answer from being mistaken for ordinary tool noise. This is
+    one startup read, bounded by the caller's anchor; JsonlTailer remains the
+    only reader used on every subsequent poll.
+    """
+    if upto_bytes <= 0:
+        return
+    consumed = 0
+    try:
+        handle = Path(path).open("rb")
+    except OSError:
+        return
+    with handle:
+        for raw_line in handle:
+            next_consumed = consumed + len(raw_line)
+            if next_consumed > upto_bytes:
+                break  # the anchor itself may be in the middle of a line
+            consumed = next_consumed
+            try:
+                rec = json.loads(raw_line)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(rec, dict) or not is_conversation_record(rec):
+                continue
+            if rec.get("isSidechain") and state.has_primary_thread:
+                continue
+            _remember_askuserquestion(rec, state)
+
+
 def update_interview_pending(rec: dict[str, Any], pending: dict[str, str]) -> str | None:
     """Track unanswered AskUserQuestion tool calls across a record stream;
     return the question text when THIS record leaves one outstanding.
@@ -564,11 +611,7 @@ def parse_record(
 
     if rtype == "assistant":
         content = rec.get("message", {}).get("content", []) or []
-        for block in content:
-            if (isinstance(block, dict) and block.get("type") == "tool_use"
-                    and block.get("name") == "AskUserQuestion" and block.get("id")):
-                questions = block.get("input", {}).get("questions")
-                state.askuserquestion_inputs[block["id"]] = questions if isinstance(questions, list) else []
+        _remember_askuserquestion(rec, state)
 
         if rec.get("isApiErrorMessage"):
             # A real API-level failure (429 rate limit, overloaded_error,
@@ -778,4 +821,3 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
         events += parse_record(rec, seq, f"line{abs_i}", config, state)
 
     return events
-

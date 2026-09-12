@@ -156,6 +156,48 @@ def test_a_caller_supplied_mid_line_anchor_is_not_second_guessed(tmp_path):
     tailer.close()
 
 
+def test_a_partial_fragment_after_a_mid_line_anchor_does_not_claim_the_offset(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    first = json.dumps(_user("u1", "half-written record"))
+    fp.write_text(first[:30], encoding="utf-8")
+    tailer = JsonlTailer(fp, offset=fp.stat().st_size)
+
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(first[30:])
+    assert tailer.poll() == []
+    assert tailer.offset == 30
+    assert tailer._own_offset is False
+
+    with fp.open("a", encoding="utf-8") as f:
+        f.write("\n")
+    assert tailer.poll() == [first[30:]]
+    assert tailer.offset == len(first) + 1
+    tailer.close()
+
+
+def test_follow_primes_a_question_from_phase_one_before_reading_its_answer(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    question = _rec(type="assistant", uuid="q1", timestamp=_TS, message={
+        "role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+             "input": {"questions": [{"question": "Ship it?", "options": []}]}},
+        ],
+    })
+    _append(fp, question)
+    source = JsonlSource(fp, "claude-code", fp.stat().st_size, ExtractConfig(), False)
+
+    answer = _rec(type="user", uuid="a1", timestamp=_TS, message={
+        "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": '"Ship it?"="yes"'},
+        ],
+    })
+    _append(fp, answer)
+    arrivals = source.poll()
+    assert [e.kind for a in arrivals for e in a.events] == [EventKind.QA_PAIR]
+    assert "Ship it?" in arrivals[0].events[0].text
+    source.close()
+
+
 def test_tailer_tolerates_a_file_that_does_not_exist_yet(tmp_path):
     tailer = JsonlTailer(tmp_path / "not-created-yet.jsonl", offset=0)
     assert tailer.poll() == []
@@ -528,6 +570,22 @@ def test_a_failing_on_attention_command_does_not_stop_the_stream(tmp_path):
     follower.close()
 
 
+def test_attention_hook_stdout_does_not_contaminate_the_content_stream(tmp_path, capsys):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    out = io.StringIO()
+    follower = _follower(
+        fp, out,
+        follow_config=FollowConfig(on_attention="printf hook-output"),
+    )
+    _append(fp, _assistant("a1", "## Status\n\nDone -- landed."))
+
+    follower.tick()
+    follower.close()
+    assert "hook-output" not in out.getvalue()
+    assert "hook-output" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------
 # render modes on the live stream
 # --------------------------------------------------------------------------
@@ -554,6 +612,16 @@ def test_highlight_preserves_every_markdown_character_in_the_stream(tmp_path):
     streamed = out.getvalue()
     assert "\x1b[" in streamed  # colored...
     assert re.sub(r"\x1b\[[0-9;]*m", "", streamed) == prose  # ...but byte-identical underneath
+
+
+def test_highlight_preserves_source_trailing_newlines():
+    import re
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    source = "hello\n\n"
+    colored = highlight_markdown(source, color=True)
+    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == source
 
 
 # --------------------------------------------------------------------------
@@ -631,6 +699,41 @@ def test_opencode_source_starts_from_the_given_cursor(tmp_path):
     _opencode_message(db, "m4", 40, "assistant", "newer still")
     arrivals = source.poll()
     assert [e.text for a in arrivals for e in a.events] == ["brand new"]
+    source.close()
+
+
+def test_opencode_source_eventually_emits_a_stable_single_final_row(tmp_path):
+    # There may be no newer sibling to prove that a one-message session is
+    # finished. A stable observation is the only available end signal, so the
+    # final row is emitted on the next poll instead of being held forever.
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "the final answer")
+    source = OpencodeSource(db, sid, ExtractConfig(), lossless_mode=False, cursor=(-1, ""))
+
+    assert source.poll() == []
+    arrivals = source.poll()
+    assert [e.text for a in arrivals for e in a.events] == ["the final answer"]
+    source.close()
+
+
+def test_opencode_source_revisits_the_phase_boundary_row_when_parts_arrive(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", None)
+    source = OpencodeSource(db, sid, ExtractConfig(), lossless_mode=False, cursor=(10, "m1"))
+    before = source._fingerprint("m1", json.dumps({"role": "assistant"}))
+    source._anchor_cursor = (10, "m1")
+    source._anchor_fingerprint = before
+
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO part VALUES ('p-m1', 'm1', ?, 10, 10, ?)",
+                 (sid, json.dumps({"type": "text", "text": "arrived after phase one"})))
+    conn.commit()
+    conn.close()
+
+    arrivals = source.poll()
+    assert [e.text for a in arrivals for e in a.events] == ["arrived after phase one"]
     source.close()
 
 

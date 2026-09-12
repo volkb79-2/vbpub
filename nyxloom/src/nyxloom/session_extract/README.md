@@ -477,10 +477,10 @@ regression witness, and a test pins it to the appended size.
 Committing the offset only past complete lines also buys a checkable
 invariant — our own offset always follows a newline — which is the only way to
 catch a file truncated *and* regrown past our offset between two ticks, a
-case no size comparison can see. The caller's *starting* anchor is exempt
-from that check on purpose: it is a raw file size taken while a live session
-may be mid-write, and validating it would re-stream the whole file as "new"
-on a perfectly normal start.
+case no size comparison can see. The CLI's *starting* anchor is backed up to
+the beginning of its current line before phase 1, so a record caught mid-write
+is replayed from a parseable boundary rather than losing its completed suffix.
+The duplicate is intentional: a visible duplicate beats silent loss.
 
 The phase-1 anchor is captured **before** phase 1 parses, so a record
 appended during that parse appears twice (once in the brief, once live)
@@ -561,8 +561,11 @@ and its `part` rows stream in afterwards, so a row read the instant it
 appears can have no text yet. A cursor advanced past it would lose that prose
 permanently, so `OpencodeSource` holds back the **newest** row each tick and
 re-reads it next time, committing the cursor only to rows a newer sibling
-proves are finished. Same shape of trade as the lookahead delay, for the same
-reason.
+proves are finished. The phase-1 boundary also records the row's part
+fingerprint, so parts added to that same row during the one-shot pass are
+noticed. If no newer sibling ever arrives, two unchanged observations emit a
+stable final row rather than holding it forever. Same shape of trade as the
+lookahead delay, for the same reason.
 
 ## Delta extraction
 

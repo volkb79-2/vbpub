@@ -761,17 +761,34 @@ def _validate_render_and_follow_flags(args) -> str | None:
 
 def _follow_anchor(path: Path, fmt: str, session_id: str | None):
     """Where phase 2 picks up, captured BEFORE phase 1 parses anything: the
-    file's current size, or opencode's newest (time_created, id) row.
+    start of the file's current final (possibly partial) line, or opencode's
+    newest (time_created, id) row plus its part fingerprint.
 
     Deliberately measured BEFORE rather than after. A record appended while
     phase 1 is parsing then appears twice (once in the one-shot brief, once
     live); measured after, such a record would be skipped by BOTH and lost
     from the stream for good. A duplicate is visible and harmless; silent
-    loss is neither. The window is one parse long either way.
+    loss is neither. The window is one parse long either way. For JSONL,
+    backing up to the current line's start closes the race where the raw
+    file-size anchor lands in the middle of a record and the remaining suffix
+    cannot be parsed.
     """
     if fmt != "opencode":
         try:
-            return path.stat().st_size
+            size = path.stat().st_size
+            if size == 0:
+                return 0
+            with path.open("rb") as handle:
+                position = size
+                while position:
+                    start = max(0, position - 8192)
+                    handle.seek(start)
+                    chunk = handle.read(position - start)
+                    newline = chunk.rfind(b"\n")
+                    if newline >= 0:
+                        return start + newline + 1
+                    position = start
+            return 0
         except OSError:
             return 0
 
@@ -782,16 +799,24 @@ def _follow_anchor(path: Path, fmt: str, session_id: str | None):
     db = opencode_adapter._db_path(path)
     if db is None:
         return None
+    from .session_extract.follow import OpencodeAnchor
+
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         row = conn.execute(
-            "SELECT time_created, id FROM message WHERE session_id = ? "
+            "SELECT time_created, id, data FROM message WHERE session_id = ? "
             "ORDER BY time_created DESC, id DESC LIMIT 1",
             (session_id,),
         ).fetchone()
+        if row is None:
+            return OpencodeAnchor((-1, ""))
+        parts = conn.execute(
+            "SELECT id, time_updated, data FROM part WHERE message_id = ? ORDER BY id ASC",
+            (row[1],),
+        ).fetchall()
+        return OpencodeAnchor((row[0], row[1]), (row[2], tuple(parts)))
     finally:
         conn.close()
-    return (row[0], row[1]) if row else (-1, "")
 
 
 def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anchor,
@@ -820,8 +845,15 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
         from .session_extract.adapters import opencode as opencode_adapter
 
         db = opencode_adapter._db_path(path)
+        if isinstance(anchor, follow_mod.OpencodeAnchor):
+            cursor = anchor.cursor
+            anchor_fingerprint = anchor.fingerprint
+        else:
+            cursor = anchor
+            anchor_fingerprint = None
         source = follow_mod.OpencodeSource(
-            db, session_id, config, lossless_mode, cursor=anchor,
+            db, session_id, config, lossless_mode, cursor=cursor,
+            anchor_fingerprint=anchor_fingerprint,
         )
     else:
         source = follow_mod.JsonlSource(

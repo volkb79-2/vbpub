@@ -1135,6 +1135,15 @@ def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkey
     assert seen == {"offset": size_before, "lossless": False}
 
 
+def test_follow_anchor_rewinds_to_the_start_of_a_partial_jsonl_record(tmp_path):
+    prefix = b'{"type":"user"}\n'
+    partial = b'{"type":"assistant","message":{"content":['
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(prefix + partial)
+
+    assert cli._follow_anchor(fp, "claude-code", None) == len(prefix)
+
+
 def test_extract_lossless_follow_uses_lossless_semantics_for_phase_two(tmp_path, capsys, monkeypatch):
     from nyxloom.session_extract import follow as follow_mod
 
