@@ -341,6 +341,23 @@ never a silent edit to the contract file.
   unit it already committed in M1); P6/P5 handoffs will carry D-27..D-29;
   SPEC-V8 D.7 item (5) corrected.
 
+- **RW-31 (transport: exec and socket as interchangeable carriers, D-30):**
+  operator ~14:50Z after the controller's transport assessment (exec today
+  = 4 docker API calls + a python spawn per verb, 100–400 ms idle, seconds
+  under load, one exec per 30 s status poll; mounted Unix socket = same
+  protocol, no spawn, push-capable, needs a devcontainer mount; TCP
+  rejected — privileged daemon, `network_mode: none`, no multi-host need):
+  "make `docker exec` and the socket fully interchangeable, both offering
+  the full functionality … build the socket in parallel and ship as well so
+  I can switch directly later". Ruling: design amendment A2 / D-30 — one
+  listener, two carriers, identical verbs/responses/errors, `watch`
+  streaming on both, docker-group trust boundary on the socket + optional
+  uid allowlist, client `transport = auto|exec|socket` with `doctor` dual
+  probe; exec stays the default and a permanent fallback; only the
+  template mount needs a rebuild (P8 M5 after review); parity proven by a
+  probe container before any rebuild. Scope lands in P6 (daemon), P8 M5
+  (mount), P5 (client).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |

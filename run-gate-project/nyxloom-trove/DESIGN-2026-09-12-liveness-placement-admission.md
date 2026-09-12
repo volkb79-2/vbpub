@@ -311,3 +311,51 @@ WATCH role (`start --progress-stream/--idle-bound/--ceiling/--on-stall`,
 gains `cgroup.kill` on `rg-*` leaves only); **P5** shrinks to RG-56 admission
 + RG-62 as policy author/consumer/reconciler with the in-process fallback
 watch; SPEC-V8 D.7 item (5) reads "its own `cgprofile.slice`".
+
+## A2 — Transport (RW-31, operator ~14:50Z): `docker exec` and the socket are interchangeable carriers of one protocol
+
+The operator asked for both transports to offer the FULL functionality, exec
+staying the default now (no devcontainer rebuild, no session loss), the
+socket built in parallel and shipped so the switch later is a flip.
+
+**D-30 — One protocol, two carriers.** The serve loop speaks newline-
+delimited JSON, one request per connection, on ONE listener,
+`/run/cgprofile/ctl.sock`; the daemon stack bind-mounts the directory
+`/run/cgprofile` to the same path on the host (`root:docker 0770`, socket
+`0660`). Carriers:
+- **exec** (contract v1, default today): `docker exec cgprofile-host-daemon
+  cgprofile ctl <verb> --json` — the in-image client connects to the socket
+  from inside; arrives as uid 0; always authorised. Trust boundary = docker
+  socket access.
+- **socket**: the consumer (run-gate in a devcontainer, `ciu gate`)
+  connects to the mounted path with stdlib `socket`; trust boundary = the
+  `docker` group (the same principals who can exec), plus an optional
+  `SO_PEERCRED` uid allowlist (`CGPROFILE_ALLOW_UIDS`) for finer control.
+Every verb, every response, every error code and the `contract` field are
+identical on both. Streaming (`ctl watch <session>`: NDJSON until the session
+ends, D-27) works on both — over exec it is one long-lived exec whose stdout
+run-gate reads line by line, so the per-lane cost falls from one exec per
+30 s poll to one exec per lane. Timeouts are per verb, not per carrier.
+`ctl version` reports `transports: ["exec","socket"]` and the socket path.
+
+**Client side (run-gate, ciu gate):** `[profile] transport = "auto" | "exec"
+| "socket"` (env `RUN_GATE_PROFILE_TRANSPORT`); `auto` = connect to the
+socket path if present, else exec; one request builder and one response
+parser behind a two-line carrier seam; `doctor` probes BOTH carriers and
+prints which one is live and why the other is not. Switching later is a
+default flip; exec stays as a permanent fallback for hosts without the mount
+(locked-down CI, a devcontainer created before the mount existed) because it
+costs nothing to keep.
+
+**What needs a rebuild:** only the devcontainer template's mount of
+`/run/cgprofile` (mdt, P8 follow-up M5); until then exec is unchanged and
+`auto` resolves to exec. Parity is proven WITHOUT a rebuild by a throwaway
+probe container that mounts the directory (reviewer / P3 live probes run
+every verb over both carriers against the same daemon and diff the JSON).
+
+**Packages:** P6 (daemon: listener on the shared directory, dir/socket
+permissions, peer-cred allowlist, `watch` streaming, `version.transports`,
+contract v1.1 §1.1 amendment "transport-agnostic protocol, two carriers");
+P8 M5 after its review (template mount line + docs); P5 (run-gate transport
+seam, `auto`, `doctor` dual probe, `watch` consumption). TCP stays out
+(D-15 `network_mode: none`; see the transport assessment recorded in RW-31).
