@@ -361,31 +361,118 @@ passed**. Plus `test_cli_run.py` (full file, real end-to-end subprocess) +
 `test_docs_examples_and_vocabulary.py` — **148 passed**. Full gate still
 deferred to A6.
 
-**Not done this session (honest gaps, BRIEF-4's own first items):**
-- **The real end-to-end fixture-project test BRIEF-3 names explicitly**:
-  a thread-join-style hang → `hung` within ~45s, and a busy-loop →
-  `budget_exceeded` (not `hung`), BOTH through the real installed `assay
-  run` CLI against a tiny real pytest project with a real compare-swap
-  mutant (`x <= 0` → `x < 0` is the concrete, verified-available direction
-  — `_COMPARE_SWAP` in `adapters/python.py` maps `LtE` → `Lt`; at `x = 0`
-  the baseline is `True` and the mutant is `False`, which is what needs to
-  differ for the mutant to change behaviour at all). NOT attempted — a
-  checkpoint-budget decision, not a design gap: by the time A3's
-  implementation, its full closed-vocabulary threading, and the two
-  real-pre-existing-gap fixes above were green, the session was already
-  well past the checkpoint clause's own ~90-call ceiling.
-- **The ≥3-planted-mutant table for the monitoring loop.** The 100%
-  line+branch self-check above is real and done; a planted-mutant table
-  is BRIEF-3's OWN, separate, additional ask on top of it (prove a real
-  mutation of the loop's own logic is actually caught by a real test, not
-  merely that every line/branch executes at least once) — not done this
-  session.
+**Both of session 4's "not done" items above were session 4's own honest
+gaps — both are now DONE, in session 5.** See the new section immediately
+below for the full account (short version: the real e2e test's own first
+run found a genuine, previously-undetected bug — the plugin's own event
+lines were never valid JSON — fixed, and the fix is what let the e2e test
+pass for real; the planted-mutant table then found that TWO of its own
+four candidate mutants were not caught by the existing suite, each fixed
+with a new precision-targeted test rather than recorded as a known gap).
+
+## A3 (session 5) — remainder: real e2e fixture tests + planted-mutant table
+
+Commits `99463ae5` (e2e tests + plugin bug fix) and `d1540eda`
+(planted-mutant table). Full narrative in the LOG's own entries for both
+hashes — this section is the short version plus anything the LOG does not
+already say.
+
+**The two real end-to-end tests** (`tests/test_cli_run.py`):
+`test_run_liveness_classifies_a_thread_join_hang_as_hung` and
+`test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung`.
+Both build a real two-commit `git_repo`, a real `python:compare-swap` site
+(`x <= 0` → `x < 0`, exactly BRIEF-4's own verified-available design), a
+real `-m pytest` argv, and assert on the real verdict document's
+`claims[1].mutation.hung`/`.budget_exceeded`, `claims[1].status`/
+`.reason_code`, and `judgment.r2.liveness`. 71s combined wall-clock
+(hang ~32-40s, busy-loop ~35-40s, each independently under BRIEF-3's own
+~90s-per-test bound — the two are NOT required to fit ~90s combined,
+only individually, per BRIEF-3's own wording next to the hang bullet).
+
+**The bug the first test's own FAILURE found** (not inspection): the
+materialized pytest plugin's `pytest_runtest_logreport`/
+`pytest_sessionfinish` built each NDJSON event line with `%r` (`repr()`)
+on string/duration fields — Python's `repr()` of a string is
+single-quoted, and `repr(None)` is the bare token `None`; NEITHER is valid
+JSON. Every `json.loads` call downstream (`compute_expect_next_event_
+within_s`, `_read_events_progress`) treats a `ValueError` as a tolerated
+torn last line (correct behaviour for an actually-torn line from a plugin
+still writing) and silently skips it — so this was never surfaced as an
+error, on any line, ever. Two concrete, previously-invisible consequences:
+`slowest_test_s` was never found (the loop always used the coarse
+`max(60s, baseline_s/4)` idle-threshold fallback, never the tight `max(3×
+slowest, 15s)` bound A3 was designed around), and the "`session_finish`
+seen, still alive 30s later" `hung` branch (RW-33's own second
+distinguishing case) was DEAD in practice — every unit test for it feeds
+`_read_events_progress` a hand-built, already-valid fixture, never the
+real plugin's own output, so nothing had ever exercised the real path.
+Fixed by building a real `dict` and calling `json.dumps` instead. A new
+fast unit test (`test_materialized_plugin_writes_valid_json_events`,
+`tests/test_liveness.py`) pins this by materializing the real plugin,
+importing it directly, and calling its hooks — catches a regression in
+under a second, independent of the ~70s real CLI proof.
+
+**The planted-mutant table** (BRIEF-3's own separate, additional ask on
+top of the 100% line+branch self-check — proving a real logic defect is
+CAUGHT, not merely that every line executes once): all four of BRIEF-4's
+sketched candidates were planted (`cp` backup/restore, never `git checkout
+--`). Two were caught immediately by the existing suite exactly as
+predicted (removing the `session_finish` disjunct; swapping
+`LivenessHungExpired` for plain `TimeoutExpired`, the latter caught by
+FOUR tests, not just the one BRIEF-4 named). The other two — off-by-one
+`>=`→`>` on the idle threshold, and the same on the CPU-growth floor —
+were NOT caught: both existing tests for each condition only exercise
+values FAR from the actual boundary (a lower-bound-only assertion for the
+first; deltas of `0.0`/`2.0` against a `1.0` floor for the second), so an
+off-by-one that only matters exactly AT the boundary was invisible to
+both. Per BRIEF-4's own explicit rule ("fix the test... do not just
+record it as uncaught, known gap"), both got a new, boundary-exact test
+(`test_idle_threshold_is_inclusive_at_the_exact_boundary`,
+`test_cpu_growth_floor_is_inclusive_at_the_exact_boundary`) rather than a
+"known gap" note — zero production-code changes in this commit, the fix
+is entirely in test precision. `liveness.py` stays 100% line+branch (285
+stmts/78 branches) throughout.
+
+**Coverage self-check, session 5:** `src/assay/liveness.py` — **100%
+line+branch**, unchanged shape from session 4 (285 statements, 78
+branches, 0 missing; 70 tests across `test_liveness.py`/`test_liveness_
+runner_monitor.py`/`test_liveness_proc_helpers.py`, up from 67). One
+transient false 99%/1-missing reading occurred mid-session after several
+mutate/restore cycles reused stale `.coverage`/`__pycache__` state across
+different file CONTENTS in the same process — `rm -f .coverage` plus
+clearing `__pycache__` and re-running confirmed 100% for real; noted here
+so a future session does not mistake this artifact for a regression.
+
+**Regression, session 5 (targeted, GREEN):** `test_liveness.py` (39),
+`test_liveness_runner_monitor.py` + `test_liveness_proc_helpers.py` +
+`test_mutation_hung_bucket.py` (68→70 combined), `test_runner_execute.py`/
+`test_mutation_judge.py`/`test_verify_hung_bucket.py`/`test_verdict_
+reason_codes.py`/`test_verdict_conformance.py`/`test_errors.py` (768),
+plus the two new e2e tests. No full `mutation`/`runner`/`verdict`-named
+2107-test sweep this session (a call-budget choice — the targeted set
+above is the exact surface this session's own changes reached). Full gate
+(`tools/tester-unified-gate.sh`) still deferred to A6, unchanged from
+session 4.
+
+**Not done this session — A4/A5/A6, all as BRIEF-4 left them:**
 - A4 (progress-stream fields: `test` events to the stream for the
   baseline, `plan.slowest_test_s`/`expect_next_event_within_s`,
   `candidate.tests_completed`, `"test"` in `PROGRESS_EVENTS`) — untouched.
   `compute_expect_next_event_within_s` and the baseline
   `ASSAY_LIVENESS_EVENTS` wiring A3 shipped are A4's own shared
-  prerequisite, already done; A4's remaining work is reading `tests_
-  completed`/`slowest_test_s` back onto the wire, which this session did
-  not reach.
-- A5/A6 — untouched, unchanged from BRIEF-3.
+  prerequisite, already done (and, as of this session, PROVEN to actually
+  work end to end, not merely unit-tested against hand-built fixtures);
+  A4's remaining work is reading `tests_completed`/`slowest_test_s` back
+  onto the wire, which this session did not reach. **A4 gets a real
+  benefit from this session that BRIEF-4 could not have anticipated**:
+  because the plugin now writes valid JSON, `slowest_test_s` genuinely
+  populates from a real baseline run, so A4's own `plan.slowest_test_s`
+  field will carry a REAL measured value rather than one that always
+  happened to look plausible while silently never being read.
+- A5 (`--rejudge`/`--rejudge-outcome`) — untouched, unchanged from
+  BRIEF-1/BRIEF-2's own sketch; `--rejudge-outcome hung` is implementable
+  now that the bucket exists (session 4), same as BRIEF-4 already noted.
+- A6 (close-out: docs, `CHANGES.md`, backlog rows, the real gate) —
+  untouched; still needs ALL of A4/A5 first, per the handoff's own
+  ordering. `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4) AND
+  A3(session 5) in one pass — never touched for any of the three.

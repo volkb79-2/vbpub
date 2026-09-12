@@ -412,3 +412,170 @@ exists, in a small follow-up entry-only commit).
   PID 680903/680904 joined partway through) — this session never ran
   the shared assay R2 mutation-lane gate itself, only targeted pytest,
   which does not conflict with either per the handoff's own binding rule.
+
+### `99463ae5` — A3 remainder: real e2e liveness fixture tests + a real plugin JSON bug they found (session 5)
+
+- BRIEF-4's own first item, done: `test_run_liveness_classifies_a_thread_
+  join_hang_as_hung` and `test_run_liveness_classifies_a_busy_loop_as_
+  budget_exceeded_not_hung`, both in `tests/test_cli_run.py`, through the
+  REAL installed `assay run` CLI. Fixture design exactly per BRIEF-4: a
+  base commit with `def guard(x): return False`, a second commit
+  introducing `def guard(x): return x <= 0` (the compare-swap site, on a
+  changed line), a `tests/test_mod.py` whose test starts a background
+  thread blocked on `threading.Event().wait()`, calls `guard(0)` (baseline
+  `True`) to `.set()` the event before `t.join()` with NO timeout, inside
+  the test body — so a mutant's `x < 0` (compare-swap `LtE`→`Lt`, `False`
+  at `x=0`) never signals the event and `t.join()` blocks forever at ~0%
+  CPU, entirely inside the `call` phase (never reaching
+  `pytest_sessionfinish`, so A2's `os._exit` cure cannot mask it). The
+  busy-loop sibling reuses the identical fixture shape but the
+  mutant-only branch spins `while True: total += 1` instead of blocking.
+  Both lanes: `rigor = ["R0", "R2"]`, `argv` invoking `-m pytest` (so
+  liveness auto-activates), `source_roots = ["pkg"]`,
+  `operators = ["python:compare-swap"]`, `jobs = 1`. Per-candidate budgets
+  chosen deliberately relative to `LivenessRunner`'s own two fixed
+  thresholds (`_HUNG_CPU_WINDOW_S=30s`, the 15s idle floor from a fast
+  baseline): the hang lane's `budget_per_candidate = "50s"` sits well
+  above the ~31s a CORRECT loop needs to reach `hung` on its own (so only
+  a regressed loop would ever wait out the budget); the busy-loop lane's
+  `"35s"` is deliberately PAST the 30s CPU-growth window (an 8-10s budget
+  would prove nothing about the CPU-growth branch at all, since `hung`
+  structurally cannot fire before 30s regardless of what the candidate is
+  doing — this session's own first draft used a short budget and had to
+  be corrected once the reasoning was checked against the code, not
+  merely against the brief's prose).
+- **A real, previously-undetected bug, found by the FIRST test's own
+  failure, not by inspection.** First run: the hang test got
+  `LANE_TIMEOUT` (plain elapsed-budget expiry) instead of the expected
+  `CANDIDATE_HUNG` — the candidate genuinely hung (confirmed: it ran the
+  full 50s budget), but `LivenessRunner._monitor` never classified it
+  `hung`. Isolated by driving `LivenessRunner` directly (no CLI, no
+  pytest) against a bare `threading.Event().wait()` subprocess with the
+  REAL default `cpu_reader`/`monotonic`/`sleep` — this DID correctly
+  classify `hung` at `t=30.0s`, proving the loop's own decision logic is
+  correct in isolation. Then reproduced the exact CLI scenario standalone
+  (bypassing pytest's own test harness so the working directory survives
+  inspection) and read `.assay/liveness/baseline.ndjson` directly: every
+  line was **not valid JSON** —
+  `{"event": "test", "nodeid": 'tests/test_mod.py::...', "outcome":
+  'passed', ...}` — single-quoted `nodeid`/`outcome` values. Root cause:
+  `_PLUGIN_SOURCE`'s `pytest_runtest_logreport`/`pytest_sessionfinish`
+  built each line with Python's `%r` (`repr()`) on `nodeid`/`outcome`/
+  `duration_s` — `repr()` of a string is SINGLE-quoted (JSON requires
+  double quotes) and `repr(None)` is the bare token `None` (JSON's `null`
+  is a different token). `compute_expect_next_event_within_s`/
+  `_read_events_progress` both catch `json.loads`'s `ValueError` and skip
+  the line as a "tolerated torn line" (BY DESIGN, for a genuinely torn
+  LAST line from a plugin still writing) — so this was silently swallowed
+  rather than raised, on EVERY line, always. Effect: `slowest_test_s` was
+  NEVER found (`compute_expect_next_event_within_s` always fell to the
+  coarse `max(60s, baseline_s/4)` fallback, never the tight
+  measurement-based `max(3×slowest, 15s)` bound — 60s instead of 15s in
+  this fixture's own case, which is exactly why the 50s hang-lane budget
+  elapsed first) and `saw_session_finish` was NEVER `True` (the
+  "`session_finish` seen, still alive 30s later" `hung` branch RW-33
+  names in `LivenessRunner`'s own docstring was live, tested-in-isolation
+  code that could never actually fire against a real candidate — every
+  existing test for that branch feeds `_read_events_progress` a
+  HAND-CONSTRUCTED, already-valid-JSON fixture, never the real plugin's
+  own output). No existing unit test caught this because every one of
+  them (`test_liveness_proc_helpers.py`'s
+  `compute_expect_next_event_within_s`/`_read_events_progress` tests)
+  hand-constructs its own valid-JSON event lines rather than running the
+  plugin's own code — exactly the independent-oracle gap a real
+  end-to-end test exists to close, and exactly what BRIEF-3/BRIEF-4 asked
+  this session to attempt for this reason.
+- **Fix**: `_PLUGIN_SOURCE`'s two hooks now build a real `dict` and call
+  `json.dumps` (stdlib — `import json` added to the plugin's own tiny
+  import block) instead of hand-rolling a JSON-shaped string with `%r`.
+  Files: `src/assay/liveness.py` (the plugin source string + a new
+  docstring paragraph recording the bug for future maintainers, right
+  above `_PLUGIN_SOURCE`), `tests/test_cli_run.py` (the two new e2e
+  tests), `tests/test_liveness.py` (new:
+  `test_materialized_plugin_writes_valid_json_events` — materializes the
+  plugin, imports it via `importlib.util` [no real pytest subprocess,
+  matching this file's own stated "no real subprocess" scope, see its
+  module docstring], calls both hooks directly with a fake `report`/
+  `exitstatus`, asserts every emitted line is valid, correctly-typed JSON,
+  including the `None`-duration → JSON `null` edge case and an explicit
+  `"'...'" not in line` / `'"..."' in line` pin of the exact regression
+  symptom — catches the bug in <1s rather than only via the ~70s real CLI
+  test).
+- `liveness.py`: **100% line+branch, unchanged shape** (285 stmts/78
+  branches) — the fix changes only the plugin's own DATA string, not
+  `liveness.py`'s own executable surface.
+- Regression, GREEN: `test_liveness.py` (39), `test_liveness_runner_
+  monitor.py` + `test_liveness_proc_helpers.py` + `test_mutation_hung_
+  bucket.py` (68 combined, with the coverage run above), `test_runner_
+  execute.py`/`test_mutation_judge.py`/`test_verify_hung_bucket.py`/
+  `test_verdict_reason_codes.py`/`test_verdict_conformance.py`/
+  `test_errors.py` (768) — plus the two new e2e tests themselves (71s
+  combined wall-clock; each independently well under BRIEF-3's own ~90s-
+  per-test bound). No full `mutation`/`runner`/`verdict`-named sweep this
+  session (see REPORT's own call-budget note) — the targeted set above is
+  the same surface A3 touched, chosen to catch a regression in exactly
+  the areas this commit's fix reaches.
+- HOST LOAD: `/proc/pressure/memory` `full avg10` was 6.92–9.43 (ABOVE the
+  5.0 back-off threshold) immediately before the real e2e run was due;
+  backed off via a bounded `Monitor` poll (8×15s ceiling) rather than a
+  raw sleep, until it read 4.32, then proceeded. `nice -n19`/`ionice -c3`
+  for every pytest invocation; serial; targeted files throughout. The
+  busy-loop mutant's own ~100%-of-one-core spin runs at normal (non-
+  niced) priority for ~35s by construction (`LivenessRunner` launches the
+  CANDIDATE directly via `Popen`, not through this session's own
+  `nice`-prefixed shell) — bounded and brief by the lane's own small
+  `budget_per_candidate`, not left running.
+
+### `d1540eda` — A3: ≥3 planted-mutant table for the monitoring loop (session 5)
+
+- BRIEF-4's own second item, done. Four candidate mutants BRIEF-4
+  sketched, each hand-planted with a `cp`-backup/restore cycle (never
+  `git checkout --`), targeted tests run, restored before the next:
+  1. `idle_for >= self._expect_next_event_within_s` → `>`: **NOT caught**
+     by the existing suite (`test_idle_with_flat_cpu_is_hung` only pins a
+     LOWER bound, `clock.t >= 30.0` — with the default 30s CPU window
+     dominating a 15s idle floor, the off-by-one just fires one tick
+     later and still satisfies that assertion). This is a real gap in the
+     session 4 test suite's own precision, not a `liveness.py` defect —
+     fixed by a NEW test,
+     `test_idle_threshold_is_inclusive_at_the_exact_boundary`
+     (`tests/test_liveness_runner_monitor.py`), which monkeypatches
+     `_HUNG_CPU_WINDOW_S` down to 2.0s so the idle threshold (5.0s) is the
+     LAST-satisfied condition, then pins `hung` firing at the exact tick
+     (`clock.t == 5.0`) — the mutant now fires at `6.0` and the test
+     fails as designed.
+  2. `cpu_growing = (cpu_now - baseline_cpu) >= _HUNG_CPU_GROWTH_FLOOR_S`
+     → `>`: **also NOT caught** (the two existing CPU tests use deltas of
+     `0.0` and `2.0`/sample, never exactly the `1.0` floor). Fixed by a
+     second new test, `test_cpu_growth_floor_is_inclusive_at_the_exact_
+     boundary`, a stepped `cpu_reader` (`0.0` for 30 samples, then
+     exactly `1.0`) holding the observed delta at precisely the floor
+     value across several ticks — correct `>=` reads that as "growing"
+     (plain `TimeoutExpired` at `clock.t == 35.0`); the mutant reads the
+     same delta as flat and raises the `hung` subclass at `t == 30.0`.
+  3. Removing the `session_finish_at is not None and ...` disjunct: caught
+     as BRIEF-4 predicted, by
+     `test_session_finish_then_still_alive_is_hung_regardless_of_cpu`. No
+     new test needed.
+  4. Swapping `LivenessHungExpired` for plain `subprocess.TimeoutExpired`
+     in the hung-raise branch: caught as BRIEF-4 predicted, by FOUR tests
+     (`test_idle_with_flat_cpu_is_hung`, both new boundary tests above,
+     and `test_real_subprocess_thread_join_style_hang_is_killed_and_
+     classified_hung`) — broader than BRIEF-4's single-test prediction.
+     No new test needed.
+- Per BRIEF-4's own explicit rule ("a mutant NOT caught by an existing
+  test is a real bug in this session's own test suite — fix the test...
+  do not just record it as uncaught, known gap"): mutants 1 and 2 each
+  got a real fix (a new, precision-targeted test), not a "known gap"
+  note. Zero production-code changes this commit — both fixes are tests.
+- `liveness.py` stays 100% line+branch (285 stmts/78 branches) with the
+  two new tests added (70 tests total across the three liveness-runner-
+  monitor-adjacent files, up from 68). One transient false-99%/1-missing
+  coverage reading occurred mid-session after several mutate-restore
+  cycles reused the same `.coverage`/`__pycache__` state across different
+  file CONTENTS in the same process — a clean re-run after `rm -f
+  .coverage` and clearing `__pycache__` confirmed 100%; recorded here so
+  a future session does not mistake stale coverage state for a real
+  regression.
+- File: `tests/test_liveness_runner_monitor.py` only (+87 lines, two new
+  tests).
