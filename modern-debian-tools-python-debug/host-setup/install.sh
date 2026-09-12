@@ -91,6 +91,23 @@ fi
 # shellcheck disable=SC1091
 . /etc/mdt/host-setup.env
 
+# A config that predates a key added to host-setup.env.example since has NO
+# line for it at all (not even empty) -- render()'s own "empty/unset =
+# directive dropped" rule then silently removes every directive that uses
+# it from the rendered unit(s), which for e.g. dev-gates.slice means an
+# UNBOUNDED admission capacity object with no mechanical signal at all
+# (RG-55 P8 review round 1, B3). Compares NAME presence only (`^KEY=`), not
+# values: several keys are intentionally shipped empty in the example
+# itself (DEV_MEMORY_MIN_GUARANTEED_CEILING, DEV_BUILDKITD_CPU_QUOTA,
+# IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
+MISSING_KEYS=""
+while IFS= read -r key; do
+  grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
+done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
+if [ -n "$MISSING_KEYS" ]; then
+  echo "WARN: your /etc/mdt/host-setup.env predates these keys:${MISSING_KEYS} — the rendered unit(s) using them will be unbounded (directive dropped, not defaulted). Add them from host-setup.env.example (see README.md \"Upgrading a host that already runs mdt host-setup\" for the additive sequence), then re-run this script. (--force/--wizard also pick them up, but re-render/reactivate the WHOLE estate from the example's numbers live — see the same README section before using either on an already-tuned host.)"
+fi
+
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
 if [ -z "${IO_DEV_PATH:-}" ]; then
@@ -180,6 +197,20 @@ render "$HERE/units/docker-scope-default-limits.conf.in" \
 mkdir -p /etc/systemd/system/docker.socket.d
 install -m 0644 "$HERE/units/docker-api-socket.conf" \
   /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
+
+# /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
+# templates/devcontainer.json bind-mounts to reach the cgroup-profiler
+# daemon's control socket. No template variables, installed directly like
+# docker-api-socket.conf above — see units/tmpfiles-cgprofile.conf for the
+# full reasoning. `systemd-tmpfiles --create` applies it immediately
+# (idempotent — a directory that already has the right mode/owner is a
+# no-op) rather than waiting for the next boot's automatic
+# systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
+# exist" requirement is satisfied the moment this script finishes, not
+# after a reboot.
+install -m 0644 "$HERE/units/tmpfiles-cgprofile.conf" /etc/tmpfiles.d/cgprofile.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/cgprofile.conf \
+  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.

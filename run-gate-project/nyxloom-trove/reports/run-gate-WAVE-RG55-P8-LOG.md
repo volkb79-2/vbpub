@@ -465,3 +465,32 @@ covered; only the comment was incomplete).
 Verify: `bash -n scripts/mdt-apply-dev-caps.sh scripts/check.sh` clean;
 `python3 -m py_compile scripts/mdt-slice-audit.py` clean;
 `shellcheck -S warning` on both shell scripts clean (no new findings).
+
+### C5 — install.sh: B3 WARN mechanism, M5 tmpfiles install (hash: see next entry)
+
+(B3) Right after sourcing `/etc/mdt/host-setup.env`, a new block extracts
+every `^KEY=` name from `host-setup.env.example` and prints one named WARN
+listing every key present in the example but absent (no line at all, not
+even empty) from the installed config — "your config predates these keys:
+… the rendered unit(s) using them will be unbounded". Compares NAME
+presence only, not values: several keys are intentionally shipped empty in
+the example itself (`DEV_MEMORY_MIN_GUARANTEED_CEILING`,
+`DEV_BUILDKITD_CPU_QUOTA`, `IO_DEV_PATH`) — a declared-but-empty key is not
+a finding. Points at the new README "Upgrading a host that already runs
+mdt host-setup" section (C7) for the fix, and names `--force`/`--wizard`'s
+own estate-wide-activation caveat inline.
+
+(M5/D-30) New `units/tmpfiles-cgprofile.conf` (static, no render vars,
+installed the same way `docker-api-socket.conf` already is) installed to
+`/etc/tmpfiles.d/cgprofile.conf` and applied immediately
+(`systemd-tmpfiles --create`) rather than waiting for the next boot, since
+`templates/devcontainer.json`'s bind mount (`--mount`, C9) refuses a
+missing source.
+
+Verify: `bash -n install.sh` clean; `shellcheck -S warning install.sh`
+clean; `grep -n MISSING_KEYS install.sh` shows the new block;
+`grep -n tmpfiles-cgprofile install.sh` shows the install + apply lines.
+B3's WARN mechanism cannot be exercised without root/`/etc/mdt` (HOST LOAD:
+no host mutation) — its companion `check.sh` FAIL mechanism (next commit)
+IS exercised, via a mocked cgroupfs, and is the actual enforcement; this
+WARN is the early, loud, install-time signal.
