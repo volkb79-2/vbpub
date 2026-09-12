@@ -7198,6 +7198,7 @@ class TestFootprintManifestBuild:
             "lanes": {"suite": {
                 "runs": 1, "completed_runs": 1,
                 "scope": "container-shared", "method": "daemon",
+                "source": "sampled-max",
                 "duration_s": {"median": 10.0, "max": 10.0},
                 "memory_peak_bytes": {"median": 734003200, "max": 734003200},
                 "memory_peak_over_baseline_bytes": {"median": 209715200,
@@ -7336,6 +7337,49 @@ class TestFootprintVerbCLI:
         raw = (proj / run_gate.FOOTPRINT_FILE_NAME).read_text()
         assert raw.endswith("\n") and not raw.endswith("\n\n")
         assert list(json.loads(raw).keys()) == sorted(json.loads(raw).keys())
+
+    def test_bare_host_rusage_run_makes_write_stop_refusing(
+            self, tmp_path, monkeypatch, capsys):
+        # RG-57's own "consequence to exploit" (the handoff's wording): a
+        # project whose lanes are ALL bare-host used to have `footprint
+        # --write` refuse FOREVER (bare-host lanes were categorically
+        # unprofiled) -- a REAL run through main(), not a synthetic
+        # `record_profiled_run` injection, proves the rusage path alone is
+        # now enough to make one PASS. `RESOURCE_SERIES_GETTERS`/
+        # `build_footprint_manifest` need zero code changes for this to
+        # work (design-time claim, verified live here).
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        assert run_gate.main(["suite"]) == 0
+        capsys.readouterr()
+        code = run_gate.main(["footprint", "--write"])
+        assert code == 0, capsys.readouterr().err
+        out = capsys.readouterr().out
+        assert "[source: rusage-maxrss]" in out
+        on_disk = read_footprint(proj)
+        assert on_disk["lanes"]["suite"]["runs"] == 1
+        assert on_disk["lanes"]["suite"]["method"] == "rusage"
+        assert on_disk["lanes"]["suite"]["scope"] is None
+        assert on_disk["lanes"]["suite"]["source"] == "rusage-maxrss"
+        assert on_disk["lanes"]["suite"]["memory_peak_bytes"]["median"] > 0
+        # doctor's own consolidated caveat (cmd_doctor section 6) — the
+        # same disclosure `_fmt_footprint_row` already prints, surfaced
+        # again where an operator is most likely to be reading for it.
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        doctor_code = run_gate.main(["doctor"])
+        doctor_out = capsys.readouterr().out
+        assert doctor_code == 0
+        assert "rusage-maxrss" in doctor_out
+        assert "footprint source" in doctor_out
 
     def test_write_with_a_lane_filter_is_refused(self, tmp_path, monkeypatch,
                                                   capsys):
@@ -14060,63 +14104,201 @@ class TestAwaitContainerProfilingWiring:
 
 
 class TestBareHostProfilingWiring:
-    def test_host_pressure_line_and_record_fields(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
-        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
-                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
-        repo, proj = make_history_repo(tmp_path, """\
+    """RG-57/RW-27b: a bare-host lane IS profiled once `[profile]` is
+    enabled -- the daemon path (self container id + token, scope ALWAYS
+    `container-shared`) when a daemon is reachable, coarse `getrusage
+    (RUSAGE_CHILDREN)` accounting (`method: "rusage"`, NEVER a
+    `BasicSampler` -- RW-27b, explicit and deliberate) when it is not."""
+
+    def _config(self):
+        return """\
             schema_version = 1
             [lanes.suite]
             kind = "command"
             environment = "bare-host"
             argv = ["true"]
             clean_tree = false
-        """)
+        """
+
+    def test_daemon_absent_falls_back_to_rusage_and_discloses_why(
+            self, tmp_path, monkeypatch, capsys):
+        # No `resolve_self_container_id` monkeypatch here on purpose:
+        # `fake_docker`'s shim has no `inspect)` case at all, so the REAL
+        # `resolve_self_container_id` runs against it and reads empty
+        # stdout back -- deterministic regardless of this test process's
+        # own /etc/hostname, and exactly the "docker is present, but this
+        # process is not one of ITS containers" case every plain host
+        # invocation hits.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
+                           str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
         assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
-        assert "host memory PSI full avg10=" in out
+        captured = capsys.readouterr()
+        assert "host memory PSI full avg10=" in captured.out
+        assert "not running in a container" in captured.err
+        assert "coarse rusage sampling only" in captured.err
         latest = lane_slot(proj)["latest"]
-        assert latest["resources"] is None
-        assert latest["profile_error"] == "bare-host lanes are not profiled (RG-57)"
+        res = latest["resources"]
+        assert res["method"] == "rusage"
+        assert res["scope"] is None
+        assert res["session"] is None and res["daemon"] is None
+        assert res["memory"]["source"] == "rusage-maxrss"
+        assert isinstance(res["memory"]["peak_bytes"], int)
+        assert res["memory"]["peak_bytes"] > 0
+        assert res["memory"]["baseline_bytes"] is None
+        assert res["cpu"]["seconds"] is not None and res["cpu"]["seconds"] >= 0
+        assert res["cpu"]["cores_max"] is None
+        assert res["target"] == {"container_id": None, "cgroup": None,
+                                 "token": None, "targets_seen": None}
+        assert res["host"]["memory_full_stall_seconds"] is None
+        assert res["damon"] is None
+        assert latest["profile_error"] is None
         assert latest["profile_ref"] is None
 
     def test_disabled_prints_nothing_new(self, tmp_path, monkeypatch, capsys):
         # kill switch is ON by default (profiling_off_by_default) -- no
-        # host-PSI line should appear even on a real, readable proc root.
+        # host-PSI line should appear even on a real, readable proc root,
+        # and no daemon/rusage attempt is made at all.
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
-        repo, proj = make_history_repo(tmp_path, """\
-            schema_version = 1
-            [lanes.suite]
-            kind = "command"
-            environment = "bare-host"
-            argv = ["true"]
-            clean_tree = false
-        """)
+        repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(["suite"]) == 0
         out = capsys.readouterr().out
         assert "host memory PSI" not in out
         latest = lane_slot(proj)["latest"]
-        assert latest["profile_error"] == "bare-host lanes are not profiled (RG-57)"
+        assert latest["resources"] is None
+        assert latest["profile_error"] == (
+            f"disabled ({run_gate.PROFILE_AMBIENT_ENV_VAR}=off)")
+        assert latest["profile_ref"] is None
 
     def test_dry_run_has_no_run_record(self, tmp_path, monkeypatch, capsys):
         # main() never builds a run_record for --dry-run — the ONLY way to
         # exercise run_bare_host_lane's `run_record is not None` guard's
-        # False side.
+        # False side. Also proves the plan is REHEARSED, never attempted
+        # for real -- no docker shim is installed at all, so a live attempt
+        # would fail loudly (docker not found) rather than silently pass.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
-        repo, proj = make_history_repo(tmp_path, """\
-            schema_version = 1
-            [lanes.suite]
-            kind = "command"
-            environment = "bare-host"
-            argv = ["true"]
-            clean_tree = false
-        """)
+        repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "DRY RUN — profile plan: daemon" in out
+        assert "container-shared" in out
         assert not (proj / ".run-gate" / "history.json").exists()
+
+    def test_daemon_path_targets_self_id_scope_and_injects_token(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log = fake_docker(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = (RG55_FIXTURES / "start-v1.json").read_text()
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
+                           start=(start, None, None), stop=(stop, None, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        monkeypatch.setattr(run_gate, "generate_profile_token",
+                            lambda: "deadbeefcafebabedeadbeefcafebabe")
+        real_run = subprocess.run
+        captured_env = {}
+
+        def spy(cmd, **kw):
+            if cmd == ["true"]:
+                captured_env["env"] = kw.get("env")
+            return real_run(cmd, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert (f"profile session s-20260912T101500Z-9f01 is "
+               f"DEVCONTAINER-WIDE") in out
+        assert "'suite'" in out
+        start_calls = [c for c in docker_execs(log) if len(c) > 4 and c[4] == "start"]
+        assert len(start_calls) == 1
+        joined = " ".join(start_calls[0])
+        assert f"containerid:{RG55_CONTAINER_ID}" in joined
+        assert "--scope container-shared" in joined
+        assert captured_env["env"] is not None
+        assert captured_env["env"].get(run_gate.PROFILE_TOKEN_ENV) == \
+            "deadbeefcafebabedeadbeefcafebabe"
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "daemon"
+        assert latest["resources"]["scope"] == "container-shared"
+        assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
+        assert latest["profile_error"] is None
+
+    def test_rusage_mode_never_injects_a_token(self, tmp_path, monkeypatch):
+        # The rusage path starts no daemon session for a token to identify
+        # -- nothing would ever read it -- so, unlike the daemon path, the
+        # child's environment must be unchanged from the ambient one.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        real_run = subprocess.run
+        captured_env = {}
+
+        def spy(cmd, **kw):
+            if cmd == ["true"]:
+                captured_env["env"] = kw.get("env")
+            return real_run(cmd, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        assert run_gate.main(["suite"]) == 0
+        assert "env" in captured_env
+        assert captured_env["env"] is None
+
+    def test_resolve_self_container_id_raising_never_aborts_the_lane(
+            self, tmp_path, monkeypatch, capsys):
+        # R-36h: "the WHOLE profiling attempt ... must be wrapped so an
+        # unexpected exception never escapes to abort the lane's own
+        # subprocess.run" -- planted here exactly like TestProfiling
+        # NeverRaisesEndToEnd plants one in ProfilerClient._ctl for the
+        # container/exec paths. Unlike that class's assertions, this
+        # degrades to a STILL-VALID rusage profile (the crash only means no
+        # daemon target was ever found -- the getrusage bracket around the
+        # lane's own child runs regardless and succeeds), so the disclosed
+        # WARNING is the proof here, not a null record.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config().replace(
+            'argv = ["true"]', 'argv = ["sh", "-c", "exit 7"]'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+
+        def _boom(docker):
+            raise RuntimeError("planted: resolve_self_container_id exploded")
+        monkeypatch.setattr(run_gate, "resolve_self_container_id", _boom)
+        assert run_gate.main(["suite"]) == 7   # the LANE's own exit code
+        err = capsys.readouterr().err
+        assert "profiling crashed unexpectedly" in err
+        assert "planted: resolve_self_container_id exploded" in err
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "rusage"
+        assert latest["profile_error"] is None
+
+    def test_getrusage_raising_never_aborts_the_lane(self, tmp_path, monkeypatch):
+        # The second half of R-36h's "OR the getrusage calls" clause --
+        # both getrusage() brackets are guarded individually (never left to
+        # raise through the surrounding try/finally), so a planted failure
+        # degrades to `resources: None` with the lane's own exit code
+        # completely unaffected.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config().replace(
+            'argv = ["true"]', 'argv = ["sh", "-c", "exit 3"]'))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+
+        def _boom(who):
+            raise OSError("planted: getrusage exploded")
+        monkeypatch.setattr(run_gate.resource, "getrusage", _boom)
+        assert run_gate.main(["suite"]) == 3   # the LANE's own exit code
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] is not None
 
 
 class TestEphemeralProfilingWiring:
