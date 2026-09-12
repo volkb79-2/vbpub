@@ -2578,6 +2578,42 @@ candidates a tool drops before reporting them at all — is still not
 recoverable from any artifact assay receives, and remains declared, not
 verified.
 
+### B091/6.2.0: a native-R2 verdict is refused by an assay older than 6.2.0
+
+This one is NOT a schema cut. `schema_version` stays **11** — the two
+changes below are additive to a v11 document, and assay's model is that
+every consumer pins its own release, so a v12 cut is reserved for the next
+real shape change (RW-33, re-affirmed as RW-49/D1). The paragraph above,
+"this cut carries exactly ONE change, and it touches exactly one field", is
+still exactly true of the v10 → v11 cut itself; what follows is a second,
+later change landing under the same schema number, which that paragraph was
+written before and does not describe.
+
+What changes on the wire, for a **native** R2 lane (never an ingested one):
+
+- `judgment.r2.mutation` gains a sixth outcome bucket, `hung`, emitted
+  **unconditionally** — so every native-R2 document 6.2.0 produces carries
+  it;
+- `judgment.r2` gains `liveness: {active, reason, plugin}`.
+
+The consequence, and it is one-way: `assay verify` compares a document's
+keys against the shape the RUNNING build produces, so an assay older than
+6.2.0 refuses any native-R2 verdict 6.2.0 wrote, printing exactly:
+
+```
+assay verify: schema: unknown mutation field(s): ['hung']
+```
+
+on a document whose `schema_version` reads `11`. (Measured with the 6.1.1
+release.)
+
+**The rule: verify a document with the release that produced it, or newer.**
+If you archive verdicts and verify them later in CI, pin the verifier to at
+least the producing release; if you hit the diagnostic above, that is what
+it means — not a corrupt artifact. The reverse direction is handled: a
+6.2.0 `verify` reads a pre-`hung` document (one that simply omits the key)
+cleanly, and that direction is covered by tests.
+
 ## Migration notes (v9 → v10)
 
 Verdict schema v10 is a **hard cut**, exactly as v9 was over v8: `assay verify`

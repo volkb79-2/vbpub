@@ -5,10 +5,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the instant that release is cut -- do not trust the "cleared" comment alone, verify against every dated section below `<!-- cmru: release history -->` first. Two independent instances of this exact staleness were found and fixed in this file and in run-gate-project's on 2026-09-11; the second one was caught only because a dispatched agent re-checked its own merged work after the fact. Verified empty as of 2026-09-11's 6.1.1 release. -->
 
-### Fixed (detail)
+### Changed
 
-- **`judge.mutation.budget_per_candidate` now defaults to `"auto"` instead of
-  no bound at all (B091/D-23, mitigates B090).** An omitted key used to leave
+- **BREAKING: `judge.mutation.budget_per_candidate` now defaults to `"auto"`
+  instead of no bound at all (B091/D-23, mitigates B090).** Every existing
+  native R2 lane that OMITTED this key changes behaviour: it is now bounded,
+  and can produce `budget_exceeded` candidates it never produced before.
+  Declare `budget_per_candidate = "none"` to keep the old unbounded shape.
+  An omitted key used to leave
   every mutant command genuinely unbounded -- exactly the shape that hung a
   whole vbpub RG-55 lane for 37 minutes on one candidate that lost a
   termination condition (B090), with nobody enforcing anything because the
@@ -31,6 +35,42 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   pre-existing 60s-per-candidate fallback for every non-duration spelling
   rather than crashing on `"auto"`/`"none"`, since planning never executes
   anything to measure from.
+
+- **BREAKING: `budget = "unbounded"` now ADMITS a lane that omits
+  `judge.mutation.budget_per_candidate`.** The
+  `_refuse_unbounded_without_unit_bounds` load-time rule ("every unit must
+  carry its own bound") used to refuse that combination; since an omitted
+  key now means `"auto"`, the lane genuinely carries a bound and loads.
+  A lane that previously refused at load will now run. The explicit
+  `budget_per_candidate = "none"` opt-out still trips the rule, which is the
+  point of having it.
+
+- **BREAKING: `argv_effective` moves in every native-R2 pytest lane's
+  verdict.** Liveness appends `-p assay_liveness_plugin` to the lane's argv
+  by default (`judge.mutation.liveness = "auto"`), so anything diffing
+  `argv_effective` across the 6.1.1 → 6.2.0 boundary sees the extra pair.
+  The run line discloses it as `(appended: -p assay_liveness_plugin)`.
+  `judge.mutation.liveness = false` restores the pre-B091 argv exactly.
+  Note that the injection also reaches R3 canary probes on an
+  `R0/R1/R2/R3` lane, where it is inert (`ASSAY_LIVENESS_EVENTS` and
+  `ASSAY_LIVENESS_EXIT` are unset for them).
+
+- **BREAKING: an assay older than 6.2.0 refuses to `verify` a native-R2
+  verdict produced by 6.2.0, under an unchanged `schema_version: 11`.**
+  `Mutation.to_dict()` now emits the new `hung` bucket unconditionally, and
+  `verify._reject_unknown_keys` compares a document's keys against the
+  RUNNING build's shape — so assay 6.1.1 prints
+  `assay verify: schema: unknown mutation field(s): ['hung']` on a document
+  whose `schema_version` says 11. The schema number deliberately does NOT
+  move (RW-33/RW-49 D1: additive under v11, a v12 cut is reserved for the
+  next shape change) because assay's model is that every consumer pins its
+  own release. **The rule: verify a document with the release that produced
+  it, or newer.** See CONSUMERS.md "Migration notes (v10 → v11)" →
+  "B091/6.2.0" for the operator-facing version of this paragraph. The
+  reverse direction (a 6.2.0 `verify` reading a pre-`hung` document) is
+  handled and tested.
+
+### Added
 
 - **A native R2 python/pytest lane's mutant candidates no longer hang at
   interpreter shutdown on a leaked non-daemon thread (B091/D-23, contract
@@ -61,20 +101,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   it). The mutation sweep's `plan` progress event and the verdict's
   `judgment.r2` both gain `liveness: {active, reason, plugin}` (additive)
   recording whether the mechanism ran for this lane and, when it did not,
-  why. **Not yet shipped in this entry:** the active liveness-monitoring
-  loop and the new `hung` outcome bucket that distinguishes an idle stall
-  from a genuine CPU-bound runaway (`budget_exceeded`) -- tracked as open
-  work on B091.
-
-- **Fixed: `assay verify` raised a spurious "unknown judgment.r2 field(s):
-  ['budget_per_candidate_derived_s']" on every real document the
-  `budget_per_candidate = "auto"` default above produces.** Found while
-  wiring the `liveness` field beside it: `_reconstruct_judgment_r2` never
-  read the key back off the raw document at all, so the reconstructed
-  object's own `to_dict()` omitted it and the unknown-key check compared it
-  against a `raw` document that legitimately carried it. A real, if latent,
-  regression from the `budget_per_candidate = "auto"` change above, not
-  something new; fixed alongside `liveness`'s own reconstruction.
+  why.
 
 - **A native R2 python/pytest lane's `LivenessRunner` now actively monitors
   each candidate instead of only wrapping its shutdown (B091/RW-33, contract
@@ -95,9 +122,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - **The progress stream gains per-test detail for a native R2 python/pytest
   lane's liveness-active run (B091 A4; `5baf2670`).** The `plan` event gains
-  `slowest_test_s` and `expect_next_event_within_s` (`max(3 x
-  slowest_test_s, 15s)`, `LivenessRunner`'s own idle-stall threshold, read
-  back from the measured baseline rather than re-derived a second way); a
+  `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s` and
+  `pre_first_event_within_s` (`LivenessRunner`'s own idle-stall thresholds
+  and the measurements they came from, read back from the measured baseline
+  rather than re-derived a second way — see the round-1 B2 entry under
+  Fixed for what each one means); a
   new `test` event forwards the BASELINE's own per-test outcomes verbatim
   (`phase: "baseline"`, `nodeid`, `outcome`, `duration_s`) — never emitted
   for a candidate, since a `jobs`-way concurrent sweep would otherwise
@@ -127,6 +156,63 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   verdict's own bucket lists) — no verdict field today exposes the digest a
   `--rejudge <id>` invocation needs; it must be read back from a
   `--state-dir` state record.
+
+### Fixed
+
+- **`assay verify` raised a spurious "unknown judgment.r2 field(s):
+  ['budget_per_candidate_derived_s']" on every real document the
+  `budget_per_candidate = "auto"` default above produces.** Found while
+  wiring the `liveness` field beside it: `_reconstruct_judgment_r2` never
+  read the key back off the raw document at all, so the reconstructed
+  object's own `to_dict()` omitted it and the unknown-key check compared it
+  against a `raw` document that legitimately carried it. A real, if latent,
+  regression from the `budget_per_candidate = "auto"` change above, not
+  something new; fixed alongside `liveness`'s own reconstruction.
+
+- **The liveness plugin turned a genuine KILL into a false SURVIVOR when the
+  pytest session never started (round-1 B1; `802f0855`).** The plugin's
+  module-level `_EXIT_STATUS` defaulted to `0`, and pytest still runs
+  `pytest_unconfigure` when `_do_configure()` completed but the session
+  never started — a raising `conftest.pytest_configure` or
+  `pytest_sessionstart`, an ordinary shape for a project whose bootstrap
+  touches product code. The plugin `os._exit(0)`'d with a status pytest
+  never assigned, and exit 0 classifies as `survived`. `_EXIT_STATUS` is now
+  a `None` sentinel and `pytest_unconfigure` returns without exiting when
+  `pytest_sessionfinish` never assigned one, so pytest's own exit path
+  stands byte for byte. (The hang this mechanism cures can only happen
+  after tests have run, which implies `sessionfinish` ran.)
+
+- **The derived idle bound killed healthy candidates as `hung` (round-1 B2,
+  RW-49/D3; `07e121d9`).** `expect_next_event_within_s` was
+  `max(3 x slowest_test_s, 15s)` over `call`-phase durations alone, but a
+  pytest suite goes silent exactly where no `call` report exists:
+  collection, session/module fixture setup, teardown. Measured on a real
+  project whose module-scoped fixture took 40 s, `slowest_test_s` was
+  0.00037 and the bound collapsed to its 15 s floor, so every candidate was
+  killed as `hung` at ~31 s — including candidates the suite was about to
+  kill honestly, which made mutation scores less trustworthy than before
+  B091. The plugin now stamps `session_start` (from `pytest_configure`,
+  before collection), every `setup`/`teardown` report (as a `phase` event
+  carrying `when`) and `session_finish`; the bound is
+  `max(3 x the baseline's worst observed inter-event gap, 15s)`, with a
+  separate `max(3 x the baseline's leading gap, 15s)` governing the window
+  before a candidate has produced any event. `call` events keep the `test`
+  name, so the progress stream's `test` forwarding and `tests_completed`
+  are one-per-test exactly as before. `slowest_test_s` keeps its name and
+  its old meaning and is still disclosed; the figure the bound now comes
+  from is the new `worst_gap_s`. The stdout/stderr file-growth fallback
+  stays, and CONSUMERS.md now states its real reach: pytest's default
+  global capture writes nothing to the real fds until the run ends, so a
+  lane where the plugin is inactive gets COARSE liveness only.
+
+- **`candidate.tests_completed` was read from the wrong directory on any
+  lane declaring `cwd` (round-1 B3; `5c1b9ef8`).** The writer keys the
+  candidate's events side file on the RESOLVED run cwd
+  (`resolve_run_cwd(project_root, plan)`); the reader used
+  `snapshot.project_root`. On a lane with `cwd` declared they are different
+  directories, the reader missed the file, and the field reported `0` —
+  the one value its own contract defines as "the plugin ran and genuinely
+  saw no test". Both sides now go through the one join (A-367).
 
 <!-- cmru: release history -->
 
