@@ -91,6 +91,27 @@ def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: 
     contract as the adapters' own since/until handling, so a typo'd or
     wrong-file marker fails loudly rather than silently returning everything
     or nothing.
+
+    Each block's own header names the record's real `uuid` (falling back to
+    `L<line-number>` only for the rare record with none, e.g. a synthetic
+    "system" record) -- the SAME marker adapters/claude_code.py's parse()
+    assigns as a NormalizedEvent's own `.marker` for a user/assistant
+    record, deliberately, so debug_diff.py can look up "does a real,
+    scored event for this exact record exist, and what happened to it" by
+    EXACT identity rather than approximating from isolated text (2026-09-11,
+    operator direction: "we should always know why we excluded something").
+    Also promotes `isVisibleInTranscriptOnly`, `interruptedMessageId`, and
+    `isSidechain` into the same tag suffix as `isMeta` -- adapters/
+    claude_code.py's parse() drops a "user" record unconditionally for
+    isMeta/isVisibleInTranscriptOnly (before any cleaning), separately drops
+    one carrying interruptedMessageId (Claude Code's own synthetic
+    "[Request interrupted by user]" Ctrl-C marker, never real operator
+    intent) unconditionally too, and drops ANY record (user or assistant)
+    with isSidechain=true whenever the file also has a primary (non-
+    sidechain) thread. All four are real, header-visible ground truth once
+    tagged here, so debug_diff.py's marker lookup can name the exact
+    adapter-level reason instead of falling back to "no matching event
+    found."
     """
     blocks: list[str] = []
     in_span = since_marker is None
@@ -115,23 +136,32 @@ def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: 
             rtype = rec.get("type")
             ts = rec.get("timestamp", "")
 
+            marker = uuid or f"L{i}"
             if rtype == "system" and rec.get("subtype") == "compact_boundary":
-                blocks.append(f"===[{i} | {ts} | SYSTEM compact_boundary]===\n{rec.get('content', '')}")
+                blocks.append(f"===[{marker} | {ts} | SYSTEM compact_boundary]===\n{rec.get('content', '')}")
             elif rtype in ("user", "assistant"):
                 msg = rec.get("message") or {}
                 content = msg.get("content")
                 role = (msg.get("role") or rtype).upper()
-                tag = f"{role}{' isMeta' if rec.get('isMeta') else ''}"
+                flags = "".join(
+                    f" {name}" for name, present in (
+                        ("isMeta", rec.get("isMeta")),
+                        ("isVisibleInTranscriptOnly", rec.get("isVisibleInTranscriptOnly")),
+                        ("interruptedMessageId", rec.get("interruptedMessageId")),
+                        ("isSidechain", rec.get("isSidechain")),
+                    ) if present
+                )
+                tag = f"{role}{flags}"
                 if isinstance(content, str):
                     if content.strip():
-                        blocks.append(f"===[{i} | {ts} | {tag}]===\n{content}")
+                        blocks.append(f"===[{marker} | {ts} | {tag}]===\n{content}")
                 elif isinstance(content, list):
                     for block in content:
                         if not isinstance(block, dict) or block.get("type") not in _KEEP_BLOCK_TYPES:
                             continue
                         text = block.get("text", "")
                         if text.strip():
-                            blocks.append(f"===[{i} | {ts} | {tag} {block['type']}]===\n{text}")
+                            blocks.append(f"===[{marker} | {ts} | {tag} {block['type']}]===\n{text}")
             # else: bookkeeping or unrecognized record type -- no prose to lose.
 
             if until_marker is not None and uuid == until_marker:

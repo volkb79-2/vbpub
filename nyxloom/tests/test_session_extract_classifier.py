@@ -5,7 +5,7 @@ structural signal.
 
 from __future__ import annotations
 
-from nyxloom.session_extract.classifier import has_finding_signal, score_events
+from nyxloom.session_extract.classifier import has_finding_signal, score_events, shape_score
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 
 _TS = "2026-01-01T00:00:00Z"
@@ -132,3 +132,21 @@ def test_api_error_tag_is_a_signal_even_though_its_short():
     # real API error must never be silently dropped as noise.
     assert has_finding_signal("[API ERROR: rate_limit, HTTP 429] You've hit your session limit")
     assert has_finding_signal("[API ERROR]")
+
+
+# --- shape_score: the public alias debug_diff.py uses for extract-debug's
+# own reason-labeling -- same underlying computation score_events() itself
+# calls, just without the "followed by a pause" bonus (untestable from
+# isolated text alone; score_events()'s own tests above cover that half).
+
+def test_shape_score_matches_score_events_minus_the_pause_bonus():
+    text = "## Where things actually stand\n\nsome prose"
+    events = [_asst(0, text)]
+    score_events(events)
+    # No event follows, so score_events() itself grants no pause bonus here
+    # either -- the two must agree exactly for this specific text.
+    assert shape_score(text) == events[0].checkpoint_score
+
+
+def test_shape_score_of_plain_narration_is_near_zero():
+    assert shape_score("Now let's fix the detection logic.") < 1.0

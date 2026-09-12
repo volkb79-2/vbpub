@@ -71,23 +71,20 @@ class ExtractConfig:
     # THINKING events are dropped at parse time unless this is set.
     include_thinking: bool = False
 
-    # Claude Code only (adapters/claude_code.py). isSidechain records are
-    # dropped at parse time unless this is set -- the default (False) is
-    # correct for a normal interactive session file, where every sidechain
-    # branch found in real data was parallel tool-call fan-out noise, never
-    # a genuine retry/edit-resubmit or a real narrative thread (see
-    # README's "Why ignore branching / sidechains?"). It is WRONG for a
-    # dispatched Agent-tool subagent's own dedicated transcript file
-    # (`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl`),
-    # where EVERY record carries isSidechain=true (sharing the PARENT
-    # session's own sessionId, flagged relative to it) even though, from
-    # that file's own perspective, it IS the main thread -- the default
-    # would silently drop the entire transcript (2026-09-11, operator-
-    # discovered: `extract` returned zero events, exit 0, no warning,
-    # against a real subagent transcript; `extract-lossless` was unaffected
-    # since lossless.py never filters on isSidechain at all). Set this for
-    # a subagent's own transcript file specifically.
-    include_sidechain: bool = False
+    # NOTE: there is deliberately no `include_sidechain` knob here. An
+    # earlier version of this field existed (2026-09-11) after a real bug
+    # (a dispatched Agent-tool subagent's own transcript file has
+    # isSidechain=true on every record and was silently extracting to zero
+    # events) -- but exposing a Claude-Code-only vocabulary word
+    # ("sidechain") on this shared, adapter-agnostic config was itself a
+    # design mistake (operator critique, 2026-09-11: "adapters solve the
+    # CLI specifics"). Fixed instead entirely inside
+    # adapters/claude_code.py's parse(): whether a file has a "primary
+    # thread" at all (any non-sidechain record present) is auto-detected
+    # from the file's own content -- see that function's comment for the
+    # exhaustive real-data verification behind it. No flag needed; targeting
+    # a subagent's own conversation is just `nyxloom extract <that agent's
+    # own file path>`, same as targeting any other adapter's session.
 
     # Opaque marker (an event.marker from a prior extract() call) to resume
     # from -- only events strictly after it are considered. None = walk the
@@ -207,6 +204,59 @@ class ExtractConfig:
     # the length filter. `nyxloom extract --show-api-errors` restores the
     # old behavior for a run where seeing API-transport stalls matters.
     hide_api_errors: bool = True
+
+    # An operator-issued `/compact <prompt>` dispatch's own argument text,
+    # which can otherwise carry a large verbatim body (2026-09-11, operator
+    # direction: real example -- a session had one directing "KEEP:
+    # standing /goal is active..." verbatim, the same text mangle.py's
+    # redact_paragraphs was separately built to strip back out downstream).
+    # By default this collapses to a terse "[compaction: steered
+    # dispatched]" instead -- the operator's instruction almost always just
+    # re-quotes a "compaction prompt" the model already produced as
+    # ordinary ASSISTANT_TEXT moments earlier (kept in full there,
+    # unaffected by this flag -- classifier.py's meta_compact scoring bonus
+    # is what keeps a model-authored "paste this as the /compact argument"
+    # checkpoint), and extract's own concatenated prose already IS the
+    # context that would otherwise be repeated verbatim a second time.
+    # `--show-compaction-content` (hide_compaction_content=False) restores
+    # the pre-2026-09-11 behavior verbatim for this one case, for a run
+    # where recovering the exact dispatched prompt text matters more than
+    # compactness. Does NOT affect the resulting compact_boundary record's
+    # own marker text ("[compaction: steered|automatic happened, <pre>-><
+    # post> tok, <dur>s]", mirroring extract-report's own stats.py
+    # _compaction_label bracket format, "just like our extract-report" --
+    # operator's own words) -- that text is always the enriched form,
+    # unconditionally, since the boundary record never carried real
+    # verbatim content for this flag to hide in the first place (its own
+    # `content` field is always just the fixed literal string "Conversation
+    # compacted"; the real retained-context summary lives on a SEPARATE
+    # isCompactSummary record, which has always been hint-only --
+    # "[compact summary]" -- with no code change needed there at all).
+    hide_compaction_content: bool = True
+
+    # Post-selection, pre-render heuristic mangling (mangle.py) -- both OFF
+    # by default; see that module's docstring for the real-session evidence
+    # behind each. Built for exactly one use case: piping `extract`'s own
+    # output straight into a fresh agent's prompt (`nyxloom extract ... |
+    # claude`), where recency bias (a stale trailing confirmation reads as
+    # "the current situation") and role-level framing (a standing
+    # controller directive surviving in the render) can hijack what the new
+    # agent does first.
+
+    # Collapse a trailing run of 2+ near-duplicate "stale wakeup, nothing
+    # new" assistant checkpoints down to just the first of the run. See
+    # mangle.strip_stale_wakeup_tail for the exact detection rule.
+    strip_stale_wakeups: bool = False
+
+    # Paragraph-level redaction: any blank-line-delimited paragraph in ANY
+    # kept event's text matching one of these regexes (case-insensitive) is
+    # replaced with a one-line placeholder naming the match. Empty tuple =
+    # no-op. The canonical use case this was built for: `--redact-pattern
+    # '/goal'` to strip a standing controller directive's own text back out
+    # of what a fresh (or forked) agent would otherwise inherit verbatim --
+    # see mangle.py's docstring for the real `/compact` KEEP-block example
+    # that motivated this.
+    redact_patterns: tuple[str, ...] = ()
 
 
 # Named presets bundling the "how aggressively should selection filter

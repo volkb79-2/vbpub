@@ -33,7 +33,8 @@ class SessionAdapter(Protocol):
         file format (Claude Code, Codex) returns exactly one synthetic id
         (str(path)); a shared store (opencode's SQLite DB) returns the real
         session ids it holds, and the caller must then pick one via
-        --session."""
+        --opencode-session (the cli.py flag name; the session_id= parameter
+        here and throughout this package is unchanged)."""
         ...
 
     @staticmethod

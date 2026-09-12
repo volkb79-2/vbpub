@@ -168,7 +168,11 @@ def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     assert result.format == "claude-code"
     text = result.render()
     assert "postdates the compact boundary" in text
-    assert "compact boundary" in text
+    # The boundary's own marker text is now a terse trigger/token hint
+    # (2026-09-11, operator direction), not the old bare "[compact
+    # boundary]" label -- this fixture's compact_boundary record has no
+    # compactMetadata at all, so trigger falls back to "unknown".
+    assert "[compaction: unknown happened]" in text
     assert "telegram alternative" not in text
     assert "Which host?" not in text
     # last_marker reflects the true end of the FULL parse, not just what survived selection
@@ -316,13 +320,13 @@ def test_thinking_block_included_only_when_configured(tmp_path):
     assert thinking_ev.text == "reasoning about the bug"
 
 
-def test_sidechain_records_included_only_when_configured(tmp_path):
-    # 2026-09-11 fix: a dispatched Agent-tool subagent's OWN transcript
-    # file carries isSidechain=true on every record (real, operator-
-    # verified against a live subagent transcript). The default (correct
-    # for a normal interactive session, where every real sidechain found
-    # was parallel tool-fan-out noise) must not silently return zero
-    # events for a WHOLLY-sidechain file without --include-sidechain.
+def test_wholly_sidechain_file_is_auto_detected_as_its_own_primary_thread(tmp_path):
+    # 2026-09-11: a dispatched Agent-tool subagent's OWN transcript file
+    # carries isSidechain=true on every record (real, operator-verified
+    # against live subagent transcripts). No flag is needed for this --
+    # parse() auto-detects that the file has no non-sidechain "primary"
+    # record at all and treats the sidechain content as primary instead of
+    # silently dropping the entire file to zero events.
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isSidechain=True,
              message={"role": "user", "content": "dispatch prompt"}),
@@ -334,12 +338,28 @@ def test_sidechain_records_included_only_when_configured(tmp_path):
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
-    default_events = claude_code.parse(fp, str(fp), ExtractConfig())
-    assert default_events == []
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert any("dispatch prompt" in e.text for e in events if e.kind is EventKind.OPERATOR_TEXT)
+    assert any("Status" in e.text for e in events if e.kind is EventKind.ASSISTANT_TEXT)
 
-    with_sidechain = claude_code.parse(fp, str(fp), ExtractConfig(include_sidechain=True))
-    assert any("dispatch prompt" in e.text for e in with_sidechain if e.kind is EventKind.OPERATOR_TEXT)
-    assert any("Status" in e.text for e in with_sidechain if e.kind is EventKind.ASSISTANT_TEXT)
+
+def test_sidechain_records_still_dropped_as_noise_alongside_a_primary_thread(tmp_path):
+    # The original (still-correct) case this filter exists for: a genuine
+    # primary thread present in the same file, with a sidechain branch
+    # (e.g. parallel tool-call fan-out) interleaved -- the sidechain
+    # content is dropped, the primary thread is kept.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "real operator prompt"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z", isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": "fan-out noise"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert any("real operator prompt" in e.text for e in events if e.kind is EventKind.OPERATOR_TEXT)
+    assert not any("fan-out noise" in e.text for e in events)
 
 
 def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):
@@ -428,10 +448,19 @@ def test_custom_command_args_survive_as_operator_text(tmp_path):
     assert "please review the auth module for security holes" in events[0].text
 
 
-def test_compact_command_guidance_text_survives_in_the_lifecycle_label(tmp_path):
-    # Milder version of the same bug: /compact's own guidance text ("focus
-    # on X, drop Y") must not be thrown away just because /compact is a
-    # lifecycle command.
+def test_compact_dispatch_is_hinted_by_default_not_repeated_verbatim(tmp_path):
+    # 2026-09-11, operator direction: an operator-issued /compact <prompt>
+    # dispatch is hint-only by default -- the guidance text ("focus on X,
+    # drop Y") is genuinely redundant here (it almost always just re-quotes
+    # a compaction prompt the model already produced as ordinary,
+    # kept-in-full ASSISTANT_TEXT moments earlier, and extract's own
+    # concatenated prose already IS the context that would otherwise be
+    # repeated). This SUPERSEDES an earlier regression test with the
+    # opposite assertion (this same fixture, pre-2026-09-11 default) --
+    # that older bug was TOTAL silent loss with zero trace at all; this is
+    # a deliberate, explicit hint, not a regression of that bug, and
+    # --show-compaction-content (below) is the escape hatch that recovers
+    # the exact old behavior when the verbatim text is genuinely needed.
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
              message={"role": "user", "content": (
@@ -443,7 +472,49 @@ def test_compact_command_guidance_text_survives_in_the_lifecycle_label(tmp_path)
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     events = claude_code.parse(fp, str(fp), ExtractConfig())
     assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert events[0].text == "[compaction: steered dispatched]"
+    assert "focus on the auth bug" not in events[0].text
+
+
+def test_show_compaction_content_restores_the_verbatim_compact_argument(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "<command-name>compact</command-name>\n"
+                 "<command-args>focus on the auth bug, drop the docs tangent</command-args>"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig(hide_compaction_content=False))
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
     assert "focus on the auth bug" in events[0].text
+
+
+def test_compact_boundary_label_reflects_trigger_and_token_counts(tmp_path):
+    records = [
+        _rec(type="system", uuid="sys1", subtype="compact_boundary", timestamp="2026-01-01T00:00:00Z",
+             compactMetadata={"trigger": "manual", "preTokens": 305120, "postTokens": 14154,
+                               "durationMs": 143814}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert events[0].text == "[compaction: steered happened, 305,120→14,154 tok, 143.8s]"
+
+
+def test_compact_boundary_label_for_an_auto_trigger(tmp_path):
+    records = [
+        _rec(type="system", uuid="sys1", subtype="compact_boundary", timestamp="2026-01-01T00:00:00Z",
+             compactMetadata={"trigger": "auto", "preTokens": 471179, "postTokens": 17919,
+                               "durationMs": 182708}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events[0].text == "[compaction: automatic happened, 471,179→17,919 tok, 182.7s]"
 
 
 def test_command_name_tag_merely_mentioned_in_prose_is_not_a_real_command(tmp_path):
@@ -488,6 +559,28 @@ def test_task_notification_embedded_mid_message_is_stripped_not_the_whole_messag
     assert events[0].kind is EventKind.OPERATOR_TEXT
     assert "should not survive" not in events[0].text
     assert "By the way" in events[0].text and "please keep going" in events[0].text
+
+
+def test_is_harness_tag_only_true_for_a_bare_task_notification():
+    # The exact condition parse() itself uses (`if not cleaned: continue`)
+    # to drop such a record without ever emitting a NormalizedEvent --
+    # exposed publicly for extract-debug's own reason-labeling
+    # (debug_diff.py), verified against a real dstdns session where this
+    # is precisely why a lossless-only block had no adapter-side
+    # counterpart at all.
+    assert claude_code.is_harness_tag_only(
+        "<task-notification><task-id>x</task-id><summary>bg event</summary></task-notification>"
+    )
+
+
+def test_is_harness_tag_only_false_when_real_text_surrounds_the_tag():
+    assert not claude_code.is_harness_tag_only(
+        "By the way, <task-notification><result>x</result></task-notification> please keep going"
+    )
+
+
+def test_is_harness_tag_only_false_for_ordinary_prose():
+    assert not claude_code.is_harness_tag_only("Just ordinary assistant prose, nothing tagged.")
 
 
 def test_real_text_alongside_an_unrelated_tool_result_is_not_dropped(tmp_path):

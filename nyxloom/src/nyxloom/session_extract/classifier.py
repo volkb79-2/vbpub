@@ -116,6 +116,20 @@ def is_api_error(text: str) -> bool:
     return bool(_API_ERROR_RE.match(first_line))
 
 
+def shape_score(text: str) -> float:
+    """Public alias for _shape_score -- the header/closure/meta-compact/
+    direct-address part of a checkpoint score, WITHOUT score_events()'s
+    separate "followed by a pause" bonus (+2.0), which needs a lookahead
+    across the full parsed event list this function, given only isolated
+    text, cannot see. Exposed for extract-debug's own reason-labeling
+    (debug_diff.py): a lossless block re-scored this way that clears the
+    real run's checkpoint_score_threshold on shape alone would have scored
+    even higher with the real bonus, so it was never a per-content
+    rejection -- see debug_diff.py's own caveat text for what that implies.
+    """
+    return _shape_score(text)
+
+
 def has_finding_signal(text: str) -> bool:
     first_line = text.split("\n", 1)[0][:160]
     if _FINDING_OPENER_RE.match(first_line) or is_api_error(text):

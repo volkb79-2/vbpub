@@ -173,17 +173,14 @@ def _write_subagent_fixture(tmp_path: Path) -> Path:
     return fp
 
 
-def test_extract_on_a_subagent_transcript_is_empty_without_include_sidechain(tmp_path, capsys):
+def test_extract_on_a_subagent_transcript_needs_no_flag(tmp_path, capsys):
+    # 2026-09-11 redesign: no --include-sidechain flag exists on this shared
+    # CLI surface (operator critique: adapter-specific vocabulary doesn't
+    # belong there). Targeting a subagent's own transcript is just pointing
+    # path at that file -- claude_code.py auto-detects it has no primary
+    # thread of its own and extracts its (wholly-sidechain) content anyway.
     fp = _write_subagent_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp)])
-    out = capsys.readouterr().out
-    assert exit_code == 0
-    assert out.strip() == ""
-
-
-def test_extract_include_sidechain_recovers_a_subagent_transcript(tmp_path, capsys):
-    fp = _write_subagent_fixture(tmp_path)
-    exit_code = cli.main(["extract", str(fp), "--include-sidechain"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "research question dispatched by the controller" in out
@@ -326,6 +323,8 @@ def test_extract_show_gap_source_names_the_marker(tmp_path, capsys):
     ("--insert-blank-lines", "0"),
     ("--gap-marker", "inline"),
     ("--min-gap-records", "1"),
+    ("--task", "do the next thing"),
+    ("--task-file", "/nonexistent/path/does/not/matter"),
 ])
 def test_extract_render_only_flags_reject_json(tmp_path, capsys, flag, value):
     fp = _write_claude_code_fixture(tmp_path)
@@ -357,6 +356,14 @@ def test_extract_debug_shows_dropped_content_as_a_gap_note(tmp_path, capsys):
     assert ">>> [gap:" in out
     assert "lossless block" in out
     assert "\x1b[" not in out  # --no-color: no ANSI codes at all
+
+
+def test_extract_debug_annotates_each_dropped_block_with_a_yellow_reason(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-debug", str(fp), "--max-words", "1", "--no-color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "reason:" in out
 
 
 def test_extract_debug_color_forces_ansi_codes_even_when_piped(tmp_path, capsys):
@@ -397,7 +404,7 @@ def test_extract_debug_opencode_multi_session_requires_session_flag(tmp_path, ca
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["extract-debug", str(db), "--session", "s0"])
+    exit_code = cli.main(["extract-debug", str(db), "--opencode-session", "s0"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
@@ -437,18 +444,18 @@ def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     assert "not allowed with argument --since" in capsys.readouterr().err
 
 
-def test_session_stats_condensed_view_by_default(tmp_path, capsys):
+def test_extract_report_condensed_view_by_default(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp)])
+    exit_code = cli.main(["extract-report", str(fp)])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "trigger text" in out  # condensed view's header row
     assert "blocks total)" in out
 
 
-def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
+def test_extract_report_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp), "--detailed"])
+    exit_code = cli.main(["extract-report", str(fp), "--detailed"])
     out = capsys.readouterr().out
     assert exit_code == 0
     lines = out.strip().splitlines()
@@ -456,9 +463,9 @@ def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
     assert "please look into this" in out
 
 
-def test_session_stats_json_output(tmp_path, capsys):
+def test_extract_report_json_output(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp), "--json"])
+    exit_code = cli.main(["extract-report", str(fp), "--json"])
     out = capsys.readouterr().out
     assert exit_code == 0
     parsed = json.loads(out)
@@ -466,10 +473,10 @@ def test_session_stats_json_output(tmp_path, capsys):
     assert parsed  # at least one block
 
 
-def test_session_stats_works_for_codex_too(tmp_path, capsys):
-    # codex is now a supported session-stats format (was errored-out once).
+def test_extract_report_works_for_codex_too(tmp_path, capsys):
+    # codex is now a supported extract-report format (was errored-out once).
     fp = _write_codex_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp)])
+    exit_code = cli.main(["extract-report", str(fp)])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "blocks total)" in out
@@ -578,9 +585,15 @@ def test_extract_max_words_independently_overrides_a_profiles_own_default(tmp_pa
     assert exit_code == 0
     assert "Found it" in out
 
-    # Overridden down to a 5-word budget: still walks past the marker
-    # (manual_fresh's max_lifecycle_markers=-1 is untouched)...
-    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "5"])
+    # Overridden down to an 8-word budget: still walks past the marker
+    # (manual_fresh's max_lifecycle_markers=-1 is untouched). 8, not a
+    # smaller number, deliberately: the marker's own rendered text now
+    # counts toward the budget too (select.py's 2026-09-11 fix -- see its
+    # module docstring), and "after the boundary" (3 words) + the marker
+    # ("[compaction: unknown happened]", 3 words) already total 6 before
+    # "before the boundary" (3 more words) is even considered -- a 5-word
+    # budget would stop the walk right at the marker and never reach it.
+    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "8"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "before the boundary" in out
@@ -616,20 +629,323 @@ def test_extract_lossless_opencode_multi_session_requires_session_flag(tmp_path,
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["extract-lossless", str(db), "--session", "s0"])
+    exit_code = cli.main(["extract-lossless", str(db), "--opencode-session", "s0"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
 
 
-def test_session_stats_opencode_needs_session_flag_when_ambiguous(tmp_path, capsys):
+def test_extract_report_opencode_needs_session_flag_when_ambiguous(tmp_path, capsys):
     db = _write_opencode_fixture(tmp_path, n_sessions=2)
-    exit_code = cli.main(["session-stats", str(db)])
+    exit_code = cli.main(["extract-report", str(db)])
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["session-stats", str(db), "--session", "s0", "--detailed"])
+    exit_code = cli.main(["extract-report", str(db), "--opencode-session", "s0", "--detailed"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "cost_usd" in out.splitlines()[0]
     assert "0.001234" in out
+
+
+# -- extract-sessions (discovery: what sessions/sub-agents exist) --------
+
+
+def _write_claude_code_family_fixture(tmp_path: Path) -> Path:
+    """root.jsonl dispatches child1 (spawnDepth 1); child1 dispatches
+    child2 (spawnDepth 2) -- the real on-disk shape confirmed this session
+    against production data (E-015): a flat subagents/ dir, lineage
+    resolved via toolUseId cross-reference, not isSidechain."""
+    root = tmp_path / "root.jsonl"
+    root.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "please look into this"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "tu-child1", "name": "Agent", "input": {}},
+             ]}),
+    ]) + "\n", encoding="utf-8")
+
+    subagents_dir = tmp_path / "root" / "subagents"
+    subagents_dir.mkdir(parents=True)
+
+    (subagents_dir / "agent-child1.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="cu1", timestamp="2026-01-01T00:00:02Z", isSidechain=True,
+             message={"role": "user", "content": "dispatched task"}),
+        _rec(type="assistant", uuid="ca1", timestamp="2026-01-01T00:00:03Z", isSidechain=True,
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "tu-child2", "name": "Agent", "input": {}},
+             ]}),
+    ]) + "\n", encoding="utf-8")
+    (subagents_dir / "agent-child1.meta.json").write_text(json.dumps({
+        "agentType": "fork", "isFork": True, "description": "Child one task",
+        "toolUseId": "tu-child1", "spawnDepth": 1,
+    }), encoding="utf-8")
+
+    (subagents_dir / "agent-child2.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="gu1", timestamp="2026-01-01T00:00:04Z", isSidechain=True,
+             message={"role": "user", "content": "nested dispatched task"}),
+    ]) + "\n", encoding="utf-8")
+    (subagents_dir / "agent-child2.meta.json").write_text(json.dumps({
+        "agentType": "fork", "isFork": True, "description": "Grandchild task",
+        "toolUseId": "tu-child2", "spawnDepth": 2,
+    }), encoding="utf-8")
+
+    return root
+
+
+def test_extract_sessions_claude_code_resolves_nested_lineage(tmp_path, capsys):
+    root = _write_claude_code_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(root)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+
+    lines = out.splitlines()
+    root_idx = next(i for i, l in enumerate(lines) if "(interactive session)" in l)
+    child1_idx = next(i for i, l in enumerate(lines) if "Child one task" in l)
+    child2_idx = next(i for i, l in enumerate(lines) if "Grandchild task" in l)
+    assert root_idx < child1_idx < child2_idx
+    # child2 is nested under child1 (4-space indent = 2 levels), not under root.
+    assert lines[child2_idx].startswith("    -")
+    assert lines[child1_idx].startswith("  -")
+    assert "spawnDepth 1" in lines[child1_idx]
+    assert "spawnDepth 2" in lines[child2_idx]
+
+
+def test_extract_sessions_claude_code_same_family_from_a_child_file(tmp_path, capsys):
+    root = _write_claude_code_family_fixture(tmp_path)
+    child2 = root.parent / "root" / "subagents" / "agent-child2.jsonl"
+    exit_code = cli.main(["extract-sessions", str(child2)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "(interactive session)" in out
+    assert "Child one task" in out
+    assert "Grandchild task" in out
+
+
+def _write_codex_family_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    parent = tmp_path / "rollout-parent.jsonl"
+    parent.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "session_meta", "payload": {
+            "session_id": "root-thread", "id": "root-thread",
+            "thread_source": "user", "source": "exec", "cli_version": "0.154.0",
+        }},
+        {"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "ordinal": 1, "payload": {
+            "type": "user_message", "message": "hi",
+        }},
+    ]) + "\n", encoding="utf-8")
+
+    child = tmp_path / "rollout-child.jsonl"
+    child.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "session_meta", "payload": {
+            "session_id": "root-thread", "id": "child-thread", "cli_version": "0.154.0",
+            "forked_from_id": "root-thread", "thread_source": "subagent",
+            "source": {"subagent": {"thread_spawn": {
+                "parent_thread_id": "root-thread", "depth": 1, "agent_nickname": "Ada",
+            }}},
+        }},
+        {"type": "event_msg", "timestamp": "2026-01-01T00:00:01Z", "ordinal": 1, "payload": {
+            "type": "user_message", "message": "delegated task",
+        }},
+    ]) + "\n", encoding="utf-8")
+    return parent, child
+
+
+def test_extract_sessions_codex_finds_spawned_subagent(tmp_path, capsys):
+    parent, _child = _write_codex_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(parent)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "(interactive session)" in out
+    assert "Ada (depth 1)" in out
+    assert "  -" in out  # child is indented under the root
+
+
+def _write_opencode_family_fixture(tmp_path: Path) -> Path:
+    import sqlite3
+
+    db = tmp_path / "opencode.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, "
+        "agent TEXT, time_created INTEGER, time_updated INTEGER);"
+        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, "
+        "time_updated INTEGER, data TEXT);"
+        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, "
+        "time_created INTEGER, time_updated INTEGER, data TEXT);"
+    )
+    conn.execute("INSERT INTO session VALUES ('parent', NULL, 'Parent session', 'build', 1000, 2000)")
+    conn.execute("INSERT INTO session VALUES ('kid', 'parent', 'Explore subtask', 'explore', 1100, 1200)")
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_extract_sessions_opencode_shows_forked_session(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    lines = out.splitlines()
+    parent_idx = next(i for i, l in enumerate(lines) if "Parent session" in l)
+    kid_idx = next(i for i, l in enumerate(lines) if "Explore subtask" in l)
+    assert parent_idx < kid_idx
+    assert lines[kid_idx].startswith("  -")  # nested under the parent
+
+
+def test_extract_sessions_json_output(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db), "--json"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    parsed = json.loads(out)
+    assert isinstance(parsed, list)
+    ids = {n["id"] for n in parsed}
+    assert ids == {"parent", "kid"}
+    kid = next(n for n in parsed if n["id"] == "kid")
+    assert kid["parent_id"] == "parent"
+
+
+# -- extract-sessions on a DIRECTORY of many sessions (2026-09-11, real ---
+# operator repro: pointing it at a Claude Code project directory failed) --
+
+
+def test_extract_sessions_directory_lists_every_top_level_session(tmp_path, capsys):
+    # Two independent top-level sessions, directly in the same directory --
+    # the real ~/.claude/projects/<project>/ layout (one *.jsonl per
+    # session, no shared family between them).
+    for name, text in [("sessionA", "first session prompt"), ("sessionB", "second session prompt")]:
+        fp = tmp_path / f"{name}.jsonl"
+        fp.write_text("\n".join(json.dumps(r) for r in [
+            _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+                 message={"role": "user", "content": text}),
+        ]) + "\n", encoding="utf-8")
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert str(tmp_path / "sessionA.jsonl") in out
+    assert str(tmp_path / "sessionB.jsonl") in out
+    # Both are independent roots -- neither indented under the other.
+    for line in out.splitlines():
+        if "sessionA.jsonl" in line or "sessionB.jsonl" in line:
+            assert line.startswith("- ")
+
+
+def test_extract_sessions_directory_hints_at_subdirectory_one_level_down(tmp_path, capsys):
+    subproj = tmp_path / "-workspaces-dstdns"
+    subproj.mkdir()
+    fp = subproj / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "hi"}),
+    ]) + "\n", encoding="utf-8")
+
+    # Pointed at the PARENT (like the real ~/.claude/projects itself) --
+    # nothing directly in it, but a real project one level down.
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "did you mean" in err
+    assert str(subproj) in err
+
+
+# --- handoff-to-a-fresh-agent flags (--task/--task-file/--strip-stale-wakeups/
+# --redact-pattern) -- session_extract/mangle.py, verified against a real
+# dstdns session (design-context-lifecycle-experiments.md's E-015 follow-up).
+
+def test_extract_task_appends_a_labeled_banner_after_the_render(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--task", "Carve the next candidate."])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+    assert out.index("nyxloom-extract: format=claude-code") < out.index("TASK FOR THIS SESSION")
+    assert "Carve the next candidate." in out
+
+
+def test_extract_task_file_reads_the_task_from_a_file(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    task_fp = tmp_path / "task.txt"
+    task_fp.write_text("Do the thing described in this file.\n", encoding="utf-8")
+    exit_code = cli.main(["extract", str(fp), "--task-file", str(task_fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Do the thing described in this file." in out
+
+
+def test_extract_task_and_task_file_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--task", "x", "--task-file", str(fp)])
+    assert exit_code == 2
+    assert "not allowed with argument --task" in capsys.readouterr().err
+
+
+def _write_stale_wakeup_tail_fixture(tmp_path: Path) -> Path:
+    # A trailing run of 2 near-duplicate "stale wakeup, nothing new"
+    # checkpoints after a real, informative one -- mirrors the real pattern
+    # found in the dstdns session this feature was built against. Each
+    # block is long enough to clear the default long_comment_chars filter
+    # on its own (independent of checkpoint scoring).
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "please look into this"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "The package is fully closed: merged, gate green across every lane, "
+                 "worktree and all containers torn down and independently verified clean, "
+                 "docs archived, memory updated with the new operational lessons learned."
+             )}]}),
+        _rec(type="assistant", uuid="a2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "This is the stale fallback wakeup I armed earlier -- everything it asks "
+                 "for already completed in the meantime. Quick confirmation, then done."
+             )}]}),
+        _rec(type="assistant", uuid="a3", timestamp="2026-01-01T00:00:03Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "This is the same stale fallback message repeating -- already confirmed "
+                 "in the previous turn that everything is done and consistent. No new "
+                 "action needed."
+             )}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_extract_strip_stale_wakeups_collapses_the_trailing_repeat(tmp_path, capsys):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+    # --long-threshold 0 isolates this test from select()'s independent
+    # length filter -- every ASSISTANT_TEXT survives selection regardless
+    # of length, so only --strip-stale-wakeups's own behavior is exercised.
+    exit_code = cli.main(["extract", str(fp), "--long-threshold", "0", "--strip-stale-wakeups"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "stripped 1 stale-wakeup checkpoint(s) from the tail" in captured.err
+    assert "This is the stale fallback wakeup I armed earlier" in captured.out
+    assert "This is the same stale fallback message repeating" not in captured.out
+
+
+def test_extract_without_the_flag_keeps_every_stale_wakeup_repeat(tmp_path, capsys):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--long-threshold", "0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "This is the same stale fallback message repeating" in out
+
+
+def test_extract_redact_pattern_replaces_matching_paragraphs(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--redact-pattern", "please look"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "redacted 1 paragraph(s) matching --redact-pattern" in captured.err
+    assert "please look into this" not in captured.out
+    assert "redacted paragraph -- matched --redact-pattern" in captured.out
+
+
+def test_extract_redact_pattern_rejects_an_invalid_regex(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--redact-pattern", "(unclosed"])
+    assert exit_code == 1
+    assert "invalid regex" in capsys.readouterr().err

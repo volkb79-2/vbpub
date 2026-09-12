@@ -954,7 +954,7 @@ class TestDegradationBranches:
             lambda *a, **kw: (_ for _ in ()).throw(ValueError("test error")),
         )
 
-        args = argparse.Namespace(project="demo", task="demo-cover",
+        args = argparse.Namespace(project_id="demo", task="demo-cover",
                                    commit=mc)
         rc = cli.cmd_merge(args)
         assert rc == 0, f"cmd_merge should not crash, got rc={rc}"

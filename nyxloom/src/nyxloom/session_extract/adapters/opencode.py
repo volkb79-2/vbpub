@@ -4,10 +4,45 @@ shape).
 
 Schema facts verified directly against a real local opencode.db:
 
-- `session` table: one row per session, including a `parent_id` column --
-  opencode sessions can natively fork from a parent session -- and a
-  `time_compacting` column, suggesting a native compaction concept. Neither
-  is used by this adapter yet (see gaps below).
+- `session` table, full real schema (2026-09-11, `sqlite_master` against a
+  real local 935MB store -- superseding the vaguer version of this note):
+  `id` (text PK, e.g. `ses_0a6bb813bffe...`), `project_id`, `workspace_id`,
+  `parent_id` (a fork's parent session -- see below), `slug`, `directory`,
+  `path`, `title` (text NOT NULL -- a genuinely descriptive human string in
+  real data, e.g. `"Find P55 and P57 tests (@explore subagent)"` -- the
+  session's OWN name, not derived from message content), `version`,
+  `share_url`, `summary_additions`/`summary_deletions`/`summary_files`/
+  `summary_diffs`, `metadata`, `cost` (real, a running total), `tokens_
+  input`/`tokens_output`/`tokens_reasoning`/`tokens_cache_read`/`tokens_
+  cache_write` (all integer, session-level running totals -- NOT used by
+  this adapter's own stats.py yet, which reads per-call usage from
+  elsewhere; a real gap worth closing separately), `revert`, `permission`,
+  `agent` (text -- the session's role/persona tag; real values observed:
+  `"build"`, `"explore"`, `"general"`), `model` (JSON string, e.g.
+  `{"id":"openai/gpt-5.6-luna","providerID":"openrouter","variant":
+  "medium"}`), `time_created`/`time_updated`/`time_compacting`/
+  `time_archived` (integer, Unix ms -- `time_compacting`/`time_archived`
+  suggest native compaction/archival concepts, still unused here, see
+  gaps below).
+  **Sub-agent targeting (2026-09-11, cross-adapter design pass, confirmed
+  against the real store above)**: a forked/sub-agent session is a
+  SEPARATE row in this table (real data: 72 total sessions, 24 with
+  `parent_id` set, max chain depth 1 in what's on this machine -- but
+  `parent_id` is a plain self-FK, nothing caps deeper chains), so it is
+  already targetable through this adapter's EXISTING `--opencode-session
+  <id>` mechanism -- `list_sessions()` below has no `parent_id` filter, so it
+  already lists forked sessions alongside top-level ones today, with no
+  code change needed to make them selectable. `list_agents()` (added
+  2026-09-11 for `nyxloom extract-sessions`) is the discovery layer this
+  was missing: it surfaces every row's `parent_id`/`title`/`agent` so a
+  human or controller can find the right id without already knowing it --
+  real `title` values are self-descriptive enough (opencode's own
+  `@explore subagent` convention names the relationship directly in the
+  title) that no further labeling was needed. Unlike Claude Code (separate
+  file per agent) or Codex (separate rollout file per agent, confirmed by
+  live test -- see codex.py), the targeting PRIMITIVE already existed here
+  before any of this session's work; only the "list children of this
+  parent" convenience was the real gap, now closed.
 - `message` table: one row per message (id, session_id, time_created,
   time_updated, data). `data` is a JSON blob carrying at least {role, time,
   agent, model, summary} -- confirmed role "user" in the row inspected;
@@ -78,6 +113,59 @@ def sniff(path: Path) -> bool:
             conn.close()
     except sqlite3.Error:
         return False
+
+
+def list_agents(path: Path) -> list["SessionNode"]:
+    """Every session in the store, root and forked alike -- there is no
+    single-file scoping concept here the way path scopes a Claude Code/
+    Codex family, so this is the whole store's forest, not one session's
+    family. See module docstring's "Sub-agent targeting" note."""
+    from ..sessions import SessionNode
+
+    db = _db_path(path)
+    if db is None:
+        raise ValueError(f"{path} is not an opencode SQLite store")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, parent_id, title, agent, time_created, time_updated FROM session"
+        ).fetchall()
+        counts = dict(conn.execute("SELECT session_id, COUNT(*) FROM message GROUP BY session_id"))
+    finally:
+        conn.close()
+
+    parent_of = {r[0]: r[1] for r in rows}
+
+    def _depth(sid: str, seen: set[str] | None = None) -> int:
+        seen = seen or set()
+        if sid in seen:
+            return 0  # cycle guard -- not expected in real data
+        seen.add(sid)
+        p = parent_of.get(sid)
+        if not p or p not in parent_of:
+            return 0
+        return 1 + _depth(p, seen)
+
+    nodes = []
+    for sid, parent_id, title, agent, time_created, time_updated in rows:
+        label = title or "(untitled session)"
+        if agent:
+            label = f"{label} [{agent}]"
+        nodes.append(SessionNode(
+            id=sid,
+            parent_id=parent_id if parent_id in parent_of else None,
+            depth=_depth(sid),
+            label=label,
+            path=str(path),
+            record_count=counts.get(sid, 0),
+            first_ts=_ms_to_iso(time_created),
+            last_ts=_ms_to_iso(time_updated),
+        ))
+    return nodes
+
+
+def _ms_to_iso(ms: int | None) -> str | None:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat() if ms else None
 
 
 def list_sessions(path: Path) -> list[str]:

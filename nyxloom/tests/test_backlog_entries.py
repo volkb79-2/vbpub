@@ -438,7 +438,7 @@ def demo_with_entries(sample_project):
 
 class TestCli:
     def test_new_creates_entry_and_prints_path(self, demo_with_entries):
-        rc = cli.main(["backlog", "new", "--project", "demo",
+        rc = cli.main(["backlog", "new", "--project-id", "demo",
                        "env generate leaks ambient network",
                        "--type", "bugfix", "--severity", "medium"])
         assert rc == 0
@@ -449,40 +449,40 @@ class TestCli:
         assert (d / "INDEX.md").exists()
 
     def test_new_refuses_without_section(self, sample_project):
-        rc = cli.main(["backlog", "new", "--project", "demo", "nope"])
+        rc = cli.main(["backlog", "new", "--project-id", "demo", "nope"])
         assert rc == 1
 
     def test_set_status_reason_refusal_exit_2(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        rc = cli.main(["backlog", "set-status", "--project", "demo",
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        rc = cli.main(["backlog", "set-status", "--project-id", "demo",
                        "CIU-1", "fixed"])
         assert rc == 2
-        rc = cli.main(["backlog", "set-status", "--project", "demo",
+        rc = cli.main(["backlog", "set-status", "--project-id", "demo",
                        "CIU-1", "fixed", "--reason", "done elsewhere"])
         assert rc == 0
         e = backlog_entries.load_entries(demo_with_entries)[0]
         assert e.status == "fixed" and e.closed_reason == "done elsewhere"
 
     def test_show_list_note(self, demo_with_entries, capsys):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        cli.main(["backlog", "note", "--project", "demo", "CIU-1", "repro #2"])
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        cli.main(["backlog", "note", "--project-id", "demo", "CIU-1", "repro #2"])
         out = capsys.readouterr().out
-        cli.main(["backlog", "show", "--project", "demo", "CIU-1"])
+        cli.main(["backlog", "show", "--project-id", "demo", "CIU-1"])
         assert "repro #2" in capsys.readouterr().out
-        rc = cli.main(["backlog", "list", "--project", "demo"])
+        rc = cli.main(["backlog", "list", "--project-id", "demo"])
         assert rc == 0
         assert "| [CIU-1](" in capsys.readouterr().out
 
     def test_show_missing_exit_1(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
         # CIU-1 exists; asking for CIU-9 walks the loop's non-matching arc
-        assert cli.main(["backlog", "show", "--project", "demo", "CIU-9"]) == 1
+        assert cli.main(["backlog", "show", "--project-id", "demo", "CIU-9"]) == 1
 
     def test_promote_plain_inbox_via_cli(self, demo_with_entries):
         plain = demo_with_entries.root / "nyxloom-trove" / "backlog.md"
         plain.parent.mkdir(parents=True, exist_ok=True)
         plain.write_text("- **B4 — idea.** detail.\n", encoding="utf-8")
-        rc = cli.main(["backlog", "promote", "--project", "demo", "B4"])
+        rc = cli.main(["backlog", "promote", "--project-id", "demo", "B4"])
         assert rc == 0
         entries = backlog_entries.load_entries(demo_with_entries)
         assert entries[0].promoted_from == "B4"
@@ -491,7 +491,6 @@ class TestCli:
     def test_merge_auto_ticks_linked_entry(self, demo_with_entries, make_statefile=None):
         from nyxloom import storage
         from nyxloom.types import TaskState, TaskStateFile, utc_now
-        import tests.test_backlog_items as tbi
 
         d = backlog_entries.resolve_dir(demo_with_entries)
         fm = valid_fm(id="CIU-5", title="linked work",
@@ -650,7 +649,7 @@ class TestCoverageClosure:
 
 class TestCliRefusalsAndDiscovery:
     def test_unknown_project_exit_1(self):
-        assert cli.main(["backlog", "new", "--project", "nope",
+        assert cli.main(["backlog", "new", "--project-id", "nope",
                          "t"]) == 1
 
     def test_cwd_discovery_without_project_flag(self, demo_with_entries, monkeypatch):
@@ -670,11 +669,11 @@ class TestCliRefusalsAndDiscovery:
         body = tmp_path / "body.md"
         body.write_text("## Observed mechanism and reproduction\n\nrepro\n",
                         encoding="utf-8")
-        assert cli.main(["backlog", "new", "--project", "demo", "with body",
+        assert cli.main(["backlog", "new", "--project-id", "demo", "with body",
                          "--body-from", str(body)]) == 0
         e = backlog_entries.load_entries(demo_with_entries)[0]
         assert "repro" in e.path.read_text()
-        assert cli.main(["backlog", "new", "--project", "demo", "bad",
+        assert cli.main(["backlog", "new", "--project-id", "demo", "bad",
                          "--body-from", "/nonexistent/f.md"]) == 1
 
     def test_promote_refusals_exit_1(self, demo_with_entries):
@@ -682,40 +681,40 @@ class TestCliRefusalsAndDiscovery:
         plain.parent.mkdir(parents=True, exist_ok=True)
         plain.write_text("- **B1 — keep.** stay.\n", encoding="utf-8")
         # unknown id in a PRESENT inbox -> KeyError -> 1
-        assert cli.main(["backlog", "promote", "--project", "demo",
+        assert cli.main(["backlog", "promote", "--project-id", "demo",
                          "B99"]) == 1
         plain.unlink()
         # no inbox anywhere -> FileNotFoundError -> 1
-        assert cli.main(["backlog", "promote", "--project", "demo",
+        assert cli.main(["backlog", "promote", "--project-id", "demo",
                          "B1"]) == 1
 
     def test_note_and_set_status_missing_entry_exit_1(self, demo_with_entries):
-        assert cli.main(["backlog", "note", "--project", "demo", "CIU-9",
+        assert cli.main(["backlog", "note", "--project-id", "demo", "CIU-9",
                          "x"]) == 1
-        assert cli.main(["backlog", "set-status", "--project", "demo",
+        assert cli.main(["backlog", "set-status", "--project-id", "demo",
                          "CIU-9", "fixed", "--reason", "r"]) == 1
 
     def test_set_status_merged_and_unknown_exit_2(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        assert cli.main(["backlog", "set-status", "--project", "demo",
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        assert cli.main(["backlog", "set-status", "--project-id", "demo",
                          "CIU-1", "merged"]) == 2
-        assert cli.main(["backlog", "set-status", "--project", "demo",
+        assert cli.main(["backlog", "set-status", "--project-id", "demo",
                          "CIU-1", "shipped", "--reason", "r"]) == 2
 
     def test_list_regenerates_missing_index(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
         (backlog_entries.resolve_dir(demo_with_entries) / "INDEX.md").unlink()
-        assert cli.main(["backlog", "list", "--project", "demo"]) == 0
+        assert cli.main(["backlog", "list", "--project-id", "demo"]) == 0
         assert (backlog_entries.resolve_dir(demo_with_entries) /
                 "INDEX.md").exists()
 
     def test_show_and_index_unknown_project_exit_1(self):
-        assert cli.main(["backlog", "show", "--project", "nope",
+        assert cli.main(["backlog", "show", "--project-id", "nope",
                          "CIU-1"]) == 1
-        assert cli.main(["backlog", "index", "--project", "nope"]) == 1
+        assert cli.main(["backlog", "index", "--project-id", "nope"]) == 1
 
     def test_index_without_section_exit_1(self, sample_project):
-        assert cli.main(["backlog", "index", "--project", "demo"]) == 1
+        assert cli.main(["backlog", "index", "--project-id", "demo"]) == 1
 
     def test_bare_backlog_group_prints_help_exit_2(self, capsys):
         assert cli.main(["backlog"]) == 2
@@ -725,17 +724,17 @@ class TestCliRefusalsAndDiscovery:
         for argv in (["promote", "B1"], ["note", "CIU-1", "x"],
                      ["set-status", "CIU-1", "fixed", "--reason", "r"],
                      ["list"]):
-            assert cli.main(["backlog", *argv, "--project", "nope"]) == 1
+            assert cli.main(["backlog", *argv, "--project-id", "nope"]) == 1
 
     def test_list_status_filter(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        rc = cli.main(["backlog", "list", "--project", "demo",
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        rc = cli.main(["backlog", "list", "--project-id", "demo",
                        "--status", "open"])
         assert rc == 0
 
     def test_index_happy_path_prints_path(self, demo_with_entries, capsys):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        assert cli.main(["backlog", "index", "--project", "demo"]) == 0
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        assert cli.main(["backlog", "index", "--project-id", "demo"]) == 0
         assert "INDEX.md" in capsys.readouterr().out
 
 
@@ -824,18 +823,18 @@ class TestMutationSurvivorKills:
         assert "- **B2 — keep too.** stay." in after
 
     def test_cli_note_and_show_return_zero(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "an issue"])
-        assert cli.main(["backlog", "note", "--project", "demo",
+        cli.main(["backlog", "new", "--project-id", "demo", "an issue"])
+        assert cli.main(["backlog", "note", "--project-id", "demo",
                          "CIU-1", "repro #2"]) == 0
-        assert cli.main(["backlog", "show", "--project", "demo",
+        assert cli.main(["backlog", "show", "--project-id", "demo",
                          "CIU-1"]) == 0
 
     def test_list_status_filter_filters_content(self, demo_with_entries):
-        cli.main(["backlog", "new", "--project", "demo", "open item"])
-        cli.main(["backlog", "new", "--project", "demo", "fixed item"])
-        cli.main(["backlog", "set-status", "--project", "demo", "CIU-2",
+        cli.main(["backlog", "new", "--project-id", "demo", "open item"])
+        cli.main(["backlog", "new", "--project-id", "demo", "fixed item"])
+        cli.main(["backlog", "set-status", "--project-id", "demo", "CIU-2",
                   "fixed", "--reason", "done"])
-        out = _capture(lambda: cli.main(["backlog", "list", "--project",
+        out = _capture(lambda: cli.main(["backlog", "list", "--project-id",
                                          "demo", "--status", "fixed"]))
         assert "| fixed |" in out
         assert "open item" not in out

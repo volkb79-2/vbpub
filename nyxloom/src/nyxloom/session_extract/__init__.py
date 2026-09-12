@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import classifier, render, select
+from . import classifier, mangle, render, select
 from .adapters import DetectionError, detect, get_adapter
 from .config import ExtractConfig
 from .events import NormalizedEvent
@@ -28,6 +28,22 @@ class ExtractResult:
     format: str  # the adapter name that was used
     session_id: str
     last_marker: str | None  # marker of the last event in the FULL parse, for --since chaining
+    # mangle.py's own report -- how many trailing stale-wakeup checkpoints
+    # --strip-stale-wakeups collapsed away, and how many paragraphs
+    # --redact-pattern replaced. Zero when the corresponding config knob
+    # wasn't set (mangle.py never ran). cli.py surfaces these as a one-line
+    # stderr note, not part of the rendered brief itself.
+    stale_wakeups_stripped: int = 0
+    redacted_paragraphs: int = 0
+    # The FULL, pre-selection, post-classifier-scoring event list -- every
+    # NormalizedEvent the adapter emitted for this session, not just the
+    # ones select() kept. `events` above is a WINDOWED SUBSET of this (or
+    # equal to it, if nothing was walked past). extract() always populates
+    # this; Optional only so the dataclass field can default. Exposed for
+    # extract-debug's own reason-labeling (debug_diff.py): given an exact
+    # marker, "does a real, scored event exist for this record, and is it
+    # in `events`" is a certain lookup, not a text-based approximation.
+    all_events: list[NormalizedEvent] | None = None
 
     def render(self) -> str:
         if self._output_format == "json":
@@ -98,7 +114,8 @@ def extract(
             raise DetectionError(f"{path}: no sessions found")
         else:
             raise DetectionError(
-                f"{path} holds {len(sessions)} sessions; pass --session (e.g. {sessions[0]!r})"
+                f"{path} holds {len(sessions)} sessions; pass session_id "
+                f"(e.g. {sessions[0]!r}) -- cli.py's --opencode-session flag selects it"
             )
     elif session_id not in sessions:
         raise DetectionError(f"session {session_id!r} not found at {path}")
@@ -108,7 +125,19 @@ def extract(
     last_marker = events[-1].marker if events else None
     kept = select.select(events, config)
 
-    result = ExtractResult(events=kept, format=adapter.name, session_id=session_id, last_marker=last_marker)
+    stale_wakeups_stripped = 0
+    if config.strip_stale_wakeups:
+        kept, stale_wakeups_stripped = mangle.strip_stale_wakeup_tail(kept)
+
+    redacted_paragraphs = 0
+    if config.redact_patterns:
+        kept, redacted_paragraphs = mangle.redact_paragraphs(kept, list(config.redact_patterns))
+
+    result = ExtractResult(
+        events=kept, format=adapter.name, session_id=session_id, last_marker=last_marker,
+        stale_wakeups_stripped=stale_wakeups_stripped, redacted_paragraphs=redacted_paragraphs,
+        all_events=events,
+    )
     result._output_format = config.output_format
     result._checkpoint_threshold = config.checkpoint_score_threshold
     result._min_gap_to_annotate = config.min_gap_to_annotate

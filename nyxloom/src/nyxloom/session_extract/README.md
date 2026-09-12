@@ -148,18 +148,36 @@ plain integer index rather than a graph position so that a future
 tree-aware walk wouldn't require reshaping the core data model.
 
 **Correction, 2026-09-11 (operator-discovered against a real dispatched
-Agent-tool subagent's own transcript):** the above holds for a normal
-*interactive* session file, but a subagent's own dedicated transcript
-(`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl`) carries
-`isSidechain: true` on **every** record — sharing the parent session's own
-`sessionId`, flagged relative to it — even though it IS that file's main
-thread. Unconditionally dropping `isSidechain` records (as this adapter
-always did before this fix) silently returned zero events for such a file:
-`extract` exited 0 with empty output, no warning; `extract-lossless` was
-unaffected since `lossless.py` never filtered on `isSidechain` at all.
-`ExtractConfig.include_sidechain` (`--include-sidechain`) now makes this
-configurable instead of hardcoded — off by default (correct for a normal
-session), set it for a subagent's own transcript file.
+Agent-tool subagent's own transcript, then redesigned same day):** the
+above holds for a normal *interactive* session file, but a subagent's own
+dedicated transcript (`~/.claude/projects/<proj>/<session>/subagents/
+agent-<id>.jsonl`) carries `isSidechain: true` on **every** record —
+sharing the parent session's own `sessionId`, flagged relative to it —
+even though it IS that file's main thread. Unconditionally dropping
+`isSidechain` records (as this adapter always did before this fix)
+silently returned zero events for such a file: `extract` exited 0 with
+empty output, no warning; `extract-lossless` was unaffected since
+`lossless.py` never filtered on `isSidechain` at all.
+
+The first fix added an `--include-sidechain` flag. That was itself wrong
+— an operator design critique caught it same day: `nyxloom extract` is a
+shared, adapter-agnostic surface, and "sidechain" is Claude-Code-only
+vocabulary that has no meaning for Codex or opencode; "adapters solve the
+CLI specifics," not the shared command. The flag was removed entirely.
+`claude_code.py`'s `parse()` now **auto-detects** whether the file has any
+non-sidechain "primary" record at all — verified exhaustively against
+every real session file on the development machine (59/59 top-level
+interactive files: 100% non-sidechain; 358/358 dedicated subagent files:
+100% sidechain; zero files mixed the two). A file with no primary thread
+present has nothing to distinguish sidechain content *from*, so its
+content is kept; a file that does have a primary thread keeps the original
+noise-dropping behavior. **Targeting a specific agent's own conversation
+needs no flag at all** — it's just `nyxloom extract <that agent's own
+file>`, the same shape as targeting any other adapter's session. See
+`adapters/claude_code.py`'s module docstring for the nested-subagent case
+(a subagent that itself dispatches another subagent) and
+`adapters/codex.py` / `adapters/opencode.py` for how (or whether) the
+same kind of targeting exists for those CLIs today.
 
 ### Why is `compact_boundary` a hard stop, not ignored?
 
@@ -217,10 +235,12 @@ constrained the interface or turned up a real bug:
   `"Reasoning"` item carries a `raw_content` list of **plain-text**
   reasoning strings, not encrypted at all. THINKING is now emitted from
   real Codex sessions (new generation, `--include-thinking`) where it
-  previously never could be. Whether the OLD layer's `encrypted_content`
-  is genuinely unrecoverable, or just a different code path, is a
-  narrower open question left to the Codex-encryption research thread
-  (see "Known limitations" below).
+  previously never could be. **RESOLVED 2026-09-11** (see "Known
+  limitations" below for the full writeup): the OLD layer's
+  `encrypted_content` is genuinely, permanently unrecoverable by design —
+  OpenAI's Responses API "encrypted reasoning items" (stateless/ZDR mode),
+  server-sealed and server-decrypt-only — not a code-path variance from
+  the plain-text `raw_content` channel.
   Remaining honest gap: no `AskUserQuestion`-equivalent structured Q&A
   signal was found in either generation, including a
   `"CollabAgentToolCall"` item that looked promising but turned out (its
@@ -310,6 +330,18 @@ debug_diff.py   render_debug(): `nyxloom extract-debug`'s colored diff
                 between lossless.py's own dump and a given extract() run --
                 see its own module docstring for the full color-scheme
                 rationale (white/grey/cyan/green).
+sessions.py     list_agents()/render_tree(): `nyxloom extract-sessions`'s
+                discovery layer -- "what sessions/sub-agents exist and how
+                do they relate," answered by each adapter's OWN
+                list_agents(path) (real per-CLI schema, not this module's
+                business -- see each adapter's own docstring), rendered
+                here as a generic indented tree. A different question from
+                everything else above: not "what's in this session" but
+                "what's out there to point extract/extract-lossless/
+                extract-report AT." See E-015 in
+                nyxloom/docs/design-context-lifecycle-experiments.md for
+                why this was needed and how each adapter's answer was
+                verified against real local data.
 ```
 
 ## Delta extraction
@@ -493,12 +525,19 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   it), and part-fetching is one query per message (N+1; fine at real-world
   session scale seen so far, won't scale indefinitely).
 - Codex: no `AskUserQuestion`-equivalent found in either schema generation
-  (see "Cross-CLI adapter findings" above). Whether the OLD generation's
-  `response_item.reasoning.encrypted_content` is genuinely unrecoverable,
-  or just a different code path from the NEW generation's plain-text
-  `raw_content`, is still an open question — not currently under active
-  investigation; fold findings back into `adapters/codex.py`'s documented
-  gaps if and when that thread resumes. `--since` chaining across the
+  (see "Cross-CLI adapter findings" above). **RESOLVED 2026-09-11**: the
+  OLD generation's `response_item.reasoning.encrypted_content` is
+  confirmed genuinely, permanently unrecoverable — OpenAI's Responses API
+  "encrypted reasoning items" (stateless/`store: false`/ZDR mode):
+  server-sealed, round-tripped opaquely by the client, decrypted
+  server-side in memory only and immediately discarded, no client-side
+  key ever issued. Real-world confirmation, not just docs: openai/codex
+  issue #25290 — Codex's own later runs failing to replay its own
+  locally-persisted `encrypted_content` after a backend key/format
+  change ("could not be decrypted or parsed"). The NEW generation's
+  `raw_content` is a separate, deliberately plaintext display channel,
+  not a decrypted view of the OLD blob. Full writeup in
+  `adapters/codex.py`'s module docstring. `--since` chaining across the
   0.145.0→0.147.0 schema boundary, or across the ordinal-present/absent
   boundary, is not guaranteed to resolve (the marker scheme is
   generation-internal, not a stable cross-version id) — narrower than it
@@ -506,7 +545,7 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   individually lack `ordinal`, is fixed and covered by regression tests
   (see "Delta extraction" above); only a hop that crosses the schema-version
   boundary mid-chain is the still-open gap.
-- `extract-lossless` and `session-stats` now both support Claude Code, Codex, and
+- `extract-lossless` and `extract-report` now both support Claude Code, Codex, and
   opencode (2026-09-10) -- see `stats.py`/`lossless.py`'s own module
   docstrings for the real per-format usage-ledger shape and gaps each
   found (incl. a correction to `adapters/codex.py`'s own claim about
@@ -567,7 +606,7 @@ Parked here rather than acted on unilaterally:
   `nyxloom extract --profile <name>`, with `--max-words` staying an
   independent, always-overridable axis rather than baked into a profile's
   identity. Still open: surfacing profiles as parallel columns in
-  `session-stats`' timeline view (`_simulate_profile` already computes the
+  `extract-report`' timeline view (`_simulate_profile` already computes the
   per-profile running word count needed for this; nothing renders it as a
   table yet).
 - **CLI-version-aware schema-drift detection** — every adapter's docstring
@@ -603,7 +642,7 @@ edit or replace verbatim kept text.
 pieces: the real-data inventory of what's mechanically recoverable from
 tool_use/tool_result records nyxloom otherwise drops (`E-012`, feeding
 `ledger.py`'s `--ledger` flag), a second round of real-data-driven fixes to
-`session-stats`' condensed view (`E-013` addendum — a real compaction is
+`extract-report`' condensed view (`E-013` addendum — a real compaction is
 now its own `kind="compaction"` row with visible post-compaction recovery
 work, not a suppressed block hidden behind a divider; the elapsed-time
 column now measures each row's own call latency, not a gap to the previous

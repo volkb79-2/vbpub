@@ -59,6 +59,35 @@ files during this tool's design, not from documentation):
   deliberately NOT parentUuid-chain-aware. Genuine message-edit/resubmit
   branching was not observed and is not specifically handled; if it turns
   out to matter, this is the place to add it.
+- A dispatched Agent-tool subagent's own conversation lives in a SEPARATE
+  file, `<project>/<session>/subagents/agent-<agentId>.jsonl` (reachable
+  from the Agent tool's own `output_file` result, a symlink typically ending
+  in `.output` rather than `.jsonl` -- see sniff()'s docstring), paired with
+  an `agent-<agentId>.meta.json` sidecar (agentType, isFork, description,
+  toolUseId, spawnDepth). The TOP-LEVEL interactive session file never
+  contains this subagent's content inline and never carries an `agentId`
+  itself (verified: 59/59 real top-level files on this machine, zero
+  isSidechain=true records and zero agentId values among them) -- dispatch
+  leaves no trace in the parent file beyond the Agent tool_use/tool_result
+  pair that requested it.
+- **Nested subagents (a subagent that itself dispatches another subagent
+  via the Agent tool) get their own separate file too** -- verified
+  directly, not assumed: real sessions were found where a subagent's own
+  file uses the Agent tool, and the resulting child file exists as a FLAT
+  SIBLING under the SAME top-level session's `subagents/` directory (no
+  `subagents/.../subagents/...` nesting in the path). The parent-child link
+  is carried EXTERNALLY, in the child's `.meta.json` (`spawnDepth`: 1 =
+  dispatched directly from the interactive session, 2 = dispatched from
+  within another subagent, etc. -- a real session showed the histogram
+  {1: 34, 2: 3}, confirming multi-level nesting occurs) and `toolUseId`
+  (cross-referenced against the Agent-tool tool_use block ids found inside
+  the presumed PARENT's own file to establish the actual edge -- confirmed
+  concretely on real data: a depth-1 subagent file containing 4 Agent
+  tool_use blocks, two of which matched the `toolUseId` of two sibling
+  depth-2 `.meta.json` files). isSidechain does NOT carry this signal --
+  it is `true` uniformly for every record at every depth, so it tells you
+  "this file is someone's subagent," never which one dispatched it or how
+  deep. Lineage/depth is a `.meta.json`-only fact.
 """
 
 from __future__ import annotations
@@ -98,6 +127,38 @@ _HARNESS_TAG_RE = re.compile(
 )
 _COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.IGNORECASE | re.DOTALL)
 _LIFECYCLE_COMMANDS = {"compact", "clear"}
+
+# Mirrors stats.py's own _COMPACT_LABEL -- same trigger vocabulary
+# (compactMetadata.trigger is "manual" for an operator-issued /compact,
+# "auto" for the harness's own auto-compaction), a distinct dict because
+# stats.py's is capitalized for a table column ("Steered"/"Auto") while this
+# one reads as prose inside a bracketed hint ("steered"/"automatic"). Not
+# shared code on purpose -- see this module's and lossless.py's own "each
+# reads independently" design point; both call the same underlying concept
+# by name only, not by an imported constant.
+_COMPACTION_TRIGGER_WORD = {"manual": "steered", "auto": "automatic"}
+
+
+def _compaction_boundary_label(rec: dict) -> str:
+    """Text for a compact_boundary record's own LIFECYCLE_MARKER (2026-09-11,
+    operator direction: "the compaction step itself should only be present
+    as hint `[compaction: steered|automatic happened]`... the extract prose
+    should never include the content of the compaction itself -- it would
+    be repetitive, we concat all text before"). compactMetadata (present on
+    every real compact_boundary record) carries the real token/duration
+    facts -- format mirrors stats.py's own _compaction_label bracket
+    ("just like our extract-report", operator's own words) rather than the
+    record's own `content` field, which is always just the fixed literal
+    string "Conversation compacted" (verified against real dstdns session
+    data), never the actual multi-KB retained-context summary -- that lives
+    on the SEPARATE isCompactSummary record this adapter already hints-only
+    ("[compact summary]", unchanged by this feature)."""
+    meta = rec.get("compactMetadata") or {}
+    trigger = meta.get("trigger")
+    word = _COMPACTION_TRIGGER_WORD.get(trigger, trigger or "unknown")
+    pre, post, dur_ms = meta.get("preTokens"), meta.get("postTokens"), meta.get("durationMs")
+    detail = f", {pre:,}→{post:,} tok, {(dur_ms or 0) / 1000.0:.1f}s" if pre is not None and post is not None else ""
+    return f"[compaction: {word} happened{detail}]"
 
 def _split_qa_pairs(text: str, questions: list[Any]) -> list[tuple[str, str]] | None:
     """Best-effort re-split of the harness's own flattened tool_result
@@ -228,9 +289,123 @@ def list_sessions(path: Path) -> list[str]:
     return [str(path)]
 
 
+def _file_timestamps(path: Path) -> tuple[int, str | None, str | None]:
+    records = _load_records(path)
+    first_ts = records[0].get("timestamp") if records else None
+    last_ts = records[-1].get("timestamp") if records else None
+    return len(records), first_ts, last_ts
+
+
+def _tool_use_ids(path: Path) -> set[str]:
+    """Every tool_use block id found in an assistant record in this file --
+    used to resolve which file dispatched a given sub-agent (its
+    `.meta.json`'s toolUseId), regardless of the tool's own name (an Agent-
+    tool dispatch today, but this deliberately doesn't hardcode that name)."""
+    ids: set[str] = set()
+    for rec in _load_records(path):
+        if rec.get("type") != "assistant":
+            continue
+        for block in rec.get("message", {}).get("content", []) or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                ids.add(block["id"])
+    return ids
+
+
+def list_agents(path: Path) -> list["SessionNode"]:
+    """Discovery for `nyxloom extract-sessions` -- the whole family rooted
+    at path's top-level session, whether path itself is that top-level
+    file or one specific sub-agent's own file (see module docstring's
+    "Nested subagents" section for the on-disk layout this walks, and
+    E-015 for how it was verified against real data).
+
+    Lineage is resolved the same way it was confirmed by hand this
+    session: a sub-agent's `.meta.json` gives its own `spawnDepth`
+    directly (the source of truth for "how deep"), and its `toolUseId` is
+    cross-referenced against every CANDIDATE parent file's own tool_use
+    ids (root file + every other sub-agent file, since a depth>1 agent's
+    real dispatcher is another sub-agent, not necessarily the root) to
+    find which file actually dispatched it. When that cross-reference
+    can't resolve an edge (data anomaly, or a future spawn mechanism this
+    wasn't written against), the node still surfaces -- with its own known
+    spawnDepth kept visible -- rather than being silently dropped; only
+    the tree NESTING for that one node is left unresolved.
+    """
+    from ..sessions import SessionNode
+
+    if path.parent.name == "subagents":
+        session_dir = path.parent.parent
+        root_file = session_dir.parent / f"{session_dir.name}.jsonl"
+    else:
+        root_file = path
+        session_dir = path.parent / path.stem
+
+    root_id = str(root_file)
+    nodes = []
+    if root_file.exists():
+        count, first_ts, last_ts = _file_timestamps(root_file)
+        nodes.append(SessionNode(
+            id=root_id, parent_id=None, depth=0, label="(interactive session)",
+            path=root_id, record_count=count, first_ts=first_ts, last_ts=last_ts,
+        ))
+
+    subagents_dir = session_dir / "subagents"
+    meta_files = sorted(subagents_dir.glob("agent-*.meta.json")) if subagents_dir.is_dir() else []
+    if not meta_files:
+        return nodes
+
+    agent_files = {m: subagents_dir / (m.name[: -len(".meta.json")] + ".jsonl") for m in meta_files}
+    candidate_files = ([root_file] if root_file.exists() else []) + [
+        f for f in agent_files.values() if f.exists()
+    ]
+    owner_of_tool_use: dict[str, str] = {}
+    for f in candidate_files:
+        owner = root_id if f == root_file else str(f)
+        for tid in _tool_use_ids(f):
+            owner_of_tool_use.setdefault(tid, owner)
+
+    for meta_path in meta_files:
+        jsonl_path = agent_files[meta_path]
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+        agent_id = meta_path.name[len("agent-"): -len(".meta.json")]
+        spawn_depth = meta.get("spawnDepth")
+        tool_use_id = meta.get("toolUseId")
+        parent_id = owner_of_tool_use.get(tool_use_id) if tool_use_id else None
+        if parent_id is None and spawn_depth == 1:
+            parent_id = root_id if root_file.exists() else None
+        label = meta.get("description") or meta.get("agentType") or "(sub-agent)"
+        if spawn_depth is not None:
+            label = f"{label} (spawnDepth {spawn_depth})"
+        count, first_ts, last_ts = _file_timestamps(jsonl_path) if jsonl_path.exists() else (0, None, None)
+        nodes.append(SessionNode(
+            id=str(jsonl_path), parent_id=parent_id,
+            depth=spawn_depth if isinstance(spawn_depth, int) else 1,
+            label=label, path=str(jsonl_path),
+            record_count=count, first_ts=first_ts, last_ts=last_ts,
+        ))
+    return nodes
+
+
 def _strip_harness_tags(text: str) -> str:
     text = _COMMAND_ARGS_RE.sub(r"\1", text)  # unwrap, don't discard
     return _HARNESS_TAG_RE.sub("", text).strip()
+
+
+def is_harness_tag_only(text: str) -> bool:
+    """True when `text` consists ENTIRELY of harness-tag framing
+    (`<task-notification>`, `<command-name>`, `<local-command-caveat>`,
+    etc. -- see _HARNESS_TAG_RE) with nothing left once stripped -- the
+    exact condition parse() itself uses (`if not cleaned: continue`) to
+    drop a record without ever emitting a NormalizedEvent for it. Exposed
+    (not just `_strip_harness_tags` directly) for extract-debug's own
+    reason-labeling (debug_diff.py): a lossless block matching this is
+    real, precisely-known noise, not a guess -- distinct from the
+    checkpoint/length-based reasons debug_diff otherwise reconstructs,
+    which only approximate select()'s per-event decision.
+    """
+    return not _strip_harness_tags(text)
 
 
 def _command_name(text: str) -> str | None:
@@ -319,9 +494,34 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                     askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
     askuserquestion_ids = set(askuserquestion_inputs)
 
+    # isSidechain targeting is auto-detected from the file's OWN content, not
+    # a CLI flag (an earlier --include-sidechain flag was removed 2026-09-11,
+    # operator design critique: the shared `nyxloom extract` surface should
+    # stay adapter-agnostic -- "adapters solve the CLI specifics," not expose
+    # a Claude-Code-only vocabulary word on the generic command). The signal
+    # this replaces it with was verified exhaustively, not assumed: every
+    # top-level interactive session file on this machine (59/59) has
+    # isSidechain False/absent on EVERY record; every dispatched Agent-tool
+    # subagent's own dedicated file (.../subagents/agent-<id>.jsonl, 358/358)
+    # has isSidechain=True on EVERY record. Zero exceptions in either
+    # direction -- no file mixes the two. So a file with no non-sidechain
+    # record present has no "primary thread" to distinguish sidechain
+    # content FROM -- dropping it there would silently zero out an entire
+    # otherwise-valid file (exit 0, no warning), which is never the right
+    # default. A file that DOES have a primary thread keeps the original
+    # behavior of dropping sidechain records as noise (their originally-
+    # documented case: parallel tool-call fan-out branches interleaved with
+    # the real conversation -- not reproduced in this machine's corpus, but
+    # the logic below still defends against it if a future session has it).
+    # Net effect: targeting a specific subagent's own conversation is just
+    # `nyxloom extract <path to that agent's file>` -- same as targeting any
+    # other adapter's session, no separate flag required. See this module's
+    # own docstring for the nested-subagent (subagent-spawns-subagent) case.
+    has_primary_thread = any(not r.get("isSidechain") for _, r in indexed)
+
     events: list[NormalizedEvent] = []
     for seq, (abs_i, rec) in enumerate(indexed):
-        if rec.get("isSidechain") and not config.include_sidechain:
+        if rec.get("isSidechain") and has_primary_thread:
             continue
 
         uuid = rec.get("uuid") or f"line{abs_i}"
@@ -330,7 +530,16 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
 
         if rtype == "system":
             if rec.get("subtype") == "compact_boundary":
-                events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, "[compact boundary]"))
+                # Unconditional, regardless of hide_compaction_content: the
+                # record's own `content` field is always just the fixed
+                # literal "Conversation compacted" (never the real
+                # retained-context summary -- see _compaction_boundary_
+                # label's docstring), so there is no verbatim "content" for
+                # that flag to hide here in the first place -- only the
+                # trigger/token metadata that flag has no reason to gate,
+                # a strict improvement over the old bare "[compact
+                # boundary]" text either way.
+                events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, _compaction_boundary_label(rec)))
             continue
 
         if rtype == "assistant":
@@ -430,7 +639,23 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
             cmd = _command_name(raw_text)
             cleaned = _strip_harness_tags(raw_text)
             if cmd in _LIFECYCLE_COMMANDS:
-                label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
+                # An operator-issued `/compact <prompt>` dispatch's own
+                # argument text is hint-only by default (2026-09-11,
+                # operator direction -- see _compaction_boundary_label's
+                # docstring): it almost always just re-quotes a "compaction
+                # prompt" the model already produced as ordinary
+                # ASSISTANT_TEXT moments earlier (unaffected by this --
+                # kept in full there, classifier.py's meta_compact scoring
+                # sees to that), so repeating it here in full is exactly
+                # the redundancy the operator flagged. /clear carries no
+                # such risk (no KEEP-block-style argument in practice) and
+                # is left as-is. --show-compaction-content
+                # (hide_compaction_content=False) restores the pre-
+                # 2026-09-11 verbatim behavior for either command.
+                if cmd == "compact" and config.hide_compaction_content:
+                    label = "[compaction: steered dispatched]"
+                else:
+                    label = f"[/{cmd}]" + (f" {cleaned}" if cleaned else "")
                 events.append(NormalizedEvent(seq, uuid, ts, EventKind.LIFECYCLE_MARKER, label))
                 continue
             if not cleaned:
