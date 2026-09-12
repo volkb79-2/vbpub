@@ -297,10 +297,39 @@ never a silent edit to the contract file.
   backlog per the cross-repo convention. Both agents told (P1 addendum,
   P4 addendum).
 
+- **RW-29 (liveness / placement / admission design adopted; tracks P5–P8):**
+  operator ~13:40Z: fixed budgets are ceilings, not detectors, and fail on
+  old hardware; judge progress mechanically; consider a slice with
+  guarantees, the daemon's own slice, lanes naming what they need, the
+  root daemon adjusting cgroups; "write up a design doc and example flow
+  … persist our reasoning … fold this into our planned work … another
+  parallel track … RAM PSI is the only limit". Ruling: the design of record
+  is `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-
+  admission.md` (D-17..D-26: bound absence of progress; daemon = liveness
+  oracle + actuator in a new `dev-infra.slice`; `dev-gates.slice` as the
+  capacity object; lanes name requests, the daemon places exec/bare-host
+  lanes into `rg-<token>` leaves with `memory.high` throttling; detached
+  run-gate owner + attach; PSI-paused stall clock with named verdicts;
+  assay auto bound + cadence hints + `os._exit` runner + `hung` +
+  `--rejudge`; env-unset fallback so nothing breaks before the host is
+  updated; D-15 whitelist extension; ciu v8 D.7). Packages: **P7** assay
+  B091 (dispatched now, `assay-liveness`), **P8** mdt host-setup slices
+  (dispatched now, `mdt-dev-slices`), **P6** cgprofile CP-4..7 then CP-8/
+  CP-9 after the v1.1 contract amendment (controller-authored), **P5**
+  run-gate RG-56 + RG-62 after P4 and P6 merge. Releases: assay 6.2.0,
+  cgprofile 1.1.0, run-gate 23.9.0 (after 23.8.0 from P4). Host rule for
+  the parallel tracks: RAM PSI is the limit (back off while memory `full
+  avg10 > 5`), one mutation run per project, ≤ 2 gate containers. Backlog
+  rows RG-62 and CP-8/CP-9 are filed by P5/P6 from their handoffs (the
+  run-gate backlog file is under edit on two unmerged branches; appending
+  on main now would conflict).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
 | P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
+| P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29) |
+| P8 — mdt host-setup dev-infra/dev-gates slices | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); operator installs on the host |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27) |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |

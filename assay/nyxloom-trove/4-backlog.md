@@ -9334,3 +9334,44 @@ Two things here, both in assay's court:
 Consumer-side mitigation applied in the RG-55 wave (controller ruling
 RW-28): every r2 lane sets `judge.mutation.budget_per_candidate`
 (cgprofile `600s`, run-gate `900s`).
+
+## B091 — judge candidates by progress, not by time: auto per-candidate bound, per-test cadence hints, `os._exit` runner, `hung` outcome, `--rejudge`
+
+**Provenance:** vbpub `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`
+D-17/D-23 (operator directive 2026-09-12: fixed budgets fail on slow
+hardware; judge progress mechanically). Follows B090 (the incident) and
+B088 (resume identity ignores the test suite).
+
+**Status:** OPEN — dispatched as RG-55 wave package P7 (`assay-liveness`).
+
+### Contract
+1. `judge.mutation.budget_per_candidate` accepts `"auto"` (the default when
+   unset): max(3 × measured baseline wall time, baseline + 60 s), printed in
+   the plan line and recorded as `budget_per_candidate_derived_s` in the
+   verdict. `"none"` disables with a WARN. Explicit durations keep working.
+2. The progress NDJSON stream starts with a `plan` event carrying
+   `baseline_s`, `slowest_test_s`, `expect_next_event_within_s` (= max(3 ×
+   slowest test, 15 s)) and emits one `test` event per test (nodeid, outcome,
+   duration) from a pytest hook assay installs itself; consumers (run-gate)
+   use the hint as their stall bound. Documented in CONSUMERS as the progress
+   protocol.
+3. The python runner launches the suite through a wrapper that calls
+   `os._exit(rc)` after `pytest.main` returns, so a leaked non-daemon thread
+   cannot hang the candidate at interpreter exit (the mutant then SURVIVES and
+   must be killed by an honest assertion).
+4. Liveness: the runner samples the candidate process tree's CPU time
+   (`/proc/<pid>/stat` utime+stime, children included) every 5 s; no growth
+   for max(60 s, 2 × slowest test) after the last output line, or "runner
+   reported completion but the process is alive" for 30 s, ends the candidate
+   as `hung` — a new outcome, reported like `budget_exceeded` (never
+   `killed`), named in the verdict for triage.
+5. `run --resume --rejudge <id>[,<id>…]` and `--rejudge-outcome
+   hung,budget_exceeded,error` drop those state records before resuming.
+
+### Oracles
+Fake baseline timings → the derived bound and the hint are exactly the
+formulas above; a candidate whose process prints the summary and then sleeps
+in a non-daemon thread is `hung` within the grace, never `killed`, and the
+wrapper alone (3) makes the same candidate a survivor; a busy-loop candidate
+is `budget_exceeded` at the derived bound; `--rejudge` re-executes exactly
+the named ids and nothing else.
