@@ -6506,10 +6506,194 @@ class TestHistoryRollingSeries:
         store = run_gate.load_history_store(proj / ".run-gate/history.json")
         stats = run_gate.lane_history_report(store, "suite")["stats"]
         # Split series: the short-circuiting fail never dilutes the pass cost.
-        assert stats["passes"] == {"count": 1, "min_seconds": 30.0,
-                                   "median_seconds": 30.0, "max_seconds": 30.0}
+        # (duration keys only -- the five RG-55/C4 resource series are
+        # asserted by TestHistoryResourceSeries below; every entry here has
+        # `resources: null`, RUN_GATE_PROFILE=off, so they would all be
+        # zero-count and add nothing to what THIS test is proving.)
+        assert stats["passes"]["count"] == 1
+        assert stats["passes"]["min_seconds"] == 30.0
+        assert stats["passes"]["median_seconds"] == 30.0
+        assert stats["passes"]["max_seconds"] == 30.0
         assert stats["completed"]["count"] == 2
         assert stats["completed"]["median_seconds"] == 16.5
+
+
+MIB = 1024 * 1024
+
+
+class TestHistoryResourceSeries:
+    """RG-55/C4 (SPEC R-36 amended, contract Sec 4 obligation 4):
+    `series_stats` generalizes `duration_stats` for the five new resource
+    series. Same RG-27 traps, re-proven at least once each per the handoff
+    ('the pattern is identical, one test suffices to prove the
+    GENERALIZATION works')."""
+
+    def _entry(self, commit, resources, outcome="pass", duration=10.0,
+              eligible=True):
+        return {"commit": commit, "outcome": outcome,
+                "duration_seconds": duration, "history_eligible": eligible,
+                "resources": resources, "profile_error": None,
+                "profile_ref": None}
+
+    def test_series_stats_empty_reports_nothing_not_zero(self):
+        assert run_gate.series_stats([], lambda e: 1) == {
+            "count": 0, "min": None, "median": None, "max": None}
+
+    def test_series_stats_even_count_averages_the_two_middle_values(self):
+        entries = [{"resources": {"cpu": {"cores_avg": v}}}
+                  for v in (1.0, 2.0, 3.0, 4.0)]
+        stats = run_gate.series_stats(
+            entries, run_gate.RESOURCE_SERIES_GETTERS["cpu_cores_avg"])
+        assert stats == {"count": 4, "min": 1.0, "median": 2.5, "max": 4.0}
+
+    def test_resource_field_walks_the_path_and_stops_at_the_first_gap(self):
+        rf = run_gate._resource_field
+        assert rf({"resources": {"damon": {"hot_bytes": {"p90": 5}}}},
+                  "damon", "hot_bytes", "p90") == 5
+        assert rf({"resources": {"damon": None}},
+                  "damon", "hot_bytes", "p90") is None
+        assert rf({"resources": None}, "memory", "peak_bytes") is None
+        assert rf({}, "memory", "peak_bytes") is None   # schema-1 entry
+
+    def test_median_resists_a_10x_outlier_and_absent_entries_are_excluded(
+            self):
+        entries = [
+            self._entry("a", {"memory": {"peak_bytes": 700 * MIB,
+                              "peak_over_baseline_bytes": 200 * MIB},
+                              "cpu": {"cores_avg": 1.2},
+                              "host": {"memory_full_stall_seconds": 4.0},
+                              "damon": {"hot_bytes": {"p90": 190 * MIB}}}),
+            self._entry("b", {"memory": {"peak_bytes": 710 * MIB,
+                              "peak_over_baseline_bytes": 210 * MIB},
+                              "cpu": {"cores_avg": 1.3},
+                              "host": {"memory_full_stall_seconds": 4.5},
+                              "damon": {"hot_bytes": {"p90": 195 * MIB}}}),
+            self._entry("c", {"memory": {"peak_bytes": 7000 * MIB,  # 10x
+                              "peak_over_baseline_bytes": 2000 * MIB},
+                              "cpu": {"cores_avg": 9.0},
+                              "host": {"memory_full_stall_seconds": 40.0},
+                              "damon": {"hot_bytes": {"p90": 1900 * MIB}}}),
+            self._entry("d", None),          # unprofiled -- excluded, not 0
+        ]
+        store = {"schema": 2, "lanes": {"suite": {"latest": None,
+                                                   "history": entries}}}
+        stats = run_gate.lane_history_report(store, "suite")["stats"]["completed"]
+        peak = stats["memory_peak_bytes"]
+        assert peak["count"] == 3
+        assert peak["median"] == 710 * MIB   # NOT dragged toward the outlier
+        assert peak["max"] == 7000 * MIB     # outlier stays visible as max
+        assert stats["memory_peak_over_baseline_bytes"]["median"] == 210 * MIB
+        assert stats["cpu_cores_avg"]["median"] == 1.3
+        assert stats["memory_full_stall_seconds"]["median"] == 4.5
+        hot = stats["hot_set_p90_bytes"]
+        assert hot["count"] == 3
+        assert hot["median"] == 195 * MIB   # same resistance, odd-count series
+
+    def test_dirty_run_never_touches_a_committed_entrys_resources(self):
+        """RG-27 trap 2, re-proven for the resource series: `_apply_record`
+        gates on `history_eligible` alone, so this holds for free -- proven
+        directly rather than re-derived."""
+        store = {"schema": 2, "lanes": {}}
+        clean = {"lane": "suite", "commit": "c1", "outcome": "pass",
+                "duration_seconds": 10.0, "history_eligible": True,
+                "resources": {"memory": {"peak_bytes": 500 * MIB}},
+                "profile_error": None, "profile_ref": None}
+        store = run_gate._apply_record(store, clean, keep=10)
+        dirty = {"lane": "suite", "commit": "c1", "outcome": "pass",
+                "duration_seconds": 999.0, "history_eligible": False,
+                "excluded_reason": "dirty tree",
+                "resources": {"memory": {"peak_bytes": 999 * MIB}},
+                "profile_error": None, "profile_ref": None}
+        store = run_gate._apply_record(store, dirty, keep=10)
+        entry = store["lanes"]["suite"]["history"][0]
+        assert entry["resources"]["memory"]["peak_bytes"] == 500 * MIB
+        assert store["lanes"]["suite"]["latest"]["resources"]["memory"][
+            "peak_bytes"] == 999 * MIB   # latest DOES reflect the dirty run
+
+
+class TestHistorySchema2Migration:
+    """RG-55/C4: a schema-1 store loads as-is and is written back as
+    schema 2 on the NEXT write; entries never re-run stay schema-1-shaped
+    forever, which is the documented steady state, not a bug."""
+
+    def test_schema1_store_migrates_on_next_write_old_entry_untouched(
+            self, tmp_path):
+        old_entry = {"commit": "old1", "outcome": "pass",
+                    "duration_seconds": 5.0, "history_eligible": True,
+                    "started_at": "2026-01-01T00:00:00Z"}
+        store_path = tmp_path / "history.json"
+        store_path.write_text(json.dumps({"schema": 1, "lanes": {"suite": {
+            "latest": dict(old_entry), "history": [dict(old_entry)]}}}))
+        loaded = run_gate.load_history_store(store_path)
+        assert loaded["schema"] == 1   # untouched on LOAD alone
+        assert "resources" not in loaded["lanes"]["suite"]["history"][0]
+        new_record = {"lane": "suite", "commit": "new1", "outcome": "pass",
+                     "duration_seconds": 6.0, "history_eligible": True,
+                     "resources": {"memory": {"peak_bytes": 123 * MIB}},
+                     "profile_error": None, "profile_ref": None}
+        updated = run_gate._apply_record(loaded, new_record, keep=10)
+        assert updated["schema"] == run_gate.HISTORY_SCHEMA   # flips to 2
+        assert updated["lanes"]["suite"]["history"][0] == old_entry  # byte-for-byte
+        assert updated["lanes"]["suite"]["history"][1]["resources"] == {
+            "memory": {"peak_bytes": 123 * MIB}}
+        # reading the untouched schema-1 entry must not raise -- `.get`,
+        # never a bare subscript -- and it contributes NOTHING to the
+        # resource series (only the new entry has `resources` at all).
+        report = run_gate.lane_history_report(updated, "suite")
+        assert report["stats"]["completed"]["memory_peak_bytes"]["count"] == 1
+
+
+class TestHistoryTableResourceColumns:
+    """RG-55/C4/C5: the human `history` table's PEAK/+BASE/HOT p90/CORES/
+    STALL line -- unit-level (formatters) and one in-process, through
+    `run_gate.main()`, proof that `_print_lane_history` actually calls them
+    (a `run_tool()` subprocess proves the CLI shape but is invisible to
+    diff-coverage, handoff note on `run_tool()` vs `main()`)."""
+
+    def test_fmt_mib_and_fmt_cores_both_branches(self):
+        assert run_gate._fmt_mib(700 * MIB) == "700 MiB"
+        assert run_gate._fmt_mib(None) == "-"
+        assert run_gate._fmt_cores(1.234) == "1.23"
+        assert run_gate._fmt_cores(None) == "-"
+
+    def test_fmt_resource_stats_populated_and_all_null(self):
+        populated = {
+            "memory_peak_bytes": {"count": 1, "min": 1,
+                                  "median": 700 * MIB, "max": 700 * MIB},
+            "memory_peak_over_baseline_bytes": {"count": 1, "min": 1,
+                                                "median": 200 * MIB,
+                                                "max": 200 * MIB},
+            "hot_set_p90_bytes": {"count": 1, "min": 1,
+                                  "median": 190 * MIB, "max": 190 * MIB},
+            "cpu_cores_avg": {"count": 1, "min": 1, "median": 1.3,
+                              "max": 1.3},
+            "memory_full_stall_seconds": {"count": 1, "min": 1,
+                                          "median": 4.8, "max": 4.8},
+        }
+        line = run_gate._fmt_resource_stats(populated)
+        assert "PEAK 700 MiB (max 700 MiB)" in line
+        assert "+BASE 200 MiB" in line
+        assert "HOT p90 190 MiB" in line
+        assert "CORES 1.30" in line
+        assert "STALL 4.8s" in line
+        empty = {k: {"count": 0, "min": None, "median": None, "max": None}
+                for k in populated}
+        empty_line = run_gate._fmt_resource_stats(empty)
+        assert "PEAK - (max -)" in empty_line
+        assert "+BASE -" in empty_line and "CORES -" in empty_line
+        assert "STALL -" in empty_line
+
+    def test_history_table_in_process_prints_the_resource_line(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path)
+        for tag, secs in (("a", 10.0), ("b", 100.0)):
+            new_commit(repo, tag)
+            record_run(proj, repo, seconds=secs)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["history", "suite"]) == 0
+        out = capsys.readouterr().out
+        assert "PEAK -" in out    # RUN_GATE_PROFILE=off -- no resources yet
+        assert "CORES -" in out
 
 
 class TestHistoryEligibilityGuard:
@@ -6938,7 +7122,7 @@ class TestHistoryQueryVerb:
         out = run_tool(proj, "history", "suite", "--json")
         assert out.returncode == 0, out.stderr
         payload = json.loads(out.stdout)
-        assert payload["schema"] == 1
+        assert payload["schema"] == 2   # RG-55/C4
         assert payload["keep"] == 10 and "default" in payload["keep_source"]
         assert payload["store"] == str(proj / ".run-gate/history.json")
         lane = payload["lanes"]["suite"]
@@ -7159,11 +7343,12 @@ class TestHistoryDegradedInputs:
     def test_a_wrongly_shaped_store_reads_as_empty(self, tmp_path, body):
         path = tmp_path / "history.json"
         path.write_text(body)
-        assert run_gate.load_history_store(path) == {"schema": 1, "lanes": {}}
+        assert run_gate.load_history_store(path) == \
+            {"schema": run_gate.HISTORY_SCHEMA, "lanes": {}}
 
     def test_a_missing_store_reads_as_empty(self, tmp_path):
         assert run_gate.load_history_store(tmp_path / "nope.json") == \
-            {"schema": 1, "lanes": {}}
+            {"schema": run_gate.HISTORY_SCHEMA, "lanes": {}}
 
     def test_stats_over_nothing_report_nothing_not_zero(self):
         """`min 0.0s` would be a measurement nobody took."""

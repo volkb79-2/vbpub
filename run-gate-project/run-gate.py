@@ -95,7 +95,20 @@ SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
 HISTORY_DIR_NAME = ".run-gate"
 HISTORY_FILE_NAME = "history.json"
 HISTORY_LOCK_NAME = "history.lock"
-HISTORY_SCHEMA = 1
+# schema 2 (RG-55/C4, contract Sec 4 obligation 4, SPEC R-36 amended): every
+# entry gains `resources` (Summary | null), `profile_error` (str | null),
+# `profile_ref` (dict | null) -- already written into every `run_record` by
+# the C3 wiring, so a schema-1 STORE loaded today already has real data in
+# any entry recorded since. A schema-1 store loads and reads fine as-is
+# (`.get("resources")` everywhere an entry is read, never a bare subscript,
+# so an old entry with none of the three keys reads as `resources: None`
+# rather than raising); `_apply_record` stamps `HISTORY_SCHEMA` on the STORE
+# itself on every write, so the store's own `schema` field flips to 2 the
+# first time ANY lane in it runs again, while entries that are never re-run
+# stay schema-1-shaped in the JSON forever -- `schema` is a store-level
+# field, not a per-entry one, and mixed-shape entries under one `schema: 2`
+# store is the documented, permanent steady state, not a transient one.
+HISTORY_SCHEMA = 2
 HISTORY_KEEP_DEFAULT = 10
 HISTORY_LOCK_TIMEOUT = 5.0   # seconds — telemetry NEVER blocks a gate
 HISTORY_OUTCOMES = ("pass", "fail", "error", "aborted")
@@ -2144,6 +2157,14 @@ def load_history_store(path: Path) -> dict:
 
 
 def _apply_record(store: dict, record: dict, keep: int) -> dict:
+    # RG-55/C4: every WRITE stamps the current schema on the store itself,
+    # regardless of what was loaded -- a schema-1 store (or one missing the
+    # key entirely) is rewritten as schema 2 the moment anything in it is
+    # next recorded (contract Sec 4 obligation 4: "written back as schema 2
+    # on the next write"). Existing entries this call does not touch are
+    # left byte-for-byte alone below; only the store's own top-level field
+    # changes here.
+    store["schema"] = HISTORY_SCHEMA
     slot = store["lanes"].setdefault(record["lane"],
                                      {"latest": None, "history": []})
     entry = {k: v for k, v in record.items() if not k.startswith("_")}
@@ -2711,6 +2732,65 @@ def duration_stats(entries: list[dict]) -> dict:
             "median_seconds": median, "max_seconds": values[-1]}
 
 
+def series_stats(entries: list[dict], getter) -> dict:
+    """`duration_stats`, generalized (RG-55/C4, contract Sec 4 obligation 4):
+    median never mean, same reasoning as `duration_stats` — one slow (or
+    swollen) outlier must not be read as the lane's typical cost. `getter`
+    pulls ONE numeric value (or `None`) from a history entry; a `None` —
+    unprofiled run, a profile error, or a schema-1 entry with no `resources`
+    at all — is EXCLUDED from the series, never coerced to 0 (a lane that
+    was never measured is not the same fact as a lane that measured zero).
+    `count` says how many entries actually contributed, which can be less
+    than `len(entries)` for exactly that reason."""
+    values = sorted(v for v in (getter(e) for e in entries)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool))
+    if not values:
+        return {"count": 0, "min": None, "median": None, "max": None}
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else \
+        round((values[mid - 1] + values[mid]) / 2, 3)
+    return {"count": len(values), "min": values[0], "median": median,
+            "max": values[-1]}
+
+
+def _resource_field(entry: dict, *path: str) -> object:
+    """Walk `entry["resources"][path[0]][path[1]]…`, `None` at the first
+    missing/non-dict step — `.get`, never a bare subscript, so a schema-1
+    entry (`resources` key absent) or a `resources: null` one (unprofiled,
+    disabled, or a profile error) reads as `None` rather than raising."""
+    node = entry.get("resources")
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+# RG-55/C4, contract Sec 3/Sec 4 obligation 4: the five new `series_stats`
+# keys `stats.passes`/`stats.completed` gain, and where each lives in the
+# Summary (Sec 3) — `hot_set_p90_bytes` comes from `damon`, not
+# `memory`/`cpu`/`host`, because DAMON's hot/warm/cold/idle classification
+# is its own top-level object in the Summary; a session with DAMON
+# unavailable (or `[profile] damon = false`) has `damon: null` and
+# contributes nothing to that one series, same as any other missing value.
+RESOURCE_SERIES_GETTERS = {
+    "memory_peak_bytes": lambda e: _resource_field(e, "memory", "peak_bytes"),
+    "memory_peak_over_baseline_bytes":
+        lambda e: _resource_field(e, "memory", "peak_over_baseline_bytes"),
+    "hot_set_p90_bytes": lambda e: _resource_field(e, "damon", "hot_bytes", "p90"),
+    "cpu_cores_avg": lambda e: _resource_field(e, "cpu", "cores_avg"),
+    "memory_full_stall_seconds":
+        lambda e: _resource_field(e, "host", "memory_full_stall_seconds"),
+}
+
+
+def _lane_stats(entries: list[dict]) -> dict:
+    stats = duration_stats(entries)
+    for key, getter in RESOURCE_SERIES_GETTERS.items():
+        stats[key] = series_stats(entries, getter)
+    return stats
+
+
 def lane_history_report(store: dict, lane_name: str) -> dict:
     slot = store.get("lanes", {}).get(lane_name) or {}
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
@@ -2718,8 +2798,8 @@ def lane_history_report(store: dict, lane_name: str) -> dict:
     return {
         "latest": slot.get("latest"),
         "history": hist,
-        "stats": {"passes": duration_stats(passes),
-                  "completed": duration_stats(hist)},
+        "stats": {"passes": _lane_stats(passes),
+                  "completed": _lane_stats(hist)},
     }
 
 
@@ -2734,6 +2814,39 @@ def _fmt_stats(label: str, stats: dict) -> str:
             f"median {_fmt_seconds(stats['median_seconds'])} "
             f"(min {_fmt_seconds(stats['min_seconds'])}, "
             f"max {_fmt_seconds(stats['max_seconds'])})")
+
+
+def _fmt_mib(value: object) -> str:
+    """Bytes -> whole MiB for display (RG-55/C4/C5) — `-` for `None`, the
+    same nullable-numeric convention `_fmt_seconds` already uses; bytes
+    themselves are never rounded (contract Sec 7), only THIS rendering is."""
+    return (f"{round(value / (1024 * 1024))} MiB"
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else "-")
+
+
+def _fmt_cores(value: object) -> str:
+    return (f"{value:.2f}" if isinstance(value, (int, float))
+            and not isinstance(value, bool) else "-")
+
+
+def _fmt_resource_stats(stats: dict) -> str:
+    """PEAK/+BASE/HOT p90/CORES/STALL — RG-55/C4: the median (never mean,
+    same reasoning as `_fmt_stats`) of each of the five `series_stats`
+    series over the SAME entries `_fmt_stats`'s own line just described;
+    `-` for any series with zero contributing entries (RG-27's dirty-run
+    trap generalizes: an unprofiled or errored run contributes to NEITHER
+    series, the same way it never touched `duration_stats`)."""
+    peak = stats["memory_peak_bytes"]
+    over = stats["memory_peak_over_baseline_bytes"]
+    hot = stats["hot_set_p90_bytes"]
+    cores = stats["cpu_cores_avg"]
+    stall = stats["memory_full_stall_seconds"]
+    return (f"PEAK {_fmt_mib(peak['median'])} (max {_fmt_mib(peak['max'])})  "
+            f"+BASE {_fmt_mib(over['median'])}  "
+            f"HOT p90 {_fmt_mib(hot['median'])}  "
+            f"CORES {_fmt_cores(cores['median'])}  "
+            f"STALL {_fmt_seconds(stall['median'])}")
 
 
 def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
@@ -2764,8 +2877,10 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
                   f"{_fmt_seconds(entry.get('duration_seconds')):>9}  "
                   f"{entry.get('started_at')}")
         print("    " + _fmt_stats("passes", report["stats"]["passes"]))
+        print("      " + _fmt_resource_stats(report["stats"]["passes"]))
         print("    " + _fmt_stats("completed (passes + fails)",
                                   report["stats"]["completed"]))
+        print("      " + _fmt_resource_stats(report["stats"]["completed"]))
 
 
 def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
