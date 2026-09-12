@@ -398,3 +398,15 @@ shellcheck's own quote parsing) — reworded every occurrence to "mistyped"
 `test-render: ALL OK`, exit 0 (this run is BEFORE B1/M5 land, so it does
 not yet cover the cap-watcher/tmpfiles assertions for real — re-run at the
 end of the whole repair set, see the final gate verdict entry).
+
+### C2 — host-setup.env.example: B5, D1's env keys (hash: see next entry)
+
+(B5) `:127`'s "BOTH this slice and (its share of) dev.slice below" reverted
+to main's exact original "BOTH this slice and dev.slice below" — residue of
+the withdrawn 3-way `MemoryMin` sum the `b9e628f5` revert missed. Verified
+no other residue: `git grep -n "its share of"` at this tip finds nothing.
+(D1) new `DEV_CAP_GATES_MEMORY_MAX=4G` key in the "Reactive per-container
+cap watcher" section, with the reasoning the ruling asked for (one lane
+alone drives the tier into throttle, never past MemoryMax; two lanes are
+bounded by oomd; `1G` would re-create the 2026-08-04 incident) — verify:
+`grep -n DEV_CAP_GATES_MEMORY_MAX host-setup.env.example`.
