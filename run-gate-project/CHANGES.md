@@ -180,6 +180,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   (125/126/127) OR a stderr line PREFIXED (not merely containing) with
   `docker:`/`Error response from daemon:` — never a bare substring match
   against text a daemon's own application code might have produced.
+  **Round-2 review (S11):** those three exit codes are not one condition.
+  125 (the docker CLI/daemon could not even start the command) is the
+  only one consistent with "container absent/stopped"; 126 (command not
+  executable) and 127 (not found) mean `docker exec` REACHED a live
+  container and `cgprofile` itself could not be started inside it — a
+  broken image or PATH, reproduced live on this host. Folding all three
+  into "not running ... ciu up" told the operator to start a container
+  that was already up. 126/127 now get their own `daemon_broken_reason()`
+  wording naming the real condition; 125 keeps `daemon_not_running_
+  reason()`.
 - **RG-58 — bare-host `stall_timeout` gets a load-time WARNING + a
   matching `doctor` WARN, never a refusal (RW-27a).** A `stall_timeout`
   declared on a `bare-host` lane was silently inert (`run_bare_host_lane`

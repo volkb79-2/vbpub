@@ -13252,15 +13252,18 @@ class TestProfilerClient:
 
     def test_docker_reserved_exit_code_names_the_real_cause_even_with_no_recognizable_prefix(
             self, tmp_path, monkeypatch):
-        """S2's OTHER branch: docker's own reserved exit codes (125/126/127)
-        must be sufficient on their own -- docker CLI wording varies across
-        versions/hosts, so the exit code, not a specific string, is the
-        unambiguous signal for "this docker exec never reached
-        cgprofile"."""
+        """S2's OTHER branch: docker's own reserved exit code for "the CLI/
+        daemon could not even start the command" (125) must be sufficient
+        on its own -- docker CLI wording varies across versions/hosts, so
+        the exit code, not a specific string, is the unambiguous signal
+        for "this docker exec never reached cgprofile". S11 (round-2
+        review, RW-51) narrowed this to 125 specifically -- 126/127 are a
+        DIFFERENT condition, see
+        test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one."""
         class _FakeCompleted:
             stdout = ""
-            stderr = "OCI runtime exec failed: exec failed: no such file or directory"
-            returncode = 126
+            stderr = "no such file or directory: unknown"
+            returncode = 125
         monkeypatch.setattr(run_gate.subprocess, "run",
                             lambda *a, **k: _FakeCompleted())
         client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
@@ -13268,6 +13271,33 @@ class TestProfilerClient:
         assert doc is None
         assert "not running" in reason
         assert "ciu up" in reason
+
+    def test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one(
+            self, tmp_path, monkeypatch):
+        """S11 (round-2 review, RW-51): exit 126 (container command not
+        executable) and 127 (not found) mean `docker exec` REACHED a live
+        container -- `cgprofile` itself could not be started inside it (a
+        broken image or PATH), reproduced live on this host with a real
+        OCI runtime exec failure. The OLD wording (126/127 folded into the
+        same "not running ... ciu up" reason as 125) told the operator to
+        start a container that is already up -- the wrong remedy for the
+        wrong cause. Must name the real condition instead, for BOTH exit
+        codes, and never say "not running"."""
+        for code in (126, 127):
+            class _FakeCompleted:
+                stdout = ""
+                stderr = "OCI runtime exec failed: exec failed: no such file or directory"
+                returncode = code
+            monkeypatch.setattr(run_gate.subprocess, "run",
+                                lambda *a, **k: _FakeCompleted())
+            client = run_gate.ProfilerClient("docker",
+                                             run_gate.PROFILE_DAEMON_DEFAULT)
+            doc, reason = client.version()
+            assert doc is None
+            assert "not running" not in reason
+            assert "is running" in reason
+            assert "126/127" in reason
+            assert run_gate.PROFILE_DAEMON_DEFAULT in reason
 
     def test_a_running_daemons_own_crash_is_never_misreported_as_not_running(
             self, tmp_path, monkeypatch):

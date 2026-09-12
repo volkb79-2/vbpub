@@ -1120,18 +1120,30 @@ def _last_successful(values) -> object:
 # demonstrably running is the opposite of RG-59's own goal. Narrowed to
 # docker's own exec failure signature specifically: `docker exec` itself
 # never reaching `cgprofile` returns one of docker's own reserved exit
-# codes (125 = the docker CLI/daemon could not even start the command,
-# 126 = container command not executable, 127 = not found) OR prints a
-# line prefixed with docker's own "docker:"/"Error response from
-# daemon:" wording -- never a bare substring match against arbitrary
-# stderr content a daemon's OWN application code might have produced.
-_DOCKER_EXEC_FAILURE_EXIT_CODES = (125, 126, 127)
+# codes OR prints a line prefixed with docker's own "docker:"/"Error
+# response from daemon:" wording -- never a bare substring match against
+# arbitrary stderr content a daemon's OWN application code might have
+# produced.
+#
+# S11 (round-2 review, RW-51): those reserved exit codes are NOT all the
+# same condition. 125 = the docker CLI/daemon could not even start the
+# command -- consistent with "the target container is absent/stopped",
+# the ONLY case `daemon_not_running_reason`'s "not running ... ciu up"
+# wording is honest for. 126/127 (container command not executable / not
+# found) mean `docker exec` DID reach a live container -- the container is
+# running, `cgprofile` itself could not be started inside it (a broken
+# image or PATH), and telling the operator to `ciu up` a container that is
+# already up is the wrong remedy for the wrong cause, reproduced live on
+# this host (an OCI runtime exec failure, exit 126). Split into two exit-
+# code sets with two distinct reasons instead of one.
+_DAEMON_ABSENT_EXIT_CODES = (125,)
+_DAEMON_BROKEN_EXIT_CODES = (126, 127)
 _DOCKER_EXEC_FAILURE_STDERR_PREFIXES = ("docker:", "Error response from daemon:")
 
 
 def _stderr_names_daemon_not_running(stderr_tail: str,
                                      returncode: int | None = None) -> bool:
-    if returncode in _DOCKER_EXEC_FAILURE_EXIT_CODES:
+    if returncode in _DAEMON_ABSENT_EXIT_CODES:
         return True
     return stderr_tail.strip().startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES)
 
@@ -1145,6 +1157,19 @@ def daemon_not_running_reason(daemon_name: str) -> str:
     warning did not)."""
     return (f"{daemon_name!r} not running (start it: cd "
            f"scripts/cgroup-profiler && ciu up)")
+
+
+def daemon_broken_reason(daemon_name: str) -> str:
+    """S11 (round-2 review, RW-51): exit 126/127 means `docker exec`
+    reached the daemon container but could not start `cgprofile` inside it
+    (a broken image or PATH) -- the container IS running, so
+    `daemon_not_running_reason`'s "not running ... ciu up" wording names
+    the wrong condition and the wrong remedy. Named separately so a
+    caller never tells the operator to start a container that is already
+    up."""
+    return (f"{daemon_name!r} container is running but could not start "
+           f"`cgprofile` in it (exit 126/127 — broken image or PATH, not "
+           f"a stopped container)")
 
 
 class ProfilerClient:
@@ -1215,6 +1240,13 @@ class ProfilerClient:
             # ACTUALLY malformed response from a daemon that IS running.
             if _stderr_names_daemon_not_running(stderr_tail, proc.returncode):
                 return None, daemon_not_running_reason(self.daemon)
+            # S11 (round-2 review, RW-51): 126/127 reach a LIVE container
+            # that could not start `cgprofile` -- a distinct condition
+            # from "not running", checked after the not-running/stderr-
+            # prefix test above so a real docker "not running" stderr
+            # wording still wins even on one of these exit codes.
+            if proc.returncode in _DAEMON_BROKEN_EXIT_CODES:
+                return None, daemon_broken_reason(self.daemon)
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
                           f"(exit {proc.returncode}); stderr: {stderr_tail}")
         if not isinstance(doc, dict):
