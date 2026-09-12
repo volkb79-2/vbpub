@@ -77,6 +77,27 @@ never a silent edit to the contract file.
   with everything independent of it. (P2's second session stopped on the
   C2 ask with C3–C8 untouched.)
 
+- **RW-10 (P2 C2):** accepted P2's readings — the `assay-r3` canary runs the
+  one pytest selector that encodes the invariant (the cgroup-profiler
+  `canary-run.sh` shape, not the full r1 argv on a scratch copy), and
+  `assay plan r2` stood in for the RW-8 proof because `assay plan` is
+  R2-only. assay-r1's first run on the branch FAILED (86.9%) on a real gap
+  in `tools/coverage_gate.py` invisible to the narrower selftest — closed
+  with four tests (`45f2aa5a`); the lane is doing its job.
+- **RW-11 (contract amendment, P2 C3):** contract §4.3's basic-path file
+  list gains `memory.max` and `memory.high` (12 files): §7's `limit_drift`
+  and the golden `summary-basic-v1.json` both require them. Applies to the
+  daemon side as a no-op (it samples every group already). The contract
+  file itself (and its mirror) is amended at P3 integration so both copies
+  move in lockstep; until then this ruling is the text.
+- **RW-12 (P2 C3 wiring):** `await_container` tick shape — no background
+  sampler thread. `proc.wait(timeout=tick)` with `tick =
+  PROFILE_SAMPLE_SECONDS` while a basic sampler is active, else
+  `PROGRESS_POLL_SECONDS`; the progress/log-stream watch polls only when
+  ≥ `PROGRESS_POLL_SECONDS` have elapsed since its last poll (monotonic,
+  injectable), so RG-36/RG-41 stall semantics are unchanged. The daemon
+  path does no per-tick work and no `ctl status` polling in v1.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
