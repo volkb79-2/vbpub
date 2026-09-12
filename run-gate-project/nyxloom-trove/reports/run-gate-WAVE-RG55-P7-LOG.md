@@ -116,7 +116,7 @@ exists, in a small follow-up entry-only commit).
   (`KeyError` on the missing env key). All three caught by an EXISTING
   test — no gap found, no new test needed.
 
-### `<pending>` — session 3: RW-36 correction (argv_appended channel, `judge.mutation.liveness` gate, `liveness` wire record)
+### `e27b107b` — session 3: RW-36 correction (argv_appended channel, `judge.mutation.liveness` gate, `liveness` wire record)
 
 - **First commit of session 3** (fresh Sonnet successor, seeded from
   BRIEF-2). Implements RW-36 verbatim, per the handoff's own "do this FIRST"
