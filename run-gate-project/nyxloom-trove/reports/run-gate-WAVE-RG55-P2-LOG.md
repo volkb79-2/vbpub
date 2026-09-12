@@ -1595,13 +1595,40 @@ added. Then merged into this branch (`a55e4d3e`, clean, no conflicts).
   and closed in `8faaf969` with `TestFootprintManifestLanePeakMedian` (3
   direct-call tests).
 
-- **B3** (2 mutation survivors, no oracle — code was already correct):
-  `TestNearestRankValue` (3 tests: None-exclusion, all-None, mixed) and
-  `test_peak_over_baseline_bytes_is_floored_at_zero_container_shared`
-  (direct call proving the `max(0, ...)` floor with a shrinking baseline).
-  `_last_successful` (new helper, see RW-21 below) gets its own
-  `TestLastSuccessful` (3 tests) since it is new code, not a pre-existing
-  survivor.
+- **B3/M5 correction (review round 2, ACCEPT condition 2):** the bullet
+  below originally claimed BOTH round-1 mutation survivors were closed by
+  a direct-call test, M5 among them via "a direct call proving the
+  `max(0, ...)` floor with a shrinking baseline". The round-2 reviewer
+  replanted M5 and re-ran it against the full suite: it still survives
+  (`3 failed, 1066 passed`, byte-identical to the control), then proved
+  *why* it is not a test gap — in the only scope where that expression
+  runs (`container-shared`; RW-21 makes scope `container` return `None`
+  unconditionally), `peak_bytes = _max_or_none(mem_current)` is the
+  maximum over a list whose FIRST element is the baseline sample, so
+  `peak_bytes >= baseline_bytes` holds BY CONSTRUCTION — exhaustively
+  checked over 340 readable/`None` sample combinations, zero negatives.
+  `max(0, …)` is dead defensive code; **M5 is an EQUIVALENT mutant**, not
+  a missing oracle, and the final `assay-r2` (RW-25) is expected to report
+  it again with exactly this justification, not a new killing test. The
+  test named below does not close it either, and its own body already
+  said so (see its corrected name/comment) — substantively B3 is still
+  closed (no behaviour is at risk either way), which is why this was an
+  ACCEPT condition on the records, not a blocker.
+- **B3** (2 mutation survivors — one KILLED, one EQUIVALENT, per the
+  correction above): `TestNearestRankValue` (3 tests: None-exclusion,
+  all-None, mixed) KILLS M2 (`_nearest_rank_value` treating `None` as
+  `0`). M5 (removing `max(0, peak_bytes - baseline_bytes)`) is not
+  killed by any test, and the round-2 reviewer's 340-combination proof
+  establishes it cannot be — see the correction above.
+  `test_peak_over_baseline_bytes_is_floored_at_zero_container_shared` is
+  RENAMED (this close-out, `test_peak_over_baseline_bytes_is_zero_when_
+  the_session_only_shrinks`) to say what it actually pins: the correct
+  ARITHMETIC result (`0`, never negative) for the one real scenario where
+  the baseline sample is also the peak sample — a genuine regression
+  test, but not an M5 kill; its own comment already said as much before
+  this rename made the name agree with the comment. `_last_successful`
+  (new helper, see RW-21 below) gets its own `TestLastSuccessful` (3
+  tests) since it is new code, not a pre-existing survivor.
 
 - **B4** (hollow red-first proof): `TestExecLaneProfilingWiring`'s sample
   assertion raised `>= 2` → `>= 3` (exactly 2 is what the reviewer proved

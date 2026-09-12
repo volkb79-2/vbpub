@@ -1219,8 +1219,14 @@ caught after B2's redirect).
 `except Exception`, required-key validation, call-site + finally-block
 try/except wraps in both `await_container` and `run_exec_lane` — 20+ new
 tests). B2 (`meta.expected` now the frozen contract's four-key object).
-B3 (2 mutation survivors — code was already correct, both now have
-direct-call tests). B4 (red-first assertion raised `>=2` → `>=3`,
+B3 (2 mutation survivors — code was already correct; M2 is KILLED with a
+new direct-call test, M5 is an EQUIVALENT mutant, not a test gap, per the
+review round-2 ACCEPT condition 2 correction in the LOG's "Fix round 1"
+section — `max(0, peak_bytes - baseline_bytes)` cannot go negative by
+construction in the only scope it runs, proven over 340 sample
+combinations; the original claim here that "both now have direct-call
+tests" was inaccurate for M5 and is corrected by this same close-out).
+B4 (red-first assertion raised `>=2` → `>=3`,
 docstring corrected). B5 (LOG/REPORT records corrected in place — the
 final selftest never ran history-recorded at `ac885ed4`, `assay-r2` was
 dispatched FIRST not last; substance was already right, only the records

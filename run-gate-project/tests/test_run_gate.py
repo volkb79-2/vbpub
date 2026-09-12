@@ -12596,14 +12596,23 @@ class TestResourceAccumulatorGoldenFixtures:
                             "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None  # the only pair is skipped
 
-    def test_peak_over_baseline_bytes_is_floored_at_zero_container_shared(self):
-        # B3 (round-1 review): a mutant removing `max(0, ...)` survived the
-        # WHOLE suite -- no test called this directly with a SHRINKING
-        # baseline. A container-shared lane whose baseline shrinks (e.g. a
-        # sibling process in the shared container frees memory between
-        # `docker exec` and the first sample) must never write a negative
-        # byte count to history/the tracked manifest (contract Sec 7:
-        # "floored at 0").
+    def test_peak_over_baseline_bytes_is_zero_when_the_session_only_shrinks(
+            self):
+        # B3/M5 CORRECTION (review round 2, ACCEPT condition 2): this test
+        # was originally named/described as proving the `max(0, ...)`
+        # floor survivor closed -- it does not, and its own body already
+        # said so. `peak_bytes = _max_or_none(mem_current)` is the maximum
+        # over ALL samples INCLUDING s0 (the baseline), so on a
+        # container-shared session that only ever shrinks after its first
+        # sample, `peak_bytes == baseline_bytes` by construction -- the
+        # `max(0, ...)` clamp is never even reached (0 - 0 = 0 needs no
+        # flooring). The round-2 reviewer proved `max(0, ...)` is DEAD
+        # CODE for this whole scope (peak >= baseline always, 340 sample
+        # combinations checked, zero negatives) -- M5 is an EQUIVALENT
+        # mutant, not a test gap; see the LOG's "Fix round 1" B3/M5
+        # correction. What THIS test legitimately pins is the correct
+        # ARITHMETIC result (0, never a fabricated positive or negative
+        # number) for the one real shrinking-session shape.
         acc = run_gate.ResourceAccumulator("container-shared")
         s0 = _rg55_container_sample(0)
         s0["memory_current"] = 900 * 1048576          # baseline: 900 MiB
@@ -12615,11 +12624,6 @@ class TestResourceAccumulatorGoldenFixtures:
                             "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
         assert result["memory"]["baseline_bytes"] == 900 * 1048576
         assert result["memory"]["peak_bytes"] == 900 * 1048576  # max of samples
-        # baseline == peak here (the max IS the baseline sample), so this
-        # alone would not distinguish "floored" from "never negative in the
-        # first place" -- the real proof is peak < baseline for a LATER-only
-        # read; use the accumulator's own formula on a case where the
-        # sampled max is strictly below the baseline sample.
         assert result["memory"]["peak_over_baseline_bytes"] == 0
 
 
