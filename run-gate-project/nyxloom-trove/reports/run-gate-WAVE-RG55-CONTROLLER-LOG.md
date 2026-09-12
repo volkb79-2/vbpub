@@ -203,6 +203,20 @@ never a silent edit to the contract file.
   RW-24, then the final `assay-r2` on the tip (resume, RW-22), final gates,
   return → merge `--no-ff`.
 
+- **RW-25 (supersedes RW-20/RW-22 for the stale run):** the assay-r2 run
+  on `62d9a66a` is STOPPED (65/256 after ~3 h; the tip diverged
+  substantially in the fix round, so most remaining candidates would be
+  re-judged anyway). Its partial survivor list is recorded. The final r2
+  runs ONCE on the close-out tip with `jobs = 2` in run-gate-project's
+  `assay.toml` (host: 8 cores, ≤ 2 gate containers still respected — the
+  lane is bare-host; each candidate runs in its own assay scratch snapshot
+  with its own pytest basetemp, so two candidates do not share state),
+  resuming what `.assay/mutation-state/` still matches by content.
+- P1 status: r2 on the pre-RW-21 tip → FAIL MUTANTS_SURVIVED, triage
+  committed (`5058f04d`: 28 killed, 3 justified), `main` merged
+  (`c97bd176`), RW-21 adoption in progress; then one r2 resume run, then
+  the P1 reviewer.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
