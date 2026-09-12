@@ -853,3 +853,73 @@ alone, each ~150-200s, plus the isolation/diagnosis work) — justified
 because the alternative was returning a RED gate with no explanation,
 which the dispatch prompt's own "Claim only what you ran" standard does
 not allow; cutting here regardless, tip commit follows immediately.
+
+## Session 5 — RW-46 (fresh successor)
+
+Starting tip `00a79de4`. Read (full): BRIEF-4, controller log RW-46 (`main`,
+after RW-45), round-1 review's S1–S5 (`main`), session 4's own LOG/REPORT
+tail. Call count tracked from call 1 of this session; checkpoint clause
+(ARM ~call 60/~120k context, HARD ceiling 90) in effect throughout.
+
+### Commit 1 — RW-46a: test-suite lock-dir isolation + root cause
+
+Root cause of the 493 stale `run-gate-exec-*-runner.lock` DIRECTORIES
+(session 4's own finding): `TestResourceAdmission::test_unusable_lock_
+path_is_infra_failure_not_traceback` (RG-20 precedent) and
+`TestExecModeMutex::test_unusable_lock_path_is_infra_failure_not_traceback`
+each deliberately `mkdir()` a directory at the lock path (to prove
+`acquire_*_lock`'s OSError-not-traceback behavior) — WITH NO CLEANUP. Every
+green run of either test, in every RG-55-era CI/dev invocation since Sep 3,
+left one directory behind forever (a directory is never removed by
+anything else — the code only ever `os.open()`s a plain FILE at that
+path). Confirmed by reading both tests directly (`tests/test_run_gate.py`,
+`grep -n "run-gate-exec-\|SHARED_LOCK_DIR\|TestExecModeMutex"` located
+them immediately) — no other code path in `run-gate.py` ever creates a
+directory at a `run-gate-{exec,shared}-*.lock` path.
+
+Fix, both parts of RW-46a:
+- **Isolation.** `run-gate.py`: new `LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"`
+  + `_lock_dir()` helper (`os.environ.get(LOCK_DIR_ENV_VAR, SHARED_LOCK_DIR)`,
+  re-read every call — the SAME override shape as `RUN_GATE_CGROUPFS_ROOT`/
+  `RUN_GATE_PROC_ROOT`, chosen specifically because it reaches BOTH
+  in-process `run_gate.main()` calls and subprocess `run_tool()`
+  invocations without needing to monkeypatch a module attribute — unsafe
+  here since `test_run_gate.py`/`test_coverage_gate.py` each load their
+  tool via a fresh `importlib.util.spec_from_file_location` at THEIR OWN
+  collection time, so a patch against one loaded module object would not
+  reach a different copy's own global lookups). `acquire_shared_locks`/
+  `acquire_exec_lock` now call `_lock_dir()` instead of
+  `Path(SHARED_LOCK_DIR)` directly. `usage()` documents the new env var.
+  New `tests/conftest.py`: autouse `isolate_shared_lock_dir` fixture sets
+  `RUN_GATE_LOCK_DIR` to a `tmp_path_factory.mktemp(...)` dir per test, AND
+  asserts at teardown that no directory-shaped entry survives under it —
+  an estate-wide, permanent regression guard against this exact defect
+  class recurring anywhere in the file, not just the two known sites.
+  `tests/test_run_gate.py`: new `_shared_lock_dir()` helper; all 9
+  hard-coded `Path("/tmp") / f"run-gate-{...}"` constructions
+  (`TestResourceAdmission` ×8, `TestExecModeMutex._lock_path` ×1) now route
+  through it — required because those tests pre-open a "holder" fd to
+  simulate contention; if they kept hard-coding `/tmp` while production
+  code now writes to the isolated dir, the holder and the code's own lock
+  would sit on two different files and the tests would stop proving
+  anything (would have gone green for the wrong reason).
+- **Root cause.** Both offending tests wrapped in `try/finally: <path>.rmdir()`.
+  Regression test: `TestExecModeMutex::test_a_real_lane_run_never_touches_
+  host_tmp` snapshots real `/tmp` before/after a real in-process lane run
+  and asserts byte-identical (plus a positive check that the isolated dir
+  DID receive the lock, proving isolation isn't silently a no-op).
+- **`doctor` INFO line.** New check 8 in `cmd_doctor`: counts
+  `run-gate-{exec,shared}-*.lock` entries under `_lock_dir()` with mtime
+  older than 1 day, names how many are directories (always corruption),
+  never deletes anything. 4 new tests
+  (`TestDoctorStaleLockCheck`): none-yet OK, fresh-not-counted, stale-file
+  counted+untouched, stale-directory named-as-corruption+untouched.
+- SPEC.md `R-41` amended: documents `RUN_GATE_LOCK_DIR`, why `/tmp` stays
+  the production default, and the test-isolation fixture.
+
+Targeted verification (all green, PSI `full avg10` 0.22–2.56% throughout,
+serial `nice -n 19 ionice -c 3`):
+- `python3 -m pytest tests/test_run_gate.py -k "TestExecModeMutex or TestResourceAdmission" -q` → 30 passed
+- `python3 -m pytest tests/test_run_gate.py -k "TestDoctor or TestUsageEnvironmentContract or test_no_stdlib_violations" -q` → 45 passed
+- `python3 -m pytest tests/test_run_gate.py -k "TestDoctorStaleLockCheck" -q` → 4 passed
+- `python3 -m pytest tests/test_run_gate.py -k "Lock or lock or Mutex or ResourceAdmission or Doctor" -q` → 100 passed

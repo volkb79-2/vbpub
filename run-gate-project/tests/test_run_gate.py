@@ -242,6 +242,19 @@ def shim_dir_of(monkeypatch) -> Path:
     return Path(os.environ["PATH"].split(":")[0])
 
 
+def _shared_lock_dir() -> Path:
+    """RW-46a: `tests/conftest.py`'s `isolate_shared_lock_dir` autouse
+    fixture points `RUN_GATE_LOCK_DIR` at a throwaway per-test directory —
+    every test that pre-opens/probes a lock file by hand (the RG-20/R-41
+    tests below) must construct that SAME path, never a hard-coded
+    `/tmp`, or its manual "holder" fd and run-gate's own lock would sit on
+    two different files and the test would stop proving anything. Reads
+    the env var directly (not a cached module import) so it stays correct
+    even if this file's own `run_gate` module object identity ever changes
+    across a collection boundary (see the fixture's own docstring)."""
+    return Path(os.environ["RUN_GATE_LOCK_DIR"])
+
+
 @pytest.fixture(autouse=True)
 def ambient_cgroup(monkeypatch):
     """Tests declare slices explicitly or set the var themselves."""
@@ -3342,7 +3355,7 @@ class TestResourceAdmission:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(proj)
 
-        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX)  # the "first gate" holds it
 
@@ -3382,7 +3395,7 @@ class TestResourceAdmission:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(proj)
 
-        a_lock = Path("/tmp") / f"run-gate-shared-{svc_a}.lock"
+        a_lock = _shared_lock_dir() / f"run-gate-shared-{svc_a}.lock"
         holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX)
 
@@ -3399,7 +3412,7 @@ class TestResourceAdmission:
         assert worker.is_alive(), "gate must block on the contended name"
         # While blocked, the gate must NOT hold the alphabetically-later
         # service: probe its lock non-blocking from here.
-        z_lock = Path("/tmp") / f"run-gate-shared-{svc_z}.lock"
+        z_lock = _shared_lock_dir() / f"run-gate-shared-{svc_z}.lock"
         probe = os.open(z_lock, os.O_CREAT | os.O_RDWR, 0o666)
         try:
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must succeed
@@ -3423,12 +3436,22 @@ class TestResourceAdmission:
         monkeypatch.setenv("RUN_GATE_CGROUPFS_ROOT",
                            str(tmp_path / "no-such-cgfs"))
         fake_docker(tmp_path, monkeypatch)
-        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         lock_path.mkdir()  # a directory where the flock file must go
-        proc = run_tool(proj, "suite")
-        assert proc.returncode == 3
-        assert "shared-infra lock" in proc.stderr
-        assert "Traceback" not in proc.stderr
+        try:
+            proc = run_tool(proj, "suite")
+            assert proc.returncode == 3
+            assert "shared-infra lock" in proc.stderr
+            assert "Traceback" not in proc.stderr
+        finally:
+            # RW-46a root cause: this line, with no cleanup, is exactly how
+            # 493 stale `run-gate-*.lock` DIRECTORIES (never a legitimate
+            # shape — the code only ever os.open()s a plain FILE here)
+            # accumulated under production /tmp since Sep 3. A directory is
+            # never removed by anything else, so every run of this test
+            # left one behind forever. `isolate_shared_lock_dir`'s own
+            # teardown (tests/conftest.py) now asserts this directly.
+            lock_path.rmdir()
 
     def test_planted_symlink_at_lock_refused(self, tmp_path, monkeypatch):
         svc = f"sym-{os.getpid()}"
@@ -3438,7 +3461,7 @@ class TestResourceAdmission:
         fake_docker(tmp_path, monkeypatch)
         target = tmp_path / "victim"
         target.write_text("x")
-        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         if lock_path.exists():
             lock_path.unlink()
         lock_path.symlink_to(target)
@@ -3461,7 +3484,7 @@ class TestResourceAdmission:
         cgfs = _fake_cgroupfs(tmp_path, max_raw=str(1 * GB),
                               current=str(int(0.9 * GB)))
         env = {**os.environ, "RUN_GATE_CGROUPFS_ROOT": str(cgfs)}
-        a_lock = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        a_lock = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         holder = os.open(a_lock, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX)
         try:
@@ -3484,7 +3507,7 @@ class TestResourceAdmission:
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(proj)
 
-        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
@@ -3519,7 +3542,7 @@ class TestResourceAdmission:
         out = capsys.readouterr().out
         # host lane: no slice to account against — declaration stays advisory
         assert "admission" not in out or "not memory-accounted" not in out
-        lock_path = Path("/tmp") / f"run-gate-shared-{svc}.lock"
+        lock_path = _shared_lock_dir() / f"run-gate-shared-{svc}.lock"
         probe = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         try:
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released?
@@ -3868,7 +3891,7 @@ class TestExecModeMutex:
         return f"myproj-{self._tag()}-runner"
 
     def _lock_path(self, container: str | None = None) -> Path:
-        return Path("/tmp") / f"run-gate-exec-{container or self._container_name()}.lock"
+        return _shared_lock_dir() / f"run-gate-exec-{container or self._container_name()}.lock"
 
     def _proj(self, tmp_path, extra_lane_toml: str = "", name: str = "proj"):
         repo = make_repo(tmp_path)
@@ -4058,11 +4081,59 @@ class TestExecModeMutex:
         # locks are never unlinked, only unlocked), so clear it first.
         self._lock_path().unlink(missing_ok=True)
         self._lock_path().mkdir()  # a directory where the flock file must go
+        try:
+            rc = run_gate.main(["suite"])
+            assert rc == 3
+            err = capsys.readouterr().err
+            assert "exec-mode lock" in err
+            assert "Traceback" not in err
+        finally:
+            # RW-46a root cause: this exact line (mkdir with no cleanup) is
+            # how 493 stale `run-gate-exec-*-runner.lock` DIRECTORIES —
+            # never a legitimate shape, the code only ever os.open()s a
+            # plain FILE here — accumulated under production /tmp since
+            # Sep 3. `isolate_shared_lock_dir`'s own teardown (tests/
+            # conftest.py) asserts no such directory survives any test.
+            self._lock_path().rmdir()
+
+    def test_a_real_lane_run_never_touches_host_tmp(self, tmp_path,
+                                                    monkeypatch):
+        """RW-46a's own acceptance bar: a real exec-mode lane invocation,
+        with `conftest.py`'s `isolate_shared_lock_dir` fixture active (it is
+        autouse — no special setup here), must create its lock ONLY under
+        the isolated `RUN_GATE_LOCK_DIR`, never under host `/tmp` — proven
+        directly against the REAL filesystem path, not a mock. Snapshots
+        real /tmp before and after so a regression (isolation silently
+        stops working) fails loudly instead of leaking another stale
+        directory for someone to find nine days later."""
+        real_tmp_before = {
+            p.name for p in Path("/tmp").glob("run-gate-exec-*")
+        } | {p.name for p in Path("/tmp").glob("run-gate-shared-*")}
+
+        repo, proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
         rc = run_gate.main(["suite"])
-        assert rc == 3
-        err = capsys.readouterr().err
-        assert "exec-mode lock" in err
-        assert "Traceback" not in err
+        assert rc == 0
+
+        real_tmp_after = {
+            p.name for p in Path("/tmp").glob("run-gate-exec-*")
+        } | {p.name for p in Path("/tmp").glob("run-gate-shared-*")}
+        assert real_tmp_after == real_tmp_before, (
+            "a lane run created something under host /tmp: "
+            f"{real_tmp_after - real_tmp_before}"
+        )
+
+        # And prove isolation actually did something (didn't just skip the
+        # lock silently): the SAME lane run must have created its lock
+        # under the isolated dir instead.
+        isolated = _shared_lock_dir()
+        assert self._lock_path().exists() and \
+            self._lock_path().parent == isolated, (
+                f"expected the exec-mode lock under {isolated}, "
+                f"got {self._lock_path()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -13273,6 +13344,68 @@ class TestDoctorProfilerCheck:
         out = capsys.readouterr().out
         assert "[SKIP] profiler daemon" in out
         assert "docker not found" in out
+
+
+class TestDoctorStaleLockCheck:
+    """RW-46a's own `doctor` obligation: count stale RG-20/R-41
+    coordination-lock entries under the (isolated, per `conftest.py`'s
+    `isolate_shared_lock_dir`) lock dir — report only, never delete."""
+
+    def _doctor(self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_no_lock_dir_yet_is_ok(self, tmp_path, monkeypatch, capsys):
+        """The isolated lock dir exists (the fixture creates it) but is
+        EMPTY -- the common case, never a WARN."""
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[OK] stale coordination locks" in out
+        assert "none older than 1 day" in out
+        assert code == 0
+
+    def test_fresh_entries_not_counted(self, tmp_path, monkeypatch, capsys):
+        lock_dir = _shared_lock_dir()
+        (lock_dir / "run-gate-exec-fresh-runner.lock").touch()
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[OK] stale coordination locks" in out
+        assert code == 0
+
+    def test_stale_file_counted_by_name_not_deleted(self, tmp_path,
+                                                     monkeypatch, capsys):
+        lock_dir = _shared_lock_dir()
+        stale = lock_dir / "run-gate-shared-old.lock"
+        stale.touch()
+        two_days_ago = time.time() - 2 * 86400
+        os.utime(stale, (two_days_ago, two_days_ago))
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[INFO] stale coordination locks" in out
+        assert "1 entry older than 1 day" in out
+        assert "DIRECTORY" not in out
+        assert "report only, doctor never deletes" in out
+        assert code == 0
+        assert stale.exists(), "doctor must never delete a stale lock"
+
+    def test_stale_directory_named_as_corruption_and_not_removed(
+            self, tmp_path, monkeypatch, capsys):
+        """The RW-46a root-cause shape itself: a DIRECTORY at a lock path
+        is never legitimate -- doctor names it as corruption but, like the
+        file case, never removes it (report only)."""
+        lock_dir = _shared_lock_dir()
+        stale_dir = lock_dir / "run-gate-exec-old-runner.lock"
+        stale_dir.mkdir()
+        two_days_ago = time.time() - 2 * 86400
+        os.utime(stale_dir, (two_days_ago, two_days_ago))
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert "[INFO] stale coordination locks" in out
+        assert "1 entry older than 1 day" in out
+        assert "1 as a DIRECTORY (never legitimate" in out
+        assert code == 0
+        assert stale_dir.is_dir(), "doctor must never remove a stale lock"
+        stale_dir.rmdir()  # this test's own cleanup, not doctor's
 
 
 class TestCgroupNamespacePrivateWhy:

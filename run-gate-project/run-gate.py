@@ -165,7 +165,24 @@ PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 h
 # pre-existing suite by one autouse fixture; the RG-55 wiring tests that
 # mean to exercise the real default unset it, or set it to 'on', explicitly.
 PROFILE_AMBIENT_ENV_VAR = "RUN_GATE_PROFILE"
-SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
+SHARED_LOCK_DIR = "/tmp"  # RG-20/R-41 default: host-wide by design (see below)
+LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"  # tests / a namespaced lock directory
+
+
+def _lock_dir() -> Path:
+    """The RG-20 (`R-29`)/R-41 shared coordination directory. `SHARED_LOCK_DIR`
+    (`/tmp`) is the PRODUCTION default and stays host-wide on purpose — R-41's
+    exec mutex and R-29's shared-infra mutex both exist specifically to
+    coordinate SEPARATE run-gate invocations on one host, so scoping this
+    per-worktree/per-project would defeat their own purpose. `RUN_GATE_LOCK_DIR`
+    is the same override shape as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`
+    (an operator-facing namespacing knob, and this suite's own escape hatch —
+    RW-46a: the test suite must never write its locks into host /tmp, where
+    several concurrently-run copies of this same suite would otherwise
+    collide). Re-read on every call, never cached at import, so a test's
+    `monkeypatch.setenv` reaches every call site including a freshly spawned
+    subprocess."""
+    return Path(os.environ.get(LOCK_DIR_ENV_VAR, SHARED_LOCK_DIR))
 
 # RG-27 lane invocation history. The store is PER (judged worktree × project):
 # it lives under the EFFECTIVE project dir, which R-21 already relocates into
@@ -2470,7 +2487,7 @@ def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]
     # diagnostic. A canonical GLOBAL order makes hold-and-wait cycles
     # impossible regardless of how each project lists its services.
     for svc in sorted(names):
-        path = Path(SHARED_LOCK_DIR) / f"run-gate-shared-{svc}.lock"
+        path = _lock_dir() / f"run-gate-shared-{svc}.lock"
         try:
             fd = _open_lockfile(path)
             try:
@@ -2510,7 +2527,7 @@ def acquire_exec_lock(container_name: str, lane_name: str,
     never take or block on it (RG-8's pattern, `acquire_shared_locks`'
     dry-run half). Returns the held fd (closing it releases the flock), or
     None for a dry run — there is nothing to close."""
-    path = Path(SHARED_LOCK_DIR) / f"run-gate-exec-{container_name}.lock"
+    path = _lock_dir() / f"run-gate-exec-{container_name}.lock"
     if dry_run:
         print(f"run-gate: DRY RUN — exec-mode serialization planned for "
               f"container {container_name!r} ({path})", flush=True)
@@ -5632,6 +5649,43 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                                f", memory PSI full avg10="
                                f"{s_mem_p.get('full_avg10')}%")
 
+    # 8. RG-55/RW-46a: stale RG-20 (`R-29`)/R-41 coordination-lock entries
+    # under the (possibly namespaced) lock dir — report only, doctor never
+    # deletes. A DIRECTORY at one of these paths is never legitimate
+    # (`_open_lockfile` only ever `os.open()`s a plain FILE) — 493 such
+    # directories, dated back to Sep 3, were found accumulated under
+    # production /tmp, traced to a test that `mkdir()`ed one with no
+    # cleanup (RW-46a, fixed at the two call sites + a suite-wide teardown
+    # guard). A stale plain FILE is not itself a defect (a lock file is
+    # never unlinked, only un-flocked — R-29/R-41's own design), but a
+    # large or growing count is worth an operator's attention on a
+    # long-lived shared host.
+    lock_root = _lock_dir()
+    stale_cutoff = time.time() - 86400
+    stale_total = 0
+    stale_dirs = 0
+    if lock_root.is_dir():
+        for pattern in ("run-gate-exec-*.lock", "run-gate-shared-*.lock"):
+            for entry in lock_root.glob(pattern):
+                try:
+                    mtime = entry.lstat().st_mtime
+                except OSError:
+                    continue
+                if mtime < stale_cutoff:
+                    stale_total += 1
+                    if entry.is_dir():
+                        stale_dirs += 1
+    if stale_total:
+        dir_note = (f", {stale_dirs} as a DIRECTORY (never legitimate — "
+                    f"corruption, see above)" if stale_dirs else "")
+        record("INFO", "stale coordination locks",
+               f"{stale_total} entr{'y' if stale_total == 1 else 'ies'} "
+               f"older than 1 day under {lock_root}{dir_note} — report "
+               f"only, doctor never deletes")
+    else:
+        record("OK", "stale coordination locks",
+               f"none older than 1 day under {lock_root}")
+
     ok_n = sum(1 for s, *_ in results if s == "OK")
     warn_n = sum(1 for s, *_ in results if s == "WARN")
     fail_n = sum(1 for s, *_ in results if s == "FAIL")
@@ -7892,6 +7946,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                and the private-cgroup-namespace check (RG-55)",
         "                                (default /proc; override in namespaces that hide",
         "                                the host /proc or in tests)",
+        f"  {LOCK_DIR_ENV_VAR}                directory for the RG-20/R-41 coordination",
+        "                                locks (default /tmp, HOST-WIDE by design — two",
+        "                                gates on the same host serialize there on",
+        "                                purpose); override in namespaces that hide the",
+        "                                host /tmp or in tests (RW-46a)",
         f"  {PROFILE_AMBIENT_ENV_VAR}                 ambient override for [profile] enabled",
         "                                ('on'|'off', RG-55/SPEC R-43g); absent = config",
         "                                decides. 'off' disables profiling for EVERY lane",

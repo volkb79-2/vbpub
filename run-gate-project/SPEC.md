@@ -1619,7 +1619,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the eventual `docker exec` target can never drift apart —
   `/tmp/run-gate-exec-<container>.lock`, the SAME `O_NOFOLLOW`+`0600`
   discipline as `R-29`'s shared-infra locks (a shared `_open_lockfile()`
-  helper backs both). Acquired strictly AFTER every `R-29` shared-infra lock
+  helper backs both). `/tmp` is the PRODUCTION default and stays host-wide
+  on purpose — this lock exists specifically to coordinate SEPARATE
+  run-gate invocations on one host, so scoping it per-worktree would defeat
+  its own purpose; `RUN_GATE_LOCK_DIR` overrides the directory for both
+  this lock and `R-29`'s (a namespacing knob in the same family as
+  `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`, and this suite's own test
+  isolation — RW-46a: the test suite must never write its locks into host
+  /tmp, where several concurrently-run copies of this same suite would
+  otherwise collide; `tests/conftest.py`'s `isolate_shared_lock_dir`
+  autouse fixture sets it for every test). Acquired strictly AFTER every
+  `R-29` shared-infra lock
   the lane declares is already held, and released from the SAME `finally` —
   a fixed global order (shared-infra, then exec target) that makes an ABBA
   deadlock between the two lock kinds impossible regardless of declaration
