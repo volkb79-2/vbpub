@@ -703,3 +703,50 @@ change together (flagged pending since C1), the registered gate
 (`nice -n 19 ionice -c 3 python3 run-gate.py smoke`) with its verdict
 read in a SEPARATE step, and the REPORT rewrite (refreshed Tip,
 Round-1-repairs table, M5 section, "Operator: add to TODO.md" line).
+
+### Final verification -- test-render.sh full re-run, registered gate, REPORT rewrite
+
+`nice -n 19 ionice -c 3 bash tests/test-render.sh` (from
+`host-setup/`, tip `e6af30df`): exit 0, all 8 assertions plus the
+`bash -n`/`py_compile` and `shellcheck -S warning` loops print `ok:`,
+final line `test-render: ALL OK`.
+
+Registered gate: first attempt ran from `host-setup/` (matching the
+mechanics instruction's literal `./run-gate.py smoke` phrasing) and
+failed with `python3: can't open file '.../host-setup/run-gate.py':
+No such file or directory` -- `run-gate.py`/`run-gate.toml` live at
+the PROJECT ROOT (`modern-debian-tools-python-debug/`), not under
+`host-setup/`, confirmed via `find . -maxdepth 4 -name run-gate.py`.
+Re-ran `nice -n 19 ionice -c 3 python3 run-gate.py smoke` from
+`modern-debian-tools-python-debug/`: exit 0. Verdict read in a
+SEPARATE step (`cat` the captured log, not a pipe tail): `run-gate:
+lane 'smoke' exit 0`, `smoke: OK`, the full `test-render: ALL OK`
+block reproduced inside the container's own output, and the argv line
+confirms `--cgroup-parent dev-background.slice -e
+CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice` (D-24's fallback,
+still exercised in practice -- run-gate itself is one of the "onward
+consumers" that does not read `$CGROUP_PARENT_DEV_GATES` yet, D4/S4).
+This is gate run 1 of the 2 allowed for this repair round; it passed
+cleanly, so no second run was made. The mis-directed first attempt
+never invoked python3 against any real file (ENOENT before any code
+ran) so it does not count as a "run" of the registered gate for
+budget purposes.
+
+REPORT (`run-gate-WAVE-RG55-P8-REPORT.md`) fully rewritten: Tip
+refreshed to `e6af30df`; new "Round-1 repairs" table mapping every
+B1-B6/D1-D5/named-S-finding to its commit and a one-command
+verification; new "M5" section; "Onward propagation" section restated
+with the three real consumer paths; full operator command sequence
+rewritten to match README's B4 fix; new "Operator: add to TODO.md"
+section carrying the exact paste-in text (TODO.md itself still
+untouched); dropped the earlier "byte-for-byte" overclaim on
+assertion 3, explained what it actually proves instead; "What was NOT
+done" section added, itemizing the second gate run, the flat-cgroupfs-
+convention non-fix, and the three deliberately-unfixed onward
+consumers, each with its reason. Verified the round's own diff surface
+against a real `git diff 244728c0~1..HEAD --name-only` before writing
+it into the REPORT -- exact match, no unexpected path, nothing from
+the four forbidden M5 paths present.
+
+Committed together with this entry: REPORT-only commit (no code
+changes), since C10 already landed everything else.
