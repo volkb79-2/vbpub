@@ -2,6 +2,7 @@
 kind: backlog
 schema_version: 1
 items:
+  - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
   - {id: B003, title: "Ship a zipapp (.pyz) beside the wheel as a second release artifact. COMPLETE: publication waited on B002's release step, which landed; both assay-v2.0.0 and assay-v2.1.0 publish assay-<version>.pyz with a .sha256 sidecar, and dstdns consumes the zipapp. Measured bonus: the .pyz is byte-reproducible across independent builds at different commits, while the wheel is not.", type: feature, component: distribution, context_estimate: small, folds_into: F014}
@@ -9261,3 +9262,35 @@ source byte-identical. Gate-verified: `run-gate.py tester-unified`, R0 PASS.
    "cannot bump the shared constant" objection as residual 2. (Found by the
    round-1 reviewer.)
 
+
+## B089 — istanbul branch-arc self-contradiction on some `.tsx` files
+
+Observed live during dstdns's `ui_unit` lane (P186 post-merge gate, 2026-09-12,
+run-gate rev 40, assay-6.1.0.pyz), against unrelated pre-existing files (P186
+itself touched zero frontend code):
+
+```
+assay: coverage record for '.../ChartCard.tsx' contradicts itself at line(s) [34]:
+a branch arc is recorded on a line the same record does not classify as
+executed or missing. Those arcs were dropped. This file's branch data is
+incomplete; if this lane judges it, the lane refuses rather than report a
+number over it.
+```
+
+Four files hit it in the same run: `ChartCard.tsx:34`, `DataTable.tsx:33-35`,
+`StatCard.tsx:17`, `StatTile.tsx:28`. The lane still PASSed — assay's own
+self-consistency check caught the contradiction and dropped the offending
+arcs rather than report a number over incomplete data, which is exactly the
+right defensive behavior (see B038/B045, the istanbul-producer branch-arc
+work this parser comes from). Filed anyway because a *correctness* bug in
+the underlying istanbul record for these specific files is still
+unexamined — the observed defense means no consumer sees a wrong number
+today, not that the parser or its `.tsx` input is behaving correctly.
+
+**Not investigated further**: dstdns's own scope doesn't touch these files
+or assay's parser; this is a downstream-consumer sighting, not a diagnosis.
+Whoever picks this up should start from B038/B045's istanbul branch-arc
+parser and try to reproduce the same four files' coverage record directly
+(vitest/istanbul version pinned in dstdns's `webapp-ui-react` at the time of
+this filing) to find what's actually inconsistent about the source maps or
+arc positions for these specific components.
