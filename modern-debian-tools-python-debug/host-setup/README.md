@@ -142,14 +142,24 @@ kill whichever lane is using the allowance this unit deliberately grants
 it, on a signal D-6 rejects ("swap usage is never the gate; PSI is"). See
 `units/dev-gates.slice.in`'s own comment. `CPUWeight=20`/`IOWeight=10` —
 identical to `dev-background.slice`'s own — stand as designed (D-19): a
-fourth same-weight sibling does lower interactive's worst-case share under
-simultaneous contention (the shared non-interactive weight rises from 20,
-dev-background alone, to 40 once dev-gates.slice joins it, so interactive's
-CPUWeight share drops from `200/220` (~91%) to `200/240` (~83%) — the same
-ratio on the IOWeight side, `100/110` to `100/120`, since both tiers scale
-interactive's own weight by the same 10x). Accepted because gates and a
-long-running stack are rarely both saturating CPU/IO at once; revisit once
-real usage data exists (design §7), not by guessing further.
+fourth same-weight sibling does lower interactive's share under
+simultaneous gates + background contention (the shared non-interactive
+weight rises from 20, dev-background alone, to 40 once dev-gates.slice
+joins it, so interactive's CPUWeight share drops from `200/220` (~91%) to
+`200/240` (~83%) — the same ratio on the IOWeight side, `100/110` to
+`100/120`, since both tiers scale interactive's own weight by the same
+10x). **That 83%/83% pair is not the actual worst case** (round-2 review
+S16): `dev-buildkitd.slice` (`CPUWeight=50`/`IOWeight=50`) and
+`dev-memory_min_guaranteed.slice` (declares neither directive, so
+systemd's own default of 100 applies to both) are also runnable
+siblings. Recomputed from every rendered unit's own weight, all five
+siblings contending at once: CPU `200/(200+20+20+50+100)` = **51.3%**
+(`200/290` = 69.0% with buildkitd alone added, before the guaranteed
+tier's default-100 also joins); IO `100/(100+10+10+50+100)` = **37.0%**.
+Accepted because all five tiers rarely saturate CPU/IO simultaneously in
+practice, and cgroup weights only bite under real contention in the first
+place (an idle sibling claims nothing); revisit once real usage data
+exists (design §7), not by guessing further.
 
 Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
 `_SWAP_MAX`/`_CPU_WEIGHT`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`, sized for a
@@ -161,12 +171,17 @@ export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
 fallback rule (D-24), precisely stated: it protects a **devcontainer that
 was not rebuilt** (the variable is simply absent from its environment until
 recreated), **not** a **host that was not upgraded** (the slice unit
-missing) — that failure mode is instead caught mechanically by `mdt-host-
-check.sh` (see "Quick start"/"Upgrading a host that already runs mdt
-host-setup" below) and, independently, by
-`docker run` itself failing outright when a named `--cgroup-parent` slice
-was never installed and the daemon-wide default cannot resolve it either,
-which run-gate reports (round-1 review S10).
+missing). That case is **NOT self-announcing**: a `--cgroup-parent` naming
+a slice with no unit file fails **open** — systemd auto-creates an
+unlimited transient slice and the container starts normally
+(`units/docker-scope-default-limits.conf.in`, `AGENTS.md`), which is
+exactly why the `docker-.scope.d` backstop exists. It is caught by
+`mdt-host-check.sh` (`dev-gates.slice has no unit file`, a hard FAIL) and
+by a consumer that verifies `LoadState=loaded` before launch, as
+`AGENTS.md` already requires — **not** by docker (round-2 review B8;
+round-1 review S10 asked for this rule stated precisely, and the round-1
+repair's substitute claim — that `docker run` itself fails outright — was
+wrong in the fail-open direction and is withdrawn here).
 
 **Rebuild your devcontainer.** `containerEnv` changes only take effect on
 container **recreate** — `CGROUP_PARENT_DEV_GATES` is not visible inside an
@@ -227,7 +242,21 @@ design residue, renderer-test coverage of `install.sh`'s own wiring);
 checkout, see round-1 review S13/RW-32 D5) — the operator paste-in line is
 in this package's own REPORT
 (`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md`,
-"Operator: add to TODO.md").
+"Operator: add to TODO.md"). Round-2 review B7/B8 fixed: `check.sh`'s
+byte-size parser now handles half-GiB and percentage values without a
+bash syntax error or a false FAIL; the D-24 fallback note's substitute
+claim about `docker run` was corrected to the verified fail-open
+behavior. The tmpfiles entry is now `/etc/tmpfiles.d/mdt-cgprofile.conf`
+(mdt-prefixed, matching every other drop-in this host ships).
+
+**Ordering constraint (round-2 review S19, made explicit):** install this
+version of host-setup on the host **BEFORE** anyone rebuilds a
+devcontainer from `templates/devcontainer.json` — the new `/run/cgprofile`
+mount is Docker `--mount`, which refuses to start a container at all when
+the bind source directory does not exist, and that directory only exists
+once this package's `install.sh` has run. Rebuilding a devcontainer from
+an updated template against a host that has not yet been upgraded will
+fail to start, not merely run with a missing feature.
 
 **Fresh host, never ran mdt host-setup before:** the existing "Quick start"
 section below already covers you end to end — it now seeds/renders

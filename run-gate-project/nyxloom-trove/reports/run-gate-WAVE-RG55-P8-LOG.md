@@ -870,3 +870,68 @@ Verify: `bash tests/test-render.sh` (all 9 assertions green,
 comment; `grep -n "mdt-cgprofile.conf" install.sh scripts/check.sh
 templates/../templates/devcontainer.json` (run from `host-setup/`, with
 `../templates/devcontainer.json`) shows the renamed references throughout.
+
+### RC2 -- B8: README asserted a protection this repository has verified does NOT exist, plus S16 worst-case share + S19 ordering-constraint sentence (hash: see next entry)
+
+**B8.** README.md's D-24 fallback paragraph (round-1 repair C7) claimed
+"docker run itself failing outright when a named --cgroup-parent slice
+was never installed" as the mechanical catch for a host that was not
+upgraded. This is false, and this repository says so in FOUR places (none
+edited by this repair): `AGENTS.md` ("A typo'd or nonexistent slice name
+fails open (systemd silently auto-creates an unlimited transient
+slice)"), `units/docker-scope-default-limits.conf.in` ("fails OPEN --
+systemd silently auto-creates an unlimited transient slice and the
+container starts normally"), `host-setup.env.example` (same wording),
+`scripts/check.sh` ("fails OPEN (unbounded), unmitigated"). The whole
+`docker-.scope.d` backstop exists BECAUSE the container starts normally
+-- the round-1 repair replaced an imprecise statement with a confidently
+wrong one, in the fail-open direction, in exactly the section a consumer
+author reads before deciding whether they need their own preflight.
+
+Replaced with the reviewer's prescribed paragraph verbatim (adapted only
+to this file's existing surrounding prose): states the devcontainer-not-
+rebuilt vs. host-not-upgraded distinction (unchanged, this half was
+already correct per round-1 S10), then states plainly that the
+host-not-upgraded case is NOT self-announcing -- a `--cgroup-parent`
+naming a slice with no unit file fails OPEN, the container starts
+normally, which is exactly why the `docker-.scope.d` backstop exists --
+and that it is caught by `mdt-host-check.sh` (a hard FAIL) and by a
+consumer verifying `LoadState=loaded` before launch, per `AGENTS.md`,
+NOT by docker. Also fixed the SAME wrong claim in the REPORT's own
+"dev-gates.slice -- what it is" section (round-1 repair had copied the
+wrong wording there too) -- REPORT commit lands separately below.
+
+Swept the full worktree (not just the committed branch diff, since this
+repair set has uncommitted work in flight) for "fails outright"/"docker
+refuses" wording: three other hits, all in a DIFFERENT, correct context
+(`host-setup.env.example`, `mdt-host-setup-wizard.py`,
+`units/dev-gates.slice.in` -- all describing a build process hitting OOM
+vs. thrashing swap, unrelated to --cgroup-parent/docker run semantics) --
+left untouched, confirmed not the B8 pattern.
+
+**S16, worst-case share.** README's "Sizing choices" paragraph stated only
+the interactive-vs-background-vs-gates 3-way CPU/IO share (83%/83%) as if
+it were the worst case; `dev-buildkitd.slice` (CPUWeight/IOWeight 50) and
+`dev-memory_min_guaranteed.slice` (declares neither directive, so
+systemd's own default of 100 applies to both) are also runnable siblings.
+Recomputed independently from every rendered unit's own weight (verified
+against the reviewer's own cited figures): CPU 4-way (+buildkitd) 69.0%,
+CPU 5-way (+guaranteed) 51.3%, IO 5-way 37.0% -- all three match. Added to
+the same paragraph; reworded "worst-case" to "simultaneous gates +
+background contention" for the 3-way figure per the reviewer's own
+prescription, and added the full 4/5-way figures explicitly.
+
+**S19 (ordering constraint), made explicit.** Added a new paragraph to
+README's "## Changes" section stating plainly: install this version of
+host-setup on the host BEFORE anyone rebuilds a devcontainer from the
+template, since `/run/cgprofile` (Docker `--mount`) refuses to start a
+container at all when the bind source does not yet exist. Did NOT
+additionally reconcile `templates/devcontainer.json`'s two now-opposite
+mount conventions (this mount shipped unconditional; the BuildKit mount
+stays commented-out with an explanatory reason) -- that half of S19 was
+not in the coordinator's explicit accepted-items list for this round (see
+REPORT "What was NOT done").
+
+Verify: `grep -n "docker run.*fail\|fails outright when" README.md`
+(no hits outside the withdrawal note itself); `grep -n "51.3%\|69.0%\|37.0%"
+README.md`; `grep -n "Ordering constraint" README.md`.
