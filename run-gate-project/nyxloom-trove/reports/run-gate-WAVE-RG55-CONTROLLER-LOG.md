@@ -217,6 +217,32 @@ never a silent edit to the contract file.
   (`c97bd176`), RW-21 adoption in progress; then one r2 resume run, then
   the P1 reviewer.
 
+- **RW-26 (orphaned mutation container; untracked long lanes):** at 12:34Z
+  the Claude Code low-memory guard killed both agents' tracked background
+  commands ("stopped because the system is running low on memory"; host at
+  ~860 MiB free with the dstdns stack and the game server resident). P2's
+  `assay-r2` survived because it was launched `nohup … & disown`
+  (untracked); P1's `./run-gate.py r2` OWNER (pid 2315801) died while its
+  container `run-gate-vbpub-r2-2315801-…` kept judging (37/208 at 12:36Z,
+  ~55 s/candidate, ETA ~15:15Z, inside RW-19). Ruling: an orphaned
+  mutation container is left to FINISH (never `docker rm -f` a progressing
+  run, never restart from scratch — `.assay/mutation-state/` is keyed by
+  candidate content, nothing is lost); the agent then captures exit code +
+  `docker logs` tail, removes the container, and RE-RUNS the lane as a
+  resume under run-gate ownership so the R-36 history record and the
+  run-gate verdict are real. From now on every long lane is launched
+  untracked (`nohup … > log 2>&1 & disown`) and observed with a cheap
+  tracked `until` loop that is re-armed if killed; no additional pytest or
+  container may start while a mutation run is live on this host. P1 was
+  told to commit its pending working-tree edits (a `manifest["duration"]`
+  assertion found while waiting, LOG/REPORT) and write BRIEF-6 now as
+  insurance (its context is ~513k). P2's run: 283 candidates, `jobs = 2`,
+  started 12:27Z on `186461de` (close-out commits `026663c1`, `cc19e1f0`,
+  `82094849`, `69d46544`, `186461de`: RW-24, RG-58..RG-61, B3/M5, R-43f,
+  jobs). Both agents' watchers are exposed to the same guard; the
+  controller's heartbeat checks both runs and messages an idle agent
+  whose run has finished.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
