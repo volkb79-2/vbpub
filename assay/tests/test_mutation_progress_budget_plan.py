@@ -20,6 +20,7 @@ from conftest import (
 from assay.adapters.python import PythonAdapter
 from assay.config import LaneConfigError, MutationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay import liveness
 from assay import mutation
 from assay.mutation import (
     Mutation,
@@ -118,6 +119,14 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert events[1]["baseline_s"] >= 0.0
     assert events[1]["budget_per_candidate_s"] is None
     assert events[1]["derived"] is False
+    # (B091/D-23, P7 A4) Neither of the two liveness measurements nor the
+    # baseline's own liveness events path was passed at all -- both new
+    # `plan` fields are honestly `None`, and no `test` event is forwarded
+    # (a lane that never wires liveness must never fabricate baseline test
+    # detail it does not have).
+    assert events[1]["slowest_test_s"] is None
+    assert events[1]["expect_next_event_within_s"] is None
+    assert not any(event["event"] == "test" for event in events)
     assert events[2] == {
         **events[2],
         "event": "candidates",
@@ -142,8 +151,211 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
         assert event["mutated_file_sha256"]
         assert "replacement_sha256" not in event
         assert isinstance(event["elapsed_seconds"], float)
+        # (B091/D-23, P7 A4) `liveness_events_dir` was never passed either
+        # -- `tests_completed` is honestly `None`, not `0` (a `0` would
+        # claim liveness ran and genuinely saw no test).
+        assert event["tests_completed"] is None
     assert events[1]["outcome_bucket"] == "killed"
     assert events[2]["outcome_bucket"] == "survived"
+
+
+# --- B091/D-23, P7 A4: progress stream gains per-test liveness detail -----
+
+
+def test_plan_event_reports_slowest_test_s_and_expect_next_event_within_s(
+    tmp_path,
+):
+    """(B091/D-23, P7 A4) Both new `plan` fields are `run_mutation`'s own
+    caller-supplied facts, READ BACK verbatim onto the wire -- never
+    recomputed here (that computation belongs to `assay.liveness.
+    baseline_slowest_test_s`/`compute_expect_next_event_within_s`, called
+    once by the caller, per BRIEF-5's own "read it back rather than
+    re-deriving" instruction).
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_slowest_test_s=6.0,
+            liveness_expect_next_event_within_s=18.0,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    plan_event = next(event for event in events if event["event"] == "plan")
+    assert plan_event["slowest_test_s"] == 6.0
+    assert plan_event["expect_next_event_within_s"] == 18.0
+
+
+def test_baseline_test_events_are_forwarded_right_after_plan_never_per_candidate(
+    tmp_path,
+):
+    """(B091/D-23, P7 A4, RW-33) Every `test` event in the BASELINE's own
+    liveness side file is translated onto the progress stream, verbatim,
+    `phase: "baseline"`, in file order, right after `plan` and before
+    `candidates` -- a `session_finish` record and a torn last line are both
+    silently excluded, and no candidate's own execution ever emits a `test`
+    event of its own (RW-33: baseline only).
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    baseline_events_path = tmp_path / "baseline.ndjson"
+    baseline_events_path.write_text(
+        '{"event": "test", "nodeid": "pkg/test_a.py::test_one", "outcome": "passed", "duration_s": 0.5, "t": 0}\n'
+        '{"event": "test", "nodeid": "pkg/test_a.py::test_two", "outcome": "failed", "duration_s": 5.0, "t": 1}\n'
+        '{"event": "session_finish", "exitstatus": 0, "t": 2}\n'
+        '{"event": "test", "nodeid": "pkg/test_a.py::test_thr',  # torn last line
+        encoding="utf-8",
+    )
+
+    def decide(argv, *, env, cwd, timeout):
+        return subprocess.CompletedProcess(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_baseline_events_path=baseline_events_path,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    plan_index = next(
+        index for index, event in enumerate(events) if event["event"] == "plan"
+    )
+    candidates_index = next(
+        index for index, event in enumerate(events) if event["event"] == "candidates"
+    )
+    forwarded = events[plan_index + 1 : candidates_index]
+    assert [event["event"] for event in forwarded] == ["test", "test"]
+    assert [event["nodeid"] for event in forwarded] == [
+        "pkg/test_a.py::test_one",
+        "pkg/test_a.py::test_two",
+    ]
+    assert [event["phase"] for event in forwarded] == ["baseline", "baseline"]
+    assert forwarded[0]["outcome"] == "passed"
+    assert forwarded[0]["duration_s"] == 0.5
+    assert forwarded[1]["outcome"] == "failed"
+    assert forwarded[1]["duration_s"] == 5.0
+    # RW-33: baseline only -- no candidate record carries a "test" event.
+    candidate_events = [event for event in events if event["event"] == "candidate"]
+    assert len(candidate_events) == 2
+    assert all(event["event"] != "test" for event in candidate_events)
+
+
+def test_candidate_progress_event_gains_tests_completed_from_its_own_events_file(
+    tmp_path,
+):
+    """(B091/D-23, P7 A4) `tests_completed` is read back, per candidate,
+    from that candidate's own liveness side file -- located via
+    `assay.liveness.candidate_events_path`, the SAME free function a real
+    `LivenessRunner` uses to name where IT writes, so this reader and that
+    writer can never disagree about the path. This fake `process_runner`
+    stands in for `LivenessRunner` and writes to the identical path a real
+    one would, keyed off the SAME `cwd` `execute_plan` hands it -- proving
+    the reader/writer path agreement, not just the counting logic alone.
+    """
+    repo = _repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+    events_dir = tmp_path / "liveness-candidates"
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+        text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
+        killed = "a = False" in text
+        events_path = liveness.candidate_events_path(events_dir, Path(cwd))
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        test_count = 2 if killed else 1
+        with events_path.open("w", encoding="utf-8") as stream:
+            for index in range(test_count):
+                stream.write(
+                    json.dumps(
+                        {
+                            "event": "test",
+                            "nodeid": f"pkg/test_flags.py::test_{index}",
+                            "outcome": "failed" if killed else "passed",
+                            "duration_s": 0.1,
+                        }
+                    )
+                    + "\n"
+                )
+            stream.write(json.dumps({"event": "session_finish", "exitstatus": 0}) + "\n")
+        return subprocess.CompletedProcess(
+            list(argv), returncode=1 if killed else 0
+        )
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            liveness_events_dir=events_dir,
+        )
+    assert result is not None and not isinstance(result, str)
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    candidate_events = [event for event in events if event["event"] == "candidate"]
+    assert len(candidate_events) == 2
+    by_bucket = {
+        event["outcome_bucket"]: event["tests_completed"] for event in candidate_events
+    }
+    assert by_bucket == {"killed": 2, "survived": 1}
+    # A session_finish record must never be counted as a test.
+    assert set(by_bucket.values()) == {2, 1}
 
 
 def test_progress_writer_refuses_a_directory_destination_with_output_write_failed(

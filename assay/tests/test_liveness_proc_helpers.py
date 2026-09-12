@@ -243,6 +243,162 @@ def test_compute_expect_next_event_within_s_ignores_non_test_and_malformed_durat
 
 
 # --------------------------------------------------------------------------
+# baseline_slowest_test_s (B091/D-23, P7 A4) -- the same measurement
+# compute_expect_next_event_within_s above already made internally, now
+# extracted so a caller (the `plan` progress event) reads it back rather
+# than re-deriving.
+# --------------------------------------------------------------------------
+
+
+def test_baseline_slowest_test_s_none_path_is_none() -> None:
+    assert liveness.baseline_slowest_test_s(None) is None
+
+
+def test_baseline_slowest_test_s_missing_file_is_none(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.ndjson"
+    assert liveness.baseline_slowest_test_s(missing) is None
+
+
+def test_baseline_slowest_test_s_reads_the_max_duration(tmp_path: Path) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
+        '{"event": "test", "nodeid": "b", "outcome": "passed", "duration_s": 6.0, "t": 1}\n'
+        '{"event": "test", "nodeid": "c", "outcome": "passed", "duration_s": 2.0, "t": 2}\n'
+        '{"event": "session_finish", "exitstatus": 0, "t": 3}\n',
+        encoding="utf-8",
+    )
+    assert liveness.baseline_slowest_test_s(events) == 6.0
+    # compute_expect_next_event_within_s must agree exactly -- it now
+    # delegates to this same function, never a second parse.
+    assert liveness.compute_expect_next_event_within_s(events, 400.0) == 18.0
+
+
+def test_baseline_slowest_test_s_tolerates_a_torn_last_line(tmp_path: Path) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 9.0, "t": 0}\n'
+        '{"event": "test", "nodeid": "b", "outc',
+        encoding="utf-8",
+    )
+    assert liveness.baseline_slowest_test_s(events) == 9.0
+
+
+def test_baseline_slowest_test_s_ignores_non_test_and_malformed_duration(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        "\n"
+        '{"event": "session_finish", "exitstatus": 0, "t": 0}\n'
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": "oops", "t": 1}\n'
+        '{"event": "test", "nodeid": "b", "outcome": "passed", "duration_s": true, "t": 2}\n',
+        encoding="utf-8",
+    )
+    assert liveness.baseline_slowest_test_s(events) is None
+
+
+# --------------------------------------------------------------------------
+# baseline_test_events (B091/D-23, P7 A4) -- verbatim {nodeid, outcome,
+# duration_s} triples, forwarded onto the progress stream for the BASELINE
+# only.
+# --------------------------------------------------------------------------
+
+
+def test_baseline_test_events_missing_file_is_empty(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.ndjson"
+    assert liveness.baseline_test_events(missing) == []
+
+
+def test_baseline_test_events_returns_the_triple_in_file_order(tmp_path: Path) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
+        '{"event": "session_finish", "exitstatus": 0, "t": 1}\n'
+        '{"event": "test", "nodeid": "b", "outcome": "failed", "duration_s": 2.5, "t": 2}\n',
+        encoding="utf-8",
+    )
+    assert liveness.baseline_test_events(events) == [
+        {"nodeid": "a", "outcome": "passed", "duration_s": 1.0},
+        {"nodeid": "b", "outcome": "failed", "duration_s": 2.5},
+    ]
+
+
+def test_baseline_test_events_tolerates_a_torn_last_line(tmp_path: Path) -> None:
+    events = tmp_path / "baseline.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
+        '{"event": "test", "nodeid": "b", "outc',
+        encoding="utf-8",
+    )
+    assert liveness.baseline_test_events(events) == [
+        {"nodeid": "a", "outcome": "passed", "duration_s": 1.0},
+    ]
+
+
+# --------------------------------------------------------------------------
+# count_test_events (B091/D-23, P7 A4) -- a candidate's own tests_completed
+# progress field.
+# --------------------------------------------------------------------------
+
+
+def test_count_test_events_none_path_is_zero() -> None:
+    assert liveness.count_test_events(None) == 0
+
+
+def test_count_test_events_missing_file_is_zero(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist.ndjson"
+    assert liveness.count_test_events(missing) == 0
+
+
+def test_count_test_events_counts_only_test_events(tmp_path: Path) -> None:
+    events = tmp_path / "candidate.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
+        '{"event": "test", "nodeid": "b", "outcome": "failed", "duration_s": 2.0, "t": 1}\n'
+        '{"event": "session_finish", "exitstatus": 1, "t": 2}\n',
+        encoding="utf-8",
+    )
+    assert liveness.count_test_events(events) == 2
+
+
+def test_count_test_events_tolerates_a_torn_last_line(tmp_path: Path) -> None:
+    events = tmp_path / "candidate.ndjson"
+    events.write_text(
+        '{"event": "test", "nodeid": "a", "outcome": "passed", "duration_s": 1.0, "t": 0}\n'
+        '{"event": "test", "nodeid": "b", "outc',
+        encoding="utf-8",
+    )
+    assert liveness.count_test_events(events) == 1
+
+
+# --------------------------------------------------------------------------
+# candidate_events_path (B091/D-23, P7 A4) -- the ONE hash both
+# LivenessRunner (the writer) and mutation._run_one (the reader) use.
+# --------------------------------------------------------------------------
+
+
+def test_candidate_events_path_matches_the_livenessrunners_own_writer_path(
+    tmp_path: Path,
+) -> None:
+    events_dir = tmp_path / "candidates"
+    cwd = tmp_path / "some" / "mutant" / "snapshot"
+    runner = liveness.LivenessRunner(events_dir=events_dir, expect_next_event_within_s=15.0)
+    # `_events_path_for_cwd` is what a real candidate execution writes to;
+    # the free function must agree with it exactly, never a second
+    # independent hash.
+    assert liveness.candidate_events_path(events_dir, cwd) == runner._events_path_for_cwd(cwd)
+
+
+def test_candidate_events_path_differs_for_different_cwds(tmp_path: Path) -> None:
+    events_dir = tmp_path / "candidates"
+    first = liveness.candidate_events_path(events_dir, tmp_path / "a")
+    second = liveness.candidate_events_path(events_dir, tmp_path / "b")
+    assert first != second
+    assert first.parent == events_dir == second.parent
+
+
+# --------------------------------------------------------------------------
 # _read_events_progress
 # --------------------------------------------------------------------------
 

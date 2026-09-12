@@ -3576,6 +3576,12 @@ def _run_prepared_lane(
     # baseline's tests actually measured (`slowest_test_s`) instead of
     # always falling back to `baseline_s / 4`.
     liveness_baseline_events_path: Path | None = None
+    # (B091/D-23, P7 A4) The lane's own PERSISTENT candidates-events
+    # directory -- named here, ONCE, so both the `LivenessRunner`
+    # construction further down (the WRITER) and the `run_mutation` call
+    # just below it (the READER, for `tests_completed`) use the identical
+    # value, never two independently-typed-out paths that could drift.
+    liveness_candidates_dir: Path | None = None
     baseline_plan = plan
     if liveness_injected:
         liveness_baseline_events_path = project_root / ".assay" / "liveness" / "baseline.ndjson"
@@ -3584,6 +3590,7 @@ def _run_prepared_lane(
             liveness_baseline_events_path.unlink()
         except FileNotFoundError:
             pass
+        liveness_candidates_dir = project_root / ".assay" / "liveness" / "candidates"
         baseline_plan = replace(
             plan,
             env_effective=MappingProxyType(
@@ -3647,6 +3654,18 @@ def _run_prepared_lane(
                 liveness_baseline_events_path,
                 mutation.baseline_wall_seconds(result),
             )
+            if liveness_injected
+            else None
+        )
+        # (B091/D-23, P7 A4) The raw measurement `liveness_expect_next_
+        # event_within_s` above was derived from -- `assay.liveness.
+        # baseline_slowest_test_s` is the SAME underlying parse
+        # `compute_expect_next_event_within_s` calls internally (B088's own
+        # "two derivations drift" lesson: one canonical function, read back
+        # twice, never two independent hand-rolled parses of the same
+        # file). Reported on the `plan` progress event alongside it.
+        liveness_slowest_test_s: float | None = (
+            liveness.baseline_slowest_test_s(liveness_baseline_events_path)
             if liveness_injected
             else None
         )
@@ -4248,8 +4267,9 @@ def _run_prepared_lane(
             # verbatim -- byte-for-byte the pre-B091 candidate path.
             if liveness_injected:
                 assert liveness_expect_next_event_within_s is not None
+                assert liveness_candidates_dir is not None
                 candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
-                    events_dir=project_root / ".assay" / "liveness" / "candidates",
+                    events_dir=liveness_candidates_dir,
                     expect_next_event_within_s=liveness_expect_next_event_within_s,
                 )
             else:
@@ -4270,6 +4290,15 @@ def _run_prepared_lane(
                     liveness_active=liveness_injected,
                     liveness_reason=liveness_reason,
                     liveness_plugin=liveness_plugin_path,
+                    # (B091/D-23, P7 A4) All four `None` for every
+                    # non-liveness lane, matching the three fields just
+                    # above.
+                    liveness_baseline_events_path=liveness_baseline_events_path,
+                    liveness_slowest_test_s=liveness_slowest_test_s,
+                    liveness_expect_next_event_within_s=(
+                        liveness_expect_next_event_within_s
+                    ),
+                    liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,

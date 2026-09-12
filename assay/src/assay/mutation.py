@@ -117,7 +117,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
-from . import git, safeio
+from . import git, liveness, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .isolation import SnapshotRepository, netstring
@@ -826,6 +826,8 @@ PROGRESS_EVENTS = frozenset(
         "resume_merged",
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
+        # --- per-test liveness detail, BASELINE only (B091/D-23, P7 A4) ---
+        "test",  # one baseline test's own outcome, forwarded verbatim
     }
 )
 
@@ -1561,6 +1563,13 @@ class _MutantRun:
     equivalence_bytes: bytes | None = None
     kill_signal: str | None = None
     elapsed_seconds: float = 0.0
+    #: (B091/D-23, P7 A4) How many `test` events this candidate's own
+    #: liveness side file carries, read back via `assay.liveness.
+    #: count_test_events` while *snapshot* (below) is still the mutant's
+    #: real execution `cwd` -- `None` for every non-liveness lane, never `0`
+    #: (a `0` would claim the plugin ran and genuinely saw no test, which is
+    #: a different fact from "liveness never ran here at all").
+    tests_completed: int | None = None
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -1835,6 +1844,31 @@ def run_mutation(
     liveness_active: bool = False,
     liveness_reason: str | None = None,
     liveness_plugin: str | None = None,
+    #: (B091/D-23, P7 A4) The BASELINE's own liveness events file (never a
+    #: candidate's) -- `None` for every non-liveness lane, exactly like the
+    #: three fields just above. When given, every `test` event it carries
+    #: is forwarded onto the progress stream, verbatim, right after the
+    #: `plan` record: RW-33's own "test events reach the progress stream
+    #: for the BASELINE only" instruction, and `assay.liveness.
+    #: baseline_test_events` is the ONE place that translation happens.
+    liveness_baseline_events_path: Path | None = None,
+    #: (B091/D-23, P7 A4) The SAME two measurements the caller
+    #: (`runner._run_prepared_lane`) already derived from
+    #: *liveness_baseline_events_path* via `assay.liveness.
+    #: baseline_slowest_test_s`/`compute_expect_next_event_within_s` --
+    #: read back onto the `plan` progress event here, never recomputed a
+    #: second, independent way (B088's own "two derivations drift"
+    #: lesson). Both `None` for every non-liveness lane.
+    liveness_slowest_test_s: float | None = None,
+    liveness_expect_next_event_within_s: float | None = None,
+    #: (B091/D-23, P7 A4) The lane's own PERSISTENT
+    #: `.assay/liveness/candidates/` directory -- `None` for every
+    #: non-liveness lane. When given, each candidate's own `tests_completed`
+    #: progress-event field is read back from the events file
+    #: `assay.liveness.candidate_events_path` names for that candidate's own
+    #: execution `cwd`, via `assay.liveness.count_test_events` -- never a
+    #: second, independent count.
+    liveness_events_dir: Path | None = None,
     progress_artifact: Path | str | None = None,
     #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
     #: runner opens the stream once, high up, so the R0/R1 phase records and
@@ -2039,8 +2073,31 @@ def run_mutation(
                         "reason": liveness_reason,
                         "plugin": liveness_plugin,
                     },
+                    # (B091/D-23, P7 A4) The measurement `expect_next_
+                    # event_within_s` (LivenessRunner's own idle threshold,
+                    # already governing every candidate by the time this
+                    # line is written) was DERIVED from -- `None`/`None` for
+                    # every liveness-off lane, matching the `liveness` block
+                    # just above.
+                    "slowest_test_s": liveness_slowest_test_s,
+                    "expect_next_event_within_s": liveness_expect_next_event_within_s,
                 }
             )
+            if liveness_baseline_events_path is not None:
+                # (B091/D-23, P7 A4, RW-33) "test events reach the progress
+                # stream for the BASELINE only" -- every candidate's own
+                # test events stay in that candidate's own side file,
+                # summarised only as `tests_completed` on its `candidate`
+                # record below, never forwarded one-by-one (a `jobs`-way
+                # concurrent sweep would otherwise interleave N candidates'
+                # worth of `test` events with nothing on the wire to tell
+                # them apart). Right after `plan`, before any candidate
+                # line, so a reader already has the baseline's own per-test
+                # detail before judging any mutant against it.
+                for test_event in liveness.baseline_test_events(
+                    liveness_baseline_events_path
+                ):
+                    write_progress({"event": "test", "phase": "baseline", **test_event})
         from .runner import execute_plan
 
         collected = collect_mutation_sites(
@@ -2208,6 +2265,7 @@ def run_mutation(
             candidate_count=len(pending_jobs),
             state_root=state_root,
             judge=judge,
+            liveness_events_dir=liveness_events_dir,
         )
 
         if resumed_records:
@@ -2295,6 +2353,11 @@ def _execute_mutation_jobs(
     #: pre-B088 record on the next read, except that its `schema_version`
     #: would claim it is new enough to be checkable.
     judge: str | None = None,
+    #: (B091/D-23, P7 A4) The lane's own persistent `.assay/liveness/
+    #: candidates/` directory, passed straight through from `run_mutation`
+    #: -- `None` for every non-liveness lane, in which case `_run_one`
+    #: never touches `assay.liveness` at all.
+    liveness_events_dir: Path | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -2347,6 +2410,19 @@ def _execute_mutation_jobs(
                 clock=clock,
             )
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
+            # (B091/D-23, P7 A4) Read back HERE, while `snapshot.
+            # project_root` is still this candidate's own real execution
+            # `cwd` -- the events file lives at the lane's PERSISTENT
+            # `liveness_events_dir`, so it would still be readable after
+            # this `with` block exits, but the *path* to it is keyed by
+            # `cwd`, which only this scope still has.
+            tests_completed: int | None = None
+            if liveness_events_dir is not None:
+                tests_completed = liveness.count_test_events(
+                    liveness.candidate_events_path(
+                        liveness_events_dir, snapshot.project_root
+                    )
+                )
             try:
                 # P26/A-212: the ONE lane deadline IS forwarded here, so this
                 # check's own Git children are bounded by the same budget as
@@ -2411,6 +2487,7 @@ def _execute_mutation_jobs(
             equivalence_bytes=equivalence_bytes,
             kill_signal=kill_signal_text,
             elapsed_seconds=elapsed_seconds,
+            tests_completed=tests_completed,
         )
 
     results: list[_MutantRun | None] = [None] * total
@@ -2477,6 +2554,11 @@ def _execute_mutation_jobs(
                             ),
                             "outcome_bucket": outcome_bucket,
                             "elapsed_seconds": round(run.elapsed_seconds, 3),
+                            # (B091/D-23, P7 A4) `None` for every
+                            # non-liveness lane -- `run.tests_completed`
+                            # already carries that same `None` default
+                            # through from `_run_one`.
+                            "tests_completed": run.tests_completed,
                         }
                     )
                 if state_root is not None:

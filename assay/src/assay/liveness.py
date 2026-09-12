@@ -67,7 +67,16 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Mapping, NamedTuple, Sequence, TextIO
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterator,
+    Mapping,
+    NamedTuple,
+    Sequence,
+    TextIO,
+)
 
 if TYPE_CHECKING:
     from .runner import CommandPlan, ProcessRunner
@@ -538,6 +547,91 @@ def tree_cpu_seconds(root_pid: int) -> float:
     return total_ticks / clock_ticks_per_s
 
 
+def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
+    """Yield every valid `test` event record in *events_path*, in file
+    order.
+
+    `None` (never wired with `ASSAY_LIVENESS_EVENTS`), an absent/unreadable
+    path, and a torn last line (the file's own writer still appending when
+    this is read) all yield nothing extra -- tolerated by skipping, never
+    raised, matching the plugin's own append-per-event contract which makes
+    a torn line possible only for the very last one.
+
+    The ONE parse loop over one of these NDJSON side files that
+    :func:`baseline_slowest_test_s`, :func:`baseline_test_events` and
+    :func:`count_test_events` all build on, so the three can never drift
+    into three different ideas of what counts as a valid `test` event
+    (B088's own "two independent derivations is how a reader and a writer
+    drift apart" reasoning, applied here to a THIRD and FOURTH reader this
+    session (B091 A4) adds beside :func:`compute_expect_next_event_within_s`
+    -- itself now also built on this same generator, below).
+    """
+    if events_path is None:
+        return
+    try:
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            record = json.loads(stripped)
+        except ValueError:
+            continue  # Tolerant of a torn last line.
+        if isinstance(record, dict) and record.get("event") == "test":
+            yield record
+
+
+def baseline_slowest_test_s(baseline_events_path: "Path | None") -> float | None:
+    """The slowest well-typed `duration_s` among *baseline_events_path*'s
+    own `test` events, or `None` when there is no such event to measure
+    (see :func:`_iter_test_events` for what "no such event" covers).
+
+    The SAME computation :func:`compute_expect_next_event_within_s` already
+    made internally before this function existed -- extracted here so a
+    caller that also needs the raw `slowest_test_s` figure (the `plan`
+    progress event's own new field, B091 A4) reads it back from this ONE
+    function rather than hand-rolling a second, independent parse of the
+    same file (B088's own "two derivations drift" lesson).
+    """
+    slowest_test_s: float | None = None
+    for record in _iter_test_events(baseline_events_path):
+        duration = record.get("duration_s")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            continue
+        if slowest_test_s is None or duration > slowest_test_s:
+            slowest_test_s = duration
+    return slowest_test_s
+
+
+def baseline_test_events(baseline_events_path: Path) -> list[dict[str, Any]]:
+    """Every `test` event in *baseline_events_path*, in file order, as the
+    exact ``{nodeid, outcome, duration_s}`` triple the plugin wrote --
+    B091 A4's own baseline-forwarding rule: these are translated verbatim
+    onto the progress stream as one ``test`` event per baseline test, the
+    BASELINE only, never per candidate (RW-33). `[]` for a `None`, absent,
+    unreadable, or event-less path -- see :func:`_iter_test_events`.
+    """
+    return [
+        {
+            "nodeid": record.get("nodeid"),
+            "outcome": record.get("outcome"),
+            "duration_s": record.get("duration_s"),
+        }
+        for record in _iter_test_events(baseline_events_path)
+    ]
+
+
+def count_test_events(events_path: "Path | None") -> int:
+    """How many `test` events *events_path* carries -- B091 A4's own
+    per-candidate `tests_completed` progress field. `0` for a `None`,
+    absent, unreadable, or event-less path -- see :func:`_iter_test_events`.
+    """
+    return sum(1 for _ in _iter_test_events(events_path))
+
+
 def compute_expect_next_event_within_s(
     baseline_events_path: "Path | None", baseline_s: float
 ) -> float:
@@ -553,28 +647,11 @@ def compute_expect_next_event_within_s(
     writing when this is read, is tolerated by skipping only that one
     unparseable line, matching the plugin's own append-per-event contract
     which makes a torn line possible only for the very last one).
+
+    Delegates the parse to :func:`baseline_slowest_test_s` -- the same
+    measurement, not a second one.
     """
-    slowest_test_s: float | None = None
-    if baseline_events_path is not None:
-        try:
-            lines = baseline_events_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            lines = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                record = json.loads(stripped)
-            except ValueError:
-                continue  # Tolerant of a torn last line.
-            if not isinstance(record, dict) or record.get("event") != "test":
-                continue
-            duration = record.get("duration_s")
-            if isinstance(duration, bool) or not isinstance(duration, (int, float)):
-                continue
-            if slowest_test_s is None or duration > slowest_test_s:
-                slowest_test_s = duration
+    slowest_test_s = baseline_slowest_test_s(baseline_events_path)
     if slowest_test_s is not None:
         return max(3.0 * slowest_test_s, 15.0)
     return max(60.0, baseline_s / 4.0)
@@ -623,6 +700,27 @@ def _read_bytes(path: Path) -> bytes:
         return path.read_bytes()
     except OSError:
         return b""
+
+
+def candidate_events_path(events_dir: Path, cwd: Path) -> Path:
+    """The events NDJSON file :class:`LivenessRunner` writes for a candidate
+    whose mutant snapshot's own execution ``cwd`` is *cwd*, under
+    *events_dir* -- the lane's own PERSISTENT ``.assay/liveness/
+    candidates/`` directory, never the ephemeral per-mutant snapshot
+    itself (which is torn down before this sweep's own progress records
+    are built, well after this path still needs to resolve to the same
+    file).
+
+    A free function, not a method, so :class:`LivenessRunner` (which only
+    ever WRITES here) and :mod:`assay.mutation` (which only ever READS
+    back afterwards, for B091 A4's own `tests_completed` progress field)
+    compute the SAME path from the SAME one implementation -- never two
+    independent hashes of the same *cwd* that could drift apart from each
+    other (B088's own "two derivations drift" lesson, applied to a path
+    computation rather than a measurement).
+    """
+    digest = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()[:16]
+    return events_dir / f"{digest}.ndjson"
 
 
 class LivenessRunner:
@@ -692,8 +790,7 @@ class LivenessRunner:
         self._popen = popen
 
     def _events_path_for_cwd(self, cwd: Path) -> Path:
-        digest = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()[:16]
-        return self._events_dir / f"{digest}.ndjson"
+        return candidate_events_path(self._events_dir, cwd)
 
     def __call__(
         self,
