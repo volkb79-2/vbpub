@@ -189,3 +189,76 @@ place the closed vocabulary is checked (`verdict.py`, `verdict.schema.json`,
 names explicitly (a mutant that blocks on a non-daemon thread join ->
 `hung`; a mutant that busy-loops -> `budget_exceeded`). See BRIEF-2 for the
 exact next steps.
+
+
+## RW-36 (session 3) — liveness via `argv_appended` + `judge.mutation.liveness`
+
+**Ruling satisfied:** RW-36 verbatim (controller log, main). Corrects
+session 2's flagged A-036 exception: liveness injection must extend
+`CommandPlan.argv_appended`, never `argv_declared`; must be gated by a new
+`judge.mutation.liveness = "auto" | true | false` key, never by
+`allow_argv_append`; the `plan` progress event and `judgment.r2` must both
+gain `liveness: {active, reason, plugin}`.
+
+**Oracle → test mapping:**
+
+| Oracle | Test(s) |
+| --- | --- |
+| `argv_declared` is byte-for-byte the lane's own words after injection; the `-p` flag lands in `argv_appended` instead | `test_liveness.py::test_inject_adds_plugin_flag_to_argv_appended_never_argv_declared`, `::test_inject_preserves_the_lanes_own_appended_tokens_and_recomputes_effective` |
+| A liveness-only append runs through `execute_plan` despite `allow_argv_append = False`; a genuine unconsented CLI append on a plan liveness never touched is still refused | `test_liveness.py::test_liveness_injected_plan_runs_through_execute_plan_despite_no_consent`, `::test_a_plan_with_real_unconsented_cli_appended_argv_is_still_refused` |
+| `cli_argv_appended` freezes the pre-injection `argv_appended` exactly | `test_liveness.py::test_inject_sets_cli_argv_appended_to_the_pre_injection_appended_tuple` |
+| `judge.mutation.liveness`'s three spellings (`"auto"`/`true`/`false`, plus omission) load and normalize correctly; `true` on a non-pytest/non-python lane refuses AT LOAD; `auto`/omission never refuses at load | `test_config_mutation.py::test_liveness_omitted_stays_none_the_omission_is_the_default`, `::test_liveness_declared_spellings_are_accepted_and_normalized[…]`, `::test_liveness_true_is_refused_at_load_when_argv_does_not_invoke_pytest`, `::test_liveness_auto_on_a_non_pytest_argv_loads_without_refusal`, `::test_liveness_rejects_an_unknown_spelling`, `::test_liveness_declared_value_round_trips_through_as_declared` |
+| `liveness` is forbidden on an ingested lane (orchestration-only) | `test_config_ingested_mutation.py::test_orchestration_keys_are_refused_on_an_ingested_lane[liveness = …]` (3 new parametrize cases) |
+| `JudgmentR2.liveness`'s wire shape (`active`/`reason`/`plugin`, active⇔plugin-present) validates and round-trips; forbidden under `producer = "ingested"` | `test_verdict_judgment.py::test_judgment_r2_liveness_round_trips_when_present`, `::test_judgment_r2_liveness_inactive_form_round_trips`, `::test_judgment_r2_liveness_absent_by_default`, `::test_judgment_r2_refuses_a_malformed_liveness[…]` (7 cases), `::test_judgment_r2_forbids_liveness_under_ingested` |
+| A real end-to-end `assay run` records the real, honest `liveness` value for its own lane | `test_cli_run.py::test_run_evaluates_a_real_r2_pass_end_to_end` (extended: this fixture's argv is `/bin/sh -c "grep …"`, so the real answer is `{active: false, reason: "argv-does-not-invoke-pytest", plugin: null}`) |
+
+**Files touched:** `src/assay/liveness.py` (rewritten), `src/assay/
+runner.py`, `src/assay/mutation.py`, `src/assay/verdict.py`, `src/assay/
+schemas/verdict.schema.json`, `src/assay/config.py`, `src/assay/verify.py`,
+`CHANGES.md`; tests as tabulated above.
+
+**Design decision made explicit (mechanical reading of RW-36, not a
+judgment call under the BLOCKED protocol):** RW-36's text says liveness
+should use "the same channel R1 coverage flags use" — session 2 already
+established (LOG `f4fa1788`) that no such channel exists; `argv_appended`
+is ONLY the CLI's own `--` passthrough today, and `execute_plan` refuses
+any plan carrying it without `allow_argv_append = true`. Routing liveness
+through the literal SAME field would contradict RW-36's own "NOT gated by
+allow_argv_append" clause for every lane that does not separately declare
+CLI-passthrough consent. Resolution: a new `CommandPlan.cli_argv_appended`
+field (`None` = "identical to `argv_appended`", the default, byte-for-byte
+unaffecting every existing call site) lets `execute_plan`'s refusal check
+keep testing only the CLI-consented subset, while `argv_appended` itself
+carries the full liveness-augmented view onto the wire. Two integration
+tests pin both directions (see the mapping above).
+
+**A real, pre-existing bug found and fixed by this session, incidental to
+its own work:** `verify.py`'s `_reconstruct_judgment_r2` never read
+`budget_per_candidate_derived_s` (A1, `de32bb91`) back off the raw
+document — `verify.py` was not among A1's own "Files touched". `assay
+verify` on any real A1-produced document with this field would raise
+`ValueError: unknown judgment.r2 field(s): ['budget_per_candidate_derived_s']`.
+Fixed alongside `liveness`'s own reconstruction (same function, same
+commit).
+
+**Coverage self-check:** `coverage run --branch --source=assay.liveness -m
+pytest tests/test_liveness.py` — **100% line+branch** (82 stmts, 22
+branches, 0 missing) after one test closed a single missed branch
+(`liveness = true` + non-pytest argv + `diagnostics=None`).
+
+**Regression (targeted, GREEN, 406 passed):** `test_liveness.py` (38),
+`test_config_mutation.py`, `test_config_ingested_mutation.py`,
+`test_verdict_judgment.py` (117), `test_mutation_judge.py` +
+`test_runner_run_lane_r2.py` (42), `test_mutation_progress_budget_plan.py`
+(38), `test_cli_run.py` (full file, real subprocess), `test_verify_layer_
+independence.py`; plus an earlier broader sweep of every test file
+grepped for `argv_appended`/`allow_argv_append` (`test_runner_plan_env.py`,
+`test_infrastructure_injection.py`, `test_refusal_announcement.py`,
+`test_environment_preflight.py`, `test_dependency_purity.py`,
+`test_docs_examples_and_vocabulary.py`, `test_runner_run_lane.py`,
+`test_runner_assemble_verdict_mutation.py`,
+`test_verdict_mutation_artifacts.py`) — all green (221+63 passed across
+those two batches). Full gate still deferred to A6.
+
+**Not run this session:** the real registered gate; A3's own tests
+(A3 not started — see BRIEF-3).
