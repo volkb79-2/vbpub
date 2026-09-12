@@ -14483,6 +14483,82 @@ class TestBareHostProfilingWiring:
         assert "profiling: cleanup crashed unexpectedly" in err
 
 
+class _FakeRusage:
+    """A minimal stand-in for the `resource.struct_rusage` `os.wait4()`
+    hands back -- only the three fields `finish_bare_host_profiling`
+    reads, so tests can pin exact arithmetic without a real subprocess."""
+
+    def __init__(self, ru_maxrss, ru_utime, ru_stime):
+        self.ru_maxrss = ru_maxrss
+        self.ru_utime = ru_utime
+        self.ru_stime = ru_stime
+
+
+class TestBareHostRusageArithmetic:
+    """B2 (round-1 review): direct oracles on `finish_bare_host_profiling`'s
+    arithmetic. The diff-coverage judge proves these LINES execute, never
+    that their VALUES are right -- round-1 review's mutation probe found
+    the KiB->bytes conversion, the cpu-seconds sum and the mode/None guard
+    all unpinned (M1/M2/M3/N4 in the round file); RW-43's rewrite replaced
+    the before/after `getrusage(RUSAGE_CHILDREN)` delta with a single `ru`
+    read directly off `os.wait4()`, so these oracles are written against
+    THAT shape."""
+
+    def test_exact_arithmetic_from_a_known_rusage(self):
+        # M2 (`* 1024` -> `* 1`): 12345 KiB must become 12345*1024 bytes,
+        # not 12345. The "cpu absolute" mutant class (M3 in the original
+        # round file) becomes, in the rewritten single-`ru` shape, "drop
+        # ru_stime from the sum" -- utime=1.25 + stime=0.5 must read 1.75,
+        # not 1.25.
+        ru = _FakeRusage(ru_maxrss=12345, ru_utime=1.25, ru_stime=0.5)
+        state = {"mode": "rusage", "warning": None}
+        result = run_gate.finish_bare_host_profiling(
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+        assert result["profile_error"] is None
+        assert result["profile_ref"] is None
+        res = result["resources"]
+        assert res["method"] == "rusage"
+        assert res["scope"] is None
+        assert res["session"] is None
+        assert res["daemon"] is None
+        assert res["memory"]["peak_bytes"] == 12345 * 1024
+        assert res["memory"]["source"] == "rusage-maxrss"
+        assert res["memory"]["baseline_bytes"] is None
+        assert res["cpu"]["seconds"] == 1.75
+        assert res["cpu"]["cores_avg"] == pytest.approx(1.75 / 2, rel=1e-9)
+        assert res["cpu"]["cores_max"] is None
+        # every field os.wait4() structurally cannot supply stays null
+        # (contract Sec 1.7: absent means unknown, never fabricated).
+        assert res["target"] == {"container_id": None, "cgroup": None,
+                                 "token": None, "targets_seen": None}
+        assert res["host"]["memory_full_stall_seconds"] is None
+        assert res["damon"] is None
+        assert res["pids"]["peak"] is None
+        assert res["events"]["oom_kill"] is None
+
+    def test_ru_is_none_never_fabricates_a_profile(self):
+        # N4 (round-1 review): `state["mode"] != "rusage" or ru is None`
+        # -- an `or` -> `and` boolop-swap mutant would fall through to the
+        # arithmetic below with `ru = None` and raise `AttributeError`
+        # instead of returning the documented "no profile recorded"
+        # shape (which the KeyboardInterrupt/wait4-failure path in
+        # `run_bare_host_lane` relies on to degrade cleanly).
+        state = {"mode": "rusage", "warning": "planted: wait4 failed"}
+        result = run_gate.finish_bare_host_profiling(
+            state, None, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+        assert result["resources"] is None
+        assert result["profile_error"] == "planted: wait4 failed"
+        assert result["profile_ref"] is None
+
+    def test_zero_duration_leaves_cores_avg_null_not_a_zero_division(self):
+        ru = _FakeRusage(ru_maxrss=100, ru_utime=0.0, ru_stime=0.0)
+        state = {"mode": "rusage", "warning": None}
+        result = run_gate.finish_bare_host_profiling(
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z")
+        assert result["resources"]["duration_seconds"] == 0.0
+        assert result["resources"]["cpu"]["cores_avg"] is None
+
+
 class TestResolveSelfContainerIdDirectBranches:
     """RG-57's `resolve_self_container_id` -- the bare-host daemon path's
     own target resolution -- exercised directly against each of its five
@@ -15140,8 +15216,63 @@ class TestExecLaneInflightRecord:
         assert seen["record"]["lane"] == "suite"
         assert seen["record"]["container"] == "the-runner"
         assert seen["record"]["profile_token"] == "abc123"
+        # N13 half 1 (round-1 review B2): no cgprofile daemon shim is
+        # installed here, so `client.version()` fails and profiling
+        # degrades to the basic path -- `profile_session` must be None,
+        # never a fabricated id, on any path that is NOT "daemon".
+        assert seen["record"]["profile_session"] is None
         # Cleared in the SAME finally that finishes profiling.
         assert not run_gate.inflight_path(repo, "suite").exists()
+
+    def test_profile_session_recorded_only_on_the_daemon_path(
+            self, tmp_path, monkeypatch):
+        # N13 half 2 (round-1 review B2): the inflight payload's own
+        # `"profile_session": (profiler_state["session"] if
+        # profiler_state["mode"] == "daemon" else None)` compare -- an
+        # `==` -> `!=` swap would record `None` on the REAL daemon path
+        # (losing exactly the field a re-attach needs) while the sibling
+        # test above would still pass unchanged (its own path is already
+        # non-daemon). `start_lane_profiling` stubbed directly to a known
+        # daemon-mode state isolates the compare without a live cgprofile
+        # daemon shim.
+        def _fake_daemon_state(*a, **k):
+            return {"mode": "daemon", "client": None,
+                    "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                    "session": "s-fake-session-id", "session_line": None,
+                    "warning": None, "sampler": None, "profiler_status": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling", _fake_daemon_state)
+        repo = make_repo(tmp_path)
+        (repo / ".gitignore").write_text(".run-gate/\n")
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        seen = {}
+        real_popen = run_gate.subprocess.Popen
+
+        def _spy_popen(argv, *a, **k):
+            path = run_gate.inflight_path(repo, "suite")
+            if path.exists():
+                seen["record"] = run_gate.load_inflight_record(path)
+            return real_popen(argv, *a, **k)
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
+        env = {"forward_env": []}
+        lane = {"kind": "command", "argv": ["true"]}
+        profile_plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": "1s", "damon": True, "source": "test",
+                        "token": "abc123", "disabled_reason": "disabled"}
+        code = run_gate.run_exec_lane(
+            lane, "suite", repo, repo, repo, env, "test-env",
+            "the-runner", "test-src", "test-remedy", None, "no-slice",
+            dry_run=False, run_record={}, profile_plan=profile_plan)
+        assert code == 0
+        assert seen["record"]["profile_session"] == "s-fake-session-id"
 
     def test_killed_client_leaves_the_record_on_disk(self, tmp_path,
                                                       monkeypatch):
