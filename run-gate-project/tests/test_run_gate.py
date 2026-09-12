@@ -4105,10 +4105,23 @@ class TestExecModeMutex:
         directly against the REAL filesystem path, not a mock. Snapshots
         real /tmp before and after so a regression (isolation silently
         stops working) fails loudly instead of leaking another stale
-        directory for someone to find nine days later."""
+        directory for someone to find nine days later.
+
+        S9 (round-2 review, RW-51): the ORIGINAL version of this test
+        compared the FULL `run-gate-{exec,shared}-*` name sets before/
+        after — but other checkouts on this shared host legitimately
+        write there too (this suite runs concurrently, estate-wide,
+        RW-39/RW-42), so a foreign process creating or removing an entry
+        during this test's own window flakes it on a mutation this test
+        never planted. Scoped to entries whose name contains THIS test's
+        own container name (`myproj-dev1-<pid>-runner`, pid-suffixed —
+        unique to this process) so only what this exact invocation could
+        plausibly have created is compared; a foreign checkout's entries
+        never match and are correctly left out."""
+        my_name = self._container_name()
         real_tmp_before = {
-            p.name for p in Path("/tmp").glob("run-gate-exec-*")
-        } | {p.name for p in Path("/tmp").glob("run-gate-shared-*")}
+            p.name for p in Path("/tmp").glob(f"run-gate-exec-*{my_name}*")
+        } | {p.name for p in Path("/tmp").glob(f"run-gate-shared-*{my_name}*")}
 
         repo, proj = self._proj(tmp_path)
         fake_docker(tmp_path, monkeypatch)
@@ -4118,10 +4131,11 @@ class TestExecModeMutex:
         assert rc == 0
 
         real_tmp_after = {
-            p.name for p in Path("/tmp").glob("run-gate-exec-*")
-        } | {p.name for p in Path("/tmp").glob("run-gate-shared-*")}
+            p.name for p in Path("/tmp").glob(f"run-gate-exec-*{my_name}*")
+        } | {p.name for p in Path("/tmp").glob(f"run-gate-shared-*{my_name}*")}
         assert real_tmp_after == real_tmp_before, (
-            "a lane run created something under host /tmp: "
+            "a lane run created something under host /tmp attributable to "
+            f"this test's own container name {my_name!r}: "
             f"{real_tmp_after - real_tmp_before}"
         )
 
