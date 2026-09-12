@@ -19,6 +19,9 @@ two carriers (§8.1), `watch` (§8.2), placement (§8.3), liveness + policy
 implement it in cgprofile 1.1.0 (P6); consumers in run-gate 23.9.0 (P5).
 A v1 consumer talking to a v1.1 producer, and vice versa, keeps working:
 every new field is optional and every new option is opt-in.
+**RW-43 (2026-09-12, §4.3a):** bare-host lanes — `method: "rusage"`,
+`scope: null`, `source: "rusage-maxrss"`, manifest/`meta.expected`
+`source` provenance.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
@@ -264,6 +267,20 @@ and the `footprint` manifest.
    from `/proc/pressure/memory` and `/proc/pressure/cpu` read directly
    (readable from the devcontainer). A lane whose container exits before the
    first sample records `resources: null` with `profile_error`.
+3a. **Bare-host lanes (RW-27b, RW-43; run-gate ≥ 23.8.0):** a lane with
+   no container is profiled through the daemon when run-gate itself runs
+   inside a container (`--scope container-shared`, `--target` = run-gate's
+   own container id, token exported into the child) and otherwise through
+   the child's own resource usage: `method: "rusage"`, `scope: null`,
+   `memory.peak_bytes = ru_maxrss × 1024` and `cpu.seconds = utime + stime`
+   taken from `os.wait4(<lane pid>)` — the lane process and what it
+   reaped, never run-gate's other children — with `memory.source:
+   "rusage-maxrss"`; every field rusage cannot give (`pressure`, `damon`,
+   `events`, `host.slice`, `target.targets_seen`) is `null`. The manifest
+   entry of such a lane carries `"source": "rusage-maxrss"` next to its
+   medians; `meta.expected` fed into `start` carries `"source"` (the
+   manifest's) so admission (RG-56) knows the provenance. Consumers of
+   the Summary MUST tolerate `scope: null`.
 4. **Record shapes (history schema 2):** each `latest`/history entry gains
    `resources` (Summary | null), `profile_error` (string | null),
    `profile_ref` (`{"daemon": name, "session": id, "session_dir": path}` |

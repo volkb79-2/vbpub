@@ -585,6 +585,27 @@ never a silent edit to the contract file.
   landed the wave goal `run-gate-project/run-gate.footprint.json`
   (`02707e30`) from a real `footprint --write`.
 
+- **RW-43 (P4 review round 1 — ACCEPT-conditional B1–B4; rusage must
+  come from `os.wait4`; contract §4.3a):** round file
+  `run-gate-WAVE-RG55-P4-REVIEW-round1.md` (~17:40Z). B1 is real:
+  `getrusage(RUSAGE_CHILDREN).ru_maxrss` is a high-water mark over every
+  reaped child, so a `["true"]` lane recorded 36 MiB (run-gate's own
+  docker/git children) into history, the tracked manifest and
+  `meta.expected`. Ruling: the rusage path takes the LANE's own numbers
+  from `os.wait4(pid, 0)` (Popen + wait4, `returncode` via
+  `os.waitstatus_to_exitcode`) — exact, no baseline arithmetic, no null
+  for light lanes (D2 moot); oracles pin `ru_maxrss × 1024`, `utime +
+  stime`, `cores_avg` (B2). B3: the exec-lane inflight record is stamped
+  `"runner": "exec"` and the container path REFUSES a foreign record
+  (never `docker rm -f` a container run-gate did not create — CIU-104
+  class). B4: `doctor` wording. Non-blocking accepted: rusage caveat on
+  the live `footprint` line and `history`; RG-59 match narrowed to
+  docker's own exec failure (exit status + stderr prefix), never the
+  daemon's stderr; the circular RG-60 test; stale comment; RG-61 counts.
+  D1: contract §4.3a added (this ruling) and mirrored. Repairs by a
+  FRESH P4 session 4 from the round file; reviewer round 2 on the
+  repair tip; r2 still pending a slot (RW-42).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
@@ -593,5 +614,5 @@ never a silent edit to the contract file.
 | P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus) → C6 socket carrier `bb575fd4` (35 tests, parity harness, PROTOCOL.md), BRIEF-5 `b865556b`; session 5 (Opus) → C7 watch role `4fa725dc` (104 tests, real kill, streaming on both carriers), r0/r1 lane GREEN 100%/100% project-wide, BRIEF-6 `7c34dcc2`; session 6 (Opus) dispatched ~17:20Z for C8 placement (+C9); release cgprofile 1.1.0 after review |
 | P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 → spike + plugin + v1 runner (`f4fa1788`), BRIEF-2 `ef5088f6`; session 3 → RW-36 gating `e27b107b` + verify.py fix, BRIEF-3 `d2b7c76d` (A3 mechanism decided: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG`); session 4 → A3 active runner + `hung` bucket `44dd12ca` (a real `judge_mutation` precedence bug fixed; 252 calls — clause violated, flagged), BRIEF-4 `4ace234f`; session 5 → A3 complete: e2e CLI tests `99463ae5`, boundary tests + mutant table `d1540eda` (real bug: plugin wrote `repr` not JSON — fixed), BRIEF-5 `72baf838`; session 6 → A4 `5baf2670`, A5 `c15f6040` (275 calls — clause violated again), BRIEF-6 `1eaf5683`; session 7 dispatched ~17:30Z for A6 close-out + real gate (+ B092 filing) |
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
-| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 dispatched ~17:15Z on `0bb3bbeb` |
+| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 dispatched for repairs |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); review round 2 ACCEPT on `186461de` (close-out commits); assay-r2 hit the 4 h lane budget at ~165/283 (16:28Z) → RESUMED untracked (RW-40); survivor triage + final gates + merge/release 23.7.0 pending the verdict |
