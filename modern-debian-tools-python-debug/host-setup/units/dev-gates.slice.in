@@ -39,9 +39,18 @@ IOWeight=@DEV_GATES_IO_WEIGHT@
 # exactly why stacks stay in dev-background.slice instead of sharing this
 # tier (D-19). Silent no-op unless systemd-oomd is installed and running
 # (install.sh installs it).
+#
+# Deliberately NO ManagedOOMSwap= here (RW-32/D1 review S1, ruled D2): D-19
+# names only the pressure kill + its limit, and MemorySwapMax=32G above
+# exists specifically to make swap this tier's relief valve for a disposable
+# lane — an oomd SWAP kill would trigger on host swap usage (SwapUsedLimit,
+# not this tier's own pressure) and kill whichever lane is USING the
+# allowance this unit deliberately grants it, on a signal D-6 explicitly
+# rejects ("swap usage is never the gate; PSI is"). dev-background.slice
+# keeps its own ManagedOOMSwap=kill unchanged; this is a genuine difference
+# between the two tiers, not an oversight.
 ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=@DEV_GATES_OOM_PRESSURE_LIMIT@
-ManagedOOMSwap=kill
 
 # Containers join via an explicit `docker run --cgroup-parent=dev-gates.slice`
 # / compose `cgroup_parent: dev-gates.slice` (run-gate's ephemeral-lane create

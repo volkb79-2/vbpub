@@ -432,3 +432,36 @@ Verify: `python3 -m py_compile scripts/mdt-dev-cap-watcher.py` (clean);
 slices; `python3 -c "import ast; ast.parse(open('scripts/mdt-dev-cap-
 watcher.py').read())"` (clean, confirms no syntax regression from the
 signature change touching every call site).
+
+### C4 — D2 + S5 + S12: drop gates ManagedOOMSwap, generalize stale sibling phrasing (hash: see next entry)
+
+(D2/S1) `units/dev-gates.slice.in`: `ManagedOOMSwap=kill` removed; the
+`ManagedOOMMemoryPressure` comment block explains why (D-19 lists only the
+pressure kill; `MemorySwapMax=32G` is this tier's deliberate relief valve;
+an oomd swap kill would fire on a signal D-6 rejects and kill the lane
+that's legitimately using the allowance the unit grants it) and notes
+`dev-background.slice` keeps its own unchanged — a real difference, not an
+oversight. Verify: `grep -c ManagedOOMSwap units/dev-gates.slice.in`
+prints `0`; `tests/test-render.sh`'s own assertion (2) from C1 now also
+fails RED if this line is ever re-added (mutation-verified: re-adding it
+on a scratch copy → `FAIL: dev-gates.slice has ManagedOOMSwap=kill --
+withdrawn by RW-32/D2`).
+
+(S5) "dev-interactive + dev-background"-only phrasing generalized to name
+every `dev.slice` child (or "every child combined"), matching the wording
+the P8 README pass already fixed: `scripts/mdt-apply-dev-caps.sh`'s header
+comment + its own runtime log line, `scripts/check.sh`'s "dev.slice IO
+caps" section header, `units/dev.slice.in`'s own header comment (now also
+names `dev-gates.slice`/`dev-buildkitd.slice`, closing a PRE-EXISTING gap
+that predates P8 — `dev-buildkitd.slice` was already missing before this
+package).
+
+(S12) `scripts/mdt-slice-audit.py`'s header comment now also names
+`dev-gates.slice` alongside `dev-background.slice` as a tier with no
+declared `MemoryMin`/`MemoryLow` (behaviour is unchanged and needs no fix —
+the script scans `CG/dev.slice` recursively, so the new tier was already
+covered; only the comment was incomplete).
+
+Verify: `bash -n scripts/mdt-apply-dev-caps.sh scripts/check.sh` clean;
+`python3 -m py_compile scripts/mdt-slice-audit.py` clean;
+`shellcheck -S warning` on both shell scripts clean (no new findings).
