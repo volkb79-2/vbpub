@@ -45,9 +45,41 @@ never a silent edit to the contract file.
   to both implementers; nobody edits `RG55-INTERFACE-CONTRACT.md`
   unilaterally.
 
+- **RW-5 (P2, after its first checkpoint):** 0/0 diff semantics corrected.
+  As first landed (`607950fd`), a `changed_executable == 0` verdict REFUSED
+  (exit 2) unless `--allow-empty-diff` — which makes `./run-gate.py
+  selftest` red on `main` itself (merge-base(main, HEAD) == HEAD → zero
+  changed lines) and would block every `cmru release` of this project. Now:
+  0/0 → exit 0 with a distinct verdict line `diff-coverage SKIPPED: 0
+  changed executable lines under '<source>' between <base> and HEAD
+  (<relation>)` and `"verdict": "skipped"` in any structured output, never
+  `100.0% OK`; refusal is OPT-IN via `--refuse-empty-diff` (the
+  `--allow-empty-diff` flag is removed). Rationale: the false-green hazard
+  RG-51/RG-54 describe is a WRONG BASE hiding real source changes; the judge
+  cannot tell that from "this change has no source lines" by the zero alone,
+  so the zero is made visible and named, and the wrong-base guard stays
+  RG-51's fork-point rule. Landed as `8c76ba3e`.
+- **RW-6:** accepted P2's reading — `branches_total`/`branches_missed` are
+  scoped to the changed-line set and reported beside the line counts.
+- **RW-7:** accepted P1's reading — "the last read of `memory.peak` /
+  `pids.peak`" (contract §7) means the last SUCCESSFUL read (skip back over
+  trailing nulls), pinned by a dedicated test in `lib/summary.py`'s suite.
+- **RW-8 (P2 C2):** assay judge scope for run-gate-project's new lanes:
+  `judge.source_roots = ["."]` with `base_source = "request"`; `tests/` is
+  excluded by assay's own `is_test_path`; `tools/` IS judged deliberately (a
+  changed line in `tools/coverage_gate.py` must be covered by
+  `tests/test_coverage_gate.py` — that is what 100% on every changed line
+  means here). No restructuring of `run-gate.py` into a subdirectory.
+  Narrowest supported exclusion only if the symlink/fixtures trip the
+  adapter; never exclude `tools/`.
+- **RW-9 (process):** a decision ask never stops a package — record it,
+  apply the reading the handoff/contract/fixtures imply, mark it, continue
+  with everything independent of it. (P2's second session stopped on the
+  C2 ask with C3–C8 untouched.)
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
-| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | pending dispatch |
-| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | pending dispatch |
+| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | session 1 → C0+C1 (`bc47130d`); session 2 dispatched for C2–C9 |
+| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | session 1 → C1 (`1dc201ab`); session 2 → RW-5 rework + pyz vendored (`554d1a1a`); session 3 dispatched for C2 rest + C3–C8 |
