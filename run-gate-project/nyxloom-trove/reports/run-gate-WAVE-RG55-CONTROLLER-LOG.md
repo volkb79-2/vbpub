@@ -148,6 +148,36 @@ never a silent edit to the contract file.
   the tip `62d9a66a` starts in parallel; the reviewer does not touch
   `.assay/` or run r2 itself.
 
+- **P2 review round 1 (tip `62d9a66a`): REJECT** — B1 profiling exceptions
+  escape `main()` and leak the container (four planted routes + a real
+  `UnicodeDecodeError` route); B2 `meta.expected` sent as a bare int
+  (contract §2.2 wants the four-key object); B3 two surviving mutants on
+  contract rules; B4 hollow red-first proof for the exec rewrite; B5 records
+  claim a gate sweep that did not run. Fix round dispatched to a FRESH
+  implementer (large remaining work; the original session is idle-waiting on
+  its r2 lane).
+- **RW-21 (contract §7 amendment, from the review's measurement):** scope
+  `container` reads cumulative counters as ABSOLUTE values at the last
+  successful read (cpu, pressure, faults, events), `peak_over_baseline_bytes`
+  is `null` there; scope `container-shared` keeps the delta rules; host
+  fields keep deltas in both scopes. Rationale: an ephemeral lane's cgroup
+  is born with the lane, so a delta from the first sample drops everything
+  before it (3.3× CPU understatement measured live). Goldens
+  `summary-container-v1.json` regenerated, `summary-basic-container-v1.json`
+  added; landed on `main` by the P2 fix implementer, adopted by both
+  packages via `git merge main`. Contract text now carries an Amendments
+  line (RW-11, RW-21).
+- **RW-22:** the running `assay-r2` on `62d9a66a` continues to its verdict;
+  fix rounds do not run r2; the final r2 runs once on the reviewer-ACCEPTed
+  tip and resumes from `.assay/mutation-state/` (content-keyed candidates).
+- **RW-23:** reviewer decision asks ruled: RW-7 applies to all "last read"
+  fields; the bare-host `assay-r2` `stall_timeout` is removed (inert);
+  `RUN_GATE_PROFILE=""` = absent; the token is redacted in the header
+  line; the basic path never fabricates `target.cgroup`; the canary copies
+  without `.assay/`/`.run-gate/`/`coverage.json`; the pre-existing
+  `coverage_gate` record-lookup false green is fixed if small, else RG-58;
+  all listed doc drift fixed in the round.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
