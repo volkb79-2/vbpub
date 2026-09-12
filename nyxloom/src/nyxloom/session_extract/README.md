@@ -534,7 +534,9 @@ loop's idle state.
 
 ### Delivery
 
-`--bell` writes `\a`. `--on-attention '<cmd>'` runs your command with
+`--bell` writes `\a` to **stderr**, not into the content stream — a bell is
+a notification, and `nyxloom extract --follow | claude` should not carry stray
+bell bytes into another agent's prompt. `--on-attention '<cmd>'` runs your command with
 `NYXLOOM_ATTENTION_REASON` / `_HARNESS` / `_SESSION_PATH` / `_EXCERPT` (first
 ~100 chars) in its environment — your script decides whether that reaches
 Telegram, Mattermost or nothing; nyxloom holds no credentials for it.

@@ -291,13 +291,14 @@ def test_an_api_error_is_dropped_immediately_not_buffered():
 # --------------------------------------------------------------------------
 
 
-def _follower(fp, out, lossless_mode=False, follow_config=None, config=None, fmt="claude-code"):
+def _follower(fp, out, lossless_mode=False, follow_config=None, config=None, fmt="claude-code",
+               bell_out=None):
     config = config or ExtractConfig()
     source = JsonlSource(fp, fmt, fp.stat().st_size, config, lossless_mode)
     return Follower(
         source, harness=fmt, session_path=str(fp), config=config,
         follow_config=follow_config or FollowConfig(), out=out,
-        lossless_mode=lossless_mode, printed_any=False,
+        lossless_mode=lossless_mode, printed_any=False, bell_out=bell_out,
     )
 
 
@@ -411,25 +412,29 @@ def test_an_ordinary_tool_call_is_not_an_interview_signal():
     assert pending == {}
 
 
-def test_bell_writes_the_bell_byte_on_a_fired_signal(tmp_path):
+def test_bell_rings_on_a_fired_signal_without_polluting_the_content_stream(tmp_path):
+    # The bell is a notification, not session content: it must not land in the
+    # stream `nyxloom extract --follow | claude` would pipe onward.
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
-    out = io.StringIO()
-    follower = _follower(fp, out, follow_config=FollowConfig(bell=True))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(fp, out, follow_config=FollowConfig(bell=True), bell_out=bell)
     _append(fp, _assistant("a1", "## Status\n\nDone -- landed."))
     follower.tick()
-    assert "\a" in out.getvalue()
+    assert bell.getvalue() == "\a"
+    assert "\a" not in out.getvalue()
+    assert "## Status" in out.getvalue()
     follower.close()
 
 
 def test_no_bell_when_nothing_fires(tmp_path):
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
-    out = io.StringIO()
-    follower = _follower(fp, out, follow_config=FollowConfig(bell=True))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(fp, out, follow_config=FollowConfig(bell=True), bell_out=bell)
     _append(fp, _user("u1", "just an operator turn"))
     follower.tick()
-    assert "\a" not in out.getvalue()
+    assert bell.getvalue() == ""
     follower.close()
 
 
@@ -482,18 +487,19 @@ def test_long_block_signal_is_off_until_attention_min_chars_is_given(tmp_path):
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
 
-    out = io.StringIO()
-    quiet = _follower(fp, out, follow_config=FollowConfig(bell=True))
+    out, bell = io.StringIO(), io.StringIO()
+    quiet = _follower(fp, out, follow_config=FollowConfig(bell=True), bell_out=bell)
     _append(fp, _assistant("a1", "z" * 500))  # long, but no checkpoint shape
     quiet.tick()
-    assert "\a" not in out.getvalue()
+    assert bell.getvalue() == ""
     quiet.close()
 
-    out2 = io.StringIO()
-    loud = _follower(fp, out2, follow_config=FollowConfig(bell=True, attention_min_chars=100))
+    out2, bell2 = io.StringIO(), io.StringIO()
+    loud = _follower(fp, out2, follow_config=FollowConfig(bell=True, attention_min_chars=100),
+                      bell_out=bell2)
     _append(fp, _assistant("a2", "z" * 500))
     loud.tick()
-    assert "\a" in out2.getvalue()
+    assert bell2.getvalue() == "\a"
     loud.close()
 
 
@@ -502,11 +508,12 @@ def test_lossless_follow_falls_back_to_shape_scoring_for_checkpoints(tmp_path):
     # classifier.shape_score alone -- weaker, and documented as such.
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
-    out = io.StringIO()
-    follower = _follower(fp, out, lossless_mode=True, follow_config=FollowConfig(bell=True))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(fp, out, lossless_mode=True, follow_config=FollowConfig(bell=True),
+                          bell_out=bell)
     _append(fp, _assistant("a1", "## A header block\n\nprose"))
     follower.tick()
-    assert "\a" in out.getvalue()
+    assert bell.getvalue() == "\a"
     follower.close()
 
 

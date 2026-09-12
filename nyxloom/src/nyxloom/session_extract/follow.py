@@ -83,7 +83,9 @@ reason:
 fourth signal; the practical proxy ("the file stopped growing") is just this
 loop's own idle state.
 
-**Delivery** is orthogonal to detection: `--bell` writes `\\a`,
+**Delivery** is orthogonal to detection: `--bell` writes `\\a` to stderr
+(a bell is a notification, not session content -- piping the stream onward
+must not carry stray bell bytes),
 `--on-attention '<cmd>'` runs a command with `NYXLOOM_ATTENTION_REASON` /
 `_HARNESS` / `_SESSION_PATH` / `_EXCERPT` in its environment (your script
 decides whether that reaches Telegram, Mattermost or nothing -- nyxloom
@@ -108,6 +110,7 @@ reason.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -233,8 +236,6 @@ class Arrival:
 
 
 def _parse_line(line: str) -> dict | None:
-    import json
-
     try:
         obj = json.loads(line)
     except ValueError:
@@ -440,14 +441,19 @@ class FollowConfig:
     attention_min_chars: int | None = None
 
 
-def deliver(att: AttentionEvent, config: FollowConfig, out) -> None:
+def deliver(att: AttentionEvent, config: FollowConfig, bell_out) -> None:
     """Every configured delivery channel for one fired signal. Never raises:
     a follow loop that dies because a notification hook failed is worse than
     a missed notification, so failures go to stderr and the stream continues.
+
+    The bell goes to `bell_out` (stderr in production, not the content
+    stream): `\a` is a notification, not session content, and `nyxloom
+    extract --follow | claude` should not carry stray bell bytes into
+    another agent's prompt.
     """
     if config.bell:
-        out.write("\a")
-        out.flush()
+        bell_out.write("\a")
+        bell_out.flush()
 
     if config.on_attention:
         env = dict(os.environ)
@@ -507,6 +513,7 @@ class Follower:
         block_render: Callable[[str], str] | None = None,
         insert_blank_lines: int = 1,
         printed_any: bool = True,
+        bell_out=None,
     ):
         self._source = source
         self._harness = harness
@@ -514,6 +521,7 @@ class Follower:
         self._config = config
         self._follow = follow_config
         self._out = out
+        self._bell_out = bell_out if bell_out is not None else sys.stderr
         self._lossless = lossless_mode
         self._block_render = block_render
         self._selector = None if lossless_mode else FollowSelector(config)
@@ -543,11 +551,8 @@ class Follower:
     def _fire(self, reason: str, text: str) -> None:
         deliver(
             AttentionEvent(reason, self._harness, self._session_path, self._excerpt(text)),
-            self._follow, self._out,
+            self._follow, self._bell_out,
         )
-
-    def _long_block_chars(self) -> int | None:
-        return self._follow.attention_min_chars
 
     def tick(self) -> int:
         """One poll cycle: returns how many blocks were printed."""
@@ -558,7 +563,7 @@ class Follower:
                 if question is not None:
                     self._fire("interview_pending", question)
 
-            min_chars = self._long_block_chars()
+            min_chars = self._follow.attention_min_chars
 
             if self._lossless:
                 for block in arrival.blocks:

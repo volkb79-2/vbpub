@@ -2640,7 +2640,8 @@ def _add_follow_flags(parser) -> None:
                         help="Poll interval while following (default 1.0). A session log grows "
                              "in per-turn bursts, so sub-second polling buys nothing")
     group.add_argument("--bell", action="store_true",
-                        help="Write a terminal bell (\\a) whenever an attention signal fires: an "
+                        help="Ring a terminal bell (\\a on STDERR, so a piped stream stays clean) "
+                             "whenever an attention signal fires: an "
                              "unanswered AskUserQuestion (Claude Code only -- no equivalent is "
                              "known in the Codex/opencode schema), a detected checkpoint, or "
                              "--attention-min-chars below. Independent of --on-attention")
