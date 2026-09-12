@@ -106,25 +106,33 @@ def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
 def _rel_to_source(path: str, source_prefix: str) -> str:
     """Normalize a path to the canonical `<source_prefix>/...` tail.
 
-    The prefix is matched as a directory boundary: after the common prefix is
-    found, the next character must be '/' or end-of-string, so that a prefix
-    ``run-gate-project`` does NOT match ``run-gate-project-other/mod.py`` (the
-    ``-`` would follow instead of ``/`` or EOS).
+    The prefix is matched as a directory boundary on BOTH sides: the
+    character immediately AFTER the match must be '/' or end-of-string
+    (so a prefix ``run-gate-project`` does NOT match
+    ``run-gate-project-other/mod.py``), and the character immediately
+    BEFORE the match must be '/' or start-of-string (S8, round-1 review:
+    the old version checked only the trailing boundary — a prefix
+    ``subject.py`` matched inside ``tests/test_subject.py`` as a bare
+    substring, because an EMPTY tail short-circuited the trailing check
+    without ever looking at what preceded the match; with `--source
+    subject.py`, the test file's own coverage record silently collided
+    with the real source file's, last-wins, and a genuinely uncovered
+    branch reported 100%). Every candidate occurrence is tried, left to
+    right, until one satisfies both boundaries; the unmatched path is
+    returned unchanged if none does.
     """
     n = os.path.normpath(path).replace(os.sep, "/")
-    i = n.find(source_prefix)
-    if i == -1:
-        return n
-    tail = n[i + len(source_prefix):]
-    if tail and not tail.startswith("/"):
-        # Prefix match is a substring, not a directory boundary — retry
-        # from the next character.
-        j = n.find(source_prefix, i + 1)
-        if j != -1:
-            i, tail = j, n[j + len(source_prefix):]
-            if tail and not tail.startswith("/"):
-                return n
-    return n[i:] if tail == "" or tail.startswith("/") else n
+    start = 0
+    while True:
+        i = n.find(source_prefix, start)
+        if i == -1:
+            return n
+        leading_ok = i == 0 or n[i - 1] == "/"
+        tail = n[i + len(source_prefix):]
+        trailing_ok = tail == "" or tail.startswith("/")
+        if leading_ok and trailing_ok:
+            return n[i:]
+        start = i + 1
 
 
 def _validate_cov_record(path: str, record: dict) -> None:

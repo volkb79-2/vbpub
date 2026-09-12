@@ -57,9 +57,14 @@ canary() {
   # Excludes are speed-only (a stale coverage/state directory carried into
   # the copy changes nothing about which test fails): tools/assay/ is a 2
   # MiB pinned zipapp pytest never imports, nyxloom-trove/ is reports/docs,
-  # the rest is generated state a fresh copy does not need.
+  # the rest is generated state a fresh copy does not need. `.assay/` (S9a,
+  # round-1 review) is NOT speed-only to exclude: a mutation lane can be
+  # live-appending `.assay/progress-*.jsonl` while this script runs (assay-r2
+  # is bare-host, hours long) -- `tar` exits 1 on "file changed as we read
+  # it" and this script runs under `set -euo pipefail`, so copying it risked
+  # a spurious canary failure racing a real, unrelated mutation sweep.
   tar -C "$project_dir" \
-      --exclude=nyxloom-trove --exclude=tools/assay \
+      --exclude=nyxloom-trove --exclude=tools/assay --exclude=.assay \
       --exclude=__pycache__ --exclude=.pytest_cache --exclude=.hypothesis \
       --exclude=.run-gate --exclude=.coverage --exclude=coverage.json \
       -cf - . | tar -C "$work" -xf -
@@ -104,11 +109,33 @@ echo "run-gate-project assay-r1 canary"
 # (10, 10, 100)'s reported "typical cost" from 10.0 into 40.0 --
 # TestHistoryRollingSeries::test_one_slow_outlier_does_not_become_the_typical_cost
 # asserts exactly 10.0 and must fail.
+#
+# S9b (round-1 review): the median-computing block below is BYTE-IDENTICAL
+# in duration_stats and series_stats (run-gate.py), so `find` is widened to
+# include each function's own distinct empty-input `return` line as an
+# anchor -- `text.replace(find, replace, 1)` would otherwise silently
+# target whichever copy appears FIRST in the file (duration_stats,
+# correct today only by position), leaving series_stats' own median
+# un-canaried. Two canaries now, one per function, each unambiguous.
 canary median-not-mean run-gate.py \
-  '    median = values[mid] if len(values) % 2 else \
+  '                "max_seconds": None}
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else \
         round((values[mid - 1] + values[mid]) / 2, 3)' \
-  '    median = round(sum(values) / len(values), 3)' \
+  '                "max_seconds": None}
+    mid = len(values) // 2
+    median = round(sum(values) / len(values), 3)' \
   tests/test_run_gate.py::TestHistoryRollingSeries::test_one_slow_outlier_does_not_become_the_typical_cost
+
+canary median-not-mean-series-stats run-gate.py \
+  '        return {"count": 0, "min": None, "median": None, "max": None}
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else \
+        round((values[mid - 1] + values[mid]) / 2, 3)' \
+  '        return {"count": 0, "min": None, "median": None, "max": None}
+    mid = len(values) // 2
+    median = round(sum(values) / len(values), 3)' \
+  tests/test_run_gate.py::TestHistoryResourceSeries::test_median_resists_a_10x_outlier_and_absent_entries_are_excluded
 
 echo
 if [ "$fail" -gt 0 ]; then

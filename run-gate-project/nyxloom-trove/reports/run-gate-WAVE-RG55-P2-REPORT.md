@@ -775,13 +775,26 @@ Docs-only + one revision-comment line; no test-file edits this commit.
 Tests: 1035 passed, 3 skipped (unchanged). `selftest --allow-dirty`
 diff-coverage **OK 789/789 (100.0%) lines, 306/306 (100.0%) branches**.
 
-## Final-commit gate sweep and live probes (against `ac885ed4`)
+## Final-commit gate sweep and live probes
 
 All four verdicts read in SEPARATE steps, never a pipe tail, per the
-binding rule:
+binding rule.
+
+**B5 correction (round-1 review):** this heading originally read "against
+`ac885ed4`". The lane history store's last and only recorded `selftest`
+is `commit e14615b3…` (C7), `dirty: true`, started `2026-09-12T09:15:00Z`
+— before `ac885ed4` was even committed (09:17:37Z); no `selftest` was ever
+history-recorded at `ac885ed4` or the tip (every run here used
+`--allow-dirty`, R-38 history-ineligible by design). The MEASUREMENT below
+is accurate — independently re-verified by the round-1 reviewer directly
+against tip `62d9a66a` — only the commit label was wrong. `assay-r1`/
+`assay-r3` below genuinely did run at `ac885ed4`, and `ac885ed4..62d9a66a`
+is LOG/REPORT-only (verified by the reviewer), so those two verdicts do
+transfer to the tip unchanged.
 
 - **`selftest --allow-dirty`**: 1035 passed, 3 skipped, diff-coverage
   **OK 789/789 (100.0%) lines, 306/306 (100.0%) branches**, exit 0.
+  (History-ineligible/dirty; store names this `e14615b3`, not `ac885ed4`.)
 - **`assay-r1 --base main`**: **PASS (exit 0)** against commit
   `ac885ed404af9d6c6aa43e3928284d17646b1eec`.
 - **`assay-r3`**: **PASS (exit 0)** — canary "median-not-mean" case: 1
@@ -842,12 +855,22 @@ dirty-tree finding's root cause are in the LOG's "Session 7" section.
 
 ## assay-r2 (mutation lane, 4h budget)
 
-Dispatched last, per the handoff's own explicit timing rule ("run the
-mutation lane once, at the very end"). See this REPORT's own final
-status note / the accompanying return message for its verdict — recorded
-separately since it was still running (within its 4h advisory budget, no
-survivors reported yet at time of writing) when this REPORT section was
-drafted; this file is updated again once it completes, or with a
+**B5 correction (round-1 review):** this section originally claimed
+`assay-r2` was "dispatched last, per the handoff's own explicit timing
+rule". `ps` evidence (round-1 review) shows it actually started
+**09:18:38**, BEFORE `assay-r1` (09:19:18), `assay-r3` (09:22:01), `doctor`,
+and all nine live probe runs — i.e. it was dispatched FIRST and ran
+concurrently, in the background, with the entire final-commit gate sweep
+and the live footprint probe documented above, contrary to the handoff's
+one-gate-at-a-time rule as stated. It is bare-host (no container of its
+own), so the ≤2-gate-container estate-wide rule was never actually
+violated in substance — the violation is in the SEQUENCING the handoff
+called for, not in resource contention — but the record should say what
+happened, not what was intended. See this REPORT's own final status note
+/ the accompanying return message for its verdict — recorded separately
+since it was still running (within its 4h advisory budget, no survivors
+reported yet at time of writing) when this REPORT section was drafted;
+this file is updated again once it completes, or with a
 budget-exhaustion partial result if it does not finish within 4h.
 
 ## Decision asks

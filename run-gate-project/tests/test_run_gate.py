@@ -6720,6 +6720,22 @@ class TestHistoryConfigPolicy:
         assert keep == 4
         assert "central" in source
 
+    def test_a_populated_central_table_is_ignored_with_no_central_path(
+            self, tmp_path):
+        """Sibling of `TestFootprintConfigPolicy`'s own same-named test --
+        `resolve_history_keep` uses the identical `central_path is not
+        None and ...` gate (R-09's pattern, which `resolve_footprint_
+        policy` explicitly copies), and no pre-existing test here ever
+        populates `central` without a `central_path` either -- the same
+        assay-r2 `and`-vs-`or` mutation survivor risk, closed here
+        symmetrically rather than only on the newer function."""
+        _, proj = make_history_repo(tmp_path)
+        cfg, cfg_path, _, _ = run_gate.load_config(proj)
+        keep, source = run_gate.resolve_history_keep(
+            cfg, cfg_path, {"history": {"keep": 999}}, None)
+        assert keep == run_gate.HISTORY_KEEP_DEFAULT
+        assert "default" in source
+
     @pytest.mark.parametrize("value", ["0", "-1", "true", '"5"', "1.5"])
     def test_bad_keep_values_refuse_at_load(self, tmp_path, value):
         _, proj = make_history_repo(
@@ -7072,6 +7088,23 @@ class TestFootprintConfigPolicy:
         assert age == 7
         assert "central" in source
 
+    def test_a_populated_central_table_is_ignored_with_no_central_path(
+            self, tmp_path):
+        """A direct-call proof that `central_path is not None` is a REAL
+        gate, not a redundant guard `load_config` already makes moot: even
+        a `central` dict that DOES contain a `[footprint]` table must be
+        ignored when `central_path` is None (assay-r2 mutation lane: this
+        is the `and`-vs-`or` boundary on that exact condition — a test
+        that never populates `central` without a `central_path` cannot
+        distinguish the two)."""
+        _, proj = make_history_repo(tmp_path)
+        cfg, cfg_path, _, _ = run_gate.load_config(proj)
+        tol, age, source = run_gate.resolve_footprint_policy(
+            cfg, cfg_path, {"footprint": {"tolerance_pct": 999}}, None)
+        assert (tol, age) == (run_gate.FOOTPRINT_TOLERANCE_PCT_DEFAULT,
+                              run_gate.FOOTPRINT_MAX_AGE_DAYS_DEFAULT)
+        assert source == "default"
+
 
 class TestFootprintManifestBuild:
     """`build_footprint_manifest` — unit-level, direct calls, no CLI."""
@@ -7309,8 +7342,11 @@ class TestFootprintVerbCLI:
 
 
 class TestFootprintProfileMetaExpected:
-    """`profile_meta`'s `expected` field (RG-55/C5): the manifest's
-    `memory_peak_bytes.median` for THIS lane, or `None`."""
+    """`profile_meta`'s `expected` field (RG-55/C5, corrected by B2, round-1
+    review): contract Sec 2.2's four-key object
+    (`memory_peak_median_bytes`, `hot_set_p90_bytes`, `cpu_cores_avg`,
+    `duration_median_s`) built from THIS lane's manifest entry, or `None`
+    (the WHOLE field) — never a bare scalar."""
 
     def test_no_manifest_means_expected_is_none(self, tmp_path):
         meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
@@ -7323,7 +7359,32 @@ class TestFootprintProfileMetaExpected:
         (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
         meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
                                      tmp_path)
-        assert meta["expected"] == 512 * MIB
+        assert meta["expected"] == {
+            "memory_peak_median_bytes": 512 * MIB,
+            "hot_set_p90_bytes": None,
+            "cpu_cores_avg": None,
+            "duration_median_s": None,
+        }
+
+    def test_a_full_manifest_entry_fills_all_four_keys(self, tmp_path):
+        # B2 (round-1 review): contract Sec 2.2 requires the FULL four-key
+        # object, not just memory_peak_median_bytes -- this is the
+        # discriminating case a partial-object regression would slip past.
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "memory_peak_bytes": {"median": 512 * MIB, "max": 600 * MIB},
+            "hot_set_bytes": {"p90_median": 190 * MIB, "p90_max": 214 * MIB},
+            "cpu_cores": {"avg_median": 1.3, "max": 2.9},
+            "duration_s": {"median": 316.2, "max": 479.0},
+        }}}
+        (tmp_path / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        meta = run_gate.profile_meta({"kind": "command"}, "suite", tmp_path,
+                                     tmp_path)
+        assert meta["expected"] == {
+            "memory_peak_median_bytes": 512 * MIB,
+            "hot_set_p90_bytes": 190 * MIB,
+            "cpu_cores_avg": 1.3,
+            "duration_median_s": 316.2,
+        }
 
     def test_a_manifest_with_no_entry_for_this_lane_stays_none(self, tmp_path):
         manifest = {"schema": 1, "lanes": {"other": {
@@ -11708,7 +11769,8 @@ class TestRG55FixtureByteIdentity:
 
     def test_golden_json_files_are_byte_identical(self):
         names = ["summary-v1.json", "summary-container-v1.json",
-                "summary-basic-v1.json", "host-v1.json", "start-v1.json",
+                "summary-basic-v1.json", "summary-basic-container-v1.json",
+                "host-v1.json", "start-v1.json",
                 "status-v1.json", "stop-v1.json", "version-v1.json",
                 "error-v1.json", "frames.json"]
         for name in names:
@@ -11901,6 +11963,29 @@ class TestProfileConfigValidation:
             cfg["lanes"]["suite"], cfg, path, central, central_path)
         assert settings["daemon"] == "central-only-d"
         assert settings["source"] == f"[profile] in central {central_path}"
+
+    def test_a_populated_central_dict_is_ignored_with_no_central_path(
+            self, tmp_path):
+        # Sibling of the same construct on `resolve_footprint_policy`/
+        # `resolve_history_keep`: `resolve_profile_settings` also gates its
+        # central fallback on `central_path is not None and "profile" in
+        # central`, and no prior test here ever populated `central` with a
+        # `[profile]` table while leaving `central_path` at `None` --
+        # closed here for the identical assay-r2 `and`-vs-`or` boundary.
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path,
+            {"environments": {}, "profile": {"daemon": "should-be-ignored"}},
+            None)
+        assert settings["daemon"] == run_gate.PROFILE_DAEMON_DEFAULT
+        assert settings["source"] == "default"
 
     def test_top_level_profile_table_rejects_non_table_scalar(self, tmp_path):
         path = self._cfg(tmp_path, """\
@@ -12120,6 +12205,81 @@ class TestProfileConfigValidation:
         with pytest.raises(run_gate.GateError, match="tolerance_pct"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
+    def test_footprint_table_accepts_a_zero_tolerance_pct(self, tmp_path):
+        # The documented floor is `>= 0` (not `> 0`) -- `0` itself is the
+        # boundary VALUE, distinct from the boundary CHECK `-1` already
+        # exercises above. assay-r2 mutation lane: a `<`-vs-`<=` swap on
+        # this exact comparison survived until this test existed, since
+        # no prior test ever placed a value AT the boundary itself.
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            tolerance_pct = 0
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        assert cfg["footprint"] == {"tolerance_pct": 0}
+
+    def test_footprint_table_rejects_a_boolean_tolerance_pct(self, tmp_path):
+        # TOML `true`/`false` parse as Python `bool`, which IS an `int`
+        # subclass -- `isinstance(v, bool)` must be checked as its own,
+        # non-short-circuited clause, not folded into the `not isinstance(
+        # v, int)` arm (assay-r2 mutation lane: an `and`-vs-`or` swap on
+        # exactly this boundary survived until this test existed, since
+        # every prior negative/bad-value test here used a real int or a
+        # non-bool scalar, never a bool).
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            tolerance_pct = true
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="tolerance_pct"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_footprint_table_rejects_a_boolean_max_age_days(self, tmp_path):
+        # Sibling of `test_footprint_table_rejects_a_boolean_tolerance_pct`
+        # above, same construct one key over (`max_age_days`'s own
+        # `isinstance(v, bool) or not isinstance(v, int) or v < 1`) --
+        # closed here proactively for the identical assay-r2 `and`-vs-`or`
+        # boundary rather than waiting for the mutation lane to spend
+        # another ~130s finding it independently.
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            max_age_days = true
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="max_age_days"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_footprint_table_accepts_a_max_age_days_of_one(self, tmp_path):
+        # Sibling of `test_footprint_table_accepts_a_zero_tolerance_pct`
+        # above: `max_age_days`'s own documented floor is `>= 1`, so `1`
+        # itself is the boundary VALUE this test places a value AT,
+        # pre-empting the same `<`-vs-`<=` mutation-survivor class found
+        # on `tolerance_pct`'s sibling comparison.
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            max_age_days = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        assert cfg["footprint"] == {"max_age_days": 1}
+
     def test_footprint_table_rejects_bad_max_age_days(self, tmp_path):
         # No tolerance_pct here (deliberately): exercises the "absent"
         # branch of that key's own presence check, sibling to the "present"
@@ -12215,25 +12375,43 @@ class TestResourceAccumulatorGoldenFixtures:
         expected = json.loads((RG55_FIXTURES / "summary-basic-v1.json").read_text())
         assert self._feed("container-shared") == expected
 
-    def test_container_scope_matches_hand_derived_numbers(self):
-        # No separate "summary-basic-container-v1.json" golden exists (only
-        # a daemon-method one, summary-container-v1.json); this cross-checks
-        # against fixtures/rg55/README.md's own "Headline numbers" for the
-        # `container` scope instead, plus proves everything OTHER than the
-        # memory/scope fields is scope-independent (identical to the
-        # container-shared basic fixture, exactly as the README says).
+    def test_container_scope_matches_summary_basic_container_v1(self):
+        # RW-21/RW-11 (round-1 review D2/D4, T2 adoption): scope `container`
+        # now uses the ABSOLUTE-counter rule (contract Sec 7's "Scope
+        # `container`" subsection), so it is no longer just the
+        # container-shared basic fixture with three memory fields patched
+        # in -- pressure/faults/events differ too. summary-basic-container-v1
+        # (RW-21 landed on main, vendored here) is the golden this scope
+        # now reproduces byte-for-byte.
+        expected = json.loads((RG55_FIXTURES / "summary-basic-container-v1.json").read_text())
+        assert self._feed("container") == expected
+
+    def test_container_scope_peak_over_baseline_is_always_null(self):
+        # RW-21 / contract Sec 3's nullability note: not a read failure --
+        # structurally not meaningful when the profiled cgroup IS the lane.
         result = self._feed("container")
-        assert result["scope"] == "container"
-        assert result["memory"]["peak_bytes"] == 796917760       # 760 MiB
-        assert result["memory"]["source"] == "memory.peak"
-        assert result["memory"]["peak_over_baseline_bytes"] == 272629760  # 260 MiB
-        basic = json.loads((RG55_FIXTURES / "summary-basic-v1.json").read_text())
-        patched = dict(result)
-        patched["scope"] = "container-shared"
-        patched["memory"] = dict(patched["memory"])
-        for key in ("peak_bytes", "source", "peak_over_baseline_bytes"):
-            patched["memory"][key] = basic["memory"][key]
-        assert patched == basic
+        assert result["memory"]["peak_over_baseline_bytes"] is None
+        # baseline_bytes itself is still recorded (informational, RW-21).
+        assert result["memory"]["baseline_bytes"] == 524288000
+
+    def test_container_scope_absolute_counters_differ_from_delta(self):
+        # RW-21's own motivating numbers (fixtures/rg55/README.md's
+        # derivation table): frame 0's pressure/fault/event totals are
+        # deliberately non-zero, so the absolute (last-read) values below
+        # are NOT the same as the container-shared scope's deltas -- this
+        # is the numeric proof the amendment actually changes behaviour,
+        # not just relabels it.
+        container = self._feed("container")
+        shared = self._feed("container-shared")
+        assert container["pressure"]["memory_full_stall_seconds"] == 5.3
+        assert shared["pressure"]["memory_full_stall_seconds"] == 4.8
+        assert container["faults"]["pgmajfault"] == 1032
+        assert shared["faults"]["pgmajfault"] == 32
+        assert container["events"]["memory_high_breach"] == 11
+        assert shared["events"]["memory_high_breach"] == 1
+        # limit_drift and cores_max are RW-21-unaffected -- identical either way.
+        assert container["events"]["limit_drift"] == shared["events"]["limit_drift"] == 1
+        assert container["cpu"]["cores_max"] == shared["cpu"]["cores_max"] == 2.0
 
     def test_p90_equals_peak_at_n5_is_not_a_fixture_bug(self):
         # README's own documented gotcha: ceil(0.9*5) == 5 == N, so p90
@@ -12295,6 +12473,98 @@ class TestResourceAccumulatorGoldenFixtures:
         result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
                             "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
         assert result["cpu"]["cores_max"] is None  # no eligible pair
+
+    def test_peak_over_baseline_bytes_is_floored_at_zero_container_shared(self):
+        # B3 (round-1 review): a mutant removing `max(0, ...)` survived the
+        # WHOLE suite -- no test called this directly with a SHRINKING
+        # baseline. A container-shared lane whose baseline shrinks (e.g. a
+        # sibling process in the shared container frees memory between
+        # `docker exec` and the first sample) must never write a negative
+        # byte count to history/the tracked manifest (contract Sec 7:
+        # "floored at 0").
+        acc = run_gate.ResourceAccumulator("container-shared")
+        s0 = _rg55_container_sample(0)
+        s0["memory_current"] = 900 * 1048576          # baseline: 900 MiB
+        s1 = _rg55_container_sample(1)
+        s1["memory_current"] = 700 * 1048576           # sampled peak: 700 MiB
+        acc.add_sample(s0, host=_rg55_host_sample(0), at=0.0)
+        acc.add_sample(s1, host=_rg55_host_sample(1), at=1.0)
+        result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                            "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
+        assert result["memory"]["baseline_bytes"] == 900 * 1048576
+        assert result["memory"]["peak_bytes"] == 900 * 1048576  # max of samples
+        # baseline == peak here (the max IS the baseline sample), so this
+        # alone would not distinguish "floored" from "never negative in the
+        # first place" -- the real proof is peak < baseline for a LATER-only
+        # read; use the accumulator's own formula on a case where the
+        # sampled max is strictly below the baseline sample.
+        assert result["memory"]["peak_over_baseline_bytes"] == 0
+
+
+class TestNearestRankValue:
+    """B3 (round-1 review): a mutant substituting 0 for None before sorting
+    survived the WHOLE suite -- contract Sec 1.7 ("absent is never zero")
+    and `_nearest_rank_value`'s own docstring both promise a None is
+    EXCLUDED from N and the ranking, never counted as a zero-byte sample."""
+
+    def test_none_values_are_excluded_not_zeroed(self):
+        # 0-substitution would sort to [0, 0, 100], median (p50, N=3,
+        # rank=2) = 0 -- exclusion sorts to [100] alone, N=1, median = 100.
+        values = [100, None, None]
+        assert run_gate._nearest_rank_value(values, 50) == 100
+
+    def test_all_none_returns_none(self):
+        assert run_gate._nearest_rank_value([None, None], 50) is None
+
+    def test_mixed_none_matches_readable_only_ranking(self):
+        # Readable values only: [10, 30, 20] -> sorted [10, 20, 30], N=3.
+        # p90 rank = ceil(2.7) = 3 -> 30. 0-substitution would instead sort
+        # [0, 0, 10, 20, 30] (N=5), p90 rank = ceil(4.5) = 5 -> still 30 by
+        # coincidence at p90, so this asserts p50 too, where the two
+        # implementations diverge: readable-only median (N=3, rank=2) = 20;
+        # 0-substituted median (N=5, rank=3) = 10.
+        values = [10, None, 30, 20, None]
+        assert run_gate._nearest_rank_value(values, 90) == 30
+        assert run_gate._nearest_rank_value(values, 50) == 20
+
+
+class TestMaxOrNone:
+    """`_max_or_none`'s own sibling of `TestNearestRankValue`'s B3 fix: a
+    mutant swapping the `is not None` filter's `None` literal for `[]`
+    (assay-r2 mutation lane, session 7) survived because no test here ever
+    called it with a MIX of readable and unreadable (`None`) samples --
+    every prior indirect exercise (via `ResourceAccumulator`) either had
+    zero `None`s or was never asserted at this unit's own boundary."""
+
+    def test_all_readable_returns_the_max(self):
+        assert run_gate._max_or_none([5, 30, 12]) == 30
+
+    def test_none_values_are_excluded_not_treated_as_present(self):
+        # The mutant (`is not []` instead of `is not None`) does not
+        # filter `None` out at all -- `max([5, None, 3])` then raises
+        # `TypeError` (int vs NoneType), so this mixed input alone is
+        # enough to distinguish the two: unmutated code returns 5,
+        # mutated code raises.
+        assert run_gate._max_or_none([5, None, 3]) == 5
+
+    def test_all_none_returns_none(self):
+        assert run_gate._max_or_none([None, None]) is None
+
+    def test_empty_returns_none(self):
+        assert run_gate._max_or_none([]) is None
+
+
+class TestLastSuccessful:
+    """RW-7/RW-23a (S7, D1): "the last read" skips trailing failed reads."""
+
+    def test_returns_last_non_none(self):
+        assert run_gate._last_successful([1, 2, None]) == 2
+
+    def test_all_none_returns_none(self):
+        assert run_gate._last_successful([None, None]) is None
+
+    def test_empty_returns_none(self):
+        assert run_gate._last_successful([]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -12671,6 +12941,33 @@ class TestGenerateProfileToken:
         assert run_gate.generate_profile_token() != run_gate.generate_profile_token()
 
 
+class TestRedactForwardedValues:
+    """S2 (round-1 review): the profile token is a per-invocation nonce run-
+    gate itself generates and forwards, never a user-declared `forward_env`
+    key -- it must be masked in the printed `docker argv:` line regardless
+    of what the caller's own `forward_env` allowlist contains, so every
+    consumer diffing gate output sees a deterministic line."""
+
+    def test_profile_token_is_always_redacted(self):
+        argv = ["docker", "run", "-d", "-e",
+               f"{run_gate.PROFILE_TOKEN_ENV}=ff32eb7b44fbe6181a062ace3dd5cb45",
+               "image"]
+        out = run_gate.redact_forwarded_values(argv, [])  # empty forward_env
+        assert f"{run_gate.PROFILE_TOKEN_ENV}=<redacted>" in out
+        assert "ff32eb7b44fbe6181a062ace3dd5cb45" not in " ".join(out)
+
+    def test_forward_env_keys_still_redacted_alongside_it(self):
+        argv = ["docker", "run", "-d",
+               "-e", f"{run_gate.PROFILE_TOKEN_ENV}=secrettoken",
+               "-e", "MY_SECRET=hunter2",
+               "-e", "PUBLIC_NAME=visible",
+               "image"]
+        out = run_gate.redact_forwarded_values(argv, ["MY_SECRET"])
+        assert f"{run_gate.PROFILE_TOKEN_ENV}=<redacted>" in out
+        assert "MY_SECRET=<redacted>" in out
+        assert "PUBLIC_NAME=visible" in out
+
+
 class TestBasicSampler:
     """BasicSampler's own docker-exec plumbing (the `_read_container`
     shell invocation + host PSI reads), separately from
@@ -12782,6 +13079,29 @@ class TestBasicSampler:
         result = sampler.finish()
         assert result["memory"]["peak_bytes"] is None
         assert result["pids"]["peak"] is None
+
+    def test_a_generic_exception_from_subprocess_run_reads_as_none(
+            self, monkeypatch):
+        # B1b (round-1 review): broadened from (TimeoutExpired, OSError) to
+        # Exception -- this is the ONLY docker-exec call the basic-path
+        # sampler makes, so it must never raise past a caller that assumes
+        # "a tick can at worst produce an all-null reading".
+        def _boom(*a, **k):
+            raise ValueError("planted: subprocess.run exploded")
+        monkeypatch.setattr(run_gate.subprocess, "run", _boom)
+        sampler = run_gate.BasicSampler("docker", "c", "container-shared",
+                                        container_id="x", cgroup="/x")
+        dump = sampler._read_container()
+        # Scalar fields (_profile_parse_int/_profile_parse_raw_limit on
+        # None) read as None; dict-shaped fields (_profile_parse_kv/
+        # _profile_parse_pressure on None) read as {} -- same contract
+        # every OTHER unreadable-file path in this class already has.
+        for key in ("memory_current", "memory_peak", "memory_swap_current",
+                   "memory_max", "memory_high", "pids_peak"):
+            assert dump[key] is None, key
+        for key in ("memory_stat", "cpu_stat", "memory_pressure",
+                   "cpu_pressure", "io_pressure", "memory_events_local"):
+            assert dump[key] == {}, key
 
 
 class TestBasicSamplerFinalSample:
@@ -12965,6 +13285,73 @@ class TestProfileAmbientOverride:
                 r"\(got 'maybe'\)")):
             run_gate.resolve_profile_settings(
                 cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+
+    def test_env_var_empty_string_counts_as_absent(self, tmp_path, monkeypatch):
+        # RW-23c (round-1 review S3): an exported-but-empty override must
+        # NOT brick every invocation -- it is treated exactly like the
+        # variable being unset (config/default rules apply normally).
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "")
+        cfg, path = self._cfg(tmp_path, enabled=True)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is True
+        assert settings["source"] != f"${run_gate.PROFILE_AMBIENT_ENV_VAR}=off"
+        assert not settings["source"].startswith(
+            f"${run_gate.PROFILE_AMBIENT_ENV_VAR}")
+
+    def test_lane_profile_table_override_attributes_its_own_source(
+            self, tmp_path, monkeypatch):
+        # S12 (round-1 review): a `[lanes.<n>.profile]` TABLE overriding
+        # `enabled`/`damon` used to leave `source` pointing at the base
+        # config/default -- `--dry-run`/`doctor` would misattribute the
+        # override, unlike the bool `profile = false` shorthand, which
+        # already names itself. `RUN_GATE_PROFILE` must be unset here (the
+        # module's `profiling_off_by_default` autouse fixture sets it to
+        # 'off', which short-circuits BEFORE the lane-table branch runs at
+        # all) -- same reset `TestProfileConfigValidation` uses.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        path = tmp_path / "run-gate.toml"
+        path.write_text(textwrap.dedent("""\
+            schema_version = 1
+            [profile]
+            enabled = true
+            damon = true
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            enabled = false
+            damon = false
+        """))
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is False
+        assert settings["damon"] is False
+        assert "lane '[profile]' table" in settings["source"]
+        assert "enabled" in settings["source"] and "damon" in settings["source"]
+
+    def test_empty_lane_profile_table_leaves_source_untouched(
+            self, tmp_path, monkeypatch):
+        # S12's OTHER branch: an empty `[lanes.<n>.profile]` table (legal --
+        # neither key is required) changes NOTHING, so `source` must stay
+        # attributed to the base config/default, not be reattributed to a
+        # table that overrode nothing.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        path = tmp_path / "run-gate.toml"
+        path.write_text(textwrap.dedent("""\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+        """))
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["source"] == "default"
 
 
 class TestProfilingOrchestration:
@@ -13290,6 +13677,110 @@ class TestAwaitContainerProfilingWiring:
         calls = [c[0] for c in _docker_calls(log)]
         assert calls[-1] == "rm"
 
+    def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
+        # B1d (round-1 review): a tick failure must not escape the wait
+        # loop -- the lane still completes and the container is still
+        # removed once the log stream's own hang clears.
+        monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+
+        def _clear_hang():
+            time.sleep(0.3)
+            (state / ".hang").unlink(missing_ok=True)
+        threading.Thread(target=_clear_hang, daemon=True).start()
+
+        class _RaisingSampler:
+            def sample_once(self):
+                raise RuntimeError("planted: tick exploded")
+
+            def sample_final(self):
+                pass
+
+            def finish(self):
+                return {"schema": 1, "method": "basic", "samples": 0}
+
+        profiler = {"mode": "basic", "sampler": _RaisingSampler(), "client": None,
+                   "daemon": None, "session": None, "warning": None,
+                   "session_line": None, "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(docker, name, {"kind": "command"},
+                                        "suite", tmp_path, tmp_path, tmp_path,
+                                        profiler=profiler)
+        assert code == 0
+        assert profiler["warning"] is not None
+        assert "tick failed unexpectedly" in profiler["warning"]
+        calls = [c[0] for c in _docker_calls(log)]
+        assert "rm" in calls
+
+    def test_finally_profiling_exception_does_not_block_cleanup(
+            self, tmp_path, monkeypatch):
+        # B1d: the finally's OWN profiling block (finish_lane_profiling +
+        # the two print_* helpers) must never pre-empt `docker rm -f` /
+        # `clear_inflight_record` -- proven here by making the sampler's
+        # sample_final() (called from finish_lane_profiling) raise.
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+
+        class _RaisingFinalSampler:
+            def sample_once(self):
+                pass
+
+            def sample_final(self):
+                raise RuntimeError("planted: sample_final exploded")
+
+            def finish(self):
+                return {"schema": 1, "method": "basic", "samples": 0}
+
+        run_record: dict = {}
+        profiler = {"mode": "basic", "sampler": _RaisingFinalSampler(),
+                   "client": None, "daemon": None, "session": None,
+                   "warning": None, "session_line": None,
+                   "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(docker, name, {"kind": "command"},
+                                        "suite", tmp_path, tmp_path, tmp_path,
+                                        profiler=profiler, run_record=run_record)
+        assert code == 0
+        assert run_record["profile_error"] is not None
+        assert "cleanup crashed unexpectedly" in run_record["profile_error"]
+        calls = [c[0] for c in _docker_calls(log)]
+        assert calls[-1] == "rm"   # cleanup ran to completion regardless
+
+    def test_finally_profiling_exception_tolerates_no_run_record(
+            self, tmp_path, monkeypatch):
+        # The `if run_record is not None:` guard's False side -- a caller
+        # (or a re-attach path) that never passed one at all must not crash
+        # inside the except branch either.
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+
+        class _RaisingFinalSampler:
+            def sample_once(self):
+                pass
+
+            def sample_final(self):
+                raise RuntimeError("planted: sample_final exploded")
+
+            def finish(self):
+                return {"schema": 1, "method": "basic", "samples": 0}
+
+        profiler = {"mode": "basic", "sampler": _RaisingFinalSampler(),
+                   "client": None, "daemon": None, "session": None,
+                   "warning": None, "session_line": None,
+                   "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(docker, name, {"kind": "command"},
+                                        "suite", tmp_path, tmp_path, tmp_path,
+                                        profiler=profiler, run_record=None)
+        assert code == 0
+        calls = [c[0] for c in _docker_calls(log)]
+        assert calls[-1] == "rm"
+
 
 class TestBareHostProfilingWiring:
     def test_host_pressure_line_and_record_fields(self, tmp_path, monkeypatch, capsys):
@@ -13456,6 +13947,142 @@ class TestEphemeralProfilingWiring:
         assert latest["resources"]["target"]["container_id"] == "fake-container-id"
 
 
+class TestProfilingNeverRaisesEndToEnd:
+    """B1 (round-1 review): the package's central safety promise --
+    `ProfilerClient`/`BasicSampler` NEVER raise, NEVER themselves change a
+    lane's verdict (R-04/R-36h) -- proven here at the FULL LANE level for
+    the two routes the review measured actually escaping `main()`: an
+    exception inside `ProfilerClient._ctl` and inside
+    `BasicSampler._read_container`. Both assert the lane's own exit code is
+    unaffected, the container was removed, and the inflight record was
+    cleared -- exactly the review's own B1(e) prescription."""
+
+    def _config(self):
+        return """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """
+
+    def test_ctl_exception_never_escapes_the_lane(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+
+        def _boom(self, verb, *args):
+            raise RuntimeError("planted: cgprofile ctl exploded")
+        monkeypatch.setattr(run_gate.ProfilerClient, "_ctl", _boom)
+
+        assert run_gate.main(["suite"]) == 0   # the LANE's own exit code
+        latest = lane_slot(proj)["latest"]
+        assert latest["profile_error"] is not None
+        assert "crashed unexpectedly" in latest["profile_error"]
+        # the inflight record was cleared in the same `finally` as `rm -f`.
+        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        rm_calls = [c for c in _docker_calls(log) if c and c[0] == "rm"]
+        assert rm_calls, "the container was never removed"
+
+    def test_read_container_exception_never_escapes_the_lane(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        # No cgprofile plan / exec case at all -- `ctl version` degrades
+        # naturally (unparsable stdout from the shim's unmatched `exec`),
+        # so `start_lane_profiling` falls to the BASIC path, whose first
+        # act is the baseline `sample_once()` this plants the exception in.
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+
+        def _boom(self):
+            raise RuntimeError("planted: _read_container exploded")
+        monkeypatch.setattr(run_gate.BasicSampler, "_read_container", _boom)
+
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["profile_error"] is not None
+        assert "crashed unexpectedly" in latest["profile_error"]
+        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+        rm_calls = [c for c in _docker_calls(log) if c and c[0] == "rm"]
+        assert rm_calls, "the container was never removed"
+
+
+class TestProfilerClientDegradesOnMalformedResponses:
+    """B1c (round-1 review): a well-formed `"ok": true` response missing
+    the ONE key the caller immediately subscripts must degrade to
+    `(None, reason)`, not crash with a bare KeyError -- a P1 bug, or minor-
+    version skew INSIDE contract major 1 (Sec 1.4 explicitly permits it),
+    must never reach run-gate's own verdict path."""
+
+    def test_start_without_session_key_degrades(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           start=('{"ok": true, "contract": 1}', None, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.start(RG55_CONTAINER_ID, "container")
+        assert doc is None
+        assert reason is not None and "session" in reason
+
+    def test_stop_without_summary_key_degrades(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           stop=('{"ok": true, "contract": 1}', None, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.stop("s-20260912T101500Z-9f01")
+        assert doc is None
+        assert reason is not None and "summary" in reason
+
+    def test_version_without_a_required_key_still_succeeds(self, tmp_path, monkeypatch):
+        # `version`/`host`/`status` have NO entry in `_REQUIRED_KEY` -- the
+        # required-key check must not over-fire on verbs the contract does
+        # not name a subscripted key for.
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           version=('{"ok": true, "contract": 1}', None, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert reason is None
+        assert doc == {"ok": True, "contract": 1}
+
+    def test_ctl_survives_a_generic_exception_from_subprocess_run(
+            self, monkeypatch):
+        # B1b (round-1 review): _ctl's docstring promises NEVER raises --
+        # broadened from (TimeoutExpired, OSError) to Exception.
+        def _boom(*a, **k):
+            raise ValueError("planted: subprocess.run exploded")
+        monkeypatch.setattr(run_gate.subprocess, "run", _boom)
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert reason is not None and "failed unexpectedly" in reason
+
+    def test_ctl_survives_invalid_utf8_bytes_without_raising(self, tmp_path, monkeypatch):
+        # B1a: reproduces the review's own probe (a stray non-UTF-8 byte in
+        # the daemon's output) against `_ctl`'s `text=True` decode -- must
+        # degrade to (None, reason), never raise UnicodeDecodeError.
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        plan_dir = tmp_path / "cgprofile-plan"
+        plan_dir.mkdir(exist_ok=True)
+        (plan_dir / "version.json").write_bytes(b'{"ok": true, \xff"contract": 1}')
+        monkeypatch.setenv("RUN_GATE_TEST_CGPROFILE_PLAN", str(plan_dir))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()   # must not raise
+        assert doc is None
+        assert reason is not None
+
+
 PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
 
 
@@ -13464,15 +14091,23 @@ class TestExecLaneProfilingWiring:
     wave's own test spec (§3): the PRE-wiring blocking `subprocess.run(argv)`
     call structurally could not sample mid-run — a whole call blocks until
     the process exits, so zero intermediate ticks are possible no matter how
-    long the command runs (only the pre-loop baseline sample from
-    `start_lane_profiling` could ever exist, i.e. at most 1). This
-    project's own LOG records that the rewrite and this test were developed
-    together rather than by literally reverting run_exec_lane and
-    re-running (the coupling between the Popen loop and the profiler-state
-    plumbing made a true revert-and-run round trip cost more than the
-    reasoning above already proves) — the assertion below (>= 2 samples,
-    which the pre-wiring shape cannot reach) is what a red run would have
-    failed."""
+    long the command runs. B4 (round-1 review): the PRE-wiring shape does
+    NOT reach "at most 1" sample, though — `finish_lane_profiling`'s
+    `sample_final()` (contract Sec 4.2) always supplies a SECOND sample in
+    the `finally`, regardless of whether the loop ever ticked, so a revert
+    of ONLY the Popen loop (`run_exec_lane`'s wait, back to
+    `subprocess.run(argv).returncode`) still produces EXACTLY 2 samples
+    (the pre-loop baseline from `start_lane_profiling` + the post-loop
+    final sample) and a `>= 2` assertion does not distinguish the rewrite
+    from what it replaced — confirmed by direct experiment (round-1 review:
+    reverting only the loop and re-running this class passed `4 passed`
+    unchanged). The assertion below is `>= 3`, which EXACTLY 2 cannot
+    reach, so it is what a red run against the reverted loop actually
+    fails. This project's own LOG records that the rewrite and this test
+    were developed together rather than by literally reverting
+    run_exec_lane and re-running at authoring time; the round-1 reviewer's
+    direct revert-and-run experiment is the red-first proof this class
+    lacked."""
 
     def test_exec_lane_samples_at_least_twice_during_a_slow_command(
             self, tmp_path, monkeypatch):
@@ -13511,7 +14146,10 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(["suite"]) == 0
         execs = [c for c in docker_execs(log) if any("memory.current" in a for a in c)]
-        assert len(execs) >= 2, docker_execs(log)
+        # B4: >= 3, not >= 2 -- exactly 2 (baseline + sample_final) is what
+        # the PRE-wiring blocking shape (no mid-run ticks at all) already
+        # reaches, so >= 2 does not discriminate the rewrite from it.
+        assert len(execs) >= 3, docker_execs(log)
 
     def test_exec_lane_scope_is_container_shared(self, tmp_path, monkeypatch):
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
@@ -13603,6 +14241,103 @@ class TestExecLaneProfilingWiring:
             profile_plan={"enabled": False, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
                          "interval": "1s", "damon": True, "source": "test",
                          "token": None})
+        assert code == 0
+
+    # -- B1d (round-1 review): the SAME never-raises call-site wraps proven
+    # end-to-end for the ephemeral path (TestProfilingNeverRaisesEndToEnd)
+    # also exist in run_exec_lane, at three DIFFERENT points (its own
+    # start_lane_profiling call, its own tick_lane_profiling call inside the
+    # Popen loop, its own finally). Direct calls (like
+    # test_run_exec_lane_tolerates_no_run_record above), monkeypatching the
+    # MODULE-LEVEL functions run_exec_lane calls -- isolates exactly which
+    # wrap is under test without needing a working daemon/sampler shim.
+
+    def _exec_lane_call(self, tmp_path, monkeypatch, argv, run_record):
+        repo = make_repo(tmp_path)
+        fake_docker_executing(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        body = body.replace(
+            'case "$1" in',
+            'case "$1" in\n'
+            f'  inspect) printf \'running|0|2026-09-02T12:00:00Z|'
+            f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
+            '  ps) printf \'the-runner\\n\' ;;')
+        shim.write_text(body)
+        env = {"forward_env": []}
+        lane = {"kind": "command", "argv": argv}
+        return run_gate.run_exec_lane(
+            lane, "suite", repo, repo, repo, env, "test-env",
+            "the-runner", "test-src", "test-remedy", None, "no-slice",
+            dry_run=False, run_record=run_record,
+            profile_plan={"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                         "interval": "1s", "damon": True, "source": "test",
+                         "token": "abc123"})
+
+    def test_start_lane_profiling_exception_never_escapes_exec_lane(
+            self, tmp_path, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("planted: start_lane_profiling exploded")
+        monkeypatch.setattr(run_gate, "start_lane_profiling", _boom)
+        run_record: dict = {}
+        code = self._exec_lane_call(tmp_path, monkeypatch, ["true"], run_record)
+        assert code == 0   # the LANE's own exit code (`true`), unaffected
+        assert run_record["profile_error"] is not None
+        assert "crashed unexpectedly" in run_record["profile_error"]
+
+    def test_tick_exception_never_escapes_exec_lane(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
+        stub_state = {"mode": "basic", "client": None, "daemon": None,
+                      "session": None, "session_line": None, "warning": None,
+                      "sampler": None, "profiler_status": None,
+                      "disabled_reason": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *a, **k: dict(stub_state))
+
+        def _boom(state):
+            raise RuntimeError("planted: tick exploded")
+        monkeypatch.setattr(run_gate, "tick_lane_profiling", _boom)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                          "profile_error": None,
+                                          "profile_ref": None})
+        run_record: dict = {}
+        code = self._exec_lane_call(tmp_path, monkeypatch, ["sleep", "0.3"],
+                                    run_record)
+        assert code == 0   # `sleep 0.3`'s own exit code, unaffected by the
+                            # planted tick exception
+
+    def test_finally_exception_never_escapes_exec_lane(self, tmp_path, monkeypatch):
+        stub_state = {"mode": "basic", "client": None, "daemon": None,
+                      "session": None, "session_line": None, "warning": None,
+                      "sampler": None, "profiler_status": None,
+                      "disabled_reason": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *a, **k: dict(stub_state))
+
+        def _boom(state):
+            raise RuntimeError("planted: finish_lane_profiling exploded")
+        monkeypatch.setattr(run_gate, "finish_lane_profiling", _boom)
+        run_record: dict = {}
+        code = self._exec_lane_call(tmp_path, monkeypatch, ["true"], run_record)
+        assert code == 0
+        assert run_record["profile_error"] is not None
+        assert "cleanup crashed unexpectedly" in run_record["profile_error"]
+
+    def test_finally_exception_tolerates_no_run_record_exec_lane(
+            self, tmp_path, monkeypatch):
+        # The `if run_record is not None:` guard's False side.
+        stub_state = {"mode": "basic", "client": None, "daemon": None,
+                      "session": None, "session_line": None, "warning": None,
+                      "sampler": None, "profiler_status": None,
+                      "disabled_reason": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *a, **k: dict(stub_state))
+
+        def _boom(state):
+            raise RuntimeError("planted: finish_lane_profiling exploded")
+        monkeypatch.setattr(run_gate, "finish_lane_profiling", _boom)
+        code = self._exec_lane_call(tmp_path, monkeypatch, ["true"], None)
         assert code == 0
 
 

@@ -662,6 +662,14 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     silently ignored -- a mistyped override that appears to do nothing is
     the exact hazard a named refusal exists to catch)."""
     ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
+    if ambient == "":
+        # RW-23c (round-1 review S3): an exported-but-empty value counts as
+        # ABSENT everywhere else this file reads an env knob (e.g.
+        # `forward_env`'s own "empty string counts as ABSENT" comment) --
+        # refusing it here instead bricks every invocation behind a CI
+        # wrapper that does `export RUN_GATE_PROFILE=${SOMETHING}` with
+        # SOMETHING unset.
+        ambient = None
     if ambient is not None and ambient not in ("on", "off"):
         fail(f"{PROFILE_AMBIENT_ENV_VAR} must be 'on' or 'off' (got "
              f"{ambient!r})")
@@ -688,12 +696,23 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     lane_prof = lane.get("profile")
     if lane_prof is False:
         settings["enabled"] = False
-        settings["source"] = f"lane 'profile = false'"
+        settings["source"] = "lane 'profile = false'"
     elif isinstance(lane_prof, dict):
+        # S12 (round-1 review): the bool `profile = false` branch above
+        # attributes `source` to itself; this branch used to leave `source`
+        # pointing at the base config/default even when it overrode
+        # `enabled`/`damon`, so `--dry-run`/`doctor` misattributed the
+        # override to the wrong place.
+        changed = []
         if "enabled" in lane_prof:
             settings["enabled"] = lane_prof["enabled"]
+            changed.append("enabled")
         if "damon" in lane_prof:
             settings["damon"] = lane_prof["damon"]
+            changed.append("damon")
+        if changed:
+            settings["source"] = (f"lane '[profile]' table "
+                                  f"({', '.join(changed)})")
     if ambient == "on":
         settings["enabled"] = True
         settings["source"] = f"${PROFILE_AMBIENT_ENV_VAR}=on (base: {settings['source']})"
@@ -981,6 +1000,20 @@ def _nearest_rank_value(values, pct: float) -> int | None:
     return vals[rank - 1]
 
 
+def _last_successful(values) -> object:
+    """RW-7 (bound to P2 by RW-23a, round-1 review S7/D1): "the last read"
+    (contract Sec 7) means the last read that SUCCEEDED, skipping trailing
+    `None`s — not simply the final sample taken unconditionally, which a
+    partial final read (a total-failure-tolerant tick, or RW-21's absolute
+    counters in scope `container`) could otherwise null out even though an
+    earlier sample read it fine. Consumed lazily (any iterable), reversed
+    once."""
+    for v in reversed(list(values)):
+        if v is not None:
+            return v
+    return None
+
+
 class ProfilerClient:
     """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
     `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
@@ -1003,17 +1036,37 @@ class ProfilerClient:
         self.docker = docker
         self.daemon = daemon
 
+    # B1 (round-1 review): `--target`/`--meta` etc are ALL long options, so
+    # a verb never needs a positional required-key map beyond this one --
+    # the two verbs whose response the caller immediately subscripts.
+    _REQUIRED_KEY = {"start": "session", "stop": "summary"}
+
     def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
         argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
                *args, "--json"]
         try:
+            # errors="replace" (B1a, round-1 review): text=True's STRICT
+            # decoding means a single non-UTF-8 byte anywhere in the
+            # daemon's stdout/stderr (contract Sec 1.2 promises stdout is
+            # JSON but stderr is explicitly "free text" -- no encoding
+            # guarantee) raises UnicodeDecodeError, a ValueError NOT caught
+            # by (TimeoutExpired, OSError) below -- exactly the same failure
+            # class `docker logs` already guards against elsewhere in this
+            # file (see the errors="replace" comment near `LogStreamWatch`).
             proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace",
                                   timeout=PROFILE_CTL_TIMEOUTS[verb])
         except subprocess.TimeoutExpired:
             return None, (f"`cgprofile ctl {verb}` timed out after "
                           f"{PROFILE_CTL_TIMEOUTS[verb]}s")
         except OSError as exc:
             return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
+        except Exception as exc:
+            # B1b (round-1 review): this class's own docstring promises
+            # NEVER raises -- broadened from (TimeoutExpired, OSError) so an
+            # unanticipated subprocess failure degrades to "profiling
+            # unavailable" (contract Sec 1.3) instead of escaping main().
+            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
         stderr_tail = (proc.stderr.strip().splitlines() or ["(no stderr)"])[-1]
         try:
             doc = json.loads(proc.stdout)
@@ -1032,6 +1085,16 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
+        # B1c (round-1 review): a well-formed, "ok": true response that is
+        # missing the ONE key the caller immediately subscripts (a P1 bug,
+        # or minor-version skew INSIDE contract major 1, which Sec 1.4
+        # explicitly permits) must degrade here, not crash the caller with
+        # a bare KeyError.
+        required = self._REQUIRED_KEY.get(verb)
+        if required is not None and required not in doc:
+            return None, (f"`cgprofile ctl {verb}` response is missing the "
+                          f"required {required!r} key (contract Sec 1.4 "
+                          f"minor-version skew?)")
         return doc, None
 
     def version(self) -> tuple[dict | None, str | None]:
@@ -1188,17 +1251,28 @@ class ResourceAccumulator:
         interval_seconds = (round((self._ats[-1] - self._ats[0]) / (n - 1), 3)
                             if n > 1 else None)
 
+        absolute = (self.scope == "container")  # RW-21 (round-1 review D2)
+
         mem_current = [s["memory_current"] for s in samples]
         baseline_bytes = mem_current[0]
         if self.scope == "container":
-            peak_bytes = samples[-1]["memory_peak"]
+            # RW-7/RW-23a (S7): last SUCCESSFUL read, not samples[-1] taken
+            # unconditionally.
+            peak_bytes = _last_successful(s["memory_peak"] for s in samples)
             source = "memory.peak"
         else:
             peak_bytes = _max_or_none(mem_current)
             source = "sampled-max"
-        peak_over_baseline_bytes = (
-            max(0, peak_bytes - baseline_bytes)
-            if peak_bytes is not None and baseline_bytes is not None else None)
+        if absolute:
+            # RW-21: not meaningful when the profiled cgroup IS the lane --
+            # always null in scope `container` (contract Sec 3's
+            # nullability note), never computed even when both operands
+            # are readable.
+            peak_over_baseline_bytes = None
+        else:
+            peak_over_baseline_bytes = (
+                max(0, peak_bytes - baseline_bytes)
+                if peak_bytes is not None and baseline_bytes is not None else None)
 
         memory = {
             "peak_bytes": peak_bytes,
@@ -1212,24 +1286,45 @@ class ResourceAccumulator:
             "file_peak_bytes": _max_or_none(s["memory_stat"].get("file") for s in samples),
         }
 
-        usage_delta = _delta_or_none(samples[0]["cpu_stat"].get("usage_usec"),
-                                     samples[-1]["cpu_stat"].get("usage_usec"))
-        cpu_seconds = round(usage_delta / 1e6, 3) if usage_delta is not None else None
+        # RW-21 (contract Sec 7 "Scope `container`: absolute counters"): in
+        # scope `container` the cgroup was created for the lane, so its
+        # cumulative counters already measure the lane alone from their
+        # first instruction -- deltaing from s_0 drops everything before
+        # the first sample (measured live: a 3.3x CPU understatement).
+        # `cpu`/`pressure`/`faults`/`events` below all branch on `absolute`;
+        # `limit_drift`, `cores_max`, `memory.peak_bytes` above, and every
+        # `host.*` field are UNCHANGED in both scopes (they were never a
+        # delta-from-s_0 quantity, or host counters are never lane-scoped).
+        if absolute:
+            usage_last = _last_successful(s["cpu_stat"].get("usage_usec") for s in samples)
+            cpu_seconds = round(usage_last / 1e6, 3) if usage_last is not None else None
+            throttled_last = _last_successful(s["cpu_stat"].get("throttled_usec") for s in samples)
+            throttled_seconds = round(throttled_last / 1e6, 3) if throttled_last is not None else None
+            nr_throttled = _last_successful(s["cpu_stat"].get("nr_throttled") for s in samples)
+        else:
+            usage_delta = _delta_or_none(samples[0]["cpu_stat"].get("usage_usec"),
+                                         samples[-1]["cpu_stat"].get("usage_usec"))
+            cpu_seconds = round(usage_delta / 1e6, 3) if usage_delta is not None else None
+            throttled_delta = _delta_or_none(samples[0]["cpu_stat"].get("throttled_usec"),
+                                             samples[-1]["cpu_stat"].get("throttled_usec"))
+            throttled_seconds = (round(throttled_delta / 1e6, 3)
+                                 if throttled_delta is not None else None)
+            nr_throttled = _delta_or_none(samples[0]["cpu_stat"].get("nr_throttled"),
+                                          samples[-1]["cpu_stat"].get("nr_throttled"))
         cores_avg = (round(cpu_seconds / duration_seconds, 3)
                     if cpu_seconds is not None and duration_seconds else None)
-        throttled_delta = _delta_or_none(samples[0]["cpu_stat"].get("throttled_usec"),
-                                         samples[-1]["cpu_stat"].get("throttled_usec"))
         cpu = {
             "seconds": cpu_seconds,
             "cores_avg": cores_avg,
             "cores_max": self._cores_max(),
-            "throttled_seconds": (round(throttled_delta / 1e6, 3)
-                                  if throttled_delta is not None else None),
-            "nr_throttled": _delta_or_none(samples[0]["cpu_stat"].get("nr_throttled"),
-                                           samples[-1]["cpu_stat"].get("nr_throttled")),
+            "throttled_seconds": throttled_seconds,
+            "nr_throttled": nr_throttled,
         }
 
         def _pressure_seconds(field: str, key: str) -> float | None:
+            if absolute:
+                v = _last_successful(s[field].get(key) for s in samples)
+                return round(v / 1e6, 3) if v is not None else None
             d = _delta_or_none(samples[0][field].get(key), samples[-1][field].get(key))
             return round(d / 1e6, 3) if d is not None else None
 
@@ -1241,24 +1336,28 @@ class ResourceAccumulator:
             "io_full_stall_seconds": _pressure_seconds("io_pressure", "full_total"),
         }
 
+        def _fault_value(key: str):
+            if absolute:
+                return _last_successful(s["memory_stat"].get(key) for s in samples)
+            return _delta_or_none(samples[0]["memory_stat"].get(key),
+                                  samples[-1]["memory_stat"].get(key))
+
         faults = {
-            "pgmajfault": _delta_or_none(samples[0]["memory_stat"].get("pgmajfault"),
-                                         samples[-1]["memory_stat"].get("pgmajfault")),
-            "workingset_refault_anon": _delta_or_none(
-                samples[0]["memory_stat"].get("workingset_refault_anon"),
-                samples[-1]["memory_stat"].get("workingset_refault_anon")),
-            "workingset_refault_file": _delta_or_none(
-                samples[0]["memory_stat"].get("workingset_refault_file"),
-                samples[-1]["memory_stat"].get("workingset_refault_file")),
+            "pgmajfault": _fault_value("pgmajfault"),
+            "workingset_refault_anon": _fault_value("workingset_refault_anon"),
+            "workingset_refault_file": _fault_value("workingset_refault_file"),
         }
 
+        def _event_value(key: str):
+            if absolute:
+                return _last_successful(s["memory_events_local"].get(key) for s in samples)
+            return _delta_or_none(samples[0]["memory_events_local"].get(key),
+                                  samples[-1]["memory_events_local"].get(key))
+
         events = {
-            "oom_kill": _delta_or_none(samples[0]["memory_events_local"].get("oom_kill"),
-                                       samples[-1]["memory_events_local"].get("oom_kill")),
+            "oom_kill": _event_value("oom_kill"),
             "limit_drift": self._limit_drift(),
-            "memory_high_breach": _delta_or_none(
-                samples[0]["memory_events_local"].get("high"),
-                samples[-1]["memory_events_local"].get("high")),
+            "memory_high_breach": _event_value("high"),
         }
 
         host = {
@@ -1286,7 +1385,8 @@ class ResourceAccumulator:
             "cpu": cpu,
             "pressure": pressure,
             "faults": faults,
-            "pids": {"peak": samples[-1].get("pids_peak")},
+            # RW-7/RW-23a: last SUCCESSFUL read, not samples[-1] unconditionally.
+            "pids": {"peak": _last_successful(s.get("pids_peak") for s in samples)},
             "damon": None,
             "host": host,
             "events": events,
@@ -1309,7 +1409,7 @@ class BasicSampler:
     stamped as `started_at`/`ended_at`."""
 
     def __init__(self, docker: str, container: str, scope: str,
-                container_id: str = "", cgroup: str = "",
+                container_id: str = "", cgroup: str | None = None,
                 clock=time.monotonic, wall_clock=None):
         self.docker = docker
         self.container = container
@@ -1327,9 +1427,19 @@ class BasicSampler:
                  'echo "== $f"; cat /sys/fs/cgroup/$f 2>/dev/null; done')
         argv = [self.docker, "exec", self.container, "sh", "-c", script]
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            # errors="replace" (B1a): the lane container's own stdout can
+            # legitimately carry non-UTF-8 bytes (it is arbitrary test/build
+            # output on the same fd `cat` writes to) -- same discipline as
+            # ProfilerClient._ctl and the pre-existing `docker logs` guard.
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace", timeout=30)
             dump = _split_basic_dump(proc.stdout, PROFILE_BASIC_FILES)
         except (subprocess.TimeoutExpired, OSError):
+            dump = {name: None for name in PROFILE_BASIC_FILES}
+        except Exception:
+            # B1b: this is the basic-path sampler's ONLY docker-exec call --
+            # it must never raise past a caller that assumes "a tick can at
+            # worst produce an all-null reading", never an exception.
             dump = {name: None for name in PROFILE_BASIC_FILES}
         return {
             "memory_current": _profile_parse_int(dump["memory.current"]),
@@ -1455,16 +1565,19 @@ class BasicSampler:
 
 def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
                  ) -> dict:
-    """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is this LANE's own
-    `memory_peak_bytes.median` from `run-gate.footprint.json` when a
-    manifest exists next to the effective project's `run-gate.toml` and
-    names this lane — `null` otherwise (no manifest yet, or a lane the
-    manifest has never seen a profiled run for), exactly what `null` already
-    meant before this manifest existed (contract: "null or {...}")."""
+    """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is the FROZEN
+    contract's four-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
+    `cpu_cores_avg`, `duration_median_s`) built from this LANE's entry in
+    `run-gate.footprint.json` when a manifest exists next to the effective
+    project's `run-gate.toml` and names this lane — `null` otherwise (no
+    manifest yet, or a lane the manifest has never seen a profiled run for).
+    B2 (round-1 review): this used to emit a bare int/None (the object's
+    `memory_peak_median_bytes` field alone) — contract Sec 2.2 requires the
+    object or `null`, never a scalar."""
     return {"lane": lane_name, "project": str(project_dir),
            "worktree": str(worktree), "commit": head_commit(worktree),
            "run_gate_revision": __revision__, "kind": lane["kind"],
-           "expected": footprint_manifest_lane_peak_median(
+           "expected": footprint_manifest_lane_expected(
                load_footprint_manifest(project_dir), lane_name)}
 
 
@@ -1518,8 +1631,8 @@ def print_host_pressure_line(profiler_status: str | None = None) -> None:
 
 def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          worktree: Path, docker: str, plan: dict,
-                         container_name: str, container_id: str, cgroup: str,
-                         scope: str) -> dict:
+                         container_name: str, container_id: str,
+                         cgroup: str | None, scope: str) -> dict:
     """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
     the container/runner id is resolved (`docker inspect`) and BEFORE the
     caller's wait loop. Tries the daemon exactly once (`version` then
@@ -1561,14 +1674,19 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             interval=interval, meta=meta)
         if start_doc is not None:
             state["mode"] = "daemon"
-            state["session"] = start_doc["session"]
+            # B1c (round-1 review): `_ctl` already validates `session` is
+            # present for a successful `start` response (defense in depth
+            # rather than a load-bearing check) -- `.get()` regardless, per
+            # the prescription that every remaining daemon-data access
+            # becomes `.get()`.
+            state["session"] = start_doc.get("session")
             baseline = start_doc.get("target", {}).get("baseline_memory_bytes")
             baseline_mib = (round(baseline / (1024 * 1024))
                             if isinstance(baseline, (int, float))
                             and not isinstance(baseline, bool) else "?")
             damon_state = start_doc.get("damon", "unavailable")
             state["session_line"] = (
-                f"run-gate: profile session {start_doc['session']} "
+                f"run-gate: profile session {state['session']} "
                 f"(scope {scope}, baseline {baseline_mib} MiB, "
                 f"damon {damon_state})")
             return state
@@ -1602,7 +1720,10 @@ def finish_lane_profiling(state: dict) -> dict:
             state["warning"] = state["warning"] or reason
             return {"resources": None, "profile_error": reason,
                     "profile_ref": None}
-        return {"resources": stop_doc["summary"], "profile_error": None,
+        # B1c: `.get()` -- see the matching comment on `start_doc["session"]`
+        # above; `_ctl` already validates `summary` is present, this is
+        # defense in depth, not a load-bearing check.
+        return {"resources": stop_doc.get("summary"), "profile_error": None,
                 "profile_ref": {"daemon": state["daemon"],
                                 "session": state["session"],
                                 "session_dir": stop_doc.get("session_dir")}}
@@ -2372,6 +2493,31 @@ def footprint_manifest_lane_peak_median(manifest: dict | None,
         return None
     peak = lane.get("memory_peak_bytes")
     return peak.get("median") if isinstance(peak, dict) else None
+
+
+def footprint_manifest_lane_expected(manifest: dict | None,
+                                     lane_name: str) -> dict | None:
+    """B2 (round-1 review): contract Sec 2.2's `--meta` `expected` field --
+    `null` or the four-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
+    cpu_cores_avg, duration_median_s}`. `profile_meta()` is the ONLY caller;
+    kept separate from `footprint_manifest_lane_peak_median` (which returns a
+    bare scalar for the footprint disclosure line's `| manifest …` tail) so
+    neither caller's contract-mandated shape leaks into the other's."""
+    if manifest is None:
+        return None
+    lane = manifest.get("lanes", {}).get(lane_name)
+    if not isinstance(lane, dict):
+        return None
+    peak = lane.get("memory_peak_bytes")
+    hot = lane.get("hot_set_bytes")
+    cores = lane.get("cpu_cores")
+    duration = lane.get("duration_s")
+    return {
+        "memory_peak_median_bytes": peak.get("median") if isinstance(peak, dict) else None,
+        "hot_set_p90_bytes": hot.get("p90_median") if isinstance(hot, dict) else None,
+        "cpu_cores_avg": cores.get("avg_median") if isinstance(cores, dict) else None,
+        "duration_median_s": duration.get("median") if isinstance(duration, dict) else None,
+    }
 
 
 def _apply_record(store: dict, record: dict, keep: int) -> dict:
@@ -3323,8 +3469,14 @@ def substitute_worktree(argv: list[str], worktree: Path,
 def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
     """RG-19 companion to log_forwarded_env: the printed docker argv shows
     mechanics (R-05) but must NOT echo forwarded credential VALUES — mask
-    every `-e KEY=...` payload for allowlisted keys; names stay visible."""
-    prefixes = tuple(f"{k}=" for k in keys)
+    every `-e KEY=...` payload for allowlisted keys; names stay visible.
+
+    S2 (round-1 review): `PROFILE_TOKEN_ENV` is ALWAYS included, regardless
+    of what the caller passes — it is a per-invocation nonce run-gate
+    itself generates and forwards (never a user-declared `forward_env`
+    key), so both call sites redacting it is this function's job, not
+    something each caller must remember to union in."""
+    prefixes = tuple(f"{k}=" for k in (*keys, PROFILE_TOKEN_ENV))
     out: list[str] = []
     expect_value = False
     for tok in argv:
@@ -5899,7 +6051,13 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 break
             except subprocess.TimeoutExpired:
                 if basic_active:
-                    tick_lane_profiling(profiler)
+                    try:
+                        tick_lane_profiling(profiler)
+                    except Exception as exc:
+                        # B1d (round-1 review): a tick must never break the
+                        # wait loop -- swallow, record once, keep waiting.
+                        profiler["warning"] = profiler.get("warning") or \
+                            f"profiling tick failed unexpectedly: {exc}"
                 now = clock()
                 if now - last_poll_at < PROGRESS_POLL_SECONDS:
                     continue
@@ -5967,14 +6125,30 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
         # staked-claim pattern reduces here to the same guarantee `finally`
         # already gives every other cleanup step in this function).
         if profiler is not None:
-            profile_result = finish_lane_profiling(profiler)
-            print_profile_warning(profiler)
-            print_footprint_line(lane_name, project_dir,
-                                 profile_result["resources"])
-            if run_record is not None:
-                run_record["resources"] = profile_result["resources"]
-                run_record["profile_error"] = profile_result["profile_error"]
-                run_record["profile_ref"] = profile_result["profile_ref"]
+            try:
+                profile_result = finish_lane_profiling(profiler)
+                print_profile_warning(profiler)
+                print_footprint_line(lane_name, project_dir,
+                                     profile_result["resources"])
+                if run_record is not None:
+                    run_record["resources"] = profile_result["resources"]
+                    run_record["profile_error"] = profile_result["profile_error"]
+                    run_record["profile_ref"] = profile_result["profile_ref"]
+            except Exception as exc:
+                # B1d (round-1 review): profiling must NEVER pre-empt
+                # cleanup -- `docker rm -f` / `clear_inflight_record` below
+                # are structurally unreachable-by-exception now, whatever
+                # went wrong above is swallowed here, once, and the lane's
+                # own exit code (read further down, from `code`/`stalled`,
+                # never touched by this block) is unaffected.
+                print(f"run-gate: WARNING profiling: cleanup crashed "
+                      f"unexpectedly: {exc} — no profile recorded",
+                      file=sys.stderr, flush=True)
+                if run_record is not None:
+                    run_record.setdefault("resources", None)
+                    run_record["profile_error"] = \
+                        f"profiling cleanup crashed unexpectedly: {exc}"
+                    run_record.setdefault("profile_ref", None)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
         proc.terminate()   # no-op once it has exited; ends a stalled stream
         proc.wait()
@@ -6576,10 +6750,31 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         inspected = container_state(docker, name)
         container_id = inspected["id"] if inspected else \
             inflight_payload["container_id"]
-        cgroup = f"/{slice_name}/docker-{container_id}.scope" if slice_name else ""
-        profiler_state = start_lane_profiling(
-            lane, lane_name, project_dir, worktree, docker, profile_plan,
-            name, container_id, cgroup, "container")
+        # RW-23e (round-1 review, S4): this process cannot actually read its
+        # own private cgroup namespace (see `cgroup_namespace_is_private`'s
+        # own docstring) -- the systemd-cgroup-driver slice path is one
+        # level deeper than `f"/{slice_name}/docker-{id}.scope"` guesses
+        # (measured wrong on both live probes: real path carried a
+        # `dev.slice/` parent this guess omits). A confidently-wrong value
+        # is worse than the `null` contract Sec 1.7 prescribes for a fact
+        # this process cannot read; the daemon path gets the REAL cgroup
+        # from `ctl start`'s own response, which never uses this variable.
+        cgroup = None
+        try:
+            profiler_state = start_lane_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                name, container_id, cgroup, "container")
+        except Exception as exc:
+            # B1d (round-1 review): the whole point of `start_lane_profiling`
+            # is to never raise -- this call-site wrap is defense in depth
+            # against anything unanticipated (a corrupt footprint manifest
+            # `profile_meta` reads, e.g.) reaching the verdict path at all.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "disabled", "client": None,
+                              "daemon": None, "session": None,
+                              "session_line": None, "warning": msg,
+                              "sampler": None, "profiler_status": None,
+                              "disabled_reason": msg}
         print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
@@ -6765,10 +6960,21 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # runner's — this exec never creates a container of its own.
         inspected = container_state(docker, name)
         container_id = inspected["id"] if inspected else ""
-        cgroup = f"/{slice_name}/docker-{container_id}.scope" if slice_name else ""
-        profiler_state = start_lane_profiling(
-            lane, lane_name, project_dir, worktree, docker, profile_plan,
-            name, container_id, cgroup, "container-shared")
+        # RW-23e (round-1 review, S4) -- see the matching comment in
+        # run_container_lane: never fabricate a guessed cgroup path.
+        cgroup = None
+        try:
+            profiler_state = start_lane_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                name, container_id, cgroup, "container-shared")
+        except Exception as exc:
+            # B1d: call-site defense in depth, matching run_container_lane.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "disabled", "client": None,
+                              "daemon": None, "session": None,
+                              "session_line": None, "warning": msg,
+                              "sampler": None, "profiler_status": None,
+                              "disabled_reason": msg}
         print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
@@ -6789,18 +6995,48 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 code = proc.wait(timeout=tick)
                 break
             except subprocess.TimeoutExpired:
-                tick_lane_profiling(profiler_state)
+                try:
+                    tick_lane_profiling(profiler_state)
+                except Exception as exc:
+                    # B1d (round-1 review): a tick must never break an
+                    # in-flight exec -- swallow, record once, keep waiting.
+                    profiler_state["warning"] = profiler_state.get("warning") or \
+                        f"profiling tick failed unexpectedly: {exc}"
     finally:
         # Contract Sec 4 obligation 2: finished BEFORE this function returns
         # — there is no container of run-gate's own to remove on an exec
         # lane, so this IS the equivalent "same finally" moment.
-        profile_result = finish_lane_profiling(profiler_state)
-        print_profile_warning(profiler_state)
-        print_footprint_line(lane_name, project_dir, profile_result["resources"])
-        if run_record is not None:
-            run_record["resources"] = profile_result["resources"]
-            run_record["profile_error"] = profile_result["profile_error"]
-            run_record["profile_ref"] = profile_result["profile_ref"]
+        try:
+            profile_result = finish_lane_profiling(profiler_state)
+            print_profile_warning(profiler_state)
+            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            if run_record is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+        except Exception as exc:
+            # B1d: profiling must NEVER pre-empt the lane's own exit code --
+            # `code` was already captured above (or this exec's process is
+            # already gone), so there is nothing left for this block to
+            # protect except itself; see the matching comment in
+            # await_container's finally.
+            print(f"run-gate: WARNING profiling: cleanup crashed "
+                  f"unexpectedly: {exc} — no profile recorded",
+                  file=sys.stderr, flush=True)
+            if run_record is not None:
+                run_record.setdefault("resources", None)
+                run_record["profile_error"] = \
+                    f"profiling cleanup crashed unexpectedly: {exc}"
+                run_record.setdefault("profile_ref", None)
+        # S10 (round-1 review): Ctrl-C on an exec lane left the `docker exec`
+        # CLIENT process (this `proc`) running after the base's plain
+        # `subprocess.run(argv)` would have killed and reaped it on
+        # interrupt — the inner container process is unaffected either way
+        # (this only cleans up run-gate's own client-side handle). A no-op
+        # when `proc` already exited normally (`Popen.kill()`/`.wait()` on an
+        # already-reaped process are no-ops in stdlib).
+        proc.kill()
+        proc.wait()
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 

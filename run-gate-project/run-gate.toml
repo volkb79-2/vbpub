@@ -93,19 +93,27 @@ sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 
 # Mutation (R2). Bare-host and serial (HOST LOAD §6: 8 cores shared with a
 # production game server, jobs = 1 in assay.toml's own [lanes.r2.judge.
-# mutation] — no headroom for parallel mutant workers). `stall_timeout`
-# (RG-36/R-40c): the SAME grammar as `budget`, but it bounds SILENCE in
-# `.assay/progress-r2.jsonl` (`--progress`/`--resume` are unconditional on
-# every assay lane, R-38/RG-33) — a stuck-but-still-running mutation sweep
-# is stopped after 20 minutes with no progress line, not after the whole
-# 4h budget elapses.
+# mutation] — no headroom for parallel mutant workers).
+#
+# RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
+# (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
+# which only exist for CONTAINER lanes (`await_container`'s log-stream poll,
+# gated on `kind == "command" and lane.get("stall_timeout")`, and the
+# progress-file watch built for container lanes) — `run_bare_host_lane`
+# (this lane's own runner, `environment = "bare-host"`) is a plain
+# `subprocess.run` with no watch of any kind, so a `stall_timeout` here was
+# SILENTLY INERT: a stuck-but-still-running mutation sweep was never
+# stopped early, contrary to what the config used to claim. This lane's
+# only bound is the `budget` below (advisory, disclosed, never enforced by
+# a timer either — see `budget`'s own doc). After RG-43's host/bare-host
+# role swap, `stall_timeout` is live only on a lane with
+# `environment = "host"` (a real container), never on `bare-host`.
 [lanes.assay-r2]
 kind = "assay"
 assay_lane = "r2"                   # -> assay.toml [lanes.r2]
 environment = "bare-host"
 assay_command = ["python3", "tools/assay/assay-6.1.1.pyz"]
 clean_tree = true
-stall_timeout = "20m"
 budget = "4h"
 
 [lanes.assay-r2.pins.assay]

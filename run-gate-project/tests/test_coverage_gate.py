@@ -98,6 +98,41 @@ def test_rel_to_source_directory_boundary():
     assert got == "run-gate-project-other/mod.py"  # unmatched, returned as-is
 
 
+def test_rel_to_source_rejects_a_leading_substring_match():
+    """S8 (round-1 review): the OLD version checked only the boundary
+    AFTER a match — an empty tail (the prefix landing at the very end of
+    the path) short-circuited that check without ever looking at what
+    PRECEDED the match, so 'subject.py' matched inside 'test_subject.py'
+    as a bare substring (no directory separator before it). Reproduced
+    end to end by the review: with --source subject.py, coverage.py's
+    OWN record for tests/test_subject.py collided with subject.py's under
+    the old normalization, last-wins, and a genuinely uncovered branch
+    reported 100%."""
+    got = coverage_gate._rel_to_source("tests/test_subject.py", "subject.py")
+    assert got == "tests/test_subject.py"  # unmatched, returned as-is
+    # A REAL directory-boundary match for the same prefix still works.
+    assert coverage_gate._rel_to_source("src/subject.py", "subject.py") == "subject.py"
+    assert coverage_gate._rel_to_source("subject.py", "subject.py") == "subject.py"
+
+
+def test_evaluate_does_not_collide_source_and_test_file_coverage():
+    """End-to-end reproduction of S8's false-green: a changed line in the
+    real source file must be judged against the REAL source file's own
+    coverage record, never the test file's, even though 'subject.py' is a
+    literal substring of 'test_subject.py'."""
+    added = {"subject.py": {8}}
+    coverage_files = {
+        # the test file's own coverage record: line 8 not relevant there,
+        # but under the OLD bug it was the record actually consulted.
+        "tests/test_subject.py": {"executed_lines": [1, 2, 3], "missing_lines": []},
+        # the REAL source record: line 8 is genuinely uncovered.
+        "subject.py": {"executed_lines": [], "missing_lines": [8]},
+    }
+    v = coverage_gate.evaluate(added, coverage_files, source_prefix="subject.py")
+    assert not v.passed
+    assert v.uncovered == {"subject.py": {8}}
+
+
 def test_malformed_coverage_record_raises():
     added = {"run-gate-project/run-gate.py": {5}}
     coverage_files = {

@@ -1063,18 +1063,29 @@ lines, 208/208 branches). Delivered C6, C5, C7, C8 in that order (C6
 first — no dependency on the footprint manifest; C5 next since C7's
 "profiler" doctor check and C8's docs both reference it; C7 folds in the
 R-29 WHY while the private-namespace helper is fresh; C8 last, as always,
-since it documents everything shipped above it), then the final-commit
-gate sweep (`selftest`, `assay-r1 --base main`, `assay-r3`, `doctor`, each
-read in a separate step, never a pipe tail), then a real `footprint
---write` probe against a throwaway project (9 real docker runs, 4 landing
-in history), then dispatched `assay-r2` last per the handoff's own timing
-rule. `docker ps` checked before every launch; ≤ 2 gate containers
-estate-wide at any point (this package's own bare-host r1/r2/r3 lanes
-never containerize; the one container this session ever launched at a
-time was either the live probe's `probe` lane or, later, `assay-r2`'s
-own subprocess tree — never both, and a sibling P1 session's own
-`assay-r2` container was independently already running bare — confirmed
-via `docker inspect`, not assumed).
+since it documents everything shipped above it).
+
+**B5 correction (round-1 review, records-vs-store discrepancy):** the
+paragraph below originally claimed `assay-r2` was dispatched LAST, after
+the final-commit gate sweep and the live `footprint --write` probe. The
+round-1 reviewer checked `ps` against the actual process start times and
+found the opposite: `assay-r2` started at **09:18:38**, i.e. BEFORE
+`assay-r1` (09:19:18), `assay-r3` (09:22:01), `doctor`, and all nine live
+probe runs — concurrently with the entire final sweep, contrary to the
+handoff's one-gate-at-a-time rule. The substance of every gate result
+below is unaffected (the reviewer independently re-verified selftest
+green at the tip), so this is a RECORDS correction, not a re-run: `assay-r2`
+was in fact dispatched first, running bare-host and unattended in the
+background while the final-commit gate sweep (`selftest`, `assay-r1 --base
+main`, `assay-r3`, `doctor`) and the live `footprint --write` probe ran
+afterward, overlapping it. `docker ps` was still checked before every
+container launch and ≤ 2 gate containers were estate-wide at any point
+(this package's own bare-host r1/r2/r3 lanes never containerize; the one
+container this session ever launched at a time was the live probe's
+`probe` lane; a sibling P1 session's own `assay-r2` container was
+independently already running bare — confirmed via `docker inspect`, not
+assumed) — the overlap was between a bare-host mutation subprocess and
+this session's own container lanes, never two containers at once.
 
 ### Commit 1 — C6 (`f853fb52`)
 
@@ -1264,12 +1275,28 @@ comment/revision change — no test-file edits this commit).
 `selftest --allow-dirty`: diff-coverage **OK 789/789 (100.0%) lines,
 306/306 (100.0%) branches**, exit 0, read in a separate step.
 
-### Final-commit gate sweep (against `ac885ed4`, each verdict read in a separate step, never a pipe tail)
+### Final-commit gate sweep (each verdict read in a separate step, never a pipe tail)
+
+**B5 correction (round-1 review):** this heading originally said the
+`selftest` run below was "against `ac885ed4`". The lane history store
+(`run-gate-project/.run-gate/history.json`) says the last and only
+recorded `selftest` is `commit e14615b3…` (C7), `dirty: true`, started
+`2026-09-12T09:15:00Z` — BEFORE `ac885ed4` was even committed
+(09:17:37Z). No `selftest` ever actually ran history-recorded at
+`ac885ed4` or later — every `selftest` in this package's session ran
+`--allow-dirty` (history-ineligible by design, R-38), so only the
+`latest` slot's commit is ever stamped, and it stopped advancing once C8
+started editing files `selftest` itself measures coverage over. The
+number below (1035 passed, 789/789 lines, 306/306 branches) is real and
+was independently re-verified by the round-1 reviewer directly against
+the tip (`62d9a66a`) with the implementer's 2 then-uncommitted files
+present — it is accurate as a MEASUREMENT, just mis-labeled by commit.
 
 - `selftest --allow-dirty`: 1035 passed, 3 skipped, 2 warnings (the
   pre-existing wheel-version skip and a schemathesis deprecation
   warning, neither touched by this package); diff-coverage **OK 789/789
-  (100.0%) lines, 306/306 (100.0%) branches**; exit 0.
+  (100.0%) lines, 306/306 (100.0%) branches**; exit 0. (History-ineligible,
+  dirty; the `latest` slot names `e14615b3` per the store, not `ac885ed4`.)
 - `assay-r1 --base main`: **PASS (exit 0)** against commit
   `ac885ed404af9d6c6aa43e3928284d17646b1eec`.
 - `assay-r3`: **PASS (exit 0)** — canary "median-not-mean" case: `1
@@ -1368,3 +1395,76 @@ package's predecessors recorded.
 
 Throwaway project and its containers fully cleaned up after the probe
 (no lingering `run-gate-rg55-probe-*` container, stopped or running).
+
+### assay-r2: real runtime, RW-20, and live survivor triage
+
+Dispatched (`nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2`,
+budget `4h`, bare-host, background, `.assay/progress-r2.jsonl` tailed for
+per-candidate events rather than polling stdout, which assay leaves
+almost silent between the startup banner and the final verdict). Real
+observed pace: ~130s per candidate (the whole pytest suite re-run per
+mutant, 256 candidates total against `source_roots = ["."]`, RW-8's own
+whole-project scope) — a straight-line projection puts the full plan at
+~9h, well past the 4h budget. `ProgressWatch`'s own docstring (this
+file, `class ProgressWatch`) already names `budget` as "advisory [to
+run-gate] and a hard lane-wide bound in assay" — i.e. assay itself, not
+run-gate, enforces the 4h ceiling and was expected to stop mid-plan with
+a `BUDGET_EXCEEDED`-shaped partial result.
+
+**Controller ruling RW-20** (received mid-run, candidate 14/256):
+`BUDGET_EXCEEDED` is NOT the end of this deliverable — the identical
+`--resume`/`--progress`-bearing invocation is re-run, as many times as it
+takes, reading from `.assay/mutation-state/` each time, until a real
+final verdict (not a partial) is reached. Never kill the lane, never
+shorten the suite, never change `jobs`. The session stays alive and the
+package is NOT returned while any resume is in flight (the lane's process
+is tied to this session, not detachable). Survivors are triaged (killed
+with tests, or justified in the REPORT) as they are found, in real time,
+not deferred to after a final verdict — `selftest`/`assay-r1`/`assay-r3`
+only get their FINAL, single re-run once the verdict itself is final.
+The controller is running an adversarial reviewer against this session's
+current tip (`62d9a66a`) in parallel; it does not touch `.assay/` or this
+lane's own process, and this session's own survivor-triage commits land
+in that reviewer's later fix-verification round, not this one.
+
+Survivors found and closed so far (each: a direct-call unit test proving
+the mutated boundary actually matters, not a production-code change —
+every mutant killed this way was a genuine test-coverage gap, not a
+defect in the shipped behavior):
+
+1. **`resolve_footprint_policy`, line 586, `And->Or`** (candidate 8/256):
+   `elif central_path is not None and "footprint" in central:` — no
+   existing test ever populated `central` with a `[footprint]` table
+   while leaving `central_path` at `None`, so the `and`-vs-`or` swap was
+   unobserved. New test
+   `TestFootprintConfigPolicy::test_a_populated_central_table_is_ignored_with_no_central_path`
+   calls the function directly with exactly that combination and asserts
+   the DEFAULT wins regardless of `central`'s content.
+2. **The same gap, symmetrically, in the PRE-EXISTING
+   `resolve_history_keep`** (not itself flagged yet by name at the time
+   this was written, but the identical `central_path is not None and
+   "keep" in central.get(...)` construct with the same test-suite gap —
+   closed proactively rather than waiting for assay to spend another
+   ~130s finding it independently). New test
+   `TestHistoryConfigPolicy::test_a_populated_central_table_is_ignored_with_no_central_path`.
+3. **`_validate_footprint_policy`, line 632, `Or->And`** (candidate
+   13/256): `isinstance(v, bool) or not isinstance(v, int) or v < 0:` —
+   byte-offset-confirmed against the exact mutated span: the FIRST `or`
+   (between the bool-check and the not-int-check) was swapped. Since
+   `bool` is an `int` subclass in Python, `isinstance(v, bool) and not
+   isinstance(v, int)` is unsatisfiable and collapses the whole condition
+   to just `v < 0` — the mutant would silently ACCEPT `tolerance_pct =
+   true` (TOML boolean) as if it were `1`. No existing test ever passed a
+   boolean for `tolerance_pct`/`max_age_days` (every prior
+   bad-value test used a real negative int or a non-bool scalar). New
+   test `TestConfigValidation::test_footprint_table_rejects_a_boolean_tolerance_pct`
+   proves the boolean is rejected pre-mutation (and would fail against
+   the mutant, since no `GateError` would be raised).
+
+All three new tests run and pass directly (`pytest -k
+"test_a_populated_central_table_is_ignored_with_no_central_path or
+test_footprint_table_rejects_a_boolean_tolerance_pct"`) before the whole-
+suite/selftest re-run this session holds until the FINAL verdict per
+RW-20. This section is updated live as further survivors are found and
+closed, and again with the terminal verdict, the final gate re-run, and
+the closing commit hash once assay-r2 actually finishes.
