@@ -1870,3 +1870,109 @@ the 10 survivors above should be re-confirmed (most likely still present,
 since none of the killing tests were reverted and the review round's
 fixes did not touch any of these specific lines/constructs) rather than
 assumed carried forward blind.
+
+## Close-out (fresh implementer, ACCEPT conditions + RW-24 + final assay-r2)
+
+Fresh session, dispatched after review round 2's ACCEPT (`a7a84e09`) with
+two records-only conditions, working in this same worktree (HEAD
+`f08080e7` at dispatch, session 7's own RW-25 stop point).
+
+**T1 (`026663c1`):** RW-24 (S11) — byte-valued series (`memory_peak_bytes`,
+`memory_peak_over_baseline_bytes`, `hot_set_p90_bytes`) in `history` stats
+and the footprint manifest now report the nearest-rank p50 via
+`_nearest_rank_value`, never the arithmetic midpoint on an even count.
+`series_stats` gains `byte_valued` (default `False`); `_lane_stats` routes
+it structurally from each key's own `_bytes` suffix. Four new tests (direct
+`series_stats` call, the non-byte-default-unaffected control, an
+`_lane_stats`/`lane_history_report` end-to-end proof, and a
+`build_footprint_manifest` proof against the TRACKED manifest file). SPEC
+gains `R-36k`; `R-44a` cross-references it. No committed fixture manifest
+was found carrying an actual `.5` byte value to regenerate. Gates: 1087
+passed/3 skipped; diff-coverage 875/875 lines, 336/336 branches, exit 0.
+
+**T2 (`cc19e1f0`):** ACCEPT condition 1 — the deferred residues filed as
+backlog `RG-58`..`RG-61` (next free id after `RG-57`): RG-58 (S1/D5,
+bare-host `stall_timeout` warning), RG-59 (S6, wrong-cause live-run
+warning), RG-60 (S13 code half, exec-lane inflight record), RG-61 (S14
+remainder, 8 consolidated doc-drift items). S11 is NOT filed (fixed by
+T1/RW-24).
+
+**T3 (`82094849`):** ACCEPT condition 2 — B3/M5 correction. LOG/REPORT
+corrected in place with a **B3/M5 correction** callout (matching the
+existing **B5 correction** style): M5 is an EQUIVALENT mutant (proven by
+the round-2 reviewer over 340 sample combinations), not a closed oracle
+gap; the original "proved the floor with a shrinking baseline" claim was
+inaccurate. `test_peak_over_baseline_bytes_is_floored_at_zero_container_
+shared` renamed to `test_peak_over_baseline_bytes_is_zero_when_the_
+session_only_shrinks` with a comment saying what it actually pins (kept,
+not deleted — a genuine arithmetic-correctness regression test, just not
+an M5 kill). Gates: 1087 passed/3 skipped; 875/875 lines, 336/336
+branches, exit 0.
+
+**T4 (`69d46544`):** SPEC `R-43f` two-word correction (the controller
+fold-in) — `profile_token` is recorded on `docker run` only, not
+`docker exec`; an exec lane writes no inflight record at all
+(`RG-60`). `R-43a` carried the identical inaccuracy in its own words and
+was corrected the same way (review round 2 recommended fixing both).
+Verified against the same selftest run as T5 below (neither T4 nor T5
+touches Python source or tests, so one combined selftest run after both
+edits stands as the "green after every commit" check for this pair):
+1087 passed/3 skipped; 875/875 lines, 336/336 branches, exit 0.
+
+**T5 (`186461de`):** RW-25 — `[lanes.r2.judge.mutation] jobs = 2` in
+`assay.toml`, comment naming RW-25 and the measured ~130s/candidate. Same
+selftest verification as T4 (see above).
+
+**T6 (dispatched):** the final `assay-r2`, from `run-gate-project/`:
+`nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2`, launched
+`2026-09-12T12:29:56Z` via `nohup ... &` + `disown` (PID of the
+`run-gate.py` wrapper: `2415767`; the `assay-6.1.1.pyz run r2 ...` child
+it spawns holds the actual mutation work). `docker ps`/host check
+immediately before launch: 1 gate container estate-wide (P1's own r2 on
+`rg55-profiler-daemon`, capped `--cpus=3`), host memory PSI full avg10
+0.01-0.03% (fine), CPU PSI some avg10 ~10.9 / full avg10 0.00 (busy, not
+stalled) — within the ≤2-gate-container budget; this lane is bare-host
+(no new container of its own). Resumes from `.assay/mutation-state`
+content (`/workspaces/vbpub/.run-gate/assay-state/.worktrees/rg55-run-
+gate-client/run-gate-project/`, 67 files at dispatch, matching session
+7's own RW-25 stop tally) — new/changed content re-judges only what T1's
+`run-gate.py` edit actually touched (`series_stats`/`_lane_stats`), not
+the whole 256-candidate plan. Expected ~3-4h for the ~189 unjudged
+candidates at `jobs = 2`. Verdict and survivor triage recorded below once
+it completes (or BUDGET_EXCEEDED + one resume, per T6's own instructions).
+
+**T6, first run — BUDGET_EXCEEDED (RW-40 read):** `T1`'s `run-gate.py`
+edit (inserting the `byte_valued` branch into `series_stats`/`_lane_stats`)
+shifted byte offsets for most of the file, invalidating far more of the
+cache than anticipated — `candidate_total` rose from 256 to **283** (the
+new branch is itself real mutable surface), and almost none of the shifted
+candidates' content-hash matched the old cache, so this run mostly
+EXECUTED fresh rather than resuming from cache. `.assay/verdict-r2.json`
+(read in a separate step from `.assay/progress-r2.jsonl`'s tail, per RW-40
+step 1):
+- `outcome: "BUDGET_EXCEEDED"`, `reason_code: "LANE_TIMEOUT"`, `exit_code:
+  4`, `commit: 186461de` (this close-out's own T5 tip).
+- `started: 2026-09-12T12:28:58Z`, `ended: 2026-09-12T16:28:52Z` — exactly
+  the lane's 4h budget (`elapsed_s: 14400.356` in the progress file's own
+  `event: "end"` line).
+- Claim `R2`: `candidate_count: 283`, `total: 283`, **`killed: 157`,
+  `survived: 15`, `crashed: 0`, `equivalent: 0`, `budget_exceeded: 111`**
+  (172 candidates actually judged; 111 never reached).
+- `progress-r2.jsonl`'s last three lines confirm the same tally
+  (`candidate_index` 171/172/173 of 283; the `event: "end"` line's
+  `buckets` object matches the verdict's claim exactly) and the
+  `event: "verdict_written"` line names the same outcome/reason/exit code.
+- `.run-gate/assay-state/.worktrees/rg55-run-gate-client/run-gate-project/`
+  (the real resume-state directory — this bare-host lane never had a
+  `.assay/mutation-state/` of its own; `--state-dir` points there) holds
+  **241** per-candidate JSON files, matching `progress-r2.jsonl`'s 241
+  total `event: "candidate"` lines across every run to date (session 7's
+  original 67 plus this run's own judged candidates).
+- **RW-40 ruling:** RESUME, do not re-run from zero, do not raise the
+  budget unless the resume itself cannot finish within its own 4h. Two
+  concurrent mutation lanes were on the host this run (P1's own r2
+  container-based lane, this package's bare-host lane) — ≤2 estate-wide,
+  within budget, but real contention for the shared 8 cores, which is the
+  most likely cause of the run needing the full 4h to reach only 172/283
+  rather than the ~130s/candidate/2-workers estimate (172 * ~130s / 2 ≈
+  3.1h alone, before contention).
