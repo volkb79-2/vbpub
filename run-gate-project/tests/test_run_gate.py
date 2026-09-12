@@ -94,6 +94,41 @@ def make_project(repo: Path, config: str, name: str = "proj") -> Path:
     return proj
 
 
+# RG-55: `docker exec <daemon> cgprofile ctl <verb> ... --json` is answered
+# from per-test plan files under
+# $RUN_GATE_TEST_CGPROFILE_PLAN/<verb>.{json,exit,sleep} (set_cgprofile_plan
+# writes them); unset (every pre-RG-55 test) is a silent no-op, matching the
+# prior behavior of an unmatched `exec` falling straight through to the
+# shim's own `exit 0`. Shared by fake_docker's `exec)` case; embedded once
+# here so future shims (fake_docker_executing's own `exec)` branch, when a
+# later package wires ProfilerClient calls alongside a real lane exec) can
+# reuse the identical snippet instead of drifting apart.
+CGPROFILE_SHIM_CASE = """\
+            if [ -n "$RUN_GATE_TEST_CGPROFILE_PLAN" ] && [ "$3" = "cgprofile" ] && [ "$4" = "ctl" ]; then
+              verb="$5"
+              plan="$RUN_GATE_TEST_CGPROFILE_PLAN/$verb"
+              if [ -f "$plan.sleep" ]; then sleep "$(cat "$plan.sleep")"; fi
+              if [ -f "$plan.json" ]; then cat "$plan.json"; fi
+              if [ -f "$plan.exit" ]; then exit "$(cat "$plan.exit")"; fi
+            fi"""
+
+
+def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
+    """Configure fake_docker's `cgprofile ctl <verb>` responses. Each kwarg
+    is `<verb>=(stdout_text_or_None, exit_code_or_None, sleep_seconds_or_None)`."""
+    plan_dir = tmp_path / "cgprofile-plan"
+    plan_dir.mkdir(exist_ok=True)
+    for verb, (stdout, exit_code, sleep_s) in verbs.items():
+        if stdout is not None:
+            (plan_dir / f"{verb}.json").write_text(stdout)
+        if exit_code is not None:
+            (plan_dir / f"{verb}.exit").write_text(str(exit_code))
+        if sleep_s is not None:
+            (plan_dir / f"{verb}.sleep").write_text(str(sleep_s))
+    monkeypatch.setenv("RUN_GATE_TEST_CGPROFILE_PLAN", str(plan_dir))
+    return plan_dir
+
+
 def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
     """PATH-shim docker that RECORDS every invocation losslessly (args joined
     with \\037 = \\x1f — plain `echo "$@"` destroys quoting; \\xHH is NOT
@@ -112,6 +147,9 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
           logs) echo "FAKE-LOGS-LINE" ;;
           wait) printf '%s\\n' "{wait_code}" ;;
           rm) : ;;
+          exec)
+            {CGPROFILE_SHIM_CASE}
+            ;;
         esac
         exit 0
     """))
@@ -1209,7 +1247,14 @@ def test_no_stdlib_violations():
                # threading: RG-41's LogStreamWatch pumps a container command
                # lane's stdout on a background thread so the main poll loop
                # can ask, non-blockingly, how long it has been silent.
-               "threading"}
+               "threading",
+               # math: RG-55 ResourceAccumulator's nearest-rank percentile
+               # (contract Sec 7's own ceil(p/100*N) formula, math.ceil).
+               "math",
+               # secrets: RG-55 profile-session tokens (contract Sec 4.1,
+               # secrets.token_hex(16)) -- must be cryptographically
+               # unguessable, unlike run-gate's other identifiers.
+               "secrets"}
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -10587,3 +10632,868 @@ class TestFreshFlagScope:
         out = capsys.readouterr().out
         assert "[--fresh]" in out
         assert "RE-ATTACHES to the container that client left behind" in out
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / C3 — profiling client (SPEC R-43). Wiring into await_container/
+# run_exec_lane/run_container_lane/run_bare_host_lane is a SEPARATE,
+# not-yet-landed deliverable (see run-gate.py's own new-section comment) --
+# every test here exercises ProfilerClient/ResourceAccumulator/BasicSampler/
+# the config layer directly, never through a full lane run.
+# ---------------------------------------------------------------------------
+
+RG55_FIXTURES = RUN_GATE_DIR / "tests" / "fixtures" / "rg55"
+RG55_GOLDEN_SOURCE = RUN_GATE_DIR / "nyxloom-trove" / "fixtures" / "rg55"
+RG55_CONTAINER_ID = "deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233"
+RG55_CGROUP = f"/dev.slice/dev-background.slice/docker-{RG55_CONTAINER_ID}.scope"
+
+
+class TestRG55FixtureByteIdentity:
+    """The interface contract (Sec 6) requires this project's vendored copy
+    of the shared golden fixtures to be byte-identical to the controller-
+    landed source under nyxloom-trove/ -- both the daemon package (P1) and
+    this one compute from the SAME bytes."""
+
+    def test_golden_json_files_are_byte_identical(self):
+        names = ["summary-v1.json", "summary-container-v1.json",
+                "summary-basic-v1.json", "host-v1.json", "start-v1.json",
+                "status-v1.json", "stop-v1.json", "version-v1.json",
+                "error-v1.json", "frames.json"]
+        for name in names:
+            vendored = (RG55_FIXTURES / name).read_bytes()
+            source = (RG55_GOLDEN_SOURCE / name).read_bytes()
+            assert vendored == source, f"{name} drifted from nyxloom-trove"
+
+    def test_frame_tree_is_byte_identical(self):
+        source_files = sorted(p.relative_to(RG55_GOLDEN_SOURCE / "frames")
+                              for p in (RG55_GOLDEN_SOURCE / "frames").rglob("*")
+                              if p.is_file())
+        vendored_files = sorted(p.relative_to(RG55_FIXTURES / "frames")
+                                for p in (RG55_FIXTURES / "frames").rglob("*")
+                                if p.is_file())
+        assert source_files == vendored_files
+        for rel in source_files:
+            assert (RG55_FIXTURES / "frames" / rel).read_bytes() == \
+                (RG55_GOLDEN_SOURCE / "frames" / rel).read_bytes(), rel
+
+
+class TestProfileParsers:
+    """Contract Sec 4.3's ported parsers, string variants (run-gate reads
+    via `docker exec ... cat`, never a path directly) -- attributed to
+    scripts/cgroup-profiler/lib/util.py in run-gate.py's own docstrings."""
+
+    def test_parse_int_reads_a_plain_integer(self):
+        assert run_gate._profile_parse_int("524288000\n") == 524288000
+
+    def test_parse_int_folds_max_and_empty_to_none(self):
+        assert run_gate._profile_parse_int("max") is None
+        assert run_gate._profile_parse_int("") is None
+        assert run_gate._profile_parse_int(None) is None
+
+    def test_parse_int_folds_garbage_to_none(self):
+        assert run_gate._profile_parse_int("not-a-number") is None
+
+    def test_parse_raw_limit_keeps_max_distinct_from_none(self):
+        assert run_gate._profile_parse_raw_limit("max") == "max"
+        assert run_gate._profile_parse_raw_limit("1073741824") == 1073741824
+        assert run_gate._profile_parse_raw_limit("") is None
+        assert run_gate._profile_parse_raw_limit(None) is None
+        assert run_gate._profile_parse_raw_limit("garbage") is None
+
+    def test_parse_kv_reads_a_flat_keyed_file(self):
+        text = "anon 419430400\nfile 83886080\npgmajfault 1000\n"
+        assert run_gate._profile_parse_kv(text) == {
+            "anon": 419430400, "file": 83886080, "pgmajfault": 1000}
+
+    def test_parse_kv_skips_non_integer_values_not_fatally(self):
+        text = "anon 419430400\nweird not-a-number\nfile 83886080\n"
+        assert run_gate._profile_parse_kv(text) == {
+            "anon": 419430400, "file": 83886080}
+
+    def test_parse_kv_skips_lines_with_too_few_fields(self):
+        text = "anon 419430400\njunk-with-no-value\nfile 83886080\n"
+        assert run_gate._profile_parse_kv(text) == {
+            "anon": 419430400, "file": 83886080}
+
+    def test_parse_kv_empty_or_none_is_empty_dict(self):
+        assert run_gate._profile_parse_kv("") == {}
+        assert run_gate._profile_parse_kv(None) == {}
+
+    def test_parse_pressure_reads_some_and_full_lines(self):
+        text = ("some avg10=0.20 avg60=0.15 avg300=0.10 total=1000000\n"
+                "full avg10=0.05 avg60=0.03 avg300=0.02 total=500000\n")
+        assert run_gate._profile_parse_pressure(text) == {
+            "some_avg10": 0.20, "some_avg60": 0.15, "some_avg300": 0.10,
+            "some_total": 1000000.0,
+            "full_avg10": 0.05, "full_avg60": 0.03, "full_avg300": 0.02,
+            "full_total": 500000.0,
+        }
+
+    def test_parse_pressure_skips_blank_lines_and_bad_values(self):
+        text = ("some avg10=0.20 avg60=notanumber total=1000000\n"
+                "\n"
+                "full avg10=0.05 avg60=0.03 avg300=0.02 total=500000\n")
+        result = run_gate._profile_parse_pressure(text)
+        assert "some_avg60" not in result   # bad value skipped, not fatal
+        assert result["some_avg10"] == 0.20
+        assert result["full_total"] == 500000.0
+
+    def test_parse_pressure_empty_or_none_is_empty_dict(self):
+        assert run_gate._profile_parse_pressure("") == {}
+        assert run_gate._profile_parse_pressure(None) == {}
+
+    def test_split_basic_dump_recovers_each_marked_file(self):
+        text = ("== memory.current\n524288000\n"
+                "== memory.stat\nanon 1\nfile 2\n"
+                "== memory.peak\n")
+        out = run_gate._split_basic_dump(
+            text, ["memory.current", "memory.stat", "memory.peak", "pids.peak"])
+        assert out["memory.current"] == "524288000"
+        assert out["memory.stat"] == "anon 1\nfile 2"
+        assert out["memory.peak"] is None  # empty body -> None (Sec 1.7)
+        assert out["pids.peak"] is None    # marker never seen at all
+
+
+class TestProfileConfigValidation:
+    """RG-55/R-43 config layer: `[profile]`/`[footprint]` (whole-table
+    shadowing, R-09), the per-lane `profile` key, `resolve_profile_settings`."""
+
+    def _cfg(self, tmp_path: Path, text: str) -> Path:
+        p = tmp_path / "run-gate.toml"
+        p.write_text(textwrap.dedent(text))
+        return p
+
+    def test_profile_table_defaults(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings == {
+            "enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "interval": "1s", "damon": True, "source": "default"}
+
+    def test_top_level_profile_table_overrides_defaults(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            enabled = false
+            daemon = "my-daemon"
+            interval = "2s"
+            damon = false
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is False
+        assert settings["daemon"] == "my-daemon"
+        assert settings["interval"] == "2s"
+        assert settings["damon"] is False
+        assert settings["source"] == f"[profile] in {path}"
+
+    def test_project_profile_table_shadows_central_whole_table(self, tmp_path):
+        central_path = tmp_path / "central.toml"
+        central = run_gate._validate_config(
+            {"schema_version": 1, "profile": {"enabled": False, "daemon": "central-d"}},
+            central_path, central=True)
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            daemon = "project-d"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, central, central_path)
+        # whole-table shadowing (R-09): the project's [profile] table wins
+        # ENTIRELY -- central's enabled=False must NOT leak through.
+        assert settings["daemon"] == "project-d"
+        assert settings["enabled"] is True
+
+    def test_resolve_profile_settings_falls_back_to_central_when_project_omits_it(
+            self, tmp_path):
+        central_path = tmp_path / "central.toml"
+        central = run_gate._validate_config(
+            {"schema_version": 1, "profile": {"daemon": "central-only-d"}},
+            central_path, central=True)
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, central, central_path)
+        assert settings["daemon"] == "central-only-d"
+        assert settings["source"] == f"[profile] in central {central_path}"
+
+    def test_top_level_profile_table_rejects_non_table_scalar(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            profile = "not-a-table"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="'profile' must be a table"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_top_level_profile_table_rejects_non_bool_enabled(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            enabled = "yes"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="'enabled' must be a boolean"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_top_level_profile_table_rejects_bad_daemon(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            daemon = ""
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="'daemon' must be a non-empty string"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_top_level_profile_table_rejects_non_bool_damon(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            damon = "yes"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="'damon' must be a boolean"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_lane_profile_false_disables(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            profile = false
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is False
+        assert settings["source"] == "lane 'profile = false'"
+
+    def test_lane_profile_true_is_refused_by_name(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            profile = true
+        """)
+        with pytest.raises(run_gate.GateError, match="redundant"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_lane_profile_table_overrides_enabled_and_damon_only(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            damon = false
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is True   # untouched
+        assert settings["damon"] is False
+
+    def test_lane_profile_table_can_override_enabled_alone(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            enabled = false
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["enabled"] is False
+        assert settings["damon"] is True   # untouched (no lane damon override)
+
+    def test_lane_profile_table_rejects_unknown_keys(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            bogus = true
+        """)
+        with pytest.raises(run_gate.GateError, match="unknown key"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_lane_profile_table_rejects_non_bool_enabled(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            enabled = "yes"
+        """)
+        with pytest.raises(run_gate.GateError, match="'enabled' must be a boolean"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_lane_profile_table_rejects_non_bool_damon(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            [lanes.suite.profile]
+            damon = "yes"
+        """)
+        with pytest.raises(run_gate.GateError, match="'damon' must be a boolean"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_lane_profile_neither_bool_nor_table_is_rejected(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            profile = "sometimes"
+        """)
+        with pytest.raises(run_gate.GateError,
+                           match="'profile' must be a boolean or a table"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_profile_table_rejects_unknown_keys(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            bogus = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="unknown key"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_footprint_table_defaults_and_validation(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            tolerance_pct = 10
+            max_age_days = 7
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        assert cfg["footprint"] == {"tolerance_pct": 10, "max_age_days": 7}
+
+    def test_footprint_table_valid_with_only_tolerance_pct(self, tmp_path):
+        # `max_age_days` absent entirely: the sibling "not present" arm of
+        # its own presence check, distinct from "present and valid" (the
+        # test above) and "present and invalid" (below).
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            tolerance_pct = 5
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+        assert cfg["footprint"] == {"tolerance_pct": 5}
+
+    def test_footprint_table_rejects_bad_values(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            tolerance_pct = -1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="tolerance_pct"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_footprint_table_rejects_bad_max_age_days(self, tmp_path):
+        # No tolerance_pct here (deliberately): exercises the "absent"
+        # branch of that key's own presence check, sibling to the "present"
+        # branch the two tests above already cover.
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [footprint]
+            max_age_days = 0
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="max_age_days"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+    def test_top_level_footprint_rejects_non_table_scalar(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            footprint = "not-a-table"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match="'footprint' must be a table"):
+            run_gate._validate_config(run_gate._read_toml(path), path, central=False)
+
+
+# ---------------------------------------------------------------------------
+# ResourceAccumulator, tested standalone against the golden frames -- no
+# docker, no BasicSampler. This is the single highest-value test in C3: if
+# the arithmetic reproduces the golden fixtures byte-for-byte, the daemon
+# and basic-path summaries agree by construction and everything else
+# (BasicSampler's docker-exec plumbing, the eventual await_container
+# wiring) is "just" plumbing around a proven core.
+# ---------------------------------------------------------------------------
+
+def _rg55_scope_dir(frame: int) -> Path:
+    return (RG55_FIXTURES / "frames" / str(frame) / "dev.slice" /
+            "dev-background.slice" / f"docker-{RG55_CONTAINER_ID}.scope")
+
+
+def _rg55_read(frame: int, name: str) -> str | None:
+    p = _rg55_scope_dir(frame) / name
+    try:
+        return p.read_text()
+    except FileNotFoundError:
+        return None
+
+
+def _rg55_container_sample(frame: int) -> dict:
+    return {
+        "memory_current": run_gate._profile_parse_int(_rg55_read(frame, "memory.current")),
+        "memory_peak": run_gate._profile_parse_int(_rg55_read(frame, "memory.peak")),
+        "memory_swap_current": run_gate._profile_parse_int(
+            _rg55_read(frame, "memory.swap.current")),
+        "memory_stat": run_gate._profile_parse_kv(_rg55_read(frame, "memory.stat")),
+        "cpu_stat": run_gate._profile_parse_kv(_rg55_read(frame, "cpu.stat")),
+        "memory_pressure": run_gate._profile_parse_pressure(
+            _rg55_read(frame, "memory.pressure")),
+        "cpu_pressure": run_gate._profile_parse_pressure(_rg55_read(frame, "cpu.pressure")),
+        "io_pressure": run_gate._profile_parse_pressure(_rg55_read(frame, "io.pressure")),
+        "memory_events_local": run_gate._profile_parse_kv(
+            _rg55_read(frame, "memory.events.local")),
+        "memory_max": run_gate._profile_parse_raw_limit(_rg55_read(frame, "memory.max")),
+        "memory_high": run_gate._profile_parse_raw_limit(_rg55_read(frame, "memory.high")),
+        "pids_peak": run_gate._profile_parse_int(_rg55_read(frame, "pids.peak")),
+    }
+
+
+def _rg55_host_sample(frame: int) -> dict:
+    base = RG55_FIXTURES / "frames" / str(frame) / "proc"
+    loadavg1 = float((base / "loadavg").read_text().split()[0])
+    return {
+        "memory_pressure_raw": run_gate._profile_parse_pressure(
+            (base / "pressure" / "memory").read_text()),
+        "cpu_pressure_raw": run_gate._profile_parse_pressure(
+            (base / "pressure" / "cpu").read_text()),
+        "loadavg1": loadavg1,
+    }
+
+
+class TestResourceAccumulatorGoldenFixtures:
+    def _feed(self, scope: str) -> dict:
+        acc = run_gate.ResourceAccumulator(scope)
+        for k in range(5):
+            acc.add_sample(_rg55_container_sample(k), host=_rg55_host_sample(k), at=float(k))
+        return acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                          "2026-09-12T10:15:00Z", "2026-09-12T10:15:04Z")
+
+    def test_container_shared_scope_matches_summary_basic_v1(self):
+        expected = json.loads((RG55_FIXTURES / "summary-basic-v1.json").read_text())
+        assert self._feed("container-shared") == expected
+
+    def test_container_scope_matches_hand_derived_numbers(self):
+        # No separate "summary-basic-container-v1.json" golden exists (only
+        # a daemon-method one, summary-container-v1.json); this cross-checks
+        # against fixtures/rg55/README.md's own "Headline numbers" for the
+        # `container` scope instead, plus proves everything OTHER than the
+        # memory/scope fields is scope-independent (identical to the
+        # container-shared basic fixture, exactly as the README says).
+        result = self._feed("container")
+        assert result["scope"] == "container"
+        assert result["memory"]["peak_bytes"] == 796917760       # 760 MiB
+        assert result["memory"]["source"] == "memory.peak"
+        assert result["memory"]["peak_over_baseline_bytes"] == 272629760  # 260 MiB
+        basic = json.loads((RG55_FIXTURES / "summary-basic-v1.json").read_text())
+        patched = dict(result)
+        patched["scope"] = "container-shared"
+        patched["memory"] = dict(patched["memory"])
+        for key in ("peak_bytes", "source", "peak_over_baseline_bytes"):
+            patched["memory"][key] = basic["memory"][key]
+        assert patched == basic
+
+    def test_p90_equals_peak_at_n5_is_not_a_fixture_bug(self):
+        # README's own documented gotcha: ceil(0.9*5) == 5 == N, so p90
+        # always equals the sample maximum at exactly 5 samples.
+        result = self._feed("container-shared")
+        assert result["memory"]["p90_bytes"] == result["memory"]["peak_bytes"] == 734003200
+
+    def test_limit_drift_ors_max_and_high_over_sample_pairs(self):
+        result = self._feed("container-shared")
+        assert result["events"]["limit_drift"] == 1
+        assert result["events"]["memory_high_breach"] == 1
+        assert result["events"]["oom_kill"] == 0
+
+    def test_a_field_unreadable_at_either_end_of_a_delta_is_null(self):
+        acc = run_gate.ResourceAccumulator("container-shared")
+        s0 = _rg55_container_sample(0)
+        s0["memory_stat"] = dict(s0["memory_stat"])
+        del s0["memory_stat"]["pgmajfault"]   # unreadable at the FIRST end
+        acc.add_sample(s0, host=_rg55_host_sample(0), at=0.0)
+        acc.add_sample(_rg55_container_sample(4), host=_rg55_host_sample(4), at=4.0)
+        result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                            "2026-09-12T10:15:00Z", "2026-09-12T10:15:04Z")
+        assert result["faults"]["pgmajfault"] is None
+        # a sibling field with both ends readable still computes normally.
+        assert result["faults"]["workingset_refault_file"] is not None
+
+    def test_finish_with_zero_samples_raises(self):
+        acc = run_gate.ResourceAccumulator("container")
+        with pytest.raises(ValueError):
+            acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                      "2026-09-12T10:15:00Z", "2026-09-12T10:15:04Z")
+
+    def test_bad_scope_is_rejected_at_construction(self):
+        with pytest.raises(ValueError):
+            run_gate.ResourceAccumulator("bogus")
+
+    def test_add_sample_without_at_uses_a_synthetic_clock(self):
+        # Every other test passes `at=` explicitly (real per-tick timing);
+        # this proves the documented fallback (one synthetic unit per
+        # tick) also produces a sane, non-crashing result.
+        acc = run_gate.ResourceAccumulator("container-shared")
+        for k in range(5):
+            acc.add_sample(_rg55_container_sample(k), host=_rg55_host_sample(k))
+        result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                            "2026-09-12T10:15:00Z", "2026-09-12T10:15:04Z")
+        # interval_seconds derives from `_ats` (0,1,2,3,4 by construction),
+        # so this happens to match the golden fixture's own 1.0s spacing.
+        assert result["interval_seconds"] == 1.0
+        assert result["cpu"]["cores_max"] == 2.0
+
+    def test_cores_max_skips_a_non_positive_delta_t(self):
+        # Two samples sharing the same `at` (a duplicate/aliased tick,
+        # which a real monotonic clock never legitimately produces but a
+        # test double could) must not raise ZeroDivisionError.
+        acc = run_gate.ResourceAccumulator("container-shared")
+        s0, s1 = _rg55_container_sample(0), _rg55_container_sample(1)
+        acc.add_sample(s0, host=_rg55_host_sample(0), at=0.0)
+        acc.add_sample(s1, host=_rg55_host_sample(1), at=0.0)  # same `at`
+        result = acc.finish(RG55_CONTAINER_ID, RG55_CGROUP,
+                            "2026-09-12T10:15:00Z", "2026-09-12T10:15:01Z")
+        assert result["cpu"]["cores_max"] is None  # no eligible pair
+
+
+# ---------------------------------------------------------------------------
+# ProfilerClient: one `docker exec <daemon> cgprofile ctl <verb> ...
+# --json` per method, via the fake docker shim's cgprofile branch
+# (CGPROFILE_SHIM_CASE / set_cgprofile_plan). Every failure mode must
+# return (None, reason) and NEVER raise (R-04/R-36h) -- the caller's
+# single-warning, verdict-unchanged behavior is a wiring-level guarantee
+# this class exists to make possible, proven here at the unit level.
+# ---------------------------------------------------------------------------
+
+class TestProfilerClient:
+    def _client(self, tmp_path, monkeypatch) -> "run_gate.ProfilerClient":
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        return run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+
+    def test_version_success_matches_golden(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "version-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(golden, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert reason is None
+        assert doc == json.loads(golden)
+
+    def test_host_success_matches_golden(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "host-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, host=(golden, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.host()
+        assert reason is None
+        assert doc == json.loads(golden)
+
+    def test_status_success_matches_golden(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "status-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, status=(golden, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.status()
+        assert reason is None
+        assert doc == json.loads(golden)
+
+    def test_stop_success_matches_golden(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(golden, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.stop("s-20260912T101500Z-9f01")
+        assert reason is None
+        assert doc == json.loads(golden)
+
+    def test_start_success_and_argv_shape(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "start-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
+        docker_log = fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.start(RG55_CONTAINER_ID, "container-shared",
+                                   token="abc123", damon=True, interval=1.0,
+                                   meta={"lane": "suite"})
+        assert reason is None
+        assert doc == json.loads(golden)
+        execs = docker_execs(docker_log)
+        assert execs, "expected a docker exec call"
+        argv = execs[-1]
+        assert argv[:5] == ["exec", run_gate.PROFILE_DAEMON_DEFAULT, "cgprofile",
+                            "ctl", "start"]
+        assert f"containerid:{RG55_CONTAINER_ID}" in argv
+        assert "container-shared" in argv
+        assert "abc123" in argv
+        assert "--json" in argv
+
+    def test_start_with_minimal_args_omits_optional_flags(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "start-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
+        docker_log = fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.start(RG55_CONTAINER_ID, "container")
+        assert reason is None
+        argv = docker_execs(docker_log)[-1]
+        assert "--token" not in argv
+        assert "--damon" not in argv
+        assert "--interval" not in argv
+        assert "--meta" in argv   # always required (contract Sec 2.2)
+
+    def test_exit2_bad_request_returns_reason_never_raises(self, tmp_path, monkeypatch):
+        golden = (RG55_FIXTURES / "error-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(golden, 2, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.stop("s-unknown")
+        assert doc is None
+        assert "unknown-session" in reason
+
+    def test_exit3_daemon_fault_returns_reason(self, tmp_path, monkeypatch):
+        body = json.dumps({"ok": False, "contract": 1,
+                           "error": {"code": "daemon-fault", "message": "sysfs error"}})
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(body, 3, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert "daemon-fault" in reason
+
+    def test_garbage_stdout_returns_reason(self, tmp_path, monkeypatch):
+        set_cgprofile_plan(tmp_path, monkeypatch, host=("not json at all", None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.host()
+        assert doc is None
+        assert "unparsable" in reason
+
+    def test_wrong_contract_returns_reason(self, tmp_path, monkeypatch):
+        body = json.dumps({"ok": True, "contract": 2})
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(body, None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert "contract" in reason
+
+    def test_timeout_returns_reason_never_raises(self, tmp_path, monkeypatch):
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(None, None, 2))
+        monkeypatch.setitem(run_gate.PROFILE_CTL_TIMEOUTS, "version", 0.1)
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert "timed out" in reason
+
+    def test_docker_binary_missing_returns_reason_never_raises(self, tmp_path):
+        # A resolved-but-nonexistent docker path -> subprocess.run raises
+        # OSError (FileNotFoundError), the other "could not even start"
+        # failure mode alongside a timeout -- must not propagate either.
+        client = run_gate.ProfilerClient("/no/such/docker-binary",
+                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "could not be run" in reason
+
+    def test_non_object_json_returns_reason(self, tmp_path, monkeypatch):
+        set_cgprofile_plan(tmp_path, monkeypatch, version=("[1, 2, 3]", None, None))
+        client = self._client(tmp_path, monkeypatch)
+        doc, reason = client.version()
+        assert doc is None
+        assert "non-object" in reason
+
+
+class TestGenerateProfileToken:
+    def test_token_is_32_hex_chars(self):
+        token = run_gate.generate_profile_token()
+        assert len(token) == 32
+        int(token, 16)  # raises ValueError if not hex
+
+    def test_tokens_are_not_reused(self):
+        assert run_gate.generate_profile_token() != run_gate.generate_profile_token()
+
+
+class TestBasicSampler:
+    """BasicSampler's own docker-exec plumbing (the `_read_container`
+    shell invocation + host PSI reads), separately from
+    ResourceAccumulator's arithmetic (already proven directly against the
+    golden frames above)."""
+
+    def _fake_container_shim(self, tmp_path, monkeypatch, frame_dirs: list[Path]) -> Path:
+        """A docker shim that answers `exec <container> sh -c '...'` by
+        `cat`-ing the k-th frame directory's files in order -- one call per
+        BasicSampler.sample_once() tick, mirroring the handoff's own
+        "the shim serves frame k's file contents on the k-th cat call"
+        test spec, but implemented as one canned answer per full `exec`
+        invocation (BasicSampler's script requests ALL files in one call)
+        rather than per individual `cat`."""
+        shim_dir = tmp_path / "shim"
+        shim_dir.mkdir(exist_ok=True)
+        log = tmp_path / "docker-calls.log"
+        log.write_text("")
+        counter_file = tmp_path / "tick-counter"
+        counter_file.write_text("0")
+        responses_dir = tmp_path / "tick-responses"
+        responses_dir.mkdir(exist_ok=True)
+        for i, frame_dir in enumerate(frame_dirs):
+            out_lines = []
+            for name in run_gate.PROFILE_BASIC_FILES:
+                out_lines.append(f"== {name}")
+                fpath = frame_dir / name
+                if fpath.is_file():
+                    out_lines.append(fpath.read_text().rstrip("\n"))
+            (responses_dir / str(i)).write_text("\n".join(out_lines) + "\n")
+        shim = shim_dir / "docker"
+        shim.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            printf '%s\\037' "$@" >> "{log}"
+            printf '\\n' >> "{log}"
+            case "$1" in
+              exec)
+                i=$(cat "{counter_file}")
+                cat "{responses_dir}/$i" 2>/dev/null
+                echo $((i + 1)) > "{counter_file}"
+                ;;
+            esac
+            exit 0
+        """))
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
+        return log
+
+    def test_five_ticks_reproduce_the_golden_basic_summary(self, tmp_path, monkeypatch):
+        frame_dirs = [_rg55_scope_dir(k) for k in range(5)]
+        self._fake_container_shim(tmp_path, monkeypatch, frame_dirs)
+        proc_root = tmp_path / "proc"
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(proc_root))
+        docker = shutil.which("docker")
+        sampler = run_gate.BasicSampler(
+            docker, "fake-lane-container", "container-shared",
+            container_id=RG55_CONTAINER_ID, cgroup=RG55_CGROUP,
+            clock=iter([0.0, 1.0, 2.0, 3.0, 4.0]).__next__,
+            # sample_once() calls wall_clock() twice on the FIRST tick
+            # (started_at + ended_at) and once on every later tick -- 6
+            # calls total for 5 ticks. Only the 1st (started_at) and the
+            # LAST (final ended_at) values are ever kept; the rest are
+            # overwritten by the next tick's ended_at before finish() reads
+            # it, so their exact value is unobservable.
+            wall_clock=iter(["2026-09-12T10:15:00Z"] + ["ignored"] * 4 +
+                            ["2026-09-12T10:15:04Z"]).__next__)
+        for k in range(5):
+            self._link_proc_root(proc_root, k)
+            sampler.sample_once()
+        result = sampler.finish()
+        expected = json.loads((RG55_FIXTURES / "summary-basic-v1.json").read_text())
+        assert result == expected
+
+    @staticmethod
+    def _link_proc_root(proc_root: Path, frame: int) -> None:
+        if proc_root.exists() or proc_root.is_symlink():
+            proc_root.unlink() if proc_root.is_symlink() else shutil.rmtree(proc_root)
+        proc_root.symlink_to(RG55_FIXTURES / "frames" / str(frame) / "proc")
+
+    def test_finish_before_any_sample_raises(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        sampler = run_gate.BasicSampler(docker, "c", "container")
+        with pytest.raises(RuntimeError):
+            sampler.finish()
+
+    def test_unreadable_container_files_read_as_none_not_a_crash(self, tmp_path, monkeypatch):
+        fake_docker(tmp_path, monkeypatch)  # answers exec with nothing at all
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-such-proc"))
+        sampler = run_gate.BasicSampler(docker, "c", "container-shared",
+                                        container_id="x", cgroup="/x")
+        sampler.sample_once()
+        sampler.sample_once()
+        result = sampler.finish()
+        assert result["memory"]["peak_bytes"] is None
+        assert result["host"]["start"] is None
+
+    def test_docker_exec_failure_reads_as_none_not_a_crash(self, tmp_path, monkeypatch):
+        # A docker binary that cannot even be run (OSError) -- the sibling
+        # failure mode to a timeout, both of which _read_container must
+        # fold into an all-None dump rather than propagate.
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-such-proc"))
+        sampler = run_gate.BasicSampler("/no/such/docker-binary", "c",
+                                        "container-shared",
+                                        container_id="x", cgroup="/x")
+        sampler.sample_once()
+        sampler.sample_once()
+        result = sampler.finish()
+        assert result["memory"]["peak_bytes"] is None
+        assert result["pids"]["peak"] is None

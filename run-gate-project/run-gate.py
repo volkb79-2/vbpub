@@ -19,8 +19,10 @@ import ast
 import calendar
 import fcntl
 import json
+import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -52,6 +54,7 @@ EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
 EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
 EVIDENCE_TAIL_LINES = 10
 CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
+PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 host PSI)
 SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
 
 # RG-27 lane invocation history. The store is PER (judged worktree × project):
@@ -105,6 +108,44 @@ OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 # This is NOT the disclosure interval: a poll that sees no new event prints
 # nothing.
 PROGRESS_POLL_SECONDS = 30
+
+# RG-55 / SPEC R-43: cgroup-profiler daemon client
+# (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
+# daemon being present -- every daemon-shaped constant here governs the
+# OPTIONAL `cgprofile ctl` path; a lane still gets a "basic" (in-lane
+# sampling) profile when the daemon is absent or refuses, and no profile at
+# all only when [profile] enabled=false or a lane opts out.
+PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
+# 5s: the basic-path sampling tick. Balances docker-exec overhead per tick
+# (a real `docker exec ... sh -c 'cat ...'` round trip) against useful
+# sample resolution, given HOST LOAD (8 cores, shared with a production
+# workload, RG55 handoff Sec 6) -- a tighter interval multiplies exec
+# overhead across every profiled lane for no material gain in profile
+# fidelity a gate lane needs.
+PROFILE_SAMPLE_SECONDS = 5
+PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
+                        "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+PROFILE_CONTRACT = 1                # contract Sec 1.4
+PROFILE_TOKEN_ENV = "RUN_GATE_PROFILE_SESSION"     # contract Sec 4.1
+PROFILE_ENABLED_DEFAULT = True
+PROFILE_INTERVAL_DEFAULT = "1s"
+PROFILE_DAMON_DEFAULT = True
+FOOTPRINT_TOLERANCE_PCT_DEFAULT = 25   # C5 territory; validated now (Sec below)
+FOOTPRINT_MAX_AGE_DAYS_DEFAULT = 30
+# Contract Sec 4.3's basic-path file list, verbatim, PLUS `memory.max`/
+# `memory.high`: the contract's own literal list omits them, but Sec 7's
+# `events.limit_drift` rule ("number of sample pairs where memory.max or
+# memory.high changed") and the golden `summary-basic-v1.json` fixture
+# (limit_drift: 1, identical to the daemon-path fixture) both require them
+# -- the basic path cannot reproduce the golden fixture without reading the
+# same two files the daemon path reads for the same purpose. Flagged as a
+# contract drift for the controller (REPORT "Decision asks"); read here
+# regardless, because the fixture is the tie-breaker the handoff's own read
+# order says to trust over a stated-but-inconsistent list.
+PROFILE_BASIC_FILES = ["memory.current", "memory.peak", "memory.swap.current",
+                       "memory.stat", "cpu.stat", "memory.pressure",
+                       "cpu.pressure", "io.pressure", "memory.events.local",
+                       "pids.peak", "memory.max", "memory.high"]
 
 
 class GateError(Exception):
@@ -194,7 +235,8 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
 # "move it one level up, it is load-bearing there".
 LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
-             "description", "required_env", "artifacts", "resources"}
+             "description", "required_env", "artifacts", "resources",
+             "profile"}
 PIN_KEYS = {"sha256", "version"}
 
 
@@ -293,6 +335,30 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             if len(set(shared)) != len(shared):
                 fail(f"{where} [lanes.{name}.resources]: 'shared' names must "
                      f"be unique")
+    if "profile" in table:
+        # RG-55/R-43: `profile = false` opts a lane out entirely; a table
+        # overrides `enabled`/`damon` without disabling by default.
+        # `profile = true` is refused BY NAME — enabled-by-default is
+        # already the policy, so the bare flag can only be a no-op typo for
+        # either deleting the key or writing the table form.
+        prof = table["profile"]
+        if isinstance(prof, bool):
+            if prof:
+                fail(f"{where} [lanes.{name}]: 'profile = true' is redundant "
+                     f"-- profiling is enabled by default; delete the key, "
+                     f"use 'profile = false' to disable it, or a "
+                     f"'[lanes.{name}.profile]' table to override "
+                     f"'enabled'/'damon'")
+        elif isinstance(prof, dict):
+            _check_keys(prof, {"enabled", "damon"},
+                        f"{where} [lanes.{name}.profile]")
+            if "enabled" in prof and not isinstance(prof["enabled"], bool):
+                fail(f"{where} [lanes.{name}.profile]: 'enabled' must be a boolean")
+            if "damon" in prof and not isinstance(prof["damon"], bool):
+                fail(f"{where} [lanes.{name}.profile]: 'damon' must be a boolean")
+        else:
+            fail(f"{where} [lanes.{name}]: 'profile' must be a boolean or a "
+                 f"table (got {type(prof).__name__})")
     if kind == "command":
         argv = table.get("argv")
         if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
@@ -399,12 +465,89 @@ def resolve_history_keep(cfg: dict, cfg_path: Path, central: dict,
     return HISTORY_KEEP_DEFAULT, f"default ({HISTORY_KEEP_DEFAULT})"
 
 
+def _validate_profile_policy(table: object, where: str) -> None:
+    """RG-55/R-43 top-level `[profile]`: whole-table shadowing (R-09), the
+    exact pattern `_validate_history_policy` already establishes."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'profile' must be a table")
+    _check_keys(table, {"enabled", "daemon", "interval", "damon"},
+                f"{where} [profile]")
+    if "enabled" in table and not isinstance(table["enabled"], bool):
+        fail(f"{where} [profile]: 'enabled' must be a boolean")
+    if "daemon" in table and (not isinstance(table["daemon"], str)
+                              or not table["daemon"].strip()):
+        fail(f"{where} [profile]: 'daemon' must be a non-empty string")
+    if "interval" in table:
+        _validate_budget(table["interval"], f"{where} [profile]", "interval")
+    if "damon" in table and not isinstance(table["damon"], bool):
+        fail(f"{where} [profile]: 'damon' must be a boolean")
+
+
+def _validate_footprint_policy(table: object, where: str) -> None:
+    """RG-55/R-44 top-level `[footprint]`: whole-table shadowing (R-09).
+    C5 (the `footprint` verb) consumes this; validated now so a project's
+    lane declarations never need a second config-shape pass when C5 lands."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'footprint' must be a table")
+    _check_keys(table, {"tolerance_pct", "max_age_days"}, f"{where} [footprint]")
+    if "tolerance_pct" in table:
+        v = table["tolerance_pct"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            fail(f"{where} [footprint]: 'tolerance_pct' must be an integer "
+                 f">= 0 (got {v!r})")
+    if "max_age_days" in table:
+        v = table["max_age_days"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            fail(f"{where} [footprint]: 'max_age_days' must be an integer "
+                 f">= 1 (got {v!r})")
+
+
+def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
+                             central: dict, central_path: Path | None) -> dict:
+    """Always-fully-populated `[profile]` settings for ONE lane:
+    `{'enabled', 'daemon', 'interval', 'damon', 'source'}`. Project
+    `[profile]` shadows the central one WHOLE-TABLE (R-09,
+    `resolve_history_keep`'s pattern — never a per-key merge), then the
+    documented defaults, then the lane's own `profile` key on top (a bool
+    `false` disables outright; a table overrides `enabled`/`damon` only).
+    `source` names where `enabled`/`daemon`/`interval`/`damon` came from
+    before any lane-level override, for disclosure (R-05)."""
+    if "profile" in cfg:
+        table, source = cfg["profile"], f"[profile] in {cfg_path}"
+    elif central_path is not None and "profile" in central:
+        table, source = central["profile"], f"[profile] in central {central_path}"
+    else:
+        table, source = {}, "default"
+    settings = {
+        "enabled": table.get("enabled", PROFILE_ENABLED_DEFAULT),
+        "daemon": table.get("daemon", PROFILE_DAEMON_DEFAULT),
+        "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
+        "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
+        "source": source,
+    }
+    lane_prof = lane.get("profile")
+    if lane_prof is False:
+        settings["enabled"] = False
+        settings["source"] = f"lane 'profile = false'"
+    elif isinstance(lane_prof, dict):
+        if "enabled" in lane_prof:
+            settings["enabled"] = lane_prof["enabled"]
+        if "damon" in lane_prof:
+            settings["damon"] = lane_prof["damon"]
+    return settings
+
+
 def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     where = str(path)
-    _check_keys(cfg, {"schema_version", "environments", "lanes", "history"},
+    _check_keys(cfg, {"schema_version", "environments", "lanes", "history",
+                      "profile", "footprint"},
                 where)
     if "history" in cfg:
         _validate_history_policy(cfg["history"], where)
+    if "profile" in cfg:
+        _validate_profile_policy(cfg["profile"], where)
+    if "footprint" in cfg:
+        _validate_footprint_policy(cfg["footprint"], where)
     if cfg.get("schema_version") != SCHEMA_VERSION:
         fail(f"{where}: 'schema_version' must be {SCHEMA_VERSION} (got "
              f"{cfg.get('schema_version')!r})")
@@ -507,6 +650,584 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
 
 def lane_environment_name(lane: dict) -> str:
     return str(lane["environment"])
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / SPEC R-43: cgroup-profiler daemon client + basic-path fallback
+# (RG55-INTERFACE-CONTRACT.md). This section is the self-contained,
+# docker-agnostic-where-possible core: the ported cgroupfs parsers,
+# ProfilerClient (talks to the optional daemon), ResourceAccumulator (pure
+# arithmetic, contract Sec 7), and BasicSampler (the in-lane fallback that
+# owns the actual `docker exec` plumbing). Wiring these into
+# await_container/run_exec_lane/run_container_lane/run_bare_host_lane (the
+# token, the per-tick call sites, the disclosure lines, --dry-run) is a
+# SEPARATE deliverable, not yet done as of this section landing — see
+# CHANGES.md / the wave's own tracking docs for status.
+# ---------------------------------------------------------------------------
+
+
+def generate_profile_token() -> str:
+    """Contract Sec 4.1: `secrets.token_hex(16)` per lane invocation — 32
+    hex chars, comfortably inside the daemon's accepted `--token`
+    `[A-Za-z0-9._-]{8,64}` grammar."""
+    return secrets.token_hex(16)
+
+
+def _profile_parse_int(text: str | None) -> int | None:
+    """Ported from scripts/cgroup-profiler/lib/util.py:read_int (STRING
+    variant — run-gate reads via `docker exec ... cat`, never a path
+    directly). 'max' and empty read back as None (absent is never zero,
+    contract Sec 1.7)."""
+    if text is None:
+        return None
+    text = text.strip()
+    if text in ("", "max"):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _profile_parse_raw_limit(text: str | None) -> int | str | None:
+    """Special-purpose reader for `memory.max`/`memory.high` ONLY: keeps the
+    literal string 'max' (unlimited) distinct from both an integer ceiling
+    and an unreadable file (None) — `events.limit_drift` (contract Sec 7)
+    must detect a 'max' <-> integer TRANSITION, which `_profile_parse_int`
+    (which folds 'max' into None, correct for every other caller) cannot
+    represent."""
+    if text is None:
+        return None
+    text = text.strip()
+    if text == "":
+        return None
+    if text == "max":
+        return "max"
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _profile_parse_kv(text: str | None) -> dict[str, int]:
+    """Ported from .../read_kv (string variant). Non-integer values are
+    skipped, not fatal — a newer kernel field must not blind the rest."""
+    out: dict[str, int] = {}
+    if not text:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            out[parts[0]] = int(parts[1])
+        except ValueError:
+            continue
+    return out
+
+
+def _profile_parse_pressure(text: str | None) -> dict[str, float]:
+    """Ported from .../read_pressure (string variant).
+    {'some avg10=.. avg60=.. avg300=.. total=..', 'full ...'} ->
+    {'some_avg10': .., 'some_total': .., 'full_avg10': .., 'full_total': ..}
+    — total is MICROSECONDS (contract Sec 1.6 converts to seconds only in
+    the final Summary, not here)."""
+    out: dict[str, float] = {}
+    if not text:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        kind = parts[0]  # "some" | "full"
+        for kv in parts[1:]:
+            key, _, val = kv.partition("=")
+            try:
+                out[f"{kind}_{key}"] = float(val)
+            except ValueError:
+                continue
+    return out
+
+
+def _split_basic_dump(text: str, files: list[str]) -> dict[str, str | None]:
+    """Split the concatenated '== <file>\\n<content>' dump BasicSampler's
+    one `docker exec ... sh -c 'for f in ...; do echo "== $f"; cat ...
+    2>/dev/null; done'` invocation produces back into
+    `{file: content_or_None}`. A missing/unreadable file (`cat`'s stderr is
+    redirected to /dev/null) reads as an empty marker body, folded to None
+    here (absent, never zero, contract Sec 1.7) rather than "" — the
+    parsers above already treat "" the same as None, but keying by marker
+    name here makes a single missing file's test failure legible instead of
+    a silent positional shift."""
+    out: dict[str, str | None] = {name: None for name in files}
+    current: str | None = None
+    buf: list[str] = []
+
+    def _flush() -> None:
+        if current is not None:
+            body = "\n".join(buf)
+            out[current] = body if body.strip() else None
+
+    for line in text.splitlines():
+        if line.startswith("== "):
+            _flush()
+            current = line[3:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    _flush()
+    return out
+
+
+def _iso_utc(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _parse_iso_utc(stamp: str) -> float:
+    """Contract Sec 1.6's exact timestamp grammar (`YYYY-MM-DDTHH:MM:SSZ`,
+    no fraction, always UTC) — deliberately NOT `parse_docker_timestamp` (a
+    different, fraction+offset-bearing grammar for a different producer)."""
+    return float(calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")))
+
+
+def _delta_or_none(first: object, last: object):
+    """Contract Sec 7's own explicit rule: a field whose inputs were
+    unreadable at EITHER end of a delta is null, never a delta against
+    nothing."""
+    if first is None or last is None:
+        return None
+    return last - first
+
+
+def _max_or_none(values) -> int | None:
+    vals = [v for v in values if v is not None]
+    return max(vals) if vals else None
+
+
+def _nearest_rank_value(values, pct: float) -> int | None:
+    """Contract Sec 7: nearest-rank percentile, no interpolation, so two
+    stdlib implementations agree byte-for-byte. `rank = ceil(p/100 * N)`,
+    1-based, N = the number of READABLE (non-None) values — a None cannot
+    be sorted or ranked, so it is excluded from N as well as from the
+    sorted list, the same "absent, never a fabricated value" treatment
+    every other field here gets."""
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    rank = max(1, min(math.ceil(pct / 100 * len(vals)), len(vals)))
+    return vals[rank - 1]
+
+
+class ProfilerClient:
+    """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
+    `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
+    itself changes a lane's verdict (R-04/R-36h). The caller prints ONE
+    warning per lane invocation from the reason string; `resources: null` +
+    `profile_error: <reason>` is the record-level consequence, decided by
+    the CALLER, not this class.
+
+    Contract rule 2 promises stdout is EXACTLY one JSON object REGARDLESS
+    of exit code — so JSON is parsed FIRST, exit code SECOND: a doc that
+    parses, carries the right `contract`, and says `"ok": true` is trusted
+    over a nonzero exit the daemon might raise for unrelated reasons (none
+    currently defined, but the contract does not forbid it); every failure
+    mode (non-zero exit with valid `error` JSON, timeout, garbage stdout,
+    non-object JSON, wrong contract, `"ok": false`) collapses to the same
+    `(None, reason)` shape through one code path rather than a per-exit-code
+    branch tree."""
+
+    def __init__(self, docker: str, daemon: str):
+        self.docker = docker
+        self.daemon = daemon
+
+    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
+               *args, "--json"]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
+        except subprocess.TimeoutExpired:
+            return None, (f"`cgprofile ctl {verb}` timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
+        except OSError as exc:
+            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
+        stderr_tail = (proc.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        try:
+            doc = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
+                          f"(exit {proc.returncode}); stderr: {stderr_tail}")
+        if not isinstance(doc, dict):
+            return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
+                          f"(exit {proc.returncode})")
+        if doc.get("contract") != PROFILE_CONTRACT:
+            return None, (f"`cgprofile ctl {verb}` reports contract "
+                          f"{doc.get('contract')!r}, this client accepts "
+                          f"{PROFILE_CONTRACT} only")
+        if not doc.get("ok", False):
+            err = doc.get("error") or {}
+            return None, (f"`cgprofile ctl {verb}` refused "
+                          f"({err.get('code', 'unknown')}): "
+                          f"{err.get('message', stderr_tail)}")
+        return doc, None
+
+    def version(self) -> tuple[dict | None, str | None]:
+        return self._ctl("version")
+
+    def host(self) -> tuple[dict | None, str | None]:
+        return self._ctl("host")
+
+    def status(self, session: str | None = None) -> tuple[dict | None, str | None]:
+        return self._ctl("status", *([session] if session else []))
+
+    def start(self, container_id: str, scope: str, *, token: str | None = None,
+             damon: bool | None = None, interval: float | None = None,
+             meta: dict | None = None) -> tuple[dict | None, str | None]:
+        args = ["--target", f"containerid:{container_id}", "--scope", scope]
+        if token:
+            args += ["--token", token]
+        if damon is not None:
+            args += ["--damon", "on" if damon else "off"]
+        if interval is not None:
+            args += ["--interval", str(interval)]
+        args += ["--meta", json.dumps(meta or {})]
+        return self._ctl("start", *args)
+
+    def stop(self, session: str) -> tuple[dict | None, str | None]:
+        return self._ctl("stop", session)
+
+
+class ResourceAccumulator:
+    """RG55-INTERFACE-CONTRACT.md Sec 7, basic-path implementation — pure
+    arithmetic over per-tick samples (no docker/filesystem access of its
+    own; BasicSampler owns that). One instance per lane invocation. `scope`
+    is 'container' or 'container-shared' (contract Sec 3); governs only the
+    peak-bytes formula (Sec 7's first bullet). Always produces
+    `method: "basic"` — the daemon computes its own Summary server-side and
+    hands it back verbatim via `stop`; this class exists ONLY for the
+    basic-fallback path.
+
+    `host.slice` is ALWAYS null here (contract Sec 4.3: only the daemon
+    computes `host.slice`) — no slice-level cgroupfs sampling is attempted
+    by this class at all, on purpose."""
+
+    def __init__(self, scope: str):
+        if scope not in ("container", "container-shared"):
+            raise ValueError(
+                f"scope must be 'container' or 'container-shared' (got {scope!r})")
+        self.scope = scope
+        self._samples: list[dict] = []
+        self._ats: list[float] = []
+        self._host_first: dict | None = None
+        self._host_last: dict | None = None
+
+    def add_sample(self, container: dict, host: dict | None = None,
+                   at: float | None = None) -> None:
+        """`container`: a dict keyed exactly as BasicSampler's
+        `_read_container` (or a test reading golden frames directly)
+        produces — `memory_current`, `memory_peak`, `memory_swap_current`,
+        `memory_stat`, `cpu_stat`, `memory_pressure`, `cpu_pressure`,
+        `io_pressure`, `memory_events_local`, `memory_max`, `memory_high`,
+        `pids_peak`. `host`: `{'memory_pressure_raw', 'cpu_pressure_raw',
+        'loadavg1'}` or None when host PSI was unreadable this tick (only
+        the FIRST and LAST readable host sample are used, contract Sec 7).
+        `at`: a monotonic-clock float for computing REAL per-tick deltas
+        (`cores_max`, `interval_seconds`) — defaults to a synthetic
+        one-unit-per-tick clock when the caller does not track wall time
+        itself (exercised by the golden-fixture tests, whose frames are
+        exactly 1s apart by construction)."""
+        if at is None:
+            at = float(len(self._samples))
+        self._samples.append(container)
+        self._ats.append(at)
+        if host is not None:
+            if self._host_first is None:
+                self._host_first = host
+            self._host_last = host
+
+    def _cores_max(self) -> float | None:
+        """Sec 7: max over CONSECUTIVE sample pairs of
+        `(delta_usage_usec / 1e6) / delta_t` — `delta_t` from the REAL
+        per-sample clock (`_ats`), not an assumed fixed interval, so a
+        production run's real wall-clock jitter between `docker exec`
+        calls cannot silently understate a genuine CPU spike."""
+        best = None
+        for i in range(1, len(self._samples)):
+            u0 = self._samples[i - 1]["cpu_stat"].get("usage_usec")
+            u1 = self._samples[i]["cpu_stat"].get("usage_usec")
+            if u0 is None or u1 is None:
+                continue
+            dt = self._ats[i] - self._ats[i - 1]
+            if dt <= 0:
+                continue
+            rate = (u1 - u0) / 1e6 / dt
+            if best is None or rate > best:
+                best = rate
+        return round(best, 3) if best is not None else None
+
+    def _limit_drift(self) -> int:
+        """Sec 7: COUNT of sample-PAIRS (not a single delta) where
+        `memory.max` OR `memory.high`'s RAW value changed — the two fields
+        are OR'd together per pair, never counted separately (fixtures/
+        rg55/README.md's own worked example: `memory.high` changes at one
+        transition, `memory.max` never changes, `limit_drift` is still 1,
+        not 0). A pair with either side unreadable cannot be judged
+        changed, so it does not count — not the same "null propagation"
+        rule as a scalar delta, because this is a count, and a count with
+        no eligible pairs is validly 0, never null."""
+        count = 0
+        for i in range(1, len(self._samples)):
+            prev, cur = self._samples[i - 1], self._samples[i]
+            max_changed = (prev["memory_max"] is not None
+                          and cur["memory_max"] is not None
+                          and prev["memory_max"] != cur["memory_max"])
+            high_changed = (prev["memory_high"] is not None
+                           and cur["memory_high"] is not None
+                           and prev["memory_high"] != cur["memory_high"])
+            if max_changed or high_changed:
+                count += 1
+        return count
+
+    @staticmethod
+    def _host_view(raw: dict | None) -> dict | None:
+        if raw is None:
+            return None
+
+        def _sel(pressure: dict) -> dict:
+            return {"some_avg10": pressure.get("some_avg10"),
+                    "full_avg10": pressure.get("full_avg10"),
+                    "some_avg60": pressure.get("some_avg60"),
+                    "full_avg60": pressure.get("full_avg60")}
+
+        return {"memory_pressure": _sel(raw.get("memory_pressure_raw") or {}),
+                "cpu_pressure": _sel(raw.get("cpu_pressure_raw") or {}),
+                "loadavg1": raw.get("loadavg1")}
+
+    def _host_pressure_seconds(self, key: str) -> float | None:
+        if self._host_first is None or self._host_last is None:
+            return None
+        first = (self._host_first.get("memory_pressure_raw") or {}).get(key)
+        last = (self._host_last.get("memory_pressure_raw") or {}).get(key)
+        d = _delta_or_none(first, last)
+        return round(d / 1e6, 3) if d is not None else None
+
+    def finish(self, container_id: str, cgroup: str, started_at: str,
+              ended_at: str) -> dict:
+        """The schema-1 Summary (contract Sec 3), `method: "basic"`.
+        `container_id`/`cgroup` are the docker facts the caller already
+        resolved (`docker inspect`); `started_at`/`ended_at` are ISO-8601
+        UTC strings the caller stamped at the first/last `add_sample` call."""
+        samples = self._samples
+        n = len(samples)
+        if n == 0:
+            raise ValueError("ResourceAccumulator.finish() called with zero samples")
+        duration_seconds = round(_parse_iso_utc(ended_at) - _parse_iso_utc(started_at), 3)
+        interval_seconds = (round((self._ats[-1] - self._ats[0]) / (n - 1), 3)
+                            if n > 1 else None)
+
+        mem_current = [s["memory_current"] for s in samples]
+        baseline_bytes = mem_current[0]
+        if self.scope == "container":
+            peak_bytes = samples[-1]["memory_peak"]
+            source = "memory.peak"
+        else:
+            peak_bytes = _max_or_none(mem_current)
+            source = "sampled-max"
+        peak_over_baseline_bytes = (
+            max(0, peak_bytes - baseline_bytes)
+            if peak_bytes is not None and baseline_bytes is not None else None)
+
+        memory = {
+            "peak_bytes": peak_bytes,
+            "source": source,
+            "baseline_bytes": baseline_bytes,
+            "peak_over_baseline_bytes": peak_over_baseline_bytes,
+            "p90_bytes": _nearest_rank_value(mem_current, 90),
+            "median_bytes": _nearest_rank_value(mem_current, 50),
+            "swap_peak_bytes": _max_or_none(s["memory_swap_current"] for s in samples),
+            "anon_peak_bytes": _max_or_none(s["memory_stat"].get("anon") for s in samples),
+            "file_peak_bytes": _max_or_none(s["memory_stat"].get("file") for s in samples),
+        }
+
+        usage_delta = _delta_or_none(samples[0]["cpu_stat"].get("usage_usec"),
+                                     samples[-1]["cpu_stat"].get("usage_usec"))
+        cpu_seconds = round(usage_delta / 1e6, 3) if usage_delta is not None else None
+        cores_avg = (round(cpu_seconds / duration_seconds, 3)
+                    if cpu_seconds is not None and duration_seconds else None)
+        throttled_delta = _delta_or_none(samples[0]["cpu_stat"].get("throttled_usec"),
+                                         samples[-1]["cpu_stat"].get("throttled_usec"))
+        cpu = {
+            "seconds": cpu_seconds,
+            "cores_avg": cores_avg,
+            "cores_max": self._cores_max(),
+            "throttled_seconds": (round(throttled_delta / 1e6, 3)
+                                  if throttled_delta is not None else None),
+            "nr_throttled": _delta_or_none(samples[0]["cpu_stat"].get("nr_throttled"),
+                                           samples[-1]["cpu_stat"].get("nr_throttled")),
+        }
+
+        def _pressure_seconds(field: str, key: str) -> float | None:
+            d = _delta_or_none(samples[0][field].get(key), samples[-1][field].get(key))
+            return round(d / 1e6, 3) if d is not None else None
+
+        pressure = {
+            "memory_some_stall_seconds": _pressure_seconds("memory_pressure", "some_total"),
+            "memory_full_stall_seconds": _pressure_seconds("memory_pressure", "full_total"),
+            "cpu_some_stall_seconds": _pressure_seconds("cpu_pressure", "some_total"),
+            "io_some_stall_seconds": _pressure_seconds("io_pressure", "some_total"),
+            "io_full_stall_seconds": _pressure_seconds("io_pressure", "full_total"),
+        }
+
+        faults = {
+            "pgmajfault": _delta_or_none(samples[0]["memory_stat"].get("pgmajfault"),
+                                         samples[-1]["memory_stat"].get("pgmajfault")),
+            "workingset_refault_anon": _delta_or_none(
+                samples[0]["memory_stat"].get("workingset_refault_anon"),
+                samples[-1]["memory_stat"].get("workingset_refault_anon")),
+            "workingset_refault_file": _delta_or_none(
+                samples[0]["memory_stat"].get("workingset_refault_file"),
+                samples[-1]["memory_stat"].get("workingset_refault_file")),
+        }
+
+        events = {
+            "oom_kill": _delta_or_none(samples[0]["memory_events_local"].get("oom_kill"),
+                                       samples[-1]["memory_events_local"].get("oom_kill")),
+            "limit_drift": self._limit_drift(),
+            "memory_high_breach": _delta_or_none(
+                samples[0]["memory_events_local"].get("high"),
+                samples[-1]["memory_events_local"].get("high")),
+        }
+
+        host = {
+            "start": self._host_view(self._host_first),
+            "end": self._host_view(self._host_last),
+            "memory_full_stall_seconds": self._host_pressure_seconds("full_total"),
+            "memory_some_stall_seconds": self._host_pressure_seconds("some_total"),
+            "slice": None,
+        }
+
+        return {
+            "schema": 1,
+            "session": None,
+            "daemon": None,
+            "scope": self.scope,
+            "method": "basic",
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "interval_seconds": interval_seconds,
+            "samples": n,
+            "target": {"container_id": container_id, "cgroup": cgroup,
+                      "token": None, "targets_seen": None},
+            "memory": memory,
+            "cpu": cpu,
+            "pressure": pressure,
+            "faults": faults,
+            "pids": {"peak": samples[-1].get("pids_peak")},
+            "damon": None,
+            "host": host,
+            "events": events,
+        }
+
+
+class BasicSampler:
+    """RG-55 basic-path fallback (contract Sec 4.3): samples the LANE
+    container's own cgroup with ONE `docker exec <container> sh -c '...'`
+    per tick — the file list is `PROFILE_BASIC_FILES` (contract Sec 4.3's
+    ten files plus `memory.max`/`memory.high`, see that constant's own
+    comment for why) — parsed with the ported parsers above and fed into a
+    `ResourceAccumulator`. Host PSI is read directly (not via docker exec —
+    the devcontainer shares the host's /proc), honoring
+    `RUN_GATE_PROC_ROOT` for tests (mirrors `RUN_GATE_CGROUPFS_ROOT`).
+
+    `clock`/`wall_clock` are injectable for tests: `clock()` returns a
+    float used only for relative-time arithmetic (`cores_max`,
+    `interval_seconds`); `wall_clock()` returns an ISO-8601 UTC string
+    stamped as `started_at`/`ended_at`."""
+
+    def __init__(self, docker: str, container: str, scope: str,
+                container_id: str = "", cgroup: str = "",
+                clock=time.monotonic, wall_clock=None):
+        self.docker = docker
+        self.container = container
+        self.container_id = container_id
+        self.cgroup = cgroup
+        self._clock = clock
+        self._wall = wall_clock or (lambda: _iso_utc(time.time()))
+        self.accumulator = ResourceAccumulator(scope)
+        self._first_at: float | None = None
+        self.started_at: str | None = None
+        self.ended_at: str | None = None
+
+    def _read_container(self) -> dict:
+        script = ("for f in " + " ".join(PROFILE_BASIC_FILES) + "; do "
+                 'echo "== $f"; cat /sys/fs/cgroup/$f 2>/dev/null; done')
+        argv = [self.docker, "exec", self.container, "sh", "-c", script]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            dump = _split_basic_dump(proc.stdout, PROFILE_BASIC_FILES)
+        except (subprocess.TimeoutExpired, OSError):
+            dump = {name: None for name in PROFILE_BASIC_FILES}
+        return {
+            "memory_current": _profile_parse_int(dump["memory.current"]),
+            "memory_peak": _profile_parse_int(dump["memory.peak"]),
+            "memory_swap_current": _profile_parse_int(dump["memory.swap.current"]),
+            "memory_stat": _profile_parse_kv(dump["memory.stat"]),
+            "cpu_stat": _profile_parse_kv(dump["cpu.stat"]),
+            "memory_pressure": _profile_parse_pressure(dump["memory.pressure"]),
+            "cpu_pressure": _profile_parse_pressure(dump["cpu.pressure"]),
+            "io_pressure": _profile_parse_pressure(dump["io.pressure"]),
+            "memory_events_local": _profile_parse_kv(dump["memory.events.local"]),
+            "memory_max": _profile_parse_raw_limit(dump["memory.max"]),
+            "memory_high": _profile_parse_raw_limit(dump["memory.high"]),
+            "pids_peak": _profile_parse_int(dump["pids.peak"]),
+        }
+
+    def _read_host(self) -> dict | None:
+        root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+        try:
+            mem_text = (root / "pressure" / "memory").read_text()
+        except OSError:
+            mem_text = None
+        try:
+            cpu_text = (root / "pressure" / "cpu").read_text()
+        except OSError:
+            cpu_text = None
+        try:
+            loadavg1 = float((root / "loadavg").read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            loadavg1 = None
+        if mem_text is None and cpu_text is None and loadavg1 is None:
+            return None
+        return {
+            "memory_pressure_raw": _profile_parse_pressure(mem_text),
+            "cpu_pressure_raw": _profile_parse_pressure(cpu_text),
+            "loadavg1": loadavg1,
+        }
+
+    def sample_once(self) -> None:
+        """One tick: a container read + a host PSI read, fed into the
+        accumulator. The FIRST call also stamps `started_at`; every call
+        (including the last, taken by the caller right before `finish()`)
+        updates `ended_at`."""
+        now = self._clock()
+        if self._first_at is None:
+            self._first_at = now
+            self.started_at = self._wall()
+        container = self._read_container()
+        host = self._read_host()
+        self.accumulator.add_sample(container, host=host, at=now)
+        self.ended_at = self._wall()
+
+    def finish(self) -> dict:
+        """The Summary (contract Sec 3, `method: "basic"`). The caller must
+        call `sample_once()` at least once (session start) before this —
+        typically once more immediately before, as the "final sample"
+        contract Sec 4.2 requires before `ctl stop`/`docker rm -f`."""
+        if self._first_at is None:
+            raise RuntimeError("BasicSampler.finish() called with no samples taken")
+        return self.accumulator.finish(self.container_id, self.cgroup,
+                                       self.started_at, self.ended_at)
 
 
 # ---------------------------------------------------------------------------
