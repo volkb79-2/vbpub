@@ -1272,7 +1272,12 @@ def test_no_stdlib_violations():
                # secrets: RG-55 profile-session tokens (contract Sec 4.1,
                # secrets.token_hex(16)) -- must be cryptographically
                # unguessable, unlike run-gate's other identifiers.
-               "secrets"}
+               "secrets",
+               # resource: RG-57 bare-host daemon-absent path,
+               # resource.getrusage(RUSAGE_CHILDREN) around wait() -- the
+               # only source of memory/cpu numbers when no profiler daemon
+               # is reachable (method: "rusage", source: "rusage-maxrss").
+               "resource"}
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
