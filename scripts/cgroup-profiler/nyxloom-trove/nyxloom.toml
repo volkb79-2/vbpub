@@ -17,10 +17,27 @@ worktree_root = "../../.worktrees"
 
 reports_dir = "nyxloom-trove/reports"
 
+# Required by every project's ProjectConfig.load() regardless of whether the
+# project adopts the handoff/carve pipeline (this one does not) -- same
+# literal value as every other vbpub project's nyxloom.toml (ciu, ciu8,
+# nyxloom, topos, assay, shared-ramdisk-depot-manager); a glob matching
+# nothing here is harmless, but the key itself has no default and its
+# absence makes even `nyxloom backlog new` fail to load this config.
+handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+
 [refs]
 readme       = "README.md"
 design       = "DESIGN.md"
 attach_guide = "ATTACH-GUIDE.md"
+
+# Managed per-entry backlog (nyxloom-trove/backlog/, `nyxloom backlog` CLI),
+# adopted 2026-09-12 (RG-55 wave P0) for the daemon's own follow-up items
+# (CP-1..). This is a separate decision from the roadmap/decisions spine
+# note above: a backlog is a defect/follow-up ledger, not the direction
+# spine, and this project having neither did not need to change to adopt one.
+[backlog_entries]
+dir       = "nyxloom-trove/backlog"
+id_prefix = "CP"
 
 # --- gates -------------------------------------------------------------------
 #

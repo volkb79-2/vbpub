@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "contract": 1,
+  "at": "2026-09-12T10:15:02Z",
+  "sessions": [
+    {
+      "session": "s-20260912T101500Z-9f01",
+      "started_at": "2026-09-12T10:15:00Z",
+      "scope": "container-shared",
+      "elapsed_seconds": 2.0,
+      "target": {
+        "container_id": "deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233",
+        "cgroup": "/dev.slice/dev-background.slice/docker-deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233.scope",
+        "token": null,
+        "targets_seen": 5
+      },
+      "meta": {
+        "lane": "rg55-fixture-lane",
+        "project": "run-gate-project",
+        "worktree": "/workspaces/vbpub",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "run_gate_revision": 41,
+        "kind": "command",
+        "expected": null
+      },
+      "live": {
+        "memory_current_bytes": 734003200,
+        "memory_peak_bytes": 796917760,
+        "cpu_cores_recent": 2.0,
+        "samples": 3,
+        "damon": {"status": "on", "hot_bytes_recent": 230686720}
+      }
+    }
+  ],
+  "host": {
+    "at": "2026-09-12T10:15:02Z",
+    "loadavg": [3.30, 2.95, 2.58],
+    "meminfo": {
+      "total_bytes": 17179869184,
+      "available_bytes": 6144000000,
+      "swap_total_bytes": 8589934592,
+      "swap_free_bytes": 8192000000
+    },
+    "pressure": {
+      "memory": {"some_avg10": 0.65, "some_avg60": 0.63, "some_avg300": 0.57, "some_total_seconds": 51.8,
+                 "full_avg10": 0.20, "full_avg60": 0.16, "full_avg300": 0.13, "full_total_seconds": 11.1},
+      "cpu": {"some_avg10": 1.10, "some_avg60": 0.78, "some_avg300": 0.68, "some_total_seconds": 22.5,
+              "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0},
+      "io": {"some_avg10": 0.06, "some_avg60": 0.045, "some_avg300": 0.035, "some_total_seconds": 0.65,
+             "full_avg10": 0.01, "full_avg60": 0.01, "full_avg300": 0.00, "full_total_seconds": 0.22}
+    },
+    "slices": {
+      "dev-background.slice": {
+        "cgroup": "/dev.slice/dev-background.slice",
+        "memory_current_bytes": 2411724800,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.50, "some_avg60": 0.45, "some_avg300": 0.40, "some_total_seconds": 3.6,
+                     "full_avg10": 0.20, "full_avg60": 0.15, "full_avg300": 0.10, "full_total_seconds": 2.45},
+          "cpu": {"some_avg10": 0.40, "some_avg60": 0.35, "some_avg300": 0.30, "some_total_seconds": 5.4,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      },
+      "dev-interactive.slice": {
+        "cgroup": "/dev.slice/dev-interactive.slice",
+        "memory_current_bytes": 838860800,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.05, "some_avg60": 0.04, "some_avg300": 0.03, "some_total_seconds": 0.24,
+                     "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0},
+          "cpu": {"some_avg10": 0.10, "some_avg60": 0.08, "some_avg300": 0.06, "some_total_seconds": 0.46,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      },
+      "dev.slice": {
+        "cgroup": "/dev.slice",
+        "memory_current_bytes": 3355443200,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": null,
+        "pressure": {
+          "memory": {"some_avg10": 0.55, "some_avg60": 0.50, "some_avg300": 0.45, "some_total_seconds": 4.4,
+                     "full_avg10": 0.12, "full_avg60": 0.10, "full_avg300": 0.09, "full_total_seconds": 1.8},
+          "cpu": {"some_avg10": 0.60, "some_avg60": 0.55, "some_avg300": 0.50, "some_total_seconds": 8.5,
+                  "full_avg10": 0.00, "full_avg60": 0.00, "full_avg300": 0.00, "full_total_seconds": 0.0}
+        }
+      }
+    }
+  }
+}

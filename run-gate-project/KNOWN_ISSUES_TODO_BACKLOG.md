@@ -4202,3 +4202,113 @@ rather than a design:
   calls.
 - dstdns's own applied policy, once this exists: `docs/testing/RIGOR-COVERAGE-POLICY.md`
   "Resource-profiling and scheduling" section.
+
+## RG-56 — admission control on the profiler registry (next wave after RG-55)
+
+**Provenance:** RG-55 plan D-6 (`run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`),
+operator interview 2026-09-12 ("swap usage is never the gate; PSI is").
+
+### Mechanism
+
+Inputs: the committed `run-gate.footprint.json` (expected footprint per
+lane, RG-55's own D-9), `cgprofile ctl status` (the live daemon's session
+registry — sessions across ALL projects/worktrees, the cross-project
+registry RG-45's direction 2 already asked for — plus host and per-slice
+PSI), and the lane's own `resources` declaration (RG-48). None of these
+exist as an admission SIGNAL today; RG-55 only measures and records them.
+
+### Proposed contract
+
+Before starting a lane, run-gate WAITS (bounded, with a periodic notice)
+while host memory PSI `full avg10` is above a configured threshold, or
+while the sum of live sessions' expected peaks (from each session's stored
+`meta.expected`) plus this lane's own expected peak exceeds a declared
+headroom for the slice; on the bound expiring, REFUSES (exit 2) naming the
+readings that caused it (the PSI value, or the sessions and their expected
+peaks that summed over headroom). `--allow-pressure` bypasses the wait/
+refusal for one invocation (disclosed). `--dry-run` reports the admission
+decision it WOULD make without ever waiting.
+
+Explicitly NOT built as part of RG-55: run-gate decides no policy until
+real footprint data exists (the estate's R-36-style "measure first, decide
+later" posture) and any threshold set before real data is a guess dressed
+as a decision — the same trap RG-27's own filing named. RG-55 wires the
+registry and the footprint manifest; RG-56 is the wave that spends them on
+an actual go/wait/refuse decision.
+
+**Cross-reference:** SPEC-V8 S16.6 (ciu gate's admission ledger, keyed on
+the slice cgroup directory) should consume the SAME registry once it
+exists, rather than growing an independent one — see SPEC-V8.md Appendix
+D.6.
+
+### Oracles (sketch, not yet written — needs the real registry first)
+
+- A fake daemon registry with two live sessions (each carrying a stored
+  `expected.memory_peak_median_bytes`) and a footprint manifest for the
+  candidate lane → assert the three outcomes (admitted immediately, waited
+  then admitted once a live session's PSI notice clears, refused after the
+  bound naming the specific readings).
+- The PSI-threshold path alone, against a fake `/proc/pressure/memory` that
+  starts above threshold and later drops.
+- `--dry-run` never blocks regardless of the fake registry's contents.
+- `--allow-pressure` bypasses a refusal that would otherwise fire, and the
+  bypass is disclosed in the lane's stdout.
+
+### Status — OPEN
+
+## RG-57 — bare-host lanes record no resource profile (RG-55 v1 gap)
+
+**Provenance:** RG-55 plan D-5 (bare-host lanes explicitly out of v1 scope;
+"pid attribution through the env token is filed as a follow-up").
+
+### Mechanism
+
+run-gate itself runs inside a devcontainer with its own private cgroup
+namespace (`cgroupns=private`, `0::/`); a bare-host lane's child process is
+a plain `subprocess`/`Popen` in that SAME pid namespace, but the daemon
+(`cgprofile-host-daemon`) runs `--pid=host` on the bare metal host, one
+level further out — from inside the devcontainer there is no host-visible
+pid for that child to hand the daemon, so `--target containerid:<lane
+pid>` has nothing correct to name; the daemon cannot be pointed at "this
+bare-host child" by pid the way it is pointed at a container by cgroup.
+
+### Proposed contract
+
+The same env token run-gate already generates for exec/ephemeral lanes
+(`RUN_GATE_PROFILE_SESSION`, contract §4.1) is exported into the bare-host
+child's environment too. run-gate then calls `ctl start --target
+containerid:<the devcontainer's OWN container id>` (read from
+`/etc/hostname` or a self `docker inspect`, resolved once per run-gate
+process) with `--scope container-shared` and the token — the daemon's
+existing token-subtree resolver (contract §4.3: scan `cgroup.procs` pids'
+`/proc/<pid>/environ`, follow descendants) then attributes exactly the
+bare-host lane's own pids inside the devcontainer's cgroup, the same
+mechanism exec-mode already relies on. The reported cgroup numbers
+(memory, CPU, PSI) are disclosed as devcontainer-wide, not lane-exclusive
+(the devcontainer may be running other work concurrently) — same caveat
+`container-shared` scope already carries for exec lanes, not a new one.
+
+**Alternative for hosts with no daemon reachable at all:**
+`resource.getrusage(RUSAGE_CHILDREN)` read immediately after `wait()`,
+recorded as `method: "rusage"` in the summary (`maxrss` = the largest
+single child's peak, not a sum; `ru_utime`/`ru_stime` = exact CPU seconds
+for that child) — coarser than the daemon path (no PSI, no DAMON, no
+sampling series) but requires nothing beyond the stdlib and works even
+with the daemon down.
+
+Conjunction lanes stay unprofiled by design either way (RG-55 plan §3.1:
+"members record their own"); this entry is about the leaf `bare-host`
+lane, not the conjunction wrapping it.
+
+### Oracles (sketch)
+
+- A fake `docker inspect` of "self" plus a fake token-subtree registry →
+  assert `ctl start` is called with `--target containerid:<devcontainer id>
+  --scope container-shared --token <the exported token>` and the returned
+  summary is stored exactly as `container-shared` numbers are today.
+- The daemon-absent path: assert `getrusage(RUSAGE_CHILDREN)` deltas
+  (before/after wait) become a `method: "rusage"` summary with the correct
+  key subset (no `damon`, no `host.slice`, no `pressure` beyond what
+  `getrusage` cannot provide — i.e. `null`, never fabricated).
+
+### Status — OPEN
