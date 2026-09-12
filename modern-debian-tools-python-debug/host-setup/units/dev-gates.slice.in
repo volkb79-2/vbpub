@@ -33,10 +33,11 @@ CPUWeight=@DEV_GATES_CPU_WEIGHT@
 IOWeight=@DEV_GATES_IO_WEIGHT@
 
 # systemd-oomd: under sustained pressure, kill inside this tier first — a
-# gate/lane container is disposable (its history record survives it, D-21's
-# detached-owner design); a long-running dev stack is not, which is exactly
-# why stacks stay in dev-background.slice instead of sharing this tier
-# (D-19). Silent no-op unless systemd-oomd is installed and running
+# gate/lane container is disposable (its history record survives it — D-28,
+# amending D-21: the daemon enforces and records the verdict, so a killed
+# client only loses its live log); a long-running dev stack is not, which is
+# exactly why stacks stay in dev-background.slice instead of sharing this
+# tier (D-19). Silent no-op unless systemd-oomd is installed and running
 # (install.sh installs it).
 ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=@DEV_GATES_OOM_PRESSURE_LIMIT@

@@ -25,29 +25,42 @@ weight in `host-setup.env`.
 
 ```
 dev.slice                    ONE absolute IOPS/bandwidth ceiling — covers
-                              all three children combined, even interactive/
+                              every child combined, even interactive/
                               IDE activity must not be able to starve production
 ├── dev-interactive.slice    devcontainers (IDE + AI agents) via
 │                             devcontainer.json runArg
-├── dev-background.slice     test/build/gate containers — explicit opt-in
-│                            (compose cgroup_parent, docker run
+├── dev-gates.slice          gate and lane containers + placed lane leaves
+│                             rg-<token> — the admission capacity object;
+│                             see "dev-gates: why" below
+├── dev-background.slice     long-running dev stacks (dstdns, ...) — explicit
+│                            opt-in (compose cgroup_parent, docker run
 │                            --cgroup-parent) OR caught by the Docker
 │                            daemon-wide default (/etc/docker/daemon.json)
+├── dev-memory_min_guaranteed.slice   individually-governed containers with a
+│                            real memory.min floor (opt-in; see CGROUP-NOTES.md
+│                            "Per-container memory.min guarantees")
 └── dev-buildkitd.slice      host-managed BuildKit worker (mdt-buildkitd.
                              service) — a shared, long-lived builder, not
                              a per-invocation job; see
                              plan-buildkitd-service.md
 ```
 
+`dev.slice` holds dev LOAD only, nothing else — the host-level
+`cgprofile-host-daemon` is a host deployment, not dev load, and ships its own
+top-level `cgprofile.slice` alongside the `cgroup-profiler` stack instead of
+living under here (design amendment A1/D-29, `run-gate-project/nyxloom-trove/
+DESIGN-2026-09-12-liveness-placement-admission.md`).
+
 | Tier | Who joins | Character |
 |---|---|---|
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
-| `dev-background.slice` | test/build/gate containers, via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
+| `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: bounded memory+swap, `systemd-oomd` kills inside the tier first — a gate is disposable, a stack is not |
+| `dev-background.slice` | long-running dev stacks (dstdns, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
 | `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - 2` cores unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's |
 | (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
 `dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
-ceiling for all three children combined — not one per tier. That is
+ceiling for every child combined — not one per tier. That is
 deliberate: even interactive/IDE work must not be able to starve production
 I/O, so a build storm AND a heavy IDE session together still can't exceed the
 estate's single cap. `CPUWeight`/memory/OOM policy stay per-child, since
@@ -73,6 +86,90 @@ caps work on any scheduler.
 BFQ's 1..1000 range, so "1000 vs 100" would be 1.81:1, not 10:1 — express IO
 ratios by lowering the loser, never raising the winner.
 [CGROUP-NOTES.md §BFQ](CGROUP-NOTES.md#bfq-caveats) has the mapping table.
+
+## dev-gates: why
+
+`dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`
+under `dev.slice`, not a child of either — every gate/lane container AND
+every placed lane leaf (`rg-<token>`, created by a future host-level daemon
+under `scripts/cgroup-profiler/`, out of this project's own scope) lives
+under it instead of sharing `dev-background.slice` with long-running dev
+stacks. It is the **admission capacity object**: its `memory.max` is what
+`run-gate` (RG-56) and ciu v8 (S16.6.1) key admission decisions on, and its
+`memory.pressure` is the pressure signal admission reads — not swap usage
+(design doc `run-gate-project/nyxloom-trove/
+DESIGN-2026-09-12-liveness-placement-admission.md` D-6/D-19).
+
+Filed from a real, measured incident (memory `soulmask-memory-pressure-
+findings.md`, 2026-08-04): gates used to share `dev-background.slice` with the
+~4 GiB `dstdns` stack, so a gate started with only ~2 GiB of headroom before
+`dev-background.slice`'s own `memory.high` began throttling it — an unrelated
+long-running stack was silently eating a gate's budget. `dev-gates.slice`
+gives gates their own ceiling, `systemd-oomd` protection (a gate is
+disposable; a stack is not, D-19), and a `MemorySwapMax` sized against this
+host's own real swap capacity rather than dev-background's.
+
+**`dev-gates.slice` contains dev LOAD only — it does not hold the profiler
+daemon.** An earlier design draft placed a `dev-infra.slice` for
+`cgprofile-host-daemon` here too; that was withdrawn (design amendment A1/D-29,
+same doc): the daemon is a host DEPLOYMENT, not dev load, and ships its own
+top-level `cgprofile.slice` with the `cgroup-profiler` stack instead — see
+that project's own docs, out of this project's scope. `dev.slice`'s job stays
+"contain dev load and nothing else."
+
+Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
+`_SWAP_MAX`/`_CPU_WEIGHT`/`_IO_WEIGHT`/`_OOM_PRESSURE_LIMIT`, sized for a
+16 GiB host and expected to be re-tuned from real admission-usage data (design
+doc §7: "measure first"). `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels
+the same export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
+`templates/devcontainer.json`'s `containerEnv` — with the same consumer
+fallback rule (D-24): a consumer that reads it unset falls back to today's
+placement, `CGROUP_PARENT_DEV_BACKGROUND`; nothing breaks on a host that has
+not re-run `install.sh` yet.
+
+**Upgrading a host that already runs mdt host-setup** (installed before
+`dev-gates.slice` existed): a plain re-run of `install.sh` alone will NOT add
+it correctly — `install.sh` never touches an already-existing
+`/etc/mdt/host-setup.env` except to render units *from* it, so the new
+`DEV_GATES_*` keys simply have no value there yet, and `render()`'s own rule
+("not set" → the whole directive is dropped, not replaced with a fallback)
+would render `dev-gates.slice` with no `MemoryHigh`/`MemoryMax`/
+`MemorySwapMax`/`ManagedOOMMemoryPressureLimit` at all — effectively
+unbounded except for the literal `ManagedOOMMemoryPressure=kill`/
+`ManagedOOMSwap=kill` lines. Pick up the new keys first (the file's own
+top comment already documents this exact "newly-added variables" case):
+
+```bash
+sudo ./install.sh --force          # backs up /etc/mdt/host-setup.env, then
+                                    # re-seeds it wholesale from the current
+                                    # example (which now has the dev-gates.slice
+                                    # section) -- this DISCARDS your prior
+                                    # per-host tuning, on purpose; diff the
+                                    # backup against the fresh file next
+sudo vi /etc/mdt/host-setup.env    # reapply whatever you had customized
+                                    # (memory tiers, IO caps, ...) from the
+                                    # backup; size DEV_GATES_MEMORY_HIGH/_MAX/
+                                    # _SWAP_MAX/_CPU_WEIGHT/_IO_WEIGHT for THIS
+                                    # host if the 16 GiB-host defaults do not fit
+sudo ./install.sh                  # renders every unit including
+                                    # dev-gates.slice.in, installs it,
+                                    # daemon-reload, starts every slice
+                                    # (dev-gates.slice included), enables +
+                                    # runs the sweep (mdt-host-slices.service)
+                                    # once immediately
+sudo mdt-host-check.sh             # verify: dev-gates.slice exists and is
+                                    # active, effective memory.high/max/
+                                    # swap.max/cpu.weight/io.weight match what
+                                    # you set
+```
+
+(`sudo ./install.sh --wizard` is the interactive alternative to the first two
+steps above — it backs up the same way, then walks every section it knows
+with your EXISTING values pre-filled as defaults so Enter reproduces prior
+tuning; it does not walk the new `DEV_GATES_*` keys individually, so review
+`/etc/mdt/host-setup.env`'s new "dev-gates.slice" section afterwards the same
+way. Either path falls through into the same render/install/daemon-reload/
+start/sweep sequence as the plain `sudo ./install.sh` step above.)
 
 ## Quick start
 
@@ -102,7 +199,7 @@ the test stacks.
 
 | Artifact | Target | Role |
 |---|---|---|
-| `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
+| `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-gates.slice.in`, `units/dev-memory_min_guaranteed.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-host-slices.service` | systemd (enabled) | boot-time apply of the runtime half |
@@ -241,7 +338,7 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 ```bash
 sudo systemctl disable --now mdt-host-slices.timer mdt-host-slices.service mdt-buildkitd.service
 sudo docker volume rm mdt-buildkitd-cache 2>/dev/null || true
-sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-buildkitd}.slice \
+sudo rm /etc/systemd/system/{dev,dev-interactive,dev-background,dev-gates,dev-memory_min_guaranteed,dev-buildkitd}.slice \
         /etc/systemd/system/mdt-buildkitd.service \
         /etc/systemd/system/docker-.scope.d/50-default-limits.conf \
         /etc/systemd/system/mdt-host-slices.{service,timer} \

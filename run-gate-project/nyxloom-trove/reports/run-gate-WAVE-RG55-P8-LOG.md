@@ -209,3 +209,80 @@ stripping (same ad hoc python check as M3), `CGROUP_PARENT_DEV_INFRA`
 confirmed absent from the parsed object, `CGROUP_PARENT_DEV_GATES` confirmed
 present with the correct value, `runArgs`'s `--cgroup-parent=
 dev-interactive.slice` confirmed unchanged.
+
+### M4 — docs (hash: see next entry)
+
+`host-setup/README.md`: Tiering model diagram/table regain `dev-gates.slice`
+(dev-infra never added, written fresh after the re-scope) plus a one-sentence
+note that `cgprofile-host-daemon` is NOT under `dev.slice` by design,
+pointing at design doc §A1 (asked for explicitly by the re-scope message).
+New "dev-gates: why" section: containment + the admission-capacity-object
+role, the 2026-08-04 finding it fixes (memory
+`soulmask-memory-pressure-findings.md`), the explicit "dev LOAD only, does
+not hold the daemon" boundary with the A1/D-29 pointer, env keys, and the
+upgrade sequence (below). "What gets installed" table's units row gains
+`dev-gates.slice.in` (and, found while already editing that exact line,
+the pre-existing `dev-memory_min_guaranteed.slice.in` gap — it shipped
+2026-09-08 but was never added to this table; a one-word drive-by fix, not
+a new M4 obligation). "Uninstall" block's `rm` brace list gains
+`dev-gates`/`dev-memory_min_guaranteed` (same drive-by).
+
+Operator install/upgrade sequence: verified against the ACTUAL install.sh
+behavior rather than assumed — `install.sh` never touches an
+already-installed `/etc/mdt/host-setup.env` except to render *from* it
+(confirmed by reading the script, not guessing), so a plain re-run after
+this package would render `dev-gates.slice` with every `@DEV_GATES_*@`
+directive silently DROPPED (render()'s "unset -> not applied" rule) --
+effectively unbounded except the literal `ManagedOOM*=kill` lines. Documented
+the already-established remedy the script's own header names for exactly
+this case (`--force` or `--wizard`, both back up + regenerate to pick up
+new keys) as the real sequence: `--force` (+ hand-reapply prior tuning from
+the backup) -> plain `install.sh` (renders/installs/daemon-reload/starts
+every slice/runs the sweep once) -> `mdt-host-check.sh` to verify, with
+`--wizard` noted as the interactive alternative to the first step. No
+daemon-restart step (re-scope: "operator sequence without the
+daemon-restart step").
+
+`host-setup/CGROUP-NOTES.md`: new "dev-gates.slice and placed lane leaves"
+section, two facts, both scoped to dev-gates only per the re-scope --
+(1) the memory.min-on-leaf fact (a future `rg-<token>` leaf's own
+`memory.min`, if the daemon package ever writes one per D-20, needs the
+same ancestor-chain cooperation from `dev-gates.slice`/`dev.slice` already
+documented above for the guaranteed tier -- currently dormant since
+`dev-gates.slice` itself declares no `MemoryMin`); (2) the
+no-nesting-inside-scopes fact from D-20 (why a lane leaf is created as a
+SIBLING under `dev-gates.slice`, never nested inside a container's own
+`docker-<id>.scope` -- cgroup v2's "no internal processes" rule would break
+every later `docker exec` with `EBUSY`; moving a pid's cgroup accounting out
+of a container's scope is safe, its pid/mount namespaces are unaffected).
+Both are documentation of design facts this package's own units depend on
+being true later -- no daemon/leaf-creation code is implemented here (that
+stays scripts/cgroup-profiler's job, out of scope).
+
+CHANGES/TODO: `modern-debian-tools-python-debug/TODO.md` is on the
+handoff's explicit "never touch, someone else's uncommitted edits" list and
+has no existing dev-gates/cgprofile line item (checked, read-only, before
+deciding) -- skipped, not touched, not committed; no separate `CHANGES.md`
+exists for this project (checked: only `TODO.md` at the project root).
+Noting the gap in the REPORT for the operator to reconcile once the other
+session's TODO.md edits land.
+
+Project's own backlog: mdt has no `nyxloom-trove/backlog/` structure (only
+run-gate-project/assay/ciu/nyxloom do) and its one candidate location
+(TODO.md) is the same blacklisted file above -- no FIXED-evidence entry
+filed anywhere in mdt itself; the REPORT carries the FIXED evidence (commit
+hashes) for whoever reconciles TODO.md, and separately for the memory file
+`soulmask-memory-pressure-findings.md` (not repo-tracked, a controller/
+session-memory concern, out of a package implementer's scope to edit
+directly) which is where the original "dev-gates.slice ... remains unbuilt"
+finding lives.
+
+Found while re-checking every dev-gates file for A1-superseded citations
+(D-18/D-21/D-24 were the three A1 touched): `units/dev-gates.slice.in`'s own
+`ManagedOOMMemoryPressure` comment (written in M1, before the re-scope
+arrived) cited "D-21's detached-owner design" for why a killed gate client
+still leaves a usable history record — D-21 was DROPPED by A1/D-28. Fixed
+in this commit to cite D-28 instead (same underlying claim, still true, just
+under the daemon-enforced mechanism rather than the detached-owner one).
+Grepped every dev-gates-touching file for D-18/D-21/D-24/D-6/D-19/D-20/D-25
+citations first — this was the only stale one found.
