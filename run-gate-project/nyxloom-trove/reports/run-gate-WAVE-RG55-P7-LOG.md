@@ -579,3 +579,84 @@ exists, in a small follow-up entry-only commit).
   regression.
 - File: `tests/test_liveness_runner_monitor.py` only (+87 lines, two new
   tests).
+
+### `5baf2670` — A4: progress stream gains `test` events, `plan.slowest_test_s`/`expect_next_event_within_s`, `candidate.tests_completed` (session 6)
+
+- Fresh successor (session 6), continuing from BRIEF-5. `"test"` added to
+  `mutation.PROGRESS_EVENTS`.
+- `liveness.py`: extracted the parse loop `compute_expect_next_event_
+  within_s` already ran into one generator, `_iter_test_events`, then
+  built three new public functions on it — `baseline_slowest_test_s`
+  (the SAME figure `compute_expect_next_event_within_s` already computed
+  internally, now surfaced so the `plan` event can read it back rather
+  than re-derive it, per BRIEF-5's own retention prompt naming this
+  exact instruction), `baseline_test_events` (the `{nodeid, outcome,
+  duration_s}` triples forwarded to the progress stream), `count_test_
+  events` (a candidate's own `tests_completed`). Also extracted
+  `LivenessRunner._events_path_for_cwd`'s hashing into a free function,
+  `candidate_events_path`, so the WRITER (`LivenessRunner`) and the NEW
+  READER (`mutation._run_one`, this session) can never compute two
+  different paths for the same `cwd`.
+- `mutation.py`: `run_mutation` gains four new optional kwargs
+  (`liveness_baseline_events_path`, `liveness_slowest_test_s`,
+  `liveness_expect_next_event_within_s`, `liveness_events_dir`), all
+  `None` for every non-liveness lane, matching the three pre-existing
+  `liveness_active`/`liveness_reason`/`liveness_plugin` kwargs' own shape.
+  `plan` gains `slowest_test_s`/`expect_next_event_within_s`. Immediately
+  after `plan`, every baseline `test` event is forwarded verbatim
+  (`phase: "baseline"`) — RW-33's own "BASELINE only" rule; no candidate
+  ever emits one. `_run_one` reads `tests_completed` back from its own
+  candidate's events file WHILE `snapshot.project_root` (the path's own
+  hash key) is still in scope — computed there, carried on `_MutantRun`,
+  read back onto the `candidate` progress event outside the `with` block.
+- `runner.py`: `liveness_candidates_dir` named once, shared between the
+  `LivenessRunner` construction and the new `run_mutation` kwarg (was two
+  separately-typed-out paths before this session). `liveness_slowest_
+  test_s` computed via the same `baseline_slowest_test_s` this session
+  added, passed through beside the pre-existing `liveness_expect_next_
+  event_within_s`.
+- Tests-first: yes — every new function in `test_liveness_proc_helpers.py`
+  (`baseline_slowest_test_s`/`baseline_test_events`/`count_test_events`/
+  `candidate_events_path`, each with `None`/missing-file/torn-last-line/
+  non-test-event cases) and every new `run_mutation` behavior in
+  `test_mutation_progress_budget_plan.py` (the two new `plan` fields; the
+  baseline-forwarding test, incl. `session_finish` exclusion and a torn
+  last line; the `tests_completed` test, whose fake `process_runner`
+  writes to the EXACT path `candidate_events_path` names — proving
+  reader/writer path agreement, not just the counting logic alone) were
+  written and run red before the corresponding production line existed.
+  Three PRE-EXISTING tests were extended with an explicit assertion on
+  the branch they already silently exercised but never checked (`plan`
+  event's two new fields `None`, no `test` event, `tests_completed`
+  `None`) — the "every new conditional tested with the OTHER optional
+  parameter at its default" quality-bar item, made explicit rather than
+  left as an implicit side effect of an unrelated assertion.
+- Coverage: `liveness.py` **100% line+branch** (297 stmts/80 branches, up
+  from 285/78 — self-check via `test_liveness.py` + `test_liveness_proc_
+  helpers.py` + `test_liveness_runner_monitor.py`, 84 tests). `mutation.py`
+  and `runner.py`: every individual new/changed line confirmed covered
+  (none appear in either file's own `missing_lines`) against a 920-test
+  combined run (the files above plus `test_progress_phase_stream.py`,
+  `test_mutation_hung_bucket.py`, `test_runner_execute.py`, `test_
+  mutation_judge.py`, `test_verify_hung_bucket.py`, `test_verdict_reason_
+  codes.py`, `test_verdict_conformance.py`, `test_errors.py`, and BOTH
+  real e2e liveness CLI tests from session 5 — the only lines either
+  file's own coverage report still names as missing are PRE-EXISTING
+  equivalence-artifact/kill-signal-artifact/dirt-handling paths this
+  commit never touched). Branch coverage specifically confirmed for the
+  new `liveness_slowest_test_s = ... if liveness_injected else None`
+  ternary in `runner.py`: `True` via the two real e2e tests (liveness
+  genuinely active), `False` via every other lane in the same 920-test
+  batch — the "OTHER optional parameter at its default" bar, satisfied
+  for a `runner.py`-level conditional, not only a `mutation.py`/
+  `liveness.py` one.
+- Regression, GREEN: 920 tests across the twelve files/two e2e tests named
+  above (two separate runs: 128 on the narrow liveness+progress set
+  first, then the full 920-test combined run for the coverage cross-
+  check — both green, no new failures introduced).
+- HOST LOAD: `/proc/pressure/memory` `full avg10` read 0.01–0.22 throughout
+  this session's own checks — well under the 5.0 back-off threshold, no
+  waiting needed. `nice -n19`/`ionice -c3` for every pytest invocation;
+  the 920-test combined run (real e2e subprocesses included) ran ~97s,
+  well within the "whole suite at most once per commit that needs it"
+  rule (run twice total: once narrow, once combined for coverage).

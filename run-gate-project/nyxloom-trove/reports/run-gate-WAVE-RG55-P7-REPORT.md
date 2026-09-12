@@ -454,25 +454,89 @@ above is the exact surface this session's own changes reached). Full gate
 (`tools/tester-unified-gate.sh`) still deferred to A6, unchanged from
 session 4.
 
-**Not done this session — A4/A5/A6, all as BRIEF-4 left them:**
-- A4 (progress-stream fields: `test` events to the stream for the
-  baseline, `plan.slowest_test_s`/`expect_next_event_within_s`,
-  `candidate.tests_completed`, `"test"` in `PROGRESS_EVENTS`) — untouched.
-  `compute_expect_next_event_within_s` and the baseline
-  `ASSAY_LIVENESS_EVENTS` wiring A3 shipped are A4's own shared
-  prerequisite, already done (and, as of this session, PROVEN to actually
-  work end to end, not merely unit-tested against hand-built fixtures);
-  A4's remaining work is reading `tests_completed`/`slowest_test_s` back
-  onto the wire, which this session did not reach. **A4 gets a real
-  benefit from this session that BRIEF-4 could not have anticipated**:
-  because the plugin now writes valid JSON, `slowest_test_s` genuinely
-  populates from a real baseline run, so A4's own `plan.slowest_test_s`
-  field will carry a REAL measured value rather than one that always
-  happened to look plausible while silently never being read.
+## A4 (session 6): progress stream gains `test` events, `plan.slowest_test_s`/`expect_next_event_within_s`, `candidate.tests_completed`
+
+Commit `5baf2670`. `"test"` added to `mutation.PROGRESS_EVENTS`.
+
+**Oracle → test mapping (B091/D-23, A4's own contract items):**
+
+| Oracle | Test(s) |
+| --- | --- |
+| `test` events reach the progress stream for the BASELINE only, never per candidate | `test_baseline_test_events_are_forwarded_right_after_plan_never_per_candidate` (forwards two, excludes `session_finish` and a torn last line, asserts zero `candidate` records ever carry one) |
+| `plan` gains `slowest_test_s` | `test_plan_event_reports_slowest_test_s_and_expect_next_event_within_s` + the base test's own `None`-default assertion |
+| `plan` gains `expect_next_event_within_s` | same two tests |
+| `candidate` gains `tests_completed` | `test_candidate_progress_event_gains_tests_completed_from_its_own_events_file` + the base test's own `None`-default assertion |
+| `"test"` in `PROGRESS_EVENTS` | implicit — `ProgressStream.emit` would raise `ValueError` on an unlisted name, and the forwarding test's own `write_progress({"event": "test", ...})` calls pass through `ProgressStream.emit` for real (`progress_artifact=progress_path` is a real `ProgressStream`, not a bare callable) |
+| `slowest_test_s`/`expect_next_event_within_s` are READ BACK, never re-derived a second way | `liveness.compute_expect_next_event_within_s` now delegates to `baseline_slowest_test_s`, the same function `runner.py` calls directly for the `plan` event's own copy — one parse, two readers; `test_baseline_slowest_test_s_reads_the_max_duration` asserts the two functions agree on the identical fixture |
+| `tests_completed` is READ from the candidate's OWN file, not miscounted across candidates | the fake `process_runner` in `test_candidate_progress_event_gains_tests_completed_from_its_own_events_file` writes a DIFFERENT test count per candidate (1 vs 2), keyed by `cwd`; the assertion `by_bucket == {"killed": 2, "survived": 1}` would fail under any cross-candidate leak |
+| reader (`mutation._run_one`) and writer (`liveness.LivenessRunner`) agree on the candidate events path | `test_candidate_events_path_matches_the_livenessrunners_own_writer_path` (direct equality against `LivenessRunner._events_path_for_cwd`) plus the same fact proven indirectly by the `tests_completed` test above (the fake runner writes via `liveness.candidate_events_path` directly; `_run_one` reads via the same function — if they disagreed, `tests_completed` would read `0`/`None`, not the written count) |
+
+**Design note on the "read it back, never re-derive" instruction** (BRIEF-5's
+own retention prompt, quoting the original A4 spec verbatim): the safest
+reading was NOT to change `compute_expect_next_event_within_s`'s public
+contract (13 pre-existing tests depend on its exact float-returning
+signature) but to extract the parse it already does into one generator
+(`_iter_test_events`) and build `baseline_slowest_test_s` on TOP of that
+same generator, with `compute_expect_next_event_within_s` itself now
+calling `baseline_slowest_test_s` rather than re-parsing. `runner.py` calls
+`baseline_slowest_test_s` once (for the `plan` event's own figure) and
+`compute_expect_next_event_within_s` once (for `LivenessRunner`'s own idle
+threshold, unchanged) — technically two reads of the small baseline file,
+but through the exact same single parsing implementation both times, so the
+two facts can never disagree about what "the slowest test" means even
+though the disk is touched twice. A stricter reading (thread the raw
+`slowest_test_s` value INTO `compute_expect_next_event_within_s` as a
+parameter to avoid the second read entirely) was rejected: it would move
+the `max(3x, 15s)` FORMULA itself into two places (the function, and a
+caller computing the fallback branch by hand) instead of one, trading a
+cheap double file-read for a genuinely riskier double-implemented formula.
+Flagged per BLOCKED protocol; default taken, no ask.
+
+**tests_completed placement decision**: computed inside `_run_one`
+immediately after `execute_plan` returns, while `snapshot.project_root`
+(the hash key `candidate_events_path` needs) is still in scope, rather
+than after the `with prepared.materialize_replacement(...)` block closes
+— even though the events file itself lives at the lane's PERSISTENT
+`liveness_events_dir`, not inside the ephemeral snapshot, so it would
+still be *readable* later; only the *path* to it needs the live `cwd`.
+Stored on a new `_MutantRun.tests_completed` field, matching the existing
+`elapsed_seconds` pattern exactly (computed inside `_run_one`, read back
+by the caller when building the `candidate` progress event).
+
+**Coverage:** `liveness.py` 100% line+branch (297 stmts/80 branches, up
+from 285/78; self-check via 84 tests in `test_liveness.py` + `test_
+liveness_proc_helpers.py` + `test_liveness_runner_monitor.py`).
+`mutation.py`/`runner.py`: every individual new or changed line confirmed
+present in neither file's own coverage-report `missing_lines`, checked
+against a 920-test combined run (narrow liveness/progress suite + runner/
+verdict/hung-bucket regression set + both session-5 real e2e liveness CLI
+tests, for real `liveness_injected=True` branch coverage on the new
+`runner.py` ternary). The only lines either file's own report still names
+as missing are pre-existing equivalence-artifact/kill-signal-artifact/
+dirt-handling paths this commit never touched — verified by direct line-
+number cross-reference against the JSON coverage report, not by eyeballing
+percentages.
+
+**Regression:** 920 tests green (the twelve-file/two-e2e-test combined run
+above), plus an earlier 128-test narrow run (liveness + progress files
+only) before the coverage cross-check. No full `mutation`/`runner`/
+`verdict`-named 2107-test sweep this session either — the 920-test
+combined run is a materially larger targeted set than session 5's own
+768, chosen because A4 touches both `mutation.py`'s progress-event sites
+AND `runner.py`'s baseline/candidate dispatch, and A6's own close-out
+still owes the full sweep once before the real gate, unchanged from every
+prior session's own note.
+
+## Not done yet — A5/A6
+
 - A5 (`--rejudge`/`--rejudge-outcome`) — untouched, unchanged from
   BRIEF-1/BRIEF-2's own sketch; `--rejudge-outcome hung` is implementable
   now that the bucket exists (session 4), same as BRIEF-4 already noted.
 - A6 (close-out: docs, `CHANGES.md`, backlog rows, the real gate) —
-  untouched; still needs ALL of A4/A5 first, per the handoff's own
-  ordering. `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4) AND
-  A3(session 5) in one pass — never touched for any of the three.
+  untouched; still needs A5 first, per the handoff's own ordering.
+  `CHANGES.md`/`CONSUMERS.md` now owe A2, A3(session 4), A3(session 5)
+  AND A4 in one pass — never touched for any of the four. **New item for
+  A6, from the controller mid-session (not in the original handoff)**:
+  file backlog row **B092** — "`--resume` identity (B088, per-tree) is
+  invalidated by commits to non-judged paths" (RG-55 wave, RW-41,
+  2026-09-12) — row only, do not implement.
