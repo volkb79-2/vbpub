@@ -659,6 +659,19 @@ never a silent edit to the contract file.
   and returns with selftest/r1/r3 green; reviewer round 2 follows on that
   tip; r2 when a slot frees.
 
+- **RW-47 (controller incident 19:47Z — P1's relaunched r2 container
+  destroyed by an image-filtered sweep):** after stopping a duplicate P7
+  gate run the controller removed containers by `--filter
+  ancestor=tester-unified:local`; that image is shared by run-gate lane
+  containers, so P1's `run-gate-vbpub-r2-3431654-…` (relaunch at
+  `5ce232d1`, in its baseline phase) was removed too. Records at that
+  tree are intact; P1 relaunches once more (≈ 15 min). Rule (memory
+  `docker-remove-by-exact-name-only`): containers are removed only by the
+  exact name of the job that created them — never by image, label or
+  prune while other sessions run. The duplicate P7 gate run itself was
+  stopped correctly (the registered gate was already green on the same
+  tip; a second run gained nothing and risked the container cap).
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
