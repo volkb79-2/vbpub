@@ -455,3 +455,198 @@ WHOLE-SUITE gates (`selftest`, `assay-r1`) are currently RED for reasons
 established above to be environmental and pre-existing, not caused by
 this package's commits; `assay-r3` is GREEN. Continuation:
 `run-gate-WAVE-RG55-P4-BRIEF-4.md`.
+
+---
+
+# Session 5 — RW-46 (fresh successor: lock-dir isolation, rusage floor, S1-S5, gates)
+
+Fresh successor from `run-gate-WAVE-RG55-P4-BRIEF-4.md` and controller
+ruling RW-46. Starting tip `00a79de4`. Final tip `d444b246`.
+
+## RW-46a — test-suite lock-dir isolation + root cause, with evidence
+
+**Root cause of the 493 stale `run-gate-exec-*-runner.lock` DIRECTORIES**
+(session 4's own finding): `TestResourceAdmission::test_unusable_lock_
+path_is_infra_failure_not_traceback` (RG-20 precedent) and
+`TestExecModeMutex::test_unusable_lock_path_is_infra_failure_not_
+traceback` each deliberately `(lock path).mkdir()` a DIRECTORY at the
+lock path — to prove `acquire_*_lock`'s `OSError`-not-traceback behavior
+(`_open_lockfile` only ever `os.open()`s a plain FILE; a pre-existing
+directory there makes that `open()` raise `IsADirectoryError`, which the
+caller correctly turns into `fail_infra`, exit 3) — **with no cleanup**.
+Both tests share a container name (`myproj-dev1-<pid>-runner`) that
+includes the RUNNING PID, so every green run of either test, across every
+RG-55-era invocation since Sep 3, left exactly one NEW directory behind
+forever (a directory is never removed by anything else in this codebase —
+confirmed by grep: no `mkdir`/`os.mkdir`/`Path.mkdir` touches a
+`run-gate-{exec,shared}-*.lock` path anywhere else in `run-gate.py` or
+`tests/test_run_gate.py`). Located by reading `tests/test_run_gate.py`
+directly (`grep -n "run-gate-exec-\|SHARED_LOCK_DIR\|TestExecModeMutex"`)
+— no speculation, the leak is visible in the test source itself.
+
+**Fix (both parts of the ruling):**
+1. **Isolation.** New `LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"` +
+   `_lock_dir()` helper in `run-gate.py`, re-reading
+   `os.environ.get(LOCK_DIR_ENV_VAR, SHARED_LOCK_DIR)` on every call
+   (never cached) — the same override shape as the pre-existing
+   `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT` test/namespace levers,
+   chosen deliberately because it reaches BOTH in-process `run_gate.
+   main()` calls and subprocess `run_tool()`/`_TOOL_INVOKE` invocations
+   without a module-attribute monkeypatch (which would be unsafe: this
+   test file and `test_coverage_gate.py` each load their own tool via a
+   fresh `importlib.util.spec_from_file_location` at THEIR OWN collection
+   time, so a patch against one loaded module object would not reach a
+   different copy's own global lookups). New `tests/conftest.py`: autouse
+   `isolate_shared_lock_dir` fixture points `RUN_GATE_LOCK_DIR` at a
+   fresh `tmp_path_factory.mktemp(...)` per test. All 9 hard-coded
+   `Path("/tmp") / f"run-gate-{...}"` constructions in
+   `TestResourceAdmission`/`TestExecModeMutex` (which pre-open "holder"
+   fds to simulate contention) now route through a matching
+   `_shared_lock_dir()` test helper — required, or the test's own holder
+   and the code's own lock would sit on two different files.
+2. **Root cause.** Both offending tests wrapped in `try/finally:
+   <path>.rmdir()`. Regression proof, direct and estate-wide:
+   `TestExecModeMutex::test_a_real_lane_run_never_touches_host_tmp`
+   snapshots real `/tmp` before/after a REAL in-process lane run and
+   asserts byte-identical, plus a positive check that the isolated dir
+   DID receive the lock (isolation isn't silently a no-op). The
+   `isolate_shared_lock_dir` fixture's own teardown additionally asserts,
+   after EVERY test in the whole suite, that no directory-shaped entry
+   survives under the isolated dir — a permanent, suite-wide guard against
+   this exact defect class recurring anywhere, present or future, not
+   just at the two known sites.
+3. **`doctor` INFO check** (new section 8): counts
+   `run-gate-{exec,shared}-*.lock` entries under `_lock_dir()` older than
+   1 day, names how many are directories (always corruption), never
+   deletes. **Live confirmation this session** (`./run-gate.py doctor`,
+   captured verbatim below): `2603 entries older than 1 day under /tmp,
+   306 as a DIRECTORY` — real, growing evidence that OTHER RG-55
+   packages' own un-fixed test suites are still writing to host `/tmp`
+   concurrently (this package's own suite no longer contributes, per the
+   regression test above).
+
+One-command verification: `python3 -m pytest tests/test_run_gate.py -k
+"TestExecModeMutex or TestResourceAdmission or TestDoctorStaleLockCheck" -q`
+→ 34 passed.
+
+## RW-46b — rusage `memory.floor_bytes`/`memory.peak_at_floor`
+
+`os.wait4()`'s `ru_maxrss` (RW-43/B1) is exact for the lane's OWN child —
+nothing left in the arithmetic to fix. But fork+exec's COW page-table
+inheritance means a short-lived child's own high-water RSS can never fall
+below run-gate's OWN resident size at the moment it forked the child
+(session 4's own proof, carried forward: an artificial small parent
+~11 MiB resident forking `/bin/true` measured `ru_maxrss` ~11 MiB for the
+child; the SAME fork with a 300 MiB parent measured ~311-318 MiB for the
+SAME trivial child, on `Popen`/`posix_spawn`/raw `fork()+exec()`
+identically). New `_self_rss_bytes()` reads `/proc/self/statm` (resident
+pages × page size, honors `RUN_GATE_PROC_ROOT`) immediately before
+`Popen()` on the rusage path only, threaded into `finish_bare_host_
+profiling` as `memory.floor_bytes` (new optional parameter, default
+`None` — every pre-existing call site unaffected). `memory.peak_bytes` is
+UNCHANGED; new `memory.peak_at_floor`: `true` when `peak_bytes <=
+floor_bytes`, `false` when the child's own footprint exceeded it, `null`
+only when `floor_bytes` itself is unreadable (never fabricated).
+Propagated into the footprint manifest (per-lane, from the most-recently-
+profiled entry — a lane's floor-bound-ness can change run to run) and
+disclosed everywhere a rusage peak is shown: `print_footprint_line`
+(S1: previously showed NEITHER caveat at all), `_fmt_resource_stats`
+(`history`, same S1 gap), `_fmt_footprint_row`, and a new doctor INFO
+block. SPEC `R-43i`/`R-44a`, `LANE-AUTHORING.md`, `CHANGES.md` all
+explain the mechanism.
+
+One-command verification: `python3 -m pytest tests/test_run_gate.py -k
+"TestBareHostRusageArithmetic or TestSelfRssBytes or TestBareHostProfilingWiring or TestFootprintDoctorChecks" -q`
+→ 45 passed.
+
+## S1-S5 table
+
+| finding | what changed | one-command verification |
+|---|---|---|
+| S1 — rusage caveat missing from the live `footprint` line and `history` | `print_footprint_line`/`_fmt_resource_stats` now print `[source: rusage-maxrss]` (folded into the RW-46b commit, designed together) | `python3 -m pytest tests/test_run_gate.py -k "TestBareHostProfilingWiring or TestFootprintDoctorChecks" -q` |
+| S2/RG-59 — daemon-absent match over-fired on a RUNNING daemon's own crash | `_stderr_names_daemon_not_running` narrowed to docker's reserved exit codes (125/126/127) or a `docker:`/`Error response from daemon:` stderr prefix | `python3 -m pytest tests/test_run_gate.py -k "ProfilerClient" -q` (26 passed) |
+| S3 — `test_killed_client_leaves_the_record_on_disk` was circular | rewritten around a REAL client subprocess killed mid-exec (mirrors `TestReattachAcrossADeadClient`); proven to fail with the write reverted | `python3 -m pytest tests/test_run_gate.py::TestExecLaneInflightRecord -q` (4 passed) |
+| S4 — stale comment at `run-gate.py:8136` stated the opposite of RG-57 | comment corrected; confirmed no test pins the stale wording | `grep -n "categorically unprofiled" tests/test_run_gate.py` (no hits) |
+| S5 — RG-61 item-8 test counts stale | recounted at the current tip (`TestBareHostStallTimeoutWarning`=3, `TestBareHostProfilingWiring`=17, `TestExecLaneInflightRecord`=4, `TestResolveSelfContainerIdDirectBranches`=6); `KNOWN_ISSUES_TODO_BACKLOG.md` RG-57/58/60 + this LOG corrected, RG-61's own prior correction annotated rather than overwritten | manual `awk`-bounded recount, shown in the LOG |
+
+## The regenerated footprint transcript (item 4)
+
+```console
+$ ./run-gate.py footprint --write
+run-gate rev 42 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+  LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
+  assay-r1                2    265 MiB/266 MiB            -          -    0.59        -     179.5s [source: rusage-maxrss]
+  assay-r3                3    181 MiB/198 MiB            -          -    0.69        -      15.9s [source: rusage-maxrss]
+  selftest                3    268 MiB/286 MiB            -          -    0.59        -     157.6s [source: rusage-maxrss]
+```
+
+Captured on a clean tree immediately after the FIRST green `selftest`
+this session (`git status --porcelain` empty, tip `9159c58d` at capture
+time). `peak_at_floor`: `false` for `selftest` (its most-recent run is
+from this session, post-RW-46b); `null` for `assay-r1`/`assay-r3` (their
+most-recently-profiled history entries predate this session's
+`floor_bytes` field — contract Sec 1.7: absent means unknown, never
+fabricated as `false`). `CONSUMERS.md`'s own transcript replaced verbatim
+with this capture.
+
+## `./run-gate.py doctor` (captured live this session)
+
+```
+run-gate: doctor: [OK] docker: /usr/bin/docker
+run-gate: doctor: [OK] lane argv[0] (RG-34): 3 container command lane(s): every argv[0] is {worktree}-anchored, absolute, or a bare command name
+run-gate: doctor: [OK] git: worktree /workspaces/vbpub/.worktrees/rg55-followups-run-gate
+run-gate: doctor: [WARN] host-lane git view (RG-21): ... (linked worktree, pre-existing, unrelated to P4)
+run-gate: doctor: [OK] mountinfo: namespace alias derivable: /home/vb/volkb79-2/vbpub
+run-gate: doctor: [OK] git-config: /tmp writable for GIT_CONFIG_GLOBAL (safe.directory isolation)
+run-gate: doctor: [SKIP] lane 'assay-r1' toolchain: environment is the built-in 'bare-host' — its PATH is this machine's, and the lane's own run reports what is missing
+run-gate: doctor: [SKIP] lane 'assay-r2' toolchain: environment is the built-in 'bare-host' — its PATH is this machine's, and the lane's own run reports what is missing
+run-gate: doctor: [OK] footprint drift: 3 lane(s) within 25% of their live history median peak
+run-gate: doctor: [INFO] footprint source: assay-r1, assay-r3, selftest: memory peak is rusage-maxrss (RG-57 bare-host daemon-absent path) — that lane's own child's peak RSS (os.wait4), not a cgroup read and not a sum across children
+run-gate: doctor: [OK] footprint staleness: distilled 0 day(s) ago (<= 30 day threshold)
+run-gate: doctor: [OK] profile config: enabled=True daemon='cgprofile-host-daemon' interval=1s damon=True (source: default)
+run-gate: doctor: [WARN] profiler daemon: 'cgprofile-host-daemon' not running (start it: cd scripts/cgroup-profiler && ciu up) — container/exec lanes fall back to basic (in-lane) sampling, bare-host lanes to coarse rusage accounting (R-43i)
+run-gate: doctor: [INFO] stale coordination locks: 2603 entries older than 1 day under /tmp, 306 as a DIRECTORY (never legitimate — corruption, see above) — report only, doctor never deletes
+run-gate: doctor: 14 check(s): 8 OK, 2 warning(s), 0 failure(s), 2 skipped (could not determine), 2 info
+```
+
+No lane in this project is floor-bound at this snapshot, so the
+"footprint peak-at-floor" INFO block (also new this session) does not
+appear here — see `TestFootprintDoctorChecks` for it exercised directly.
+
+## Gate verdicts (verdict read in a SEPARATE step every time)
+
+- **`./run-gate.py selftest` (bare): PASS** — 1143 passed, 4 skipped, 0
+  failures; `diff-coverage OK: 1066/1066 changed executable lines covered
+  (100.0%); branches 394/394 taken`; `lane 'selftest' exit 0`. Second
+  attempt (first attempt's own new-code diff-coverage gaps closed by two
+  intermediate commits — pytest itself was green on BOTH attempts).
+- **`./run-gate.py --base rg55-run-gate-client assay-r1`: PASS** — third
+  attempt. Attempts 1-2 failed on two DIFFERENT pre-existing,
+  environment-/order-sensitive tests unrelated to this package's diff
+  (`TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`,
+  an order-dependent flake confirmed non-deterministic via 3 isolated
+  reruns of just that class — PASS/PASS/FAIL — and traced to
+  `pytest-randomly` 5.0.0 being active with no seed pinned; then
+  `TestHistoryEligibilityGuard.test_tree_state_is_sampled_before_the_
+  lane_not_after`, an ordinary `4.001 == 4.0` timing flake under load).
+  Filed `KNOWN_ISSUES_TODO_BACKLOG.md` RG-62 for both — root-caused, not
+  blindly retried past. `r1: PASS (exit 0)`.
+- **`./run-gate.py assay-r3` (bare): PASS** — first attempt, exit 0. Both
+  canaries (`median-not-mean`, `median-not-mean-series-stats`) verified
+  rejected: `canary: 2 rejected, 0 survived`.
+- **`assay-r2`: NOT attempted** — controller-scheduled separately
+  (RW-42/RW-43/RW-46), never this package's own call to make.
+
+## Status
+
+Tip **`d444b246`** on branch `rg55-followups-run-gate`, worktree
+`/workspaces/vbpub/.worktrees/rg55-followups-run-gate`. Working tree
+clean. RW-46a and RW-46b both landed and tested; S1-S5 all closed;
+`run-gate.footprint.json`/`CONSUMERS.md` regenerated from a clean
+selftest PASS; `doctor` output captured; `selftest`/`assay-r1`/`assay-r3`
+all GREEN this session (two unrelated pre-existing flakes diagnosed and
+filed as RG-62, not fixed — out of this package's own RG-57..61 scope).
+`assay-r2` remains controller-scheduled. Package is DONE modulo `assay-r2`
+and reviewer round 2.
