@@ -983,13 +983,22 @@ into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
 answers to "does this belong in git" for a reason: one is this checkout's
 raw log, the other is the distilled number everyone downstream should see).
 
+Captured from a real, clean-tree, profiled `selftest` PASS on this project
+itself (RG-55's own "consequence to exploit": run-gate-project's own lanes
+are all bare-host, so RG-57 makes this project self-hosting for RG-61's
+own transcript) — a `rusage`-sourced entry, since no `cgprofile-host-daemon`
+was reachable in this environment. Verbatim (including the `.run-gate/`
+store path, which is checkout-relative — this capture ran from the RG-55
+wave's own `rg55-followups-run-gate` worktree, not `run-gate-project/`
+directly; the table's own shape is the part that generalizes):
+
 ```console
 $ ./run-gate.py footprint --write
-run-gate rev 41 — lane resource footprint
-store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
-manifest written: /workspaces/vbpub/run-gate-project/run-gate.footprint.json
-  LANE                RUNS  PEAK(med/max)         +BASE      HOT p90    CORES   STALL  DURATION
-  selftest               8   746 MiB/812 MiB    200 MiB     181 MiB     1.30    4.8s      316.2s
+run-gate rev 42 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+  LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
+  selftest                1    267 MiB/267 MiB            -          -    0.54        -     172.3s [source: rusage-maxrss]
 ```
 
 A lane with no profiled PASS run yet is simply OMITTED (absent means

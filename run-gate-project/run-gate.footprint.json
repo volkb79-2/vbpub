@@ -1,0 +1,43 @@
+{
+  "distilled_at": "2026-09-12T17:00:31Z",
+  "from_commit": "e0e02dcec7cbc231e6a3e30ce37348d6b436e7d3",
+  "generated_by": "run-gate",
+  "keep": 10,
+  "lanes": {
+    "selftest": {
+      "completed_runs": 3,
+      "cpu_cores": {
+        "avg_median": 0.542,
+        "max": 0.542
+      },
+      "duration_s": {
+        "max": 172.315,
+        "median": 172.315
+      },
+      "hot_set_bytes": {
+        "p90_max": null,
+        "p90_median": null
+      },
+      "last_at": "2026-09-12T16:57:26Z",
+      "last_commit": "e0e02dcec7cbc231e6a3e30ce37348d6b436e7d3",
+      "memory_full_stall_s": {
+        "max": null,
+        "median": null
+      },
+      "memory_peak_bytes": {
+        "max": 279969792,
+        "median": 279969792
+      },
+      "memory_peak_over_baseline_bytes": {
+        "max": null,
+        "median": null
+      },
+      "method": "rusage",
+      "runs": 1,
+      "scope": null,
+      "source": "rusage-maxrss"
+    }
+  },
+  "revision": 42,
+  "schema": 1
+}
