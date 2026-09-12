@@ -14305,6 +14305,235 @@ class TestBareHostProfilingWiring:
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
 
+    def test_docker_not_found_disables_the_daemon_path(
+            self, tmp_path, monkeypatch, capsys):
+        # `start_bare_host_profiling`'s OWN `if not docker:` guard -- no
+        # docker binary on PATH AT ALL (a laptop/CI runner with no docker
+        # installed), distinct from `resolve_self_container_id` failing
+        # (docker present, just "not one of ITS containers"). Still
+        # degrades to a valid rusage profile, never a fatal error.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        real_which = shutil.which
+        monkeypatch.setattr(
+            run_gate.shutil, "which",
+            lambda name, *a, **k: (None if name == "docker"
+                                   else real_which(name, *a, **k)))
+        assert run_gate.main(["suite"]) == 0
+        err = capsys.readouterr().err
+        assert "docker not found on PATH" in err
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "rusage"
+
+    def test_daemon_version_failure_disables_the_daemon_path(
+            self, tmp_path, monkeypatch, capsys):
+        # `start_bare_host_profiling`'s `if version_doc is None:` guard --
+        # the daemon answered `ctl version` but REFUSED (a real, structured
+        # failure response), distinct from `resolve_self_container_id`
+        # failing (no daemon contact attempted at all) and from
+        # `client.start()` failing (contacted, version OK, `start` itself
+        # refused, covered separately below).
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        set_cgprofile_plan(
+            tmp_path, monkeypatch,
+            version=('{"ok": false, "contract": 1, "error": '
+                     '{"code": "not_ready", "message": "planted: version refused"}}',
+                     0, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        assert run_gate.main(["suite"]) == 0
+        err = capsys.readouterr().err
+        assert "planted: version refused" in err
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "rusage"
+
+    def test_daemon_start_failure_disables_the_daemon_path(
+            self, tmp_path, monkeypatch, capsys):
+        # The last of the three `start_bare_host_profiling` failure guards:
+        # `ctl version` succeeds but `ctl start` itself refuses.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        set_cgprofile_plan(
+            tmp_path, monkeypatch,
+            version=(version, None, None),
+            start=('{"ok": false, "contract": 1, "error": '
+                   '{"code": "start_refused", "message": "planted: start refused"}}',
+                   0, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        assert run_gate.main(["suite"]) == 0
+        err = capsys.readouterr().err
+        assert "planted: start refused" in err
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "rusage"
+
+    def test_dry_run_with_profiling_disabled_skips_the_pressure_line(
+            self, tmp_path, monkeypatch, capsys):
+        # `profiling_off_by_default` (module autouse) leaves RUN_GATE_PROFILE
+        # at "off" here -- the dry-run block's own `if profile_plan and
+        # profile_plan["enabled"]:` guard around `print_host_pressure_line()`
+        # never fires. `test_dry_run_has_no_run_record` already covers the
+        # ENABLED arm (it delenv's the override); this is the disabled arm,
+        # the ordinary case for a plain `--dry-run` with profiling off.
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "host memory PSI" not in out
+        assert "DRY RUN" in out
+
+    def test_cleanup_crash_never_escapes_the_lane(
+            self, tmp_path, monkeypatch, capsys):
+        # R-36h/B1d: the OUTER guard around `finish_bare_host_profiling` +
+        # `print_profile_warning` + `print_footprint_line` + the run
+        # record's own resources/profile_error/profile_ref update --
+        # distinct from `test_getrusage_raising_never_aborts_the_lane`
+        # (which plants inside the getrusage bracket itself, still caught
+        # by the INNER try and still producing a valid degraded profile).
+        # This plants directly in `finish_bare_host_profiling`, the kind of
+        # "should never happen" internal crash the outer try/except exists
+        # for -- proving the lane's own exit code and the run record's
+        # `profile_error` both survive it, mirroring
+        # `TestProfilingNeverRaisesEndToEnd`'s container-lane precedent.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+
+        def _boom(*a, **k):
+            raise RuntimeError("planted: finish_bare_host_profiling exploded")
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling", _boom)
+        assert run_gate.main(["suite"]) == 0   # the LANE's own exit code
+        err = capsys.readouterr().err
+        assert "profiling: cleanup crashed unexpectedly" in err
+        assert "planted: finish_bare_host_profiling exploded" in err
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert latest["profile_error"] == (
+            "profiling cleanup crashed unexpectedly: planted: "
+            "finish_bare_host_profiling exploded")
+
+    def test_direct_call_with_no_run_record_still_profiles(
+            self, tmp_path, monkeypatch):
+        # `run_record` defaults to `None` -- reachable only via a DIRECT
+        # call to `run_bare_host_lane` (`main()` always builds a real
+        # inflight/history record for a non-dry-run invocation, and
+        # `--dry-run` returns before this code runs at all). Proves the
+        # `if run_record is not None:` guard's FALSE arm: profiling still
+        # runs and finishes normally, there is simply nowhere to store the
+        # result.
+        repo, proj = make_history_repo(tmp_path, self._config())
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        profile_plan = {"enabled": True,
+                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
+                        "damon": run_gate.PROFILE_DAMON_DEFAULT,
+                        "source": "test", "disabled_reason": "disabled",
+                        "token": None}
+        code = run_gate.run_bare_host_lane(
+            {"kind": "command", "environment": "bare-host", "argv": ["true"],
+             "clean_tree": False},
+            "suite", proj, repo, repo, dry_run=False, request_base=None,
+            run_record=None, profile_plan=profile_plan)
+        assert code == 0
+
+    def test_direct_call_cleanup_crash_with_no_run_record(
+            self, tmp_path, monkeypatch, capsys):
+        # The except block's OWN `if run_record is not None:` guard (7607,
+        # distinct from the try block's 7596) has the SAME two arms --
+        # `test_cleanup_crash_never_escapes_the_lane` above proves the TRUE
+        # arm (a real run_record survives a planted crash); this is the
+        # FALSE arm, only reachable via a direct call like the test above
+        # (main() never builds a None run_record for a real invocation).
+        repo, proj = make_history_repo(tmp_path, self._config())
+        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        profile_plan = {"enabled": True,
+                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
+                        "damon": run_gate.PROFILE_DAMON_DEFAULT,
+                        "source": "test", "disabled_reason": "disabled",
+                        "token": None}
+
+        def _boom(*a, **k):
+            raise RuntimeError("planted: finish_bare_host_profiling exploded")
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling", _boom)
+        code = run_gate.run_bare_host_lane(
+            {"kind": "command", "environment": "bare-host", "argv": ["true"],
+             "clean_tree": False},
+            "suite", proj, repo, repo, dry_run=False, request_base=None,
+            run_record=None, profile_plan=profile_plan)
+        assert code == 0   # the LANE's own exit code, unaffected
+        err = capsys.readouterr().err
+        assert "profiling: cleanup crashed unexpectedly" in err
+
+
+class TestResolveSelfContainerIdDirectBranches:
+    """RG-57's `resolve_self_container_id` -- the bare-host daemon path's
+    own target resolution -- exercised directly against each of its five
+    own early-return branches. Testing these through `main()` would
+    require controlling this test process's own real `/etc/hostname`;
+    calling the function directly with a narrowly-scoped `Path.read_text`
+    monkeypatch (the same pattern `TestOwnerLivenessAndFollowEdges` already
+    uses for its own `/proc` reads) is the same-cost, more honest way to
+    reach each branch on purpose rather than by accident of environment."""
+
+    def test_hostname_read_oserror(self, monkeypatch):
+        def boom(self, *a, **k):
+            raise OSError("planted: no /etc/hostname")
+        monkeypatch.setattr(Path, "read_text", boom)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "could not read /etc/hostname" in reason
+
+    def test_hostname_empty(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "   \n")
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "/etc/hostname is empty" in reason
+
+    def test_docker_inspect_oserror(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+
+        def boom(*a, **k):
+            raise OSError("planted: docker inspect could not run")
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "docker inspect failed" in reason
+
+    def test_docker_inspect_nonzero_returncode(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(["docker"], 1, stdout="",
+                                         stderr="Error: No such object: abc123\n")
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "abc123" in reason and "No such object" in reason
+
+    def test_docker_inspect_empty_stdout(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(["docker"], 0, stdout="\n", stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "returned no id" in reason
+
+    def test_docker_inspect_success_returns_the_real_id(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(["docker"], 0,
+                                         stdout="sha256:realid789\n", stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id == "sha256:realid789"
+        assert reason is None
+
 
 class TestEphemeralProfilingWiring:
     """The full ephemeral flow through `main()`: token injection, the
