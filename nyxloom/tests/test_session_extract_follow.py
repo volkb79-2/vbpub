@@ -178,6 +178,12 @@ def test_a_partial_fragment_after_a_mid_line_anchor_does_not_claim_the_offset(tm
     tailer.close()
 
 
+def test_tailer_close_is_idempotent_when_no_handle_is_open(tmp_path):
+    tailer = JsonlTailer(tmp_path / "not-created-yet.jsonl", offset=0)
+    tailer.close()
+    tailer.close()
+
+
 def test_follow_primes_a_question_from_phase_one_before_reading_its_answer(tmp_path):
     fp = tmp_path / "session.jsonl"
     question = _rec(type="assistant", uuid="q1", timestamp=_TS, message={
@@ -381,6 +387,16 @@ def test_thinking_behind_a_still_pending_event_keeps_stream_order():
     ).emitted == []
     result = selector.feed(NormalizedEvent(2, "op2", _TS, EventKind.OPERATOR_TEXT, "ok"))
     assert [e.marker for e in result.emitted] == ["a0", "th1", "op2"]
+
+
+def test_thinking_held_behind_a_pending_event_can_be_dropped_when_resolved():
+    selector = FollowSelector(ExtractConfig(include_thinking=True))
+    selector.feed(NormalizedEvent(0, "a0", _TS, EventKind.ASSISTANT_TEXT, "Let me check."))
+    assert selector.feed(
+        NormalizedEvent(1, "th1", _TS, EventKind.THINKING, "short")
+    ).emitted == []
+    result = selector.feed(NormalizedEvent(2, "op2", _TS, EventKind.OPERATOR_TEXT, "ok"))
+    assert [e.marker for e in result.emitted] == ["op2"]
 
 
 def test_thinking_after_an_already_emitted_pending_event_passes_through():

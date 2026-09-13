@@ -345,6 +345,13 @@ def test_decide_evaluates_thinking_with_the_shared_assistant_text_rules():
     assert decide(thinking, ExtractConfig(include_thinking=True)).keep
 
 
+def test_decide_drops_an_unknown_event_kind():
+    from nyxloom.session_extract.select import decide
+
+    malformed = NormalizedEvent(0, "unknown", _TS, "unknown-kind", "metadata")
+    assert not decide(malformed, ExtractConfig()).keep
+
+
 def test_decide_drops_an_api_error_before_any_rescue_applies():
     from nyxloom.session_extract.select import decide
 
