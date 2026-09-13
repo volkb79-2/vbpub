@@ -994,3 +994,13 @@ copies; preserve it for the operator's eventual backlog commit and carry its
 disposition into P3's close-out report. Do not stage or commit it as part of
 the controller's shared-checkout LOG work unless the operator explicitly
 claims that file.
+
+### RW-61 — 2026-09-13 10:27:26Z — abort P2 R1 launch after PSI crossed the gate
+
+The second P2 final-gate R1 attempt was launched after a low preflight, but
+the run-gate client immediately measured `memory full avg10=11.71%`, above the
+estate launch ceiling. It had only just started; the controller interrupted
+the bare-host assay process, confirmed its child pytest was gone, and will not
+launch another gate until a fresh PSI reading is below 5%. This run is not
+evidence: the earlier R1 PASS was on the pre-canary tip, and this interrupted
+attempt is discarded. No product conclusion or ruling is changed.
