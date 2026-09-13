@@ -496,3 +496,12 @@ def test_highlight_keeps_formatter_output_without_a_generated_terminator(monkeyp
 
     monkeypatch.setattr(pygments, "highlight", lambda *_args, **_kwargs: "colored")
     assert highlight_markdown("source", color=True) == "colored"
+
+
+def test_highlight_preserves_unexpected_formatter_layout(monkeypatch):
+    import pygments
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    monkeypatch.setattr(pygments, "highlight", lambda *_args, **_kwargs: "colored\nextra\n")
+    assert highlight_markdown("source", color=True) == "colored\nextra"

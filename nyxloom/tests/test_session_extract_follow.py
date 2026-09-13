@@ -834,6 +834,12 @@ def test_highlight_preserves_crlf_line_endings():
     assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == source
 
 
+def test_highlight_preserves_an_all_newline_source():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    assert highlight_markdown("\r\n", color=True) == "\r\n"
+
+
 def test_run_forever_stops_cleanly_on_keyboard_interrupt(monkeypatch):
     class Source:
         def __init__(self):
@@ -1001,6 +1007,74 @@ def test_opencode_source_emits_only_new_text_from_changed_boundary_parts(tmp_pat
     conn.commit()
     conn.close()
     assert [e.text for a in source.poll() for e in a.events] == ["new-2"]
+    source.close()
+
+
+def test_opencode_source_handles_extended_replaced_and_empty_changed_parts(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "prefix")
+    conn = sqlite3.connect(db)
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE part SET time_updated = 11, data = ? WHERE id = 'p-m1'",
+        (json.dumps({"type": "text", "text": "prefix plus"}),),
+    )
+    conn.commit()
+    conn.close()
+    assert [e.text for a in source.poll() for e in a.events] == [" plus"]
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE part SET time_updated = 12, data = ? WHERE id = 'p-m1'",
+        (json.dumps({"type": "text", "text": "replacement"}),),
+    )
+    conn.commit()
+    conn.close()
+    assert [e.text for a in source.poll() for e in a.events] == ["replacement"]
+
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE part SET time_updated = 13 WHERE id = 'p-m1'")
+    conn.commit()
+    conn.close()
+    assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_ignores_malformed_empty_and_nontext_changed_parts(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "already printed")
+    conn = sqlite3.connect(db)
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.executemany(
+        "INSERT INTO part VALUES (?, 'm1', ?, ?, ?, ?)",
+        [
+            ("p-malformed", sid, 11, 11, "{"),
+            ("p-tool", sid, 12, 12, json.dumps({"type": "tool", "text": "noise"})),
+            ("p-empty", sid, 13, 13, json.dumps({"type": "text", "text": ""})),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+    assert source.poll() == []
     source.close()
 
 
