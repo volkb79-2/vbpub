@@ -1024,3 +1024,12 @@ the comparison ref but is not an override for the pushed-snapshot safety gate.
 The controller will push committed `main` as the normal release workflow;
 the operator's dirty `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` remains
 unstaged and is excluded from that push.
+
+### RW-64 — 2026-09-13 10:51:14Z — preserve concurrent origin updates by merge
+
+The first push was rejected because `origin/main` had advanced by nine
+committed release-preparation commits. The controller fetched and merged
+`origin/main` with `--no-ff` into local `main`, preserving both histories and
+the operator's dirty backlog outside the index. Local `main` is now one
+connected committed history and is ready for the normal push; no reset, rebase,
+force-push, or dirty-file commit is permitted.
