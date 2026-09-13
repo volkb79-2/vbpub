@@ -1357,3 +1357,13 @@ mutation lane on the shared host; the controller verified its exact command
 and applied `docker update --cpus=3` to that exact name. The estate now has
 two active mutation lanes (this lane and P6); no third mutation launch is
 authorized.
+
+### RW-99 — 2026-09-13 23:39:09Z — B096 accepted; combined assay gate running
+
+The fresh Luna xhigh B096 adversarial review returned ACCEPT with no ranked
+findings. Its report is being committed on `assay-b096`; the controller then
+started the required registered `tester-unified` gate from the quiet combined
+tip asynchronously. Exact gate container: `sweet_blackburn`, under
+`dev-background.slice`, `NanoCpus=3000000000`; it built wheel
+`assay-6.2.1.dev36+g2d80012a`. The gate is not yet a verdict: its terminal
+markers and exit status must be read separately before merge.
