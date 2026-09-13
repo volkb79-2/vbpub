@@ -32,6 +32,7 @@ from assay import git as git_module
 from assay import runner
 from assay.adapters.python import PythonAdapter
 from assay.config import (
+    MUTATION_BUDGET_PER_CANDIDATE_NONE,
     UNBOUNDED_BUDGET,
     CanaryConfig,
     LaneConfigError,
@@ -139,14 +140,40 @@ def test_an_R0_R1_lane_refuses_unbounded_by_name(tmp_path):
     assert "['R0', 'R1']" in message
 
 
-def test_a_native_R2_lane_without_budget_per_candidate_names_the_missing_bound(
+def test_a_native_R2_lane_without_budget_per_candidate_now_loads(tmp_path):
+    """(B091/D-23) An omitted `budget_per_candidate` used to be a missing
+    unit bound and refused the whole lane at load; it is now the same
+    declaration as explicit `"auto"` (`MutationConfig.budget_per_candidate`
+    stays `None`, and every reader downstream treats that as "derive one
+    from the measured baseline") -- a real bound, just not a NUMBER yet, so
+    it no longer violates this function's "every unit carries its own bound"
+    invariant.
+    """
+    path = _project(tmp_path, _toml(rigor='["R0", "R1", "R2"]', tail=_NATIVE_MUTATION))
+    lane_file = load_lane_file(path)
+    lane = lane_file.lane("only")
+    assert lane.judge.mutation.budget_per_candidate is None
+
+
+def test_a_native_R2_lane_with_budget_per_candidate_none_still_names_the_missing_bound(
     tmp_path,
 ):
-    path = _project(tmp_path, _toml(rigor='["R0", "R1", "R2"]', tail=_NATIVE_MUTATION))
+    """(B091/D-23) The one spelling that still violates the invariant: an
+    explicit `"none"` genuinely leaves the mutant command unbounded, so it
+    is refused on the exact terms an omitted key used to be, in writing
+    rather than by omission.
+    """
+    path = _project(
+        tmp_path,
+        _toml(
+            rigor='["R0", "R1", "R2"]',
+            tail=_NATIVE_MUTATION + f'budget_per_candidate = "{MUTATION_BUDGET_PER_CANDIDATE_NONE}"\n',
+        ),
+    )
     with pytest.raises(LaneConfigError) as excinfo:
         load_lane_file(path)
     message = str(excinfo.value)
-    assert "judge.mutation.budget_per_candidate (one mutant command)" in message
+    assert "judge.mutation.budget_per_candidate (declared 'none'" in message
     assert "every unit of the lane's work to carry its own bound" in message
 
 
@@ -311,16 +338,28 @@ def test_no_child_of_an_unbounded_R0_R1_R3_lane_ever_gets_no_timeout(
 
 
 def test_an_R3_lane_without_budget_per_attempt_names_the_missing_bound(tmp_path):
+    """(B091/D-23) `_NATIVE_MUTATION` alone no longer leaves the mutation
+    half of this lane missing a bound (an omitted `budget_per_candidate` is
+    "auto"), so this now needs an explicit `"none"` to still exercise BOTH
+    named units in one message -- the test's own original point.
+    """
     path = _project(
         tmp_path,
-        _toml(rigor='["R0", "R1", "R2", "R3"]', tail=_NATIVE_MUTATION + _CANARY),
+        _toml(
+            rigor='["R0", "R1", "R2", "R3"]',
+            tail=(
+                _NATIVE_MUTATION
+                + f'budget_per_candidate = "{MUTATION_BUDGET_PER_CANDIDATE_NONE}"\n'
+                + _CANARY
+            ),
+        ),
     )
     with pytest.raises(LaneConfigError) as excinfo:
         load_lane_file(path)
     message = str(excinfo.value)
     # BOTH units are named -- this lane declares neither bound, and a reader
     # fixing one at a time would otherwise need two round trips.
-    assert "judge.mutation.budget_per_candidate (one mutant command)" in message
+    assert "judge.mutation.budget_per_candidate (declared 'none'" in message
     assert "judge.canary.budget_per_attempt (one canary probe)" in message
 
 

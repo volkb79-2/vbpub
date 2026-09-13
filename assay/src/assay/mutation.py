@@ -117,7 +117,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
-from . import git, safeio
+from . import git, liveness, safeio
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .isolation import SnapshotRepository, netstring
@@ -824,6 +824,10 @@ PROGRESS_EVENTS = frozenset(
         "baseline",
         "candidate",
         "resume_merged",
+        # --- mutation sweep, judged by progress not by time (B091/D-23) ---
+        "plan",  # the sweep's own first record: what the baseline measured
+        # --- per-test liveness detail, BASELINE only (B091/D-23, P7 A4) ---
+        "test",  # one baseline test's own outcome, forwarded verbatim
     }
 )
 
@@ -1559,6 +1563,13 @@ class _MutantRun:
     equivalence_bytes: bytes | None = None
     kill_signal: str | None = None
     elapsed_seconds: float = 0.0
+    #: (B091/D-23, P7 A4) How many `test` events this candidate's own
+    #: liveness side file carries, read back via `assay.liveness.
+    #: count_test_events` while *snapshot* (below) is still the mutant's
+    #: real execution `cwd` -- `None` for every non-liveness lane, never `0`
+    #: (a `0` would claim the plugin ran and genuinely saw no test, which is
+    #: a different fact from "liveness never ran here at all").
+    tests_completed: int | None = None
 
 
 def _classify_mutant_result(result: CommandResult) -> str:
@@ -1581,6 +1592,16 @@ def _classify_mutant_result(result: CommandResult) -> str:
     if result.outcome is Outcome.FAIL:
         return "killed"
     if result.outcome is Outcome.BUDGET_EXCEEDED:
+        # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises the
+        # SAME `subprocess.TimeoutExpired` a genuine elapsed-budget timeout
+        # does for the "CPU-spinning mutant" case (RW-33 is explicit: that
+        # is NOT hung), but raises its own `LivenessHungExpired` subclass for
+        # an idle stall -- `runner._execute_plan_inner`'s except-clause reads
+        # that `isinstance` once and records it as `reason_code`, so this is
+        # the one place that distinction becomes a different BUCKET rather
+        # than a different exception type.
+        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
+            return "hung"
         return "budget_exceeded"
     return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
@@ -1620,6 +1641,11 @@ def _classify_mutant_result_with_equivalence(
             return "crashed"
         return "equivalent" if equivalence_bytes == baseline_equivalence else "killed"
     if result.outcome is Outcome.BUDGET_EXCEEDED:
+        # (B091/RW-33, P7 A3) Same `hung`/`budget_exceeded` split as
+        # `_classify_mutant_result` -- the equivalence artifact is never
+        # consulted for either, unchanged from before this bucket existed.
+        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
+            return "hung"
         return "budget_exceeded"
     return "crashed"  # Outcome.ERROR -- unchanged.
 
@@ -1735,6 +1761,41 @@ def _snapshot_left_dirt(
     return None
 
 
+def baseline_wall_seconds(baseline: CommandResult) -> float:
+    """(B091/D-23) The baseline command's own measured wall time, in
+    seconds -- ``baseline.ended - baseline.started``, the two ISO-8601
+    instants every :class:`CommandResult` already carries. Never negative
+    (P21/A-182's own ``ended >= started`` invariant is enforced upstream of
+    every :class:`CommandResult` this function is ever handed; clamped to
+    ``0.0`` here anyway rather than trusting that at a distance, because a
+    formula downstream -- :func:`auto_budget_per_candidate_seconds` -- would
+    otherwise silently shrink a derived bound from a negative input).
+    """
+    started = datetime.fromisoformat(baseline.started)
+    ended = datetime.fromisoformat(baseline.ended)
+    return max(0.0, (ended - started).total_seconds())
+
+
+def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
+    """(B091/D-23) The auto per-candidate bound: ``max(3 x baseline,
+    baseline + 60s)``.
+
+    D-17's layer-3 "derived ceiling" -- safety only, computed on the host at
+    run time from an ACTUAL measurement rather than guessed ahead of one, so
+    it scales with the hardware the lane happens to be running on instead of
+    failing every candidate on a slower host than whoever picked a fixed
+    number was thinking of. ``3x`` gives a fast baseline (sub-second unit
+    tests) enough headroom that ordinary variance never trips it; ``+60s``
+    keeps a near-instant baseline (a handful of asserts) from deriving a
+    near-instant bound that would flag the very next candidate whose own
+    mutation cost it one extra import. Never a detector of "the mutant is
+    slow" on its own -- it is the ceiling B090 measured missing entirely,
+    not a replacement for the liveness/cadence layers D-17 puts ABOVE it
+    (A2/A3/A4 in this same package).
+    """
+    return max(3.0 * baseline_wall, baseline_wall + 60.0)
+
+
 def run_mutation(
     *,
     baseline: CommandResult,
@@ -1753,6 +1814,72 @@ def run_mutation(
     kill_signal_artifact: str | None = None,
     baseline_equivalence: bytes | None = None,
     budget_per_candidate_seconds: float | None = None,
+    #: (B091/D-23) Whether *budget_per_candidate_seconds* should be DERIVED
+    #: from the measured baseline (:func:`auto_budget_per_candidate_seconds`)
+    #: rather than taken as given -- the "auto" default `config.py` now
+    #: applies to an omitted/``"auto"``-spelled ``judge.mutation.
+    #: budget_per_candidate``. The caller (:mod:`assay.runner`) resolves
+    #: WHICH of the three closed shapes (auto / an explicit duration /
+    #: ``"none"``) the lane declared; this function is where the one that
+    #: actually needs a measurement -- auto -- gets it, because this is the
+    #: only place both the resolved baseline and the per-candidate
+    #: enforcement live together. *budget_per_candidate_seconds* is ignored
+    #: (and must be ``None``) when this is ``True``: the two are mutually
+    #: exclusive so there is exactly one source for the number that both
+    #: bounds every candidate AND is reported back (the ``plan`` progress
+    #: event, and the caller's own verdict field) -- never two independent
+    #: derivations of it (B088's own "how a reader and a writer drift
+    #: apart").
+    budget_per_candidate_auto: bool = False,
+    #: (B091/RW-36) The liveness record `assay.liveness.inject_liveness_plugin`
+    #: already computed, BEFORE this function was even called (the caller,
+    #: `runner._run_prepared_lane`, injects the plugin into the shared plan
+    #: ahead of the baseline run) -- passed straight through, never
+    #: recomputed, so the `plan` progress event and `judgment.r2.liveness`
+    #: (built by the caller from the SAME `LivenessInjection`) can never
+    #: disagree. `False`/`None`/`None` for every non-native, non-python, or
+    #: liveness-off lane -- byte-identical to a pre-RW-36 `plan` event's
+    #: absence of the key would have been, except the key is always present
+    #: now (additive: a reader that does not know it yet simply ignores it).
+    liveness_active: bool = False,
+    liveness_reason: str | None = None,
+    liveness_plugin: str | None = None,
+    #: (B091/D-23, P7 A4) The BASELINE's own liveness events file (never a
+    #: candidate's) -- `None` for every non-liveness lane, exactly like the
+    #: three fields just above. When given, every `test` event it carries
+    #: is forwarded onto the progress stream, verbatim, right after the
+    #: `plan` record: RW-33's own "test events reach the progress stream
+    #: for the BASELINE only" instruction, and `assay.liveness.
+    #: baseline_test_events` is the ONE place that translation happens.
+    liveness_baseline_events_path: Path | None = None,
+    #: (B091/D-23, P7 A4) The SAME two measurements the caller
+    #: (`runner._run_prepared_lane`) already derived from
+    #: *liveness_baseline_events_path* via `assay.liveness.
+    #: baseline_slowest_test_s`/`compute_expect_next_event_within_s` --
+    #: read back onto the `plan` progress event here, never recomputed a
+    #: second, independent way (B088's own "two derivations drift"
+    #: lesson). Both `None` for every non-liveness lane.
+    liveness_slowest_test_s: float | None = None,
+    liveness_expect_next_event_within_s: float | None = None,
+    #: (B091 round-1 B2) The two figures RW-49/D3's calibration (a) adds,
+    #: from the SAME one `assay.liveness.compute_liveness_calibration` call
+    #: as the two above. *liveness_worst_gap_s* is the raw measurement
+    #: `expect_next_event_within_s` is now derived from (the baseline's
+    #: worst observed inter-event gap, session brackets included) --
+    #: `slowest_test_s` keeps its pre-B2 meaning, the slowest `call`-phase
+    #: duration, which is NO LONGER what the bound comes from.
+    #: *liveness_pre_first_event_within_s* is the separate, tighter bound
+    #: governing a candidate that has produced no event at all yet.
+    liveness_worst_gap_s: float | None = None,
+    liveness_pre_first_event_within_s: float | None = None,
+    #: (B091/D-23, P7 A4) The lane's own PERSISTENT
+    #: `.assay/liveness/candidates/` directory -- `None` for every
+    #: non-liveness lane. When given, each candidate's own `tests_completed`
+    #: progress-event field is read back from the events file
+    #: `assay.liveness.candidate_events_path` names for that candidate's own
+    #: execution `cwd`, via `assay.liveness.count_test_events` -- never a
+    #: second, independent count.
+    liveness_events_dir: Path | None = None,
     progress_artifact: Path | str | None = None,
     #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
     #: runner opens the stream once, high up, so the R0/R1 phase records and
@@ -1773,6 +1900,20 @@ def run_mutation(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    #: (B091/D-23, P7 A5) ``--rejudge <id>[,...]``: candidate ids to drop
+    #: from the resume store BEFORE it is consulted, so each re-executes
+    #: instead of replaying a possibly-stale verdict, exactly like a
+    #: candidate with no record at all. Empty (never `None` -- the caller
+    #: resolves an omitted flag to the empty frozenset) for every run that
+    #: never asked for one. Requires *resume*; refused otherwise (a
+    #: rejudge with nothing to resume FROM is not a meaningful request).
+    rejudge_ids: frozenset[str] = frozenset(),
+    #: (B091/D-23, P7 A5) ``--rejudge-outcome hung,budget_exceeded,...``:
+    #: the SAME drop, selected by a resumed record's own persisted
+    #: ``outcome_bucket`` (one of :data:`~assay.verdict.MUTATION_BUCKETS`)
+    #: rather than by explicit id. The two selections are a UNION, never
+    #: mutually exclusive -- a candidate matching either is dropped.
+    rejudge_outcomes: frozenset[str] = frozenset(),
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -1866,6 +2007,18 @@ def run_mutation(
             "run_mutation budget_per_candidate_seconds must be a positive "
             f"finite number or None, got {budget_per_candidate_seconds!r}"
         )
+    if not isinstance(budget_per_candidate_auto, bool):
+        raise ValueError(
+            "run_mutation budget_per_candidate_auto must be a boolean, got "
+            f"{budget_per_candidate_auto!r}"
+        )
+    if budget_per_candidate_auto and budget_per_candidate_seconds is not None:
+        raise ValueError(
+            "run_mutation budget_per_candidate_auto=True derives its own "
+            "budget_per_candidate_seconds from the measured baseline; "
+            "passing both is two sources for the one number that bounds "
+            "every candidate, and the caller must pick exactly one"
+        )
     if not isinstance(resume, bool):
         raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
     shard_specified = shard_index is not None or shard_count is not None
@@ -1878,11 +2031,44 @@ def run_mutation(
         raise ValueError("run_mutation requires both shard_index and shard_count")
     if shard_specified:
         select_mutation_shard((), index=shard_index, count=shard_count)
+    # (B091/D-23, P7 A5) A rejudge selection with nothing to resume FROM
+    # is not a meaningful request -- every candidate would execute anyway,
+    # and the caller almost certainly meant `--resume --rejudge ...`
+    # together.
+    if (rejudge_ids or rejudge_outcomes) and not resume:
+        raise ValueError(
+            "run_mutation rejudge_ids/rejudge_outcomes requires resume=True "
+            "-- rejudging drops matching records from the resume store "
+            "before it is consulted, which is meaningless when nothing is "
+            "being resumed"
+        )
+    unknown_rejudge_outcomes = rejudge_outcomes - frozenset(MUTATION_BUCKETS)
+    if unknown_rejudge_outcomes:
+        raise ValueError(
+            f"run_mutation rejudge_outcomes named unknown bucket(s) "
+            f"{sorted(unknown_rejudge_outcomes)}; expected a subset of "
+            f"{sorted(MUTATION_BUCKETS)}"
+        )
     if state_root is not None:
         Path(state_root).mkdir(parents=True, exist_ok=True)
 
     if baseline.outcome is not Outcome.PASS:
         return None
+
+    # (B091/D-23) Resolved HERE, once, the instant the baseline is known
+    # good and before any candidate is submitted: the derived ceiling is a
+    # function of the SAME measurement every candidate is about to be
+    # compared against, and this is the earliest point that measurement
+    # exists. `budget_per_candidate_derived` rides on the return value
+    # (below) and on the `plan` progress event so a caller/reader learns the
+    # resolved number from exactly one place, never a second computation of
+    # it (B088's own "how a reader and a writer drift apart").
+    measured_baseline_wall = baseline_wall_seconds(baseline)
+    budget_per_candidate_derived = budget_per_candidate_auto
+    if budget_per_candidate_auto:
+        budget_per_candidate_seconds = auto_budget_per_candidate_seconds(
+            measured_baseline_wall
+        )
 
     # (B064) The stream is opened HERE only when nobody upstream owns one --
     # the direct library-caller path. `runner.run_lane` opens it for the
@@ -1904,7 +2090,73 @@ def run_mutation(
                 lane=None,
                 budget_per_candidate_s=budget_per_candidate_seconds,
             )
-        from .runner import execute_plan
+        if write_progress is not None:
+            # (B091/D-23) The sweep's own first record: what the baseline
+            # actually measured, and the per-candidate bound it produced --
+            # printed here (never guessed ahead of the measurement) so a
+            # reader of ONLY this stream, before ANY candidate line has
+            # arrived, already knows what "no progress" is being judged
+            # against. `derived: false` names an explicit duration or the
+            # `"none"` opt-out equally; the value each of those two carries
+            # in `budget_per_candidate_s` -- a real number, or `None` for
+            # `"none"` -- already tells the two apart.
+            write_progress(
+                {
+                    "event": "plan",
+                    "baseline_s": round(measured_baseline_wall, 3),
+                    "budget_per_candidate_s": budget_per_candidate_seconds,
+                    "derived": budget_per_candidate_derived,
+                    # (B091/RW-36) so a reader of ONLY this stream, before
+                    # any candidate line has arrived, already knows whether
+                    # the os._exit wrapper/hung detection ran for this lane
+                    # and why -- the same three fields judgment.r2.liveness
+                    # carries on the verdict, from the same computation.
+                    "liveness": {
+                        "active": liveness_active,
+                        "reason": liveness_reason,
+                        "plugin": liveness_plugin,
+                    },
+                    # (B091/D-23, P7 A4) The measurement `expect_next_
+                    # event_within_s` (LivenessRunner's own idle threshold,
+                    # already governing every candidate by the time this
+                    # line is written) was DERIVED from -- `None`/`None` for
+                    # every liveness-off lane, matching the `liveness` block
+                    # just above.
+                    #
+                    # (B091 round-1 B2) `slowest_test_s` keeps its name AND
+                    # its exact pre-B2 meaning -- the slowest `call`-phase
+                    # duration -- so no consumer reading it finds the key
+                    # silently measuring something else. What CHANGED is
+                    # that it is no longer the input to the bound;
+                    # `worst_gap_s` is, and it is disclosed beside it.
+                    "slowest_test_s": liveness_slowest_test_s,
+                    "worst_gap_s": liveness_worst_gap_s,
+                    "expect_next_event_within_s": liveness_expect_next_event_within_s,
+                    "pre_first_event_within_s": liveness_pre_first_event_within_s,
+                }
+            )
+            if liveness_baseline_events_path is not None:
+                # (B091/D-23, P7 A4, RW-33) "test events reach the progress
+                # stream for the BASELINE only" -- every candidate's own
+                # test events stay in that candidate's own side file,
+                # summarised only as `tests_completed` on its `candidate`
+                # record below, never forwarded one-by-one (a `jobs`-way
+                # concurrent sweep would otherwise interleave N candidates'
+                # worth of `test` events with nothing on the wire to tell
+                # them apart). Right after `plan`, before any candidate
+                # line, so a reader already has the baseline's own per-test
+                # detail before judging any mutant against it.
+                for test_event in liveness.baseline_test_events(
+                    liveness_baseline_events_path
+                ):
+                    write_progress({"event": "test", "phase": "baseline", **test_event})
+        # (B091 round-1 B3) `resolve_run_cwd` travels the SAME lazy-import-
+        # then-parameter path `execute_plan` already does (a module-level
+        # `from .runner import ...` is circular -- `runner` imports
+        # `mutation` at module level), so `_run_one` can re-root the
+        # candidate's `cwd` through THE one join rather than a seventh
+        # hand-rederivation of `project_root / lane.cwd` (A-367).
+        from .runner import execute_plan, resolve_run_cwd
 
         collected = collect_mutation_sites(
             targets, adapter=adapter, operators=operators, limit=max_mutants + 1
@@ -1986,35 +2238,74 @@ def run_mutation(
         )
         resumed_records: list[Mapping[str, Any]] = []
         rejected_total = 0
+        rejudged_total = 0
         if resume:
             assert isinstance(state_root, Path)
             assert judge is not None
+            # (B091/D-23, P7 A5) `--rejudge <id>[,...]` refuses BEFORE any
+            # record is even loaded, the moment a named id does not match
+            # ANY of this run's own current candidate identities. Candidate
+            # ids fold in the mutant's own source bytes by construction
+            # (B066), so an id whose source has since changed simply no
+            # longer appears in `current_ids` -- indistinguishable, at the
+            # id level, from a typo or a stale id copied from a different
+            # run. Either way, silently ignoring it (treating "not found"
+            # as "nothing to do") would let a consumer believe a rejudge
+            # happened when it did not -- exactly the B088 principle this
+            # item cross-references: an identity that no longer matches
+            # current reality must not be silently trusted.
+            if rejudge_ids:
+                current_ids = {candidate_id(job) for job in selected_jobs}
+                unknown_rejudge_ids = rejudge_ids - current_ids
+                if unknown_rejudge_ids:
+                    raise MutationStateError(
+                        "--rejudge named a candidate id not present in "
+                        "this lane's current candidate set (unknown, or "
+                        "the mutant's own source bytes changed since the "
+                        "id was recorded -- B088's own 'an identity that "
+                        "no longer matches current reality must not be "
+                        "silently trusted' principle): "
+                        f"{sorted(unknown_rejudge_ids)}"
+                    )
             for job in selected_jobs:
                 record = _load_validated_state_record(state_root, job, judge=judge)
                 if record is _RECORD_REJECTED:
                     rejected_total += 1
                 elif record is not None:
                     assert not isinstance(record, str)
+                    # (B091/D-23, P7 A5) A record matching EITHER selection
+                    # is dropped here, before it ever reaches
+                    # `resumed_records` -- the exact same effect as a
+                    # candidate with no record at all, so it falls straight
+                    # through to `pending_jobs` below and genuinely
+                    # re-executes against the CURRENT judging suite, never
+                    # replaying the old verdict.
+                    if (
+                        candidate_id(job) in rejudge_ids
+                        or record.get("outcome_bucket") in rejudge_outcomes
+                    ):
+                        rejudged_total += 1
+                        continue
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
             )
-            # (B088) Emitted when anything was resumed OR anything was
-            # REFUSED. Before, this fired only on a successful resume, so a
-            # store whose every record was rejected -- the judging suite
-            # moved, or the lane's own identity did -- produced no event at
-            # all, and was indistinguishable from an empty store. That is
-            # the shape an operator most needs named: "I passed --resume and
-            # nothing ever resumes" has two completely different causes and
-            # used to have one (absent) symptom.
-            if write_progress is not None and (resumed_records or rejected_total):
+            # (B088) Emitted when anything was resumed, REFUSED, or
+            # REJUDGED. Before A5, this fired only on a successful resume
+            # or a refusal, so a run that rejudged every one of its records
+            # (a real, intentional event) would have looked identical to
+            # one where nothing happened at all.
+            if write_progress is not None and (
+                resumed_records or rejected_total or rejudged_total
+            ):
                 write_progress(
                     {
                         "candidate_total": total,
                         "event": "resume",
                         "resumed_total": len(resumed_records),
                         "rejected_total": rejected_total,
+                        "rejudged_total": rejudged_total,
                     }
                 )
         else:
@@ -2066,11 +2357,13 @@ def run_mutation(
             baseline_equivalence=baseline_equivalence,
             budget_per_candidate_seconds=budget_per_candidate_seconds,
             execute_plan=execute_plan,
+            resolve_run_cwd=resolve_run_cwd,
             write_progress=write_progress,
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
             state_root=state_root,
             judge=judge,
+            liveness_events_dir=liveness_events_dir,
         )
 
         if resumed_records:
@@ -2096,6 +2389,19 @@ def run_mutation(
             result_payload = _dataclass_replace(
                 result_payload,
                 candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
+            )
+        if budget_per_candidate_derived:
+            # (B091/D-23) Rides on the return value exactly like
+            # `candidate_ids` above: the ONE computation, from measured
+            # baseline_wall_seconds up in this same function, read back by
+            # the caller (`assay.runner._build_judgment_r2`) rather than
+            # recomputed. `None` -- the dataclass default -- for every other
+            # path (explicit duration, `"none"`, or a legacy caller that
+            # passed neither new kwarg at all), matching `budget_per_
+            # candidate_s: null` on the `plan` progress event above.
+            result_payload = _dataclass_replace(
+                result_payload,
+                budget_per_candidate_derived_s=budget_per_candidate_seconds,
             )
         if write_progress is not None:
             # (B065) The sweep's own terminal. Without it a reader cannot
@@ -2136,6 +2442,18 @@ def _execute_mutation_jobs(
     budget_per_candidate_seconds: float | None = None,
     write_progress: ProgressWriter | None,
     execute_plan: Callable[..., CommandResult],
+    #: (B091 round-1 B3) `runner.resolve_run_cwd` -- THE one join from a
+    #: project root plus a `CommandPlan` to the directory that plan actually
+    #: runs in (B043/A-367). Threaded in as a parameter for the same reason
+    #: *execute_plan* is: `runner` imports this module at module level, so
+    #: the reverse import can only be lazy, and the lazy import belongs at
+    #: the ONE `run_mutation` seam rather than inside this per-candidate
+    #: hot path. `_run_one` uses it to name the events side file the
+    #: candidate's own `LivenessRunner` wrote, which is keyed on the
+    #: RESOLVED `cwd` `execute_plan` hands the runner -- not on the
+    #: pre-resolution `snapshot.project_root`, which is a different
+    #: directory for every lane declaring `cwd`.
+    resolve_run_cwd: Callable[[Path, CommandPlan], Path],
     total: int,
     candidate_count: int,
     state_root: Path | str | None = None,
@@ -2145,6 +2463,11 @@ def _execute_mutation_jobs(
     #: pre-B088 record on the next read, except that its `schema_version`
     #: would claim it is new enough to be checkable.
     judge: str | None = None,
+    #: (B091/D-23, P7 A4) The lane's own persistent `.assay/liveness/
+    #: candidates/` directory, passed straight through from `run_mutation`
+    #: -- `None` for every non-liveness lane, in which case `_run_one`
+    #: never touches `assay.liveness` at all.
+    liveness_events_dir: Path | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -2197,6 +2520,34 @@ def _execute_mutation_jobs(
                 clock=clock,
             )
             elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
+            # (B091/D-23, P7 A4) Read back HERE, while this candidate's own
+            # snapshot root is still in scope -- the events file lives at
+            # the lane's PERSISTENT `liveness_events_dir`, so it would
+            # still be readable after this `with` block exits, but the
+            # *path* to it is keyed by the execution `cwd`, which only this
+            # scope still has.
+            #
+            # (B091 round-1 B3) That key is the RESOLVED run cwd -- what
+            # `execute_plan` hands `LivenessRunner` (the writer) one line
+            # above, i.e. `resolve_run_cwd(snapshot.project_root, plan)`,
+            # NOT `snapshot.project_root` itself. The two coincide only
+            # when the lane declares no `cwd`; on a lane that declares one
+            # they are different directories, the reader missed the file
+            # the writer wrote, and `count_test_events` returned `0` --
+            # precisely the value this field's own contract (below, and
+            # CONSUMERS' `candidate` row) defines as "the plugin ran and
+            # genuinely saw no test". Routed through THE one join for the
+            # same reason `runner.py`'s two other re-rootings are (A-367:
+            # "agrees today" is not a property an edit to either side
+            # preserves).
+            tests_completed: int | None = None
+            if liveness_events_dir is not None:
+                tests_completed = liveness.count_test_events(
+                    liveness.candidate_events_path(
+                        liveness_events_dir,
+                        resolve_run_cwd(snapshot.project_root, plan),
+                    )
+                )
             try:
                 # P26/A-212: the ONE lane deadline IS forwarded here, so this
                 # check's own Git children are bounded by the same budget as
@@ -2261,6 +2612,7 @@ def _execute_mutation_jobs(
             equivalence_bytes=equivalence_bytes,
             kill_signal=kill_signal_text,
             elapsed_seconds=elapsed_seconds,
+            tests_completed=tests_completed,
         )
 
     results: list[_MutantRun | None] = [None] * total
@@ -2327,6 +2679,11 @@ def _execute_mutation_jobs(
                             ),
                             "outcome_bucket": outcome_bucket,
                             "elapsed_seconds": round(run.elapsed_seconds, 3),
+                            # (B091/D-23, P7 A4) `None` for every
+                            # non-liveness lane -- `run.tests_completed`
+                            # already carries that same `None` default
+                            # through from `_run_one`.
+                            "tests_completed": run.tests_completed,
                         }
                     )
                 if state_root is not None:
@@ -2374,13 +2731,14 @@ def _execute_mutation_jobs(
     if fatal is not None:
         raise fatal
 
-    buckets: dict[str, list[MutantOutcome]] = {
-        "killed": [],
-        "survived": [],
-        "crashed": [],
-        "budget_exceeded": [],
-        "equivalent": [],
-    }
+    # (B091/RW-33, P7 A3) Built generically from `MUTATION_BUCKETS`, matching
+    # the ingested path's own construction a few hundred lines down --
+    # A-228's own root cause was a hand-written literal list reaching some
+    # of the sites that must agree with the closed vocabulary and not
+    # others, and this is exactly the site that used to be a five-entry
+    # literal missing the sixth (`hung`) bucket entirely, which would have
+    # KeyError'd the moment `_classify_mutant_result` returned it.
+    buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
         # and `collect_mutation_sites` guarantees that list is
@@ -2417,11 +2775,7 @@ def _execute_mutation_jobs(
     return Mutation(
         candidate_count=candidate_count,
         total=total,
-        killed=tuple(buckets["killed"]),
-        survived=tuple(buckets["survived"]),
-        crashed=tuple(buckets["crashed"]),
-        budget_exceeded=tuple(buckets["budget_exceeded"]),
-        equivalent=tuple(buckets["equivalent"]),
+        **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
     )
 
 
@@ -3000,11 +3354,15 @@ def mutation_pct(mutation: Mutation) -> float:
     """(B046) The mutation score: ``killed / (killed + survived)``, percent.
 
     The denominator is deliberately NOT ``total``. ``budget_exceeded`` says
-    the experiment did not finish and ``equivalent`` says the mutant could
-    never have been caught -- neither is evidence about the tests, so
-    including them would move the score for reasons that have nothing to do
-    with what the suite does. ``discarded`` is not in the payload at all, for
-    the same reason one field over.
+    the experiment did not finish, ``hung`` (B091) says a `LivenessRunner`
+    stopped it because it had gone idle -- another way of saying the
+    experiment did not finish -- and ``equivalent`` says the mutant could
+    never have been caught. None of the three is evidence about the tests,
+    so including them would move the score for reasons that have nothing to
+    do with what the suite does. ``discarded`` is not in the payload at all,
+    for the same reason one field over. (Round-1 S7: the arithmetic below
+    already excluded ``hung`` by construction; this enumeration of the
+    closed vocabulary had simply not been updated for the new bucket.)
 
     A zero denominator is ``0.0``, never ``100.0``: this is A-026/A-035's
     0/0-is-100% bug, and the only caller reaches this function on a branch
@@ -3121,6 +3479,17 @@ def judge_mutation(
         return Outcome.ERROR, ReasonCode.EXEC_FAILED
     if mutation.budget_exceeded:
         return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
+    if mutation.hung:
+        # (B091/RW-33, P7 A3) Ranked immediately beside `budget_exceeded`
+        # (a genuine elapsed-time expiry still takes precedence when BOTH
+        # are non-empty -- an arbitrary but stable tie-break, never load-
+        # bearing since `judge_mutation` returns on the first non-empty
+        # bucket it finds either way): a `hung` candidate is, like
+        # `budget_exceeded`, evidence the run did not finish, never
+        # evidence about what the suite caught. `mutation_pct` never reads
+        # this bucket (only `killed`/`survived`), so scoring is unaffected
+        # by construction -- this is the OUTCOME precedence only.
+        return Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG
     if mutation.survived and mutation_pct(mutation) < fail_under:
         # B050/A-427/DA-R22. At the default floor of 100.0 this is the v9
         # branch verbatim -- any survivor puts the score below 100 -- so a

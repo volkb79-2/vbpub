@@ -1,95 +1,101 @@
 {
-  "schema_version": 11,
-  "assay_version": "0.1.0",
-  "lane": "package",
-  "commit": "555555555555555555555555555555555555555e",
-  "outcome": "ERROR",
-  "exit_code": 2,
-  "started": "2026-08-07T14:20:00+00:00",
-  "ended": "2026-08-07T14:20:05+00:00",
-  "reason_code": "EXEC_FAILED",
-  "declared_rigor": [
-    "R0",
-    "R2"
-  ],
-  "declared_evidence": [],
-  "argv_declared": [
-    "pytest",
-    "tests",
-    "-q"
-  ],
-  "argv_appended": [],
-  "argv_effective": [
-    "pytest",
-    "tests",
-    "-q"
-  ],
-  "argv_modified": false,
-  "env_declared": {},
-  "env_effective": {},
-  "scope": "S1",
-  "enforcement": "gate",
-  "judgment": {
-    "resolved": {
-      "language": "python",
-      "source_roots": ["pkg"],
-      "base": "0000000000000000000000000000000000000a"
-    },
-    "r2": {
-      "producer": "native",
-      "jobs": 2,
-      "max_mutants": 50,
-      "operators": ["python:bool-const-flip", "python:compare-swap"],
-      "kill_attribution": "unattributed",
-      "mode": "changed_lines"
-    }
+ "schema_version": 11,
+ "assay_version": "0.1.0",
+ "lane": "package",
+ "commit": "555555555555555555555555555555555555555e",
+ "outcome": "ERROR",
+ "exit_code": 2,
+ "started": "2026-08-07T14:20:00+00:00",
+ "ended": "2026-08-07T14:20:05+00:00",
+ "reason_code": "EXEC_FAILED",
+ "declared_rigor": [
+  "R0",
+  "R2"
+ ],
+ "declared_evidence": [],
+ "argv_declared": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_appended": [],
+ "argv_effective": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_modified": false,
+ "env_declared": {},
+ "env_effective": {},
+ "scope": "S1",
+ "enforcement": "gate",
+ "judgment": {
+  "resolved": {
+   "language": "python",
+   "source_roots": [
+    "pkg"
+   ],
+   "base": "0000000000000000000000000000000000000a"
   },
-  "snapshot_policy": {
-    "selection": "repository"
+  "r2": {
+   "producer": "native",
+   "jobs": 2,
+   "max_mutants": 50,
+   "operators": [
+    "python:bool-const-flip",
+    "python:compare-swap"
+   ],
+   "kill_attribution": "unattributed",
+   "mode": "changed_lines"
+  }
+ },
+ "snapshot_policy": {
+  "selection": "repository"
+ },
+ "claims": [
+  {
+   "rigor": "R0",
+   "source": "computed",
+   "status": "PASS",
+   "verified_by_assay": true
   },
-  "claims": [
-    {
-      "rigor": "R0",
-      "source": "computed",
-      "status": "PASS",
-      "verified_by_assay": true
-    },
-    {
-      "rigor": "R2",
-      "source": "computed",
-      "status": "ERROR",
-      "verified_by_assay": true,
-      "reason_code": "EXEC_FAILED",
-      "mutation": {
-        "candidate_count": 2,
-        "total": 2,
-        "killed": [
-          {
-            "path": "pkg/broken.py",
-            "lineno": 2,
-            "start_byte": 20,
-            "end_byte": 21,
-            "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
-            "operator": "python:compare-swap",
-            "description": "Lt->LtE"
-          }
-        ],
-        "survived": [],
-        "crashed": [
-          {
-            "path": "pkg/broken.py",
-            "lineno": 4,
-            "start_byte": 60,
-            "end_byte": 64,
-            "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
-            "operator": "python:bool-const-flip",
-            "description": "True->False"
-          }
-        ],
-        "budget_exceeded": [],
-        "equivalent": []
-      }
-    }
-  ],
-  "evidence": []
+  {
+   "rigor": "R2",
+   "source": "computed",
+   "status": "ERROR",
+   "verified_by_assay": true,
+   "reason_code": "EXEC_FAILED",
+   "mutation": {
+    "candidate_count": 2,
+    "total": 2,
+    "killed": [
+     {
+      "path": "pkg/broken.py",
+      "lineno": 2,
+      "start_byte": 20,
+      "end_byte": 21,
+      "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+      "operator": "python:compare-swap",
+      "description": "Lt->LtE"
+     }
+    ],
+    "survived": [],
+    "crashed": [
+     {
+      "path": "pkg/broken.py",
+      "lineno": 4,
+      "start_byte": 60,
+      "end_byte": 64,
+      "replacement_sha256": "60a33e6cf5151f2d52eddae9685cfa270426aa89d8dbc7dfb854606f1d1a40fe",
+      "operator": "python:bool-const-flip",
+      "description": "True->False"
+     }
+    ],
+    "budget_exceeded": [],
+    "equivalent": [],
+    "hung": []
+   }
+  }
+ ],
+ "evidence": []
 }

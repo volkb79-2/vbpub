@@ -163,7 +163,18 @@ def test_equivalence_artifact_is_refused_on_an_ingested_lane(app_project: Projec
 
 
 @pytest.mark.parametrize(
-    "line", ['budget_per_candidate = "30s"', "shard_index = 0\nshard_count = 2"]
+    "line",
+    [
+        'budget_per_candidate = "30s"',
+        "shard_index = 0\nshard_count = 2",
+        # (B091/RW-36) liveness joins the orchestration-only group: it is
+        # assay's own EXECUTION mechanism (the os._exit wrapper, the hung
+        # monitor), and an ingested lane's command runs under a foreign
+        # tool assay never launches.
+        'liveness = "auto"',
+        "liveness = true",
+        "liveness = false",
+    ],
 )
 def test_orchestration_keys_are_refused_on_an_ingested_lane(
     app_project: Project, line: str

@@ -343,3 +343,32 @@ def test_to_dict_emits_all_four_buckets_and_the_candidate_count():
     assert payload["survived"] == []
     assert payload["crashed"] == []
     assert payload["budget_exceeded"] == []
+
+
+# --- B091/D-23: budget_per_candidate_derived_s, the internal carrier -------
+
+
+def test_budget_per_candidate_derived_s_defaults_absent_and_never_on_the_wire():
+    mutation = Mutation(candidate_count=1, total=1, killed=(_outcome(),))
+    assert mutation.budget_per_candidate_derived_s is None
+    # (B091/D-23) Unlike `candidate_ids`, this field is an internal carrier
+    # for `assay.runner._build_judgment_r2` -- it never reaches `to_dict()`,
+    # even when set, because the derived bound is a POLICY fact and belongs
+    # on `judgment.r2`, not on this RESULT payload.
+    assert "budget_per_candidate_derived_s" not in mutation.to_dict()
+    with_derived = dataclasses.replace(mutation, budget_per_candidate_derived_s=90.0)
+    assert with_derived.budget_per_candidate_derived_s == 90.0
+    assert "budget_per_candidate_derived_s" not in with_derived.to_dict()
+
+
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf"), True, "90"])
+def test_budget_per_candidate_derived_s_refuses_malformed_values(bad):
+    with pytest.raises(
+        ValueError, match="budget_per_candidate_derived_s must be a positive"
+    ):
+        Mutation(
+            candidate_count=1,
+            total=1,
+            killed=(_outcome(),),
+            budget_per_candidate_derived_s=bad,
+        )

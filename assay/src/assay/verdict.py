@@ -56,6 +56,7 @@ cherry-picks keys. assay carries its own names.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -664,17 +665,27 @@ MAX_CANDIDATE_CEILING = 10_001
 #: three call sites later.
 MAX_SHARD_COUNT = 10_000
 
-#: (P33/V5-3) `Mutation`'s identity buckets, in wire order. FIVE since v5.
-#: Named once rather than transcribed at each of the five sites that iterate
-#: them: A-228's own root cause was a new bucket reaching some of the layers
-#: that constrain the others and not the rest, and a literal list repeated
-#: per call site is exactly how that happens again.
+#: (P33/V5-3, extended B091/RW-33 P7 A3) `Mutation`'s identity buckets, in
+#: wire order. SIX since this session: `equivalent` (P33) added a fifth,
+#: `hung` (B091/RW-33) a sixth -- a `LivenessRunner`-classified idle stall,
+#: scored like `budget_exceeded` (excluded from `killed/(killed+survived)`)
+#: but reported as its own bucket, NATIVE-ONLY (an ingested report never
+#: produces one; `INGESTED_STATUS_BUCKETS` in `mutation.py` has no entry that
+#: maps to it). Named once rather than transcribed at each of the sites that
+#: iterate them: A-228's own root cause was a new bucket reaching some of the
+#: layers that constrain the others and not the rest, and a literal list
+#: repeated per call site is exactly how that happens again. **Additive under
+#: schema v11 (no v12 cut)**: a document produced before `hung` existed omits
+#: the key entirely -- `verify.py`'s `_mutation_of`/`_reconstruct_mutation`
+#: both default a missing `hung` to empty, matching how `budget_per_
+#: candidate_derived_s` (A1) was read back additively.
 MUTATION_BUCKETS: tuple[str, ...] = (
     "killed",
     "survived",
     "crashed",
     "budget_exceeded",
     "equivalent",
+    "hung",
 )
 
 
@@ -1653,9 +1664,36 @@ class Mutation:
     #: :attr:`candidate_count` like every other attempted mutant — they WERE
     #: attempted; what they failed to do is change anything.
     equivalent: tuple[MutantOutcome, ...] = ()
+    #: (B091/RW-33, P7 A3) mutants a `LivenessRunner` monitoring loop killed
+    #: for an idle stall (no `test`/`session_finish` progress AND no process-
+    #: tree CPU growth, or a `session_finish` seen with the process still
+    #: alive 30s later) -- distinct from `budget_exceeded`'s genuine elapsed-
+    #: time expiry (a CPU-spinning mutant is NEVER `hung`, it hits the
+    #: ordinary budget ceiling instead). Scored exactly like `budget_exceeded`
+    #: (excluded from the `killed/(killed+survived)` denominator, by
+    #: construction: `mutation.mutation_score` never reads this field).
+    #: NATIVE-only, like `liveness` itself (RW-33: applied only to native R2
+    #: python lanes) -- an ingested report never populates this bucket.
+    hung: tuple[MutantOutcome, ...] = ()
     #: (B012) Deterministic candidate IDs covered by a shard run. Omitted,
     #: never empty, so non-shard v6 payloads are unchanged.
     candidate_ids: tuple[str, ...] | None = None
+    #: (B091/D-23) The `budget_per_candidate` value
+    #: :func:`assay.mutation.run_mutation` actually DERIVED from the measured
+    #: baseline, when it derived one -- `None` whenever the lane declared an
+    #: explicit duration or the `"none"` opt-out, matching every other
+    #: "declared, not this run's business" optional field on this object.
+    #: **Internal carrier, not wire state**: unlike :attr:`candidate_ids`,
+    #: :meth:`to_dict` never emits this field -- the derived number is a
+    #: POLICY fact (what bound applied), which is `JudgmentR2`'s footing
+    #: (`jobs`/`max_mutants`/`operators` all live there, not here), and
+    #: `assay.runner._build_judgment_r2` is what actually places it on the
+    #: wire, as `judgment.r2.budget_per_candidate_derived_s`. This field
+    #: exists only so the one place that measures the baseline
+    #: (`run_mutation`) is also the one place that computes the derived
+    #: number, with the caller reading it back rather than recomputing it
+    #: (B088's own "how a reader and a writer drift apart").
+    budget_per_candidate_derived_s: float | None = None
 
     def __post_init__(self) -> None:
         for name in ("candidate_count", "total"):
@@ -1700,6 +1738,17 @@ class Mutation:
                         f"mutation.candidate_ids entry must be a 64-character "
                         f"hexadecimal digest, got {candidate!r}"
                     )
+        if self.budget_per_candidate_derived_s is not None and (
+            isinstance(self.budget_per_candidate_derived_s, bool)
+            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
+            or not math.isfinite(self.budget_per_candidate_derived_s)
+            or self.budget_per_candidate_derived_s <= 0
+        ):
+            raise ValueError(
+                "mutation.budget_per_candidate_derived_s must be a positive "
+                f"finite number or None, got "
+                f"{self.budget_per_candidate_derived_s!r}"
+            )
         self._check_identities_are_unique()
         self._check_arithmetic()
         self._check_kill_signal_is_killed_only()
@@ -2429,6 +2478,29 @@ class JudgmentR2:
     shard_index: int | None = None
     #: (B012) The declared shard cardinality. Required with ``shard_index``.
     shard_count: int | None = None
+    #: (B091/D-23) The per-candidate bound :func:`assay.mutation.
+    #: run_mutation` actually DERIVED from the run's own measured baseline
+    #: (``max(3 x baseline, baseline + 60s)``), when ``judge.mutation.
+    #: budget_per_candidate`` was omitted or declared ``"auto"``. `None`
+    #: when the lane declared an explicit duration (the bound it declared is
+    #: already on the wire, one level up, as the lane file itself) or the
+    #: `"none"` opt-out (genuinely no bound). **Optional under
+    #: `producer = "native"`, FORBIDDEN under `"ingested"`** on
+    #: :attr:`equivalence_artifact`'s own footing: an ingested lane never
+    #: declares this key at all (`config._load_ingested_mutation` refuses
+    #: it), so assay derived no bound for a run it did not orchestrate.
+    budget_per_candidate_derived_s: float | None = None
+    #: (B091/RW-36) ``{"active": bool, "reason": str, "plugin": str | None}``
+    #: -- ``assay.liveness.LivenessInjection.to_wire()`` verbatim, recording
+    #: whether the ``os._exit``/hung-detection mechanism ran for this lane's
+    #: R2 candidates and, when it did not, WHY (a non-pytest argv, a
+    #: non-python language, or an explicit ``judge.mutation.liveness =
+    #: false``). **Optional under `producer = "native"`, FORBIDDEN under
+    #: `"ingested"`** on :attr:`budget_per_candidate_derived_s`'s own
+    #: footing: liveness is a native-execution mechanism (RW-33: "applied
+    #: ONLY to native R2 lanes"), so an ingested judgment has nothing
+    #: honest to put here.
+    liveness: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # B046: the producer fork, checked FIRST -- every field below is
@@ -2544,6 +2616,12 @@ class JudgmentR2:
         "max_mutants",
         "operators",
         "equivalence_artifact",
+        # (B091/D-23, and RW-36's `liveness` trailing beside it) Trailing, on
+        # `equivalence_artifact`'s own footing: native-only but OPTIONAL,
+        # never required -- see `_check_producer_fork`'s own trailing-slice
+        # comment.
+        "budget_per_candidate_derived_s",
+        "liveness",
     )
     #: (B046) facts derived FROM an ingested report -- absent from a native
     #: document, which would otherwise claim a computation that never ran.
@@ -2568,7 +2646,11 @@ class JudgmentR2:
         """
         if self.producer == "native":
             present, forbidden_label = self._INGESTED_ONLY_FIELDS, "native"
-            required = self._NATIVE_ONLY_FIELDS[:-1]  # equivalence_artifact
+            # (B091/D-23/RW-36) `[:-3]`: the three TRAILING entries of
+            # `_NATIVE_ONLY_FIELDS` -- `equivalence_artifact`,
+            # `budget_per_candidate_derived_s` and `liveness` -- are
+            # native-only but OPTIONAL, never required of a native document.
+            required = self._NATIVE_ONLY_FIELDS[:-3]
         else:                                         # is OPTIONAL natively
             present, forbidden_label = self._NATIVE_ONLY_FIELDS, "ingested"
             required = self._INGESTED_ONLY_FIELDS
@@ -2635,6 +2717,55 @@ class JudgmentR2:
                 f"judgment.r2.operators contains a duplicate: "
                 f"{list(self.operators)}"
             )
+        if self.budget_per_candidate_derived_s is not None and (
+            isinstance(self.budget_per_candidate_derived_s, bool)
+            or not isinstance(self.budget_per_candidate_derived_s, (int, float))
+            or not math.isfinite(self.budget_per_candidate_derived_s)
+            or self.budget_per_candidate_derived_s <= 0
+        ):
+            raise ValueError(
+                "judgment.r2.budget_per_candidate_derived_s must be a "
+                f"positive finite number or None, got "
+                f"{self.budget_per_candidate_derived_s!r}"
+            )
+        if self.liveness is not None:
+            if (
+                not isinstance(self.liveness, Mapping)
+                or set(self.liveness) != {"active", "reason", "plugin"}
+            ):
+                raise ValueError(
+                    "judgment.r2.liveness must be a mapping with exactly "
+                    f"the keys active/reason/plugin, or None, got "
+                    f"{self.liveness!r}"
+                )
+            active = self.liveness["active"]
+            reason = self.liveness["reason"]
+            plugin = self.liveness["plugin"]
+            if not isinstance(active, bool):
+                raise ValueError(
+                    f"judgment.r2.liveness.active must be a bool, got {active!r}"
+                )
+            if not isinstance(reason, str) or not reason:
+                raise ValueError(
+                    "judgment.r2.liveness.reason must be a non-empty string, "
+                    f"got {reason!r}"
+                )
+            if plugin is not None and (not isinstance(plugin, str) or not plugin):
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be a non-empty string "
+                    f"or None, got {plugin!r}"
+                )
+            if active and plugin is None:
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be present when "
+                    "active is true -- an active mechanism materialised a "
+                    "real plugin file"
+                )
+            if not active and plugin is not None:
+                raise ValueError(
+                    "judgment.r2.liveness.plugin must be None when active "
+                    "is false -- nothing was materialised"
+                )
 
     def _check_ingested_record(self) -> None:
         """(B046) The shape of the four fields an ingested judgment carries.
@@ -2755,6 +2886,12 @@ class JudgmentR2:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
         if self.equivalence_artifact is not None:
             payload["equivalence_artifact"] = self.equivalence_artifact
+        if self.budget_per_candidate_derived_s is not None:
+            payload["budget_per_candidate_derived_s"] = (
+                self.budget_per_candidate_derived_s
+            )
+        if self.liveness is not None:
+            payload["liveness"] = dict(self.liveness)
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count

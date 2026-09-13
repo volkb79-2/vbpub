@@ -146,6 +146,39 @@ def test_budget_expiry_is_budget_exceeded_lane_timeout_via_injection(tmp_path: P
     assert result.returncode is None
 
 
+def _raise_liveness_hung(argv, *, env, cwd, timeout):
+    from assay import liveness
+
+    raise liveness.LivenessHungExpired(cmd=list(argv), timeout=timeout)
+
+
+def test_liveness_hung_expired_is_budget_exceeded_candidate_hung(tmp_path: Path) -> None:
+    """(B091/RW-33, P7 A3) `liveness.LivenessHungExpired` -- a
+    `subprocess.TimeoutExpired` subclass `LivenessRunner`'s own monitoring
+    loop raises ONLY for an idle-stall kill -- must map to
+    `ReasonCode.CANDIDATE_HUNG`, not the plain `LANE_TIMEOUT` a genuine
+    elapsed-budget expiry gets. This is the ONE `isinstance` check
+    `_execute_plan_inner`'s except-clause gained this session; the test
+    right above (`test_budget_expiry_is_budget_exceeded_lane_timeout_via_
+    injection`) is this test's own negative -- a PLAIN `TimeoutExpired`
+    (the base class, not the subclass) must still map to `LANE_TIMEOUT`,
+    proving the branch actually discriminates rather than always picking one
+    side.
+    """
+    lane = make_lane(budget="5m", budget_seconds=300.0)
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        process_runner=_raise_liveness_hung,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+    )
+
+    assert result.outcome is Outcome.BUDGET_EXCEEDED
+    assert result.reason_code is ReasonCode.CANDIDATE_HUNG
+    assert result.returncode is None
+
+
 def _raise_timeout_with_bytes_output(argv, *, env, cwd, timeout):
     # (B027) Reproduces the EXACT object CPython hands back on this path:
     # `TimeoutExpired.stdout`/`.stderr` are `bytes`, never decoded, even

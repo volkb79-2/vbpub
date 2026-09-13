@@ -148,6 +148,10 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         # snapshot bound reserved by the same migration.
         "MUTANT_LIMIT_EXCEEDED",
         "SNAPSHOT_LIMIT_EXCEEDED",
+        # B091/RW-33 (P7 A3), additive under v11 (no schema-version bump): a
+        # LivenessRunner-classified idle stall, distinct from LANE_TIMEOUT's
+        # genuine elapsed-budget expiry.
+        "CANDIDATE_HUNG",
     ),
     "INCONCLUSIVE": (
         "NO_MUTANTS",

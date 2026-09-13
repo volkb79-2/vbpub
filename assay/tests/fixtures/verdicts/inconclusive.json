@@ -1,75 +1,80 @@
 {
-  "schema_version": 11,
-  "assay_version": "0.1.0",
-  "lane": "package",
-  "commit": "6666666666666666666666666666666666666666",
-  "outcome": "INCONCLUSIVE",
-  "exit_code": 5,
-  "started": "2026-08-06T09:50:00+00:00",
-  "ended": "2026-08-06T09:52:18+00:00",
-  "reason_code": "NO_MUTANTS",
-  "declared_rigor": [
-    "R0",
-    "R2"
-  ],
-  "declared_evidence": [],
-  "argv_declared": [
-    "pytest",
-    "tests",
-    "-q"
-  ],
-  "argv_appended": [],
-  "argv_effective": [
-    "pytest",
-    "tests",
-    "-q"
-  ],
-  "argv_modified": false,
-  "env_declared": {},
-  "env_effective": {},
-  "scope": "S1",
-  "enforcement": "gate",
-  "judgment": {
-    "resolved": {
-      "language": "python",
-      "source_roots": ["pkg"],
-      "base": "0000000000000000000000000000000000000a"
-    },
-    "r2": {
-      "producer": "native",
-      "jobs": 1,
-      "max_mutants": 50,
-      "operators": ["python:compare-swap"],
-      "kill_attribution": "unattributed",
-      "mode": "changed_lines"
-    }
+ "schema_version": 11,
+ "assay_version": "0.1.0",
+ "lane": "package",
+ "commit": "6666666666666666666666666666666666666666",
+ "outcome": "INCONCLUSIVE",
+ "exit_code": 5,
+ "started": "2026-08-06T09:50:00+00:00",
+ "ended": "2026-08-06T09:52:18+00:00",
+ "reason_code": "NO_MUTANTS",
+ "declared_rigor": [
+  "R0",
+  "R2"
+ ],
+ "declared_evidence": [],
+ "argv_declared": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_appended": [],
+ "argv_effective": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_modified": false,
+ "env_declared": {},
+ "env_effective": {},
+ "scope": "S1",
+ "enforcement": "gate",
+ "judgment": {
+  "resolved": {
+   "language": "python",
+   "source_roots": [
+    "pkg"
+   ],
+   "base": "0000000000000000000000000000000000000a"
   },
-  "snapshot_policy": {
-    "selection": "repository"
+  "r2": {
+   "producer": "native",
+   "jobs": 1,
+   "max_mutants": 50,
+   "operators": [
+    "python:compare-swap"
+   ],
+   "kill_attribution": "unattributed",
+   "mode": "changed_lines"
+  }
+ },
+ "snapshot_policy": {
+  "selection": "repository"
+ },
+ "claims": [
+  {
+   "rigor": "R0",
+   "source": "computed",
+   "status": "PASS",
+   "verified_by_assay": true
   },
-  "claims": [
-    {
-      "rigor": "R0",
-      "source": "computed",
-      "status": "PASS",
-      "verified_by_assay": true
-    },
-    {
-      "rigor": "R2",
-      "source": "computed",
-      "status": "INCONCLUSIVE",
-      "verified_by_assay": true,
-      "reason_code": "NO_MUTANTS",
-      "mutation": {
-        "candidate_count": 0,
-        "total": 0,
-        "killed": [],
-        "survived": [],
-        "crashed": [],
-        "budget_exceeded": [],
-        "equivalent": []
-      }
-    }
-  ],
-  "evidence": []
+  {
+   "rigor": "R2",
+   "source": "computed",
+   "status": "INCONCLUSIVE",
+   "verified_by_assay": true,
+   "reason_code": "NO_MUTANTS",
+   "mutation": {
+    "candidate_count": 0,
+    "total": 0,
+    "killed": [],
+    "survived": [],
+    "crashed": [],
+    "budget_exceeded": [],
+    "equivalent": [],
+    "hung": []
+   }
+  }
+ ],
+ "evidence": []
 }
