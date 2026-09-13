@@ -481,3 +481,9 @@ def test_highlight_colorless_mode_returns_source_unchanged():
 
     source = "## Status\n\n**done**\n"
     assert highlight_markdown(source, color=False) == source
+
+
+def test_highlight_handles_empty_source_in_color_mode():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    assert highlight_markdown("", color=True) == ""

@@ -1269,6 +1269,24 @@ def test_extract_lossless_follow_opencode_resolves_a_single_session(
     assert seen == {"source": "OpencodeSource", "session": "s0"}
 
 
+def test_extract_follow_opencode_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    monkeypatch.setattr(
+        "nyxloom.session_extract.follow.Follower.run_forever", lambda self: 0
+    )
+    assert cli.main(["extract", str(db), "--follow"]) == 1
+    assert "holds 2 sessions" in capsys.readouterr().err
+
+
+def test_extract_lossless_follow_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    monkeypatch.setattr(
+        "nyxloom.session_extract.follow.Follower.run_forever", lambda self: 0
+    )
+    assert cli.main(["extract-lossless", str(db), "--follow"]) == 1
+    assert "holds 2 opencode sessions" in capsys.readouterr().err
+
+
 def test_extract_json_rejects_highlight_as_text_only(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     assert cli.main(["extract", str(fp), "--json", "--highlight", "--color"]) == 1

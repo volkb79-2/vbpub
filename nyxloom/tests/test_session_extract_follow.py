@@ -22,6 +22,7 @@ from nyxloom.session_extract.follow import (
     FollowConfig,
     Follower,
     FollowSelector,
+    Arrival,
     JsonlSource,
     JsonlTailer,
     OpencodeSource,
@@ -394,6 +395,17 @@ def test_thinking_after_an_already_emitted_pending_event_passes_through():
     assert [e.marker for e in result.emitted] == ["th1"]
 
 
+def test_thinking_after_an_emitted_pending_event_can_also_be_dropped():
+    selector = FollowSelector(ExtractConfig(include_thinking=True))
+    selector.feed(NormalizedEvent(0, "a0", _TS, EventKind.ASSISTANT_TEXT, "z" * 300))
+    assert selector.feed(NormalizedEvent(1, "th1", _TS, EventKind.THINKING, "short")).emitted == []
+
+
+def test_a_short_thinking_event_is_dropped_when_it_is_not_after_a_pending_text():
+    selector = FollowSelector(ExtractConfig(include_thinking=True))
+    assert selector.feed(NormalizedEvent(0, "th1", _TS, EventKind.THINKING, "short")).emitted == []
+
+
 def test_an_api_error_is_dropped_immediately_not_buffered():
     config = ExtractConfig()
     selector = FollowSelector(config)
@@ -712,6 +724,18 @@ def test_attention_delivery_notifies_and_reports_send_failure(monkeypatch, capsy
     assert "transport down" in capsys.readouterr().err
 
 
+def test_attention_delivery_accepts_a_successful_notification(monkeypatch, capsys):
+    from nyxloom import notify
+
+    monkeypatch.setattr(notify, "send", lambda *_args, **_kwargs: (True, "sent"))
+    deliver(
+        AttentionEvent("checkpoint_detected", "claude-code", "/tmp/session", "excerpt"),
+        FollowConfig(notify=object()),
+        io.StringIO(),
+    )
+    assert capsys.readouterr().err == ""
+
+
 def test_attention_delivery_survives_a_notify_exception(monkeypatch, capsys):
     from nyxloom import notify
 
@@ -940,6 +964,32 @@ def test_opencode_source_does_not_emit_a_stable_non_prose_row(tmp_path):
     assert source.poll() == []
     assert source.poll() == []
     source.close()
+
+
+def test_opencode_source_can_settle_a_non_prose_row_without_appending_it(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "system", None)
+    _opencode_message(db, "m2", 20, "assistant", "settled prose")
+    source = OpencodeSource(db, sid, ExtractConfig(), False, cursor=(-1, ""))
+    arrivals = source.poll()
+    assert [e.text for a in arrivals for e in a.events] == []
+    source.close()
+
+
+def test_follower_handles_an_arrival_without_raw_record_and_a_source_without_close():
+    class Source:
+        def poll(self):
+            return [Arrival(events=[NormalizedEvent(0, "op", _TS, EventKind.OPERATOR_TEXT, "operator")])]
+
+    out = io.StringIO()
+    follower = Follower(
+        Source(), harness="opencode", session_path="/tmp/db", config=ExtractConfig(),
+        follow_config=FollowConfig(), out=out, lossless_mode=False, printed_any=False,
+    )
+    assert follower.tick() == 1
+    follower.close()
+    assert "operator" in out.getvalue()
 
 
 def test_opencode_lossless_follow_yields_the_dumps_own_blocks(tmp_path):

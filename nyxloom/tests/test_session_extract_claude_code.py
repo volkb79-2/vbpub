@@ -1013,3 +1013,16 @@ def test_parse_record_covers_empty_and_non_conversation_shapes():
     ]}}, 0, "m", config, state) == []
     assert claude_code.parse_record({"type": "user", "message": {"content": 42}}, 0, "m", config, state) == []
     assert claude_code.parse_record({"type": "user", "message": {"content": "<local-command-caveat>x</local-command-caveat>"}}, 0, "m", config, state) == []
+
+
+def test_update_interview_pending_ignores_non_tool_user_blocks_and_other_records():
+    pending = {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "user", "message": {"content": [{}, {"type": "text", "text": "answer"}]}},
+        pending,
+    ) is None
+    assert pending == {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": "not a list"}}, pending
+    ) is None
+    assert claude_code.update_interview_pending({"type": "system"}, pending) is None
