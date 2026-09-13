@@ -1149,3 +1149,13 @@ LOG/REPORT at `12e4e150`. The branch is clean and the previously surviving
 P4 mutants are now covered by explicit oracles; because the judged test tree
 changed, the controller requires a fresh R2 on this committed tree before
 review or merge.
+
+### RW-77 — 2026-09-13 16:58:01Z — continue P6 from ten remaining placeholders
+
+The first P6 resume after the handoff ended at exit 4 with cumulative counts
+484 candidates, 431 killed, 43 survived, and 10 `budget_exceeded`. It made
+progress through the 66-candidate remainder but did not judge the last ten;
+the exact container exited normally without OOM. The controller requires
+another PSI-gated `--resume` on the same judged tree until
+`budget_exceeded=0`. In parallel, P4's fresh R2 remains active after its
+triage commit.
