@@ -1314,3 +1314,14 @@ the exact container is `run-gate-vbpub-r2-4167718-1789340985` under
 `dev-background.slice` with `NanoCpus=3000000000`. Its wrapper is detached
 with an explicit `RUN_GATE_EXIT` marker in `/tmp/rg55-p6-r2-resume-2.log`.
 The assay verdict and wrapper exit will be read separately when it finishes.
+
+### RW-95 — 2026-09-13 23:14:57Z — continue with independent assay B096
+
+The operator authorized continued progress while the long P6 mutation gate
+runs asynchronously. B096 is adopted as a small, independent assay change:
+derive the `--rejudge-outcome` CLI help's canonical bucket list from
+`MUTATION_BUCKETS` while retaining the CLI-only `error` alias for `crashed`.
+It is isolated in a successor assay worktree based on the accepted B092+B098
+tip; it must not modify the running B092 gate tree or the P6 judged tree. The
+implementation, tests, docs, and fresh adversarial review use Luna xhigh;
+Sol remains reserved for an actually unsolvable Luna issue.
