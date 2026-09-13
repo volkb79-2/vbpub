@@ -95,19 +95,23 @@ artifact = "coverage.json"
 # session-extract: narrow package lane (2026-09-10), added alongside
 # tester-unified rather than modifying it. Scope: src/nyxloom/session_extract
 # and the extract-related slice of src/nyxloom/cli.py (--ledger/extract-debug
-# wiring), argv restricted to that package's own test files so an unrelated,
-# pre-existing failure elsewhere in the tree (e.g. mattermost provisioning
-# tests, dstdns snapshot-fault tests) cannot block this lane.
+# wiring), plus the exact CLI selector regression tests named below. The argv
+# stays restricted to this package's tests and those two CLI nodes so an
+# unrelated, pre-existing failure elsewhere in the tree (e.g. mattermost
+# provisioning tests, dstdns snapshot-fault tests) cannot block this lane.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "3d27c67e": the reviewed feature boundary immediately before this
-# session's session_extract work. The earlier edc55648 pin predated the
-# separate CLI-wide project-id/help wave and made this narrow lane judge that
-# unrelated diff as well; this boundary keeps R1/R2 scoped to this feature.
+# base = "3d27c67e": the reviewed boundary for this narrow follow-up lane.
+# The full branch fork point at this HEAD is main's merge-base
+# 364945ddaaa528e4ca105bbe3af371d4d0360b04, which the tester-unified lane
+# already owns through base = "main". Do not move this narrow lane back to
+# that fork point: it would make changed-line R1/R2 judge the entire earlier
+# CLI-wide project-id/help wave as well as this feature, defeating the lane's
+# reviewed package scope. The earlier edc55648 pin had the same overreach.
 #
 # rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
 # R2 (native python mutation) is added in a follow-up edit once R1 is
@@ -138,6 +142,8 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_follow.py",
   "tests/test_session_extract_locate.py",
   "tests/test_cli_help.py",
+  "tests/test_cli.py::test_tick",
+  "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]

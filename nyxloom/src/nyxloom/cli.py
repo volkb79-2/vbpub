@@ -12,10 +12,10 @@ INTERFACE CONTRACT (frozen) — subcommands:
   lint [path ...]             no args -> lint_project for every registered
                               project; exit 1 if any has_blocking. Prints
                               'PATH:LINE RULE SEVERITY MESSAGE' lines.
-  doctor [--project X] [--rebuild [--write]]
+  doctor [--project-id PROJECT_ID] [--rebuild [--write]]
                               findings table; exit 1 on any severity in
                               {critical, error}. --rebuild prints diffs.
-  status [--project X]        per task: id, state, since, attempt route,
+  status [--project-id PROJECT_ID] per task: id, state, since, attempt route,
                               cost, notes. Reads statefiles only.
   resync <project> [--apply] [--apply-content-merges]
                               PACKAGE RP01 2026-07-21 + RP02 (docs/plan-
@@ -77,7 +77,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               its mutating verbs are refused unless the
                               deployment sets NYXLOOM_CHANNEL_OPERATOR_ID --
                               see control_auth.channel_operator.
-  tick [--project X]          daemon.run_once — one pass, prints action
+  tick [--project-id PROJECT_ID] daemon.run_once — one pass, prints action
                               count. THE debug/fallback mode.
   decide <project> <D-id> --choose TEXT [--note TEXT]
                               decisions.decide(authority=$USER) +
@@ -422,7 +422,7 @@ def cmd_lint(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    """doctor [--project X] [--rebuild [--write]] [--liveness]"""
+    """doctor [--project-id PROJECT_ID] [--rebuild [--write]] [--liveness]"""
     from . import config, doctor, storage
 
     registry = config.load_registry()
@@ -469,7 +469,7 @@ def cmd_doctor(args) -> int:
         all_findings.extend(findings)
 
     # Host-scoped checks (docker-transport lying, missing cgroup slices) --
-    # not owned by any single project, so run once regardless of --project
+    # not owned by any single project, so run once regardless of --project-id
     # and folded into the SAME findings table + exit-code decision below.
     all_findings.extend(doctor.doctor_host())
 
@@ -522,7 +522,7 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_status(args) -> int:
-    """status [--project X]"""
+    """status [--project-id PROJECT_ID]"""
     from . import config, storage
 
     registry = config.load_registry()
@@ -1447,10 +1447,10 @@ def cmd_daemon(args) -> int:
 
 
 def cmd_tick(args) -> int:
-    """tick [--project X]"""
+    """tick [--project-id PROJECT_ID]"""
     from . import daemon as daemon_mod
 
-    action_count = daemon_mod.run_once(args.project_id if hasattr(args, 'project') else None)
+    action_count = daemon_mod.run_once(args.project_id)
     print(action_count)
     return 0
 
@@ -2235,7 +2235,7 @@ def cmd_free_models_refresh(args) -> int:
 
 
 def cmd_finding_record(args) -> int:
-    """finding record --project P --kind K --title T [--body B]
+    """finding record --project-id PROJECT_ID --kind KIND --title TITLE [--body BODY]
     [--field KEY=VALUE ...] [--task-id ID] [--severity S]"""
     from . import findings
     fields = {}
@@ -2253,7 +2253,7 @@ def cmd_finding_record(args) -> int:
 
 
 def cmd_finding_list(args) -> int:
-    """finding list [--project P] [--kind K]"""
+    """finding list [--project-id PROJECT_ID] [--kind KIND]"""
     from . import findings
     from .config import load_registry
     if args.project_id:

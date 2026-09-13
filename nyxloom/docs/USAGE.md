@@ -163,14 +163,14 @@ them as worked examples.
 | `project add <id> <root>` | Register a project path in the registry. |
 | `project list` | Print the registry table. |
 | `lint [path…]` | Lint registered projects / specific handoff files (the quality gate). |
-| `doctor [--project] [--rebuild [--write]] [--liveness]` | Integrity findings + dashboard URL (`--liveness`: CR-16 fast healthcheck path). |
-| `status [--project]` | Per-task state / since / route / cost / notes. |
+| `doctor [--project-id PROJECT_ID] [--rebuild [--write]] [--liveness]` | Integrity findings + dashboard URL (`--liveness`: CR-16 fast healthcheck path). |
+| `status [--project-id PROJECT_ID]` | Per-task state / since / route / cost / notes. |
 | `resync <project> [--apply] [--apply-content-merges]` | Re-baseline state against ground truth (post manual-merge drift). |
 | `render` | Render the read-only `www/` dashboard. |
 | `migrate-store <project>` | Migrate the file-backend event store → SQLite. |
 | `daemon [--foreground]` | Run the resident reconcile daemon. |
 | `auth show \| bootstrap [--operator] \| rotate [--operator] [--force]` | Show / initialize / rotate the daemon's operator-auth store. |
-| `tick [--project]` | One reconcile pass (degraded/debug mode). |
+| `tick [--project-id PROJECT_ID]` | One reconcile pass (degraded/debug mode). |
 | `decide <project> <D-id> --choose [--note]` | Resolve a `D-NNN` product decision. |
 | `discuss <project> <D-id>` | Print the decision-chat command. |
 | `intake <project> <intake_id> <msg>` | Advance a feature-intake chat turn. |
@@ -187,8 +187,8 @@ them as worked examples.
 | `free-models list [--source] \| refresh [--source] [--dry-run]` | Discover currently-free models & refresh routes (see §5). |
 | `capability-map refresh [--dry-run] [--emit-findings PROJECT]` | Refresh `routes.toml`'s model catalog from a live capability probe; optionally record `cost_crossover` findings under a registered project. |
 | `route doctor [--no-probe]` | Validate `routes.toml` and live-probe each declared route (`--no-probe`: schema-only, offline-safe). |
-| `finding record --project --kind --title [--body] [--field KEY=VALUE]... [--task-id] [--severity] \| list [--project] [--kind]` | Record / list structured findings against a registered project (FN-4). |
-| `backlog [--project] new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. `--project` (default: discover from cwd) applies to every subcommand. |
+| `finding record --project-id PROJECT_ID --kind KIND --title TITLE [--body BODY] [--field KEY=VALUE]... [--task-id TASK_ID] [--severity SEVERITY] \| list [--project-id PROJECT_ID] [--kind KIND]` | Record / list structured findings against a registered project (FN-4). |
+| `backlog [--project-id PROJECT_ID] new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. `--project-id` (default: discover from cwd) applies to every subcommand. |
 | `version` | Print the version. |
 
 Against the deployed daemon, run any verb through the container wrapper:

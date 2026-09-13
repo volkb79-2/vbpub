@@ -388,6 +388,12 @@ class JsonlSource:
         # knowable from the stream.
         if self._fmt == "claude-code" and any(not rec.get("isSidechain") for rec in records):
             self._state.has_primary_thread = True
+        if self._fmt == "claude-code" and self._state.has_primary_thread:
+            # parse_record() emits no events for these records, but Follower
+            # also uses Arrival.raw for interview attention. Drop them at the
+            # source boundary so an ignored sidechain cannot alert through a
+            # channel that selection would never render.
+            records = [rec for rec in records if not rec.get("isSidechain")]
 
         for rec in records:
 

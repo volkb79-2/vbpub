@@ -653,6 +653,7 @@ def test_jsonl_follow_promotes_a_new_primary_before_filtering_same_tick_sidechai
     assert [e.text for a in arrivals for e in a.events] == [
         "## Primary\n\nreal conversation"
     ]
+    assert [a.raw["uuid"] for a in arrivals] == ["a1"]
     source.close()
 
 
@@ -743,6 +744,30 @@ def test_no_bell_when_nothing_fires(tmp_path):
     follower.tick()
     assert bell.getvalue() == ""
     follower.close()
+
+
+def test_ignored_sidechain_question_emits_no_output_bell_or_hook(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    sink = tmp_path / "fired.txt"
+    script = f'printf "%s\\n" "$NYXLOOM_ATTENTION_EXCERPT" > "{sink}"'
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(
+        fp, out, follow_config=FollowConfig(bell=True, on_attention=script), bell_out=bell,
+    )
+
+    _append(fp, _rec(type="assistant", uuid="side-q", timestamp=_TS, isSidechain=True,
+                     message={"role": "assistant", "content": [
+                         {"type": "tool_use", "id": "side-tu", "name": "AskUserQuestion",
+                          "input": {"questions": [{"question": "Sidechain only?"}]}},
+                     ]}))
+
+    assert follower.tick() == 0
+    follower.close()
+
+    assert out.getvalue() == ""
+    assert bell.getvalue() == ""
+    assert not sink.exists()
 
 
 def test_on_attention_runs_the_command_with_the_documented_env_vars(tmp_path):

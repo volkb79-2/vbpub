@@ -289,7 +289,10 @@ def test_render(sample_project, tmp_state, capsys, monkeypatch):
 
 def test_tick(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 6: tick calls daemon.run_once and prints result."""
+    calls = []
+
     def mock_run_once(project):
+        calls.append(project)
         return 7
 
     monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
@@ -298,6 +301,24 @@ def test_tick(sample_project, tmp_state, capsys, monkeypatch):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "7" in out
+    assert calls == [None]
+
+
+def test_tick_project_id_passes_the_selector_to_daemon(sample_project, tmp_state, capsys, monkeypatch):
+    """tick --project-id selects exactly the requested registered project."""
+    calls = []
+
+    def mock_run_once(project):
+        calls.append(project)
+        return 11
+
+    monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
+
+    exit_code = cli.main(["tick", "--project-id", "selected"])
+
+    assert exit_code == 0
+    assert calls == ["selected"]
+    assert capsys.readouterr().out == "11\n"
 
 
 def test_decide_success(sample_project, tmp_state, capsys, monkeypatch):
@@ -1555,4 +1576,3 @@ def test_gatedef_asserts_defaults_to_empty_list():
     gate = GateDef(gate_id="g", argv=["true"], phase="implementation", timeout_seconds=1)
 
     assert gate.asserts == []
-
