@@ -1290,3 +1290,14 @@ package. The implementation and its tests use Luna xhigh; Sol is reserved for
 an unsolvable Luna blocker. B092's public configuration, hash-identity
 compatibility, validation, docs, and regression oracles are part of the work,
 and B098 must retain the existing arithmetic while documenting `crashed`.
+
+### RW-93 — 2026-09-13 23:00:05Z — discard non-verdict B092+B098 review session
+
+The first fresh Luna xhigh adversarial reviewer was stopped after repeated
+completion prompts produced no report or verdict. It modified no product
+files; its partial evidence was 150 focused tests, 42 documentation checks,
+67 additional targeted tests, and passing live loader/digest probes, with the
+full serial suite interrupted at approximately 54%. Because no review report
+or verdict was issued, this does not consume a review round or provide merge
+evidence. A fresh Luna xhigh reviewer must be seeded from the same handoff;
+Sol remains reserved for an actually unsolvable Luna issue.
