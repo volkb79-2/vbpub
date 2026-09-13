@@ -9644,27 +9644,29 @@ temporary vocabulary addition changes the help without a second edit.
 
 ## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
 
-**OPEN follow-up, explicitly deferred beyond this 6.2.0 repair by RW-57
-(2026-09-13 filing).** One events file receives every xdist worker's and
-controller's session records. B6-a now requires a full idle grace after any
-finish, preventing the reviewed kill of a progressing candidate. Remaining
-defects: duplicated `tests_completed` (review measured 8 records for 4
-tests) and baseline gaps computed from a merged timeline that can be
-tighter than any worker's worst gap.
+**FIXED in this change, 2026-09-13.** One events file receives every xdist
+worker's and controller's session records. The materialized plugin now stamps
+the producer's positive `pid` and optional non-empty `PYTEST_XDIST_WORKER`,
+without mutating the hook's input record. The monitor recognizes only its
+candidate process's stamped `session_finish`; post-run test readers use the
+owner pid from the first `session_start`, so four controller test records are
+counted once rather than merged with worker duplicates. Baseline gaps are
+computed per pid after ordering each process's records by event timestamp,
+then the largest process-local gap is used, including the owner's leading gap.
 
-Stamp `os.getpid()` and available `PYTEST_XDIST_WORKER` identity in `_append`;
-recognize the candidate's own `session_finish`, count its test records, and
-compute baseline gaps per pid before taking the worst. Decide and document
-handling of older records without pid; the review proposes retaining their
-current interpretation. No stamping, per-pid parser or xdist WARN ships in
-this repair. CONSUMERS discloses the current limits (B6-c); evaluate any new
-WARN with the follow-up rather than silently adding policy here.
+Records with no usable pid (missing, boolean, non-integer, or non-positive)
+remain valid. When the relevant records are mixed or malformed, the parser
+retains the existing merged interpretation rather than dropping evidence or
+inventing an identity from `xdist_worker`. No new WARN, schema number, or
+liveness policy was added. The B6-a progressing-tail and single-process
+behavior remain covered.
 
-Oracle: real `pytest -n 2` with four tests yields four completed tests,
-worker finish cannot stand in for controller finish, and interleaved fast
-workers cannot shrink a slow worker's calibrated gap. Preserve the B6-a
-progressing-tail regression, single-process and legacy-file behavior.
-Update README, DESIGN-GUIDE and CONSUMERS in the same change.
+Oracle: the focused behavioral suite covers materialized subprocess records,
+an interleaved controller-plus-two-workers fixture with four owner test
+records, owner-only finish detection, reordered per-pid timestamps, malformed
+and mixed legacy-compatible records, and the B6-a progressing-tail regression.
+See `nyxloom-trove/reports/assay-B097-REPORT.md` for the implementation
+traceability and deferred verification notes.
 
 ## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
 

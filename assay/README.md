@@ -276,7 +276,15 @@ silently consuming a whole `budget_per_candidate` window — see
 An early xdist worker finish does not expire a candidate still emitting
 events or output: the post-finish grace requires 30 s without either.
 See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
-and the consumer section's xdist measurement limitations.
+and the consumer section's xdist identity rules. Every materialized-plugin
+record now carries its positive producer `pid` and, when present, the
+descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test records are read
+from the process owning the first `session_start`, so controller/worker
+duplicates do not inflate `tests_completed`; baseline gaps are computed on
+each pid timeline and the largest per-process gap is used. The monitor's own
+candidate pid is the only stamped `session_finish` that arms the finish grace.
+Old, malformed, or mixed records retain the merged legacy interpretation, and
+the worker label is never used as identity.
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,

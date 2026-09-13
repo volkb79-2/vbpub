@@ -464,11 +464,28 @@ the idle clock, preserving a progressing worker tail while still expiring
 a process that stops reporting after the full 30 s grace. The calibrated
 idle/CPU branch and elapsed budget retain their existing rules.
 
-Pid stamping and per-process parsing are deferred to B097: this repair
-does not correct xdist test-count duplication or merged-stream calibration.
-RW-49/D3 calibration ends at `session_finish`; RW-57 accepts the remaining
-shutdown region under this idle grace (review N2 measured about 1 s with
-coverage). See CONSUMERS' liveness section for adoption and limitations.
+#### Liveness process identity and xdist parsing (B097)
+
+The materialized plugin copies each hook record before adding its timestamp,
+the producer's positive integer `os.getpid()` as `pid`, and the non-empty
+`PYTEST_XDIST_WORKER` value as optional descriptive metadata. The parser never
+turns that worker label into identity and never performs process lookup.
+
+When the relevant records carry usable pids, test records are read from the
+process owning the first `session_start` (the xdist controller's event
+timeline), preserving repeated records rather than deduplicating by `nodeid`.
+The monitor separately passes the actual candidate `proc.pid`, and only that
+pid's stamped `session_finish` arms the post-finish grace. Baseline timestamps
+are partitioned by pid, each partition is ordered by its event timestamp, and
+the maximum per-process gap is calibrated; the leading gap comes from the
+owner of the first `session_start`.
+
+This is deliberately fail-compatible with old side files. If the records
+needed for a result omit pid or contain a boolean, non-integer, or non-positive
+pid, the parser keeps the existing merged interpretation and retains every
+valid record. Mixed identity sets do not silently drop evidence. The change is
+side-file/parser behavior only: no schema number, warning, or public liveness
+policy changes, and the RW-49/D3 calibration still ends at `session_finish`.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an

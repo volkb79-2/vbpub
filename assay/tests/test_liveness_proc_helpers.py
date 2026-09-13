@@ -225,6 +225,128 @@ def _finish(t: float) -> str:
     return json.dumps({"event": "session_finish", "exitstatus": 0, "t": t})
 
 
+def test_calibration_uses_each_pid_timeline_and_owner_leading_gap(
+    tmp_path: Path,
+) -> None:
+    """B097: an interleaved worker cannot tighten the controller's gap.
+
+    Both processes deliberately claim the same descriptive worker label, so
+    grouping by ``xdist_worker`` would merge them and produce the wrong
+    result. The controller owns the first session start and has a 10-second
+    quiet interval; the merged stream's largest interval is only 9.5 seconds.
+    """
+    events = _write(
+        tmp_path / "xdist-baseline.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "xdist_worker": "gw0", "t": 0.0}),
+        json.dumps({"event": "session_start", "pid": 200, "xdist_worker": "gw0", "t": 0.1}),
+        json.dumps({"event": "test", "pid": 200, "xdist_worker": "gw0", "t": 0.2}),
+        json.dumps({"event": "test", "pid": 200, "xdist_worker": "gw0", "t": 0.5}),
+        json.dumps({"event": "phase", "pid": 100, "xdist_worker": "gw0", "t": 10.0}),
+        json.dumps({"event": "session_finish", "pid": 100, "xdist_worker": "gw0", "t": 12.0}),
+    )
+    gaps = liveness.baseline_event_gaps(events)
+    assert gaps is not None
+    assert (gaps.worst_gap_s, gaps.leading_gap_s) == (10.0, 10.0)
+    calibration = liveness.compute_liveness_calibration(events, 20.0)
+    assert calibration.expect_next_event_within_s == 30.0
+    assert calibration.pre_first_event_within_s == 30.0
+
+
+def test_calibration_orders_each_pid_by_event_timestamp(
+    tmp_path: Path,
+) -> None:
+    """Inter-process file order is not a process's chronological order."""
+    events = _write(
+        tmp_path / "reordered.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "t": 0.0}),
+        json.dumps({"event": "phase", "pid": 100, "t": 4.0}),
+        json.dumps({"event": "session_start", "pid": 200, "t": 0.1}),
+        # Deliberately reordered within pid 200, as can happen when records
+        # are collected/replayed independently of their write order.
+        json.dumps({"event": "test", "pid": 200, "t": 7.1}),
+        json.dumps({"event": "test", "pid": 200, "t": 0.2}),
+        json.dumps({"event": "session_finish", "pid": 100, "t": 4.1}),
+        json.dumps({"event": "session_finish", "pid": 200, "t": 7.2}),
+    )
+    gaps = liveness.baseline_event_gaps(events)
+    assert gaps is not None
+    assert gaps.worst_gap_s == pytest.approx(6.9)
+    assert gaps.leading_gap_s == 4.0
+
+
+def test_count_test_events_counts_owner_records_not_nodeid_deduplication(
+    tmp_path: Path,
+) -> None:
+    """B097: four owner records survive worker duplication and equal nodeids."""
+    events = _write(
+        tmp_path / "xdist-candidate.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "xdist_worker": "gw0", "t": 0.0}),
+        json.dumps({"event": "session_start", "pid": 101, "xdist_worker": "gw0", "t": 0.1}),
+        json.dumps({"event": "session_start", "pid": 102, "xdist_worker": "gw1", "t": 0.2}),
+        # Worker reports: the first test is retried, so equal nodeids are
+        # distinct records and must not be collapsed into a set.
+        json.dumps({"event": "test", "pid": 101, "xdist_worker": "gw0", "nodeid": "test_a", "t": 1.0}),
+        json.dumps({"event": "test", "pid": 101, "xdist_worker": "gw0", "nodeid": "test_a", "t": 1.1}),
+        json.dumps({"event": "test", "pid": 102, "xdist_worker": "gw1", "nodeid": "test_b", "t": 1.2}),
+        json.dumps({"event": "test", "pid": 102, "xdist_worker": "gw1", "nodeid": "test_c", "t": 1.3}),
+        # xdist forwards those four reports to the controller hook too.
+        json.dumps({"event": "test", "pid": 100, "xdist_worker": "gw0", "nodeid": "test_a", "t": 2.0}),
+        json.dumps({"event": "test", "pid": 100, "xdist_worker": "gw0", "nodeid": "test_a", "t": 2.1}),
+        json.dumps({"event": "test", "pid": 100, "xdist_worker": "gw0", "nodeid": "test_b", "t": 2.2}),
+        json.dumps({"event": "test", "pid": 100, "xdist_worker": "gw0", "nodeid": "test_c", "t": 2.3}),
+        json.dumps({"event": "session_finish", "pid": 101, "xdist_worker": "gw0", "t": 3.0}),
+        json.dumps({"event": "session_finish", "pid": 102, "xdist_worker": "gw1", "t": 3.1}),
+        json.dumps({"event": "session_finish", "pid": 100, "xdist_worker": "gw0", "t": 3.2}),
+    )
+    assert liveness.count_test_events(events) == 4
+    assert [
+        event["nodeid"] for event in liveness._iter_test_events(events)
+    ] == ["test_a", "test_a", "test_b", "test_c"]
+
+
+def test_malformed_and_mixed_pids_keep_the_legacy_merged_count(
+    tmp_path: Path,
+) -> None:
+    """B097: incomplete identity is legacy data, not evidence to discard."""
+    legacy = _write(
+        tmp_path / "legacy.ndjson",
+        json.dumps({"event": "test", "nodeid": "a"}),
+        json.dumps({"event": "test", "nodeid": "b"}),
+    )
+    malformed = _write(
+        tmp_path / "malformed.ndjson",
+        json.dumps({"event": "test", "nodeid": "a", "pid": True}),
+        json.dumps({"event": "test", "nodeid": "b", "pid": 0}),
+        json.dumps({"event": "test", "nodeid": "c", "pid": -1}),
+        json.dumps({"event": "test", "nodeid": "d", "pid": "100"}),
+    )
+    mixed = _write(
+        tmp_path / "mixed.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "t": 0.0}),
+        json.dumps({"event": "test", "pid": 100, "nodeid": "a", "t": 1.0}),
+        json.dumps({"event": "test", "pid": "bad", "nodeid": "b", "t": 2.0}),
+        json.dumps({"event": "test", "pid": 200, "nodeid": "c", "t": 3.0}),
+    )
+    assert liveness.count_test_events(legacy) == 2
+    assert liveness.count_test_events(malformed) == 4
+    assert liveness.count_test_events(mixed) == 3
+
+
+def test_malformed_pid_keeps_legacy_merged_calibration(
+    tmp_path: Path,
+) -> None:
+    events = _write(
+        tmp_path / "mixed-baseline.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "t": 0.0}),
+        json.dumps({"event": "phase", "pid": 100, "t": 1.0}),
+        json.dumps({"event": "phase", "pid": "bad", "t": 10.0}),
+        json.dumps({"event": "session_finish", "pid": 200, "t": 11.0}),
+    )
+    gaps = liveness.baseline_event_gaps(events)
+    assert gaps is not None
+    assert (gaps.worst_gap_s, gaps.leading_gap_s) == (9.0, 1.0)
+
+
 def test_calibration_none_path_uses_the_plugin_inactive_fallback() -> None:
     for baseline_s, expected in ((40.0, 60.0), (400.0, 100.0)):
         calibration = liveness.compute_liveness_calibration(None, baseline_s)
@@ -650,6 +772,41 @@ def test_read_events_progress_counts_valid_lines_and_session_finish(
     count, saw_finish = liveness._read_events_progress(events, 0)
     assert count == 2
     assert saw_finish is True
+
+
+def test_read_events_progress_only_accepts_the_candidate_pid_finish(
+    tmp_path: Path,
+) -> None:
+    """B097: a worker finish cannot arm the candidate's finish grace."""
+    events = _write(
+        tmp_path / "xdist-events.ndjson",
+        json.dumps({"event": "session_start", "pid": 100, "t": 0.0}),
+        json.dumps({"event": "session_finish", "pid": 101, "xdist_worker": "gw0", "t": 1.0}),
+    )
+    count, saw_finish = liveness._read_events_progress(events, 0, 100)
+    assert (count, saw_finish) == (2, False)
+    with events.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {"event": "session_finish", "pid": 100, "t": 2.0}
+            )
+            + "\n"
+        )
+    count, saw_finish = liveness._read_events_progress(events, count, 100)
+    assert (count, saw_finish) == (3, True)
+
+
+def test_read_events_progress_mixed_finish_identity_uses_legacy_behavior(
+    tmp_path: Path,
+) -> None:
+    """An unstamped finish preserves old any-finish behavior in a mixed file."""
+    events = _write(
+        tmp_path / "mixed-events.ndjson",
+        json.dumps({"event": "session_finish", "pid": 101, "t": 1.0}),
+        json.dumps({"event": "session_finish", "t": 2.0}),
+    )
+    count, saw_finish = liveness._read_events_progress(events, 0, 100)
+    assert (count, saw_finish) == (2, True)
 
 
 def test_read_events_progress_a_test_event_alone_never_reports_session_finish(

@@ -16,6 +16,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `crashed`, while preserving the `killed / (killed + survived)` arithmetic.
 - fix(assay): B096 derives `--rejudge-outcome` help from the canonical
   `MUTATION_BUCKETS` vocabulary while retaining the CLI-only `error` alias.
+- fix(assay): B097 stamps liveness records and parses xdist timelines by
+  producer pid, preserving legacy records and owner-only session finishes.
 
 ### Documentation
 - docs(assay): sync README, DESIGN-GUIDE, and CONSUMERS with B092 adoption

@@ -2203,16 +2203,29 @@ making progress, on EITHER of two branches:
   30 s grace (P7 round-2 B6, RW-57).
 
 **xdist (`-n` / `--numprocesses`).** Workers and the controller share the
-events file. An early worker finish cannot expire a candidate while another
-worker keeps reporting events or output. Test records are still counted
-from that merged file, so `tests_completed` can count a test twice, and
-baseline gap calibration can be tighter than the worst individual worker
-gap. Pid stamping and per-process parsing are deferred (B097); this release
-adds no xdist-specific WARN. The existing `liveness = false` setting in
-`[lanes.<name>.judge.mutation]` disables liveness when those limitations are
-unsuitable; the declared per-candidate budget still applies. The
-[design rationale](DESIGN-GUIDE.md#liveness-session-finish-grace) explains
-why the grace uses subsequent progress.
+events file. Every materialized-plugin record carries its positive producer
+`pid` and, when non-empty, the descriptive `PYTEST_XDIST_WORKER` value. The
+worker label is never used as identity. When all relevant test records carry
+usable pids, `tests_completed` reads the records owned by the process that
+wrote the first `session_start` (the controller), so worker reports forwarded
+to that controller do not duplicate the count; repeated records with an equal
+`nodeid` remain separate events. The monitor recognizes only its candidate
+process's stamped `session_finish`, so a worker finish cannot arm the
+post-finish grace while the candidate is still progressing.
+
+When all timestamped baseline records carry usable pids, gap calibration orders
+each pid's records by event timestamp, computes that process's own gaps, and
+uses the largest per-process worst gap. The leading gap is taken from the
+process owning the first `session_start`. A legacy file with no pid, or a
+relevant set containing a missing, boolean, non-integer, or non-positive pid,
+keeps the old merged interpretation; no evidence is dropped and no pid is
+invented from `xdist_worker`. The same compatibility rule applies to mixed
+records. There is no xdist-specific WARN or schema change. The existing
+`liveness = false` setting in `[lanes.<name>.judge.mutation]` still disables
+liveness when that policy is unsuitable; the declared per-candidate budget
+still applies. The [design rationale](DESIGN-GUIDE.md#liveness-session-finish-grace)
+explains why the grace uses subsequent progress and why the owner identity is
+separate from the worker label.
 
 **The residual limitation, stated plainly (P7 round-1 B2, item 3).** The
 events side file is in practice the ONLY live progress signal a pytest
@@ -2345,7 +2358,7 @@ never says `coverage_parsed`.
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4 — that candidate's own liveness event count; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no test event yet, distinct meanings) |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4/B097 — the count of owner-process `test` records; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no owner test event yet, distinct meanings) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
@@ -2403,7 +2416,7 @@ way:
 
 | field | meaning |
 | --- | --- |
-| `worst_gap_s` | the largest interval between two consecutive events in the BASELINE's own side file — the measurement the bound is derived from. `null` on the plugin-inactive fallback path |
+| `worst_gap_s` | the largest per-process interval between consecutive events in the BASELINE's own side file, after each pid timeline is ordered by event timestamp — the measurement the bound is derived from. `null` on the plugin-inactive fallback path |
 | `expect_next_event_within_s` | `max(3 x worst_gap_s, 15s)` — how long a candidate may go silent once it has produced at least one event |
 | `pre_first_event_within_s` | `max(3 x the baseline's LEADING gap, 15s)` — the bound in force before a candidate has produced any event at all |
 | `slowest_test_s` | the slowest `call`-phase duration in the baseline. **Unchanged in meaning**, and since 6.2.0 no longer the input to either bound (see below) |
