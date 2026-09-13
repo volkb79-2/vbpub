@@ -1375,3 +1375,13 @@ The shared host's fresh `/proc/pressure/memory` reading reached
 containers remain undisturbed, but no new test, gate, or mutation process may
 be launched until a fresh reading is at or below the threshold. B097 editing
 may continue; its implementer was explicitly told to defer PSI-gated tests.
+
+### RW-101 — 2026-09-13 23:56:25Z — B097 validation green; final review dispatched
+
+The B097 implementer committed `1daf6e62`; controller validation initially
+found and repaired one test-only missing `json` import in `a8ac0d5c`. The
+serial PSI-gated focused suite then passed 116 liveness tests, and the
+cross-document suite passed 42 tests. The review handoff was frozen in
+`b83b9941`, and a fresh Luna xhigh adversarial reviewer was dispatched against
+that exact tip. The B097 registered gate remains pending until review accepts;
+no merge or release is authorized by this ruling.
