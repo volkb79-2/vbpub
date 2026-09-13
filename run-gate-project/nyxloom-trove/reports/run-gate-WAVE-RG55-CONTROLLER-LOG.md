@@ -1279,3 +1279,14 @@ A fresh P4 final-review dispatch requested explicitly as Sol xhigh exposed only
 a generic GPT-5 identity and could not verify `gpt-5.6-sol` at `xhigh`; it
 stopped before reading the handoff, inspecting the repository, probing, or
 writing a review. This is not review evidence and P4 remains merge-blocked.
+
+### RW-92 — 2026-09-13 22:14:41Z — fold assay B092 and B098 into the wave
+
+The operator authorized immediate implementation of assay backlog B092
+(explicit per-tree mutation identity exclusions) and B098 (complete the
+`mutation_pct` excluded-bucket documentation). The work is isolated to a new
+assay worktree and must not modify the active P6 judged tree or any other
+package. The implementation and its tests use Luna xhigh; Sol is reserved for
+an unsolvable Luna blocker. B092's public configuration, hash-identity
+compatibility, validation, docs, and regression oracles are part of the work,
+and B098 must retain the existing arithmetic while documenting `crashed`.
