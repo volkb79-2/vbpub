@@ -1098,3 +1098,14 @@ mutation claim and requires a resumed R2 on a non-merge P4 judged tree, with
 source identity checked against the final merge tip; the already-green R1/R3
 results remain separate final-tip evidence. This is a gate-procedure ruling,
 not a reopening of any settled product decision.
+
+### RW-72 — 2026-09-13 12:00:28Z — exact-tree non-merge assay judgment
+
+The P4 source comparison verified that the complete final source tree at
+`d4c57c1a` is represented by ephemeral non-merge commit `cd6780ed` (parent
+`fccba080`; identical tree), while the existing non-merge tip before the P2
+canary merge was missing four source lines. P4 R2 is therefore judged on
+`cd6780ed`, with its exact tree identity and `--request-base main` recorded in
+the report; the ephemeral commit is not a release or product-history commit.
+The final branch remains at `d4c57c1a` until the valid mutation evidence and
+final review are complete.
