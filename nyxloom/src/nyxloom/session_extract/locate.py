@@ -54,13 +54,13 @@ Resolution rules, deliberately strict:
 
 Claude Code's project directories are keyed by an escaped form of the cwd
 the session ran in (`/workspaces/vbpub` -> `-workspaces-vbpub`), so the
-directory matching the CURRENT cwd is searched first and short-circuits on
-a unique hit. That ordering is a speed optimization only: correctness comes
-from the full scan it falls back to, which is also what covers any cwd
-whose escaping this module gets wrong (the rule below -- `/` and `.` both
-to `-` -- is a best-effort mirror of Claude Code's own, checked against all
-26 real project dirs on this machine, but it is the harness's rule, not
-ours, and it is free to change).
+directory matching the CURRENT cwd is searched first. That ordering is a
+speed optimization only: correctness comes from the full scan, which is
+always performed so a preferred hit cannot hide another Claude Code or Codex
+match. The full scan also covers any cwd whose escaping this module gets
+wrong (the rule below -- `/` and `.` both to `-` -- is a best-effort mirror of
+Claude Code's own, checked against all 26 real project dirs on this machine,
+but it is the harness's rule, not ours, and it is free to change).
 """
 
 from __future__ import annotations
@@ -68,12 +68,13 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 
 class LocateError(Exception):
-    """A bare ref resolved to zero, or more than one, session."""
+    """A bare ref was absent, ambiguous, or could not be resolved."""
 
 
 @dataclass
@@ -164,22 +165,89 @@ def _opencode_matches(ref: str) -> list[Path]:
     from .adapters import opencode as opencode_adapter
 
     found: list[Path] = []
+    failures: list[str] = []
     for db in _opencode_db_candidates():
-        if not db.is_file() or not opencode_adapter.sniff(db):
+        try:
+            db_stat = db.stat()
+        except FileNotFoundError:
             continue
+        except OSError as exc:
+            failures.append(f"{db}: path lookup failed: {type(exc).__name__}: {exc}")
+            continue
+        if not stat.S_ISREG(db_stat.st_mode):
+            continue
+
+        try:
+            sniffed = opencode_adapter.sniff(db)
+        except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+            failures.append(f"{db}: sniff failed: {type(exc).__name__}: {exc}")
+            continue
+
+        if not sniffed:
+            # opencode.sniff() deliberately exposes a boolean API and handles
+            # its own SQLite errors as False. Re-open the candidate just
+            # enough to tell a readable, non-opencode SQLite database (a
+            # genuine negative) from a failed sniff (indeterminate).
+            probe_error = _sqlite_read_probe_error(db)
+            if probe_error is not None:
+                failures.append(f"{db}: sniff failed: {probe_error}")
+            continue
+
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        except sqlite3.Error:
-            continue
-        try:
             row = conn.execute("SELECT 1 FROM session WHERE id = ?", (ref,)).fetchone()
-        except sqlite3.Error:
-            row = None
+        except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+            failures.append(f"{db}: query failed: {type(exc).__name__}: {exc}")
+            continue
         finally:
-            conn.close()
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+                    failures.append(f"{db}: query cleanup failed: {type(exc).__name__}: {exc}")
         if row is not None:
             found.append(db)
+
+    if failures:
+        details = "\n".join(f"  {failure}" for failure in failures)
+        raise LocateError(
+            f"opencode lookup for session {ref!r} is indeterminate; a known store "
+            f"could not be inspected:\n{details}"
+        )
     return found
+
+
+def _sqlite_read_probe_error(db: Path) -> str | None:
+    """Return a sniff failure, or None when ``db`` is a genuine negative.
+
+    ``opencode.sniff`` returns False for both a readable database with the
+    wrong schema and SQLite/open failures. The former is a genuine negative;
+    the latter is indeterminate and must not become a "session not found"
+    answer. This small probe separates those two outcomes without changing
+    the adapter's public sniff contract.
+    """
+    conn: sqlite3.Connection | None = None
+    failure: str | None = None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if {"session", "message", "part"}.issubset(tables):
+            failure = "sniff returned False for a database with the expected opencode tables"
+    except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+        failure = f"{type(exc).__name__}: {exc}"
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+                failure = f"{type(exc).__name__}: {exc}"
+    return failure
 
 
 def _ambiguous(ref: str, candidates: list[str]) -> LocateError:
@@ -214,19 +282,13 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
 
     if _UUID_RE.match(ref) or _SUBAGENT_ID_RE.match(ref):
         projects_root = _claude_projects_root()
+        candidates: list[Path] = []
         if projects_root.is_dir():
             preferred = projects_root / escape_cwd(cwd or Path.cwd())
             if preferred.is_dir():
-                hits = _claude_matches_in(preferred, ref)
-                if len(hits) == 1:
-                    return SessionRef(path=hits[0])
-                if len(hits) > 1:
-                    raise _ambiguous(ref, [str(h) for h in hits])
-
-        candidates: list[Path] = []
-        if projects_root.is_dir():
+                candidates += _claude_matches_in(preferred, ref)
             for project_dir in sorted(projects_root.iterdir()):
-                if project_dir.is_dir():
+                if project_dir.is_dir() and project_dir != preferred:
                     candidates += _claude_matches_in(project_dir, ref)
         if _UUID_RE.match(ref):
             candidates += _codex_matches(ref)

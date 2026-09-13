@@ -111,13 +111,28 @@ def test_a_uuid_found_only_outside_the_cwds_project_dir_still_resolves(home):
     assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == f
 
 
-def test_the_cwds_own_project_dir_wins_a_tie(home):
-    # Same id present in two project dirs -- the one matching the current cwd
-    # short-circuits instead of erroring as ambiguous (see locate.py's module
-    # docstring on why that ordering exists).
+def test_a_preferred_claude_match_and_another_claude_match_are_ambiguous(home):
+    # The cwd-matching directory is searched first for speed, but preference
+    # cannot hide a second global match.
     preferred = _claude_session(home, "-workspaces-vbpub", _UUID)
-    _claude_session(home, "-workspaces-dstdns", _UUID)
-    assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == preferred
+    other = _claude_session(home, "-workspaces-dstdns", _UUID)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "matches 2 sessions" in message
+    assert str(preferred) in message and str(other) in message
+    assert message.index(str(preferred)) < message.index(str(other))
+
+
+def test_a_preferred_claude_match_and_a_codex_match_are_ambiguous(home):
+    preferred = _claude_session(home, "-workspaces-vbpub", _UUID)
+    other = _codex_rollout(home, _UUID)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "matches 2 sessions" in message
+    assert str(preferred) in message and str(other) in message
+    assert message.index(str(preferred)) < message.index(str(other))
 
 
 def test_two_matches_outside_the_cwd_error_listing_every_candidate(home):
@@ -201,7 +216,10 @@ def test_an_unknown_opencode_id_errors_naming_the_stores_searched(home):
     _opencode_db(home / ".local" / "share" / "opencode" / "opencode.db", ["ses_other"])
     with pytest.raises(LocateError) as e:
         resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
-    assert "opencode.db" in str(e.value)
+    message = str(e.value)
+    assert "opencode.db" in message
+    assert "not found" in message
+    assert "indeterminate" not in message
 
 
 def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypatch):
@@ -220,8 +238,10 @@ def test_a_non_opencode_sqlite_file_at_the_default_path_is_skipped(home):
     conn.execute("CREATE TABLE unrelated (x INTEGER)")
     conn.commit()
     conn.close()
-    with pytest.raises(LocateError):
+    with pytest.raises(LocateError) as e:
         resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    assert "not found" in str(e.value)
+    assert "indeterminate" not in str(e.value)
 
 
 def test_a_preferred_project_with_two_matching_layouts_is_ambiguous(home):
@@ -249,7 +269,7 @@ def test_duplicate_candidate_paths_are_deduplicated(home, monkeypatch):
     assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == candidate
 
 
-def test_opencode_lookup_skips_a_database_that_cannot_be_opened(home, monkeypatch):
+def test_opencode_lookup_reports_a_database_open_failure_as_indeterminate(home, monkeypatch):
     db = home / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)
     db.write_bytes(b"not a database")
@@ -261,11 +281,14 @@ def test_opencode_lookup_skips_a_database_that_cannot_be_opened(home, monkeypatc
         raise locate.sqlite3.OperationalError("locked")
 
     monkeypatch.setattr(locate.sqlite3, "connect", fail_connect)
-    with pytest.raises(LocateError):
+    with pytest.raises(LocateError) as e:
         resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    assert "indeterminate" in str(e.value)
+    assert "query failed" in str(e.value)
+    assert "not found" not in str(e.value)
 
 
-def test_opencode_lookup_reports_a_query_error_as_no_match(home, monkeypatch):
+def test_opencode_lookup_reports_a_query_error_as_indeterminate(home, monkeypatch):
     db = home / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)
     conn = sqlite3.connect(db)
@@ -275,5 +298,47 @@ def test_opencode_lookup_reports_a_query_error_as_no_match(home, monkeypatch):
     from nyxloom.session_extract.adapters import opencode
 
     monkeypatch.setattr(opencode, "sniff", lambda _path: True)
-    with pytest.raises(LocateError):
+    with pytest.raises(LocateError) as e:
         resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    assert "indeterminate" in str(e.value)
+    assert "query failed" in str(e.value)
+    assert "not found" not in str(e.value)
+
+
+def test_opencode_sniff_failure_is_indeterminate_not_no_match(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"not a database")
+    from nyxloom.session_extract.adapters import opencode
+
+    def fail_sniff(_path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(opencode, "sniff", fail_sniff)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    assert "indeterminate" in str(e.value)
+    assert "sniff failed" in str(e.value)
+    assert "not found" not in str(e.value)
+
+
+def test_opencode_match_is_not_resolved_when_another_store_is_indeterminate(
+    home, tmp_path, monkeypatch
+):
+    sid = _OPENCODE_SID
+    xdg = tmp_path / "xdg"
+    good = _opencode_db(xdg / "opencode" / "opencode.db", [sid])
+    bad = home / ".local" / "share" / "opencode" / "opencode.db"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(b"locked database")
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: True)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(sid, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert str(bad) in message
+    assert str(good) not in message
