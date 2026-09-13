@@ -1076,3 +1076,13 @@ the operator's uncommitted backlog addendum. The controller will rerun with
 cmru's explicit `--allow-uncommitted` escape hatch: the release source is the
 pushed `origin/main` snapshot and the known dirty path is excluded by the
 operator-file rule. No gate or release mutation ran in the refused attempt.
+
+### RW-70 — 2026-09-13 11:27:50Z — run-gate 23.7.0 released
+
+The authorized cmru transaction released `run-gate-v23.7.0` after its
+selftest gate passed in 157.1 seconds, published the wheel and tag, and
+retained the artifact manifest under
+`run-gate-project/artifacts/run-gate-v23.7.0/`. As with assay, cmru's local
+sync warning is caused only by the preserved operator backlog; the controller
+will merge the pushed release commit with `--no-ff`, install the exact wheel,
+and verify revision 41.
