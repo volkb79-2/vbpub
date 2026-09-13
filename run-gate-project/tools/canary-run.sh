@@ -130,6 +130,10 @@ echo "run-gate-project assay-r1 canary"
 # breaking the non-byte `else` arm, still caught by the SAME test
 # (its own `cpu_cores_avg`/`memory_full_stall_seconds` assertions never
 # touch the byte-valued path).
+# R-36k later split series_stats' byte-valued path from its non-byte path;
+# the second canary anchors the else branch so its existing non-byte outlier
+# assertion remains the oracle rather than mutating an intentionally
+# nearest-rank byte path.
 canary median-not-mean run-gate.py \
   '                "max_seconds": None}
     mid = len(values) // 2

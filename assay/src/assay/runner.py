@@ -100,6 +100,7 @@ from . import (
     diff,
     git,
     isolation,
+    liveness,
     measurability,
     mutation,
     mutation_parsers,
@@ -109,6 +110,8 @@ from . import (
 from .adapters.base import LanguageAdapter
 from .config import (
     MAX_INFRASTRUCTURE_VALUE_BYTES,
+    MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+    MUTATION_BUDGET_PER_CANDIDATE_NONE,
     IsolationConfig,
     Lane,
     ResultReportConfig,
@@ -692,6 +695,17 @@ class CommandPlan:
     argv_declared: tuple[str, ...]
     argv_appended: tuple[str, ...]
     argv_effective: tuple[str, ...]
+    #: (B091/RW-36) `None` -- and only `None` -- means "all of `argv_appended`
+    #: requires `allow_argv_append` consent (A-095)", which is byte-identical
+    #: to every pre-RW-36 `CommandPlan` and to every plan `assay.liveness`
+    #: never touches. `assay.liveness.inject_liveness_plugin` is the ONLY
+    #: function that ever sets this explicitly, to the value `argv_appended`
+    #: held BEFORE it added its own unconditional infrastructure tokens --
+    #: so `execute_plan`'s refusal check keeps testing only what the CLI's
+    #: own `--` passthrough contributed, and liveness's own append (gated by
+    #: `judge.mutation.liveness`, never by lane consent) is not caught by a
+    #: gate whose entire meaning is "the lane permitted THIS".
+    cli_argv_appended: tuple[str, ...] | None = None
     #: exactly ``lane.env``, verbatim (A-019: declared-only).
     env_declared: Mapping[str, str]
     #: ``env_declared`` plus whichever ``env_passthrough`` names were actually
@@ -1145,7 +1159,15 @@ def execute_plan(
         )
     child_timeout: float | None = None if timeout == math.inf else timeout
     started_at = clock()
-    if plan.argv_appended and not plan.allow_argv_append:
+    # (B091/RW-36) `consent_scoped_appended` is `argv_appended` itself for
+    # every plan `assay.liveness` never touched (`cli_argv_appended is None`)
+    # -- unchanged behaviour, byte for byte. A liveness-augmented plan sets
+    # `cli_argv_appended` to the CLI-only subset, so this refusal continues
+    # to test ONLY the tokens `allow_argv_append` actually governs.
+    consent_scoped_appended = (
+        plan.argv_appended if plan.cli_argv_appended is None else plan.cli_argv_appended
+    )
+    if consent_scoped_appended and not plan.allow_argv_append:
         return CommandResult(
             plan=plan,
             outcome=Outcome.ERROR,
@@ -1224,10 +1246,24 @@ def _execute_plan_inner(
         # contract stays accurate everywhere else.
         stdout_tail, stdout_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stdout))
         stderr_tail, stderr_dropped_bytes = _bounded_tail(_decode_timeout_stream(exc.stderr))
+        # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises its
+        # own `liveness.LivenessHungExpired` -- a `subprocess.TimeoutExpired`
+        # subclass -- ONLY for an idle-stall kill, never for a genuine
+        # elapsed-budget timeout (which still raises the plain base class,
+        # unchanged). This is the ONE place that distinction becomes a
+        # `reason_code`: every other `process_runner` (R0/R1/R3, every non-
+        # liveness R2 call site) never raises the subclass, so this branch
+        # is unreachable dead code for them and `reason_code` is `LANE_TIMEOUT`
+        # exactly as before this session.
+        reason_code = (
+            ReasonCode.CANDIDATE_HUNG
+            if isinstance(exc, liveness.LivenessHungExpired)
+            else ReasonCode.LANE_TIMEOUT
+        )
         return CommandResult(
             plan=plan,
             outcome=Outcome.BUDGET_EXCEEDED,
-            reason_code=ReasonCode.LANE_TIMEOUT,
+            reason_code=reason_code,
             returncode=None,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
@@ -3432,6 +3468,10 @@ def _run_prepared_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    #: (B091/D-23, P7 A5) Straight through to `mutation.run_mutation` --
+    #: see its own docstring. Empty for every call site that never asked.
+    rejudge_ids: frozenset[str] = frozenset(),
+    rejudge_outcomes: frozenset[str] = frozenset(),
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
     state_dir: Path | None = None,
@@ -3470,6 +3510,40 @@ def _run_prepared_lane(
     # both present or both absent.
     r2_ingested = r2_declared and lane.judge.mutation.is_ingested
     mutation_artifact = lane.judge.mutation.artifact if r2_ingested else None
+    # (B091/D-23/RW-33) Liveness applies ONLY to a native (non-ingested) R2
+    # python lane. `plan` is shadowed for the REST of this function -- the
+    # baseline call below and the R2 dispatch further down both read this
+    # same rebound name, exactly like the pre-existing shared-plan behaviour
+    # this session's BRIEF-1 found (baseline and every R2 candidate already
+    # ran the identical `CommandPlan`; this only changes WHAT that plan is,
+    # never introduces a second one). `liveness_injected` gates whether the
+    # R2 dispatch below hands candidates a `liveness.LivenessRunner` instead
+    # of the lane's own `process_runner` -- the baseline keeps using
+    # `process_runner` unchanged either way (`ASSAY_LIVENESS_EXIT` is never
+    # set for it; see `liveness.py`'s own docstring).
+    liveness_injected = False
+    # (B091/RW-36) A real string always -- never `None` -- so
+    # `judgment.r2.liveness.reason`/the `plan` event's own copy are never a
+    # bare `active: false` with no explanation. Overwritten below only when
+    # this lane actually reaches `inject_liveness_plugin`. `r2_ingested` is
+    # never true here (the ingested path never reaches `run_mutation`/
+    # `_build_judgment_r2` at all -- `_build_ingested_judgment_r2` handles
+    # that branch and never sets `liveness`, which is exactly "forbidden
+    # under producer = ingested"), so the only live reason this default
+    # ever actually reports is "language-not-python".
+    liveness_reason: str = "language-not-python" if r2_declared else "not-applicable"
+    liveness_plugin_path: str | None = None
+    if r2_declared and not r2_ingested and adapter is not None and adapter.name == "python":
+        liveness_injection = liveness.inject_liveness_plugin(
+            plan,
+            liveness_dir=project_root / ".assay" / "liveness",
+            diagnostics=diagnostics,
+            liveness_policy=lane.judge.mutation.liveness,
+        )
+        plan = liveness_injection.plan
+        liveness_injected = liveness_injection.active
+        liveness_reason = liveness_injection.reason
+        liveness_plugin_path = liveness_injection.plugin
     # B031/A-320. This used to be an UNCONDITIONAL
     # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
     # a CWD-relative path in the CONSUMER's live worktree, built by
@@ -3493,6 +3567,43 @@ def _run_prepared_lane(
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
+    #
+    # (B091/RW-33, P7 A3/A4 shared prerequisite) The baseline runs the SAME
+    # plugin every candidate does (RW-33's materialized module is on
+    # `PYTHONPATH`/`-p` for the whole lane, injected once above), but never
+    # got `ASSAY_LIVENESS_EVENTS` -- so it wrote no side file at all, fully
+    # INERT, exactly A2's own contract (`ASSAY_LIVENESS_EXIT` is NEVER set
+    # for it, unchanged here). Wiring `ASSAY_LIVENESS_EVENTS` (never
+    # `_EXIT`) onto the baseline's OWN env -- a plan copy used ONLY for this
+    # one call, never mutating the shared `plan` the R2 dispatch below still
+    # reads -- lets `expect_next_event_within_s` be computed from what the
+    # baseline's tests actually measured (`slowest_test_s`) instead of
+    # always falling back to `baseline_s / 4`.
+    liveness_baseline_events_path: Path | None = None
+    # (B091/D-23, P7 A4) The lane's own PERSISTENT candidates-events
+    # directory -- named here, ONCE, so both the `LivenessRunner`
+    # construction further down (the WRITER) and the `run_mutation` call
+    # just below it (the READER, for `tests_completed`) use the identical
+    # value, never two independently-typed-out paths that could drift.
+    liveness_candidates_dir: Path | None = None
+    baseline_plan = plan
+    if liveness_injected:
+        liveness_baseline_events_path = project_root / ".assay" / "liveness" / "baseline.ndjson"
+        liveness_baseline_events_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            liveness_baseline_events_path.unlink()
+        except FileNotFoundError:
+            pass
+        liveness_candidates_dir = project_root / ".assay" / "liveness" / "candidates"
+        baseline_plan = replace(
+            plan,
+            env_effective=MappingProxyType(
+                {
+                    **plan.env_effective,
+                    liveness.ASSAY_LIVENESS_EVENTS_ENV: str(liveness_baseline_events_path),
+                }
+            ),
+        )
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
         if progress_stream is not None:
             progress_stream.emit(
@@ -3503,7 +3614,7 @@ def _run_prepared_lane(
                 }
             )
         unit = _execute_snapshot_unit(
-            plan=plan,
+            plan=baseline_plan,
             snapshot=baseline_snapshot,
             deadline=deadline,
             wants_coverage=r1_declared,
@@ -3534,6 +3645,29 @@ def _run_prepared_lane(
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
+        # (B091/RW-33, P7 A3) Computed here, once, right beside the baseline
+        # measurement A1's own `budget_per_candidate_derived_s` already
+        # reads (`mutation.baseline_wall_seconds`, the SAME function, never
+        # a second derivation of "how long did the baseline take") -- fed to
+        # the R2 dispatch's `LivenessRunner` further down, which never
+        # recomputes it either. `None` when liveness was never injected
+        # (`LivenessRunner` is never constructed in that case, so nothing
+        # reads this).
+        #
+        # (B091 round-1 B2) ONE call, returning the whole calibration --
+        # both bounds AND the two raw measurements the `plan` progress event
+        # discloses (`worst_gap_s`, `slowest_test_s`). Previously this was
+        # two calls parsing the same file for two halves of one answer;
+        # collapsing them removes the seam entirely (B088's "two
+        # derivations drift").
+        liveness_calibration: liveness.LivenessCalibration | None = (
+            liveness.compute_liveness_calibration(
+                liveness_baseline_events_path,
+                mutation.baseline_wall_seconds(result),
+            )
+            if liveness_injected
+            else None
+        )
 
         if unit.post_reason is not None:
             # (B053/DA-R8) Say WHY, once, before the claims are built --
@@ -4079,6 +4213,71 @@ def _run_prepared_lane(
             ended = iso_utc(clock())
         else:
             assert targets is not None
+            # (B091/D-23) The three closed shapes `judge.mutation.
+            # budget_per_candidate` can now take, resolved HERE -- the one
+            # place that both reads the raw declaration and prints a WARN a
+            # human can see. `None`/`"auto"` (an omitted key defaults to
+            # "auto", config.py's own doc on `MutationConfig.
+            # budget_per_candidate`) asks `run_mutation` to derive the bound
+            # itself from the measured baseline; `"none"` is the explicit
+            # opt-out B090 could previously only reach by SILENCE, so it gets
+            # a WARN here rather than passing through unremarked; anything
+            # else is an explicit duration, parsed exactly as before.
+            declared_budget_per_candidate = lane.judge.mutation.budget_per_candidate
+            budget_per_candidate_auto = declared_budget_per_candidate in (
+                None,
+                MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            )
+            budget_per_candidate_none = (
+                declared_budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
+            )
+            explicit_budget_per_candidate_seconds: float | None = None
+            if budget_per_candidate_none:
+                # (B053/DA-D2's own convention: `diagnostics is None` means
+                # the caller asked for no diagnosis and is not an error --
+                # never a fallback to a stream nobody asked for.) Whether or
+                # not there is somewhere to print the WARN, "none" is never
+                # a duration -- checked as its OWN branch, never folded into
+                # the `elif` below, so a `diagnostics=None` caller cannot
+                # accidentally fall through into `parse_duration("none")`.
+                if diagnostics is not None:
+                    print(
+                        f"assay: WARN: lane {lane.name!r} declares "
+                        f"judge.mutation.budget_per_candidate = 'none' -- "
+                        f"every mutant command runs genuinely unbounded "
+                        f"(B090: this is exactly the shape that hung a "
+                        f"whole lane for 37 minutes on an unenforced "
+                        f"candidate); prefer the default 'auto' or an "
+                        f"explicit duration",
+                        file=diagnostics,
+                    )
+            elif not budget_per_candidate_auto:
+                assert declared_budget_per_candidate is not None
+                explicit_budget_per_candidate_seconds = parse_duration(
+                    declared_budget_per_candidate
+                )
+            # (B091/D-23/RW-33) Candidates ONLY get the liveness-stamping
+            # runner -- constructed fresh per lane run, never reused across
+            # lanes -- so `ASSAY_LIVENESS_EXIT=1` is set for every candidate
+            # while the baseline just above (already executed by this point,
+            # via `process_runner` unchanged) never sees it. When liveness
+            # was not injected into `plan` (non-pytest argv, non-python
+            # language, or an ingested lane), `process_runner` is used
+            # verbatim -- byte-for-byte the pre-B091 candidate path.
+            if liveness_injected:
+                assert liveness_calibration is not None
+                assert liveness_candidates_dir is not None
+                candidate_process_runner: ProcessRunner = liveness.LivenessRunner(
+                    events_dir=liveness_candidates_dir,
+                    expect_next_event_within_s=(
+                        liveness_calibration.expect_next_event_within_s
+                    ),
+                    pre_first_event_within_s=(
+                        liveness_calibration.pre_first_event_within_s
+                    ),
+                )
+            else:
+                candidate_process_runner = process_runner
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
@@ -4090,16 +4289,45 @@ def _run_prepared_lane(
                     jobs=lane.judge.mutation.jobs,
                     max_mutants=lane.judge.mutation.max_mutants,
                     operators=lane.judge.mutation.operators,
-                    process_runner=process_runner,
+                    process_runner=candidate_process_runner,
                     clock=clock,
+                    liveness_active=liveness_injected,
+                    liveness_reason=liveness_reason,
+                    liveness_plugin=liveness_plugin_path,
+                    # (B091/D-23, P7 A4) All four `None` for every
+                    # non-liveness lane, matching the three fields just
+                    # above.
+                    liveness_baseline_events_path=liveness_baseline_events_path,
+                    liveness_slowest_test_s=(
+                        liveness_calibration.slowest_test_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_expect_next_event_within_s=(
+                        liveness_calibration.expect_next_event_within_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    # (B091 round-1 B2) The two NEW disclosed figures: the
+                    # measurement the bound is actually derived from, and
+                    # the separate bound governing the window before a
+                    # candidate's first event.
+                    liveness_worst_gap_s=(
+                        liveness_calibration.worst_gap_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_pre_first_event_within_s=(
+                        liveness_calibration.pre_first_event_within_s
+                        if liveness_calibration is not None
+                        else None
+                    ),
+                    liveness_events_dir=liveness_candidates_dir,
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,
-                    budget_per_candidate_seconds=(
-                        parse_duration(lane.judge.mutation.budget_per_candidate)
-                        if lane.judge.mutation.budget_per_candidate is not None
-                        else None
-                    ),
+                    budget_per_candidate_seconds=explicit_budget_per_candidate_seconds,
+                    budget_per_candidate_auto=budget_per_candidate_auto,
                     progress_stream=progress_stream,
                     # A sharded run needs the same authoritative state root
                     # `run_mutation` requires for `resume` (its own guard:
@@ -4126,6 +4354,8 @@ def _run_prepared_lane(
                     resume=resume,
                     shard_index=shard_index,
                     shard_count=shard_count,
+                    rejudge_ids=rejudge_ids,
+                    rejudge_outcomes=rejudge_outcomes,
                 )
             except AssayError as exc:
                 # (B053/A-409) Announced once, here. The SAME error also
@@ -4158,6 +4388,27 @@ def _run_prepared_lane(
                         lane,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        # (B091/D-23) `run_mutation` is the one place the
+                        # derived number was actually computed, against the
+                        # measured baseline; read back here (via the CLAIM's
+                        # own `Mutation`, already narrowed non-`None` by the
+                        # `if` above -- unlike `mutation_result`, whose
+                        # static type also admits `"UNSUPPORTED"`) rather
+                        # than recomputed, exactly the reason the field's own
+                        # docstring gives.
+                        budget_per_candidate_derived_s=(
+                            r2_claim.mutation.budget_per_candidate_derived_s
+                        ),
+                        # (B091/RW-36) Straight from THIS function's own
+                        # local variables, not read back off `Mutation` --
+                        # unlike `budget_per_candidate_derived_s`, nothing
+                        # about liveness is computed inside `run_mutation`;
+                        # `inject_liveness_plugin` already decided all three
+                        # before `run_mutation` was even called, so there is
+                        # no second derivation here to drift from the first.
+                        liveness_active=liveness_injected,
+                        liveness_reason=liveness_reason,
+                        liveness_plugin=liveness_plugin_path,
                     )
         ended = iso_utc(clock())
 
@@ -4542,7 +4793,24 @@ def _build_ingested_judgment_r2(
 
 
 def _build_judgment_r2(
-    lane: Lane, *, shard_index: int | None = None, shard_count: int | None = None
+    lane: Lane,
+    *,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+    #: (B091/D-23) The bound `run_mutation` actually derived from this run's
+    #: own measured baseline, or `None` when the lane declared an explicit
+    #: duration or the `"none"` opt-out. See `JudgmentR2.
+    #: budget_per_candidate_derived_s`'s own docstring.
+    budget_per_candidate_derived_s: float | None = None,
+    #: (B091/RW-36) The SAME three-field record the `plan` progress event
+    #: carries, straight from `assay.liveness.LivenessInjection` -- `False`/
+    #: `None`/`None` for every lane liveness never touched (non-python,
+    #: ingested, or no R2 at all), so a reader sees a real `{active: false,
+    #: reason: ..., plugin: null}` object rather than an absent key even on
+    #: those lanes (RW-36's own "a reader sees what ran").
+    liveness_active: bool = False,
+    liveness_reason: str | None = None,
+    liveness_plugin: str | None = None,
 ) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
@@ -4595,6 +4863,12 @@ def _build_judgment_r2(
         targets=lane.judge.targets,
         shard_index=shard_index,
         shard_count=shard_count,
+        budget_per_candidate_derived_s=budget_per_candidate_derived_s,
+        liveness={
+            "active": liveness_active,
+            "reason": liveness_reason,
+            "plugin": liveness_plugin,
+        },
     )
 
 
@@ -4715,6 +4989,8 @@ def _run_higher_rigor_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
+    rejudge_ids: frozenset[str] = frozenset(),
+    rejudge_outcomes: frozenset[str] = frozenset(),
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
@@ -4913,6 +5189,8 @@ def _run_higher_rigor_lane(
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
+                        rejudge_ids=rejudge_ids,
+                        rejudge_outcomes=rejudge_outcomes,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
                         state_dir=state_dir,
@@ -5019,17 +5297,35 @@ def _run_higher_rigor_lane(
 
 
 def _declared_budget_per_candidate_seconds(lane: Lane) -> float | None:
-    """(B065) The lane's declared per-candidate bound in seconds, or ``None``.
+    """(B065) The lane's EXPLICITLY declared per-candidate bound in seconds,
+    or ``None``.
 
     The progress ``run`` header carries it so a reader knows the bounds the
     run is operating under WITHOUT opening the lane file -- which is the
     whole point of a header on an artifact that travels on its own. Under
     ``budget = "unbounded"`` (B067) it is also the only bound there is.
+
+    **(B091/D-23) ``None`` now covers two different declarations, and this
+    function cannot tell them apart -- deliberately.** An omitted key or an
+    explicit ``"auto"`` derives its number from the measured baseline
+    (:func:`assay.mutation.auto_budget_per_candidate_seconds`), which has not
+    run yet at the point this is called (the ``run`` header is emitted
+    before HEAD's own command, let alone a baseline); the explicit
+    ``"none"`` opt-out has no number at all. Both are honestly ``None``
+    here, same as before B091 shipped -- the resolved auto number is
+    reported later, once it exists, by the mutation sweep's own ``plan``
+    progress event and by ``judgment.r2.budget_per_candidate_derived_s`` in
+    the verdict, never guessed early by this function.
     """
     if lane.judge is None or lane.judge.mutation is None:
         return None
     declared = lane.judge.mutation.budget_per_candidate
-    return parse_duration(declared) if declared is not None else None
+    if declared is None or declared in (
+        MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+        MUTATION_BUDGET_PER_CANDIDATE_NONE,
+    ):
+        return None
+    return parse_duration(declared)
 
 
 def run_lane(
@@ -5052,6 +5348,15 @@ def run_lane(
     deadline: LaneDeadline | None = None,
     resume: bool = False,
     shard: str | None = None,
+    #: (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, unparsed --
+    #: comma-separated, exactly like *shard*'s own `"INDEX/COUNT"` string.
+    #: Parsed and refused (clean `BAD_LANE_CONFIG`, never an uncaught
+    #: exception) at the same point *shard* is, just below. `None` (the
+    #: default) is "neither flag was given", not "rejudge nothing" spelled
+    #: oddly -- an empty string after splitting is refused the same way a
+    #: malformed `--shard` is, rather than silently becoming a no-op.
+    rejudge: str | None = None,
+    rejudge_outcome: str | None = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
@@ -5173,6 +5478,8 @@ def run_lane(
                 deadline=deadline,
                 resume=resume,
                 shard=shard,
+                rejudge=rejudge,
+                rejudge_outcome=rejudge_outcome,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 progress_artifact=None,
@@ -5479,6 +5786,85 @@ def run_lane(
                 clock=clock,
             )
 
+    # (B091/D-23, P7 A5) `--rejudge`/`--rejudge-outcome`, parsed and refused
+    # HERE -- the same point *shard* is, and the same clean `BAD_LANE_CONFIG`
+    # shape (a complete refused verdict, never an uncaught exception) rather
+    # than deferring to `mutation.run_mutation`'s own defensive `ValueError`s,
+    # which exist for a direct library caller bypassing the CLI, not for an
+    # operator's own typo.
+    def _refuse_bad_rejudge_config(message: str) -> Verdict:
+        detail = announce_refusal(
+            AssayError(
+                message, outcome=Outcome.ERROR, reason_code=ReasonCode.BAD_LANE_CONFIG
+            ),
+            diagnostics=diagnostics,
+        )
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+            detail=detail,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
+    rejudge_ids: frozenset[str] = frozenset()
+    if rejudge is not None:
+        rejudge_ids = frozenset(
+            part.strip() for part in rejudge.split(",") if part.strip()
+        )
+        if not rejudge_ids:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge {rejudge!r} names no candidate id -- expected a "
+                f"comma-separated list, e.g. --rejudge abc123,def456."
+            )
+
+    # `"error"` is accepted as a documented alias for the real bucket name
+    # `"crashed"` (Outcome.ERROR is what `_classify_mutant_result` maps onto
+    # that bucket) -- the handoff's own example spelling
+    # (`--rejudge-outcome hung,budget_exceeded,error`) is honoured verbatim
+    # at the CLI surface, while `mutation.run_mutation` itself only ever
+    # sees canonical `MUTATION_BUCKETS` names.
+    _REJUDGE_OUTCOME_ALIASES = {"error": "crashed"}
+    rejudge_outcomes: frozenset[str] = frozenset()
+    if rejudge_outcome is not None:
+        raw_outcomes = frozenset(
+            _REJUDGE_OUTCOME_ALIASES.get(token, token)
+            for part in rejudge_outcome.split(",")
+            if (token := part.strip())
+        )
+        unknown_outcomes = raw_outcomes - frozenset(mutation.MUTATION_BUCKETS)
+        if not raw_outcomes:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge-outcome {rejudge_outcome!r} names no outcome "
+                f"bucket -- expected a comma-separated subset of "
+                f"{sorted(mutation.MUTATION_BUCKETS)} (or 'error' as an "
+                f"alias for 'crashed')."
+            )
+        if unknown_outcomes:
+            return _refuse_bad_rejudge_config(
+                f"--rejudge-outcome {rejudge_outcome!r}: unknown bucket(s) "
+                f"{sorted(unknown_outcomes)}; expected a comma-separated "
+                f"subset of {sorted(mutation.MUTATION_BUCKETS)} (or 'error' "
+                f"as an alias for 'crashed')."
+            )
+        rejudge_outcomes = raw_outcomes
+
+    if (rejudge_ids or rejudge_outcomes) and not resume:
+        return _refuse_bad_rejudge_config(
+            "--rejudge/--rejudge-outcome require --resume -- rejudging "
+            "drops matching records from the resume store before it is "
+            "consulted, which is meaningless when nothing is being resumed."
+        )
+
     if r1_declared or r2_declared or r3_declared:
         # A-189: exact R0 alone stays on the direct live-tree path below;
         # every higher-rigor lane uses P22's committed-snapshot state
@@ -5509,6 +5895,8 @@ def run_lane(
             resume=resume,
             shard_index=shard_index,
             shard_count=shard_count,
+            rejudge_ids=rejudge_ids,
+            rejudge_outcomes=rejudge_outcomes,
             evidence=evidence,
             declared_evidence=declared_evidence,
             progress_stream=progress_stream,

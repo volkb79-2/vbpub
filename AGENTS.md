@@ -78,18 +78,29 @@ slice name:
 
 - `$CGROUP_PARENT_DEV_INTERACTIVE` — this devcontainer's own tier (already
   applied via `runArgs`; you don't need to pass this yourself).
-- `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a test/gate/build
-  container you spawn (`docker run --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND
-  ...`). `ciu`'s governance mechanism (`ciu/src/ciu/governance.py`) resolves
-  this automatically. **cmru's `tester-gate` is DECLARED-CONFIG instead**
-  (2026-08-22): it reads only `CMRU_TESTER_CGROUP_PARENT`, normally set once
-  in `cmru.orchestration.toml [env]` via a `${CGROUP_PARENT_DEV_BACKGROUND:-
+- `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a long-running dev
+  stack or (until a spawner adopts `$CGROUP_PARENT_DEV_GATES` below) a
+  test/gate/build container you spawn (`docker run
+  --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND ...`). `ciu`'s governance
+  mechanism (`ciu/src/ciu/governance.py`) resolves this automatically.
+  **cmru's `tester-gate` is DECLARED-CONFIG instead** (2026-08-22): it reads
+  only `CMRU_TESTER_CGROUP_PARENT`, normally set once in
+  `cmru.orchestration.toml [env]` via a `${CGROUP_PARENT_DEV_BACKGROUND:-
   dev-background.slice}` reference — cmru expands `${NAME:-default}` at load
   time; an EMPTY result means "no slice tier" on purpose (unscoped launch,
   announced; per-container memory/CPU/IO caps still apply). Per-project
   override through the project's own cmru.toml [env]. Whatever non-empty
   value resolves is verified against the HOST systemd (LoadState=loaded AND
   FragmentPath) before launch.
+- `$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24, 2026-09-12) — the admission
+  capacity object for gate/lane containers and placed lane leaves
+  `rg-<token>` specifically, a SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s
+  tier rather than a child of it; see `modern-debian-tools-python-debug/
+  host-setup/README.md` "dev-gates: why". No spawner reads it yet as of
+  this entry — `run-gate`'s own default, cmru's `tester-gate`, and srdm's
+  gate script all still resolve only `$CGROUP_PARENT_DEV_BACKGROUND`, so
+  every gate/lane container keeps landing there (today's placement) until
+  each adopts the new variable; adoption is tracked per-tool, not here.
 
 **No hardcoded fallbacks.** If neither variable nor an explicit override is
 set where a resolver REQUIRES one, that is a configuration error — refuse to

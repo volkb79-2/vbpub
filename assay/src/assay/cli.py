@@ -87,7 +87,15 @@ from .adapters.go import GoAdapter
 from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
-from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
+from .config import (
+    MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+    MUTATION_BUDGET_PER_CANDIDATE_NONE,
+    Lane,
+    LaneFile,
+    find_lane_file,
+    load_lane_file,
+    parse_duration,
+)
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .output import (
     VerdictOutput,
@@ -224,6 +232,35 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true")
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    run.add_argument(
+        "--rejudge",
+        default=None,
+        metavar="ID[,ID...]",
+        help=(
+            "(B091/D-23) with --resume: drop these mutation candidate "
+            "ids' resume records before the store is consulted, so each "
+            "re-executes against the current judging suite instead of "
+            "replaying its prior verdict. Refused, before any work, if an "
+            "id does not match any of this run's own current candidate "
+            "identities -- unknown, or the mutant's own source bytes "
+            "changed since the id was recorded (B088). Requires --resume."
+        ),
+    )
+    run.add_argument(
+        "--rejudge-outcome",
+        default=None,
+        metavar="BUCKET[,BUCKET...]",
+        help=(
+            "(B091/D-23) with --resume: the same drop as --rejudge, "
+            "selected by a resumed record's own persisted outcome bucket "
+            "rather than by explicit id -- e.g. "
+            "'hung,budget_exceeded,error' re-executes every previously "
+            "hung/budget-exceeded/crashed candidate. One of killed, "
+            "survived, crashed (or its alias 'error'), budget_exceeded, "
+            "equivalent, hung; a union with --rejudge when both are given. "
+            "Requires --resume."
+        ),
+    )
     _add_request_base_argument(run)
 
     plan = subparsers.add_parser(
@@ -1370,6 +1407,8 @@ def _run_reserved(
                 deadline=deadline,
                 resume=getattr(args, "resume", False),
                 shard=getattr(args, "shard", None),
+                rejudge=getattr(args, "rejudge", None),
+                rejudge_outcome=getattr(args, "rejudge_outcome", None),
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 # B031/A-320: opt-in, consumer-named, absent by default.
@@ -1608,7 +1647,21 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
         by_operator = Counter(job.site.operator for job in jobs)
         by_file = Counter(job.path for job in jobs)
         per_candidate = lane.judge.mutation.budget_per_candidate
-        per_candidate_seconds = parse_duration(per_candidate) if per_candidate else 60.0
+        # (B091/D-23) `assay plan` never executes anything, so it cannot
+        # measure the baseline "auto" would derive from -- an omitted key,
+        # an explicit "auto", and the explicit "none" opt-out all fall back
+        # to the same 60s-per-candidate estimate an undeclared bound always
+        # used, which is honestly an upper-bound GUESS either way (this
+        # function's own docstring already says so). Only an explicit
+        # duration is a real number to multiply by.
+        if per_candidate in (
+            None,
+            MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            MUTATION_BUDGET_PER_CANDIDATE_NONE,
+        ):
+            per_candidate_seconds = 60.0
+        else:
+            per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
         wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
         payload = {

@@ -15,12 +15,19 @@ Before=slices.target
 # test/gate/build container opts into ($CGROUP_PARENT_DEV_BACKGROUND).
 
 # Soft ceiling first (throttle into zswap), hard cap so a leak can never
-# poison the host, swap cap so it can't poison swap/zswap either.
+# poison the host, swap cap so it can't poison swap/zswap either. Swap cap
+# auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling) unless set explicitly — see
+# host-setup.env.example.
 MemoryHigh=@DEV_BACKGROUND_MEMORY_HIGH@
 MemoryMax=@DEV_BACKGROUND_MEMORY_MAX@
 MemorySwapMax=@DEV_BACKGROUND_MEMORY_SWAP_MAX@
 
 CPUWeight=@DEV_BACKGROUND_CPU_WEIGHT@
+# Absolute ceiling too, same "single tier can't alone claim the whole
+# parent budget" reasoning as dev.slice's own CPUQuota — see
+# units/dev.slice.in.
+CPUQuota=@DEV_BACKGROUND_CPU_QUOTA@
 # On a BFQ host this is only a true ratio against dev-interactive.slice
 # because both weights are <= 100 (systemd compresses IOWeight > 100 into
 # BFQ's 1..1000 range). See CGROUP-NOTES.md §BFQ before raising it.
@@ -29,7 +36,9 @@ IOWeight=@DEV_BACKGROUND_IO_WEIGHT@
 # NO absolute IO cap here — the shared parent dev.slice carries the one
 # IOPS/bandwidth ceiling for this tier AND dev-interactive.slice combined. See
 # units/dev.slice.in for the static boot-window fallback + the runtime
-# measured-baseline override this used to carry per-tier.
+# measured-baseline override this used to carry per-tier. (Unlike CPU and
+# swap, no per-tier IOPS sub-ceiling for this tier either — that's only on
+# dev-gates.slice/dev-buildkitd.slice, see those units.)
 
 # systemd-oomd: under sustained pressure, kill inside this tier first.
 # Silent no-op unless systemd-oomd is installed and running (install.sh
@@ -38,8 +47,12 @@ ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=@DEV_BACKGROUND_OOM_PRESSURE_LIMIT@
 ManagedOOMSwap=kill
 
-# NOTE: memory.zswap.writeback stays at the kernel default (1) here — cold
-# background pages MAY be written back to disk; that is the point of the tier.
+# Cold background pages MAY be written back to disk, which is the point of
+# the tier. NOTE: this is a per-cgroup toggle, NOT inherited from
+# dev.slice's own value — every tier needs its own explicit line. Full
+# reasoning: units/dev.slice.in's own MemoryZSwapWriteback comment,
+# CGROUP-NOTES.md "zswap writeback — who may page to disk".
+MemoryZSwapWriteback=@DEV_BACKGROUND_ZSWAP_WRITEBACK@
 # Containers join via the Docker daemon-wide default (cgroup-parent in
 # /etc/docker/daemon.json — see host-setup.env.example), an explicit
 # `docker run --cgroup-parent=dev-background.slice`, or compose

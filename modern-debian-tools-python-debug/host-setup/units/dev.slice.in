@@ -5,16 +5,37 @@ Description=Dev/build/interactive estate — one absolute IOPS/bandwidth ceiling
 Before=slices.target
 
 [Slice]
-# Root parent for dev-interactive.slice + dev-background.slice +
-# dev-memory_min_guaranteed.slice (systemd derives the nesting from the
-# dash-separated names — no parent directive needed on any child). ONLY an IO
-# ceiling and (see below) the guaranteed-tier's MemoryMin live here (host
-# dev-tier cgroup governance rollout): CPUWeight/memory-high/max/OOM policy
-# stay per-child, since interactive and background work genuinely need
-# different shapes there. IO is different — even interactive/IDE activity
-# must not be able to starve production I/O, so ONE absolute cap bounds both
-# tiers combined rather than being duplicated (and potentially summed past a
-# safe total) on each child separately.
+# Root parent for dev-interactive.slice + dev-background.slice + dev-gates.slice +
+# dev-memory_min_guaranteed.slice + dev-buildkitd.slice (systemd derives the
+# nesting from the dash-separated names — no parent directive needed on any
+# child). IO/CPU/swap ceilings and (see below) the guaranteed-tier's MemoryMin
+# live here (host dev-tier cgroup governance rollout); CPUWeight/memory-high/
+# max/OOM policy stay per-child, since interactive and background work
+# genuinely need different shapes there. IO/CPU/swap are different — even
+# interactive/IDE activity must not be able to starve production, so ONE
+# absolute cap bounds every child COMBINED rather than being duplicated (and
+# potentially summed past a safe total) on each separately. Every child ALSO
+# carries its OWN tighter ceiling for these three so no single tier can
+# alone claim this whole parent budget — see each child's own unit for its
+# number; this parent number is what still binds when MULTIPLE tiers are
+# busy at once.
+CPUQuota=@DEV_CPU_QUOTA@
+MemorySwapMax=@DEV_SWAP_MAX@
+#
+# MemoryZSwapWriteback does NOT inherit like MemoryMin below does — it is a
+# PLAIN PER-CGROUP TOGGLE with no ancestor-chain "effective value" the way
+# MemoryMin/MemoryLow have. **Setting it here does not, by itself, apply it
+# to any child** (verified live 2026-09-12: writing 0 here left a leaf
+# scope's own file reading 1, unaffected). What IS true, per
+# CGROUP-NOTES.md "zswap writeback — who may page to disk": enforcement is
+# hierarchical the OTHER direction — a 0 on ANY ancestor silently disables
+# writeback for the WHOLE subtree below it, even for a child whose own file
+# still reads 1. So this line is not a way to set the policy for children —
+# each child needs its OWN explicit MemoryZSwapWriteback= to state its own
+# intent (see each child's unit) — it exists here ONLY as a safety anchor
+# against a FUTURE accident where something sets an ancestor to 0 and
+# silently denies every descendant with no other symptom.
+MemoryZSwapWriteback=@DEV_ZSWAP_WRITEBACK@
 #
 # MemoryMin below exists ONLY to back dev-memory_min_guaranteed.slice's own
 # floor -- cgroup v2's ancestor-chain rule means a child's MemoryMin is

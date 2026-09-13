@@ -178,9 +178,875 @@ never a silent edit to the contract file.
   `coverage_gate` record-lookup false green is fixed if small, else RG-58;
   all listed doc drift fixed in the round.
 
+- **P2 fix round 1 → review round 2 (tip `a7a84e09`): ACCEPT**, two
+  records-only conditions: (1) the deferred residues (S1/D5 doctor warning
+  for bare-host `stall_timeout`, S6, S11, S13-code, the S14 doc-drift list)
+  become real backlog rows (RG-58..); (2) the B3/M5 claim is corrected — M5
+  (`peak_over_baseline` floor at 0 in scope `container-shared`) is an
+  EQUIVALENT mutant (the max over a list whose first element is the
+  baseline cannot go negative; 340 combinations, zero negatives), so the
+  LOG must say so instead of "proved the floor". Also fold at merge: SPEC
+  `R-43f` must not claim `profile_token` is recorded for exec lanes (no
+  recovery record exists there). Gates at the tip: selftest 1083 passed,
+  873/873 lines, 334/334 branches; assay-r1 PASS; assay-r3 2 rejected /
+  0 survived. RW-21 verified live (cpu.seconds 0.093 → 0.292 against the
+  container's 0.321 s lifetime).
+- **RW-24 (S11, byte medians):** byte-valued series in `history` stats and
+  the footprint manifest use the nearest-rank p50 (an integer element of
+  the series, consistent with §7), never the arithmetic midpoint (`100.5`
+  bytes is not a measurement); float series (`duration_seconds`,
+  `cpu_cores_avg`, stall seconds) keep `statistics.median` (R-36d
+  unchanged). Lands in the P2 close-out with a test.
+- **P2 close-out plan:** after session 7's r2 verdict + triage lands (it
+  owns the worktree's LOG/REPORT until then), ONE fresh close-out
+  implementer: ACCEPT conditions (backlog rows, B3/M5 correction, `R-43f`),
+  RW-24, then the final `assay-r2` on the tip (resume, RW-22), final gates,
+  return → merge `--no-ff`.
+
+- **RW-25 (supersedes RW-20/RW-22 for the stale run):** the assay-r2 run
+  on `62d9a66a` is STOPPED (65/256 after ~3 h; the tip diverged
+  substantially in the fix round, so most remaining candidates would be
+  re-judged anyway). Its partial survivor list is recorded. The final r2
+  runs ONCE on the close-out tip with `jobs = 2` in run-gate-project's
+  `assay.toml` (host: 8 cores, ≤ 2 gate containers still respected — the
+  lane is bare-host; each candidate runs in its own assay scratch snapshot
+  with its own pytest basetemp, so two candidates do not share state),
+  resuming what `.assay/mutation-state/` still matches by content.
+- P1 status: r2 on the pre-RW-21 tip → FAIL MUTANTS_SURVIVED, triage
+  committed (`5058f04d`: 28 killed, 3 justified), `main` merged
+  (`c97bd176`), RW-21 adoption in progress; then one r2 resume run, then
+  the P1 reviewer.
+
+- **RW-26 (orphaned mutation container; untracked long lanes):** at 12:34Z
+  the Claude Code low-memory guard killed both agents' tracked background
+  commands ("stopped because the system is running low on memory"; host at
+  ~860 MiB free with the dstdns stack and the game server resident). P2's
+  `assay-r2` survived because it was launched `nohup … & disown`
+  (untracked); P1's `./run-gate.py r2` OWNER (pid 2315801) died while its
+  container `run-gate-vbpub-r2-2315801-…` kept judging (37/208 at 12:36Z,
+  ~55 s/candidate, ETA ~15:15Z, inside RW-19). Ruling: an orphaned
+  mutation container is left to FINISH (never `docker rm -f` a progressing
+  run, never restart from scratch — `.assay/mutation-state/` is keyed by
+  candidate content, nothing is lost); the agent then captures exit code +
+  `docker logs` tail, removes the container, and RE-RUNS the lane as a
+  resume under run-gate ownership so the R-36 history record and the
+  run-gate verdict are real. From now on every long lane is launched
+  untracked (`nohup … > log 2>&1 & disown`) and observed with a cheap
+  tracked `until` loop that is re-armed if killed; no additional pytest or
+  container may start while a mutation run is live on this host. P1 was
+  told to commit its pending working-tree edits (a `manifest["duration"]`
+  assertion found while waiting, LOG/REPORT) and write BRIEF-6 now as
+  insurance (its context is ~513k). P2's run: 283 candidates, `jobs = 2`,
+  started 12:27Z on `186461de` (close-out commits `026663c1`, `cc19e1f0`,
+  `82094849`, `69d46544`, `186461de`: RW-24, RG-58..RG-61, B3/M5, R-43f,
+  jobs). Both agents' watchers are exposed to the same guard; the
+  controller's heartbeat checks both runs and messages an idle agent
+  whose run has finished.
+
+- **RW-27 (third track: the wave's own backlog entries are folded in):**
+  operator 2026-09-12 ~12:55Z: "can you start work on new backlog entries
+  you filed as well and fold them in? you are free to run a 3rd track in
+  parallel". Ruling: the base packages ship first, unchanged (run-gate
+  23.7.0 rev 41, cgprofile 1.0.0 — their reviews are done or imminent and
+  are not reopened); the follow-ups ship as SECOND releases in the same
+  wave (run-gate 23.8.0 rev 42, cgprofile 1.1.0), each with its own fresh
+  adversarial review and full assay lanes. Packages: **P4** run-gate
+  follow-ups RG-57, RG-58, RG-59, RG-60, RG-61 on branch
+  `rg55-followups-run-gate` from the P2 tip `186461de` (dispatched NOW;
+  handoff `run-gate-WAVE-RG55-P4-HANDOFF.md`, review handoff written);
+  **P6** cgroup-profiler follow-ups CP-4 (id-suffix flake), CP-5
+  (events.jsonl records), CP-6 (DAMON series in `ctl report`), CP-7
+  (limits table resolved) from the P1 tip, dispatched when P1's r2
+  container exits (2-container cap + memory); CP-1 (retention tuning
+  needs real data), CP-2 (socket transport) and CP-3 (DAMON paddr) stay
+  OPEN — they need measurements or a design round, not this wave; **P5**
+  RG-56 admission after BOTH base merges: contract amendment by the
+  controller first (`ctl status` must expose each session's
+  `meta.expected`; run-gate computes go/wait/refuse client-side from
+  `status` + `host` PSI + the manifest, `--allow-pressure`, `--dry-run`
+  reports), then one daemon-side and one run-gate-side package.
+  Sub-rulings: **RW-27a** RG-58 = option 2 (load-time WARNING + `doctor`
+  WARN, never refuse); **RW-27b** RG-57 = both halves as filed (daemon
+  path via self container id + token, `scope container-shared`;
+  daemon-absent `method: "rusage"`, `source: "rusage-maxrss"`, no basic
+  sampler on that path); rusage entries are footprint-eligible with the
+  source caveat printed. Host rule for the third track while two
+  mutation runs are live: targeted pytest only until P2's `assay-r2` pid
+  exits; one mutation run per project at a time.
+
+- **RW-28 (hung mutation candidate; `budget_per_candidate` mandatory):**
+  P1's r2 (orphaned container, RW-26) stalled 37 min on candidate 47
+  (`lib/serve.py:479`, `True->False`: the session-loop
+  `threading.Thread(daemon=True)` flipped to non-daemon → pytest finishes
+  its tests and hangs at interpreter exit on the thread join; futex wait,
+  0 % CPU). cgprofile's `assay.toml` r2 lane set no `budget_per_candidate`
+  (assay B012's optional key), so assay waited indefinitely — and with the
+  run-gate owner dead (RW-26) nothing enforced the 4 h lane budget either.
+  13:22Z: the controller SIGKILLed that pytest inside the container; the
+  run resumed at once (candidate id `30262744b91e83a5…`, whatever assay
+  recorded for it is not an honest verdict). Ruling: (1) every r2 lane in
+  this wave sets `budget_per_candidate` (cgprofile `600s`, run-gate `900s`
+  via P4); (2) the mutant is killed HONESTLY by a test asserting the
+  thread is a daemon thread, never by a hang or by the kill; (3) before
+  the resume under run-gate ownership the agent deletes that candidate's
+  `.assay/mutation-state/<id>.json` so it is re-judged — assay B088:
+  `--resume` keys candidate identity on the mutant's source bytes, not the
+  test suite, so a test-only fix would replay the stale verdict; (4) the
+  tool finding (no default per-candidate budget → one hung mutant blocks
+  the whole run; nothing warns when the key is unset) is filed in assay's
+  backlog per the cross-repo convention. Both agents told (P1 addendum,
+  P4 addendum).
+
+- **RW-29 (liveness / placement / admission design adopted; tracks P5–P8):**
+  operator ~13:40Z: fixed budgets are ceilings, not detectors, and fail on
+  old hardware; judge progress mechanically; consider a slice with
+  guarantees, the daemon's own slice, lanes naming what they need, the
+  root daemon adjusting cgroups; "write up a design doc and example flow
+  … persist our reasoning … fold this into our planned work … another
+  parallel track … RAM PSI is the only limit". Ruling: the design of record
+  is `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-
+  admission.md` (D-17..D-26: bound absence of progress; daemon = liveness
+  oracle + actuator in a new `dev-infra.slice`; `dev-gates.slice` as the
+  capacity object; lanes name requests, the daemon places exec/bare-host
+  lanes into `rg-<token>` leaves with `memory.high` throttling; detached
+  run-gate owner + attach; PSI-paused stall clock with named verdicts;
+  assay auto bound + cadence hints + `os._exit` runner + `hung` +
+  `--rejudge`; env-unset fallback so nothing breaks before the host is
+  updated; D-15 whitelist extension; ciu v8 D.7). Packages: **P7** assay
+  B091 (dispatched now, `assay-liveness`), **P8** mdt host-setup slices
+  (dispatched now, `mdt-dev-slices`), **P6** cgprofile CP-4..7 then CP-8/
+  CP-9 after the v1.1 contract amendment (controller-authored), **P5**
+  run-gate RG-56 + RG-62 after P4 and P6 merge. Releases: assay 6.2.0,
+  cgprofile 1.1.0, run-gate 23.9.0 (after 23.8.0 from P4). Host rule for
+  the parallel tracks: RAM PSI is the limit (back off while memory `full
+  avg10 > 5`), one mutation run per project, ≤ 2 gate containers. Backlog
+  rows RG-62 and CP-8/CP-9 are filed by P5/P6 from their handoffs (the
+  run-gate backlog file is under edit on two unmerged branches; appending
+  on main now would conflict).
+
+- **RW-30 (boundaries corrected — design amendment A1, D-27..D-29):**
+  operator ~14:25Z: mdt is a devcontainer/cockpit template whose `dev*`
+  slices CONTAIN dev load; the root daemon is a host DEPLOYMENT consumed
+  by run-gate / ciu gate from devcontainers; the watcher should be a
+  service with the daemon. Ruling: (1) the daemon is the singleton
+  watcher — run-gate authors the stall policy at `ctl start`, the daemon
+  judges liveness + cadence and enforces with `cgroup.kill`, records the
+  verdict; the run-gate client is disposable (D-21 detached owner
+  DROPPED); (2) `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are
+  WITHDRAWN — the daemon ships its own top-level `cgprofile.slice` with
+  its deployment (P6), authored `cgroup_parent`, implicit unbounded slice
+  when the unit is not installed (reported by `ctl host`/`doctor`);
+  (3) `dev-gates.slice` stays in mdt (gates are dev load; capacity
+  object). P8 re-scoped by message (dev-gates only; drop the dev-infra
+  unit it already committed in M1); P6/P5 handoffs will carry D-27..D-29;
+  SPEC-V8 D.7 item (5) corrected.
+
+- **RW-31 (transport: exec and socket as interchangeable carriers, D-30):**
+  operator ~14:50Z after the controller's transport assessment (exec today
+  = 4 docker API calls + a python spawn per verb, 100–400 ms idle, seconds
+  under load, one exec per 30 s status poll; mounted Unix socket = same
+  protocol, no spawn, push-capable, needs a devcontainer mount; TCP
+  rejected — privileged daemon, `network_mode: none`, no multi-host need):
+  "make `docker exec` and the socket fully interchangeable, both offering
+  the full functionality … build the socket in parallel and ship as well so
+  I can switch directly later". Ruling: design amendment A2 / D-30 — one
+  listener, two carriers, identical verbs/responses/errors, `watch`
+  streaming on both, docker-group trust boundary on the socket + optional
+  uid allowlist, client `transport = auto|exec|socket` with `doctor` dual
+  probe; exec stays the default and a permanent fallback; only the
+  template mount needs a rebuild (P8 M5 after review); parity proven by a
+  probe container before any rebuild. Scope lands in P6 (daemon), P8 M5
+  (mount), P5 (client).
+
+- **RW-32 (P8 review round 1 — ACCEPT-conditional B1–B6; decision asks D1–D5
+  ruled; M5 folded into round 2):** round file
+  `run-gate-WAVE-RG55-P8-REVIEW-round1.md` (~14:50Z). Rulings: **D1** the
+  cap watcher gains `dev-gates.slice` with its own knob
+  `DEV_CAP_GATES_MEMORY_MAX`, default `4G` (= the tier's `MemoryHigh`: one
+  lane alone can drive the tier into throttle but never past `MemoryMax`;
+  two lanes are bounded by the tier's oomd pressure kill at 6G; `1G` would
+  re-create the incident this wave fixes). Finer per-lane caps come from
+  daemon placement (D-25, P6/P5) and COMPOSE with the watcher's coarse
+  backstop — the watcher is not withdrawn when placement lands. **D2**
+  `ManagedOOMSwap=kill` is DROPPED: D-19 lists only the pressure kill and
+  `MemorySwapMax=32G` makes swap the gates' relief valve — an oomd swap kill
+  contradicts the design. **D3** `CPUWeight=20`/`IOWeight=10` STAND (D-19);
+  the README states the arithmetic (interactive's worst-case share under
+  3-way contention 83% → 71%, accepted because gates and background are
+  rarely both busy; revisit on a measurement, not a guess). **D4** mdt
+  `AGENTS.md` is updated NOW (P8 scope); run-gate/cmru/srdm consumers are
+  propagated at P5 (run-gate's default parent) and their rows filed in
+  their own backlogs by the controller after merge — the P8 REPORT lists
+  them under "onward propagation". **D5** P8 never touches mdt `TODO.md`
+  (dirty in the shared checkout — a merge touching it would abort); the
+  record goes to `host-setup/README.md` ("Changes") + the P8 REPORT, and the
+  operator adds the TODO line themselves. B1–B6 accepted as prescribed; the
+  wizard earmark-sum defect (fourth `MemoryHigh` missing) is promoted to
+  REQUIRED (cheap, real); `AGENTS.md` variables, REPORT `Tip:`, the
+  "byte-for-byte" overclaim and the D-24 fallback wording are fixed in the
+  same pass. **M5 (D-30 template mount)** lands in the SAME repair set so
+  round 2 covers it: `templates/devcontainer.json` bind-mounts
+  `/run/cgprofile` (the `--group-add ${localEnv:DOCKER_GID}` already
+  present is exactly the socket's group — no new gid plumbing); because
+  `mounts` entries are `--mount` (docker refuses a missing bind source),
+  host-setup ships a `tmpfiles.d` entry `d /run/cgprofile 0770 root docker -`
+  installed + applied by `install.sh`, verified by `check.sh` (dir mode +
+  owner; socket present → INFO "socket carrier available", absent → INFO
+  "exec carrier only"); the daemon (P6) re-asserts owner/mode at start as
+  belt and braces. Round 3 stays in reserve.
+
+- **RW-33 (P7 checkpoint BRIEF-1 — liveness mechanism decided for A2–A4;
+  fresh successor dispatched):** P7 session 1 shipped A1 (`de32bb91`:
+  `budget_per_candidate = "auto"` default, `"none"` opt-out, `plan`
+  progress event, `judgment.r2.budget_per_candidate_derived_s`) and cut at
+  `723c431d` with the architectural findings: assay runs every command via
+  the blocking `default_process_runner` on the lane's own argv; baseline
+  and candidates share one `CommandPlan`; the candidate subprocess runs in
+  the PROJECT's interpreter (assay is often a pyz, not importable there).
+  Ruling — ONE mechanism, two parts, R2 candidates only:
+  (1) **materialized plugin**: assay writes a stdlib-only pytest plugin
+  file into `.assay/liveness/` (content-hashed) and injects it into the
+  shared plan via `-p <module>` + `PYTHONPATH` prepend ONLY when the lane
+  argv literally invokes pytest (`pytest`, `…/pytest`, `-m pytest`);
+  otherwise liveness is off with one WARN and D-23 budgets remain the only
+  bound (documented requirement). The plugin emits `test` events (nodeid,
+  outcome, duration) and a `session_finish` event (exitstatus) to a side
+  file named by `ASSAY_LIVENESS_EVENTS`, and calls `os._exit(exitstatus)`
+  from `pytest_unconfigure(trylast)` — after the terminal summary, after
+  pytest-cov's sessionfinish write — ONLY when `ASSAY_LIVENESS_EXIT=1`,
+  which assay sets for candidates and never for R0/R1 (coverage atexit
+  writers stay intact). (2) **`LivenessRunner`** replaces the runner for
+  the R2 candidate path only (`_execute_mutation_jobs._run_one`):
+  `Popen(start_new_session=True)`, stdio to files, 1 s loop; `hung` when
+  no `test` event (or, plugin-less, no stdout growth) for
+  `expect_next_event_within_s = max(3 × slowest_test_s, 15 s)` AND the
+  process tree's CPU time grew < 1 s over the last 30 s, or when
+  `session_finish` was seen and the process is still alive 30 s later →
+  `killpg(SIGKILL)`; CPU-spinning mutants are NOT hung — they hit the
+  budget ceiling (`budget_exceeded`). `hung` is a new bucket scored like
+  `budget_exceeded` (outside the killed/(killed+survived) denominator),
+  reported separately, additive schema (no v12 cut). `test` events reach
+  the progress stream for the BASELINE only; candidate events gain
+  `tests_completed`; the `plan` event gains `slowest_test_s` +
+  `expect_next_event_within_s` (A4). A5 `--rejudge` per the handoff sketch.
+  Successor: fresh Sonnet seeded with BRIEF-1; the checkpoint clause is
+  HARD this time (session 1 ran 370 calls before cutting).
+
+- **RW-34 (contract v1.1 landed — §8 of `RG55-INTERFACE-CONTRACT.md`,
+  mirrored to `scripts/cgroup-profiler/docs/`):** additive under
+  `contract: 1`: §8.1 two carriers (socket request line
+  `{"verb","args","contract"}`, `peer-refused`, `auto|exec|socket`
+  semantics, exec permanent); §8.2 `ctl watch` NDJSON (`reading` every
+  `--watch-interval` 30 s [5, 300], `verdict` on state change, one `end`;
+  consumer idle timeout 3 × interval + re-attach); §8.3 placement
+  (`--place --memory-high --memory-max --cpu-weight`, `placement
+  {requested, leaf, applied (read back), pids_moved, error}`, never fails
+  `start`, D-25 whitelist enumerated incl. `cgroup.kill` + `rmdir` on
+  `rg-*` only); §8.4 liveness block + policy options
+  (`--progress-stream`, `--idle-bound auto|s` = max(300, 3 × cadence
+  hint) with a PSI-paused clock, `--ceiling auto|s`, `--on-stall
+  kill|report`, default `report`) and the state vocabulary ok / stalled /
+  hung / runaway / throttled / over_ceiling; §8.5 `host.gates_slice` +
+  `daemon_slice`; §8.6 `version.transports`; §8.7 Summary `liveness` /
+  `placement` / `watch`; §8.8 error codes; §8.9 consumer obligations for
+  P5. Goldens: P6 adds one fixture per new shape, P5 verifies bytes; v1
+  goldens stay byte-identical. Design doc §5 now points here.
+
+- **RW-35 (P6 dispatched now; three settled details):** P6 (cgprofile
+  follow-ups, handoff `scripts/cgroup-profiler/nyxloom-trove/reports/
+  cgprofile-P6-FOLLOWUPS-HANDOFF.md`) starts from the P1 branch tip
+  before P1 merges (targeted pytest only while the two mutation runs live;
+  merges `rg55-profiler-daemon`/`main` when told). (a) D-25 whitelist
+  gains ONE non-leaf write: `+memory +cpu +pids` into the gates slice's
+  `cgroup.subtree_control` (never `-`), because a manually created leaf
+  cannot take `memory.high` unless its parent delegates the controller.
+  (b) Socket group = the mounted directory's gid (the host `tmpfiles.d`
+  entry is the source of truth; a root:root directory means root-only
+  socket until host-setup is installed — exec unaffected). (c) The
+  singleton `cgprofile-host-daemon` is the controller's; P6 probes with
+  its own `cgprofile-p6-probe` instance on a scratch `/tmp/cgprofile-p6`
+  mount (CIU-104 name-collision lesson applied). The socket carrier is
+  backlog row CP-2 (already filed by P0); CP-8 watch and CP-9 placement
+  are filed by P6.
+
+- **RW-36 (P7 session 2 flag — liveness injection vs A-036 "flags never
+  derived by assay"):** session 2 (`ef5088f6`) shipped the materialized
+  plugin, the pytest-argv rule and a v1 `LivenessRunner` (still blocking),
+  and flagged that the injection extends `CommandPlan.argv_declared`
+  directly, bypassing the `allow_argv_append` consent gate. Ruling: the
+  plugin is judge mechanics (observation + exit hygiene; it changes no
+  test selection or behaviour), so it is NOT the A-036 case — but the
+  lane's declaration must stay the lane's own words: liveness argv goes
+  through `argv_appended` (the channel R1 coverage flags use), never
+  `argv_declared`; it is gated by a new `judge.mutation.liveness =
+  "auto" | true | false` (default `auto` = on when the lane argv invokes
+  pytest; `true` on a non-pytest argv refuses at load; `false` = off, D-23
+  budget only) — NOT by `allow_argv_append`, which keeps its coverage-flag
+  meaning; the `plan` progress event and the verdict's `judgment.r2` gain
+  `liveness: {active, reason, plugin}` so a reader sees what ran. Session
+  3 is a fresh successor from BRIEF-2 with this ruling; A3's active
+  monitoring loop (Popen + /proc tree CPU + side-file cadence + killpg)
+  is the next deliverable, exactly as RW-33 specifies.
+
+- **RW-37 (P8 round 2 — B1–B6 + M5 PASS; new B7/B8; round 3 = last):**
+  round file `run-gate-WAVE-RG55-P8-REVIEW-round2.md` (~15:45Z). B7:
+  `check.sh` `_bytes_of` breaks on legal systemd sizes (`4.5G`, `50%`) —
+  the wizard itself emits half-gigabyte values; fix = awk parser, `?` →
+  warn never fail. B8: the README's new "docker run fails outright on a
+  missing cgroup parent" claim contradicts four verified fail-OPEN
+  statements in the repo — replaced by "caught by `check.sh`, run-gate
+  `doctor`, `ctl host`". Accepted S-items: tmpfiles entry renamed
+  `mdt-cgprofile.conf` (the daemon package never writes tmpfiles; the
+  name is mdt's), full-contention share figure incl. buildkitd +
+  guaranteed tiers, REPORT tip/labels, non-vacuous assertions (7)/(8),
+  and the MERGE-ORDERING constraint recorded: host-setup must be
+  installed on the host BEFORE any devcontainer is rebuilt from the
+  template (the `/run/cgprofile` `--mount` refuses a missing source) —
+  the operator sequence says so.
+
+- **RW-38 (P8 MERGED `a71c46b0`, review round 3 ACCEPT at `e326cc9b`):**
+  mdt host-setup now ships `dev-gates.slice` (D-19 sizing, no
+  `ManagedOOMSwap`), the cap watcher's `DEV_CAP_GATES_MEMORY_MAX` (4G),
+  `check.sh` size-aware comparison, `install.sh` missing-keys WARN, the
+  `/run/cgprofile` template mount and `mdt-cgprofile.conf` (tmpfiles.d,
+  mdt-owned — P6 ships none). Residual R1 (a typo'd size warns instead of
+  failing) is an mdt follow-up line for the operator's TODO.md (dirty in
+  the shared checkout; the REPORT carries the paste-in text). OPERATOR
+  ACTIONS (not automatable from here): install host-setup on the host
+  BEFORE any devcontainer rebuild from the template, per the sequence in
+  `run-gate-WAVE-RG55-P8-REPORT.md`; expect `mdt-host-check.sh` OK/OK on
+  memory.max/high and `/run/cgprofile` 0770 root:docker; a rebuilt
+  devcontainer then carries the socket mount. Worktree
+  `.worktrees/mdt-dev-slices` removed; branch kept until the wave closes.
+
+- **RW-39 (gate rule relaxed for non-mutation lanes — PSI is the
+  signal):** the handoffs' "no run-gate lane while a mutation run is live"
+  was capacity caution; the operator's standing rule is that RAM PSI is
+  the only limit. Ruling: r0/r1-style pytest lanes and r3 canaries (bare-
+  host, serial) MAY run while other mutation runs are live, one lane at a
+  time, `nice -n 19 ionice -c 3`, launched only while memory `full avg10`
+  < 5. Still serialized estate-wide: r2 mutation lanes (one per project,
+  ≤ 2 gate containers) and image builds/probe containers. Applies to P6
+  session 5 onward and to P7's next session; P4 keeps its handoff's
+  sequencing (its whole-suite run waits for pid 2415767 because it merges
+  P2 first). Also noted: P1's "resume" under run-gate ownership re-judges
+  all 208 candidates (the container snapshot does not carry the untracked
+  `.assay/mutation-state/`), ~3.5 h instead of minutes — accepted, the
+  verdict must be on the final tree anyway; P1 records the mechanism.
+
+- **RW-40 (P2 assay-r2 hit its 4 h LANE budget — resume, no re-run, no
+  budget change):** 16:28Z, `BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4)` after
+  14401 s with ~165/283 candidates judged; the host carried two mutation
+  runs and the bare-host lane runs ~75–90 s per candidate here. This is
+  the design's own incident class (a ceiling killing progressing work —
+  §1 of the design doc gains it as row 4 at close-out). Ruling: P2 relaunches
+  the same lane untracked; assay's mutation state in the worktree
+  (`.assay/mutation-state/`, never in a snapshot for a bare-host lane)
+  makes it a resume; if the resume does not skip judged candidates P2
+  stops and reports. Budgets stay as they are; the reviewer's ACCEPT on
+  `186461de` stands (no code change). P4 is woken under RW-39 for
+  selftest/r1/r3 now, r2 only after P2's resume finishes (one mutation run
+  per project). Monitor `bvlfxll3r` ended; the P1 resume container is
+  watched by `b5fc67sgd`.
+
+- **RW-41 (P2 resume rejected every record — per-tree identity; re-run
+  at the original tree; assay B092 filed):** the 16:31Z relaunch printed
+  `resume: rejected_total=174, resumed_total=0` — assay 6.1.1's B088 fix
+  keys resume on the WHOLE judged tree, and the only commit between the
+  two runs (`647a2cc6`) added `run-gate-WAVE-RG55-P2-LOG.md` under the
+  project's own `nyxloom-trove/reports/`; a records-only commit
+  invalidated 4 h of judging. run-gate's lane `budget` is advisory; the
+  enforcing one is assay's `budget_s`, which is itself in the tree, so a
+  budget bump would also invalidate. Ruling: P2 runs the r2 lane with the
+  worktree detached at `186461de` (the tree the 174 records were judged
+  on) so 109 candidates remain; started now despite P1's concurrent
+  container (worst case a short third resume at the same tree); after
+  the verdict the worktree returns to the branch. Post-triage rule: if
+  survivor triage adds tests, the final r2 re-executes every candidate
+  (B088's correct semantics) — once, alone on the host; equivalent-mutant
+  justifications alone need no re-run. **B092 (assay, filed via P7):**
+  resume identity must exclude non-judged paths (records, docs, the
+  `nyxloom-trove/` tree) or honour an ignore list — a LOG commit must
+  not cost a mutation run. Also noted: P1's container "resume" re-ran
+  all 208 for the same reason (`5ce232d1` changed `assay.toml`).
+
+- **RW-42 (mutation-run concurrency — up to two estate-wide, PSI-gated;
+  P4 review starts before its r2):** the "one mutation run per project"
+  phrasing was load caution; with per-tree resume (RW-41) two concurrent
+  runs cost per-run wall time, not throughput, and the host's RAM PSI is
+  the only limit the operator set. Ruling: ≤ 2 mutation runs estate-wide
+  regardless of project, launched only while memory `full avg10` < 5;
+  budget hits are answered by a same-tree resume, never by editing the
+  tree. P4's r2 starts when a slot frees (P1's container, ~19:30Z), from
+  BRIEF-3, as a fresh session. To shorten the critical path the P4
+  adversarial review (fresh Opus) starts NOW on `0bb3bbeb` with selftest
+  / r1 / r3 green; its ACCEPT is explicitly "pending the r2 survivor
+  table", which arrives as a fix-verification round. P4 session 3 also
+  landed the wave goal `run-gate-project/run-gate.footprint.json`
+  (`02707e30`) from a real `footprint --write`.
+
+- **RW-43 (P4 review round 1 — ACCEPT-conditional B1–B4; rusage must
+  come from `os.wait4`; contract §4.3a):** round file
+  `run-gate-WAVE-RG55-P4-REVIEW-round1.md` (~17:40Z). B1 is real:
+  `getrusage(RUSAGE_CHILDREN).ru_maxrss` is a high-water mark over every
+  reaped child, so a `["true"]` lane recorded 36 MiB (run-gate's own
+  docker/git children) into history, the tracked manifest and
+  `meta.expected`. Ruling: the rusage path takes the LANE's own numbers
+  from `os.wait4(pid, 0)` (Popen + wait4, `returncode` via
+  `os.waitstatus_to_exitcode`) — exact, no baseline arithmetic, no null
+  for light lanes (D2 moot); oracles pin `ru_maxrss × 1024`, `utime +
+  stime`, `cores_avg` (B2). B3: the exec-lane inflight record is stamped
+  `"runner": "exec"` and the container path REFUSES a foreign record
+  (never `docker rm -f` a container run-gate did not create — CIU-104
+  class). B4: `doctor` wording. Non-blocking accepted: rusage caveat on
+  the live `footprint` line and `history`; RG-59 match narrowed to
+  docker's own exec failure (exit status + stderr prefix), never the
+  daemon's stderr; the circular RG-60 test; stale comment; RG-61 counts.
+  D1: contract §4.3a added (this ruling) and mirrored. Repairs by a
+  FRESH P4 session 4 from the round file; reviewer round 2 on the
+  repair tip; r2 still pending a slot (RW-42).
+
+- **RW-44 (P6 C8 placement landed `a654bd5d`; session-6 decision asks
+  accepted; CP-10 test isolation; CP-11 orphaned leaf):** all nine
+  session-6 defaults stand — a malformed cap value is `bad-argument`
+  (exit 2, no session) while host conditions are `place-refused:*`;
+  `placement` is `null` only when `--place` was never requested;
+  `applied` holds only the requested caps; a stop-time `rmdir` failure
+  keeps `leaf` non-null (honest); `rmdir` is an injectable seam (kernfs vs
+  tmpdir); `parent-not-gates-slice` refusal added; D-25 rows in
+  `events.jsonl` per cgroup write. The r0/r1 lane is currently order-
+  dependent (C7's `TestPeerCredentials` leaks state into
+  `TestRealSubtreeEnforcement`; pre-C8, bisected) → CP-10, root-cause fix
+  in session 7 before C9; `gc` not reclaiming a leaf orphaned by a daemon
+  restart → CP-11 (open, next release). Session 7 (Sonnet) dispatched for
+  CP-10 + C9 close-out + gates; probes still wait for a mutation-free
+  window (RW-42).
+
+- **RW-45 (P6 C9 complete `241122b6`; image builds under PSI; frozen
+  goldens' version string):** C1–C9 are on the branch (r0/r1 GREEN 1335
+  tests 100%/100%, r3 GREEN); r2 and the live probes wait for a mutation
+  slot (RW-42) and a build. Ruling: (a) image builds and probe containers
+  are allowed whenever memory `full avg10` < 5, one build at a time, the
+  probe container counting toward the ≤ 2 gate-container cap — the earlier
+  "mutation-free window" wording is withdrawn; (b) the frozen cross-package
+  goldens `run-gate-project/nyxloom-trove/fixtures/rg55/*-v1.json` may
+  change ONLY in the producer version string (`1.0.0` → `1.1.0`) — contract
+  §6 identity binds both copies, so the string tracks the producer's
+  release; the P6 reviewer runs run-gate's fixture-reading tests against
+  the branch's fixtures and P5 re-asserts bytes; (c) CP-10's root cause
+  is the host-PSI seam (`host_proc_root`), not a peer-cred leak — the
+  reviewer re-checks both hypotheses. P6 session 8 (r2 + probes) is
+  dispatched when P1's container frees a slot; review handoff written.
+
+- **RW-46 (P4 session 4 — B1–B4 repaired `00a79de4`; selftest red on a
+  host-wide lock hazard; rusage floor):** (a) run-gate's test suite
+  touches the production `SHARED_LOCK_DIR = "/tmp"` (R-41 exec mutex),
+  so concurrent worktrees' pytest runs contend and 493 stale
+  `run-gate-exec-*-runner.lock` DIRECTORIES (never a legitimate shape)
+  accumulated since Sep 3. Ruling: production semantics stay (the mutex
+  is per host by design); the TEST SUITE isolates the lock dir with an
+  autouse fixture (tmp-scoped), and the code path that can create a lock
+  as a directory is root-caused and fixed with a regression test; `doctor`
+  gains an INFO/WARN for stale lock entries older than a day (report only,
+  never delete). (b) A short-lived bare-host lane's `ru_maxrss` is bounded
+  below by run-gate's own RSS at spawn (fork/CoW accounting) — inherent;
+  ruling: the rusage summary gains `memory.floor_bytes` (run-gate's RSS
+  read from `/proc/self/statm` at spawn) and consumers treat a peak ≤
+  floor as "unmeasurable, at most floor"; `footprint`/`doctor`/SPEC
+  R-43i say so; the manifest marks such lanes `"peak_at_floor": true`
+  and RG-56 admission treats them as small. Session 5 (fresh) lands (a),
+  (b), S1–S5, regenerates the footprint manifest + CONSUMERS transcript,
+  and returns with selftest/r1/r3 green; reviewer round 2 follows on that
+  tip; r2 when a slot frees.
+
+- **RW-47 (controller incident 19:47Z — P1's relaunched r2 container
+  destroyed by an image-filtered sweep):** after stopping a duplicate P7
+  gate run the controller removed containers by `--filter
+  ancestor=tester-unified:local`; that image is shared by run-gate lane
+  containers, so P1's `run-gate-vbpub-r2-3431654-…` (relaunch at
+  `5ce232d1`, in its baseline phase) was removed too. Records at that
+  tree are intact; P1 relaunches once more (≈ 15 min). Rule (memory
+  `docker-remove-by-exact-name-only`): containers are removed only by the
+  exact name of the job that created them — never by image, label or
+  prune while other sessions run. The duplicate P7 gate run itself was
+  stopped correctly (the registered gate was already green on the same
+  tip; a second run gained nothing and risked the container cap).
+
+- **RW-48 (P1 r2 `BUDGET_EXCEEDED` is the hung mutant, not a lane
+  budget — root fix, then one full run; P6 waits for it):** the resumed
+  run (207 records accepted at 19:50Z) judged the last candidate and still
+  ended `BUDGET_EXCEEDED/LANE_TIMEOUT` at 20:00Z. In assay 6.1.1 any
+  candidate in the `budget_exceeded` bucket makes the lane outcome
+  `BUDGET_EXCEEDED` (mutation.py ~3033/3123; B090's "a hung mutant blocks
+  the whole R2 run"). The candidate is RW-28's `lib/serve.py:479`
+  `daemon=True → False`: the daemon assertion FAILS the test, but the
+  mutated non-daemon sampler thread blocks interpreter shutdown, so pytest
+  never exits and the 600 s per-candidate budget classifies it
+  `budget_exceeded` instead of `killed`. Ruling: root fix in P1 — every
+  test that starts the sampler thread stops it at teardown
+  (shutdown + join), plus a session-end safety net asserting no live
+  non-daemon threads; prove by applying the mutant by hand and watching
+  pytest exit non-zero within seconds; triage the other survivors now;
+  then ONE full r2 run (the tree changes; ~2.5–3.5 h). P6's r2 is HELD
+  until it merges that fix (its branch carries the same site). Lesson for
+  the design record: a "hang at exit" mutant is exactly the class D-23 /
+  P7's `os._exit` plugin removes at the root; until assay 6.2.0 ships,
+  projects must not leave non-daemon threads alive at test teardown.
+  RG-62 is now P4's flaky-test row; P5's row is RG-63.
+
+- **RW-49 (P7 review round 1 — REJECT B1–B5; rulings D1–D3):** round
+  file `run-gate-WAVE-RG55-P7-REVIEW-round1.md` (~20:20Z), every blocker
+  reproduced end-to-end. B1: the plugin's `os._exit(0)` default turns a
+  session that never started (a raising `conftest`) into a false SURVIVOR
+  — fix: `_EXIT_STATUS = None` sentinel, `pytest_unconfigure` returns
+  instead of exiting when unassigned. B2: the idle bound is derived from
+  `call` durations only, so a slow fixture/collection makes healthy
+  candidates `hung` at the 15 s floor — **D3 ruling: calibration (a)** —
+  the plugin records `session_start` (`pytest_configure`), every phase
+  (`setup`/`call`/`teardown`, `when` on the record) and `session_finish`;
+  `expect_next_event_within_s = max(3 × the baseline's worst observed
+  inter-event gap incl. the leading and trailing gaps, 15 s)`; the
+  pre-first-event bound is 3 × the baseline's leading gap; only `call`
+  events are forwarded to the progress stream (A4 contract unchanged);
+  the plugin-inactive fallback stays. B3: writer and reader of
+  `candidate.tests_completed` both key on `run_cwd`. B4/**D1: keep
+  `schema_version` 11** and DISCLOSE (BREAKING in CHANGES, CONSUMERS
+  migration note naming the exact `unknown mutation field(s): ['hung']`
+  diagnostic; an assay < 6.2.0 `verify` refuses 6.2.0 native-R2 verdicts;
+  consumers verify with the release that produced the document or newer)
+  — the estate pins per consumer; a v12 cut is reserved for the next
+  shape change. **D2: `judge.mutation.liveness` stays `"auto"`** because
+  B1 and B2 are repaired in this package. B5: CHANGES restructured
+  (Added/Changed/Fixed + BREAKING notes: bounded default budget,
+  `unbounded` admission change, `argv_effective` moves, B4). S1–S10 folded
+  where cheap, the rest listed as deferred with reasons. Repairs by a
+  FRESH session 9; the gate re-run must not overlap any commit (HEAD
+  movement voids the measurement); reviewer round 2 on the repair tip.
+  Housekeeping: the controller's 19:23Z green run is in `history.json`
+  (`exit_code: 0`, 1343.5 s) — its log was overwritten by the duplicate
+  launch, so the "4686 passed" figure is from the voided run.
+
+- **RW-50 (P2 r2: controller terminated one CPU-bound runaway candidate
+  at 20:22Z):** candidate 105 (`run-gate.py:128`, `Eq->NotEq`) ran pytest
+  at ~83 % CPU for 30 min with no end in sight; the `186461de` tree has NO
+  `budget_per_candidate` (that key arrives with P4's C5 on the follow-up
+  branch), so only the 4 h lane budget would have stopped it — at 21:02Z,
+  voiding the whole run again (RW-40). Ruling: the controller sent
+  SIGKILL to that candidate's pytest process only (pid 3534322); assay
+  recorded the candidate at 1844.6 s and proceeded (jobs = 2 resumed
+  immediately). The intervention is disclosed here and in P2's REPORT;
+  at triage P2 states how assay classified candidate 105 (signal death →
+  `killed` in 6.1.1's classifier is the expected reading — a never-
+  terminating mutant IS detected; if assay put it elsewhere, it is
+  triaged like any survivor). Lesson (already ruled RW-28): every r2
+  lane sets `budget_per_candidate`; P2's base tree predates the ruling
+  and cannot be edited without invalidating its records (RW-41); the
+  follow-up release (P4, 23.8.0) carries the key.
+
+- **RW-51 (P4 review round 2 — ACCEPT-conditional; only B5 open;
+  r2 still pending a slot):** B1–B4, S1–S5, RW-46a/b all PASS with the
+  reviewer's own probes; all three gates reproduce (selftest 1066/1066
+  lines, 394/394 branches). B5: contract §4.3a (RW-43) says
+  `meta.expected` carries `source` for run-gate ≥ 23.8.0 and the code
+  still returns four keys — ruling: P4 adds the key + assertion (the
+  clause stands; it is this release's). Non-blocking folded into the same
+  session: regenerate the manifest/CONSUMERS transcript once more after
+  the fixes (the committed one is a generation stale); assert the three
+  behaviour-correct-but-unasserted mutants (exec `runner` stamp value,
+  the footprint `[source:…]` note, history `any→all`); scope the
+  never-touches-host-tmp test to the isolated lock dir (it flaked on a
+  concurrent writer); set `Popen.returncode` after `wait4`
+  (ResourceWarning); RG-59's 126/127 arm wording. RG-62's filing is
+  honest (both flakes reproduced; wording nit fixed). P4's r2 waits for a
+  mutation slot (P1 until ~23:30Z, P6 takes P2's slot ~21:00Z) — round 3
+  = the r2 survivor table + B5.
+
+### RW-52 — 2026-09-12 21:05Z — slot rule amended: bare niced runs are
+PSI-gated, not slot-counted (RW-42 refined)
+
+- Observed at 21:02Z: P2's 127-record resume finished; 2 candidates were
+  still unjudged (`budget_exceeded` placeholders from the very first run,
+  never executed), so P2 relaunched a short `--resume` pass (pid
+  `4137438`, bare, jobs=2, nice 19/ionice idle) at 21:02Z. In the same
+  minute P6 — told to take P2's slot once pid `1499375` was gone — launched
+  its r2 (pid `4136306`, container `run-gate-vbpub-r2-4136306-…`). With
+  P1's full r2 (container `…-3677631-…`, since 20:20Z) that is THREE
+  mutation runs at once; memory PSI `full avg10=0.03`, load 12.5/8 cores,
+  both containers `--cpus=3`.
+- Ruling: RW-42's "≤ 2 estate-wide" counts CONTAINER runs (`docker`
+  lanes at normal CPU weight — the host's `dev-gates.slice` is not
+  installed yet, so nothing else bounds them). Bare `nice -n 19 / ionice
+  -c 3` runs only take idle CPU and are gated by memory PSI alone (the
+  operator's stated limit: launch nothing while `full avg10 > 5`). So
+  P2's short pass stays; P4 may launch its bare assay-r2 as soon as P2's
+  pass has exited (`pgrep -f 'assay-6.1.1.pyz run r2'` empty in the
+  `rg55-run-gate-client` tree) and PSI is under 5, without waiting for
+  P1/P6's containers (~01:30Z). Container-lane runs (P1, P6, later P7's
+  gate) stay at ≤ 2.
+- Why not wait: P4's merge already waits on P2's release (RW-27
+  ordering); a further 4 h of idle serialization buys nothing the PSI
+  gate does not already protect.
+
+### RW-53 — 2026-09-12 21:10Z — P7 session 10 returned gate-unverified;
+controller runs the gate as a third container (RW-39); round 2 dispatched
+
+- P7 session 10 (Opus) landed B2 `07e121d9`, B3 `5c1b9ef8`, B4+B5
+  `4ef3985f`, S2/S4/S7/S8/S9/S10 `ef247935`, LOG/REPORT `6f3aefad` (tip,
+  tree clean) and correctly launched NO gate at the two-container cap
+  (P1 + P6 mutation lanes live). It also overran the checkpoint clause
+  (~104 calls) and disclosed it — accepted: the remaining work was
+  bounded and a successor would have inherited a half-folded S set.
+- Ruling: the registered gate `tester-unified` is a NON-mutation lane
+  (RW-39: such lanes may run beside mutation runs under PSI). The
+  controller launched it on `6f3aefad` at 21:08Z (pid `4180329`, log
+  `<scratchpad>/p7-gate6.log`; the driver's own `docker run --rm` has no
+  `--name`/`--cpus` — the controller caps it to 2 CPUs by `docker update`
+  once it appears, so the three containers sum to 8). PSI `full avg10`
+  0.10 at launch. HEAD of `assay-liveness` must not move until the log's
+  `exit <n>` line exists.
+- Deferrals S1 (ignore-guard + cleanup policy), S3 (`MutationStateError`
+  reason mapping), S5 (hot-loop perf), S6 (`MUTATION_BUCKETS` help text)
+  are accepted as follow-ups on condition they are rows in
+  `assay/nyxloom-trove/4-backlog.md`; the reviewer checks, the controller
+  adds any missing row after the gate has finished.
+- Reviewer `a6018b6be13b42937` resumed for round 2 (repair diff
+  `8f972def..6f3aefad`, per-blocker checklist, RW-49 D1–D3 named as
+  settled, gate log to be read in a separate step, no second gate
+  container). Round 3 is the last under the cap.
+
+### RW-54 — 2026-09-12 21:13Z — P2's final pass failed at the R0 baseline;
+diagnose by hand first, relaunch on a stated condition; P4's r2 moves
+behind P2's release
+
+- P2's short `--resume` pass (pid `4137438`) ended `FAIL/COMMAND_FAILED`
+  (exit 1) at 21:05Z INSIDE the baseline pytest — no candidate ran, the
+  281-record cache is intact, the tree is still detached at `186461de`
+  and clean. assay 6.1.1 keeps no raw output on `COMMAND_FAILED`, so the
+  failing tests are unknown. At the time: three `tester-unified:local`
+  containers (P1 r2, P6 r2, the P7 gate), P4's bare r1 pytest, CPU PSI
+  `some avg10` ≈ 45, memory `full avg10` 3.5. P2 correctly did not
+  relaunch (RW-41's pre-authorised relaunch covered budget trips, not
+  FAIL) and reported.
+- Controller check: the `/tmp/run-gate-shared-*-<pid>.lock` and
+  `run-gate-exec-*-<pid>-runner.lock` entries are pid-scoped, so the
+  stale-lock hazard P4 fixed (RW-46a) cannot hit a fresh process;
+  `/tmp/run-gate/` holds only lane logs (5661). Contention is the
+  leading hypothesis, unproven.
+- Ruling: P2 runs the baseline by hand (bare, serial, `-rfE`, no
+  coverage) to get the names, classifies (a) timing/contention,
+  (b) environmental, (c) genuine; relaunches the pass for (a) or a clean
+  by-hand pass only once the P7 gate container is gone, memory PSI < 5
+  and CPU PSI `some avg10` < 25; (b) needs the foreign state named to the
+  controller first; (c) no relaunch. A second baseline failure under
+  that condition stops the track for a controller decision on accepting
+  the run-2 verdict (281/283 judged) with a disclosure.
+- P4 (supersedes the RW-52 launch condition): no r2 until P2 has
+  released 23.7.0; then merge `main` into `rg55-followups-run-gate`,
+  re-run selftest/r1/r3 on the merge tip and judge THAT tree — the
+  reviewed tree and the merged tree stay one tree, and P2's short pass
+  is not contended by a 4 h sibling. P4 returns after B5 + the
+  non-blocking items + selftest/r1/r3.
+
+### RW-55 — 2026-09-12 21:17Z — a closed P4 session re-woke and acted as a
+controller; stopped; P4 session 6's early r2 terminated
+
+- P4 session 4 (`ade7916e85220fbb9`, closed ~19:30Z after round-1
+  repairs) was re-invoked at ~21:25Z — most likely by one of its own
+  tracked background watchers finishing when P2's run exited — and,
+  with stale context, "processed" old notifications, messaged P4
+  session 6 with options about its r2, and armed a watcher on P2's
+  by-hand log. It wrote nothing. The controller stopped it (`TaskStop`),
+  which also kills its watchers.
+- P4 session 6 had launched its assay-r2 at 21:14Z under the RW-52
+  condition before the RW-54 correction reached it. Ruling: terminate
+  it (its own pids only; no container; ~15 min lost) — P2's short pass
+  must re-run without a 4 h CPU sibling, and round 3 judges the
+  post-merge tree (RW-54). Session 6 told to ignore the stale agent.
+- Estate rule (memory `subagent-watchers-reinvoke-closed-sessions`): a
+  superseded implementer session with tracked background commands is
+  TaskStop'ed by the controller when its successor is dispatched, never
+  left "completed" — its watchers re-invoke it with stale context.
+
+### RW-56 — 2026-09-12 21:26Z — P2's baseline failure root-caused: an
+order-dependent lock-directory plant; final pass runs with
+`PYTEST_ADDOPTS="-p no:randomly"`, tree unchanged
+
+- P2's by-hand baseline (3 failed / 1084 passed, 194 s): all three in
+  `TestExecModeMutex` — `IsADirectoryError` on
+  `/tmp/run-gate-exec-myproj-dev1-<pid>-runner.lock` at
+  tests/test_run_gate.py:3949 and :3968, and "DID NOT RAISE" at the
+  lock-released test because `main()` took the unusable-lock infra path
+  first. The directory is planted by
+  `test_unusable_lock_path_is_infra_failure_not_traceback` (line 4036,
+  `mkdir()` at 4053) with no cleanup; the name is pid-scoped, so it
+  poisons every later `os.open` of that path in the SAME process.
+  pytest-randomly is active (RG-62), so the plant precedes its siblings
+  on a per-run coin flip: runs 1–2 passed, run 3 and the by-hand run
+  did not. Not contention; not the cross-process hazard (pid-scoped).
+- Why not fix the tree: a commit invalidates the 281 judged records
+  (RW-41) for a defect P4's branch already fixes (RW-46a isolation +
+  cleanup). Ruling: the final 2-candidate pass runs with
+  `PYTEST_ADDOPTS="-p no:randomly"` (definition order puts the plant
+  after its siblings), proven deterministic by three by-hand runs first,
+  disclosed in P2's REPORT; test order changes nothing about which
+  mutants the suite kills. If assay strips the environment the baseline
+  fails identically and the track stops for a decision. Relaunch gate:
+  memory PSI only (RW-52).
+- P4 session 6 parked at `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 green,
+  r2 terminated per RW-54/55), waiting for the 23.7.0 release.
+
+### RW-57 — 2026-09-12 21:42Z — P7 round 2 REJECT on B6 (false `hung`
+under xdist); rulings for the repair; session wind-down begins
+
+- Gate `tester-unified` on `6f3aefad`: `exit 0` (history `latest` =
+  `6f3aefad`, `dirty: false`, 1691.6 s, 21:08Z). Reviewer round 2
+  (`run-gate-WAVE-RG55-P7-REVIEW-round2.md`, committed): B1–B5 all
+  verified end-to-end with the round-1 probes re-run verbatim; `liveness.py`
+  100 %/100 % reproduced; S2/S4/S7–S10 folded; survivor table N/A accepted
+  (assay's own lane is R0-only, A-046/A-133).
+- B6 (new, present since `8f972def` — a round-1 miss, not a regression):
+  with an events file written by several pytest processes (xdist `-n 2`
+  under assay's own injection shape → 3 `session_start`/`session_finish`),
+  the `session_finish` disjunct at `liveness.py:1214-1217` arms the fixed
+  30 s `_HUNG_SESSION_FINISH_GRACE_S` at the FIRST `session_finish` and
+  consults neither CPU nor later events → `LivenessHungExpired` at t≈35 s
+  on a progressing candidate → the lane ends `BUDGET_EXCEEDED/
+  CANDIDATE_HUNG`. Reachable today via `vbpub/nyxloom/assay.toml`
+  `[lanes.session-extract]` (`-n auto`, `budget_per_candidate = "120s"`,
+  liveness `auto`). Same cause double-counts `tests_completed` and shrinks
+  `worst_gap_s`. Never a false survivor (`os._exit` under xdist measured
+  correct).
+- Rulings (decision asks 1–3): (1) B6 is MERGE-BLOCKING. Repair = the
+  reviewer's minimum conjunct (the post-`session_finish` grace may expire
+  only while the candidate's process tree is CPU-idle for the whole grace,
+  i.e. `and idle_for >= _HUNG_SESSION_FINISH_GRACE_S`) + a regression test
+  with the xdist shape (multi-process events file, growing CPU, an event
+  every 2 s, calibrated bound 600 s → must NOT expire); pid-stamping the
+  events (`_append`) + per-pid parsing (correct `tests_completed`/
+  `worst_gap_s` under xdist) is a filed follow-up row, not this release.
+  (2) RW-49/D3 "trailing gap" = last event → `session_finish` as
+  implemented, accepted BECAUSE the post-`session_finish` region is then
+  guarded by the idle-conjunct grace (N2's residual measured ~1 s with
+  `--cov`; documented, not a defect). (3) N1: the four deferral rows
+  (S1/S3/S5/S6) plus the pid-stamping row and N3 (`crashed` in
+  `mutation_pct`'s enumeration) are filed in
+  `assay/nyxloom-trove/4-backlog.md` in the repair commit; N4/N5/N6 are
+  recorded in the REPORT.
+- No repair dispatched: the operator instructed the session to wind down
+  (no new work; agents checkpoint to files). Round 3 (the last under the
+  cap) is the next session's: a FRESH Opus repair successor seeded with
+  the round-2 file + P7's LOG/REPORT session-10 sections, one gate run on
+  a quiet tip, then the reviewer round 3 (a fresh reviewer seeded with
+  rounds 1–2, since this session's reviewer cannot be resumed from a new
+  session).
+
+### RW-58 — 2026-09-12 21:45Z — P2: the RW-56 remedy works by hand but not
+through assay; relaunch rule for the successor
+
+- P2's second by-hand baseline with `PYTEST_ADDOPTS="-p no:randomly"`
+  (bare, niced, `-rfE`): 1087 passed, 3 skipped, 153.9 s — GREEN. The
+  relaunched assay pass with the same variable exported (21:22Z) still
+  ended `FAIL/COMMAND_FAILED` in the baseline at 21:24Z. Conclusion for
+  the successor (to confirm by reading assay 6.1.1's runner): assay does
+  not propagate `PYTEST_ADDOPTS` (or the environment) into the baseline
+  command, so the order-dependent defect (RW-56) stays a per-run coin
+  flip inside assay.
+- Rule: the successor relaunches the 2-candidate `--resume` pass on the
+  tree detached at `186461de` up to THREE more times (≈6 min each; only
+  the R0 baseline is at risk; records intact); the first PASS is the
+  evidence. If all three fail in the baseline, accept run 2 (281/283
+  judged, 263 killed, 18 survivors triaged, the 2 placeholders named as
+  never executed, RG-62/RW-56 cause) as the mutation evidence with that
+  disclosure in the REPORT and CHANGES, and proceed to release 23.7.0.
+  Either way P4's branch (RW-46a) removes the defect for 23.8.0.
+
 ## Dispatch
 
 | package | worktree | branch | implementer | reviewer | status |
 |---|---|---|---|---|---|
-| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); r2 lane in flight (123/217 at 09:56); reviewer pending the r2 verdict |
-| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); assay-r2 in flight (14/256 at 09:56, RW-20); reviewer round 1 dispatched on `62d9a66a` |
+| P1 — cgroup-profiler daemon | `.worktrees/rg55-profiler-daemon` | `rg55-profiler-daemon` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–5 → C0–C9 + live acceptance (`8cdd09e6`, RW-19 `71c6f607`); orphaned r2 container exited 15:49Z (208 candidates, 195 killed, 13 survived on the OLD tree `7ec4f9e8`); `budget_per_candidate` key misplaced in `16f3a29f` → fixed `5ce232d1`; r2 re-judge under run-gate ownership 15:58Z–19:33Z re-ran all 208 (per-tree identity, RW-41) and hit the lane budget at ~201/208 → relaunch detached at `5ce232d1` (container destroyed by the controller 19:47Z, RW-47; relaunched 19:48Z, 207 records resumed) → still `BUDGET_EXCEEDED` 20:00Z = the hung mutant (RW-48) → RW-48 root fix + second survivor pass (8 killed, 4 justified) `637b8c09`, proven by hand (mutant → 1 failure, no hang, 122 s); FULL fresh r2 launched 20:20Z (container `run-gate-vbpub-r2-3677631-…`, ~23:30Z); then r0-r1/r3 → reviewer |
+| P6 — cgroup-profiler follow-ups (CP-2 socket, CP-4..CP-7, cgprofile.slice, CP-8 watch, CP-9 placement) | `.worktrees/rg55-followups-cgprofile` | `rg55-followups-cgprofile` | fresh Sonnet (checkpoint clause on, HARD) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~15:25Z from the P1 tip (RW-35); session 1 → C1 CP-4 `376bb9cb`, C2 CP-5 `16b01c1c`, BRIEF-2 `614dcd9f`; session 2 → C3 CP-7 `907ddd50`, C4 CP-6 `e053276b`, BRIEF-3 `36859c77`; session 3 → C5 `39d43934`, BRIEF-4 `c60644ac`; session 4 (Opus) → C6 socket carrier `bb575fd4` (35 tests, parity harness, PROTOCOL.md), BRIEF-5 `b865556b`; session 5 (Opus) → C7 watch role `4fa725dc` (104 tests, real kill, streaming on both carriers), r0/r1 lane GREEN 100%/100% project-wide, BRIEF-6 `7c34dcc2`; session 6 (Opus) → C8 placement `a654bd5d` (72 tests, guard whitelist, read-back proof), BRIEF-7 `e4be5111`; session 7 → CP-10 root cause `b50163e9` (host-PSI seam), C9 `478f1443`/`e17cdf9a` (docs, CHANGES, 1.1.0 sweep, rows FIXED), r0/r1 + r3 GREEN, BRIEF-8 `241122b6`; session 9 held (RW-48); session 10 dispatched ~20:30Z: merge `rg55-profiler-daemon`@`637b8c09`, r2 when P2's slot frees (~21:00Z), triage, r0-r1/r3; session 8 → live probes (a)–(f) against a real build: both carriers parity, peer-refused, `place-refused:no-gates-slice` (host has no dev-gates.slice yet), watch kill; REAL BUG CP-12 (kill never finalized the session — `watch` streamed forever) fixed `8067cc03` and re-probed; r0/r1 GREEN 1336 tests 100%/100%; tip `42784c17`; r2 pending a mutation slot (BRIEF-9); review handoff written; session 10 merged P1@`637b8c09` → tip `d4f51bbc`, r0/r1 100%/100%, r3 green; r2 launched 21:01Z (pid `4136306`, container `run-gate-vbpub-r2-4136306-…`, RW-52); then triage, r0-r1/r3, fresh Opus reviewer, release cgprofile 1.1.0 |
+| P7 — assay B091 (progress-judged candidates) | `.worktrees/assay-liveness` | `assay-liveness` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); session 1 → A1 (`de32bb91`), BRIEF-1 `723c431d`; session 2 → spike + plugin + v1 runner (`f4fa1788`), BRIEF-2 `ef5088f6`; session 3 → RW-36 gating `e27b107b` + verify.py fix, BRIEF-3 `d2b7c76d` (A3 mechanism decided: `LivenessHungExpired` + `ReasonCode.CANDIDATE_HUNG`); session 4 → A3 active runner + `hung` bucket `44dd12ca` (a real `judge_mutation` precedence bug fixed; 252 calls — clause violated, flagged), BRIEF-4 `4ace234f`; session 5 → A3 complete: e2e CLI tests `99463ae5`, boundary tests + mutant table `d1540eda` (real bug: plugin wrote `repr` not JSON — fixed), BRIEF-5 `72baf838`; session 6 → A4 `5baf2670`, A5 `c15f6040` (275 calls — clause violated again), BRIEF-6 `1eaf5683`; session 7 → A6 docs/backlog/B092 `afda58fd`, sweep 2077 green `8bf77745`, W7 schema re-sync `b3f31506`, tip `edb995f4`; registered gate (`tester-unified`, wheel-in-container) RED 18:30Z: 5 failed / 4681 passed (pyflakes, 3 real-R2-through-the-wheel standalone tests, RecursionError sweep) → session 8: 5 root causes fixed `95d02f50`/`ee24ced6` (dead imports, RecursionError on the side-file parser, stale wheel-R2 expected documents), tip `8f972def`; gate re-run 2 voided by a records commit moving HEAD mid-run (assay `NO_MEASUREMENT/HEAD_CHANGED`, 4686 passed); controller relaunched from the clean tip → GREEN `exit 0` 19:44Z; review round 1 REJECT B1–B5 (~20:20Z, RW-49) → session 9: B1 `802f0855`, BRIEF-9 `2c967cae`; session 10 (Opus — B2 calibration carries design judgment) dispatched ~20:35Z for B2–B5 + gate → B2 `07e121d9`, B3 `5c1b9ef8`, B4+B5 `4ef3985f`, S-items `ef247935`, tip `6f3aefad` (10 planted mutants caught, `liveness.py` 100%/100%; S1/S3/S5/S6 deferred; ~104 calls, disclosed); gate NOT run at the container cap → controller launched `tester-unified` on `6f3aefad` 21:08Z (RW-53) → GREEN `exit 0` (1691.6 s); reviewer round 2 (21:10Z–21:42Z) REJECT on B6 only — false `hung` under xdist multi-process events files (B1–B5 verified) → RW-57 rulings; repair + round 3 deferred to the next session (wind-down) |
+| P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
+| P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 repairs `a1cebacf`/`8c5af489`/`05193f44`/`9489bb6d`/`50684f2c`, tip `00a79de4` (507 calls — clause ignored), selftest/r1 RED on the shared-lock hazard → session 5 (RW-46): lock-dir isolation + root cause, floor_bytes, S1–S5, footprint regenerated, selftest PASS 1143/100%, r1 PASS, r3 PASS, tip `4fa46b03` (357 calls — clause ignored; RG-62 used for two pre-existing flaky tests → P5's row becomes RG-63); review round 2 ACCEPT-conditional (B5 only, ~20:45Z, RW-51) → session 6 dispatched for B5 + non-blocking + transcript → tip `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 GREEN); its 21:14Z r2 terminated (RW-54/55); parked until 23.7.0 is released → merge `main`, selftest/r1/r3, r2 on the merge tip; round 3 = r2 survivor table + B5 |
+| P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); review round 2 ACCEPT on `186461de` (close-out commits); assay-r2 hit the 4 h lane budget at ~165/283 (16:28Z) → RESUMED untracked (RW-40); the LOG-commit relaunch rejected all records (per-tree identity, RW-41) → re-run detached at `186461de` (pid `1499375`, 156 resumed; candidate 105 SIGKILLed by the controller, RW-50) finished 21:01Z with 2 placeholders unjudged → final short `--resume` pass pid `4137438` launched 21:02Z (RW-52); then `git switch rg55-run-gate-client`, survivor triage (state candidate 105's classification), final gates, merge --no-ff, release 23.7.0, install |
+
+### RW-59 — 2026-09-13 02:30:59Z — controller takeover
+
+The new controller has taken over RG-55 from the 2026-09-12 checkpoint. The
+handoff, this log, the plan/contracts, and the named per-package briefs are
+the controlling record. Resume the prescribed order: observe the detached P1
+and P6 mutation runs, finish P2, repair/review/release P7, then P4, P1, P6,
+P5, and P3 close-out. Do not reopen settled D-1..D-30 or the recorded RW-1..
+RW-58 rulings; record any new product call as a new D-decision and operational
+calls as RW rulings. The operator's exclusions and dirty-file protections in
+the handoff remain binding.
+
+### RW-60 — 2026-09-13 02:36:07Z — triage of the shared RG-45 backlog edit
+
+The shared checkout's uncommitted addendum under RG-45 is retained as
+operator-authored evidence. It describes a distinct lane-budget symptom of
+the already filed/moved assay B078/vitest heartbeat issue, and does not belong
+in P2's 23.7.0 or P4's 23.8.0 code trees: the P2 auto candidate budget and P7
+liveness work do not silently solve a fixed whole-lane budget. No new RG id or
+code change is invented here. The addendum is not present in the P2/P4 branch
+copies; preserve it for the operator's eventual backlog commit and carry its
+disposition into P3's close-out report. Do not stage or commit it as part of
+the controller's shared-checkout LOG work unless the operator explicitly
+claims that file.
+
+### RW-61 — 2026-09-13 10:27:26Z — abort P2 R1 launch after PSI crossed the gate
+
+The second P2 final-gate R1 attempt was launched after a low preflight, but
+the run-gate client immediately measured `memory full avg10=11.71%`, above the
+estate launch ceiling. It had only just started; the controller interrupted
+the bare-host assay process, confirmed its child pytest was gone, and will not
+launch another gate until a fresh PSI reading is below 5%. This run is not
+evidence: the earlier R1 PASS was on the pre-canary tip, and this interrupted
+attempt is discarded. No product conclusion or ruling is changed.
+
+### RW-62 — 2026-09-13 10:48:23Z — P7 repair accepted and merged
+
+Sol xhigh's fresh final review round 3 ACCEPTed P7 on `cd1f84fe` with no
+blocker. The registered tester-unified gate on that exact tip exited 0, with
+wheel installation, B006(a) R0/R1/R2/R3 PASS, independent self-hosting PASS,
+and pyflakes clean. The controller closed the stale session-10 gate notes,
+committed the gate record, and merged branch `assay-liveness` with `--no-ff`;
+P7's release remains pending cmru's local-snapshot requirement and a PSI-safe
+launch.
+
+### RW-63 — 2026-09-13 10:50:05Z — cmru release requires committed main at origin
+
+`cmru release --project assay --set-version 6.2.0` and the same command with
+`--ref HEAD` both refused before mutation because committed local `main` was
+ahead of `origin/main` (41, then 42 commits after the P7 merge). `--ref` selects
+the comparison ref but is not an override for the pushed-snapshot safety gate.
+The controller will push committed `main` as the normal release workflow;
+the operator's dirty `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` remains
+unstaged and is excluded from that push.
+
+### RW-64 — 2026-09-13 10:51:14Z — preserve concurrent origin updates by merge
+
+The first push was rejected because `origin/main` had advanced by nine
+committed release-preparation commits. The controller fetched and merged
+`origin/main` with `--no-ff` into local `main`, preserving both histories and
+the operator's dirty backlog outside the index. Local `main` is now one
+connected committed history and is ready for the normal push; no reset, rebase,
+force-push, or dirty-file commit is permitted.
+
+### RW-65 — 2026-09-13 10:53:52Z — P2 final review accepted
+
+Fresh Sol xhigh adversarial review round 3 accepted P2 with no blockers. The
+review verified the repaired R3 canary (`2 rejected, 0 survived`), retained
+R0/R1 evidence, exact 875/875 changed-line and 336/336 changed-branch
+coverage, doctor, R-36h containment, and the RW-58 mutation disclosure.
+The review record is `run-gate-WAVE-RG55-P2-REVIEW-round3.md`; merge remains
+serial and release/install still follow.
+
+### RW-66 — 2026-09-13 10:54:50Z — preserve operator backlog during P2 merge
+
+The P2 no-ff merge was initially refused because the operator's uncommitted
+`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` addendum would be overwritten.
+The controller will use a path-scoped temporary stash solely to preserve and
+restore that addendum around the merge; it remains outside all controller
+commits and is not a product decision.

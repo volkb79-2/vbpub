@@ -1,0 +1,86 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=gate and lane containers + placed lane leaves rg-<token> — the admission capacity object
+Before=slices.target
+
+[Slice]
+# NOTE: no explicit parent directive — dash-name nesting under dev.slice,
+# same mechanism as every sibling tier. SIBLING of dev-background.slice, not
+# a child of it — long-running dev stacks (dstdns, ...) stay in
+# dev-background.slice; gates leave it for here. See
+# run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md
+# D-19/D-20/D-25, and memory `soulmask-memory-pressure-findings.md` (the
+# 2026-08-04 finding this slice fixes: "gates share dev-background.slice
+# with the ~4 GiB dstdns stack ... the user's own instinct was a separate
+# dev-gates.slice; that remains unbuilt").
+#
+# All lane containers AND every placed lane leaf rg-<token> (D-20 — exec and
+# bare-host lanes whose pids the daemon migrates out of a container scope
+# into a sibling leaf here) live under this slice. Its memory.max is what
+# admission (RG-56 in run-gate, S16.6.1 in ciu v8) keys on; its
+# memory.pressure is THE pressure signal admission reads (D-6: "swap usage
+# is never the gate; PSI is").
+MemoryHigh=@DEV_GATES_MEMORY_HIGH@
+MemoryMax=@DEV_GATES_MEMORY_MAX@
+# Relaxed swap ceiling, same reasoning as dev-background.slice's own: a gate
+# that swaps just finishes slowly; one that OOMs fails outright. Auto-
+# detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling) unless set explicitly — see
+# host-setup.env.example.
+MemorySwapMax=@DEV_GATES_MEMORY_SWAP_MAX@
+# See the IOWeight note in dev-background.slice.in: keep <= 100 on a BFQ
+# host, or the ratio against sibling tiers silently stops being what it says.
+CPUWeight=@DEV_GATES_CPU_WEIGHT@
+IOWeight=@DEV_GATES_IO_WEIGHT@
+# Absolute CPU ceiling too, same "single tier can't alone claim the whole
+# parent budget" reasoning as dev.slice's own CPUQuota — see
+# units/dev.slice.in.
+CPUQuota=@DEV_GATES_CPU_QUOTA@
+# Absolute IOPS sub-ceiling too, tighter than the shared dev.slice IO
+# ceiling this tier otherwise inherits — RUNTIME-ONLY (not a
+# static directive here): mdt-apply-dev-caps.sh applies
+# IOReadIOPSMax/IOWriteIOPSMax at DEV_SUBSLICE_IOPS_PCT% (default 60%) of
+# whatever it just derived for dev.slice itself, every time it runs
+# (same reason dev.slice's own IO ceiling is runtime-derived rather than a
+# static unit-file number — a static line here can't express "a percentage
+# of what dev.slice just measured"). Bandwidth is deliberately left
+# untouched — only IOPS gets the tighter sub-ceiling; a gate/lane doing a
+# few large sequential ops should not be penalized the same way a workload
+# doing many small ones is. Same mechanism, same reasoning, applies to
+# dev-buildkitd.slice — see that unit.
+
+# systemd-oomd: under sustained pressure, kill inside this tier first — a
+# gate/lane container is disposable (its history record survives it — D-28,
+# amending D-21: the daemon enforces and records the verdict, so a killed
+# client only loses its live log); a long-running dev stack is not, which is
+# exactly why stacks stay in dev-background.slice instead of sharing this
+# tier (D-19). Silent no-op unless systemd-oomd is installed and running
+# (install.sh installs it).
+#
+# Deliberately NO ManagedOOMSwap= here (RW-32/D1 review S1, ruled D2): D-19
+# names only the pressure kill + its limit, and MemorySwapMax above exists
+# specifically to make swap this tier's relief valve for a disposable
+# lane — an oomd SWAP kill would trigger on host swap usage (SwapUsedLimit,
+# not this tier's own pressure) and kill whichever lane is USING the
+# allowance this unit deliberately grants it, on a signal D-6 explicitly
+# rejects ("swap usage is never the gate; PSI is"). dev-background.slice
+# keeps its own ManagedOOMSwap=kill unchanged; this is a genuine difference
+# between the two tiers, not an oversight.
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=@DEV_GATES_OOM_PRESSURE_LIMIT@
+
+# NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's own
+# value — every tier needs its own explicit line. Full reasoning:
+# units/dev.slice.in's own MemoryZSwapWriteback comment, CGROUP-NOTES.md
+# "zswap writeback — who may page to disk".
+MemoryZSwapWriteback=@DEV_GATES_ZSWAP_WRITEBACK@
+
+# Containers join via an explicit `docker run --cgroup-parent=dev-gates.slice`
+# / compose `cgroup_parent: dev-gates.slice` (run-gate's ephemeral-lane create
+# path — see run-gate-project/, out of this project's scope), or
+# $CGROUP_PARENT_DEV_GATES exported into whatever creates the lane container
+# (D-24: unset → falls back to dev-background.slice, today's placement). No
+# Docker daemon-wide fallback into this tier, same reasoning as
+# dev-memory_min_guaranteed.slice: landing here is always a deliberate
+# per-lane choice, never an accident of an unconfigured default.

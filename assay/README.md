@@ -253,6 +253,26 @@ scoped as **B073**, deliberately deferred — no consumer had asked for
 per-test granularity when it was filed; use `--progress` for liveness today,
 and see B073 if per-test detail becomes worth the design cost.
 
+**B091 has since delivered a SCOPED instance of exactly this**, for one case
+only: a native R2 python/pytest mutation lane. When `judge.mutation.liveness`
+is active (the default, `"auto"`, whenever the lane's own argv invokes
+pytest), assay materializes a small pytest plugin that emits one `test`
+event per test to a side file; the progress stream forwards the BASELINE's
+own per-test events verbatim, and each `candidate` record carries its own
+`tests_completed` count. This is the mechanism that also makes a hung mutant
+candidate (a leaked non-daemon thread idling at interpreter shutdown)
+detectable and killable as its own `hung` outcome bucket, rather than
+silently consuming a whole `budget_per_candidate` window — see
+`docs/CONSUMERS.md`'s "Liveness for a native R2 python/pytest lane" section.
+An early xdist worker finish does not expire a candidate still emitting
+events or output: the post-finish grace requires 30 s without either.
+See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
+and the consumer section's xdist measurement limitations.
+**B073 itself is not resolved**: this is per-test data for one runner
+(pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
+plugin assay itself materializes — not the general, per-language,
+per-tool live-output-parsing capability B073 describes for every lane.
+
 ### What assay is not (yet)
 
 The verdict schema reserves a `go:*` operator vocabulary and

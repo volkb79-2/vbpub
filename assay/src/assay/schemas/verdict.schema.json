@@ -623,6 +623,7 @@
         "LANE_TIMEOUT",
         "MUTANT_LIMIT_EXCEEDED",
         "SNAPSHOT_LIMIT_EXCEEDED",
+        "CANDIDATE_HUNG",
         "NO_MUTANTS",
         "MUTATION_UNSUPPORTED",
         "CANARY_INCONCLUSIVE",
@@ -671,7 +672,8 @@
         "enum": [
           "LANE_TIMEOUT",
           "MUTANT_LIMIT_EXCEEDED",
-          "SNAPSHOT_LIMIT_EXCEEDED"
+          "SNAPSHOT_LIMIT_EXCEEDED",
+          "CANDIDATE_HUNG"
         ]
       },
       "INCONCLUSIVE": {
@@ -1424,6 +1426,24 @@
             ]
           }
         },
+        "hung": {
+          "description": "B091/RW-33 (P7 A3): mutants a LivenessRunner monitoring loop killed for an idle stall (no test/session_finish progress and no process-tree CPU growth, or session_finish seen with the process still alive 30s later) -- distinct from budget_exceeded's genuine elapsed-time expiry (a CPU-spinning mutant is never hung). Scored like budget_exceeded (excluded from the mutation-score denominator). Native-only, like liveness itself: an ingested report never populates this bucket. ADDITIVE under schema v11 (no v12 cut) -- NOT in this object's 'required' list, so a document produced before this bucket existed, which omits the key entirely, still validates; a native document produced by this build always includes it (possibly empty).",
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
+        },
         "candidate_ids": {
           "description": "Optional B012 deterministic candidate IDs covered by a shard run. Omitted, never empty, for non-shard compatibility.",
           "$ref": "#/$defs/mutation_candidate_ids"
@@ -1666,6 +1686,30 @@
           "type": "string",
           "minLength": 1
         },
+        "budget_per_candidate_derived_s": {
+          "description": "B091/D-23: the per-candidate bound run_mutation actually DERIVED from this run's own measured baseline (max(3 x baseline, baseline + 60s)), when judge.mutation.budget_per_candidate was omitted or declared 'auto'. Absent when the lane declared an explicit duration or the 'none' opt-out. Optional under producer = 'native'; FORBIDDEN under 'ingested' on equivalence_artifact's own footing -- an ingested lane never declares budget_per_candidate at all, so assay derived no bound for a run it did not orchestrate.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "liveness": {
+          "description": "B091/RW-36: whether the os._exit/hung-detection mechanism ran for this lane's R2 candidates, and why not when it did not (a non-pytest argv, a non-python language, or an explicit judge.mutation.liveness = false). Optional under producer = 'native'; FORBIDDEN under 'ingested' on budget_per_candidate_derived_s's own footing -- liveness is a native-execution mechanism (RW-33: applied ONLY to native R2 lanes).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["active", "reason", "plugin"],
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "plugin": {
+              "type": ["string", "null"],
+              "minLength": 1
+            }
+          }
+        },
         "kill_attribution": {
           "description": "Whether kills in this run are attributed to a declared mechanism or merely observed. 'unattributed' is honest and common: it means a killed mutant proves only that the suite failed, not that it failed for the reason the mutant created. Assay cannot verify a database's causality, so v5 makes the weakness visible rather than absent (A-220).",
           "enum": [
@@ -1821,7 +1865,9 @@
               {"not": {"required": ["jobs"]}},
               {"not": {"required": ["max_mutants"]}},
               {"not": {"required": ["operators"]}},
-              {"not": {"required": ["equivalence_artifact"]}}
+              {"not": {"required": ["equivalence_artifact"]}},
+              {"not": {"required": ["budget_per_candidate_derived_s"]}},
+              {"not": {"required": ["liveness"]}}
             ]
           }
         }
@@ -2576,6 +2622,9 @@
                     "maxItems": 0
                   },
                   "equivalent": {
+                    "maxItems": 0
+                  },
+                  "hung": {
                     "maxItems": 0
                   }
                 }

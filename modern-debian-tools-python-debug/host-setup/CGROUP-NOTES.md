@@ -735,6 +735,45 @@ Both values must be rendered from the **same** `host-setup.env` variable
 variables that happen to start out equal — two variables invites exactly the
 drift this design depends on not happening.
 
+## `dev-gates.slice` and placed lane leaves (`rg-<token>`) — two facts a future daemon depends on
+
+`dev-gates.slice` (RG-55 D-19, see `run-gate-project/nyxloom-trove/
+DESIGN-2026-09-12-liveness-placement-admission.md`) is the admission capacity
+object for every gate/lane container AND every placed lane leaf a future
+host-level daemon creates under it (D-20/D-25 there — the daemon package,
+`scripts/cgroup-profiler/`, is a separate package from this one; this section
+records the two cgroup v2 facts that placement design depends on, since they
+belong in this directory's "what a slice unit can/cannot express" catalogue
+regardless of which package implements the daemon side).
+
+**The memory.min-on-leaf fact.** Exactly like `dev-memory_min_guaranteed.slice`
+above: if a lane leaf (`dev-gates.slice/rg-<token>/`) ever gets its own
+`memory.min`/`memory.high` (D-20's `ctl start --place --memory-high <request>
+--memory-max <ceiling>`), that value is only real if it is written directly
+onto the LEAF's own cgroup file, and only effective up to what every ancestor
+(`dev-gates.slice`, then `dev.slice`) hands down under `memory_recursiveprot`
+— the same ancestor-chain rule as above, one level deeper. `dev-gates.slice`
+itself ships with no `MemoryMin` (only `MemoryHigh`/`MemoryMax`/
+`MemorySwapMax`, deliberately — see `units/dev-gates.slice.in`'s own
+comment), so today this is dormant; it becomes live the moment a daemon
+starts writing `memory.min` on a leaf, at which point `dev-gates.slice`
+(and `dev.slice` above it) would need their own declared `MemoryMin` too,
+by the exact same "keep the parent's claim exactly matched" invariant this
+section documents for the guaranteed tier.
+
+**The no-nesting-inside-scopes fact (D-20).** A lane leaf is created as a
+SIBLING cgroup directory under `dev-gates.slice` (`dev-gates.slice/rg-<token>/`),
+never as a CHILD of the lane container's own `docker-<id>.scope`. Reason:
+enabling a controller inside a container's own scope requires writing to that
+scope's `cgroup.subtree_control`, and cgroup v2's "no internal processes" rule
+then FORBIDS the scope itself from holding any processes once it has children
+— so the very next `docker exec` into that container (an operator's shell, a
+tester step, VS Code attaching) would fail with `EBUSY`. Moving a pid OUT of
+a container's scope into a sibling leaf is safe by contrast: the pid stays in
+the container's own PID and mount namespaces (its container's PID-1 dying
+still kills it), only its cgroup ACCOUNTING moves — nothing about `docker
+exec`, signal delivery, or namespace isolation changes.
+
 ## A game-server-tuned custom kernel — what it would consider (not proposed, documentation only)
 
 Not work to do — a reference for *if* a kernel is ever rebuilt specifically

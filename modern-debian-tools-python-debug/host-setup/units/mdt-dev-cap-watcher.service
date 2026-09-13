@@ -1,8 +1,9 @@
 # mdt host-setup — reactive counterpart to mdt-host-slices.timer's periodic
-# sweep: watches dev-interactive.slice + dev-background.slice via inotify
-# and applies a default MemoryMax to any new container that didn't request
-# its own, within the same second it's created rather than up to
-# SWEEP_INTERVAL later. Proven live (2026-08-28) with a plain read-only
+# sweep: watches dev-interactive.slice + dev-background.slice + dev-gates.slice
+# via inotify and applies a PER-SLICE default MemoryMax (dev-gates.slice gets
+# its own knob, DEV_CAP_GATES_MEMORY_MAX, RW-32/D1) to any new container that
+# didn't request its own, within the same second it's created rather than up
+# to SWEEP_INTERVAL later. Proven live (2026-08-28) with a plain read-only
 # inotify watch on cgroupfs — no Docker API, no authorization plugin, no
 # socket proxy. See scripts/mdt-dev-cap-watcher.py's own docstring and
 # CGROUP-NOTES.md for why a periodic sweep alone leaves a real exposure

@@ -3,21 +3,27 @@
 # static slice units can't express:
 #   - dev.slice (the shared root) IO*Max at DEV_IO_CAP_PCT% of the MEASURED
 #     device ceilings (io-baseline.env) — replaces the deliberately tight
-#     unit-file statics for BOTH dev-interactive.slice and
-#     dev-background.slice combined (host dev-tier cgroup governance
-#     rollout: one absolute ceiling on the shared parent, not one per child)
-#   - dev-interactive.slice memory.zswap.writeback (raw-write fallback for
-#     systemd < 256 where the MemoryZSwapWriteback= directive doesn't exist;
-#     harmless double-set on newer hosts)
+#     unit-file statics for EVERY child combined (dev-interactive.slice,
+#     dev-background.slice, dev-gates.slice, ... — host dev-tier cgroup
+#     governance rollout: one absolute ceiling on the shared parent, not one
+#     per child)
+#   - every dev slice's memory.zswap.writeback (raw-write fallback for systemd
+#     < 256 where the MemoryZSwapWriteback= directive doesn't exist; harmless
+#     double-set on newer hosts)
 #   - per-container caps: test-runner/buildx_buildkit_*/devcontainer scopes get
 #     io.max at SWEEP_IO_CAP_PCT% of the baseline (bench+buildkit additionally
 #     get IOWeight=1; the devcontainer does not — it is the IDE). This is the
-#     ONLY governance buildx_buildkit_* workers get at all: Buildx's own
-#     cgroup-parent driver-opt is unreliable under the systemd cgroup driver
-#     (docs/BUILD-ARCHITECTURE.md), so they can't be PLACED under dev.slice —
-#     DEV_IO_CAP_PCT's aggregate never reaches them. Docker scopes are also
-#     transient units: they exist only while the container runs, so this can
-#     only ever be done at runtime, never declaratively in a unit file.
+#     ONLY placement-independent governance buildx_buildkit_* workers get at
+#     all: Buildx's own cgroup-parent driver-opt is unreliable under the
+#     systemd cgroup driver (docs/BUILD-ARCHITECTURE.md), so they can't be
+#     PLACED under dev.slice — DEV_IO_CAP_PCT's aggregate never reaches them.
+#     Docker scopes are also transient units: they exist only while the
+#     container runs, so this can only ever be done at runtime, never
+#     declaratively in a unit file. This sweep is the BACKSTOP:
+#     mdt-io-cap-watcher.service applies the same caps within the same
+#     second of container start via `docker events` — see
+#     mdt-container-caps.lib.sh (shared by both) and host-setup/README.md
+#     "Persistence model".
 #   - cgroup2 mount-flag check: without memory_recursiveprot every slice-level
 #     MemoryLow/MemoryMin silently stops protecting container pages
 # Idempotent; tolerant of missing docker/baseline/slices. Config:
@@ -28,35 +34,19 @@ CG="${CG:-/sys/fs/cgroup}"
 CONF="${CONF:-/etc/mdt/host-setup.env}"
 log(){ echo "[mdt-dev-caps] $*"; }
 
-# shellcheck disable=SC1090
-[ -f "$CONF" ] && . "$CONF" || log "WARN: $CONF not found — using built-in defaults"
+# shellcheck source=./mdt-container-caps.lib.sh
+. "$(dirname "$0")/mdt-container-caps.lib.sh"
 
+# _mdt_load_config: sources $CONF, sets SWEEP_IO_CAP_PCT/*_PATTERNS/
+# IO_BASELINE_ENV — shared with mdt-io-cap-watcher.sh, see the lib file.
+_mdt_load_config
 DEV_IO_CAP_PCT="${DEV_IO_CAP_PCT:-60}"
-# SWEEP_IO_CAP_PCT / TESTRUNNER_IMAGE_PATTERNS / BUILDKIT_NAME_PATTERNS renamed
-# 2026-08-03 from BENCH_* for clarity (the old name implied "benchmark only";
-# the percentage applies to bench+buildkit+devcontainer alike, and the two
-# pattern vars each match a DIFFERENT one of those categories — see
-# host-setup.env.example). Back-compat: an old BENCH_* value in an already-
-# installed /etc/mdt/host-setup.env still works, loudly, for one release.
-if [ -z "${SWEEP_IO_CAP_PCT:-}" ] && [ -n "${BENCH_IO_CAP_PCT:-}" ]; then
-  log "WARN: BENCH_IO_CAP_PCT is renamed SWEEP_IO_CAP_PCT — using the old value ($BENCH_IO_CAP_PCT) for now; update /etc/mdt/host-setup.env"
-  SWEEP_IO_CAP_PCT="$BENCH_IO_CAP_PCT"
-fi
-if [ -z "${TESTRUNNER_IMAGE_PATTERNS:-}" ] && [ -n "${BENCH_IMAGE_PATTERNS:-}" ]; then
-  log "WARN: BENCH_IMAGE_PATTERNS is renamed TESTRUNNER_IMAGE_PATTERNS — using the old value for now; update /etc/mdt/host-setup.env"
-  TESTRUNNER_IMAGE_PATTERNS="$BENCH_IMAGE_PATTERNS"
-fi
-if [ -z "${BUILDKIT_NAME_PATTERNS:-}" ] && [ -n "${BENCH_NAME_PATTERNS:-}" ]; then
-  log "WARN: BENCH_NAME_PATTERNS is renamed BUILDKIT_NAME_PATTERNS — using the old value for now; update /etc/mdt/host-setup.env"
-  BUILDKIT_NAME_PATTERNS="$BENCH_NAME_PATTERNS"
-fi
-SWEEP_IO_CAP_PCT="${SWEEP_IO_CAP_PCT:-80}"
-TESTRUNNER_IMAGE_PATTERNS="${TESTRUNNER_IMAGE_PATTERNS:-*test-runner*}"
-BUILDKIT_NAME_PATTERNS="${BUILDKIT_NAME_PATTERNS:-buildx_buildkit_*}"
-DEVCONTAINER_NAME_PATTERNS="${DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
 CGROUP2_FLAGS="${CGROUP2_FLAGS:-fix}"
-IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
+DEV_ZSWAP_WRITEBACK="${DEV_ZSWAP_WRITEBACK:-no}"
 DEV_INTERACTIVE_ZSWAP_WRITEBACK="${DEV_INTERACTIVE_ZSWAP_WRITEBACK:-no}"
+DEV_BACKGROUND_ZSWAP_WRITEBACK="${DEV_BACKGROUND_ZSWAP_WRITEBACK:-no}"
+DEV_GATES_ZSWAP_WRITEBACK="${DEV_GATES_ZSWAP_WRITEBACK:-no}"
+DEV_BUILDKITD_ZSWAP_WRITEBACK="${DEV_BUILDKITD_ZSWAP_WRITEBACK:-no}"
 
 # --- cgroup2 mount flags -----------------------------------------------------
 # systemd mounts cgroup2 with nsdelegate,memory_recursiveprot at boot; a later
@@ -105,32 +95,14 @@ fi
 
 # --- device discovery ---------------------------------------------------------
 # Node PATH for systemd IO*Max= set-property (needs a path, not MAJ:MIN).
-if [ -z "${IO_DEV_PATH:-}" ]; then
-  for path in /var/lib/docker /; do
-    IO_DEV_PATH=$(findmnt -no SOURCE --target "$path" 2>/dev/null) && [ -n "$IO_DEV_PATH" ] && break
-  done
-fi
-# Strip partition/mapper indirection is deliberately NOT attempted: caps on the
-# partition node work; if you want the whole-disk node, set IO_DEV_PATH.
-[ -n "${IO_DEV_PATH:-}" ] && log "io device: $IO_DEV_PATH" \
-  || log "WARN: no block device discovered — all IO cap steps will be skipped"
+_mdt_discover_io_dev_path
+
+# --- baseline: shared by the dev.slice cap below AND the per-container caps --
+_mdt_load_baseline
 
 # --- dev.slice: whole-estate measured IO caps (dev-interactive + dev-background) --
-if [ -f "$IO_BASELINE_ENV" ]; then
-  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
-  # shellcheck disable=SC1090
-  . "$IO_BASELINE_ENV" 2>/dev/null || true
-  # Provenance: the numbers alone can't say how they were measured, and the
-  # methods differ in a direction we can't see. sustained-v3 is ours; burst-v1
-  # is `ciu iops-baseline` (unramped 1G/10s — reads HIGH on a VM, so caps
-  # derived from it are looser than the percentage suggests).
-  case "${MEASURE_METHOD:-}" in
-    sustained-v3) : ;;
-    "")           log "WARN: $IO_BASELINE_ENV has no MEASURE_METHOD — provenance unknown; caps may not be the intended fraction of sustained capacity" ;;
-    burst-v1)     log "WARN: baseline method=burst-v1 (ciu iops-baseline, unramped 1G/10s) — reads high on a VM; run mdt-io-baseline.py for a sustained measurement" ;;
-    *)            log "WARN: baseline method=$MEASURE_METHOD is UNRECOGNISED — treat the derived caps as unverified" ;;
-  esac
-  if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] && [ -n "${RBW_MAX_BPS:-}" ] \
+if [ -n "${RIOPS_MAX:-}" ]; then
+  if [ -n "${WIOPS_MAX:-}" ] && [ -n "${RBW_MAX_BPS:-}" ] \
      && [ -n "${WBW_MAX_BPS:-}" ] && [ -n "${IO_DEV_PATH:-}" ]; then
     DEV_RIOPS=$(( RIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
     DEV_WIOPS=$(( WIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
@@ -145,7 +117,30 @@ if [ -f "$IO_BASELINE_ENV" ]; then
     elif systemctl set-property --runtime dev.slice \
          "IOReadBandwidthMax=$IO_DEV_PATH $DEV_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $DEV_WBPS" \
          "IOReadIOPSMax=$IO_DEV_PATH $DEV_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $DEV_WIOPS" 2>/tmp/mdt-cg-err; then
-      log "dev.slice: io.max=${DEV_RIOPS}r/${DEV_WIOPS}w IOPS $((DEV_RBPS/1048576))/$((DEV_WBPS/1048576))MB/s r/w (${DEV_IO_CAP_PCT}% of baseline — covers dev-interactive.slice + dev-background.slice combined)"
+      log "dev.slice: io.max=${DEV_RIOPS}r/${DEV_WIOPS}w IOPS $((DEV_RBPS/1048576))/$((DEV_WBPS/1048576))MB/s r/w (${DEV_IO_CAP_PCT}% of baseline — covers every dev.slice child combined)"
+      # Per-tier IOPS sub-ceiling for dev-gates.slice/dev-buildkitd.slice:
+      # tighter than the shared parent ceiling above, so
+      # neither alone can claim the whole dev.slice IOPS budget when
+      # interactive/background also want it. IOPS only — bandwidth is
+      # deliberately left at whatever dev.slice's own cap allows (see each
+      # unit's own comment for why). Runtime-only, same reason dev.slice's
+      # own cap is: a static unit-file number can't express "a percentage of
+      # what was just measured."
+      DEV_SUBSLICE_IOPS_PCT="${DEV_SUBSLICE_IOPS_PCT:-60}"
+      SUB_RIOPS=$(( DEV_RIOPS * DEV_SUBSLICE_IOPS_PCT / 100 ))
+      SUB_WIOPS=$(( DEV_WIOPS * DEV_SUBSLICE_IOPS_PCT / 100 ))
+      if [ "$SUB_RIOPS" -ge 1 ] && [ "$SUB_WIOPS" -ge 1 ]; then
+        for _sub_slice in dev-gates.slice dev-buildkitd.slice; do
+          if systemctl set-property --runtime "$_sub_slice" \
+               "IOReadIOPSMax=$IO_DEV_PATH $SUB_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $SUB_WIOPS" 2>/tmp/mdt-cg-err; then
+            log "$_sub_slice: IOPS sub-ceiling ${SUB_RIOPS}r/${SUB_WIOPS}w (${DEV_SUBSLICE_IOPS_PCT}% of dev.slice's own — bandwidth untouched, inherits the parent's)"
+          else
+            log "WARN: $_sub_slice IOPS sub-ceiling set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null))"
+          fi
+        done
+      else
+        log "WARN: derived sub-slice IOPS cap <= 0 — dev-gates.slice/dev-buildkitd.slice keep only dev.slice's shared ceiling"
+      fi
     else
       log "WARN: dev.slice set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null)) — unit-file statics remain in force"
     fi
@@ -156,98 +151,52 @@ else
   log "no $IO_BASELINE_ENV — dev.slice keeps unit-file statics (run mdt-io-baseline.py)"
 fi
 
-# --- dev-interactive.slice: zswap writeback policy -----------------------------
+# --- slice zswap writeback policies -------------------------------------------
 # Raw cgroupfs write: fallback for systemd < 256 (no MemoryZSwapWriteback=
-# directive) and for a slice activated before the unit carried the directive.
-case "$DEV_INTERACTIVE_ZSWAP_WRITEBACK" in
-  no|0|false) ZSWAP_WB=0 ;;
-  *)          ZSWAP_WB=1 ;;
-esac
-IA="$CG/dev-interactive.slice"
-if [ -d "$IA" ] && [ -w "$IA/memory.zswap.writeback" ]; then
-  echo "$ZSWAP_WB" > "$IA/memory.zswap.writeback" \
-    && log "dev-interactive.slice memory.zswap.writeback=$ZSWAP_WB"
-else
-  log "dev-interactive.slice not active yet (starts with the first devcontainer) — skipped zswap policy"
-fi
+# directive) and for slices activated before their unit carried the directive.
+# Slice names with a dash are nested below dev.slice in cgroupfs, even though
+# systemd accepts the unit name directly for set-property.
+for _zswap_entry in \
+  "dev.slice:DEV_ZSWAP_WRITEBACK" \
+  "dev-interactive.slice:DEV_INTERACTIVE_ZSWAP_WRITEBACK" \
+  "dev-background.slice:DEV_BACKGROUND_ZSWAP_WRITEBACK" \
+  "dev-gates.slice:DEV_GATES_ZSWAP_WRITEBACK" \
+  "dev-buildkitd.slice:DEV_BUILDKITD_ZSWAP_WRITEBACK"; do
+  IFS=: read -r _zswap_slice _zswap_var <<< "$_zswap_entry"
+  _zswap_value="${!_zswap_var:-no}"
+  case "$_zswap_value" in
+    no|0|false) _zswap_wb=0 ;;
+    *)           _zswap_wb=1 ;;
+  esac
+  if [ "$_zswap_slice" = dev.slice ]; then
+    _zswap_path="$CG/dev.slice"
+  else
+    _zswap_path="$CG/dev.slice/$_zswap_slice"
+  fi
+  if [ -d "$_zswap_path" ] && [ -w "$_zswap_path/memory.zswap.writeback" ]; then
+    echo "$_zswap_wb" > "$_zswap_path/memory.zswap.writeback" \
+      && log "$_zswap_slice memory.zswap.writeback=$_zswap_wb"
+  else
+    log "$_zswap_slice not active yet — skipped zswap policy"
+  fi
+done
 
 # --- per-container caps: bench / buildkit / devcontainer ----------------------
 # These target the transient docker-<id>.scope of each matched container —
-# scopes exist only while the container runs, so this is runtime-only by
-# nature. The periodic timer catches containers created between runs.
-_match() { # _match "value" "pattern1 pattern2 ..."
-  local v="$1" p
-  # shellcheck disable=SC2254  # unquoted on purpose: patterns SHOULD glob
-  for p in $2; do case "$v" in $p) return 0 ;; esac; done
-  return 1
-}
-
-# _apply_container_caps <container-id> <label> [deprioritize]
-# deprioritize=1 (bench/buildkit): also drop the scope to the lowest IO weight,
-# so it yields the device to everything else. NOT used for the devcontainer —
-# that scope lives in dev-interactive.slice and IS the IDE; capping its peak rate is
-# the goal, making it lose every IO race to a sibling is not.
-_apply_container_caps() {
-  local cid="$1" label="$2" deprio="${3:-0}" pid scope unit props=()
-  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || return 0
-  { [ -z "$pid" ] || [ "$pid" = "0" ]; } && return 0
-  [ -n "${IO_DEV_PATH:-}" ] || { log "WARN: $label ($cid): no io device — skipped"; return 0; }
-  scope="$CG$(awk -F: '/^0::/{print $3}' "/proc/$pid/cgroup" 2>/dev/null)"
-  # buildkitd nests sub-cgroups INSIDE its container; trim to the scope
-  # component — limits on the scope cover the whole subtree.
-  case "$scope" in *".scope/"*) scope="${scope%%.scope/*}.scope" ;; esac
-  [ -d "$scope" ] || return 0
-  unit="${scope##*/}"
-  [ "$deprio" = 1 ] && props+=(IOWeight=1)
-  props+=("IOReadBandwidthMax=$IO_DEV_PATH $SWEEP_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $SWEEP_WBPS"
-          "IOReadIOPSMax=$IO_DEV_PATH $SWEEP_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $SWEEP_WIOPS")
-  # set-property (not a raw io.max write): systemd re-applies its own recorded
-  # properties to a scope on every daemon-reload, silently wiping raw writes.
-  if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
-    log "$label ($cid): io.max=${SWEEP_RIOPS}r/${SWEEP_WIOPS}w IOPS $((SWEEP_RBPS/1048576))/$((SWEEP_WBPS/1048576))MB/s r/w (${SWEEP_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
-  else
-    log "WARN: $label ($cid): set-property failed — skipped"
-    return 0
-  fi
-  # BFQ per-scope weight has no systemd property — raw write, and because
-  # systemd does not manage this attribute the write survives daemon-reload.
-  [ "$deprio" = 1 ] && { echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null || true; }
-  return 0
-}
-
+# scopes exist only while the container runs. mdt-io-cap-watcher.service now
+# applies this instantly on container start via `docker events`; this sweep
+# is the backstop for whatever it missed (a restart window, a docker daemon
+# restart mid-stream) — see host-setup/README.md "Persistence model". Uses
+# the SAME _mdt_match/_mdt_apply_container_caps/_mdt_classify_and_apply as
+# the watcher (mdt-container-caps.lib.sh), so the two can never drift apart.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   # Per-container ceilings: SWEEP_IO_CAP_PCT% of baseline, static fallbacks
   # when no baseline exists (tight on purpose — measure!). Applies to every
   # category this sweep matches below (test-runner/"bench", buildkit,
   # devcontainer) — one percentage, three container categories.
-  SWEEP_RBPS="${SWEEP_RBPS:-31457280}"; SWEEP_WBPS="${SWEEP_WBPS:-31457280}"
-  SWEEP_RIOPS="${SWEEP_RIOPS:-200}";    SWEEP_WIOPS="${SWEEP_WIOPS:-400}"
-  SWEEP_SRC="static fallback — no baseline, run mdt-io-baseline.py"
-  # All four or none: a partial baseline would derive a 0 cap, and 0 in io.max
-  # is not "unlimited", it stops the container's IO dead.
-  if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
-     && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
-    SWEEP_RIOPS=$(( RIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_WIOPS=$(( WIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_RBPS=$((  RBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_WBPS=$((  WBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_SRC="${SWEEP_IO_CAP_PCT}% of baseline"
-  fi
-  if [ "$SWEEP_RIOPS" -lt 1 ] || [ "$SWEEP_WIOPS" -lt 1 ] \
-     || [ "$SWEEP_RBPS" -lt 1 ] || [ "$SWEEP_WBPS" -lt 1 ]; then
-    log "WARN: derived per-container cap <= 0 (bad baseline?) — skipping the container sweep"
-    SWEEP_SKIP=1
-  fi
+  _mdt_derive_sweep_caps
   for c in $([ "${SWEEP_SKIP:-0}" = 0 ] && docker ps -q 2>/dev/null); do
-    img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
-    name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d '/' || true)
-    if _match "$img" "$TESTRUNNER_IMAGE_PATTERNS"; then
-      _apply_container_caps "$c" "bench:$name" 1
-    elif _match "$name" "$BUILDKIT_NAME_PATTERNS"; then
-      _apply_container_caps "$c" "buildkit:$name" 1
-    elif _match "$name" "$DEVCONTAINER_NAME_PATTERNS"; then
-      _apply_container_caps "$c" "devcontainer:$name" 0
-    fi
+    _mdt_classify_and_apply "$c"
   done
 else
   log "docker unavailable — skipped per-container sweep"

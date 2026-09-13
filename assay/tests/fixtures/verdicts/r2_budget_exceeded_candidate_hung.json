@@ -1,0 +1,106 @@
+{
+ "schema_version": 11,
+ "assay_version": "0.1.0",
+ "lane": "package",
+ "commit": "555555555555555555555555555555555555555e",
+ "outcome": "BUDGET_EXCEEDED",
+ "exit_code": 4,
+ "started": "2026-09-12T14:15:00+00:00",
+ "ended": "2026-09-12T14:15:45+00:00",
+ "reason_code": "CANDIDATE_HUNG",
+ "declared_rigor": [
+  "R0",
+  "R2"
+ ],
+ "declared_evidence": [],
+ "argv_declared": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_appended": [],
+ "argv_effective": [
+  "pytest",
+  "tests",
+  "-q"
+ ],
+ "argv_modified": false,
+ "env_declared": {},
+ "env_effective": {},
+ "scope": "S1",
+ "enforcement": "gate",
+ "judgment": {
+  "resolved": {
+   "language": "python",
+   "source_roots": [
+    "pkg"
+   ],
+   "base": "0000000000000000000000000000000000000a"
+  },
+  "r2": {
+   "producer": "native",
+   "jobs": 2,
+   "max_mutants": 50,
+   "operators": [
+    "python:boolop-swap",
+    "python:compare-swap"
+   ],
+   "kill_attribution": "unattributed",
+   "mode": "changed_lines",
+   "liveness": {
+    "active": true,
+    "reason": "auto-pytest-argv",
+    "plugin": "/tmp/.assay/liveness/assay_liveness_plugin.py"
+   }
+  }
+ },
+ "snapshot_policy": {
+  "selection": "repository"
+ },
+ "claims": [
+  {
+   "rigor": "R0",
+   "source": "computed",
+   "status": "PASS",
+   "verified_by_assay": true
+  },
+  {
+   "rigor": "R2",
+   "source": "computed",
+   "status": "BUDGET_EXCEEDED",
+   "verified_by_assay": true,
+   "reason_code": "CANDIDATE_HUNG",
+   "mutation": {
+    "candidate_count": 2,
+    "total": 2,
+    "killed": [
+     {
+      "path": "pkg/slow.py",
+      "lineno": 5,
+      "start_byte": 40,
+      "end_byte": 41,
+      "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
+      "operator": "python:compare-swap",
+      "description": "Lt->LtE"
+     }
+    ],
+    "survived": [],
+    "crashed": [],
+    "budget_exceeded": [],
+    "equivalent": [],
+    "hung": [
+     {
+      "path": "pkg/slow.py",
+      "lineno": 9,
+      "start_byte": 96,
+      "end_byte": 99,
+      "replacement_sha256": "7175517a370b5cd2e664e3fd29c4ea9db5ce17058eb9772fe090a5485e49dad6",
+      "operator": "python:boolop-swap",
+      "description": "And->Or"
+     }
+    ]
+   }
+  }
+ ],
+ "evidence": []
+}

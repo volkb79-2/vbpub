@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # mdt host-setup installer — prepares a host for tiered devcontainer/test work
 # (dev.slice root ceiling + dev-interactive.slice + dev-background.slice +
+# dev-gates.slice + dev-memory_min_guaranteed.slice +
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
@@ -90,6 +91,23 @@ fi
 # shellcheck disable=SC1091
 . /etc/mdt/host-setup.env
 
+# A config that predates a key added to host-setup.env.example since has NO
+# line for it at all (not even empty) -- render()'s own "empty/unset =
+# directive dropped" rule then silently removes every directive that uses
+# it from the rendered unit(s), which for e.g. dev-gates.slice means an
+# UNBOUNDED admission capacity object with no mechanical signal at all
+# (RG-55 P8 review round 1, B3). Compares NAME presence only (`^KEY=`), not
+# values: several keys are intentionally shipped empty in the example
+# itself (DEV_MEMORY_MIN_GUARANTEED_CEILING, DEV_BUILDKITD_CPU_QUOTA,
+# IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
+MISSING_KEYS=""
+while IFS= read -r key; do
+  grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
+done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
+if [ -n "$MISSING_KEYS" ]; then
+  echo "WARN: your /etc/mdt/host-setup.env predates these keys:${MISSING_KEYS} — the rendered unit(s) using them will be unbounded (directive dropped, not defaulted). Add them from host-setup.env.example (see README.md \"Upgrading a host that already runs mdt host-setup\" for the additive sequence), then re-run this script. (--force/--wizard also pick them up, but re-render/reactivate the WHOLE estate from the example's numbers live — see the same README section before using either on an already-tuned host.)"
+fi
+
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
 if [ -z "${IO_DEV_PATH:-}" ]; then
@@ -99,14 +117,76 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
 fi
 echo "io device for static caps: ${IO_DEV_PATH:-<none discovered — static IO caps omitted>}"
 
-# dev-buildkitd.slice CPUQuota: auto-detect (nproc - 2) cores, floored at 1,
-# when left unset in host-setup.env — same auto-discovery convention as
-# IO_DEV_PATH above. An explicit value in host-setup.env always wins.
-if [ -z "${DEV_BUILDKITD_CPU_QUOTA:-}" ]; then
-  _nproc=$(nproc 2>/dev/null || echo 2)
-  _buildkitd_cores=$(( _nproc > 2 ? _nproc - 2 : 1 ))
-  DEV_BUILDKITD_CPU_QUOTA="${_buildkitd_cores}00%"
-  echo "dev-buildkitd.slice CPUQuota: auto-detected $_buildkitd_cores cores (host has $_nproc) -> $DEV_BUILDKITD_CPU_QUOTA"
+# CPUQuota, absolute ceilings mirroring the IO one: auto-
+# detected from nproc when left unset in host-setup.env, floored at 1 core —
+# same auto-discovery convention as IO_DEV_PATH above. An explicit value in
+# host-setup.env always wins, per-slice. dev.slice's own ceiling bounds the
+# WHOLE tier combined (DEV_CPU_RESERVE_CORES=1 default: nproc-1, leaving one
+# core for the host/production regardless of how many dev-tier children are
+# busy at once); each child ALSO gets its own tighter ceiling
+# (DEV_SUBSLICE_CPU_RESERVE_CORES=3 default: nproc-3) so no single tier can
+# alone claim the parent's whole budget — multiple tiers combined are still
+# bounded by dev.slice's own quota either way.
+_nproc=$(nproc 2>/dev/null || echo 2)
+DEV_CPU_RESERVE_CORES="${DEV_CPU_RESERVE_CORES:-1}"
+DEV_SUBSLICE_CPU_RESERVE_CORES="${DEV_SUBSLICE_CPU_RESERVE_CORES:-3}"
+if [ -z "${DEV_CPU_QUOTA:-}" ] && [ "$_nproc" -le "$DEV_CPU_RESERVE_CORES" ] 2>/dev/null; then
+  echo "WARN: host has $_nproc CPU core(s), so DEV_CPU_RESERVE_CORES=$DEV_CPU_RESERVE_CORES cannot be fully reserved; the dev.slice auto-quota will use its 1-core floor"
+fi
+if [ "$_nproc" -le "$DEV_SUBSLICE_CPU_RESERVE_CORES" ] 2>/dev/null \
+   && { [ -z "${DEV_INTERACTIVE_CPU_QUOTA:-}" ] || [ -z "${DEV_BACKGROUND_CPU_QUOTA:-}" ] \
+     || [ -z "${DEV_GATES_CPU_QUOTA:-}" ] || [ -z "${DEV_BUILDKITD_CPU_QUOTA:-}" ]; }; then
+  echo "WARN: host has $_nproc CPU core(s), so DEV_SUBSLICE_CPU_RESERVE_CORES=$DEV_SUBSLICE_CPU_RESERVE_CORES cannot be fully reserved; child-slice auto-quotas will use their 1-core floor"
+fi
+_auto_cpu_quota() { # _auto_cpu_quota <reserve-cores> -> "<cores>00%"
+  local reserve="$1" cores
+  cores=$(( _nproc > reserve ? _nproc - reserve : 1 ))
+  echo "${cores}00%"
+}
+if [ -z "${DEV_CPU_QUOTA:-}" ]; then
+  DEV_CPU_QUOTA=$(_auto_cpu_quota "$DEV_CPU_RESERVE_CORES")
+  echo "dev.slice CPUQuota: auto-detected (host has $_nproc, reserving $DEV_CPU_RESERVE_CORES) -> $DEV_CPU_QUOTA"
+fi
+for _tier_var in DEV_INTERACTIVE_CPU_QUOTA DEV_BACKGROUND_CPU_QUOTA DEV_GATES_CPU_QUOTA DEV_BUILDKITD_CPU_QUOTA; do
+  if [ -z "$(eval echo "\${$_tier_var:-}")" ]; then
+    eval "$_tier_var=\$(_auto_cpu_quota \"\$DEV_SUBSLICE_CPU_RESERVE_CORES\")"
+    echo "$_tier_var: auto-detected (host has $_nproc, reserving $DEV_SUBSLICE_CPU_RESERVE_CORES) -> $(eval echo "\${$_tier_var}")"
+  fi
+done
+
+# Swap cascade: auto-detect total host swap, then apply
+# DEV_SWAP_CASCADE_PCT (default 80%) at each level — host swap -> dev.slice's
+# own MemorySwapMax -> each child's own (same 80%, of the PARENT's derived
+# value, not of the host total again) -> the watcher's per-container
+# MemorySwapMax (mdt-dev-cap-watcher.py reads DEV_SWAP_CASCADE_PCT itself and
+# applies it a third time, of whichever child's derived value matches). Same
+# "absolute ceiling at every level" reasoning as CPU/IO above. Bytes, not a
+# size-suffixed string — valid for systemd set-property AND the Python
+# watcher's own arithmetic without a unit parser on either side.
+DEV_SWAP_CASCADE_PCT="${DEV_SWAP_CASCADE_PCT:-80}"
+_host_swap_bytes=""
+if grep -q '^SwapTotal:' /proc/meminfo 2>/dev/null; then
+  _host_swap_kib=$(awk '$1 == "SwapTotal:" && $2 ~ /^[0-9]+$/ {print $2; exit}' /proc/meminfo 2>/dev/null)
+  if [ -n "${_host_swap_kib:-}" ]; then
+    _host_swap_bytes=$(( _host_swap_kib * 1024 ))
+  fi
+fi
+_pct_of() { echo $(( $1 * $2 / 100 )); } # _pct_of <bytes> <pct> -> bytes
+if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
+  if [ -z "${DEV_SWAP_MAX:-}" ]; then
+    DEV_SWAP_MAX=$(_pct_of "$_host_swap_bytes" "$DEV_SWAP_CASCADE_PCT")
+    echo "dev.slice MemorySwapMax: auto-detected (host swap ${_host_swap_bytes}B, ${DEV_SWAP_CASCADE_PCT}%) -> ${DEV_SWAP_MAX}B"
+  fi
+  for _swap_var in DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
+    if [ -z "$(eval echo "\${$_swap_var:-}")" ]; then
+      eval "$_swap_var=\$(_pct_of \"\$DEV_SWAP_MAX\" \"\$DEV_SWAP_CASCADE_PCT\")"
+      echo "$_swap_var: auto-detected (${DEV_SWAP_CASCADE_PCT}% of dev.slice's ${DEV_SWAP_MAX}B) -> $(eval echo "\${$_swap_var}")B"
+    fi
+  done
+elif [ "${_host_swap_bytes:-}" = 0 ]; then
+  echo "WARN: no swap detected (/proc/meminfo SwapTotal=0) — MemorySwapMax auto-detect skipped; explicit host-setup.env values (if any) still apply"
+else
+  echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
 
 echo "== packages =="
@@ -130,13 +210,20 @@ if [ ! -f "$MDT_BASELINE" ] && [ -f "$GSTAMMTISCH_BASELINE" ]; then
 fi
 
 echo "== render + install units =="
-RENDER_VARS="DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACTIVE_MEMORY_LOW \
-DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
+RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
+DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACTIVE_MEMORY_LOW \
+DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_QUOTA \
+DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
 DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
-DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_IO_WEIGHT DEV_BACKGROUND_OOM_PRESSURE_LIMIT \
+DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_CPU_QUOTA DEV_BACKGROUND_IO_WEIGHT \
+DEV_BACKGROUND_OOM_PRESSURE_LIMIT DEV_BACKGROUND_ZSWAP_WRITEBACK \
 DEV_MEMORY_MIN_GUARANTEED_CEILING \
+DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
+DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
+DEV_GATES_ZSWAP_WRITEBACK \
 DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
+DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
 IO_DEV_PATH SWEEP_INTERVAL"
@@ -157,6 +244,7 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
+render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
@@ -164,6 +252,10 @@ install -m 0644 "$HERE/units/mdt-host-slices.service" /etc/systemd/system/mdt-ho
 if [ "${INOTIFY_OK:-}" = 1 ]; then
   install -m 0644 "$HERE/units/mdt-dev-cap-watcher.service" /etc/systemd/system/mdt-dev-cap-watcher.service
 fi
+# Not gated by INOTIFY_OK: this one reacts via `docker events`, not inotify —
+# see scripts/mdt-io-cap-watcher.sh for why it can't use the same mechanism
+# as mdt-dev-cap-watcher.py above.
+install -m 0644 "$HERE/units/mdt-io-cap-watcher.service" /etc/systemd/system/mdt-io-cap-watcher.service
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
@@ -177,6 +269,27 @@ mkdir -p /etc/systemd/system/docker.socket.d
 install -m 0644 "$HERE/units/docker-api-socket.conf" \
   /etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf
 
+# /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
+# templates/devcontainer.json bind-mounts to reach the cgroup-profiler
+# daemon's control socket. No template variables, installed directly like
+# docker-api-socket.conf above — see units/mdt-cgprofile.conf for the
+# full reasoning. Named with the mdt- prefix (round-2 review S15(r2)),
+# matching every other mdt-owned drop-in on this host
+# (/etc/modules-load.d/mdt-bfq.conf, docker.socket.d's own
+# 50-mdt-dedicated-api-socket.conf above) rather than the unprefixed
+# "cgprofile.conf" the daemon package's own future deployment would also
+# plausibly want to ship into the same directory -- an unprefixed name
+# invites two independent packages fighting over one file, silently, with
+# whichever installs last winning. `systemd-tmpfiles --create` applies it
+# immediately (idempotent — a directory that already has the right
+# mode/owner is a no-op) rather than waiting for the next boot's automatic
+# systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
+# exist" requirement is satisfied the moment this script finishes, not
+# after a reboot.
+install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
+  || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
+
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
 #   (dev.slice now carries the one IO ceiling for both tiers — see units/dev.slice.in)
@@ -185,11 +298,17 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
   echo "no device — dropped static IO*Max lines (runtime caps may still apply if discovery succeeds later)"
 fi
 # - MemoryZSwapWriteback= needs systemd >= 256; older hosts get the raw-write
-#   fallback from mdt-apply-dev-caps.sh instead.
+#   fallback from mdt-apply-dev-caps.sh instead. Applies to dev.slice AND
+#   every child.
 SD_VER=$(systemctl --version | awk 'NR==1{print $2}')
 if [ -n "$SD_VER" ] && [ "$SD_VER" -lt 256 ] 2>/dev/null; then
-  sed -i '/^MemoryZSwapWriteback=/d' /etc/systemd/system/dev-interactive.slice
-  echo "systemd $SD_VER < 256 — dropped MemoryZSwapWriteback= (runtime raw-write fallback covers it)"
+  sed -i '/^MemoryZSwapWriteback=/d' \
+    /etc/systemd/system/dev.slice \
+    /etc/systemd/system/dev-interactive.slice \
+    /etc/systemd/system/dev-background.slice \
+    /etc/systemd/system/dev-gates.slice \
+    /etc/systemd/system/dev-buildkitd.slice
+  echo "systemd $SD_VER < 256 — dropped MemoryZSwapWriteback= from dev.slice + every child (runtime raw-write fallback covers it)"
 fi
 
 echo "== docker daemon.json (merge, not overwrite — cgroup-parent only, host dev-tier cgroup governance rollout) =="
@@ -219,7 +338,12 @@ print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTA
 PY
 
 echo "== scripts =="
+# mdt-container-caps.lib.sh: sourced by BOTH scripts below via
+# "$(dirname "$0")/mdt-container-caps.lib.sh" — must land in the same
+# directory as them, not just be present in the repo checkout.
+install -m 0644 "$HERE/scripts/mdt-container-caps.lib.sh" /usr/local/sbin/mdt-container-caps.lib.sh
 install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply-dev-caps.sh
+install -m 0755 "$HERE/scripts/mdt-io-cap-watcher.sh"  /usr/local/sbin/mdt-io-cap-watcher.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
 install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
@@ -243,13 +367,15 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
-systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-buildkitd.slice 2>/dev/null || true
+systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
+  dev-gates.slice dev-buildkitd.slice 2>/dev/null || true
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
 systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker
 if [ "$INOTIFY_OK" = 1 ]; then
   systemctl enable --now mdt-dev-cap-watcher.service  # reactive per-container MemoryMax
 fi
+systemctl enable mdt-io-cap-watcher.service         # reactive per-container IO caps (docker events)
 
 if [ "$WITH_BASELINE" = 1 ]; then
   echo "== io baseline (fio — disk will be saturated for ~4 min) =="
@@ -258,6 +384,13 @@ if [ "$WITH_BASELINE" = 1 ]; then
 fi
 
 systemctl start mdt-host-slices.service           # apply runtime caps now
+# Both reactive watchers load their configuration and baseline once per
+# process. Restart after the optional baseline measurement so a re-run of this
+# installer cannot leave an already-running watcher applying stale values.
+if [ "$INOTIFY_OK" = 1 ]; then
+  systemctl restart mdt-dev-cap-watcher.service
+fi
+systemctl restart mdt-io-cap-watcher.service
 
 # Optional: automatically restart docker if requested (--restart-docker flag)
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then

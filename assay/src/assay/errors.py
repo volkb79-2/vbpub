@@ -178,6 +178,19 @@ class ReasonCode(StrEnum):
     #: is the real artifact. `MISSING_EXTERNAL_TOOL` above is likewise no
     #: longer reserved as of P34/A-253; both are live.
     SNAPSHOT_LIMIT_EXCEEDED = "SNAPSHOT_LIMIT_EXCEEDED"
+    #: (B091/RW-33, P7 A3) A `LivenessRunner`-classified idle stall -- the
+    #: candidate's process tree stopped producing progress (no new `test`
+    #: event, no CPU growth) though nothing about the lane's own elapsed
+    #: budget expired. Distinct from `LANE_TIMEOUT`'s genuine elapsed-time
+    #: expiry so `mutation._classify_mutant_result` can tell "ran out of
+    #: time" (`budget_exceeded`) apart from "stopped making progress"
+    #: (`hung`), which score identically (both excluded from
+    #: `killed/(killed+survived)`) but are reported as different buckets
+    #: (RW-33: never conflate the two). Raised only via
+    #: `assay.liveness.LivenessHungExpired`, a `subprocess.TimeoutExpired`
+    #: subclass `runner._execute_plan_inner`'s existing except-clause tells
+    #: apart from a genuine timeout with one `isinstance` check.
+    CANDIDATE_HUNG = "CANDIDATE_HUNG"
     # INCONCLUSIVE
     NO_MUTANTS = "NO_MUTANTS"
     #: (P21/A-183) the ADAPTER has no mutation implementation at all, so no
@@ -248,6 +261,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.LANE_TIMEOUT,
                 ReasonCode.MUTANT_LIMIT_EXCEEDED,
                 ReasonCode.SNAPSHOT_LIMIT_EXCEEDED,
+                ReasonCode.CANDIDATE_HUNG,
             }
         ),
         Outcome.INCONCLUSIVE: frozenset(

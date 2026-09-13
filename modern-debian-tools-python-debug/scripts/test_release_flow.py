@@ -70,11 +70,20 @@ class ReleaseFlowTests(unittest.TestCase):
 
     def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn('COPY build/tool-artifacts-staging/downloads', dockerfile)
+        # downloads/ (~1 GB) is bind-mounted rather than COPYed, so it never becomes
+        # a permanent layer (a later RUN deleting it couldn't reclaim an earlier
+        # COPY layer's bytes). The property this test protects is unchanged: the
+        # volatile, timestamped metadata.json must still be copied AFTER the
+        # tool-install RUN so its per-build churn never invalidates that RUN's cache.
+        bind_mount = (
+            "--mount=type=bind,source=build/tool-artifacts-staging/downloads,"
+            "target=/tmp/tool-artifacts-staging/downloads"
+        )
+        self.assertIn(bind_mount, dockerfile)
         self.assertIn('COPY build/tool-artifacts-staging/tool-versions.env', dockerfile)
         self.assertGreater(
             dockerfile.find('COPY build/tool-artifacts-staging/metadata.json'),
-            dockerfile.find('COPY build/tool-artifacts-staging/downloads'),
+            dockerfile.find(bind_mount),
         )
 
     def test_active_repack_path_is_oci_native(self) -> None:

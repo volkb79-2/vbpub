@@ -2,6 +2,12 @@
 kind: backlog
 schema_version: 1
 items:
+  - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bug, component: liveness, context_estimate: small}
+  - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bug, component: mutation, context_estimate: small}
+  - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bug, component: liveness, context_estimate: small}
+  - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bug, component: cli, context_estimate: small}
+  - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
+  - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
   - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
@@ -9294,3 +9300,359 @@ parser and try to reproduce the same four files' coverage record directly
 (vitest/istanbul version pinned in dstdns's `webapp-ui-react` at the time of
 this filing) to find what's actually inconsistent about the source maps or
 arc positions for these specific components.
+
+## B090 — `judge.mutation.budget_per_candidate` has no default, so one hung mutant blocks a whole R2 run indefinitely, and nothing warns when the key is unset
+
+Observed live 2026-09-12 13:22Z in vbpub's `scripts/cgroup-profiler` r2 lane
+(assay from the `tester-unified:local` source tree, run-gate rev 40, RG-55
+wave P1): candidate 47 mutated `lib/serve.py:479` `threading.Thread(...,
+daemon=True)` → `daemon=False`. The suite ran to completion and then the
+pytest process hung at interpreter exit joining the non-daemon session-loop
+thread (futex wait, 0 % CPU). The lane's `assay.toml` set `budget = "4h"`
+and `jobs = 2` but no `judge.mutation.budget_per_candidate`, so assay waited
+37 minutes on that one candidate with the second job slot idle, and would
+have waited until the lane budget (which, with the run-gate owner process
+dead — RG-55 controller log RW-26 — nobody was enforcing). The controller
+SIGKILLed the pytest inside the container; the run resumed immediately.
+
+Two things here, both in assay's court:
+
+1. **No default per-candidate bound.** B012 shipped `budget_per_candidate`
+   as optional, and the R2-admission table (CONSUMERS "native R2 …
+   requires `judge.mutation.budget_per_candidate`") already treats it as
+   required for admission — but an r2 lane without it is accepted and
+   runs unbounded per candidate. Any mutant that removes a termination
+   condition (daemon flag, loop bound, timeout argument, `join(timeout)`)
+   produces exactly this hang; those mutants are common in daemon/thread
+   code. Proposal: default `budget_per_candidate` to
+   `max(5 × measured baseline, 300 s)` when unset, print the derived value
+   in the plan line, and mark such candidates `budget_exceeded` (never
+   `killed`, per the B012 classification) so the lane's verdict names them
+   for triage.
+2. **A SIGKILLed candidate's classification.** What assay recorded for the
+   killed pytest (signal death, non-zero returncode) is not an honest
+   verdict either way; the honest kill is a test asserting `thread.daemon`.
+   Combined with B088 (resume identity ignores the test suite), the only
+   way to re-judge it after the test fix is to delete the candidate's
+   `.assay/mutation-state/<id>.json` by hand — worth a `--rejudge <id>`
+   or `--rejudge-outcome budget_exceeded,error` flag on `run … --resume`.
+
+Consumer-side mitigation applied in the RG-55 wave (controller ruling
+RW-28): every r2 lane sets `judge.mutation.budget_per_candidate`
+(cgprofile `600s`, run-gate `900s`).
+
+**Mitigated by B091 (FIXED 2026-09-12).** Both items this incident named are
+now shipped: an omitted `judge.mutation.budget_per_candidate` defaults to
+`"auto"` (item 1) instead of running unbounded, so a lane like this
+incident's own `scripts/cgroup-profiler` r2 lane — which set `budget`/`jobs`
+but not `budget_per_candidate` — now derives a real per-candidate bound
+automatically rather than waiting on nothing enforcing anything; and the
+exact failure mode this incident hit (a mutant that removes a termination
+condition, e.g. `daemon=True` → `daemon=False`, leaving a non-daemon thread
+that never joins) is now caught structurally, not just bounded: the R2
+candidate wrapper calls `os._exit(rc)` after the suite's own summary prints
+(item 3), so the interpreter never blocks on the leaked thread at shutdown
+at all — the mutant SURVIVES and must be killed by an honest assertion
+instead of hanging. For the remaining case where a candidate genuinely does
+stall (no `os._exit` reached, no progress, no CPU growth), the active
+`LivenessRunner` monitoring loop (item 4) now kills it and classifies it
+`hung` — reported like `budget_exceeded`, never `killed`, named in the
+verdict for triage — rather than consuming the whole lane/candidate budget
+silently. This incident's own second observation (a SIGKILLed candidate's
+classification, and re-judging it after a test fix) is answered by
+`--rejudge`/`--rejudge-outcome` (item 5, B091), exactly the flag this
+incident's own proposal named as "worth" adding.
+
+## B091 — judge candidates by progress, not by time: auto per-candidate bound, per-test cadence hints, `os._exit` runner, `hung` outcome, `--rejudge`
+
+**Provenance:** vbpub `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`
+D-17/D-23 (operator directive 2026-09-12: fixed budgets fail on slow
+hardware; judge progress mechanically). Follows B090 (the incident) and
+B088 (resume identity ignores the test suite).
+
+**Status:** **FIXED 2026-09-12**, on branch `assay-liveness` (RG-55 wave
+package P7). All five contract items shipped, tests-first, every changed
+line coverage-confirmed:
+
+- **Item 1** (`budget_per_candidate = "auto"` default, `plan`'s budget
+  fields, `judgment.r2.budget_per_candidate_derived_s`) — `de32bb91`.
+- **Item 3** (materialized pytest liveness plugin, `judge.mutation.liveness`
+  gating, `argv_invokes_pytest`, the `os._exit` candidate wrapper) —
+  `f4fa1788` (mechanism), `e27b107b` (RW-36's `argv_appended`-vs-
+  `allow_argv_append` gating correction).
+- **Item 4** (active `LivenessRunner` monitoring loop, the `hung` outcome
+  bucket, additive under schema v11) — `44dd12ca` (session 4: the active
+  loop + bucket, plus a real `judge_mutation` outcome-precedence gap found
+  and fixed — a `hung`-only candidate previously verdicted `PASS`),
+  `99463ae5` (session 5: real e2e liveness CLI fixture tests — their first
+  run found and fixed a real bug, the plugin's own event lines were not
+  valid JSON), `d1540eda` (session 5: a ≥3-planted-mutant table, which
+  found two candidates the existing suite did not actually kill and added
+  precision-targeted tests for both).
+- **Item 2** (progress-stream `test` events, `plan.slowest_test_s`/
+  `expect_next_event_within_s`, `candidate.tests_completed`) — `5baf2670`.
+- **Item 5** (`--resume --rejudge <id>[,...]` / `--rejudge-outcome
+  BUCKET[,...]`, union semantics, the `"error"`→`"crashed"` CLI alias, the
+  unknown-id refusal cross-referencing B088) — `c15f6040`.
+
+Evidence: `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P7-
+{LOG,REPORT}.md` (vbpub) carry the full oracle → test mapping, mutation-check
+transcripts and coverage self-checks for every item above. Docs
+(`docs/CONSUMERS.md`, `README.md`, `CHANGES.md`) updated to match in the
+same close-out pass (A6).
+
+Gate history, corrected (round-1 S8 — the sentence here previously claimed
+the registered gate "re-run green after the docs/backlog pass", which is not
+what happened, and the hash list omitted the two commits that actually made
+it green). The first real `./run-gate.py tester-unified` run after the
+docs/backlog pass was **RED** (5 failed / 4681 passed): five dead imports
+tripping pyflakes, a `RecursionError` reachable on the two untrusted JSON
+parse sites, and three real-R2-through-the-wheel `test_standalone.py`
+expectations that had drifted. Those five root causes were fixed in
+`95d02f50` and `ee24ced6`, and the gate was green only on the tip carrying
+them. Add both to the hash list above. Review round 1 then rejected on five
+blockers, repaired in `802f0855` (B1), `5c1b9ef8` (B3), `07e121d9` (B2) and
+`4ef3985f` (B4/B5); see the REPORT for each one's verification command and
+the gate verdict on the repair tip.
+
+A real, if minor, documentation-only gap surfaced while shipping item 5 and
+is recorded as a `CONSUMERS.md` caveat rather than a new contract item: the
+ids `--rejudge` takes are `mutation.candidate_id()` digests, not
+`MutantOutcome.identity` (a different, tuple-shaped identity on a verdict's
+own bucket lists) — no verdict field today exposes the digest a `--rejudge
+<id>` invocation needs.
+
+### Contract
+1. `judge.mutation.budget_per_candidate` accepts `"auto"` (the default when
+   unset): max(3 × measured baseline wall time, baseline + 60 s), printed in
+   the plan line and recorded as `budget_per_candidate_derived_s` in the
+   verdict. `"none"` disables with a WARN. Explicit durations keep working.
+2. The progress NDJSON stream starts with a `plan` event carrying
+   `baseline_s`, `slowest_test_s`, `expect_next_event_within_s` (= max(3 ×
+   slowest test, 15 s)) and emits one `test` event per test (nodeid, outcome,
+   duration) from a pytest hook assay installs itself; consumers (run-gate)
+   use the hint as their stall bound. Documented in CONSUMERS as the progress
+   protocol.
+3. The python runner launches the suite through a wrapper that calls
+   `os._exit(rc)` after `pytest.main` returns, so a leaked non-daemon thread
+   cannot hang the candidate at interpreter exit (the mutant then SURVIVES and
+   must be killed by an honest assertion).
+4. Liveness: the runner samples the candidate process tree's CPU time
+   (`/proc/<pid>/stat` utime+stime, children included) every 5 s; no growth
+   for max(60 s, 2 × slowest test) after the last output line, or "runner
+   reported completion but the process is alive" for 30 s, ends the candidate
+   as `hung` — a new outcome, reported like `budget_exceeded` (never
+   `killed`), named in the verdict for triage.
+5. `run --resume --rejudge <id>[,<id>…]` and `--rejudge-outcome
+   hung,budget_exceeded,error` drop those state records before resuming.
+
+### Oracles
+Fake baseline timings → the derived bound and the hint are exactly the
+formulas above; a candidate whose process prints the summary and then sleeps
+in a non-daemon thread is `hung` within the grace, never `killed`, and the
+wrapper alone (3) makes the same candidate a survivor; a busy-loop candidate
+is `budget_exceeded` at the derived bound; `--rejudge` re-executes exactly
+the named ids and nothing else.
+
+## B092 — `--resume`'s per-tree identity (B088) is invalidated by a commit to a path the lane never judges, so a records-only commit can cost a full mutation re-run
+
+**Provenance:** RG-55 wave, controller ruling RW-41 (`run-gate-project/
+nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`, vbpub). Filed
+via P7 (`assay-liveness`) per the controller's own mid-session instruction,
+during the same wave B091 shipped in. Follows B088 (resume identity, the
+mechanism this backlog row is about) and is a direct, live incident of it —
+not a hypothetical.
+
+**Status:** OPEN.
+
+### The observation
+
+B088's `judge_sha256` folds in **the content of the judged commit's whole
+tree** — "every leaf of the commit being judged," deliberately not limited
+to the argv's own test paths, because a suite is also judged by its
+`conftest.py`, its fixtures and every non-mutated source file it imports
+(see `docs/CONSUMERS.md`'s "What a record has to match before its verdict
+is trusted"). That is the right behavior for a source or test change. It is
+the WRONG behavior for a commit that touches only paths the lane's own
+command never reads at all — a wave's own LOG/REPORT records under
+`nyxloom-trove/reports/`, a `.md` note, a docs-only edit outside the judged
+tree's real dependency closure.
+
+**Live incident (RW-41, 2026-09-12):** P2 (run-gate client package, wave
+RG-55) ran an r2 lane, judged ~174 candidates over ~4 hours, hit the lane's
+own 4 h budget, and relaunched with `--resume` expecting to pick up where it
+left off. The relaunch printed `resume: rejected_total=174, resumed_total=0`
+— every single record was rejected. The only commit between the two runs
+was `647a2cc6`, which added `run-gate-WAVE-RG55-P2-LOG.md` under the
+project's own `nyxloom-trove/reports/` — a wave bookkeeping file, never
+referenced by the judged lane's own `argv`, `env`, or import graph. That one
+records-only commit changed the judged tree's content (B088's identity
+folds in the WHOLE tree, not just the paths the command touches), so
+`judge_sha256` changed, so every one of the 174 records failed to match and
+`--resume` treated the run as starting from zero. The 4 hours of judging
+were not lost by design — B088 IS working as documented — but the
+DOCUMENTED behavior costs a full re-run for a commit that could not possibly
+have changed what the suite exercises.
+
+**A second instance the same session (also RW-41):** P1 (cgroup-profiler
+daemon package) hit the identical shape from a different cause —
+`5ce232d1` changed `assay.toml` itself (the lane's own budget declaration),
+which is *correctly* part of the identity (an unenforced budget bump would
+otherwise let a stale verdict under a looser bound pass silently), but
+illustrates that the identity has no way to distinguish "this tree change
+could affect the verdict" from "this tree change provably cannot."
+
+**Consumer-side mitigation applied this session, not a fix:** P2 detached
+the worktree at the ORIGINAL judged commit (`186461de`, before the
+records-only commit) to resume against the exact tree the 174 records were
+judged on, re-attaching to the branch after the verdict. This works only
+when the operator still has (or can reconstruct) the original tree and
+remembers to do it — it is a workaround for THIS incident, not a mechanism
+a routine consumer gate can rely on.
+
+### Why this is an assay concern, not a wave-process concern
+
+`--resume`'s whole value proposition (`docs/CONSUMERS.md`: "an R0/R1 lane
+that used to look hung for nine minutes is now legible," and the entire
+reason B012 shipped resumability for a long mutation sweep) is undermined
+if the *ordinary* act of recording progress about the run — a LOG entry, a
+checkpoint note, anything a long-running judged project's own convention
+asks for alongside its code — silently costs the exact thing `--resume`
+exists to avoid. A consumer cannot "just not commit anything" for the
+duration of a multi-hour mutation lane; that is the opposite of what a
+resumable, checkpointed wave process is for.
+
+### Proposed mechanism
+
+A new lane key, tentatively `judge.mutation.identity_exclude` (name not
+final): a list of path globs, relative to the judged tree's root, EXCLUDED
+from the tree-content half of `judge_sha256`'s computation — never from the
+mutation candidate scan itself, never from `argv`/`env`/`cwd`/`link_paths`,
+which stay folded in exactly as B088 already documents. Declaring it is an
+explicit, written-down claim the lane's own author makes ("these paths
+cannot affect this lane's judged suite"), not a default assay infers —
+matching this project's own `A-036`/`argv_declared` discipline of never
+guessing at consent on the consumer's behalf. A reasonable starting
+default-if-declared-empty stays today's behavior (whole tree, unchanged) —
+this is additive, opt-in, never a silent narrowing of what B088 already
+protects.
+
+### Oracles
+
+A lane declaring `identity_exclude = ["nyxloom-trove/**"]`: a commit that
+touches ONLY a path matching the glob leaves `judge_sha256` byte-identical,
+and `--resume` replays every prior record (`resumed_total` unchanged,
+`rejected_total = 0`) — proving the exclusion actually suppresses the
+tree-hash contribution, not merely that resume happens to still work. A
+commit that touches ANY path NOT matching the glob (even alongside one that
+does) changes `judge_sha256` and re-executes normally — proving the
+exclusion is precise, not a blanket "ignore all tree changes" escape hatch.
+A lane declaring no `identity_exclude` is byte-identical to today's B088
+behavior on both counts — regression coverage against every existing
+resume-identity test. A record produced by a pre-`identity_exclude` assay
+version (the key did not exist when it was written) is not silently
+misread: the key's absence in the historical `judge_sha256` computation and
+its presence now are different inputs to the same hash, so those records
+correctly fail to match and re-execute — the same "an assay upgrade
+re-executes" disposition B088 already documents for any classification
+change, not a new special case.
+
+### Severity
+
+**Medium.** Not data-loss (the workaround — resume against the original
+tree — recovers the situation without re-judging), not a correctness bug
+(B088's current behavior is conservatively correct, never silently wrong)
+but a real throughput/usability cost that scales with lane length: the
+longer and more expensive a mutation sweep is, the more a routine
+bookkeeping commit during it costs to work around, which is exactly
+backwards from what a checkpointed, resumable process should reward.
+
+## B093 — P7 S1: liveness write guard and side-file cleanup
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
+its plugin and candidate event/stdout/stderr files in the judged tree's
+`.assay/liveness/` without an ignore guard or cleanup. The estate ignores
+`.assay/`, but external consumers may not. Define a load-time refusal/WARN
+consistent with `--progress`, plus cleanup after `tests_completed` is read
+or at sweep completion. This needs a deliberate retention policy and is
+outside the B6 minimum repair.
+
+Oracle: construct both an ignored and an unignored destination, prove the
+appropriate diagnostic before writes, and prove cleanup preserves the
+candidate count readback and any explicitly retained diagnostic artifacts.
+Sync README, DESIGN-GUIDE and CONSUMERS with the selected policy.
+
+## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
+id correctly refuses with the right message, but reports
+`ERROR/UNREADABLE_ARTIFACT` (exit 2). `MutationStateError` is shared across
+the mutation-state refusal path; use a distinct exception or an explicit
+per-raise reason to classify invalid user input without relabeling real
+unreadable/corrupt state. Round-2 N5 reproduced the current behavior on
+the real CLI; no mapping change is included in 6.2.0's B6 repair.
+
+Oracle: unknown and stale-source ids refuse before record replay with the
+chosen input-refusal code; unreadable/corrupt stores retain artifact-error
+codes; valid ids still rejudge only their selected records. Sync all three
+user documents if the public reason vocabulary or compatibility changes.
+
+## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
+rescans event/proc data and retains an unbounded `cpu_samples` list, including
+for unbounded candidates. Trim history while retaining the sample needed
+at the trailing-window edge; assess incremental event parsing and proc
+sampling costs separately. This is a performance change in the loop just
+hardened by B1/B2/B6 and needs its own review and measurement.
+
+Oracle: a long virtual run retains bounded history while preserving exact
+CPU-window boundary classifications, partial-line tolerance, process-tree
+accounting and `/proc` failure behavior. Measure before/after cost against
+large events files; no timing threshold replaces those behavioral checks.
+
+## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** CLI help manually
+transcribes `MUTATION_BUCKETS`. Derive accepted bucket spellings from that
+source and retain the documented `error` alias for `crashed`. The earlier
+cleanup removed the unused import; reintroduce it only with its real use.
+
+Oracle: real CLI help names every accepted bucket and the alias, and a
+temporary vocabulary addition changes the help without a second edit.
+Keep README, DESIGN-GUIDE and CONSUMERS aligned with accepted spellings.
+
+## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
+
+**OPEN follow-up, explicitly deferred beyond this 6.2.0 repair by RW-57
+(2026-09-13 filing).** One events file receives every xdist worker's and
+controller's session records. B6-a now requires a full idle grace after any
+finish, preventing the reviewed kill of a progressing candidate. Remaining
+defects: duplicated `tests_completed` (review measured 8 records for 4
+tests) and baseline gaps computed from a merged timeline that can be
+tighter than any worker's worst gap.
+
+Stamp `os.getpid()` and available `PYTEST_XDIST_WORKER` identity in `_append`;
+recognize the candidate's own `session_finish`, count its test records, and
+compute baseline gaps per pid before taking the worst. Decide and document
+handling of older records without pid; the review proposes retaining their
+current interpretation. No stamping, per-pid parser or xdist WARN ships in
+this repair. CONSUMERS discloses the current limits (B6-c); evaluate any new
+WARN with the follow-up rather than silently adding policy here.
+
+Oracle: real `pytest -n 2` with four tests yields four completed tests,
+worker finish cannot stand in for controller finish, and interleaved fast
+workers cannot shrink a slow worker's calibrated gap. Preserve the B6-a
+progressing-tail regression, single-process and legacy-file behavior.
+Update README, DESIGN-GUIDE and CONSUMERS in the same change.
+
+## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
+
+**OPEN, deferred by RW-57 (2026-09-13 filing).** The docstring lists
+`budget_exceeded`, `hung`, `equivalent` and `discarded` as excluded but
+omits `crashed`. Scoring already uses only `killed + survived`; this is the
+remaining documentation omission after S7, with no arithmetic repair due.
+
+Oracle: enumerate every excluded bucket, including `crashed`, against
+`MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and
+empty-denominator behavior unchanged.

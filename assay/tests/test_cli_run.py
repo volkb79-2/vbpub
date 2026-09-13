@@ -371,7 +371,8 @@ operators = ["python:compare-swap"]
     assert killed["operator"] == "python:compare-swap"
     assert killed["start_byte"] < killed["end_byte"]
     assert len(killed["replacement_sha256"]) == 64
-    assert document["judgment"]["r2"] == {
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment == {
         # B046/schema v9: the REAL producer's own value through the CLI --
         # this lane runs assay's own mutation engine, so `native` is what a
         # genuine end-to-end run puts on the wire, beside the jobs/
@@ -392,7 +393,25 @@ operators = ["python:compare-swap"]
         # declaration. It is what makes the `base` this same document carries
         # checkable for an `R0,R2` lane at all.
         "mode": "changed_lines",
+        # (B091/D-23) This lane declares no `judge.mutation.
+        # budget_per_candidate` at all -- the OMITTED-means-"auto" default --
+        # so a real end-to-end run derives one from the real baseline this
+        # test just measured. The exact value is a real, non-deterministic
+        # wall-clock measurement (this process's own `/bin/sh -c` cost),
+        # checked structurally just below rather than pinned here.
+        "budget_per_candidate_derived_s": r2_judgment["budget_per_candidate_derived_s"],
+        # (B091/RW-36) This lane's own argv (`/bin/sh -c "grep ..."`) never
+        # literally invokes pytest, so liveness stays OFF by the same
+        # auto-policy rule that would refuse an explicit
+        # `judge.mutation.liveness = true` at load time -- a real, honest
+        # answer from a real end-to-end run, not a mocked one.
+        "liveness": {
+            "active": False,
+            "reason": "argv-does-not-invoke-pytest",
+            "plugin": None,
+        },
     }
+    assert r2_judgment["budget_per_candidate_derived_s"] > 0
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --
     # exactly the hole v4 had, since `judgment.r1` is absent here and there
     # was nowhere else for a language, source roots or a comparison commit
@@ -404,6 +423,298 @@ operators = ["python:compare-swap"]
     assert "r1" not in document["judgment"]
     # A-230a: no helper ran, so the key is absent rather than an empty array.
     assert "helpers" not in document
+
+
+def test_run_liveness_classifies_a_thread_join_hang_as_hung(git_repo: GitRepo):
+    """(P7/B091 A3 remainder, BRIEF-3/BRIEF-4's own named gap) The real
+    end-to-end proof through the installed CLI, not a hand-built claim: a
+    genuine ``python:compare-swap`` site (``x <= 0`` -- ``ast.LtE`` maps to
+    ``ast.Lt`` in the adapter's own closed catalogue) evaluated at ``x = 0``
+    flips baseline-``True``-branch to mutant-``False``-branch. The TRUE
+    branch (baseline only) sets a ``threading.Event`` a background thread's
+    blocking ``.wait()`` (started before the branch) is waiting on; the
+    test body then calls ``t.join()`` with NO timeout, BEFORE the test
+    returns -- so the mutant's own hang happens inside the test's `call`
+    phase, never reaching `pytest_sessionfinish`, and A2's `os._exit` cure
+    cannot mask it. The mutant thread never signals the event, so its own
+    `t.join()` blocks forever burning ~0 CPU -- `LivenessRunner._monitor`'s
+    idle+flat-CPU branch, proven through a REAL `assay run` subprocess, a
+    REAL `-m pytest` candidate process and a REAL `/proc`-tree CPU read,
+    never a fake clock/popen/cpu_reader. `budget_per_candidate` (50s) sits
+    comfortably above the ~31s `LivenessRunner` needs (the 30s CPU-growth
+    window plus the 15s idle floor, both already satisfied well before
+    then) to reach a `hung` verdict on its own, so a correct loop is never
+    waiting out the budget -- only a REGRESSED one would."""
+    (git_repo.path / "pkg").mkdir()
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return False\n")
+    git_repo.write(
+        "tests/test_mod.py",
+        "import threading\n\n"
+        "from pkg.mod import guard\n\n\n"
+        "def test_guard_unblocks_the_waiter():\n"
+        "    event = threading.Event()\n\n"
+        "    def waiter():\n"
+        "        event.wait()\n\n"
+        "    t = threading.Thread(target=waiter)\n"
+        "    t.start()\n"
+        "    if guard(0):\n"
+        "        event.set()\n"
+        "    t.join()\n"
+        "    assert not t.is_alive()\n",
+    )
+    base_rev = git_repo.commit_all("add pkg + tests")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return x <= 0\n")
+    git_repo.commit_all("introduce the compare-swap site")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["{sys.executable}", "-m", "pytest", "tests", "-q"]
+env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 5
+operators = ["python:compare-swap"]
+budget_per_candidate = "50s"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    # errors.EXIT_CODES[Outcome.BUDGET_EXCEEDED] == 4.
+    assert code == 4, err
+    document = json.loads(out)
+    assert document["outcome"] == "BUDGET_EXCEEDED"
+    assert document["reason_code"] == "CANDIDATE_HUNG"
+    assert document["exit_code"] == 4
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
+    assert document["claims"][0]["status"] == "PASS"
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "BUDGET_EXCEEDED"
+    assert r2_claim["reason_code"] == "CANDIDATE_HUNG"
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["killed"] == []
+    assert mutation["budget_exceeded"] == []
+    assert mutation["equivalent"] == []
+    assert len(mutation["hung"]) == 1
+    hung = mutation["hung"][0]
+    assert set(hung) == {
+        "path",
+        "lineno",
+        "start_byte",
+        "end_byte",
+        "replacement_sha256",
+        "operator",
+        "description",
+    }
+    assert hung["operator"] == "python:compare-swap"
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment["liveness"] == {
+        "active": True,
+        "reason": "auto-pytest-argv",
+        "plugin": r2_judgment["liveness"]["plugin"],
+    }
+    assert r2_judgment["liveness"]["plugin"] is not None
+
+
+def test_run_liveness_classifies_a_busy_loop_as_budget_exceeded_not_hung(
+    git_repo: GitRepo,
+):
+    """(P7/B091 A3 remainder, BRIEF-3/BRIEF-4's own named gap) RW-33's own
+    explicit distinguishing case, end to end: the SAME compare-swap site
+    and input (``x <= 0`` at ``x = 0``) as the hang test just above, but
+    the mutant-only FALSE branch spins a genuine CPU-bound loop instead of
+    blocking -- proving `tree_cpu_seconds` reads real growth from a REAL
+    spinning child and keeps the candidate OFF the `hung` bucket, landing
+    on the ordinary elapsed-budget path instead: `budget_exceeded`, never
+    `hung`. `budget_per_candidate` (35s) is set PAST `LivenessRunner`'s own
+    30s CPU-growth window on purpose -- this genuinely exercises "still
+    growing after the window was checked", not merely "the budget ran out
+    before the window was ever reached" (an 8s budget would prove nothing
+    about the CPU-growth branch at all, since `hung` cannot fire in under
+    30s regardless of what the candidate is doing)."""
+    (git_repo.path / "pkg").mkdir()
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return False\n")
+    git_repo.write(
+        "tests/test_mod.py",
+        "from pkg.mod import guard\n\n\n"
+        "def test_guard_terminates():\n"
+        "    if guard(0):\n"
+        "        result = True\n"
+        "    else:\n"
+        "        total = 0\n"
+        "        while True:\n"
+        "            total += 1\n"
+        "    assert result\n",
+    )
+    base_rev = git_repo.commit_all("add pkg + tests")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return x <= 0\n")
+    git_repo.commit_all("introduce the compare-swap site")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["{sys.executable}", "-m", "pytest", "tests", "-q"]
+env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 5
+operators = ["python:compare-swap"]
+budget_per_candidate = "35s"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 4, err
+    document = json.loads(out)
+    assert document["outcome"] == "BUDGET_EXCEEDED"
+    assert document["reason_code"] == "LANE_TIMEOUT"
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
+    assert document["claims"][0]["status"] == "PASS"
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "BUDGET_EXCEEDED"
+    assert r2_claim["reason_code"] == "LANE_TIMEOUT"
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["killed"] == []
+    assert mutation["hung"] == []
+    assert mutation["equivalent"] == []
+    assert len(mutation["budget_exceeded"]) == 1
+    exceeded = mutation["budget_exceeded"][0]
+    assert exceeded["operator"] == "python:compare-swap"
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment["liveness"]["active"] is True
+    assert r2_judgment["liveness"]["reason"] == "auto-pytest-argv"
+
+
+def test_run_liveness_does_not_turn_a_configure_time_raise_into_a_false_survivor(
+    git_repo: GitRepo,
+):
+    """(P7 round-1 B1) The reviewer's own reproduction, end to end through
+    the real CLI. `tests/conftest.py` bootstraps at CONFIGURE time from the
+    mutated product code itself (`guard(0)`): `True` at baseline (the
+    committed `x <= 0`), `False` under the `python:compare-swap` mutant
+    (`x <= 0` -> `x < 0`, `ast.LtE` -> `ast.Lt`) -- so the mutant's own
+    `pytest_configure` hook raises `RuntimeError` before a single test runs,
+    and `pytest_sessionfinish` never fires. Before the fix, the plugin's
+    unconditional `os._exit(0)` from `pytest_unconfigure` (which DOES still
+    run on this path -- `Config._ensure_unconfigure()`) turned that genuine
+    crash into exit 0 -- a false PASS, and through
+    `mutation._classify_mutant_result`, a false `survived`. The suite DID
+    catch the mutant; only the plugin's old default erased the evidence.
+    After the fix, pytest's own exit code (3, INTERNAL_ERROR) stands, is an
+    ordinary non-zero exit, and is reported `killed`, never `survived`.
+    """
+    (git_repo.path / "pkg").mkdir()
+    git_repo.write("pkg/__init__.py", "")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return False\n")
+    git_repo.write(
+        "tests/conftest.py",
+        "from pkg.mod import guard\n\n\n"
+        "def pytest_configure(config):\n"
+        "    if not guard(0):\n"
+        "        raise RuntimeError('configure-time bootstrap broken')\n",
+    )
+    git_repo.write(
+        "tests/test_mod.py",
+        "def test_trivially_true():\n    assert True\n",
+    )
+    base_rev = git_repo.commit_all("add pkg + tests + configure-time bootstrap")
+    git_repo.write("pkg/mod.py", "def guard(x):\n    return x <= 0\n")
+    git_repo.commit_all("introduce the compare-swap site")
+    lane = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["{sys.executable}", "-m", "pytest", "tests", "-q"]
+env = {{ PYTHONDONTWRITEBYTECODE = "1" }}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["pkg"]
+base = "{base_rev}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 5
+operators = ["python:compare-swap"]
+budget_per_candidate = "50s"
+"""
+    path = git_repo.write("assay.toml", lane)
+    git_repo.commit_all("add assay.toml")
+
+    code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
+
+    assert code == 0, err
+    document = json.loads(out)
+    assert document["outcome"] == "PASS"
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R2"]
+    assert document["claims"][0]["status"] == "PASS"
+    r2_claim = document["claims"][1]
+    assert r2_claim["status"] == "PASS"
+    mutation = r2_claim["mutation"]
+    assert mutation["candidate_count"] == 1
+    assert mutation["total"] == 1
+    assert len(mutation["killed"]) == 1
+    assert mutation["survived"] == []
+    assert mutation["crashed"] == []
+    assert mutation["hung"] == []
+    assert mutation["budget_exceeded"] == []
+    assert mutation["equivalent"] == []
+    r2_judgment = document["judgment"]["r2"]
+    assert r2_judgment["liveness"]["active"] is True
+    assert r2_judgment["liveness"]["reason"] == "auto-pytest-argv"
 
 
 def _r2_lane_with_two_candidates(git_repo: GitRepo) -> str:

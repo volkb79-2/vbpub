@@ -71,6 +71,7 @@ from .errors import LaneConfigError
 # imports only `assay.errors` and `assay.vocabulary`, both leaves, so this
 # does not open the `config -> mutation -> config` cycle that would exist if
 # the registry lived in `assay.mutation`.
+from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
@@ -355,6 +356,18 @@ _DURATION_HINT = "expected a duration such as '90s', '5m' or '1h30m'"
 #: RG-36) to compute staleness. assay gains no stall threshold of its own.
 UNBOUNDED_BUDGET = "unbounded"
 
+#: (B091/D-23) `judge.mutation.budget_per_candidate`'s two closed
+#: non-duration spellings. "auto" derives D-17's layer-3 ceiling --
+#: ``max(3 x measured baseline, baseline + 60s)`` (:func:`assay.mutation.
+#: auto_budget_per_candidate_seconds`), computed once the baseline has
+#: actually run, never guessed ahead of a measurement -- and is also what an
+#: OMITTED key now means (B090: an r2 lane that declared none of this ran a
+#: hung candidate for 37 minutes with nobody enforcing anything). "none"
+#: keeps today's genuinely-unbounded candidate, as an explicit opt-out
+#: rather than a silent omission, and gets a WARN at run time.
+MUTATION_BUDGET_PER_CANDIDATE_AUTO = "auto"
+MUTATION_BUDGET_PER_CANDIDATE_NONE = "none"
+
 
 def parse_duration(text: str) -> float:
     """Parse a duration string to seconds (A-052 — at LOAD, not at run time).
@@ -414,6 +427,11 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "budget_per_candidate",
     "shard_index",
     "shard_count",
+    # (B091/RW-36) native-only, like the three above -- refused on an
+    # ingested lane by `_load_ingested_mutation`'s own `orchestration_only`
+    # set, on `budget_per_candidate`'s own footing (assay orchestrates no
+    # execution at all for that producer).
+    "liveness",
 )
 
 #: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
@@ -508,10 +526,30 @@ class MutationConfig:
     #: (DESIGN-GUIDE §5). Native R2 has no such field and needs none: it
     #: fails on any survivor at all.
     fail_under: float | None = None
-    #: (B012) Optional per-candidate wall-clock bound. ``None`` preserves the
-    #: existing lane-wide-only behavior; a declared value bounds each mutant's
-    #: command independently without changing the lane deadline.
+    #: (B012, reshaped B091/D-23) Per-candidate wall-clock bound, as the
+    #: consumer declared it -- ``None`` when the key is OMITTED, which is no
+    #: longer "no bound": it now means the same as declaring
+    #: :data:`MUTATION_BUDGET_PER_CANDIDATE_AUTO` explicitly, and callers
+    #: that need the resolved number derive it from the measured baseline
+    #: (:func:`assay.mutation.auto_budget_per_candidate_seconds`) -- this
+    #: field alone can never carry it, since it is unknown until a baseline
+    #: has actually run. :data:`MUTATION_BUDGET_PER_CANDIDATE_NONE` is the
+    #: explicit, written-down opt-out (genuinely unbounded, WARNed at run
+    #: time); any other string is a duration and bounds that one mutant's
+    #: command independently, without changing the lane deadline.
     budget_per_candidate: str | None = None
+    #: (B091/RW-36) ``judge.mutation.liveness``'s resolved, normalized
+    #: spelling -- one of :data:`~assay.liveness.LIVENESS_AUTO`,
+    #: :data:`~assay.liveness.LIVENESS_TRUE`,
+    #: :data:`~assay.liveness.LIVENESS_FALSE`, or ``None`` when the key was
+    #: OMITTED (which behaves identically to the explicit ``"auto"`` spelling
+    #: at run time -- the same "omission is a real, meaningful default"
+    #: idiom :attr:`budget_per_candidate` already established for B091). A
+    #: TOML ``true``/``false`` is normalized to the matching string here, so
+    #: exactly one representation of this tri-state ever exists past the
+    #: loader boundary -- `assay.liveness.inject_liveness_plugin` and this
+    #: field's own :meth:`as_declared` echo both read the string form only.
+    liveness: str | None = None
     #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
     #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
     #: value here is only ever possible on a ``judge.language = "sql"`` lane.
@@ -578,6 +616,8 @@ class MutationConfig:
             payload["equivalence_artifact"] = self.equivalence_artifact
         if self.budget_per_candidate is not None:
             payload["budget_per_candidate"] = self.budget_per_candidate
+        if self.liveness is not None:
+            payload["liveness"] = self.liveness
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count
@@ -1528,7 +1568,7 @@ def _load_lane(
         table["allow_argv_append"], where, "allow_argv_append"
     )
 
-    judge = _load_judge(table.get("judge"), rigor, where, project_root)
+    judge = _load_judge(table.get("judge"), rigor, where, project_root, tuple(argv))
 
     if budget_seconds is None:
         _refuse_unbounded_without_unit_bounds(rigor, judge, where)
@@ -1880,6 +1920,15 @@ def _refuse_unbounded_without_unit_bounds(
     the lane's work carries its own bound. Refuse at LOAD otherwise, naming
     the unit that has none.
 
+    **(B091/D-23) An omitted ``judge.mutation.budget_per_candidate`` is no
+    longer such a unit with no bound.** It now means ``"auto"`` -- see
+    :data:`MUTATION_BUDGET_PER_CANDIDATE_AUTO` -- so a native R2 lane
+    declaring ``budget = "unbounded"`` and simply not mentioning
+    ``budget_per_candidate`` at all now LOADS, where it used to be refused;
+    only the explicit ``"none"`` opt-out still trips this function, because
+    that is the one spelling that actually asks for an unbounded mutant
+    command.
+
     **The predicate is about the lane's own TOP-LEVEL COMMAND, and is
     orthogonal to which other tiers are declared** (round-1 blocker B1).
     Every lane runs its own ``argv`` once, and ``budget`` is the only thing
@@ -1963,16 +2012,27 @@ def _refuse_unbounded_without_unit_bounds(
             f"(rigor declared here: {list(rigor)})"
         )
     missing: list[str] = []
+    # (B091/D-23) An OMITTED `budget_per_candidate` no longer leaves a
+    # candidate unbounded -- it now means "auto" (see
+    # `MUTATION_BUDGET_PER_CANDIDATE_AUTO`'s own docstring), so it no longer
+    # violates this function's own invariant ("every unit of the lane's work
+    # carries its own bound") and is no longer refused here. Only the
+    # EXPLICIT `"none"` opt-out still does: it is the one spelling that asks
+    # for a genuinely unbounded mutant command on a lane that just declared
+    # every unit of its work must be bounded.
     if (
         r2
         and not ingested_r2
         and (
             judge is None
             or judge.mutation is None
-            or judge.mutation.budget_per_candidate is None
+            or judge.mutation.budget_per_candidate == MUTATION_BUDGET_PER_CANDIDATE_NONE
         )
     ):
-        missing.append("judge.mutation.budget_per_candidate (one mutant command)")
+        missing.append(
+            "judge.mutation.budget_per_candidate (declared 'none': every "
+            "mutant command would be unbounded)"
+        )
     if r3 and (
         judge is None
         or judge.canary is None
@@ -1998,7 +2058,17 @@ def _required_judge_fields(rigor: Iterable[str]) -> tuple[str, ...]:
 
 
 def _load_judge(
-    table: Any, rigor: Iterable[str], where: str, project_root: Path
+    table: Any,
+    rigor: Iterable[str],
+    where: str,
+    project_root: Path,
+    #: (B091/RW-36) the lane's OWN declared argv, threaded through only so
+    #: `_load_mutation` can refuse `judge.mutation.liveness = true` at LOAD
+    #: time when it names a lane whose argv does not literally invoke
+    #: pytest -- the same `argv_invokes_pytest` predicate the runtime
+    #: injection path uses, so the load-time refusal and the runtime
+    #: behaviour can never disagree about which lanes qualify.
+    argv: tuple[str, ...],
 ) -> JudgeConfig | None:
     rigor = tuple(rigor)
     required = list(_required_judge_fields(rigor))
@@ -2330,7 +2400,7 @@ def _load_judge(
 
     mutation = None
     if "mutation" in table:
-        mutation = _load_mutation(table["mutation"], where, language, project_root)
+        mutation = _load_mutation(table["mutation"], where, language, project_root, argv)
     canary = None
     if "canary" in table:
         canary = _load_canary(table["canary"], where, project_root, source_root_paths)
@@ -2712,7 +2782,12 @@ def _load_coverage_producer(
 
 
 def _load_mutation(
-    value: Any, where: str, language: str | None, project_root: Path
+    value: Any,
+    where: str,
+    language: str | None,
+    project_root: Path,
+    #: (B091/RW-36) see `_load_judge`'s own parameter docstring.
+    argv: tuple[str, ...] = (),
 ) -> MutationConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
@@ -2905,12 +2980,71 @@ def _load_mutation(
                 f"{where}: 'judge.mutation.budget_per_candidate' must be a "
                 f"non-empty string, got {_type_name(budget_per_candidate)}"
             )
-        try:
-            parse_duration(budget_per_candidate)
-        except ValueError as exc:
-            raise LaneConfigError(
-                f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
-            ) from exc
+        # (B091/D-23) The two closed non-duration spellings, checked BEFORE
+        # `parse_duration` so neither is refused as a malformed duration.
+        # "auto" is also what an OMITTED key now means at run time
+        # (`MutationConfig.budget_per_candidate` stays `None` for that case
+        # -- see the field's own docstring); a lane may still spell it
+        # explicitly. "none" is the opt-out this loader used to have no way
+        # to express: before B091 the only way to run a candidate genuinely
+        # unbounded was to omit the key, which is also the exact shape B090
+        # measured hanging a whole lane for 37 minutes. Omission now means
+        # bounded (auto); "none" means the author asked for unbounded, in
+        # writing, so `run_mutation` can WARN about it instead of it being
+        # silent.
+        if budget_per_candidate not in (
+            MUTATION_BUDGET_PER_CANDIDATE_AUTO,
+            MUTATION_BUDGET_PER_CANDIDATE_NONE,
+        ):
+            try:
+                parse_duration(budget_per_candidate)
+            except ValueError as exc:
+                raise LaneConfigError(
+                    f"{where}: 'judge.mutation.budget_per_candidate' {exc}"
+                ) from exc
+    liveness_raw = value.get("liveness")
+    liveness: str | None
+    if liveness_raw is None:
+        liveness = None
+    elif liveness_raw is True:
+        liveness = LIVENESS_TRUE
+    elif liveness_raw is False:
+        liveness = LIVENESS_FALSE
+    elif liveness_raw == LIVENESS_AUTO:
+        liveness = LIVENESS_AUTO
+    else:
+        raise LaneConfigError(
+            # (Round-1 S4) The accepted TOML spellings, not the internal
+            # normalized vocabulary: `liveness = "true"` and
+            # `liveness = "false"` (QUOTED) are both refused, so echoing
+            # `LIVENESS_POLICIES` here advertised two spellings this very
+            # refusal rejects.
+            f"{where}: 'judge.mutation.liveness' must be the bare boolean "
+            f"true or false, or the string {LIVENESS_AUTO!r}, got "
+            f"{liveness_raw!r} (a QUOTED \"true\"/\"false\" is not accepted)"
+        )
+    # (B091/RW-36) The load-time half of the refusal RW-36 asks for: `true`
+    # forced on a lane whose own argv does not literally invoke pytest, or
+    # that is not even a python lane, can never actually turn liveness on
+    # (`assay.liveness.inject_liveness_plugin` would refuse it the same way
+    # the omitted/'auto' case already does) -- refusing it HERE, in writing,
+    # at load time, is a clearer diagnostic than a silent runtime WARN a
+    # human editing assay.toml would have to go looking for.
+    if liveness == LIVENESS_TRUE and not (
+        language == "python" and argv_invokes_pytest(argv)
+    ):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.liveness = true' requires "
+            f"judge.language = 'python' and a lane argv that literally "
+            f"invokes pytest (a token 'pytest', a path ending '/pytest', or "
+            f"the adjacent pair '-m pytest') -- liveness's os._exit wrapper "
+            f"and hung detection exist only for that runner (D-23/RW-33); "
+            f"this lane declares judge.language = {language!r} and argv "
+            f"{list(argv)!r}. Declare 'auto' (the default) to let assay "
+            f"decide per-lane without refusing the load, or 'false' to run "
+            f"with the declared/derived budget_per_candidate as the only "
+            f"bound"
+        )
     shard_index = value.get("shard_index")
     shard_count = value.get("shard_count")
     shard_specified = "shard_index" in value or "shard_count" in value
@@ -2945,6 +3079,7 @@ def _load_mutation(
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
         budget_per_candidate=budget_per_candidate,
+        liveness=liveness,
         shard_index=shard_index,
         shard_count=shard_count,
     )
@@ -2994,7 +3129,8 @@ def _load_ingested_mutation(
             f"mutation.*[].operator"
         )
     orchestration_only = sorted(
-        set(value) & {"budget_per_candidate", "shard_index", "shard_count"}
+        set(value)
+        & {"budget_per_candidate", "shard_index", "shard_count", "liveness"}
     )
     if orchestration_only:
         raise LaneConfigError(

@@ -66,6 +66,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -633,6 +634,13 @@ def _expected_r2_artifact(
     operators: list[str] | None = None,
     r0_claim: dict | None = None,
     base_rev: str | None = None,
+    #: (B091/RW-36) `judgment.r2.liveness` -- every real-wheel test in this
+    #: module runs a plain shell script, never pytest, so the default is the
+    #: injection rule's own "off" shape (`liveness.py`'s
+    #: ``argv-does-not-invoke-pytest``); a future pytest-lane test overrides.
+    liveness_active: bool = False,
+    liveness_reason: str | None = "argv-does-not-invoke-pytest",
+    liveness_plugin: str | None = None,
 ) -> dict:
     """The COMPLETE expected document, written out in full so a field the
     producer adds, drops, or fills in wrongly fails even though no assertion
@@ -712,6 +720,20 @@ def _expected_r2_artifact(
                 # few places that pins the producer against a REAL run rather
                 # than a hand-built model object.
                 "producer": "native",
+                # (B091/RW-36) present unconditionally -- "a reader sees
+                # what ran" even on the lanes this module runs, none of
+                # which invoke pytest.
+                "liveness": {
+                    "active": liveness_active,
+                    "reason": liveness_reason,
+                    "plugin": liveness_plugin,
+                },
+                # `budget_per_candidate_derived_s` deliberately absent here:
+                # (B091/A1) it is measured from THIS run's own real baseline
+                # wall-clock time, same class as `assay_version` -- no
+                # fixture can hand-inject it. `_assert_complete` strips it
+                # from the real document after sanity-checking it, the same
+                # way it strips the top-level volatile fields.
             },
         }
     return document
@@ -735,7 +757,27 @@ def _assert_complete(real: dict, expected: dict) -> None:
         "result_stdout_dropped_bytes",
         "result_stderr_dropped_bytes",
     }
-    assert {k: v for k, v in real.items() if k not in volatile} == expected
+    filtered = {k: v for k, v in real.items() if k not in volatile}
+    # (B091/A1) `judgment.r2.budget_per_candidate_derived_s` is the SAME
+    # class of value as the top-level `volatile` set -- measured from this
+    # run's own real baseline wall-clock time, so no fixture can hand-inject
+    # it -- just nested under `judgment` instead of top-level. Sanity-checked
+    # here (same bound `JudgmentR2` itself enforces: positive, finite) and
+    # then stripped from a COPY before the exact-match assertion; `real`
+    # itself, and the shared `judgment`/`r2` dict objects inside it, are
+    # never mutated.
+    judgment = filtered.get("judgment")
+    r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+    if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
+        derived = r2["budget_per_candidate_derived_s"]
+        assert isinstance(derived, (int, float)) and not isinstance(derived, bool)
+        assert derived > 0 and math.isfinite(derived)
+        filtered = dict(filtered)
+        filtered["judgment"] = dict(judgment)
+        filtered["judgment"]["r2"] = {
+            k: v for k, v in r2.items() if k != "budget_per_candidate_derived_s"
+        }
+    assert filtered == expected
 
 
 def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wheel(
@@ -801,6 +843,9 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
                     # wheel. A Python run proves nothing inert, which is a
                     # different fact from the bucket being absent.
                     "equivalent": [],
+                    # (B091/A3) the new bucket, scored like `budget_exceeded`
+                    # -- present and empty, since nothing hung here.
+                    "hung": [],
                 },
             },
         ),
@@ -911,6 +956,9 @@ def test_a_real_r2_lane_with_no_declared_operator_site_is_inconclusive(
                     "crashed": [],
                     "budget_exceeded": [],
                     "equivalent": [],
+                    # (B091/A3) empty: no candidates ever ran, so nothing
+                    # could hang.
+                    "hung": [],
                 },
             },
         ),
@@ -1025,6 +1073,11 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
                     "crashed": [],
                     "budget_exceeded": [_gt_site(2)],
                     "equivalent": [],
+                    # (B091/A3) present and empty: line 2's mutant is stopped
+                    # by the lane's own budget (`budget_exceeded`), never
+                    # conflated with `hung` -- a CPU-spinning mutant is not
+                    # hung, per RW-33.
+                    "hung": [],
                 },
             },
         ),

@@ -1196,3 +1196,124 @@ def test_run_lane_writes_a_verdict_for_a_backwards_block_instead_of_crashing(
     # Payload-free: the artifact could not be read, so there is no coverage
     # claim to render (P16's iff-invariant), and certainly no percentage.
     assert verdict.claims[1].coverage is None
+
+
+# --- B091/D-23, P7 A5: --rejudge/--rejudge-outcome parsing/refusal, at the ---
+# SAME point --shard's own malformed-string refusal fires: before any git
+# work, before the R0/higher-rigor dispatch, so even a trivial R0-only lane
+# hits it -- no real command execution needed to prove any of these.
+
+
+def test_run_lane_refuses_a_malformed_rejudge_with_no_ids(git_repo: GitRepo):
+    lane = make_lane(rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(MOMENT_A, MOMENT_B)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=clock,
+        resume=True,
+        rejudge=" , ,",  # every entry blank after stripping.
+    )
+
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[0].reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "--rejudge" in (verdict.claims[0].detail or "")
+    assert "names no candidate id" in (verdict.claims[0].detail or "")
+
+
+def test_run_lane_refuses_a_rejudge_outcome_with_no_buckets(git_repo: GitRepo):
+    lane = make_lane(rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(MOMENT_A, MOMENT_B)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=clock,
+        resume=True,
+        rejudge_outcome=" , ,",  # every entry blank after stripping.
+    )
+
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[0].reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "names no outcome bucket" in (verdict.claims[0].detail or "")
+
+
+def test_run_lane_refuses_an_unknown_rejudge_outcome_bucket(git_repo: GitRepo):
+    lane = make_lane(rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(MOMENT_A, MOMENT_B)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=clock,
+        resume=True,
+        rejudge_outcome="hung,bogus-bucket",
+    )
+
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[0].reason_code is ReasonCode.BAD_LANE_CONFIG
+    detail = verdict.claims[0].detail or ""
+    # `hung` IS a known bucket -- only `bogus-bucket` is named as unknown.
+    assert "unknown bucket(s) ['bogus-bucket']" in detail
+
+
+def test_run_lane_refuses_rejudge_without_resume(git_repo: GitRepo):
+    lane = make_lane(rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(MOMENT_A, MOMENT_B)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=clock,
+        resume=False,
+        rejudge="a" * 64,
+    )
+
+    assert verdict.claims[0].status is Outcome.ERROR
+    assert verdict.claims[0].reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "require --resume" in (verdict.claims[0].detail or "")
+
+
+def test_run_lane_rejudge_outcome_error_alias_for_crashed_is_accepted(
+    git_repo: GitRepo,
+):
+    """`"error"` is a documented alias for the real bucket name `"crashed"`
+    -- an R0-only lane with `resume=True, rejudge_outcome="error"` must run
+    normally (no refusal at all), proving the alias resolved to a KNOWN
+    bucket rather than tripping the "unknown bucket" refusal the previous
+    test pins for a genuinely bogus name.
+    """
+    lane = make_lane(rigor=("R0",), judge=None, argv=("/bin/sh", "-c", "exit 0"))
+    clock = fixed_clock(MOMENT_A, MOMENT_B)
+
+    verdict = runner.run_lane(
+        lane,
+        commit="d" * 40,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=None,
+        assay_version="0.1.0",
+        clock=clock,
+        resume=True,
+        rejudge_outcome="error",
+    )
+
+    assert verdict.claims[0].status is Outcome.PASS
+    assert verdict.claims[0].reason_code is None
