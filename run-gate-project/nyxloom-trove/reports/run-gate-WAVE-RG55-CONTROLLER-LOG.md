@@ -1238,3 +1238,13 @@ The controller found an unrelated orphaned non-mutation pytest process
 missing partner). It was not part of any live RG-55 lane. The controller
 terminated that exact process with SIGTERM and verified it was gone; no
 files or worktrees were changed.
+
+### RW-87 — 2026-09-13 18:52:05Z — checkpoint P6 successor and narrow the task
+
+The first fresh P6 Luna successor did not produce a shell/test result or
+commit after repeated wake/checkpoint messages, so it was TaskStopped before
+any mutation or source change. A second fresh Luna xhigh successor was
+dispatched from BRIEF-10 with a narrowed, bounded task: test whether adding
+pytest fail-fast (`-x`) to the assay mutation argv is the minimal honest fix
+for the five deterministic timeout mutants, commit only an evidence-backed
+config/record change, and wait for controller approval before any new R2.
