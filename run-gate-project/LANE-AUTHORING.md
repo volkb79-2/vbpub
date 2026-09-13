@@ -254,6 +254,21 @@ with sqlfluff in a command lane if the project wants it.
   `budget_per_candidate` is the whole bounding story for R2 (RW-6).
 - One gate container at a time across every agent on the host; cap it
   (`docker update --cpus=3`) right after launch while the host is shared.
+- Declare `resources.cpus` (RG-48) on any container lane whose argv spawns
+  workers by NAME (`-n auto`, `--workers auto`) — otherwise the worker
+  count is decided by the CONTAINER's visible CPU count (which nothing
+  capped) while the actual budget is decided by whatever else is running
+  on the shared host; `doctor` names the gap when it sees one.
+- **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
+  Once a lane has a handful of profiled runs, `./run-gate.py footprint
+  --write` distills a COMMITTED peak-memory/CPU/stall number for it —
+  size `resources.memory`/`resources.cpus` off THAT (with headroom for the
+  outlier `max`, not just the `median`), not off a number picked in a
+  meeting. Re-run `footprint --write` when a lane's shape changes
+  materially (more tests, a bigger fixture); `doctor` warns when the
+  committed number has drifted from the live history or gone stale
+  (`[footprint] tolerance_pct`/`max_age_days`), so a budget that quietly
+  stopped matching reality does not stay silent.
 
 **Anti-patterns, seen in the estate.**
 

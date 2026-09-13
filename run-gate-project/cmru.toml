@@ -73,6 +73,19 @@ artifact_dirs = ["dist"]
 # execute with project_root as cwd, so the sibling script resolves directly.
 # First standalone bootstrap before cmru is installed anywhere fresh:
 # python3 run-gate.py selftest works with zero installs (stdlib-only).
+#
+# RG-55 wave, package P2, C2 (2026-09-12): run-gate.toml grew `assay-r1`/
+# `assay-r2`/`assay-r3`/`gate-full` (assay-based judgment, stricter and
+# wider-scoped than selftest's vendored diff-coverage check — see
+# run-gate.toml's own header). The release gate STAYS `selftest` alone,
+# deliberately: `assay-r2` (mutation) can run up to 4h, which is not a bound
+# a release step should impose on every tag; `gate-full` omits r2 for the
+# exact same reason, so making `gate-full` the release gate would not even
+# buy full assay coverage, only a slower `selftest`. `assay-r1`/`assay-r3`
+# are run by hand (or by CI outside the release path) before merge; `r2` is
+# invoked separately again before merge. When a bounded, release-safe
+# assay conjunction is wanted here, it is a deliberate follow-up, not a
+# silent swap of this pointer.
 [steps.run-tests]
 quiet = true
 commands = [

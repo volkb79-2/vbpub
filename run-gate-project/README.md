@@ -31,18 +31,63 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    reachable). nyxloom's dev gate migrated OFF its hardcoded
    `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
-   overrides), `clean_tree` (default TRUE — refusals are the doctrine;
-   nyxloom adopts `false` explicitly until NL-1), `assay_command` REQUIRED
-   and explicit (the tool never invents an assay invocation), `budget`
-   advisory-only, `stall_timeout` (rev 34, RG-36/`R-40c`: same `\d+[smh]`
-   grammar as `budget` and read beside it, but it bounds SILENCE in the
-   lane's `.assay/progress-<assay_lane>.jsonl` — the lane is stopped only
-   while its container is still RUNNING and the file has not advanced for
-   that long, never on total elapsed time. assay lanes only; refused on a
-   `kind = "command"` lane, which writes no progress file and could never
-   stall by this rule. The documented shape for a mutation lane is a
-   generous assay `budget` + `judge.mutation.budget_per_candidate` +
-   this key).
+   overrides; superseded by `resources.memory`), `resources` (`R-29`: a
+   table — `memory`, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
+   `docker run --cpus`, with an environment-level fallback
+   `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
+   refusals are the doctrine; nyxloom adopts `false` explicitly until
+   NL-1), `assay_command` REQUIRED and explicit (the tool never invents an
+   assay invocation), `budget` advisory-only, `stall_timeout` (rev 34,
+   RG-36/`R-40c`: same `\d+[smh]` grammar as `budget` and read beside it,
+   but it bounds SILENCE in the lane's liveness signal — an assay lane's
+   progress file, or (RG-41, rev 36) a command lane's own log-stream
+   arrival times, `SPEC` `R-40f` — never total elapsed time. Legal on both
+   `assay` and `command` lanes since RG-41; meaningless, but accepted, on
+   host/exec lanes, which start nothing to watch. The documented shape for
+   a mutation lane is a generous assay `budget` +
+   `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
+   `false` to opt a lane out of profiling entirely, or a table
+   `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
+   `R-43h`).
+
+## Gate and evidence
+
+This project's own `run-gate.toml` declares five lanes (dogfooding — see
+"Built deltas" above):
+
+1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
+   points at it; a release cannot be tagged unless it passes). Zero
+   install: `python3 -m pytest tests -q --cov=. --cov-branch` followed by
+   the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
+   alone — a diff-coverage floor at 100% on every executable line changed
+   since `main`, not a total-coverage floor (still ~47% total; that
+   campaign is Phase 2).
+2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
+   judge: assay (pinned `tools/assay/assay-6.1.1.pyz`) running the same
+   test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
+   — the whole project, not just `run-gate.py`. `tools/coverage_gate.py`
+   itself is IN SCOPE here (a controller ruling, RW-8: "100% on every
+   changed line" means every changed line in this project, and the
+   coverage command already measures it with `--cov=.`); `tests/` stays
+   excluded, as it is on every assay lane. The comparison base is
+   delegated to the invoking gate request (`judge.base_source =
+   "request"`), never hardcoded.
+3. **`assay-r2`** — mutation testing (R2) over the same scope, bare-host
+   and serial (`jobs = 1`, HOST LOAD §6), budget 4h with a 20-minute
+   `stall_timeout` on silence in its progress file. Run separately,
+   pre-merge — never a member of `gate-full` (below), so a routine "does
+   this gate clean" check never has to pay for a lane that can take
+   hours.
+4. **`assay-r3`** — the canary: `tools/canary-run.sh` breaks one
+   provably-covered invariant (today: `duration_stats`'s median, flipped
+   to a mean) in a disposable copy and asserts the exact test that
+   encodes it goes red. Proves the suite is a real oracle, not a green
+   checkmark that would pass on broken code too.
+5. **`gate-full`** — the conjunction: `selftest` + `assay-r1` + `assay-r3`
+   (r2 excluded for the reason above). Still not the release gate
+   (`cmru.toml`'s own comment says why): `selftest` alone remains it,
+   deliberately, for now.
 
 ## Intent — what problem this solves
 
@@ -219,6 +264,17 @@ the tool's reason to exist and MUST be implemented + tested:
   names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
   (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
+- **Lane cost is PROFILED too, when a cgroup-profiler daemon is reachable
+  (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
+  memory-full stall join `history`'s own duration series (schema 2, SPEC
+  `R-36j`) — precisely from the daemon (`cgprofile-host-daemon`, `docker
+  exec ... cgprofile ctl ...`), or a coarser in-lane cgroup sample when it
+  is absent; never nothing, unless profiling is disabled outright
+  (`RUN_GATE_PROFILE=off`, `[profile] enabled = false`, or a lane's own
+  `profile = false`). `./run-gate.py footprint [LANE] [--json] [--write]`
+  distills that history into a COMMITTED `run-gate.footprint.json` —
+  budgets other projects and `doctor` can compare against, not just this
+  invocation's own number (SPEC `R-44`).
 
 ### Distribution — symlink inside vbpub, copy outside
 

@@ -9,6 +9,119 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
 
+### Added
+- **RG-55 — per-lane resource profiling, against the cgroup-profiler daemon
+  contract (`RG55-INTERFACE-CONTRACT.md`).** Every lane invocation gets a
+  resource profile — peak memory (+baseline, p90, DAMON hot-set), CPU
+  cores, memory-full stall — from the daemon (`cgprofile-host-daemon`,
+  `docker exec ... cgprofile ctl ...`) when reachable, or a coarser
+  in-lane cgroup sample (`method: "basic"`) when it is not; never nothing,
+  unless profiling is disabled outright (`RUN_GATE_PROFILE=off`,
+  `[profile] enabled = false`, or a lane's own `profile = false`). Live
+  acceptance, real docker, no daemon present (basic-path fallback): an
+  ephemeral lane allocating ≥ 100 MiB measured a peak of **115523584 bytes
+  (110.17 MiB)**; an exec-mode (`container-shared`) lane allocating 80 MiB
+  on a persistent runner measured `peak_over_baseline_bytes` of
+  **88612864 bytes (84.51 MiB)** over a 90.14 MiB baseline, with ≥ 2
+  samples taken mid-run — both against this package's own numeric
+  acceptance criteria (≥ 100 MiB / ≥ 70 MiB respectively). History schema
+  2 (SPEC `R-36j`) carries the new `resources`/`profile_error`/
+  `profile_ref` fields and five new series (median peak, +baseline,
+  hot-set p90, CPU cores, memory-full stall) alongside the existing
+  duration series. The three byte-valued series (peak, +baseline, hot-set
+  p90) report the NEAREST-RANK p50 — an actual sample, never an averaged
+  `.5` value on an even count (SPEC `R-36k`, RW-24, review round 2 S11);
+  the CPU-cores and memory-stall series are not bytes and still average.
+  New ambient override `RUN_GATE_PROFILE` (`"on"|"off"`,
+  SPEC `R-43g`) for a runner without `docker exec` rights to a daemon it
+  will never have. SPEC `R-43`.
+- **`footprint` verb (RG-55/C5) — a committed resource budget,
+  `run-gate.footprint.json`.** `./run-gate.py footprint [LANE] [--json]
+  [--write]` distills history into a manifest TRACKED next to
+  `run-gate.toml` (unlike `.run-gate/`, still gitignored); `--write`
+  REFUSES (exit 2, naming why) when no lane has a completed, profiled run
+  yet. `doctor` warns on drift (`[footprint] tolerance_pct`, default 25%)
+  or staleness (`max_age_days`, default 30) against the live history; the
+  run path reads it to fill the daemon's `expected` meta field and the
+  footprint disclosure line's `| manifest <n> MiB` tail. **BREAKING
+  (load-time):** `footprint` joins `doctor`/`validate-pointers`/`history`
+  as a RESERVED lane name — a copied-script repo with a lane by that name
+  must rename it. SPEC `R-44`.
+- **RG-48 — `resources.cpus` → `docker run --cpus`.** Lane
+  `[lanes.<n>.resources].cpus` or an environment-level fallback
+  `[environments.<e>.resources].cpus` (lane wins), a decimal string
+  matching docker's own grammar (`^\d+(\.\d+)?$`, > 0). Exec lanes get the
+  pre-existing naming-only WARNING (docker exec can neither place nor cap
+  work) rather than a refusal. `doctor` warns when a container lane's
+  argv spawns workers by name (`-n auto`/`--workers auto`) and neither the
+  lane nor its environment declares `cpus`. SPEC `R-29` amended.
+- **`doctor`'s "profiler" check (RG-55/C7).** Daemon container
+  present/running (`docker ps`), `ctl version` (contract/cgprofile
+  version/DAMON state), the effective `[profile]` settings incl. whether
+  `RUN_GATE_PROFILE` is overriding them, and — once the daemon answers —
+  host and per-slice pressure via `ctl host`. Every finding is
+  INFO/WARN/OK/SKIP, never FAIL: profiling is optional infrastructure.
+  The pre-existing R-29 "no derivable memory ceiling" WARNING now names
+  WHY when the cause is a PRIVATE cgroup namespace (the devcontainer/CI
+  default: `/proc/self/cgroup` reads exactly `0::/`) rather than a
+  misconfigured `$RUN_GATE_CGROUPFS_ROOT` — host-side slice truth is then
+  reachable only through this same "profiler" check.
+
+### Fixed (detail)
+- **The R3 `median-not-mean-series-stats` canary tracked the pre-RG-55
+  `series_stats` block and became a false "broken canary" after byte-valued
+  series moved to nearest-rank p50 (R-36k).** Its target now anchors the
+  non-byte branch, which the existing CPU/stall outlier assertions exercise;
+  the canary again rejects the arithmetic-mean mutant.
+
+- **RG-53 — BREAKING: `tools/coverage_gate.py` now reads `missing_branches`
+  and refuses a 0/0 diff.** Two independent semantic changes to the vendored
+  diff-coverage gate the `selftest` lane's floor rests on:
+  1. A changed line that executed but left an `if`/`for`/etc. arm untaken
+     (present in the coverage JSON's `missing_branches`, absent from
+     `missing_lines`) now counts as uncovered. `--cov-branch` (already
+     passed by this project's own `selftest` argv) was previously
+     decorative for the diff judge — only whole-file branch totals were
+     ever measured, never intersected with the changed-line set. `Verdict`
+     gains `branches_total`/`branches_missed`/`branch_partial_lines`,
+     reported beside the line counts in both the OK and FAIL CLI lines.
+  2. `total_changed_exec == 0` is now reported as **SKIPPED** — exit 0,
+     `Verdict.verdict == "skipped"` (never `"ok"`, never a bare `100.0%`
+     line) — naming the resolved base and how HEAD relates to it (`HEAD is
+     on the base` or `HEAD is N commits ahead of the base; the diff
+     touches no executable source line`), closing the `0/0 -> 100%`
+     SILENT-pass trap RG-53/RG-51 found without turning every gate run
+     that happens not to touch the judged file (e.g. this project's own
+     `selftest` on `main` itself) into a hard failure. `evaluate()` itself
+     stays a pure 0/0-is-100% classifier (existing direct callers/tests of
+     `evaluate()` see identical `pct`/`passed` numbers; only the new
+     `Verdict.skipped`/`.verdict` fields distinguish the case) — the
+     SKIPPED reporting is CLI-level, in `main()`. Hard refusal (exit 2,
+     naming the three known routes to a false 0/0) is now OPT-IN via the
+     new `--refuse-empty-diff` flag; `--allow-empty-diff` no longer exists.
+     **Reworked 2026-09-12 by RG-55 wave controller ruling RW-5** — this
+     package's first landing of RG-53 made the 0/0 case a hard refusal by
+     default, which put this project's own `selftest` lane permanently red
+     on `main`; RW-5 corrected it to the SKIPPED design above.
+  **BREAKING for every consumer of the vendored judge (topos pattern):
+  re-copying `tools/coverage_gate.py` picks up BOTH stricter semantics —
+  a lane that was previously green on an uncovered branch now fails, and
+  one that was silently `0/0 -> 100% OK` now prints a loud, distinct
+  SKIPPED notice (still exit 0) instead — plus `--allow-empty-diff` is
+  gone (`--refuse-empty-diff` is its opt-in replacement, inverted
+  default). Consumers re-copy on their own; this file does not push the
+  change.** `run-gate.toml`'s own `selftest` argv is UNCHANGED — on `main`
+  it now prints SKIPPED and exits 0; on a branch whose diff touches
+  `run-gate.py` it judges those lines normally, same as every other
+  consumer. `tools/coverage_gate.py`'s docstring records all three
+  changes; `tests/test_coverage_gate.py` covers them (branch-partial lines
+  staying/leaving covered, branch totals scoped to changed lines only,
+  malformed branch-arc shape rejection, `Verdict.verdict` tri-state for
+  both the 0/0 and nonzero cases, the base/HEAD relation text for both
+  shapes, the `_empty_diff_notice` pure formatter for both the default and
+  `--refuse-empty-diff` outcomes, and an end-to-end `main()` pair proving
+  the default SKIPPED exit-0/stdout behavior and the opt-in refusal).
+
 <!-- cmru: release history -->
 
 ## [23.6.2] - 2026-09-11

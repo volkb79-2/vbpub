@@ -3419,6 +3419,31 @@ when a lane's argv contains `-n auto` while its environment declares no cpu
 bound, since that is precisely the configuration whose behaviour depends on
 what an operator does to the container out-of-band after launch.
 
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2)
+
+Both halves this entry's own "possible shapes" named, landed together.
+`resources.cpus` (lane `[lanes.<n>.resources]`, decimal string, docker's
+own `--cpus` grammar) → a real `docker run --cpus <n>` on ephemeral
+container lanes — the SAME argv position `--memory` already occupies. An
+environment-level fallback, `[environments.<e>.resources] cpus = …` (the
+ONLY resources key an environment accepts), so a project can own the
+number in ONE place when every lane on an environment should share it,
+without repeating it per lane; a lane's own value still wins when both
+declare one. The cheaper interim ALSO landed, not instead: `doctor` warns
+by name when a container lane's argv contains `-n auto`/`--workers auto`
+and neither the lane nor its environment declares `cpus` — the exact
+"configuration whose behaviour depends on what an operator does to the
+container out-of-band" this entry named. Exec lanes get the pre-existing
+naming-only WARNING (`R-29`'s rule — docker exec can neither place nor cap
+work) rather than a refusal, extended to cover a `cpus`-only declaration
+(the check already fired on any truthy `resources`, but had never been
+proven against `cpus` alone before this landing). SPEC `R-29` amended.
+This entry's OWN measured 2.7x-disagreement case (`-n auto` against an
+uncapped environment) is exactly what a project now closes by declaring
+`resources.cpus` on `[environments.tester-unified]` — the FIX is
+available; whether nyxloom's own config adopts it is a separate,
+per-consumer step this entry does not track.
+
 ## RG-49 — RG-38's `--state-dir` fix `mkdir -p`s against a root-owned synthetic parent in a Mode-B (partial-bind-mount) worktree container
 
 **Found by:** dstdns-P175 implementer dispatch, 2026-09-09, worker-io
@@ -4072,20 +4097,74 @@ degenerate comparison base into a SILENT green (see RG-51's round-2
 finding, where a merged-but-not-torn-down worktree produced
 `merge-base == HEAD`, hence zero changed lines, hence `0/0 OK`).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2), BREAKING
 
-Directions, not picked here:
-- Read `missing_branches` and count a changed line as uncovered when it
-  has an untaken arm; this is what the lane's own flag already pays for.
-- Separately: refuse (or at minimum warn loudly) when
-  `total_changed_exec == 0`, rather than reporting `0/0 ≥ 100.0% floor`
-  as a pass. assay's own `check_base_is_head`/`BASE_IS_HEAD`
-  (`measurability.py`) is the precedent; the vendored thin gate has no
-  equivalent. Note the trigger is NOT only "base equals HEAD" — RG-51's
-  own merge commit reached `0/0` with a base that was neither HEAD nor
-  stale (first-parent resolution of a merge, RG-54), and round 5 found a
-  third route (a branch whose work was reverted). The condition worth
-  acting on is the zero itself.
+Both directions landed together, in `tools/coverage_gate.py`:
+- `_validate_cov_record` now also validates the OPTIONAL `missing_branches`/
+  `executed_branches` keys (list of `[source_line, target_line]` int pairs —
+  coverage.py's own JSON shape, `jsonreport.py` `_convert_branch_arcs`).
+  `evaluate()` builds a per-source-line branch-arc map (`_branch_maps`) and
+  counts a changed line as uncovered when it executed but left an arm
+  untaken, not only when it never ran. `Verdict` gains `branches_total`,
+  `branches_missed` (both scoped to the changed+executable line set only —
+  reported BESIDE the line counts, never a second whole-file denominator)
+  and `branch_partial_lines` (which uncovered lines ran but had a missed
+  arm, vs. never ran at all); the CLI's OK/FAIL lines print the branch
+  tally and mark branch-partial lines `(branch)` in the FAIL listing.
+- `total_changed_exec == 0` is now reported as **SKIPPED** by the CLI
+  (`main()`, exit 0) — `Verdict.verdict == "skipped"`, never `"ok"`, never
+  a bare `100.0%` line — naming the resolved base and how HEAD relates to
+  it. `evaluate()` itself is UNCHANGED in this respect (still a pure
+  0/0-is-100% classifier producing the same `pct`/`passed`; only the new
+  `Verdict.skipped`/`.verdict` fields distinguish the case) — the SKIPPED
+  reporting is deliberately CLI-level so existing direct callers of
+  `evaluate()` are unaffected; `_base_relation` (git ancestry/count) and
+  `_empty_diff_notice` (pure formatter) are the two small helpers the CLI
+  calls, each tested independently. Hard refusal (exit 2, naming the three
+  known routes to a false 0/0) is OPT-IN via the new `--refuse-empty-diff`
+  flag; `--allow-empty-diff` no longer exists. `run-gate.toml`'s `selftest`
+  argv is UNCHANGED — on `main` itself it now prints SKIPPED and exits 0;
+  on a branch whose diff touches `run-gate.py` it judges those lines
+  normally, same as every other consumer.
+
+### Rework — RW-5 (2026-09-12, RG-55 wave controller ruling)
+
+This entry's FIRST landing (above) made a `changed_executable == 0`
+verdict a hard refusal (exit 2) by default, gated behind
+`--allow-empty-diff`. That put THIS PROJECT'S OWN `selftest` lane
+permanently red on `main` (merge-base(main, HEAD) == HEAD there, so the
+diff-coverage phase is always 0/0) and would have blocked every
+`cmru release` of this project, whose release gate IS the selftest lane.
+RW-5 corrected the design: the false-green hazard RG-51/RG-54 describe is
+a WRONG BASE hiding real source changes, and the judge cannot tell that
+apart from "this change genuinely touches no source line under
+`--source`" by the zero alone — so instead of either silently passing
+(the pre-RG-53 bug) or refusing outright (this entry's first landing),
+the zero is made VISIBLE and NAMED: a distinct `diff-coverage SKIPPED: ...`
+stdout line (exit 0) naming the resolved base and the exact base/HEAD
+relationship (`HEAD is on the base`, or `HEAD is N commits ahead of the
+base; the diff touches no executable source line`). The hard refusal
+becomes opt-in (`--refuse-empty-diff`) for a consumer that wants it. The
+wrong-base guard for a case that DOES matter stays RG-51's fork-point
+rule, unaffected by this rework.
+
+Evidence: `tests/test_coverage_gate.py` grew from 20 to 23 tests (net —
+5 tests from the first landing tied to `--allow-empty-diff`/
+`_check_nonempty_diff` were removed and replaced with 8 covering the new
+design: `Verdict.verdict` tri-state for both the 0/0 and nonzero cases,
+`_base_relation`'s two shapes against a real tmp_path repo, the
+`_empty_diff_notice` pure formatter for both the default SKIPPED and
+`--refuse-empty-diff` outcomes, an end-to-end `main()` pair proving the
+default exit-0/stdout SKIPPED behavior and the opt-in exit-2/stderr
+refusal, and the arg-parser default for the renamed flag) — `pytest
+tests/test_coverage_gate.py -q` → 23 passed. **BREAKING** for every
+consumer of the vendored judge (topos pattern, RG-53's own analysis
+above): re-copying `tools/coverage_gate.py` picks up all three semantic
+changes (branch awareness, the SKIPPED 0/0 design, and the renamed/
+inverted-default empty-diff flag); see `CHANGES.md` `[Unreleased]` for the
+consumer-facing note. SPEC amendment (a rule id under the R-33
+diff-coverage floor family) lands with this wave's other spec/backlog
+pass (C8).
 
 ## RG-54 — whatever base run-gate resolves, assay DISCARDS it when HEAD is a merge commit and judges against HEAD's first parent instead
 
@@ -4178,30 +4257,48 @@ are not yet wired into any lane-execution path: `scripts/cgroup-profiler/`
 consumed by `topos`'s own CLI dispatch — `topos/src/topos/damon`). Neither
 speaks to run-gate/assay's lane-execution machinery today.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P2)
 
-Not yet scoped as an implementation plan, filed as the concrete need
-rather than a design:
+Scoped and shipped as a TWO-package wave (contract-first, per the plan of
+record `WAVE-PLAN-2026-09-12-rg55-profiling.md`): P1, the cgroup-profiler
+daemon (`cgprofile serve`/`ctl`, its own worktree/backlog), and P2, this
+package — the run-gate CLIENT. Answers the three open design questions
+this entry originally left open:
 
-- A lane's resource profile should be captured wrapping the lane's actual
-  process tree (via `cgroup-profiler` and/or `damon-analysis`) and
-  persisted alongside — or as an extension of — the existing
-  `verdict-<lane>.json`/`progress-<lane>.jsonl` mechanism, ideally as a
-  short history rather than only the latest run, so a scheduler can use a
-  stable estimate rather than one noisy sample.
-- The consumer-facing use case is admission control: before starting
-  lane N concurrently with already-running lanes, check the *live* PSI
-  reading (`/proc/pressure/memory`) plus each running lane's own measured
-  footprint, and only admit N if doing so is not expected to push memory
-  pressure into a rising state. Swap usage itself is not the gate — PSI
-  is.
-- Whether this belongs in run-gate proper, in assay (which already owns
-  the per-lane verdict/progress files), or as a thin wrapper script that
-  both consume is an open design question — filed here first because
-  run-gate owns the lane-dispatch entry point every consumer already
-  calls.
-- dstdns's own applied policy, once this exists: `docs/testing/RIGOR-COVERAGE-POLICY.md`
-  "Resource-profiling and scheduling" section.
+- **Where it lives:** run-gate proper, per the entry's own reasoning
+  (it owns the lane-dispatch entry point) — NOT assay, NOT a thin wrapper.
+- **What is captured, and how:** a resource profile (peak memory
+  [+baseline, p90], DAMON hot-set, CPU cores, memory-full stall) wrapping
+  the lane's actual cgroup — precisely via the daemon (`docker exec
+  cgprofile-host-daemon cgprofile ctl ...`, `RG55-INTERFACE-CONTRACT.md`)
+  when reachable, or a coarser in-lane cgroup sample (`method: "basic"`)
+  when it is not — never nothing, short of profiling being disabled
+  outright. Persisted as an EXTENSION of the existing history mechanism
+  (RG-27's `history.json`, schema 2 — `resources`/`profile_error`/
+  `profile_ref` per entry, five new series alongside duration), exactly
+  the "short history, not one noisy sample" shape this entry asked for.
+  `run-gate.footprint.json` (SPEC `R-44`) is the distilled, COMMITTED
+  form — a stable estimate a scheduler (or a human sizing
+  `resources.memory`/`resources.cpus`) reads instead of one run.
+- **Live acceptance, real docker** (this package's own numeric criteria):
+  an ephemeral lane allocating ≥ 100 MiB, no daemon present (basic-path
+  fallback), measured a peak of **115523584 bytes (110.17 MiB)**,
+  `source: "memory.peak"`. An exec-mode (`container-shared`) lane
+  allocating 80 MiB on a persistent runner measured
+  `peak_over_baseline_bytes` of **88612864 bytes (84.51 MiB)** over a
+  90.14 MiB baseline (`source: "sampled-max"`), with ≥ 2 samples taken
+  mid-run. Both against this package's own acceptance thresholds (≥ 100
+  MiB / ≥ 70 MiB respectively) — full transcripts in
+  `nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REPORT.md`.
+
+Admission control on top of this data (the PSI-gated "wait/refuse before
+starting lane N" mechanism this entry's own bullets sketched) is
+DELIBERATELY not part of this fix — filed forward as **RG-56**, the next
+wave, once real footprint data exists to set a threshold against instead
+of a guessed one (the same "measure first, decide later" posture RG-27
+itself was filed under). This entry's dstdns cross-reference
+(`docs/testing/RIGOR-COVERAGE-POLICY.md` "Resource-profiling and
+scheduling") is RG-56's to apply, not this package's.
 
 ## RG-56 — admission control on the profiler registry (next wave after RG-55)
 
@@ -4310,5 +4407,204 @@ lane, not the conjunction wrapping it.
   (before/after wait) become a `method: "rusage"` summary with the correct
   key subset (no `damon`, no `host.slice`, no `pressure` beyond what
   `getrusage` cannot provide — i.e. `null`, never fabricated).
+
+### Status — OPEN
+
+## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
+
+**Provenance:** RG-55 wave P2 review round 1 S1/D5
+(`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P2-REVIEW-round1.md`).
+RW-23b (controller ruling) removed the misleading `stall_timeout` key from
+the one lane that had it (`assay-r2`) and corrected its comment, but left
+D5's own question — refuse, warn, or accept as documented-inert — unruled;
+review round 2 confirmed "the concrete hazard is gone ... what remains is
+a genuine open product question, correctly deferred."
+
+### Mechanism
+
+`run_bare_host_lane` (`run-gate.py`) is a plain `subprocess.run` with no
+`ProgressWatch`, no `LogStreamWatch`, no timer of any kind; a
+`stall_timeout` key on a `kind = "command"`/bare-host lane's config is
+accepted at load and then silently INERT for the lane's entire run —
+nothing bounds a stuck-but-still-running invocation the way
+`stall_timeout` does on a real container/exec lane. A future bare-host
+lane's author, copying a container lane's config as a template, can
+declare `stall_timeout = "20m"` and reasonably believe it is enforced; it
+is not, and nothing tells them so beyond a comment on a DIFFERENT lane.
+
+### Proposed contract
+
+D5's own three options, still open:
+1. **Refuse at config-load** (exit 2) when a bare-host lane declares
+   `stall_timeout` — loudest and safest, at the cost of breaking a config
+   someone wrote believing the comment.
+2. **Warn once** (at load, or via a `doctor` check mirroring `R-30a`'s own
+   precedent for a similarly cheap, load-time-computable config-shape
+   warning) naming the inert key and the reason, without refusing.
+3. **Accept as documented-inert** — the RW-23b comment already states the
+   rule on the one lane that had it; no further code change. Weakest
+   guarantee: a comment is read only by someone who goes looking, and only
+   on that one lane.
+
+No option is picked here; this is the decision D5 raised and RW-23
+explicitly did not rule on.
+
+### Oracles (sketch)
+
+- A bare-host lane config declaring `stall_timeout` → assert the chosen
+  behavior (refusal at load naming the lane and key; or a `doctor`/load-
+  time WARN naming both; option 3 needs no new oracle beyond the existing
+  comment).
+
+### Status — OPEN
+
+## RG-59 — the live-run daemon-absent warning names the wrong cause ("produced unparsable stdout" instead of "container ... is not running")
+
+**Provenance:** RG-55 wave P2 review round 1 S6; confirmed unchanged
+through fix round 1 (explicitly deferred: "the LIVE-RUN warning's
+wrong-cause text ... is UNCHANGED — deferred") and review round 2 ("S6 ...
+still exactly as in round 1; I saw the same text on every probe this
+round").
+
+### Mechanism
+
+When the `cgprofile-host-daemon` container is not running (today's
+default state in this environment), `ProfilerClient._ctl`'s `docker exec`
+fails; its stdout is empty/non-JSON, so the generic `json.JSONDecodeError`
+branch fires and the LIVE-run warning reads: `run-gate: WARNING
+profiling: \`cgprofile ctl version\` produced unparsable stdout (exit 1);
+stderr: Error response from daemon: container <id> is not running — basic
+in-lane sampling only`. The real cause is present only inside the
+`stderr_tail` fragment, not named as the headline reason — a consumer has
+to parse docker's own error text to understand what to do next.
+`doctor`'s OWN daemon-absence text (a separate code path,
+`run-gate.py`'s `cmd_doctor`) is already good ("profiler daemon not
+running — basic in-lane sampling only (start it: cd
+scripts/cgroup-profiler && ciu up)"); only the LIVE-run warning has the
+wrong-cause text.
+
+### Proposed contract
+
+When `_ctl`'s `docker exec` failure's `stderr_tail` matches docker's own
+"No such container" / "is not running" text, the live-run warning should
+say so and name the remedy — the same text `doctor` already uses — rather
+than reporting a generic "unparsable stdout", which should stay reserved
+for an ACTUALLY malformed daemon response from a daemon that IS running.
+
+### Oracles (sketch)
+
+- A fake `docker exec` returning docker's real "... is not running"
+  stderr with non-JSON/empty stdout → assert the live-run warning names
+  "daemon ... not running" (matching `doctor`'s own wording), not
+  "produced unparsable stdout".
+- A genuinely malformed (non-JSON, non-docker-error) stdout from a
+  RUNNING daemon → assert the existing "produced unparsable stdout"
+  wording is preserved for that case.
+
+### Status — OPEN
+
+## RG-60 — an exec lane's profiling session has no inflight/recovery record if the client dies mid-run
+
+**Provenance:** RG-55 wave P2 review round 1 S13, code half (the doc half
+— `SPEC.md` R-43f/R-43a claiming the token IS recorded for exec lanes —
+is corrected directly in this close-out, not filed; review round 2: "The
+*code* half ... is a new code path and correctly deferred: backlog.").
+
+### Mechanism
+
+`write_inflight_record` (`run-gate.py`) is called only from
+`run_container_lane`; `run_exec_lane` writes no inflight record at all. A
+container lane whose run-gate client dies mid-run leaves a recovery
+record naming the profiling session (`profile_token`/`profile_daemon`/
+etc.) so a later invocation can reconcile or clean it up; an exec lane in
+the identical situation leaves nothing on disk for anything to recover or
+reconcile against if the client process dies between starting the
+daemon session and finishing it.
+
+### Proposed contract
+
+`run_exec_lane` gains the same `write_inflight_record` call
+`run_container_lane` already makes, at the equivalent point in its own
+lifecycle (after the profiling token/session is established, before the
+exec begins), and the equivalent clearing call in its own success/failure
+paths. The record's shape is already defined by the existing mechanism;
+this wires it into the second lane kind that currently lacks it, not a
+new design.
+
+### Oracles (sketch)
+
+- An exec lane run with profiling enabled → assert an inflight record is
+  written before the `docker exec` begins and cleared in the `finally`,
+  mirroring the existing `TestAwaitContainerProfilingWiring`-style
+  coverage `run_container_lane` already has.
+- A killed exec-lane client (simulated) → assert the inflight record
+  survives on disk, matching the container-lane recovery path's existing
+  behavior.
+
+### Status — OPEN
+
+## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
+
+**Provenance:** RG-55 wave P2 review round 1 S14 (consolidated list); fix
+round 1 explicitly deferred all of it beyond the B2/R-44d fix ("pure
+prose/doc drift, no test pins them, and this round's time budget went to
+the 5 blockers + the RW-23 items with real behavioural consequences
+first"); review round 2 spot-checked the highest-value items and
+confirmed each still present at the ACCEPTed tip ("S14 remainder ... I
+spot-checked the highest-value items and they are indeed unfixed").
+
+### Mechanism
+
+Eight separate drift items, none affecting behavior, re-verified present
+at this close-out's own starting tip (`f08080e7`):
+1. `SPEC.md:555` and `:1660` cross-reference **`R-44`** for `doctor`'s
+   "profiler" check; `R-44a`-`e` are entirely the footprint manifest, and
+   `R-30` (Doctor) is untouched — the C7 deliverable (the `doctor`
+   profiler check itself) has no rule id of its own.
+2. `R-30` still says the summary counts "all four" statuses; the code has
+   emitted a fifth, `INFO`, since before this wave.
+3. The RG-53 SPEC amendment promised at this file's own RG-53 entry never
+   landed (`R-33` untouched), and `SPEC.md:756` (`R-35a`) still states the
+   now-false "scores `0/0` as 100% — a silent false green" (made false by
+   RW-5's own 0/0 rework this wave).
+4. `[profile]`/`[footprint]` are documented as prose only, nowhere as a
+   structured key-by-key block — `CONSUMERS.md` (the adoption contract,
+   which gives `[history]` and `[lanes.<n>.resources]` their own
+   full-schema blocks) has no equivalent `[profile]` block; `RUN_GATE_
+   PROFILE` is documented there as `off`-only, while `on`-over-lane-opt-
+   out and the by-name-value refusal appear only in SPEC/`usage()`.
+5. `CONSUMERS.md`'s `footprint --write` transcript is fabricated from the
+   contract's golden fixture and shows an impossible run (all five lanes
+   of this project are bare-host, so `--write` refuses, confirmed live);
+   its column layout also does not match `print_footprint_report`'s real
+   output.
+6. `CHANGES.md`'s `[Unreleased]` header comment still reads "Verified
+   empty as of 2026-09-11's release" above 100+ new lines added since,
+   with no `__revision__` drift-marker bump note (every prior dated entry
+   has one).
+7. `usage()` (`run-gate.py`) omits `RUN_GATE_PROC_ROOT` while listing its
+   sibling `RUN_GATE_CGROUPFS_ROOT`; `SPEC.md:178`'s lane-schema text
+   still points the `profile` key at `R-43g` (it is `R-43h` — README
+   already gets it right); `SPEC.md:50`'s "both had shipped in code"
+   claim (`resources`/`cpus`) is inaccurate for the `cpus` half.
+8. Backlog RG-53's own evidence cites a stale test-count delta, and this
+   file's FIXED entries generally cite no commit hashes; LOG test-count
+   claims in two places do not match the tests actually added.
+
+### Proposed contract
+
+A documentation-only sweep (no behavior change, no new tests beyond what
+a prose fix needs) correcting all eight items in place, the same shape
+C8's own revision-41 sweep used for the rest of this file family. Low
+individual risk, moderate total size (eight file-shaped edits across
+`SPEC.md`/`CONSUMERS.md`/`usage()`/`CHANGES.md`/this backlog file) —
+better suited to its own small package or a documentation-sweep session
+than folding into another wave's close-out.
+
+### Oracles (sketch)
+
+None needed beyond the existing prose-consistency review this class of
+fix always gets — no behavior changes, so no new pytest coverage is
+implied by fixing any of the eight items.
 
 ### Status — OPEN

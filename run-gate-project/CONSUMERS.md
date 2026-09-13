@@ -54,6 +54,24 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    checklist. Only the last of these is self-enforcing — run-gate refuses
    to write an un-ignored history store and names the remedy ("What each
    lane costs" below).
+6. **Profiling (RG-55) needs nothing from a consumer to be SAFE, but one
+   thing to be PRECISE.** run-gate profiles a lane's peak memory (and CPU,
+   hot-set, stall) with no consumer action at all — a coarse in-lane
+   cgroup sample when no daemon answers, every time, unless
+   `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
+   path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
+   is host infrastructure, started once from the vbpub checkout** — `cd
+   scripts/cgroup-profiler && ciu up` — never per-project, and never
+   something a consumer's own gate config starts or stops. A runner
+   without `docker exec` rights to that daemon (a locked-down CI box, a
+   sandboxed agent) should set `RUN_GATE_PROFILE=off` rather than eat one
+   `docker exec`-per-tick failure per profiled lane; `doctor`'s "profiler"
+   check reports the daemon's reachability either way. `run-gate.footprint.json`
+   (written by `./run-gate.py footprint --write`, once a lane's history has
+   at least one profiled PASS run) is **TRACKED — commit it**, unlike
+   `.run-gate/` itself (still gitignored, per-instance telemetry): the
+   manifest is a distilled, portable BUDGET meant to travel with the
+   config it describes, not a fact about this one checkout.
 
 ## Central defaults (vbpub monorepo)
 
@@ -102,6 +120,9 @@ artifacts = ["coverage.json"]       # optional; paths printed after EVERY run (s
                                     # failure); {worktree} substituted; relative entries
                                     # resolve against the effective project dir; assay
                                     # lanes always disclose .assay/verdict-<lane>.json too
+profile = false                     # optional (RG-55): opt this lane OUT of profiling
+                                    # entirely; or a table {enabled, damon} overriding
+                                    # [profile]'s own defaults for this lane only
 
 # RG-20 resources (optional sub-table — declare RAM so admission can protect
 # the host; supersedes the top-level `memory` key, never both):
@@ -112,6 +133,11 @@ memory_swap = "16g"                 # --memory-swap; tight RAM + ample swap abso
 cpu_weight = 100                    # advisory 1..10000 (printed; no portable docker flag)
 io_weight = 100                     # advisory 1..10000 (printed; no portable docker flag)
 shared = ["pg-main"]                # serialize with any other gate declaring the same name
+cpus = "2"                          # RG-48: docker run --cpus (decimal string, > 0).
+                                    # Same key on [environments.<name>.resources] as a
+                                    # FALLBACK for lanes that declare none of their own
+                                    # (this lane's own value wins when both are set) --
+                                    # the only resources key an environment accepts.
 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
@@ -743,6 +769,11 @@ before every write, refuses to write an un-ignored store, and tells you why:
 > moved; a **copied-script repo** that happens to have a lane by that name
 > must rename it (the lane was already unreachable — the verb would have won)
 > before adopting rev 30.
+>
+> **BREAKING CHANGE (load-time) — a lane named `footprint` (RG-55, rev 10).**
+> Same shape, one more verb: `footprint` joined the reserved set at rev 10.
+> No project in this estate declares one either; a copied-script repo with a
+> lane by that name must rename it before adopting rev 10 or later.
 
 ```
 run-gate: WARNING: lane history not recorded: /repo/proj/.run-gate is not
@@ -807,8 +838,9 @@ that is not a git work tree refuses (exit 3) — never a quiet fallback to the
 invoking checkout's store, which would hand you tree A's medians under tree
 B's name.
 
-**`--json` is honored by `history` alone.** Every other verb refuses it by
-name rather than printing its human form anyway (`--list` is already a
+**`--json` is honored by `history` and `footprint` (RG-55) only.** Every
+other verb refuses it by name rather than printing its human form anyway
+(`--list` is already a
 machine table).
 
 ### Consume it
@@ -903,6 +935,54 @@ gate never hangs waiting to write telemetry.
 
 Because the replace is atomic, readers take no lock. `history` answers
 correctly while a gate is mid-write.
+
+### The footprint manifest — a committed budget (RG-55)
+
+`history` answers "what did this lane cost, in THIS checkout's own store" —
+per-instance telemetry, gitignored, never committed. `footprint` answers a
+different question: "what SHOULD this lane cost, as a number the whole
+project can commit and carry forward." It distills the SAME history (PASS +
+history-eligible entries that were actually profiled — peak memory,
++baseline, hot-set p90, CPU cores, memory-full stall, alongside duration)
+into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
+**TRACKED — commit it** (`.run-gate/` stays ignored; the two are opposite
+answers to "does this belong in git" for a reason: one is this checkout's
+raw log, the other is the distilled number everyone downstream should see).
+
+```console
+$ ./run-gate.py footprint --write
+run-gate rev 41 — lane resource footprint
+store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/run-gate-project/run-gate.footprint.json
+  LANE                RUNS  PEAK(med/max)         +BASE      HOT p90    CORES   STALL  DURATION
+  selftest               8   746 MiB/812 MiB    200 MiB     181 MiB     1.30    4.8s      316.2s
+```
+
+A lane with no profiled PASS run yet is simply OMITTED (absent means
+unknown, never zero) — `--write` REFUSES outright (exit 2, naming why) when
+**no** lane in the store qualifies yet; run a profiled lane first, then
+`--write` again. A `LANE` filter queries one lane's numbers without
+touching disk, but is REFUSED together with `--write` (a partial write
+would silently drop every other lane's committed data).
+
+**What the manifest is FOR, downstream of this package:**
+
+- **`doctor`** reads it: a per-lane WARNING when the LIVE history's median
+  peak has drifted more than `[footprint] tolerance_pct` (default 25%) from
+  the committed number, and one WARNING when `distilled_at` is older than
+  `[footprint] max_age_days` (default 30) — "this number nobody has
+  re-measured in a while" is a fact worth surfacing, never a failure.
+- **The run path** reads it too: the daemon's `--meta` carries this lane's
+  own committed median as `expected` (so the daemon, and a human reading a
+  session's own report, can see "measured vs. expected" without a second
+  lookup), and the footprint disclosure line prints a `| manifest <n> MiB`
+  tail next to the run's own peak and the standing history median — three
+  numbers, one line: what just happened, what has been typical, and what
+  was budgeted.
+- **RG-56 (a later wave, not this one)** is where a footprint becomes an
+  ADMISSION signal — scheduling concurrent lanes against a slice's real
+  remaining budget instead of a guess. This package only measures and
+  commits the number; nothing here decides policy on it yet.
 
 ## Per-project-type recipes
 
