@@ -1185,3 +1185,12 @@ separately read cumulative verdict is 484 candidates: 436 killed, 43
 survived, 5 `budget_exceeded`, and 0 crashed. The lane remains unfinished;
 the controller requires another PSI-gated exact-tree resume until no budget
 placeholders remain.
+
+### RW-81 — 2026-09-13 17:43:26Z — P6 exact-tree resume relaunched
+
+After the RW-80 pass, the controller woke the Luna xhigh P6 implementer and
+confirmed a new exact-tree resume. Container
+`run-gate-vbpub-r2-3305136-1789321303` started at 17:41:46Z with
+`oom=false`, `NanoCpus=3000000000`, and `dev-background.slice`; its baseline
+was observed running. No detached-tree switch or commit is permitted until
+this resume exits.
