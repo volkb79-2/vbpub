@@ -2681,6 +2681,16 @@ parts can arrive after the message row. The score rule's pause bonus requires
 one pending assistant event when its keep/drop decision genuinely depends on
 the next event; stable long/finding/checkpoint decisions are not delayed.
 
+The fixed-span handoff transform is intentionally not part of the live
+surface: `--strip-stale-wakeups` collapses a trailing run only after the
+complete selected span is known. Applying it incrementally would require
+revising already-emitted output when a later wakeup arrives, so the exact
+combination `extract --follow --strip-stale-wakeups` is rejected before phase
+one instead of silently approximating or diverging. Redaction has a different
+shape: it is an independent per-event transform, so `extract --follow`
+applies `--redact-pattern` to live output; `extract-lossless` stays verbatim
+and rejects `--redact-pattern`.
+
 A standalone `extract-follow` verb was rejected: it would need a second copy of
 selection and rendering rules and would drift from `extract` or
 `extract-lossless`. Repeatedly invoking the existing lossless dumper was also

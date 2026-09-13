@@ -971,6 +971,15 @@ def cmd_extract(args) -> int:
     from .session_extract.config import PROFILES
     from .session_extract.events import EventKind
 
+    if args.follow and args.strip_stale_wakeups:
+        print(
+            "error: extract --follow cannot be combined with --strip-stale-wakeups: "
+            "the trailing-run transform requires a fixed, complete span and cannot be "
+            "applied to live output without silently diverging",
+            file=sys.stderr,
+        )
+        return 1
+
     resolved = _resolve_session_log(args)
     if resolved is None:
         return 1

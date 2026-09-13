@@ -75,6 +75,19 @@ records, while `extract-lossless` prints every new prose/thinking block.
 nyxloom extract-lossless /path/to/session.jsonl --follow --highlight --bell
 ```
 
+For live redaction, use `extract`: its `--redact-pattern` applies to both the
+initial brief and newly streamed phase-two output.
+
+```bash
+nyxloom extract /path/to/session.jsonl --follow --redact-pattern 'API_KEY=[^ ]+'
+```
+
+`--strip-stale-wakeups` is only a finished-span transform. The exact
+combination `extract --follow --strip-stale-wakeups` is rejected before the
+initial extraction because a trailing run cannot be finalized while the
+session is still growing. `extract-lossless` remains verbatim and rejects
+`--redact-pattern`; choose `extract` when live redaction is required.
+
 To run an operator hook when the stream needs attention, use the typed
 environment variables supplied by nyxloom. The hook receives one of
 `interview_pending`, `checkpoint_detected`, or `long_block` in

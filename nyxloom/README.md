@@ -127,6 +127,13 @@ notify channel. See the [design rationale](docs/design-context-lifecycle-experim
 and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
 
+`--strip-stale-wakeups` is a fixed-span trailing-run transform, so the exact
+combination `extract --follow --strip-stale-wakeups` is rejected before the
+initial phase-one extraction rather than silently diverging as live output
+grows. In contrast, `extract --follow` applies `--redact-pattern` to live
+phase-two output as well as the initial brief; `extract-lossless` remains
+verbatim and rejects `--redact-pattern`.
+
 ## Documents
 
 - [Architecture](docs/ARCHITECTURE.md) — file layout, tick engine, wrapper,

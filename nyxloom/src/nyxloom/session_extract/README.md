@@ -443,6 +443,19 @@ Verified as a property, not by eye: stripping every ANSI sequence from
 and `--highlight` both error combined with `--json` (rendering flags, not data
 ones — the same rule already applied to `--insert-blank-lines` and friends).
 
+## Fixed-span handoff transforms and follow
+
+`--strip-stale-wakeups` collapses a trailing run only after a complete,
+fixed-span extraction has selected its final event list. It cannot be applied
+incrementally without revising output that was already emitted, so the exact
+combination `extract --follow --strip-stale-wakeups` is rejected before phase
+one. This is a deliberate refusal rather than a silent approximation.
+
+Redaction is per-event and does not have that fixed-span dependency:
+`extract --follow` applies `--redact-pattern` to live phase-two output, just as
+it does to the initial brief. `extract-lossless` remains a verbatim dump and
+rejects `--redact-pattern`; use `extract` for a redacted stream.
+
 ## Follow mode (`--follow`/`-f`)
 
 `extract --follow` and `extract-lossless --follow` keep printing new content

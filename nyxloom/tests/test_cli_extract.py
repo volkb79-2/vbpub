@@ -1119,6 +1119,28 @@ def test_extract_follow_rejects_json(tmp_path, capsys):
     assert "no JSON document to emit" in capsys.readouterr().err
 
 
+def test_extract_follow_rejects_strip_stale_wakeups_before_phase_one(
+    tmp_path, capsys, monkeypatch,
+):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+
+    def _phase_one_must_not_run(*_args, **_kwargs):
+        raise AssertionError("phase one must not run for the rejected combination")
+
+    monkeypatch.setattr("nyxloom.session_extract.extract", _phase_one_must_not_run)
+
+    assert cli.main([
+        "extract", str(fp), "--follow", "--strip-stale-wakeups",
+    ]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "extract --follow cannot be combined with --strip-stale-wakeups"
+        in captured.err
+    )
+    assert "fixed, complete span" in captured.err
+
+
 def test_extract_follow_rejects_until(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp), "--follow", "--until", "a2"])
