@@ -11,6 +11,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.2.1] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=188a67259c4394c67214613a1ba9067562b79b11 -->
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.1.0 -> 6.1.1 (assay-v6.1.1) (dd8b07f1)
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.0.0 -> 6.1.0 (assay-v6.1.0) (ec868f14)
+
 ## [5.2.0] - 2026-09-09
 <!-- cmru: generated -->
 <!-- cmru: source-end=617d387ed5b6481cd1d2d85561269dc78d40c8d1 -->
