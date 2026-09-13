@@ -18,12 +18,14 @@ from nyxloom.session_extract.adapters import claude_code
 from nyxloom.session_extract.config import ExtractConfig
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.follow import (
+    AttentionEvent,
     FollowConfig,
     Follower,
     FollowSelector,
     JsonlSource,
     JsonlTailer,
     OpencodeSource,
+    deliver,
 )
 from nyxloom.session_extract.select import select
 
@@ -203,6 +205,69 @@ def test_tailer_tolerates_a_file_that_does_not_exist_yet(tmp_path):
     assert tailer.poll() == []
 
 
+def test_tailer_handles_a_race_where_the_file_read_is_empty(tmp_path):
+    # stat() can observe growth which disappears before read() (a truncate or
+    # replacement racing the poll). Keep that as an empty tick rather than
+    # inventing a record or advancing the offset.
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"x")
+    tailer = JsonlTailer(fp, offset=0)
+
+    class EmptyReadHandle:
+        def seek(self, _offset):
+            pass
+
+        def read(self):
+            return b""
+
+        def close(self):
+            pass
+
+    tailer._handle = EmptyReadHandle()
+    tailer._inode = fp.stat().st_ino
+    assert tailer.poll() == []
+    assert tailer.offset == 0
+
+
+def test_jsonl_source_drops_malformed_json_and_non_conversation_records(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    source = JsonlSource(fp, "claude-code", fp.stat().st_size, ExtractConfig(), False)
+    with fp.open("a", encoding="utf-8") as f:
+        f.write("not json\n")
+        f.write(json.dumps(["not a record"]) + "\n")
+        f.write(json.dumps(_rec(type="mode")) + "\n")
+    assert source.poll() == []
+    source.close()
+
+
+def test_jsonl_source_uses_codex_lossless_and_selected_record_paths(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    initial = {"type": "session_meta", "timestamp": _TS, "payload": {}}
+    _append(fp, initial)
+    lossless = JsonlSource(fp, "codex", fp.stat().st_size, ExtractConfig(), True)
+    selected = JsonlSource(fp, "codex", fp.stat().st_size, ExtractConfig(), False)
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "response_item", "timestamp": _TS,
+                            "payload": {"type": "agent_message", "message": "ignored"}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "timestamp": _TS,
+                            "ordinal": 1,
+                            "payload": {"type": "user_message", "message": "raw prompt"}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "timestamp": _TS,
+                            "ordinal": 2,
+                            "payload": {"type": "agent_message", "message": "selected reply"}}) + "\n")
+    lossless_arrivals = lossless.poll()
+    selected_arrivals = selected.poll()
+    assert [b.text for a in lossless_arrivals for b in a.blocks] == [
+        "raw prompt", "selected reply"
+    ]
+    assert [e.text for a in selected_arrivals for e in a.events] == [
+        "raw prompt", "selected reply"
+    ]
+    lossless.close()
+    selected.close()
+
+
 # --------------------------------------------------------------------------
 # FollowSelector -- select()'s per-event rule, applied forward
 # --------------------------------------------------------------------------
@@ -315,6 +380,18 @@ def test_thinking_behind_a_still_pending_event_keeps_stream_order():
     ).emitted == []
     result = selector.feed(NormalizedEvent(2, "op2", _TS, EventKind.OPERATOR_TEXT, "ok"))
     assert [e.marker for e in result.emitted] == ["a0", "th1", "op2"]
+
+
+def test_thinking_after_an_already_emitted_pending_event_passes_through():
+    config = ExtractConfig(include_thinking=True)
+    selector = FollowSelector(config)
+    # Length makes the assistant event immediately kept, but its shape score
+    # remains below the checkpoint threshold, so it is the emitted-pending
+    # case rather than an immediate checkpoint.
+    first = selector.feed(NormalizedEvent(0, "a0", _TS, EventKind.ASSISTANT_TEXT, "z" * 300))
+    assert [e.marker for e in first.emitted] == ["a0"]
+    result = selector.feed(NormalizedEvent(1, "th1", _TS, EventKind.THINKING, "y" * 300))
+    assert [e.marker for e in result.emitted] == ["th1"]
 
 
 def test_an_api_error_is_dropped_immediately_not_buffered():
@@ -559,6 +636,20 @@ def test_lossless_follow_falls_back_to_shape_scoring_for_checkpoints(tmp_path):
     follower.close()
 
 
+def test_lossless_follow_fires_the_opt_in_long_block_signal(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(
+        fp, out, lossless_mode=True,
+        follow_config=FollowConfig(bell=True, attention_min_chars=10), bell_out=bell,
+    )
+    _append(fp, _assistant("a1", "this is a long enough block"))
+    follower.tick()
+    assert bell.getvalue() == "\a"  # long_block; shape_score stays below threshold
+    follower.close()
+
+
 def test_a_failing_on_attention_command_does_not_stop_the_stream(tmp_path):
     fp = tmp_path / "session.jsonl"
     _append(fp, _user("u0", "start"))
@@ -584,6 +675,55 @@ def test_attention_hook_stdout_does_not_contaminate_the_content_stream(tmp_path,
     follower.close()
     assert "hook-output" not in out.getvalue()
     assert "hook-output" in capsys.readouterr().err
+
+
+def test_attention_delivery_reports_a_hook_oserror(monkeypatch, capsys):
+    import subprocess
+
+    def fail(*_args, **_kwargs):
+        raise OSError("hook unavailable")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    deliver(
+        AttentionEvent("long_block", "codex", "/tmp/session", "excerpt"),
+        FollowConfig(on_attention="ignored"),
+        io.StringIO(),
+    )
+    assert "hook unavailable" in capsys.readouterr().err
+
+
+def test_attention_delivery_notifies_and_reports_send_failure(monkeypatch, capsys):
+    from nyxloom import notify
+
+    calls = []
+
+    def fail_send(config, note):
+        calls.append((config, note))
+        return False, "transport down"
+
+    monkeypatch.setattr(notify, "send", fail_send)
+    deliver(
+        AttentionEvent("checkpoint_detected", "claude-code", "/tmp/session", "excerpt"),
+        FollowConfig(notify=object()),
+        io.StringIO(),
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["body"] == "/tmp/session\nexcerpt"
+    assert "transport down" in capsys.readouterr().err
+
+
+def test_attention_delivery_survives_a_notify_exception(monkeypatch, capsys):
+    from nyxloom import notify
+
+    monkeypatch.setattr(
+        notify, "send", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    deliver(
+        AttentionEvent("checkpoint_detected", "claude-code", "/tmp/session", "excerpt"),
+        FollowConfig(notify=object()),
+        io.StringIO(),
+    )
+    assert "boom" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
@@ -622,6 +762,32 @@ def test_highlight_preserves_source_trailing_newlines():
     source = "hello\n\n"
     colored = highlight_markdown(source, color=True)
     assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == source
+
+
+def test_run_forever_stops_cleanly_on_keyboard_interrupt(monkeypatch):
+    class Source:
+        def __init__(self):
+            self.closed = False
+
+        def poll(self):
+            return []
+
+        def close(self):
+            self.closed = True
+
+    source = Source()
+    follower = Follower(
+        source, harness="codex", session_path="/tmp/session", config=ExtractConfig(),
+        follow_config=FollowConfig(interval=0.01), out=io.StringIO(), lossless_mode=False,
+        printed_any=False,
+    )
+
+    def interrupt(_interval):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("nyxloom.session_extract.follow.time.sleep", interrupt)
+    assert follower.run_forever() == 0
+    assert source.closed
 
 
 # --------------------------------------------------------------------------
@@ -734,6 +900,45 @@ def test_opencode_source_revisits_the_phase_boundary_row_when_parts_arrive(tmp_p
 
     arrivals = source.poll()
     assert [e.text for a in arrivals for e in a.events] == ["arrived after phase one"]
+    source.close()
+
+
+def test_opencode_source_does_not_reemit_an_unchanged_phase_boundary(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "already printed")
+    conn = sqlite3.connect(db)
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+    assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_tolerates_a_removed_phase_boundary(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "gone"),
+        anchor_fingerprint=("old", ()),
+    )
+    assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_does_not_emit_a_stable_non_prose_row(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "system", None)
+    source = OpencodeSource(db, sid, ExtractConfig(), False, cursor=(-1, ""))
+    assert source.poll() == []
+    assert source.poll() == []
     source.close()
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from nyxloom.session_extract import locate
 from nyxloom.session_extract.locate import LocateError, escape_cwd, resolve_session_ref
 
 _UUID = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
@@ -203,6 +204,13 @@ def test_an_unknown_opencode_id_errors_naming_the_stores_searched(home):
     assert "opencode.db" in str(e.value)
 
 
+def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    assert locate._opencode_db_candidates() == [
+        home / ".local" / "share" / "opencode" / "opencode.db"
+    ]
+
+
 def test_a_non_opencode_sqlite_file_at_the_default_path_is_skipped(home):
     # sniff() is the gate, not the filename: a DB without session/message/part
     # is not an opencode store and must not swallow the lookup.
@@ -212,5 +220,60 @@ def test_a_non_opencode_sqlite_file_at_the_default_path_is_skipped(home):
     conn.execute("CREATE TABLE unrelated (x INTEGER)")
     conn.commit()
     conn.close()
+    with pytest.raises(LocateError):
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+
+
+def test_a_preferred_project_with_two_matching_layouts_is_ambiguous(home):
+    _claude_session(home, "-workspaces-vbpub", _UUID)
+    _claude_subagent(home, "-workspaces-vbpub", _UUID, _UUID)
+    with pytest.raises(LocateError, match="matches 2 sessions"):
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+
+
+def test_non_directory_children_of_the_projects_root_are_ignored(home):
+    root = home / ".claude" / "projects"
+    root.mkdir(parents=True)
+    (root / "not-a-project-directory").write_text("file", encoding="utf-8")
+    with pytest.raises(LocateError):
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+
+
+def test_duplicate_candidate_paths_are_deduplicated(home, monkeypatch):
+    root = home / ".claude" / "projects"
+    project = root / "-workspaces-other"
+    project.mkdir(parents=True)
+    candidate = project / f"{_UUID}.jsonl"
+    candidate.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(locate, "_claude_matches_in", lambda *_args: [candidate, candidate])
+    assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == candidate
+
+
+def test_opencode_lookup_skips_a_database_that_cannot_be_opened(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"not a database")
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: True)
+
+    def fail_connect(*_args, **_kwargs):
+        raise locate.sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(locate.sqlite3, "connect", fail_connect)
+    with pytest.raises(LocateError):
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+
+
+def test_opencode_lookup_reports_a_query_error_as_no_match(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE unrelated (x INTEGER)")
+    conn.commit()
+    conn.close()
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: True)
     with pytest.raises(LocateError):
         resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))

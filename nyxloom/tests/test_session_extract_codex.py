@@ -312,3 +312,32 @@ def test_is_top_level_record_rejects_the_layers_parse_ignores():
     assert codex.is_top_level_record({"type": "compacted"})
     assert not codex.is_top_level_record({"type": "response_item"})
     assert not codex.is_top_level_record({"type": "session_meta"})
+
+
+def test_parse_record_returns_empty_for_empty_messages_and_unknown_items():
+    config = ExtractConfig(include_thinking=True)
+    empty_old_user = {"type": "event_msg", "payload": {"type": "user_message", "message": ""}}
+    empty_old_agent = {"type": "event_msg", "payload": {"type": "agent_message", "message": ""}}
+    assert codex.parse_record(empty_old_user, 0, "m", config) == []
+    assert codex.parse_record(empty_old_agent, 0, "m", config) == []
+
+    assert codex.parse_record(
+        {"type": "compacted", "payload": {"message": ""}}, 0, "m", config
+    )[0].text == "[compacted]"
+    assert codex.parse_record(
+        {"type": "event_msg", "payload": {"type": "context_compacted"}}, 0, "m", config
+    )[0].kind is EventKind.LIFECYCLE_MARKER
+
+    for item_type in ("UserMessage", "AgentMessage"):
+        assert codex.parse_record(
+            {"type": "event_msg", "payload": {"type": "item_completed",
+             "item": {"type": item_type, "content": []}}}, 0, "m", config
+        ) == []
+    assert codex.parse_record(
+        {"type": "event_msg", "payload": {"type": "item_completed",
+         "item": {"type": "Reasoning", "raw_content": []}}}, 0, "m", config
+    ) == []
+    assert codex.parse_record(
+        {"type": "event_msg", "payload": {"type": "item_completed",
+         "item": {"type": "FutureItem"}}}, 0, "m", config
+    ) == []

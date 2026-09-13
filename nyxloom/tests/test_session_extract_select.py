@@ -338,6 +338,13 @@ def test_decide_reports_checkpoint_and_marker_kinds_separately():
     assert decide(_long(2), config) == EventDecision(keep=True)
 
 
+def test_decide_evaluates_thinking_with_the_shared_assistant_text_rules():
+    from nyxloom.session_extract.select import decide
+
+    thinking = NormalizedEvent(0, "th", _TS, EventKind.THINKING, "x" * 300)
+    assert decide(thinking, ExtractConfig(include_thinking=True)).keep
+
+
 def test_decide_drops_an_api_error_before_any_rescue_applies():
     from nyxloom.session_extract.select import decide
 

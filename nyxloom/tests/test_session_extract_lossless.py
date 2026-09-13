@@ -153,6 +153,14 @@ def test_claude_code_blocks_surfaces_every_drop_reason_flag():
     assert "isMeta" in header and "isSidechain" in header
 
 
+def test_claude_code_blocks_drops_blank_string_content():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "user", "uuid": "u1", "timestamp": "t",
+           "message": {"role": "user", "content": "   "}}
+    assert claude_code_blocks(rec, "L0") == []
+
+
 def test_thinking_blocks_are_dumped_from_their_own_field(tmp_path):
     # Regression for a real bug (2026-09-12): this dumper read
     # `block["text"]` for `thinking` blocks too, so every one dumped empty

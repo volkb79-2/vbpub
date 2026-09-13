@@ -1179,3 +1179,104 @@ def test_follow_reports_an_unknown_notify_project_instead_of_crashing(tmp_path, 
     exit_code = cli.main(["extract", str(fp), "--follow", "--notify-project", "nope"])
     assert exit_code == 1
     assert "--notify-project" in capsys.readouterr().err
+
+
+def test_follow_anchor_handles_empty_unterminated_and_missing_jsonl_files(tmp_path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    assert cli._follow_anchor(empty, "claude-code", None) == 0
+
+    unterminated = tmp_path / "unterminated.jsonl"
+    unterminated.write_bytes(b"x" * 9000)
+    assert cli._follow_anchor(unterminated, "claude-code", None) == 0
+
+    assert cli._follow_anchor(tmp_path / "missing.jsonl", "claude-code", None) == 0
+
+
+def test_follow_anchor_handles_an_opencode_store_without_a_matching_message(tmp_path):
+    db = _write_opencode_fixture(tmp_path)
+    anchor = cli._follow_anchor(db, "opencode", "does-not-exist")
+    assert anchor.cursor == (-1, "")
+
+
+def test_follow_anchor_returns_the_opencode_message_and_part_fingerprint(tmp_path):
+    db = _write_opencode_fixture(tmp_path)
+    anchor = cli._follow_anchor(db, "opencode", "s0")
+    assert anchor.cursor == (2, "m0b")
+    assert anchor.fingerprint[0]  # message data JSON
+    assert anchor.fingerprint[1][0][0] == "p0b"
+
+
+def test_follow_anchor_returns_none_for_a_non_opencode_path(tmp_path):
+    assert cli._follow_anchor(tmp_path, "opencode", "s0") is None
+
+
+def test_extract_follow_opencode_resolves_the_single_session_and_wires_the_source(
+    tmp_path, capsys, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["source"] = type(self._source).__name__
+        seen["session"] = self._source._session_id
+        seen["anchor"] = self._source._anchor_cursor
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    exit_code = cli.main(["extract", str(db), "--follow"])
+    assert exit_code == 0
+    assert seen == {"source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b")}
+    assert "please look into this" in capsys.readouterr().out
+
+
+def test_extract_follow_opencode_accepts_the_legacy_tuple_anchor_shape(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["cursor"] = self._source._cursor
+        seen["fingerprint"] = self._source._anchor_fingerprint
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    monkeypatch.setattr(cli, "_follow_anchor", lambda *_args: (-1, ""))
+    assert cli.main(["extract", str(db), "--follow", "--opencode-session", "s0"]) == 0
+    assert seen == {"cursor": (-1, ""), "fingerprint": None}
+
+
+def test_extract_lossless_follow_opencode_resolves_a_single_session(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["source"] = type(self._source).__name__
+        seen["session"] = self._source._session_id
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract-lossless", str(db), "--follow"]) == 0
+    assert seen == {"source": "OpencodeSource", "session": "s0"}
+
+
+def test_extract_json_rejects_highlight_as_text_only(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main(["extract", str(fp), "--json", "--highlight", "--color"]) == 1
+    err = capsys.readouterr().err
+    assert "--highlight" in err and "only affect" in err
+
+
+@pytest.mark.parametrize("verb", ["extract-lossless", "extract-debug", "extract-report", "extract-sessions"])
+def test_extract_family_reports_an_unresolvable_path_before_dispatch(tmp_path, capsys, verb):
+    assert cli.main([verb, str(tmp_path / "missing-session.jsonl")]) == 1
+    assert "neither an existing path" in capsys.readouterr().err

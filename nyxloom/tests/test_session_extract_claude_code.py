@@ -972,3 +972,44 @@ def test_has_primary_thread_distinguishes_a_subagent_transcript(tmp_path):
              message={"role": "assistant", "content": [{"type": "text", "text": "Done."}]}),
     ]) + "\n", encoding="utf-8")
     assert claude_code.has_primary_thread(sub) is False
+
+
+def test_prime_stream_state_handles_empty_missing_partial_and_malformed_prefixes(tmp_path):
+    config = ExtractConfig()
+    state = claude_code.StreamState()
+    claude_code.prime_stream_state(tmp_path / "missing.jsonl", state, 1)
+    claude_code.prime_stream_state(tmp_path / "missing.jsonl", state, 0)
+
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(
+        "not json\n" + json.dumps(_rec(type="mode")) + "\n" +
+        json.dumps(_rec(type="assistant", isSidechain=True, message={
+            "content": [{"type": "tool_use", "id": "side", "name": "AskUserQuestion",
+                         "input": {"questions": [{"question": "side?"}]}}]})) + "\n" +
+        json.dumps(_rec(type="assistant", message={
+            "content": [{"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+                         "input": {"questions": [{"question": "real?"}]}}]})) + "\n",
+        encoding="utf-8",
+    )
+    # Stop before the final complete line once, exercising the bounded-prefix
+    # guard; then prime the complete prefix and confirm sidechain metadata is
+    # ignored for a primary transcript.
+    state = claude_code.StreamState(has_primary_thread=True)
+    claude_code.prime_stream_state(fp, state, fp.stat().st_size - 1)
+    assert "tu1" not in state.askuserquestion_inputs
+    claude_code.prime_stream_state(fp, state, fp.stat().st_size)
+    assert state.askuserquestion_inputs == {"tu1": [{"question": "real?"}]}
+
+
+def test_parse_record_covers_empty_and_non_conversation_shapes():
+    config = ExtractConfig(include_thinking=True)
+    state = claude_code.StreamState()
+    assert claude_code.parse_record({"type": "system", "subtype": "other"}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "assistant", "message": {"content": [
+        {}, {"type": "text", "text": ""}, {"type": "thinking", "thinking": ""}
+    ]}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": [
+        {}, {"type": "tool_result", "tool_use_id": "other", "content": "noise"}
+    ]}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": 42}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": "<local-command-caveat>x</local-command-caveat>"}}, 0, "m", config, state) == []

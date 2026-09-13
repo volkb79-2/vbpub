@@ -474,3 +474,10 @@ def test_highlight_as_a_block_hook_leaves_the_scaffolding_alone():
     # the footer is machine-read by read_since_marker(): it must not be colored
     footer_line = [ln for ln in text.splitlines() if "nyxloom-extract:" in ln][0]
     assert "\x1b[" not in footer_line
+
+
+def test_highlight_colorless_mode_returns_source_unchanged():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    source = "## Status\n\n**done**\n"
+    assert highlight_markdown(source, color=False) == source
