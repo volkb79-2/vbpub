@@ -111,6 +111,65 @@ def test_a_uuid_found_only_outside_the_cwds_project_dir_still_resolves(home):
     assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == f
 
 
+def test_unique_match_survives_genuinely_empty_project_and_codex_scans(home):
+    f = _claude_session(home, "-workspaces-vbpub", _UUID)
+    empty_project = home / ".claude" / "projects" / "-workspaces-empty"
+    (empty_project / "unrelated-session").mkdir(parents=True)
+    (home / ".codex" / "sessions" / "2026" / "09" / "12").mkdir(parents=True)
+
+    assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == f
+
+
+def test_unique_claude_match_is_not_returned_after_a_project_scan_fails(
+    home, monkeypatch
+):
+    expected = _claude_session(home, "-workspaces-vbpub", _UUID)
+    failing_project = home / ".claude" / "projects" / "-workspaces-zbroken"
+    failing_project.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def fail_project_scan(path):
+        if path == failing_project:
+            raise PermissionError("forced project scan failure")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_project_scan)
+
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "could not scan" in message
+    assert str(failing_project) in message
+    assert str(expected) not in message
+
+
+def test_unique_claude_match_is_not_returned_after_a_codex_scan_fails(
+    home, monkeypatch
+):
+    expected = _claude_session(home, "-workspaces-vbpub", _UUID)
+    failing_root = home / ".codex" / "sessions"
+    failing_root.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def fail_codex_scan(path):
+        if path == failing_root:
+            raise PermissionError("forced Codex scan failure")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_codex_scan)
+
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_UUID, Path("/workspaces/vbpub"))
+
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "could not scan" in message
+    assert str(failing_root) in message
+    assert str(expected) not in message
+
+
 def test_a_preferred_claude_match_and_another_claude_match_are_ambiguous(home):
     # The cwd-matching directory is searched first for speed, but preference
     # cannot hide a second global match.

@@ -2667,7 +2667,9 @@ _FOLLOW_HELP = (
     "After printing the one-shot result above, keep printing new content as "
     "the session grows (tail -f, but applying THIS verb's own selection "
     "rules to each new record). Genuinely incremental: the file's size is "
-    "polled and only newly-appended bytes are ever read. Ctrl-C to stop"
+    "polled; growth reads the appended payload plus only bounded prefix/tail "
+    "fingerprints as needed for rewrite detection -- never a whole-file "
+    "rescan. Ctrl-C to stop"
 )
 
 

@@ -2681,6 +2681,10 @@ parts can arrive after the message row. The score rule's pause bonus requires
 one pending assistant event when its keep/drop decision genuinely depends on
 the next event; stable long/finding/checkpoint decisions are not delayed.
 
+The file tailer reads the appended payload on growth plus only bounded
+prefix/tail fingerprints as needed for rewrite detection; unchanged polls read
+no content. It never performs a whole-file rescan.
+
 The fixed-span handoff transform is intentionally not part of the live
 surface: `--strip-stale-wakeups` collapses a trailing run only after the
 complete selected span is known. Applying it incrementally would require

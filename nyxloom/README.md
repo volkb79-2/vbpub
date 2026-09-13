@@ -127,6 +127,10 @@ notify channel. See the [design rationale](docs/design-context-lifecycle-experim
 and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
 
+For file-backed sessions, `--follow` reads the appended payload plus only
+bounded prefix/tail fingerprints as needed for rewrite detection; it never
+rescans the whole file. Unchanged polls read no content.
+
 `--strip-stale-wakeups` is a fixed-span trailing-run transform, so the exact
 combination `extract --follow --strip-stale-wakeups` is rejected before the
 initial phase-one extraction rather than silently diverging as live output

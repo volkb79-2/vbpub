@@ -1112,6 +1112,17 @@ def test_extract_render_markdown_and_highlight_are_mutually_exclusive(tmp_path, 
     assert "opposite goals" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("verb", ["extract", "extract-lossless"])
+def test_follow_help_describes_payload_and_bounded_fingerprint_reads(verb, capsys):
+    assert cli.main([verb, "--help"]) == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    help_text = help_text.replace("whole- file", "whole-file")
+    assert "appended payload" in help_text
+    assert "bounded prefix/tail fingerprints" in help_text
+    assert "whole-file rescan" in help_text
+    assert "only newly-appended bytes are ever read" not in help_text
+
+
 def test_extract_follow_rejects_json(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp), "--follow", "--json"])

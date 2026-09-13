@@ -132,6 +132,49 @@ def escape_cwd(cwd: Path) -> str:
     return str(cwd).replace("/", "-").replace(".", "-")
 
 
+def _scan_indeterminate(path: Path, operation: str, exc: OSError) -> LocateError:
+    return LocateError(
+        f"session lookup is indeterminate; could not {operation} {path}: "
+        f"{type(exc).__name__}: {exc}"
+    )
+
+
+def _scan_directory(path: Path, *, missing_ok: bool = False) -> list[Path]:
+    """List one directory without hiding traversal or metadata failures.
+
+    ``Path.glob`` can turn an unreadable directory into an empty iterator on
+    newer Python versions. An empty result is a valid negative only when the
+    directory is absent (or genuinely empty); a failed scan must refuse to
+    resolve a session from a partial view.
+    """
+    try:
+        path_stat = path.stat()
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return []
+        raise _scan_indeterminate(path, "inspect", exc) from exc
+    except OSError as exc:
+        raise _scan_indeterminate(path, "inspect", exc) from exc
+    if not stat.S_ISDIR(path_stat.st_mode):
+        return []
+
+    try:
+        return sorted(path.iterdir())
+    except FileNotFoundError as exc:
+        if missing_ok:
+            return []
+        raise _scan_indeterminate(path, "scan", exc) from exc
+    except OSError as exc:
+        raise _scan_indeterminate(path, "scan", exc) from exc
+
+
+def _entry_mode(path: Path) -> int:
+    try:
+        return path.stat().st_mode
+    except OSError as exc:
+        raise _scan_indeterminate(path, "inspect", exc) from exc
+
+
 def _claude_matches_in(project_dir: Path, ref: str) -> list[Path]:
     """Both file layouts one Claude Code project directory can hold a
     session under: `<uuid>.jsonl` for the interactive session itself, and
@@ -139,26 +182,48 @@ def _claude_matches_in(project_dir: Path, ref: str) -> list[Path]:
     (the verified layout adapters/claude_code.py's own docstring documents).
     """
     wanted = ref.lower()
-    matches = [
-        f for f in sorted(project_dir.glob("*.jsonl"))
-        if f.is_file() and f.stem.lower() == wanted
-    ]
-    matches += [
-        f for f in sorted(project_dir.glob("*/subagents/agent-*.jsonl"))
-        if f.is_file() and f.stem.lower() == f"agent-{wanted}"
-    ]
+    matches: list[Path] = []
+    for path in _scan_directory(project_dir):
+        mode = _entry_mode(path)
+        if stat.S_ISREG(mode) and path.name.endswith(".jsonl"):
+            if path.stem.lower() == wanted:
+                matches.append(path)
+            continue
+        if not stat.S_ISDIR(mode):
+            continue
+        subagents = path / "subagents"
+        for nested_path in _scan_directory(subagents, missing_ok=True):
+            nested_mode = _entry_mode(nested_path)
+            if (
+                stat.S_ISREG(nested_mode)
+                and nested_path.name.startswith("agent-")
+                and nested_path.name.endswith(".jsonl")
+                and nested_path.stem.lower() == f"agent-{wanted}"
+            ):
+                matches.append(nested_path)
     return matches
 
 
 def _codex_matches(ref: str) -> list[Path]:
     root = _codex_sessions_root()
-    if not root.is_dir():
-        return []
     suffix = f"-{ref.lower()}"
-    return sorted(
-        f for f in root.glob("**/rollout-*.jsonl")
-        if f.is_file() and f.stem.lower().endswith(suffix)
-    )
+    matches: list[Path] = []
+
+    def visit(directory: Path, *, missing_ok: bool = False) -> None:
+        for path in _scan_directory(directory, missing_ok=missing_ok):
+            mode = _entry_mode(path)
+            if stat.S_ISDIR(mode):
+                visit(path)
+            elif (
+                stat.S_ISREG(mode)
+                and path.name.startswith("rollout-")
+                and path.name.endswith(".jsonl")
+                and path.stem.lower().endswith(suffix)
+            ):
+                matches.append(path)
+
+    visit(root, missing_ok=True)
+    return sorted(matches)
 
 
 def _opencode_matches(ref: str) -> list[Path]:
@@ -286,13 +351,19 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
     if _UUID_RE.match(ref) or _SUBAGENT_ID_RE.match(ref):
         projects_root = _claude_projects_root()
         candidates: list[Path] = []
-        if projects_root.is_dir():
-            preferred = projects_root / escape_cwd(cwd or Path.cwd())
-            if preferred.is_dir():
-                candidates += _claude_matches_in(preferred, ref)
-            for project_dir in sorted(projects_root.iterdir()):
-                if project_dir.is_dir() and project_dir != preferred:
-                    candidates += _claude_matches_in(project_dir, ref)
+        project_dirs: list[Path] = []
+        for project_dir in _scan_directory(projects_root, missing_ok=True):
+            if stat.S_ISDIR(_entry_mode(project_dir)):
+                project_dirs.append(project_dir)
+        preferred = projects_root / escape_cwd(cwd or Path.cwd())
+        ordered_project_dirs = []
+        if preferred in project_dirs:
+            ordered_project_dirs.append(preferred)
+        ordered_project_dirs.extend(
+            project_dir for project_dir in project_dirs if project_dir != preferred
+        )
+        for project_dir in ordered_project_dirs:
+            candidates += _claude_matches_in(project_dir, ref)
         if _UUID_RE.match(ref):
             candidates += _codex_matches(ref)
 

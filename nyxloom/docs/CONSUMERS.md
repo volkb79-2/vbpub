@@ -75,6 +75,11 @@ records, while `extract-lossless` prints every new prose/thinking block.
 nyxloom extract-lossless /path/to/session.jsonl --follow --highlight --bell
 ```
 
+File-backed follow is incremental for large logs: an advancing file reads its
+appended payload plus only bounded prefix/tail fingerprints as needed for
+rewrite detection. Unchanged polls read no content, and no poll performs a
+whole-file rescan.
+
 For live redaction, use `extract`: its `--redact-pattern` applies to both the
 initial brief and newly streamed phase-two output.
 

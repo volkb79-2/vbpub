@@ -478,9 +478,10 @@ using `since_marker` only to decide when to start *emitting* — so against a
 growing 50MB+ log it would rescan the whole file every second. `JsonlTailer`
 does what `tail -f` actually does: keep the handle and the byte offset,
 `stat()` for a size change (**no content read at all** when unchanged), then
-read the appended region. When metadata changes it also rereads only bounded
-prefix/tail fingerprint samples to detect a same-inode rewrite; it never
-rescans the whole file. The offset is committed only past complete lines,
+read the appended payload plus only bounded prefix/tail fingerprint samples as
+needed to detect a same-inode rewrite; these bounded fingerprints are the only
+additional content reads, and it never rescans the whole file. The offset is
+committed only past complete lines,
 leaving a partial line (a writer caught mid-flush) for the next tick.
 
 Confirmed in a real process, not just asserted in a unit test: `strace` of a
