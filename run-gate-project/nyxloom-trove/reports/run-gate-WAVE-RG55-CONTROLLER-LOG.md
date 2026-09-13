@@ -1272,3 +1272,10 @@ A fresh P1 final-review dispatch requested explicitly as Sol xhigh reported
 that its runtime identity could not be verified as exactly `gpt-5.6-sol` at
 `xhigh`; it stopped before repository inspection, probes, or modifications.
 This is not review evidence and P1 remains merge-blocked.
+
+### RW-91 — 2026-09-13 19:15:05Z — Sol reviewer runtime unavailable for P4
+
+A fresh P4 final-review dispatch requested explicitly as Sol xhigh exposed only
+a generic GPT-5 identity and could not verify `gpt-5.6-sol` at `xhigh`; it
+stopped before reading the handoff, inspecting the repository, probing, or
+writing a review. This is not review evidence and P4 remains merge-blocked.
