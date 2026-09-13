@@ -1042,3 +1042,11 @@ R0/R1 evidence, exact 875/875 changed-line and 336/336 changed-branch
 coverage, doctor, R-36h containment, and the RW-58 mutation disclosure.
 The review record is `run-gate-WAVE-RG55-P2-REVIEW-round3.md`; merge remains
 serial and release/install still follow.
+
+### RW-66 — 2026-09-13 10:54:50Z — preserve operator backlog during P2 merge
+
+The P2 no-ff merge was initially refused because the operator's uncommitted
+`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` addendum would be overwritten.
+The controller will use a path-scoped temporary stash solely to preserve and
+restore that addendum around the merge; it remains outside all controller
+commits and is not a product decision.
