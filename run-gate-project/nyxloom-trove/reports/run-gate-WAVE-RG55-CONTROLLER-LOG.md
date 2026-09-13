@@ -1220,3 +1220,13 @@ separately read progress/verdict records show 57 candidates, 57 killed, 0
 survived, 0 `budget_exceeded`, and 0 crashed; the assay process exited 0.
 P4 may proceed from the detached judged tree to its branch for final gates,
 but no detached-tree commit was made.
+
+### RW-85 — 2026-09-13 18:41:50Z — P6 fresh Luna successor for gate mechanics
+
+The prior P6 Luna session completed the causal triage but did not advance the
+remaining budget placeholders. It was TaskStopped before a successor was
+dispatched. A fresh Luna xhigh implementer was dispatched from committed
+BRIEF-10/LOG state to test the minimal mutation-argv fail-fast configuration
+(`pytest ... -x`) or reject it with evidence, then commit any justified
+non-production fix and rerun the exact judged tree. No reviewer, merge, or
+release was dispatched.
