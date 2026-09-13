@@ -4,6 +4,32 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.3.0] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=94917b55f7274f8c3665f706fd2550cdbfb9435f -->
+
+### Added
+- feat(topos): P93 lifecycle owner-chain protocol and action migration (port-forward) (864674d7)
+
+### Changed
+- pwmcp,topos: adopt $INSTANCE_ID/$DOCKER_NETWORK_INTERNAL naming (CIU-104 mitigation) (28a70b24)
+- merge(nyxloom): make the AGENTS.md pointer block a REQUIRED adoption step (950046d9)
+- merge(topos): P93 lifecycle owner-chain protocol — port-forward + independent review APPROVE (3f156379)
+- merge(topos): P91 persistent capped history — port-forward + independent review APPROVE (d82c35af)
+- topos-P91: close final diff-coverage gaps (2 lines) (c9d70520)
+- topos-P91: close remaining diff-coverage gaps (recovery-internals branches) (301c7909)
+- topos-P91: close diff-coverage gate on the ported wiring; fix a latent COMPONENT_NAMES gap (c5bd5a1a)
+- topos-P91: port forward persistent capped daemon history (groop->topos rescue) (ecd671fe)
+
+### Documentation
+- docs(topos): update backlog ideas (59c2dd3f)
+- docs(topos-P91): LOG/REPORT/REVIEW for the groop->topos port-forward (5519eb87)
+- docs(topos/P93): record official gate results in LOG/REPORT port-forward addenda (995b57d7)
+- docs(topos/backlog): B-046/B-047 -- 4 hardcoded-"0.1.0" tests break topos-suite on main (e9f8c4d6)
+- docs(topos): update backlog entries (9f8e4929)
+- docs(run-gate): RG-13 adoption hygiene + estate budget↔timeout sweep (df5c9c10)
+- docs(nyxloom): make the AGENTS.md pointer block a REQUIRED adoption step (97324f46)
+
 ## [0.2.1] - 2026-08-22
 <!-- cmru: generated -->
 <!-- cmru: source-end=f330d9a17940787edcfcec957c1268f765aa5af6 -->

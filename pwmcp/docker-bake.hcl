@@ -38,7 +38,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.62.0-r2"
+  default = "1.62.0-r3"
 }
 
 variable "OCI_SOURCE" {

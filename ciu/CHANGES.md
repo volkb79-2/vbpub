@@ -21,6 +21,18 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.13.1] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=13ecbc71a4274dca7e23043f3e08ec7d138a706c -->
+
+### Changed
+- design(rg55): amendment A1 / RW-30 -- daemon is the singleton watcher in its own cgprofile.slice; dev-infra withdrawn; dev-gates stays in mdt (5edec58c)
+- design(rg55): liveness/placement/admission design of record (D-17..D-26) + RW-29 -- P7 assay B091, P8 mdt slices handoffs, SPEC-V8 D.7 (11ac5d67)
+- plan(rg55): P0 -- interface contract frozen, golden fixtures, RG-56/RG-57 + CP-1..3 filed, SPEC-V8 D.6, controller log (63b928da)
+
+### Documentation
+- docs(ciu): v8 third-party review, round 4 — draft.7 / rev 3.4 (d58d85df)
+
 ## [Unreleased]
 <!-- hand-written ahead of release; fold into its own dated section (never
      leave here) the moment that release is cut, per the process note above.

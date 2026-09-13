@@ -223,6 +223,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.1.2] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=ebc26e83da5d2d55b619890eca7a33e60b8e81db -->
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 6.1.0 -> 6.1.1 (assay-v6.1.1) (dd8b07f1)
+
+### Changed
+- design(rg55): liveness/placement/admission design of record (D-17..D-26) + RW-29 -- P7 assay B091, P8 mdt slices handoffs, SPEC-V8 D.7 (11ac5d67)
+- backlog(assay): B090 -- budget_per_candidate has no default; a hung mutant blocks the whole R2 run (seen live in the RG-55 wave) (ce27b14a)
+
+### Documentation
+- docs(assay): B089 -- istanbul branch-arc self-contradiction on some .tsx files (2659af3a)
+
 ## [6.1.1] - 2026-09-11
 <!-- cmru: generated -->
 <!-- cmru: source-end=53d841a84ae16545025921ff126ade7cc167dbe8 -->
