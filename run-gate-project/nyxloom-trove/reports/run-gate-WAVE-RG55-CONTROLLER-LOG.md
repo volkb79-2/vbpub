@@ -1086,3 +1086,15 @@ retained the artifact manifest under
 sync warning is caused only by the preserved operator backlog; the controller
 will merge the pushed release commit with `--no-ff`, install the exact wheel,
 and verify revision 41.
+
+### RW-71 — 2026-09-13 11:48:28Z — P4 merge-tip mutation gate is not evidence
+
+P4's final R2 invocation on merge tip `d4c57c1a` returned
+`INCONCLUSIVE/NO_MUTANTS`, not a green mutation result. Assay's B008
+first-parent merge resolution selected `b72cba31` as the comparison base,
+therefore the merge itself exposed no changed executable lines even though the
+P4 source diff exists. The controller rules this run invalid for the P4
+mutation claim and requires a resumed R2 on a non-merge P4 judged tree, with
+source identity checked against the final merge tip; the already-green R1/R3
+results remain separate final-tip evidence. This is a gate-procedure ruling,
+not a reopening of any settled product decision.
