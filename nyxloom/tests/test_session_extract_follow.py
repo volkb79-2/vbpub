@@ -26,6 +26,7 @@ from nyxloom.session_extract.follow import (
     JsonlSource,
     JsonlTailer,
     OpencodeSource,
+    _prime_interview_pending,
     deliver,
 )
 from nyxloom.session_extract.select import select
@@ -155,6 +156,23 @@ def test_tailer_detects_same_inode_replacement_that_preserves_the_boundary_newli
     tailer.close()
 
 
+def test_tailer_uses_the_boundary_check_when_a_prefix_fingerprint_is_unavailable(tmp_path):
+    # A successful owned read always records a prefix fingerprint. This test
+    # pins the defensive fallback for a tailer recovered after that metadata
+    # was unavailable: the old newline invariant still detects a rewritten
+    # prefix instead of silently treating it as appended content.
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"old line\n")
+    tailer = JsonlTailer(fp, offset=len(b"old line\n"))
+    tailer._open()
+    tailer._own_offset = True
+    assert tailer._prefix_fingerprint is None
+
+    fp.write_bytes(b"new line!")  # same length, but no boundary newline
+    assert tailer._rewritten() is True
+    tailer.close()
+
+
 def test_a_caller_supplied_mid_line_anchor_is_not_second_guessed(tmp_path):
     # The starting offset is a plain file size taken while a LIVE session may
     # be mid-write, so it can land mid-line. Validating it would mean
@@ -223,6 +241,51 @@ def test_follow_primes_a_question_from_phase_one_before_reading_its_answer(tmp_p
     assert [e.kind for a in arrivals for e in a.events] == [EventKind.QA_PAIR]
     assert "Ship it?" in arrivals[0].events[0].text
     source.close()
+
+
+def test_startup_question_priming_ignores_a_missing_session_file(tmp_path):
+    # The phase-one file can disappear before the follow source is created;
+    # startup attention must degrade to no pending question, not abort follow.
+    missing = tmp_path / "session.jsonl"
+    assert _prime_interview_pending(missing, 1, has_primary_thread=True) == {}
+
+
+def test_startup_question_priming_ignores_a_malformed_record(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("{not-json}\n", encoding="utf-8")
+    assert _prime_interview_pending(fp, fp.stat().st_size, has_primary_thread=True) == {}
+
+
+def test_startup_question_priming_does_not_consume_a_partial_anchor_line(tmp_path):
+    question = _rec(type="assistant", uuid="q1", timestamp=_TS, message={
+        "role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+             "input": {"questions": [{"question": "Ship it?"}]}},
+        ],
+    })
+    payload = (json.dumps(question) + "\n").encode()
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(payload)
+
+    # The anchor falls inside the question record. Replaying it would create
+    # startup attention from bytes phase one did not fully consume.
+    assert _prime_interview_pending(fp, len(payload) - 1, has_primary_thread=True) == {}
+
+
+def test_startup_question_priming_skips_sidechain_questions_in_a_primary_file(tmp_path):
+    sidechain_question = _rec(
+        type="assistant", uuid="side-q", isSidechain=True, timestamp=_TS,
+        message={
+            "role": "assistant", "content": [
+                {"type": "tool_use", "id": "side-tu", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": "sidechain only"}]}},
+            ],
+        },
+    )
+    fp = tmp_path / "session.jsonl"
+    _append(fp, sidechain_question)
+
+    assert _prime_interview_pending(fp, fp.stat().st_size, has_primary_thread=True) == {}
 
 
 def test_tailer_tolerates_a_file_that_does_not_exist_yet(tmp_path):
@@ -487,6 +550,7 @@ def test_startup_follow_delivers_attention_for_a_preexisting_unanswered_question
     )
 
     assert follower.tick() == 0  # no new record is needed to surface phase-one attention
+    assert follower.tick() == 0  # startup attention is delivered only once
     follower.close()
 
     assert bell.getvalue() == "\a"
@@ -771,6 +835,54 @@ def test_attention_hook_stdout_does_not_contaminate_the_content_stream(tmp_path,
     assert "hook-output" in capsys.readouterr().err
 
 
+def test_live_attention_hook_and_notification_payloads_are_redacted(tmp_path, monkeypatch):
+    # The side channels receive excerpts independently of stdout. Both the
+    # long-block path and the structural interview path must apply extract's
+    # paragraph redaction before those payloads leave the process.
+    from nyxloom import notify
+
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    hook_sink = tmp_path / "attention.txt"
+    hook = (
+        f'printf "%s|%s\\n" "$NYXLOOM_ATTENTION_REASON" '
+        f'"$NYXLOOM_ATTENTION_EXCERPT" >> "{hook_sink}"'
+    )
+    sent = []
+    monkeypatch.setattr(
+        notify, "send", lambda config, note: (sent.append(note) or (True, "sent"))
+    )
+    config = ExtractConfig(redact_patterns=(r"SECRET=[^ ]+",))
+    out = io.StringIO()
+    follower = _follower(
+        fp, out, config=config,
+        follow_config=FollowConfig(on_attention=hook, notify=object(), attention_min_chars=10),
+    )
+
+    _append(fp, _assistant("a1", "SECRET=long-value " + "x" * 500))
+    follower.tick()
+    _append(fp, _rec(type="assistant", uuid="q1", timestamp=_TS, message={
+        "role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+             "input": {"questions": [{"question": "SECRET=question-value"}]}},
+        ],
+    }))
+    follower.tick()
+    follower.close()
+
+    hook_payloads = [line.split("|", 1) for line in hook_sink.read_text().splitlines()]
+    assert {reason for reason, _excerpt in hook_payloads} == {"long_block", "interview_pending"}
+    assert all("long-value" not in excerpt and "question-value" not in excerpt
+               for _reason, excerpt in hook_payloads)
+    assert all("redacted paragraph" in excerpt for _reason, excerpt in hook_payloads)
+    assert {note["title"].rsplit("(", 1)[-1][:-1] for note in sent} == {
+        "long_block", "interview_pending",
+    }
+    assert all("long-value" not in note["body"] and "question-value" not in note["body"]
+               for note in sent)
+    assert all("redacted paragraph" in note["body"] for note in sent)
+
+
 def test_attention_delivery_reports_a_hook_oserror(monkeypatch, capsys):
     import subprocess
 
@@ -1005,6 +1117,34 @@ def test_opencode_source_eventually_emits_a_stable_single_final_row(tmp_path):
     source.close()
 
 
+def test_opencode_source_revisits_a_row_after_stable_emission_for_late_parts(tmp_path):
+    # A stable newest row is emitted and its cursor advances, but opencode can
+    # still append another part to that same message. The cursor must exclude
+    # the already-emitted row from whole-row scans without making it invisible
+    # to the fingerprinted boundary check.
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "initial prose")
+    source = OpencodeSource(db, sid, ExtractConfig(), lossless_mode=False, cursor=(-1, ""))
+
+    assert source.poll() == []
+    assert [e.text for a in source.poll() for e in a.events] == ["initial prose"]
+    assert source._cursor == (10, "m1")
+    assert source._anchor_cursor == (10, "m1")
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO part VALUES ('p-m1-late', 'm1', ?, 11, 11, ?)",
+        (sid, json.dumps({"type": "text", "text": "late prose"})),
+    )
+    conn.commit()
+    conn.close()
+
+    assert [e.text for a in source.poll() for e in a.events] == ["late prose"]
+    assert source.poll() == []  # the same part is not duplicated
+    source.close()
+
+
 def test_opencode_source_revisits_the_phase_boundary_row_when_parts_arrive(tmp_path):
     db = _opencode_db(tmp_path / "opencode.db")
     sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
@@ -1094,6 +1234,40 @@ def test_opencode_source_handles_extended_replaced_and_empty_changed_parts(tmp_p
     conn.commit()
     conn.close()
     assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_handles_a_malformed_old_changed_part(tmp_path):
+    # A malformed part already present at the phase-one boundary must not
+    # prevent a later valid update from being emitted. The old JSON is only
+    # used for suffix detection, so invalid old data means "no known prefix".
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", None)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO part VALUES ('p-m1', 'm1', ?, 10, 10, '{')", (sid,)
+    )
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.commit()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "UPDATE part SET time_updated = 11, data = ? WHERE id = 'p-m1'",
+        (json.dumps({"type": "text", "text": "replacement"}),),
+    )
+    conn.commit()
+    conn.close()
+
+    assert [e.text for a in source.poll() for e in a.events] == ["replacement"]
     source.close()
 
 

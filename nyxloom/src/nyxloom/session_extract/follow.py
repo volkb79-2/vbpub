@@ -502,6 +502,23 @@ class OpencodeSource:
         self._seq += 1
         return arrival
 
+    def _commit_row(self, row, fingerprint: tuple | None = None) -> None:
+        """Advance to an emitted/settled row while retaining its live view.
+
+        ``cursor`` excludes a row from the indexed query.  That is useful for
+        avoiding a full-row re-emission, but it also means the cursor cannot be
+        the only state for the newest row: opencode may append or extend its
+        ``part`` rows after the row looked stable.  Keep the same row as an
+        anchor, with the fingerprint representing exactly what was last
+        observed, so ``_poll_anchor`` can emit only a later contribution.
+        """
+        key = (row[1], row[0])
+        self._cursor = key
+        self._anchor_cursor = key
+        self._anchor_fingerprint = (
+            fingerprint if fingerprint is not None else self._fingerprint(row[0], row[2])
+        )
+
     def _poll_anchor(self) -> list[Arrival]:
         """Emit a changed phase-boundary row without re-emitting it unchanged."""
         if self._anchor_cursor is None:
@@ -551,23 +568,23 @@ class OpencodeSource:
             if not self._pending_stable:
                 return arrivals
             arrival = self._arrival(row[0], row[1], row[2])
-            if arrival is None:
-                return arrivals
-            self._cursor = (row[1], row[0])
-            self._anchor_cursor = None
+            self._commit_row(row, self._pending_fingerprint)
             self._pending_key = None
             self._pending_fingerprint = None
             self._pending_stable = False
-            arrivals.append(arrival)
-            return arrivals
-
-        for msg_id, time_created, data_json in rows[:-1]:
-            arrival = self._arrival(msg_id, time_created, data_json)
             if arrival is not None:
                 arrivals.append(arrival)
-        settled_id, settled_time, _ = rows[-2]
-        self._cursor = (settled_time, settled_id)
-        self._anchor_cursor = None
+            return arrivals
+
+        for row in rows[:-1]:
+            arrival = self._arrival(row[0], row[1], row[2])
+            # Rows before the newest one are settled by the newer sibling, but
+            # keep the most recently emitted row as an anchor too. This closes
+            # the same late-part window for a row that was emitted by the
+            # multi-row path rather than by the two-observation path above.
+            self._commit_row(row)
+            if arrival is not None:
+                arrivals.append(arrival)
         self._pending_key = None
         self._pending_fingerprint = None
         self._pending_stable = False
@@ -791,6 +808,27 @@ class Follower:
     def _excerpt(self, text: str) -> str:
         return text[:EXCERPT_CHARS]
 
+    def _redacted_attention_text(self, text: str) -> str:
+        """Return attention prose under the live extract redaction policy.
+
+        Attention is delivered through side channels as well as stdout.  It
+        must therefore pass through the same paragraph redactor before the
+        excerpt is constructed.  Lossless mode deliberately skips this: the
+        CLI refuses ``--redact-pattern`` for that verb, whose contract is
+        verbatim output.
+        """
+        if self._lossless or not self._config.redact_patterns:
+            return text
+        event = NormalizedEvent(
+            seq=0,
+            marker="attention",
+            timestamp="",
+            kind=EventKind.ASSISTANT_TEXT,
+            text=text,
+        )
+        self._redact(event)
+        return event.text
+
     def _redact(self, ev: NormalizedEvent) -> None:
         """Apply extract's post-selection redaction to live output too.
 
@@ -804,7 +842,10 @@ class Follower:
 
     def _fire(self, reason: str, text: str) -> None:
         deliver(
-            AttentionEvent(reason, self._harness, self._session_path, self._excerpt(text)),
+            AttentionEvent(
+                reason, self._harness, self._session_path,
+                self._excerpt(self._redacted_attention_text(text)),
+            ),
             self._follow, self._bell_out,
         )
 

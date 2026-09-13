@@ -342,3 +342,129 @@ def test_opencode_match_is_not_resolved_when_another_store_is_indeterminate(
     assert "indeterminate" in message
     assert str(bad) in message
     assert str(good) not in message
+
+
+def test_opencode_lookup_reports_a_store_stat_failure_as_indeterminate(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"candidate")
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+
+    original_stat = locate.Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == db:
+            raise PermissionError("metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError) as e:
+        locate._opencode_matches(_OPENCODE_SID)
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "path lookup failed" in message
+    assert "metadata denied" in message
+
+
+def test_a_non_regular_opencode_candidate_is_skipped_as_a_negative(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.mkdir(parents=True)
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    assert "not found" in str(e.value)
+    assert "indeterminate" not in str(e.value)
+
+
+def test_opencode_false_sniff_on_expected_schema_is_indeterminate(home, monkeypatch):
+    db = _opencode_db(home / ".local" / "share" / "opencode" / "opencode.db", [])
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: False)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "sniff failed" in message
+    assert "expected opencode tables" in message
+
+
+def test_opencode_probe_failure_after_a_false_sniff_is_indeterminate(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"candidate")
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: False)
+
+    def fail_connect(*_args, **_kwargs):
+        raise locate.sqlite3.OperationalError("probe locked")
+
+    monkeypatch.setattr(locate.sqlite3, "connect", fail_connect)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "sniff failed" in message
+    assert "probe locked" in message
+
+
+def test_opencode_query_cleanup_failure_is_indeterminate(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"candidate")
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: True)
+
+    class Cursor:
+        def fetchone(self):
+            return None
+
+    class Connection:
+        def execute(self, *_args):
+            return Cursor()
+
+        def close(self):
+            raise RuntimeError("query close failed")
+
+    monkeypatch.setattr(locate.sqlite3, "connect", lambda *_args, **_kwargs: Connection())
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "query cleanup failed" in message
+    assert "query close failed" in message
+
+
+def test_opencode_probe_cleanup_failure_is_indeterminate(home, monkeypatch):
+    db = home / ".local" / "share" / "opencode" / "opencode.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"candidate")
+    monkeypatch.setattr(locate, "_opencode_db_candidates", lambda: [db])
+    from nyxloom.session_extract.adapters import opencode
+
+    monkeypatch.setattr(opencode, "sniff", lambda _path: False)
+
+    class Cursor:
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def execute(self, *_args):
+            return Cursor()
+
+        def close(self):
+            raise RuntimeError("probe close failed")
+
+    monkeypatch.setattr(locate.sqlite3, "connect", lambda *_args, **_kwargs: Connection())
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_OPENCODE_SID, Path("/workspaces/vbpub"))
+    message = str(e.value)
+    assert "indeterminate" in message
+    assert "sniff failed" in message
+    assert "probe close failed" in message

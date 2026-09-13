@@ -193,19 +193,22 @@ def _opencode_matches(ref: str) -> list[Path]:
                 failures.append(f"{db}: sniff failed: {probe_error}")
             continue
 
-        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+            failures.append(f"{db}: query failed: {type(exc).__name__}: {exc}")
+            continue
+
+        try:
             row = conn.execute("SELECT 1 FROM session WHERE id = ?", (ref,)).fetchone()
         except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
             failures.append(f"{db}: query failed: {type(exc).__name__}: {exc}")
             continue
         finally:
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
-                    failures.append(f"{db}: query cleanup failed: {type(exc).__name__}: {exc}")
+            try:
+                conn.close()
+            except Exception as exc:  # census: process-boundary translation (nyxloom-P112)
+                failures.append(f"{db}: query cleanup failed: {type(exc).__name__}: {exc}")
         if row is not None:
             found.append(db)
 

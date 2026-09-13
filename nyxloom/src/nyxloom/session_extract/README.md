@@ -397,10 +397,11 @@ the wrong session.
 
 Claude Code project directories are keyed by an escaped cwd
 (`/workspaces/vbpub` → `-workspaces-vbpub`, `.` and `/` both becoming `-`),
-so the directory matching the **current** cwd is searched first and
-short-circuits on a unique hit. That priority is a speed optimization only —
-correctness comes from the full scan it falls back to, which is also what
-covers any cwd whose escaping this module gets wrong. The escaping rule is
+so the directory matching the **current** cwd is searched first. That priority
+only controls candidate ordering: the global scan still runs after a hit, and
+only its final count decides whether the ref is unique or ambiguous. Scanning
+all candidates is also what covers any cwd whose escaping this module gets
+wrong. The escaping rule is
 the harness's, not ours; it was checked against all 26 real project dirs
 here, and it is free to change.
 
@@ -476,16 +477,19 @@ tick. That function opens the file and iterates **from byte 0 every call**,
 using `since_marker` only to decide when to start *emitting* — so against a
 growing 50MB+ log it would rescan the whole file every second. `JsonlTailer`
 does what `tail -f` actually does: keep the handle and the byte offset,
-`stat()` for a size change (**no read at all** when unchanged), `seek()` and
-read only the new bytes, and commit the offset only past complete lines,
+`stat()` for a size change (**no content read at all** when unchanged), then
+read the appended region. When metadata changes it also rereads only bounded
+prefix/tail fingerprint samples to detect a same-inode rewrite; it never
+rescans the whole file. The offset is committed only past complete lines,
 leaving a partial line (a writer caught mid-flush) for the next tick.
 
 Confirmed in a real process, not just asserted in a unit test: `strace` of a
 live `extract-lossless --follow` against a 314KB session file being appended
-to shows `lseek` going to `314354 → 314641 → 314990` — the anchor, then past
-each appended record — and **never to 0**, with per-tick reads of exactly the
-appended bytes. `JsonlTailer.bytes_read` exists as that bug's permanent
-regression witness, and a test pins it to the appended size.
+to showed payload reads starting at the saved anchors (`314354 → 314641 →
+314990`) and no whole-file reread; the additional rewrite checks were bounded
+fingerprint samples, not a scan from byte 0. `JsonlTailer.bytes_read` counts
+the appended payload reads as the permanent regression witness, and a test
+pins it to the appended size.
 
 Committing the offset only past complete lines also buys a checkable
 invariant — our own offset always follows a newline — which is the only way to
