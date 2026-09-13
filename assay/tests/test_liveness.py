@@ -23,6 +23,7 @@ DECIDES once it is running.
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path, PurePosixPath
 
 import pytest

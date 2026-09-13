@@ -50,14 +50,20 @@ making a verdict depend on machine speed.
 The xdist fixture drives the shipped parser and monitor path with a real
 interleaved controller/two-worker wire shape and verifies four owner-PID test
 records, rather than launching an xdist pytest during this implementation.
-The estate host rule requires serial pytest, and the controller reported
-memory PSI above the launch threshold (`full avg10=6.84` on the fresh check,
-after an earlier `14.75%` report). Therefore all pytest validation, including
-the real materialized-plugin subprocess test, is explicitly deferred until a
-fresh `cat /proc/pressure/memory` shows `full avg10 <= 5`. No gate, mutation
-campaign, merge, release, or external-worktree action was performed.
+The first controller validation run found one test-only `NameError` in the
+new append regression (`json` was not imported); the import was added without
+changing product code. After a fresh PSI-gated launch, the focused serial
+suite passed: `tests/test_liveness.py`,
+`tests/test_liveness_proc_helpers.py`, and
+`tests/test_liveness_runner_monitor.py` — **116 passed**. The docs and
+cross-document vocabulary suite passed separately — **42 passed**. The real
+materialized-plugin subprocess test is therefore covered by the focused
+suite; no xdist subprocess is launched because the estate host rule requires
+serial pytest. No gate, mutation campaign, merge, release, or
+external-worktree action was performed.
 
 A fresh adversarial Luna xhigh review and the registered gate remain
-controller work before merge. The exact validation commands and their results
-must be appended here once PSI permits their launch; no unrun check is claimed
-as green.
+controller work before merge. The B096 combined registered gate is already
+running asynchronously on the parent branch; B097 itself still needs a
+quiet-tip gate after review because this report update and import fix changed
+the tip.
