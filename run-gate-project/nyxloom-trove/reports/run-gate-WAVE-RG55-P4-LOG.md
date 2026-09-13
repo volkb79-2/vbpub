@@ -1513,3 +1513,73 @@ All 14 original survivors remain classified as real oracle gaps, with line
 The focused test/report/log checkpoint is to be committed on the branch,
 then a second fresh R2 must use a new exact synthetic non-merge tree. No
 commit is permitted while detached.
+
+## Session 9 — final exact-tree R2 closure and branch transfer
+
+The assay completed before any branch operation. The worktree was then
+switched to `rg55-followups-run-gate` at
+`cd7596e9cd7e8cf64d4435c4d23b12ef636c475e`; the branch tree is
+`f673be7b41127e2b72189a450845a873dab4b8df`, identical to the exact synthetic
+non-merge assay commit `d750e6ad63240046f35bd3fdaa2459f8c98af243` (parent
+`cd7596e9cd7e8cf64d4435c4d23b12ef636c475e`). No commit was made while
+detached.
+
+The successful final R2 was launched from `run-gate-project` with:
+
+```console
+$ nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2
+```
+
+The `setsid nohup` wrapper was PID `2925691`, the gate was PID `2925693`, and
+assay was PID `2925786`. Launch PSI was `full avg10=0.00`; the lane disclosed
+`env built-in 'bare-host'`, `jobs=2`, and the generated assay argv included
+`--resume --progress .assay/progress-r2.jsonl`. The assay progress recorded
+the new run at `2026-09-13T17:10:14.051204+00:00`, `resumed_total=0`, and 57
+selected candidates. The run completed at
+`2026-09-13T18:25:05.796785+00:00` and used no P4 mutation container.
+
+The first wrapper marker was read separately from the verdict:
+
+```text
+PROCESS=absent
+ASSAY_EXIT=0
+```
+
+The final verdict artifact `.assay/verdict-r2.json` was then read separately:
+
+```text
+commit=d750e6ad63240046f35bd3fdaa2459f8c98af243
+assay_version=6.1.1
+outcome=PASS exit_code=0 reason_code=None
+R0=PASS verified_by_assay=true
+R2=PASS verified_by_assay=true
+candidate_count=57 killed=57 survived=0 equivalent=0
+budget_exceeded=0 crashed=0
+jobs=2 mode=changed_lines
+resolved_base=a921100db0897a37390273973451737584bf4aed
+base_resolution=merge-base
+```
+
+The first attempt for this exact tree used the worktree root instead of the
+project directory and failed immediately; its separate log was
+`/tmp/rg55-p4-final-r2.FS1E24/assay-r2.log`, with
+`ionice: failed to execute ./run-gate.py: No such file or directory` and
+`ASSAY_EXIT=127`, and no verdict. It was not counted as an assay result.
+
+The run was admitted at PSI `<=5`; later samples included `6.17`, `10.53`,
+and `8.44` while mutation tests were running. This was host contention after
+admission, not a launch failure, and the exact run was allowed to finish.
+The P4 lane itself stayed bare-host. A separate status probe initially
+matched unrelated containers by generic `run-gate-*` name; inspection showed
+the `session-extract-follow` worktree, not P4. An erroneous cap was issued
+to `run-gate-vbpub-tester-unified-2978019-1789319710`; restoration attempts
+were rejected/no-op as Docker began removing that unrelated container. No
+P4 mutation container was affected, and no further unrelated container
+action was taken. This corrects the earlier shorthand that all unrelated
+containers were untouched.
+
+Final survivor disposition: every original survivor was a real oracle gap;
+the line-2065 `LtE->Lt` gap was closed by
+`TestSelfRssBytes.test_zero_page_size_is_rejected`. The final exact-tree R2
+verified all 57 candidates killed. This record is ready for final selftest,
+assay-r1, and assay-r3 on the quiet branch tip.

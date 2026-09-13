@@ -806,3 +806,50 @@ real oracle gaps; line 2065 is pinned by both boundary tests, including the
 new zero-page-size test. The test and this report/log correction must be
 committed on `rg55-followups-run-gate`; a second fresh R2 is required on a new
 exact synthetic non-merge tree. No executable source was changed.
+
+## Session 9 — final exact-tree R2 closure and branch transfer
+
+After the page-size correction, the worktree was switched from the detached
+assay identity to branch `rg55-followups-run-gate` at
+`cd7596e9cd7e8cf64d4435c4d23b12ef636c475e` before this record was extended.
+The branch tree is `f673be7b41127e2b72189a450845a873dab4b8df`, exactly the
+tree judged by synthetic non-merge commit
+`d750e6ad63240046f35bd3fdaa2459f8c98af243`, whose parent is the branch tip.
+No commit was made while detached.
+
+The final exact-tree R2 command was run from `run-gate-project`:
+
+```console
+$ nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2
+```
+
+The persistent launcher was `setsid nohup`; wrapper PID `2925691`, gate PID
+`2925693`, and assay PID `2925786`. Launch PSI was `full avg10=0.00`, under
+the required `<=5` threshold. The scratch/log directory was
+`/tmp/rg55-p4-final-r2-relaunch.msXGx0`; the assay ran bare-host with two
+jobs and no mutation container. It used `--resume --progress`, and the
+current run reported `resumed_total=0` before selecting all 57 candidates.
+
+The wrapper exited normally. Its explicit marker was read separately:
+`ASSAY_EXIT=0`. The verdict artifact was then read separately and reported:
+
+```text
+commit=d750e6ad63240046f35bd3fdaa2459f8c98af243
+assay_version=6.1.1
+R0=PASS
+R2=PASS
+candidate_count=57 killed=57 survived=0 equivalent=0
+budget_exceeded=0 crashed=0
+jobs=2 mode=changed_lines
+base=a921100db0897a37390273973451737584bf4aed
+base_resolution=merge-base
+```
+
+This closes the one remaining page-size survivor. All 14 original survivor
+dispositions remain genuine oracle gaps, and line 2065 is now covered at
+both boundaries by `test_zero_resident_pages_is_a_valid_read` and
+`test_zero_page_size_is_rejected`; the final R2 killed every candidate.
+The earlier wrong-directory launch was not a verdict: its log recorded
+`ionice: failed to execute ./run-gate.py: No such file or directory` and
+`ASSAY_EXIT=127`, with no verdict artifact. The successful relaunch from the
+project directory is the valid evidence above.
