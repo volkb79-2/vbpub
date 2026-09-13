@@ -388,6 +388,44 @@ def test_claude_match_scan_ignores_a_non_directory_non_file_entry(tmp_path, monk
     assert locate._claude_matches_in(project, _UUID) == []
 
 
+def test_claude_match_scan_ignores_a_non_directory_non_file_nested_entry(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "project"
+    nested = project / _UUID / "subagents"
+    nested.mkdir(parents=True)
+    odd = nested / "socket-like"
+    odd.write_text("not a session", encoding="utf-8")
+    original_entry_mode = locate._entry_mode
+
+    def fake_entry_mode(path):
+        if path == odd:
+            return stat.S_IFIFO
+        return original_entry_mode(path)
+
+    monkeypatch.setattr(locate, "_entry_mode", fake_entry_mode)
+    assert locate._claude_matches_in(project, _AGENT_ID) == []
+
+
+def test_codex_match_scan_ignores_a_non_directory_non_file_entry(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "sessions"
+    root.mkdir()
+    odd = root / "socket-like"
+    odd.write_text("not a rollout", encoding="utf-8")
+    original_entry_mode = locate._entry_mode
+
+    def fake_entry_mode(path):
+        if path == odd:
+            return stat.S_IFIFO
+        return original_entry_mode(path)
+
+    monkeypatch.setattr(locate, "_codex_sessions_root", lambda: root)
+    monkeypatch.setattr(locate, "_entry_mode", fake_entry_mode)
+    assert locate._codex_matches(_UUID) == []
+
+
 def test_opencode_lookup_reports_a_database_open_failure_as_indeterminate(home, monkeypatch):
     db = home / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)
