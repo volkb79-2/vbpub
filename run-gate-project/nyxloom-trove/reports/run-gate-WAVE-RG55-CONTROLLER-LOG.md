@@ -1194,3 +1194,13 @@ confirmed a new exact-tree resume. Container
 `oom=false`, `NanoCpus=3000000000`, and `dev-background.slice`; its baseline
 was observed running. No detached-tree switch or commit is permitted until
 this resume exits.
+
+### RW-82 — 2026-09-13 18:16:44Z — P6 timeout mutants are deterministic
+
+The RW-81 P6 resume exited 4 with `oom=false` and left the same five
+`budget_exceeded` candidates: `lib/serve.py:610` `Or->And`, `:1461`
+`Is->IsNot`, `:1700` `Eq->NotEq`, `:1700` `And->Or`, and `:2034`
+`True->False`. The cumulative evidence remains 436 killed, 43 survived, 5
+budget, 0 crashed out of 484. Blind retries are paused; Luna xhigh must
+triage the causal hang and make a focused repair, if warranted, before a
+fresh judged-tree R2.
