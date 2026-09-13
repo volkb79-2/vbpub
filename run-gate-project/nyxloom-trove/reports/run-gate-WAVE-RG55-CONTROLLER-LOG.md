@@ -1265,3 +1265,10 @@ memory-PSI gate (`full avg10=1.35`). The exact container is
 `run-gate-vbpub-r2-3944182-1789326240`, running under `dev-background.slice`
 with `NanoCpus=3000000000`; no duplicate mutation lane was launched. The
 controller will read the wrapper exit marker and assay verdict separately.
+
+### RW-90 — 2026-09-13 19:09:47Z — Sol reviewer runtime unavailable again
+
+A fresh P1 final-review dispatch requested explicitly as Sol xhigh reported
+that its runtime identity could not be verified as exactly `gpt-5.6-sol` at
+`xhigh`; it stopped before repository inspection, probes, or modifications.
+This is not review evidence and P1 remains merge-blocked.
