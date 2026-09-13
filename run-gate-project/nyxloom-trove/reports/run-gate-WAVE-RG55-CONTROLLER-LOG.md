@@ -1346,3 +1346,14 @@ P192, 714.67 seconds against a 600-second lane budget). A repository-wide
 search found no committed or worktree duplicate. It is already filed upstream
 in the run-gate backlog; this wave neither edits nor commits it, and no
 product decision is inferred from it.
+
+### RW-98 — 2026-09-13 23:38:34Z — cap an independently discovered mutation lane
+
+During the B096 gate launch, an unrelated exact container appeared:
+`run-gate-vbpub-session-extract-10141-1789342673`, running the old
+`session-extract-follow` mutation command under `dev-background.slice` with
+`NanoCpus=0`. It was not launched by this controller, but it is an active
+mutation lane on the shared host; the controller verified its exact command
+and applied `docker update --cpus=3` to that exact name. The estate now has
+two active mutation lanes (this lane and P6); no third mutation launch is
+authorized.
