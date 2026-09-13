@@ -1167,3 +1167,12 @@ P4's fresh R2 on the repaired tree completed normally with 57 candidates,
 budget/crashed candidates. The controller requires Luna xhigh disposition of
 that single survivor and, if it is an oracle gap, another exact-tree R2 before
 P4 review or merge.
+
+### RW-79 — 2026-09-13 17:14:39Z — Sol xhigh reviewer runtime unavailable again
+
+A fresh final-review dispatch for P1 was explicitly constrained to
+`gpt-5.6-sol` at xhigh. The returned runtime identified itself as GPT-5/Codex,
+refused the assignment, ran no probes, wrote no review, and created no commit.
+This is not a review round and does not satisfy the pre-merge reviewer gate;
+P1 remains merge-blocked until a genuine Sol xhigh reviewer completes the
+adversarial review.
