@@ -26,6 +26,8 @@ def highlight_markdown(text: str, color: bool = True) -> str:
     `color` is False)."""
     if not color:
         return text
+    if not text:
+        return text
 
     from pygments import highlight
     from pygments.formatters import TerminalFormatter

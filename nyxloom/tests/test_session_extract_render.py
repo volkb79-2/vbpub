@@ -487,3 +487,12 @@ def test_highlight_handles_empty_source_in_color_mode():
     from nyxloom.session_extract.highlight import highlight_markdown
 
     assert highlight_markdown("", color=True) == ""
+
+
+def test_highlight_keeps_formatter_output_without_a_generated_terminator(monkeypatch):
+    import pygments
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    monkeypatch.setattr(pygments, "highlight", lambda *_args, **_kwargs: "colored")
+    assert highlight_markdown("source", color=True) == "colored"
