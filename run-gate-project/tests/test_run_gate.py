@@ -15364,6 +15364,15 @@ class TestSelfRssBytes:
         self._fake_proc_root(tmp_path, monkeypatch, "10000 0 100 50 0 900 0\n")
         assert run_gate._self_rss_bytes() == 0
 
+    def test_zero_page_size_is_rejected(self, tmp_path, monkeypatch):
+        # `page_size <= 0` is the second half of the guard: unlike a zero
+        # resident-page reading, a zero syscall result is not usable for a
+        # byte conversion and must degrade to unknown.
+        self._fake_proc_root(tmp_path, monkeypatch,
+                             "10000 4321 100 50 0 900 0\n")
+        monkeypatch.setattr(run_gate.os, "sysconf", lambda name: 0)
+        assert run_gate._self_rss_bytes() is None
+
 
 class TestResolveSelfContainerIdDirectBranches:
     """RG-57's `resolve_self_container_id` -- the bare-host daemon path's

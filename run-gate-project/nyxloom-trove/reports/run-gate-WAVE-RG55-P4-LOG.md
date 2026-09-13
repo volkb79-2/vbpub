@@ -1450,3 +1450,66 @@ checkpoint on the branch, create a new exact non-merge judged tree from its
 tree, keep HEAD quiet throughout R2, and return to the branch before any
 further commit. Do not treat the earlier `cd6780ed` survivor verdict as a
 passing R2; only the fresh post-triage verdict can close this step.
+
+## Session 8 — fresh R2 survivor correction and second exact-tree assay
+
+The first fresh post-triage R2 was launched with:
+
+```console
+$ nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2
+```
+
+It ran as a bare-host built-in assay lane with `jobs=2`; no P4 mutation
+container was used. The launch scratch directory was
+`/tmp/rg55-p4-fresh-r2-relaunch.uKkMef`, with log `assay-r2.log`; the
+persistent launcher was a `setsid nohup` wrapper (PID 1954095), gate PID
+1954097, and assay PID 1954185. Launch PSI was `full avg10=0.72`, satisfying
+the `<=5` admission condition. The initial non-persistent launcher had died
+after tool-shell teardown; it had no completion marker or `ASSAY_EXIT`, so it
+was not treated as a verdict. The robust relaunch completed at
+`2026-09-13T17:04:13.132671+00:00` and appended `ASSAY_EXIT=1`.
+
+The verdict artifact was read separately after the process was absent:
+
+```text
+commit=63d0633f174b6f2c8f618e443e563deb58c00f2e
+assay_version=6.1.1
+outcome=FAIL reason_code=MUTANTS_SURVIVED exit_code=1
+jobs=2 mode=changed_lines
+candidate_count=57 killed=56 survived=1 equivalent=0 budget_exceeded=0 crashed=0
+survivor: run-gate.py:2065 LtE->Lt bytes=154152:154154
+base=a921100d... base_resolution=merge-base
+```
+
+The prior line-2065 test only made zero resident pages valid. It did not
+make a zero `page_size` syscall result invalid, so the survivor was a genuine
+oracle gap. Added on the branch is
+`TestSelfRssBytes.test_zero_page_size_is_rejected`, which uses a non-zero
+resident-page reading and `os.sysconf == 0` and asserts `None`. Its targeted
+command was:
+
+```console
+$ git diff --check
+$ python3 -m py_compile run-gate.py tests/test_run_gate.py
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py -q -k 'zero_resident_pages_is_a_valid_read or zero_page_size_is_rejected'
+..                                                                       [100%]
+2 passed, 1059 deselected in 7.47s
+exit 0
+```
+
+During that R2, host PSI rose above 5 at samples including 5.93, 6.61,
+7.19, and 7.55 after launch; the launch itself met the admission rule and
+the run was not interrupted. Assay remained bare-host. Pytest's ephemeral
+repository-smoke fixtures briefly appeared under `dev-background.slice`;
+immediate exact-name `docker update --cpus=3` attempts found each already
+auto-removed (`run-gate-repo-smoke-1956195-1789314007` and
+`run-gate-repo-smoke-1956195-1789315710`), so there was no surviving P4
+mutation container to cap. The unrelated existing P6/P1 container was not
+touched.
+
+This corrects the earlier Session 7 claim that line 2065 was fully pinned.
+All 14 original survivors remain classified as real oracle gaps, with line
+2065 now covered by both the zero-resident-pages and zero-page-size tests.
+The focused test/report/log checkpoint is to be committed on the branch,
+then a second fresh R2 must use a new exact synthetic non-merge tree. No
+commit is permitted while detached.

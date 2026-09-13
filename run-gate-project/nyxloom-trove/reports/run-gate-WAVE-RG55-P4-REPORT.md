@@ -780,3 +780,29 @@ after this section is recorded. A fresh exact-tree non-merge assay identity
 will then be created from that committed branch tree; no commit will be
 made while detached. The fresh R2 verdict, final selftest, assay-r1, and
 assay-r3 will be appended in the next session section.
+
+## Session 8 — fresh R2 survivor correction and second exact-tree assay
+
+The first controller-requested fresh R2 was launched against synthetic
+non-merge commit `63d0633f174b6f2c8f618e443e563deb58c00f2e`, parent
+`12e4e150ef9f5ad72198790c15986319fecd0589`, with tree
+`56c44350e8048baf3a6c998963b404bd31f4b485`, exactly the committed triage tree.
+Its separately read verdict was `FAIL/MUTANTS_SURVIVED`, exit 1: 57
+candidates, 56 killed, 1 survived, 0 equivalent, 0 budget-exceeded, and 0
+crashed. The sole survivor was `run-gate.py:2065 LtE->Lt`, changing the
+`page_size <= 0` guard in `_self_rss_bytes` to `page_size < 0`.
+
+The earlier disposition for line 2065 was incomplete: the existing
+`test_zero_resident_pages_is_a_valid_read` exercised `resident_pages == 0`,
+not `page_size == 0`. This is a real oracle gap, not an equivalent mutant.
+The focused test `TestSelfRssBytes.test_zero_page_size_is_rejected` now
+supplies a non-zero resident-page reading while making `os.sysconf` return
+zero, and asserts that `_self_rss_bytes()` degrades to unknown. The targeted
+regression passed: `2 passed, 1059 deselected in 7.47s`, exit 0, with
+`py_compile` and `git diff --check` also exiting 0.
+
+The corrected survivor table is therefore: all 14 original survivors are
+real oracle gaps; line 2065 is pinned by both boundary tests, including the
+new zero-page-size test. The test and this report/log correction must be
+committed on `rg55-followups-run-gate`; a second fresh R2 is required on a new
+exact synthetic non-merge tree. No executable source was changed.
