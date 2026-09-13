@@ -108,7 +108,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   item 3; `44dd12ca`, `99463ae5`, `d1540eda`).** A candidate that stops
   making progress — no `test`/`session_finish` event AND its process tree's
   CPU time grew less than 1.0s over the trailing 30s, or a `session_finish`
-  event seen but the process still alive 30s later — is killed
+  event seen but the process still alive 30s later with no event/output
+  progress for a full 30s grace — is killed
   (`killpg(SIGKILL)`) and classified into a **new `hung` bucket**, additive
   to the verdict's outcome enum under schema v11 (no v12 cut). `hung` scores
   like `budget_exceeded` (excluded from `killed / (killed + survived)`) but
@@ -158,6 +159,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `--state-dir` state record.
 
 ### Fixed
+
+- **An early xdist worker's `session_finish` could classify a healthy
+  candidate as `hung` 30 s later while other workers still reported tests
+  (P7 round-2 B6, RW-57).** The post-finish branch now also requires a full
+  30 s without event or output progress. True hung candidates still expire;
+  pid stamping and per-process counts/calibration remain deferred (B097).
 
 - **`assay verify` raised a spurious "unknown judgment.r2 field(s):
   ['budget_per_candidate_derived_s']" on every real document the

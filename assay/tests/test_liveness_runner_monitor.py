@@ -325,18 +325,20 @@ def test_proc_read_failure_never_declares_hung(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# session_finish seen, process still alive later -> hung (no CPU condition)
+# session_finish grace requires a full grace with no events/output progress
 # --------------------------------------------------------------------------
 
 
-def test_session_finish_then_still_alive_is_hung_regardless_of_cpu(
+@pytest.mark.parametrize("later_event_at", [None, 20.0])
+def test_session_finish_then_still_alive_is_hung_after_a_full_idle_grace(
     tmp_path: Path,
+    later_event_at: float | None,
 ) -> None:
-    """Once `session_finish` is observed, RW-33's second `hung` clause fires
-    30s later NO MATTER what the CPU tree is doing -- unlike the idle
-    clause, this branch never consults `cpu_growing` at all (a process still
-    alive well after deciding its own exit status is hung whether or not it
-    is burning CPU, e.g. spinning inside a thread-join deadlock).
+    """RW-57: retain the true hung case, but later progress resets the grace.
+
+    Growing CPU and a 600s calibrated bound isolate the session-finish
+    branch. Pin its idle boundary, including when the last event is later
+    than the first finish, so removing the branch or weakening >= fails.
     """
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4245)
@@ -344,8 +346,8 @@ def test_session_finish_then_still_alive_is_hung_regardless_of_cpu(
         tmp_path,
         proc=proc,
         clock=clock,
-        cpu_reader=lambda pid: clock.t,  # growing every tick -- irrelevant here.
-        expect_next_event_within_s=15.0,
+        cpu_reader=lambda pid: clock.t,
+        expect_next_event_within_s=600.0,
     )
     events_path = runner._events_path_for_cwd(cwd)
 
@@ -359,11 +361,65 @@ def test_session_finish_then_still_alive_is_hung_regardless_of_cpu(
                 '{"event": "session_finish", "exitstatus": 0, "t": 0.0}\n',
                 encoding="utf-8",
             )
+        if clock.t == later_event_at:
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"event": "test", "t": clock.t}) + "\n")
 
     runner._sleep = sleep_and_maybe_write  # type: ignore[assignment]
     with pytest.raises(liveness.LivenessHungExpired):
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
-    assert clock.t >= 30.0
+    assert clock.t == (1.0 if later_event_at is None else later_event_at) + 30.0
+    assert proc.waited
+
+
+def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(
+    tmp_path: Path,
+) -> None:
+    """Round-2 B6: one file merges controller and worker sessions, without pids.
+
+    Worker A finishes at t=5; worker B keeps emitting tests every 2s through
+    t=200 with growing process-tree CPU and a 600s calibrated bound. All
+    three sessions finish before the controller exits normally at t=203.
+    The old finish-only grace kills this healthy candidate at t=35.
+    """
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4246)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t,
+        expect_next_event_within_s=600.0,
+    )
+    events_path = runner._events_path_for_cwd(cwd)
+
+    def sleep_and_write(dt: float) -> None:
+        clock.advance(dt)
+        record = None
+        if clock.t in (1.0, 2.0, 3.0):
+            record = {"event": "session_start"}
+        elif clock.t in (5.0, 201.0, 202.0):
+            record = {"event": "session_finish", "exitstatus": 0}
+        elif 6.0 <= clock.t <= 200.0 and clock.t % 2.0 == 0.0:
+            record = {
+                "event": "test", "nodeid": f"test_tail_{int(clock.t)}",
+                "outcome": "passed", "duration_s": 2.0,
+            }
+        if record is not None:
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({**record, "t": clock.t}) + "\n")
+        if clock.t == 203.0:
+            proc.finish(0)
+
+    runner._sleep = sleep_and_write
+    result = runner(("pytest", "-n", "2", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    assert clock.t == 203.0
+    assert not proc.waited
+    events = [json.loads(line)["event"] for line in events_path.read_text().splitlines()]
+    assert events.count("session_start") == 3
+    assert events.count("session_finish") == 3
+    assert events.count("test") == 98
 
 
 # --------------------------------------------------------------------------

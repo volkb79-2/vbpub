@@ -2,6 +2,12 @@
 kind: backlog
 schema_version: 1
 items:
+  - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bug, component: liveness, context_estimate: small}
+  - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bug, component: mutation, context_estimate: small}
+  - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bug, component: liveness, context_estimate: small}
+  - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bug, component: cli, context_estimate: small}
+  - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
+  - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
   - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
@@ -9560,3 +9566,93 @@ but a real throughput/usability cost that scales with lane length: the
 longer and more expensive a mutation sweep is, the more a routine
 bookkeeping commit during it costs to work around, which is exactly
 backwards from what a checkpointed, resumable process should reward.
+
+## B093 — P7 S1: liveness write guard and side-file cleanup
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** Liveness materializes
+its plugin and candidate event/stdout/stderr files in the judged tree's
+`.assay/liveness/` without an ignore guard or cleanup. The estate ignores
+`.assay/`, but external consumers may not. Define a load-time refusal/WARN
+consistent with `--progress`, plus cleanup after `tests_completed` is read
+or at sweep completion. This needs a deliberate retention policy and is
+outside the B6 minimum repair.
+
+Oracle: construct both an ignored and an unignored destination, prove the
+appropriate diagnostic before writes, and prove cleanup preserves the
+candidate count readback and any explicitly retained diagnostic artifacts.
+Sync README, DESIGN-GUIDE and CONSUMERS with the selected policy.
+
+## B094 — P7 S3 / N5: unknown `--rejudge` reason mapping
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** An unknown candidate
+id correctly refuses with the right message, but reports
+`ERROR/UNREADABLE_ARTIFACT` (exit 2). `MutationStateError` is shared across
+the mutation-state refusal path; use a distinct exception or an explicit
+per-raise reason to classify invalid user input without relabeling real
+unreadable/corrupt state. Round-2 N5 reproduced the current behavior on
+the real CLI; no mapping change is included in 6.2.0's B6 repair.
+
+Oracle: unknown and stale-source ids refuse before record replay with the
+chosen input-refusal code; unreadable/corrupt stores retain artifact-error
+codes; valid ids still rejudge only their selected records. Sync all three
+user documents if the public reason vocabulary or compatibility changes.
+
+## B095 — P7 S5: monitor hot-loop cost and unbounded CPU history
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** The one-second loop
+rescans event/proc data and retains an unbounded `cpu_samples` list, including
+for unbounded candidates. Trim history while retaining the sample needed
+at the trailing-window edge; assess incremental event parsing and proc
+sampling costs separately. This is a performance change in the loop just
+hardened by B1/B2/B6 and needs its own review and measurement.
+
+Oracle: a long virtual run retains bounded history while preserving exact
+CPU-window boundary classifications, partial-line tolerance, process-tree
+accounting and `/proc` failure behavior. Measure before/after cost against
+large events files; no timing threshold replaces those behavioral checks.
+
+## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
+
+**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** CLI help manually
+transcribes `MUTATION_BUCKETS`. Derive accepted bucket spellings from that
+source and retain the documented `error` alias for `crashed`. The earlier
+cleanup removed the unused import; reintroduce it only with its real use.
+
+Oracle: real CLI help names every accepted bucket and the alias, and a
+temporary vocabulary addition changes the help without a second edit.
+Keep README, DESIGN-GUIDE and CONSUMERS aligned with accepted spellings.
+
+## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
+
+**OPEN follow-up, explicitly deferred beyond this 6.2.0 repair by RW-57
+(2026-09-13 filing).** One events file receives every xdist worker's and
+controller's session records. B6-a now requires a full idle grace after any
+finish, preventing the reviewed kill of a progressing candidate. Remaining
+defects: duplicated `tests_completed` (review measured 8 records for 4
+tests) and baseline gaps computed from a merged timeline that can be
+tighter than any worker's worst gap.
+
+Stamp `os.getpid()` and available `PYTEST_XDIST_WORKER` identity in `_append`;
+recognize the candidate's own `session_finish`, count its test records, and
+compute baseline gaps per pid before taking the worst. Decide and document
+handling of older records without pid; the review proposes retaining their
+current interpretation. No stamping, per-pid parser or xdist WARN ships in
+this repair. CONSUMERS discloses the current limits (B6-c); evaluate any new
+WARN with the follow-up rather than silently adding policy here.
+
+Oracle: real `pytest -n 2` with four tests yields four completed tests,
+worker finish cannot stand in for controller finish, and interleaved fast
+workers cannot shrink a slow worker's calibrated gap. Preserve the B6-a
+progressing-tail regression, single-process and legacy-file behavior.
+Update README, DESIGN-GUIDE and CONSUMERS in the same change.
+
+## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
+
+**OPEN, deferred by RW-57 (2026-09-13 filing).** The docstring lists
+`budget_exceeded`, `hung`, `equivalent` and `discarded` as excluded but
+omits `crashed`. Scoring already uses only `killed + survived`; this is the
+remaining documentation omission after S7, with no arithmetic repair due.
+
+Oracle: enumerate every excluded bucket, including `crashed`, against
+`MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and
+empty-denominator behavior unchanged.

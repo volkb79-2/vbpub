@@ -2136,8 +2136,21 @@ making progress, on EITHER of two branches:
   bound — `pre_first_event_within_s` until the candidate's first event,
   `expect_next_event_within_s` after it — AND the process tree's CPU time
   grew less than 1.0 s over the trailing 30 s window, or
-- a `session_finish` event was seen (the runner completed) but the process
-  is still alive 30 s later.
+- a `session_finish` event was seen but the process is still alive 30 s
+  later AND no new event or stdout/stderr growth has occurred for a full
+  30 s grace (P7 round-2 B6, RW-57).
+
+**xdist (`-n` / `--numprocesses`).** Workers and the controller share the
+events file. An early worker finish cannot expire a candidate while another
+worker keeps reporting events or output. Test records are still counted
+from that merged file, so `tests_completed` can count a test twice, and
+baseline gap calibration can be tighter than the worst individual worker
+gap. Pid stamping and per-process parsing are deferred (B097); this release
+adds no xdist-specific WARN. The existing `liveness = false` setting in
+`[lanes.<name>.judge.mutation]` disables liveness when those limitations are
+unsuitable; the declared per-candidate budget still applies. The
+[design rationale](DESIGN-GUIDE.md#liveness-session-finish-grace) explains
+why the grace uses subsequent progress.
 
 **The residual limitation, stated plainly (P7 round-1 B2, item 3).** The
 events side file is in practice the ONLY live progress signal a pytest

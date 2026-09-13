@@ -443,7 +443,8 @@ additive under v11):**
 - **`BUDGET_EXCEEDED`/`CANDIDATE_HUNG`** — a `LivenessRunner`-classified
   idle stall for a native R2 mutation candidate: no `test`/`session_finish`
   progress AND no process-tree CPU growth (or a `session_finish` seen with
-  the process still alive 30s later). Distinct from `LANE_TIMEOUT`'s genuine
+  the process still alive 30s later and no event/output progress for a full
+  30s grace). Distinct from `LANE_TIMEOUT`'s genuine
   elapsed-budget expiry so `mutation._classify_mutant_result` can report
   `hung` as a bucket separate from `budget_exceeded` — the two score
   identically (both excluded from `killed/(killed+survived)`) but are never
@@ -452,6 +453,22 @@ additive under v11):**
   `assay.liveness.LivenessHungExpired`, a `subprocess.TimeoutExpired`
   subclass; every other `process_runner` never raises it, so this code is
   unreachable for R0/R1/R3 and every non-liveness R2 call site.
+
+#### Liveness session-finish grace
+
+RW-57 guards the post-`session_finish` branch with
+`idle_for >= _HUNG_SESSION_FINISH_GRACE_S`. xdist workers and their
+controller append to one events file; the first worker's finish does not
+mean the candidate finished. Later events or stdout/stderr growth reset
+the idle clock, preserving a progressing worker tail while still expiring
+a process that stops reporting after the full 30 s grace. The calibrated
+idle/CPU branch and elapsed budget retain their existing rules.
+
+Pid stamping and per-process parsing are deferred to B097: this repair
+does not correct xdist test-count duplication or merged-stream calibration.
+RW-49/D3 calibration ends at `session_finish`; RW-57 accepts the remaining
+shutdown region under this idle grace (review N2 measured about 1 s with
+coverage). See CONSUMERS' liveness section for adoption and limitations.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an

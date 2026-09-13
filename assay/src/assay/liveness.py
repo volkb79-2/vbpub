@@ -977,10 +977,10 @@ class LivenessRunner:
     `expect_next_event_within_s` after it) AND the tree's CPU grew less
     than :data:`_HUNG_CPU_GROWTH_FLOOR_S` over the trailing
     :data:`_HUNG_CPU_WINDOW_S`; OR a `session_finish` event was seen and the
-    process is still alive :data:`_HUNG_SESSION_FINISH_GRACE_S` later
-    (this second branch never consults CPU at all -- once pytest has decided
-    its own exit status, a process still alive well after is hung whether or
-    not it is burning CPU, e.g. spinning inside a thread-join deadlock).
+    process is still alive :data:`_HUNG_SESSION_FINISH_GRACE_S` later with
+    no event or stdout/stderr growth for that whole grace (RW-57: an xdist
+    worker's finish must not expire a candidate still reporting progress).
+    This second branch retains its independent grace, without consulting CPU.
     On `hung`: kills the whole process group and raises
     :class:`LivenessHungExpired`. On plain elapsed-budget expiry (a CPU-
     spinning mutant, RW-33 is explicit this is NOT hung): kills the same way
@@ -1214,6 +1214,7 @@ class LivenessRunner:
             hung = (idle_for >= bound and not cpu_growing) or (
                 session_finish_at is not None
                 and (now - session_finish_at) >= _HUNG_SESSION_FINISH_GRACE_S
+                and idle_for >= _HUNG_SESSION_FINISH_GRACE_S
             )
             if hung:
                 self._kill(proc)

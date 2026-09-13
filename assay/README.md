@@ -264,6 +264,10 @@ candidate (a leaked non-daemon thread idling at interpreter shutdown)
 detectable and killable as its own `hung` outcome bucket, rather than
 silently consuming a whole `budget_per_candidate` window — see
 `docs/CONSUMERS.md`'s "Liveness for a native R2 python/pytest lane" section.
+An early xdist worker finish does not expire a candidate still emitting
+events or output: the post-finish grace requires 30 s without either.
+See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
+and the consumer section's xdist measurement limitations.
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,
