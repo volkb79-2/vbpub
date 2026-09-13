@@ -1230,3 +1230,11 @@ BRIEF-10/LOG state to test the minimal mutation-argv fail-fast configuration
 (`pytest ... -x`) or reject it with evidence, then commit any justified
 non-production fix and rerun the exact judged tree. No reviewer, merge, or
 release was dispatched.
+
+### RW-86 — 2026-09-13 18:46:24Z — terminate stale orphaned pytest
+
+The controller found an unrelated orphaned non-mutation pytest process
+(`PID 2482699`, scratchpad cwd, age over two days, 0% CPU, waiting for a
+missing partner). It was not part of any live RG-55 lane. The controller
+terminated that exact process with SIGTERM and verified it was gone; no
+files or worktrees were changed.
