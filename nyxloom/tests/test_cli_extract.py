@@ -1373,6 +1373,28 @@ def test_extract_lossless_follow_opencode_resolves_a_single_session(
     assert seen == {"source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b")}
 
 
+def test_extract_lossless_follow_opencode_does_not_discover_twice_when_session_is_explicit(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+    from nyxloom.session_extract.adapters import opencode as opencode_adapter
+
+    db = _write_opencode_fixture(tmp_path)
+    calls = []
+    real_list_sessions = opencode_adapter.list_sessions
+
+    def _list_sessions(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_list_sessions(*args, **kwargs)
+
+    monkeypatch.setattr(opencode_adapter, "list_sessions", _list_sessions)
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", lambda self: 0)
+    assert cli.main([
+        "extract-lossless", str(db), "--follow", "--opencode-session", "s0",
+    ]) == 0
+    assert calls == []
+
+
 def test_extract_follow_opencode_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
     db = _write_opencode_fixture(tmp_path, n_sessions=2)
     monkeypatch.setattr(
