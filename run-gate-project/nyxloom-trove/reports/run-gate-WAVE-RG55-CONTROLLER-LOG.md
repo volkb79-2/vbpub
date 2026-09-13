@@ -970,3 +970,27 @@ through assay; relaunch rule for the successor
 | P8 — mdt host-setup `dev-gates.slice` (dev-infra withdrawn, RW-30) | `.worktrees/mdt-dev-slices` | `mdt-dev-slices` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:55Z from `main` (RW-29); tip `7bd2f03c` review round 1 ACCEPT-conditional B1–B6 (~14:50Z) → repair set + M5 landed `ae38d55a` (~15:30Z, gate green); round 2 ACCEPT-conditional (B7/B8 new, B1–B6 + M5 PASS, RW-37) → repairs `e326cc9b` (gate green, ~16:00Z); round 3 ACCEPT (~16:10Z) → MERGED `a71c46b0` (RW-38); operator installs on the host BEFORE any devcontainer rebuild |
 | P4 — run-gate follow-ups (RG-57..61) | `.worktrees/rg55-followups-run-gate` | `rg55-followups-run-gate` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | dispatched 2026-09-12 ~13:00Z from `186461de` (RW-27); C1–C4 committed (`a6716422`, `b5e4a9c6`, `e698835f`, `c37b6e94`); session 2 → merged `rg55-run-gate-client`@`647a2cc6` (`0c782601`), C5 `5b80c024` (RG-61 sweep except item 5, budget 900s, rev 42), BRIEF-2 `b695db00` (304 calls — clause violated); session 3 → selftest PASS (1008/1008 lines, 376/376 branches; 13 tests added `e0e02dce`), r1 PASS, r3 PASS (canary re-anchored `7539a44e`), `run-gate.footprint.json` + CONSUMERS transcript `02707e30`, BRIEF-3 `0bb3bbeb`; r2 pending a slot (RW-42); review round 1 ACCEPT-conditional B1–B4 (~17:40Z, RW-43) → session 4 repairs `a1cebacf`/`8c5af489`/`05193f44`/`9489bb6d`/`50684f2c`, tip `00a79de4` (507 calls — clause ignored), selftest/r1 RED on the shared-lock hazard → session 5 (RW-46): lock-dir isolation + root cause, floor_bytes, S1–S5, footprint regenerated, selftest PASS 1143/100%, r1 PASS, r3 PASS, tip `4fa46b03` (357 calls — clause ignored; RG-62 used for two pre-existing flaky tests → P5's row becomes RG-63); review round 2 ACCEPT-conditional (B5 only, ~20:45Z, RW-51) → session 6 dispatched for B5 + non-blocking + transcript → tip `1f8d9ca3` (B5 + S6–S11, selftest/r1/r3 GREEN); its 21:14Z r2 terminated (RW-54/55); parked until 23.7.0 is released → merge `main`, selftest/r1/r3, r2 on the merge tip; round 3 = r2 survivor table + B5 |
 | P2 — run-gate client | `.worktrees/rg55-run-gate-client` | `rg55-run-gate-client` | fresh Sonnet (checkpoint clause on) | fresh Opus xhigh (never a fork) | sessions 1–7 → C1–C8 complete (`62d9a66a`, rev 41, footprint manifest from a live probe); review round 2 ACCEPT on `186461de` (close-out commits); assay-r2 hit the 4 h lane budget at ~165/283 (16:28Z) → RESUMED untracked (RW-40); the LOG-commit relaunch rejected all records (per-tree identity, RW-41) → re-run detached at `186461de` (pid `1499375`, 156 resumed; candidate 105 SIGKILLed by the controller, RW-50) finished 21:01Z with 2 placeholders unjudged → final short `--resume` pass pid `4137438` launched 21:02Z (RW-52); then `git switch rg55-run-gate-client`, survivor triage (state candidate 105's classification), final gates, merge --no-ff, release 23.7.0, install |
+
+### RW-59 — 2026-09-13 02:30:59Z — controller takeover
+
+The new controller has taken over RG-55 from the 2026-09-12 checkpoint. The
+handoff, this log, the plan/contracts, and the named per-package briefs are
+the controlling record. Resume the prescribed order: observe the detached P1
+and P6 mutation runs, finish P2, repair/review/release P7, then P4, P1, P6,
+P5, and P3 close-out. Do not reopen settled D-1..D-30 or the recorded RW-1..
+RW-58 rulings; record any new product call as a new D-decision and operational
+calls as RW rulings. The operator's exclusions and dirty-file protections in
+the handoff remain binding.
+
+### RW-60 — 2026-09-13 02:36:07Z — triage of the shared RG-45 backlog edit
+
+The shared checkout's uncommitted addendum under RG-45 is retained as
+operator-authored evidence. It describes a distinct lane-budget symptom of
+the already filed/moved assay B078/vitest heartbeat issue, and does not belong
+in P2's 23.7.0 or P4's 23.8.0 code trees: the P2 auto candidate budget and P7
+liveness work do not silently solve a fixed whole-lane budget. No new RG id or
+code change is invented here. The addendum is not present in the P2/P4 branch
+copies; preserve it for the operator's eventual backlog commit and carry its
+disposition into P3's close-out report. Do not stage or commit it as part of
+the controller's shared-checkout LOG work unless the operator explicitly
+claims that file.
