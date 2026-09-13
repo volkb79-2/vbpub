@@ -1367,3 +1367,11 @@ tip asynchronously. Exact gate container: `sweet_blackburn`, under
 `dev-background.slice`, `NanoCpus=3000000000`; it built wheel
 `assay-6.2.1.dev36+g2d80012a`. The gate is not yet a verdict: its terminal
 markers and exit status must be read separately before merge.
+
+### RW-100 — 2026-09-13 23:41:38Z — defer new launches under memory PSI
+
+The shared host's fresh `/proc/pressure/memory` reading reached
+`full avg10=14.75%`, above the wave's launch gate of 5%. Existing capped
+containers remain undisturbed, but no new test, gate, or mutation process may
+be launched until a fresh reading is at or below the threshold. B097 editing
+may continue; its implementer was explicitly told to defer PSI-gated tests.
