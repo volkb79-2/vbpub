@@ -927,6 +927,7 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     # pre-pass. The answer record alone (empty state) must NOT become a
     # QA_PAIR.
     config = ExtractConfig()
+    assert claude_code.StreamState().has_primary_thread is True
     question = _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
                      message={"role": "assistant", "content": [
                          {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
@@ -1001,6 +1002,32 @@ def test_prime_stream_state_handles_empty_missing_partial_and_malformed_prefixes
     assert state.askuserquestion_inputs == {"tu1": [{"question": "real?"}]}
 
 
+def test_prime_stream_state_zero_bound_does_not_open_the_existing_file(tmp_path, monkeypatch):
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(json.dumps(_rec(type="assistant")) + "\n", encoding="utf-8")
+
+    def _unexpected_open(*args, **kwargs):
+        raise AssertionError("zero-byte prefix must not open the file")
+
+    monkeypatch.setattr(Path, "open", _unexpected_open)
+    claude_code.prime_stream_state(fp, claude_code.StreamState(), 0)
+
+
+def test_prime_stream_state_skips_a_non_conversation_dict_before_remembering(
+    tmp_path, monkeypatch
+):
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(json.dumps(_rec(type="mode")) + "\n", encoding="utf-8")
+    remembered = []
+    monkeypatch.setattr(
+        claude_code, "_remember_askuserquestion",
+        lambda rec, state: remembered.append(rec),
+    )
+
+    claude_code.prime_stream_state(fp, claude_code.StreamState(), fp.stat().st_size)
+    assert remembered == []
+
+
 def test_parse_record_covers_empty_and_non_conversation_shapes():
     config = ExtractConfig(include_thinking=True)
     state = claude_code.StreamState()
@@ -1027,3 +1054,10 @@ def test_update_interview_pending_ignores_non_tool_user_blocks_and_other_records
         {"type": "assistant", "message": {"content": "not a list"}}, pending
     ) is None
     assert claude_code.update_interview_pending({"type": "system"}, pending) is None
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "empty", "name": "AskUserQuestion",
+             "input": {"questions": []}},
+        ]}},
+        pending,
+    ) == "(question)"

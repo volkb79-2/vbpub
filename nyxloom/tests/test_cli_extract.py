@@ -1003,6 +1003,7 @@ def test_extract_render_markdown_renders_blocks_but_not_the_scaffolding(tmp_path
     # ...while render.py's own separator and marker footer survive verbatim
     assert "\n---\n" in out
     assert "<!-- nyxloom-extract: format=claude-code marker=" in out
+    assert "\x1b[" not in out
 
 
 def test_extract_render_markdown_errors_with_json(tmp_path, capsys):
@@ -1049,6 +1050,12 @@ def test_extract_lossless_highlight_colors_the_dump(tmp_path, capsys):
     assert "\x1b[" in out
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
     assert "===[a2 |" in plain and "## Status" in plain
+
+
+def test_extract_lossless_no_color_disables_highlight_ansi(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main(["extract-lossless", str(fp), "--highlight", "--no-color"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
 
 
 def test_extract_render_markdown_and_highlight_are_mutually_exclusive(tmp_path, capsys):
@@ -1124,6 +1131,7 @@ def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkey
     def _fake_run_forever(self):
         seen["offset"] = self._source.tailer.offset
         seen["lossless"] = self._lossless
+        seen["interval"] = self._follow.interval
         return 0
 
     monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
@@ -1132,7 +1140,31 @@ def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkey
 
     assert exit_code == 0
     assert "please look into this" in out  # phase 1 still printed in full
-    assert seen == {"offset": size_before, "lossless": False}
+    assert seen == {"offset": size_before, "lossless": False, "interval": 1.0}
+
+
+def test_follow_preserves_sidechain_only_primary_detection(tmp_path, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = tmp_path / "sidechain.jsonl"
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             isSidechain=True, message={"role": "user", "content": "subtask"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             isSidechain=True, message={"role": "assistant", "content": [
+                 {"type": "text", "text": "subtask answer"},
+             ]}),
+    ]
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["has_primary_thread"] = self._source._state.has_primary_thread
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract", str(fp), "--follow"]) == 0
+    assert seen == {"has_primary_thread": False}
 
 
 def test_follow_anchor_rewinds_to_the_start_of_a_partial_jsonl_record(tmp_path):
@@ -1213,6 +1245,22 @@ def test_follow_anchor_returns_the_opencode_message_and_part_fingerprint(tmp_pat
     assert anchor.fingerprint[1][0][0] == "p0b"
 
 
+def test_follow_anchor_opencode_uses_a_read_only_sqlite_uri(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = _write_opencode_fixture(tmp_path)
+    real_connect = sqlite3.connect
+    calls = []
+
+    def _connect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
+    cli._follow_anchor(db, "opencode", "s0")
+    assert calls and calls[-1][1].get("uri") is True
+
+
 def test_follow_anchor_returns_none_for_a_non_opencode_path(tmp_path):
     assert cli._follow_anchor(tmp_path, "opencode", "s0") is None
 
@@ -1224,6 +1272,11 @@ def test_extract_follow_opencode_resolves_the_single_session_and_wires_the_sourc
 
     db = _write_opencode_fixture(tmp_path)
     seen = {}
+    real_anchor = cli._follow_anchor
+
+    def _anchor(path, fmt, session):
+        seen["anchor_session"] = session
+        return real_anchor(path, fmt, session)
 
     def _fake_run_forever(self):
         seen["source"] = type(self._source).__name__
@@ -1232,9 +1285,13 @@ def test_extract_follow_opencode_resolves_the_single_session_and_wires_the_sourc
         return 0
 
     monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    monkeypatch.setattr(cli, "_follow_anchor", _anchor)
     exit_code = cli.main(["extract", str(db), "--follow"])
     assert exit_code == 0
-    assert seen == {"source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b")}
+    assert seen == {
+        "source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b"),
+        "anchor_session": "s0",
+    }
     assert "please look into this" in capsys.readouterr().out
 
 
@@ -1268,11 +1325,12 @@ def test_extract_lossless_follow_opencode_resolves_a_single_session(
     def _fake_run_forever(self):
         seen["source"] = type(self._source).__name__
         seen["session"] = self._source._session_id
+        seen["anchor"] = self._source._anchor_cursor
         return 0
 
     monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
     assert cli.main(["extract-lossless", str(db), "--follow"]) == 0
-    assert seen == {"source": "OpencodeSource", "session": "s0"}
+    assert seen == {"source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b")}
 
 
 def test_extract_follow_opencode_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
