@@ -1144,6 +1144,12 @@ def test_follow_anchor_rewinds_to_the_start_of_a_partial_jsonl_record(tmp_path):
     assert cli._follow_anchor(fp, "claude-code", None) == len(prefix)
 
 
+def test_follow_anchor_accepts_a_newline_at_the_start_of_the_file(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"\n")
+    assert cli._follow_anchor(fp, "claude-code", None) == 1
+
+
 def test_extract_lossless_follow_uses_lossless_semantics_for_phase_two(tmp_path, capsys, monkeypatch):
     from nyxloom.session_extract import follow as follow_mod
 
