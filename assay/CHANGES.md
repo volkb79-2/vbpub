@@ -223,6 +223,37 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.2.0] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=b54aa1f23ac9f91ddacf66aec02b59cc394603ef -->
+
+### Added
+- feat(assay): B091 A5 -- --rejudge/--rejudge-outcome (c15f6040)
+- feat(assay): B091 A4 -- progress stream gains test events, slowest_test_s/expect_next_event_within_s, tests_completed (5baf2670)
+- feat(assay): B091 A3 -- active LivenessRunner monitoring loop, hung bucket (44dd12ca)
+- feat(assay): B091 A2 -- materialized pytest liveness plugin + os._exit candidate wrapper (D-23/RW-33) (f4fa1788)
+- feat(assay): B091 A1 -- budget_per_candidate = "auto" default (D-23) (de32bb91)
+
+### Fixed
+- fix(assay): guard xdist session-finish liveness grace (cd1f84fe)
+- fix(assay): B091 P7 round-1 S-item fold-in (S2, S4, S7, S8, S9, S10) (ef247935)
+- fix(assay): B091 P7 round-1 B2 -- calibrate the idle bound on observed gaps (07e121d9)
+- fix(assay): B091 P7 round-1 B3 -- tests_completed reads the RESOLVED run cwd (5c1b9ef8)
+- fix(assay): B091 P7 round-1 B1 -- os._exit sentinel prevents false SURVIVOR (802f0855)
+- fix(assay/tests): B091 P7 gate finding -- test_standalone.py's real-wheel expected-artifact drift (3 R2 tests never exercised by the deferred sweep) (ee24ced6)
+- fix(assay): B091 P7 gate finding -- pyflakes unused imports + RecursionError guard on liveness.py's two untrusted JSON parse sites (95d02f50)
+- fix(assay): B091 A6 gate finding -- W7's locked v11 schema copy drifted from the shipped schema (b3f31506)
+- fix(assay): B091 A3 remainder -- real e2e liveness fixture tests + a real plugin JSON bug found by them (99463ae5)
+- fix(assay): B091 RW-36 -- liveness via argv_appended + judge.mutation.liveness gate (e27b107b)
+
+### Documentation
+- docs(assay): B091 P7 round-1 B4 + B5 -- disclose the v11 same-number break, restructure CHANGES (4ef3985f)
+- docs(assay): B091 A6 -- CHANGES/CONSUMERS/README + backlog close-out (A1-A5) (afda58fd)
+
+### Testing
+- test(assay): B091 A3 -- >=3 planted-mutant table for the monitoring loop (BRIEF-3/4's own ask) (d1540eda)
+- test(assay): fix a stray leftover assertion in the A1 diagnostics=None regression test (f649a249)
+
 ## [6.1.2] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=ebc26e83da5d2d55b619890eca7a33e60b8e81db -->
