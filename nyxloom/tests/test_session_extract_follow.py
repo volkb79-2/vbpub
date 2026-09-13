@@ -1145,6 +1145,36 @@ def test_opencode_source_revisits_a_row_after_stable_emission_for_late_parts(tmp
     source.close()
 
 
+def test_opencode_source_revisits_an_older_emitted_row_after_a_newer_row_emits(tmp_path):
+    # A newer message can advance the cursor before an older message receives
+    # its final text part. The recent-row fingerprint view must retain m1
+    # after m2 emits, then emit only m1's late contribution once.
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    source = OpencodeSource(db, sid, ExtractConfig(), lossless_mode=False, cursor=(-1, ""))
+
+    _opencode_message(db, "m1", 10, "assistant", "m1 initial")
+    assert source.poll() == []  # m1 is held for its settling observation
+
+    _opencode_message(db, "m2", 20, "assistant", "m2 complete")
+    assert [e.text for a in source.poll() for e in a.events] == ["m1 initial"]
+    assert source.poll() == []  # first observation of the newer m2
+    assert [e.text for a in source.poll() for e in a.events] == ["m2 complete"]
+    assert source._cursor == (20, "m2")
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO part VALUES ('p-m1-late', 'm1', ?, 11, 11, ?)",
+        (sid, json.dumps({"type": "text", "text": "m1 late suffix"})),
+    )
+    conn.commit()
+    conn.close()
+
+    assert [e.text for a in source.poll() for e in a.events] == ["m1 late suffix"]
+    assert source.poll() == []  # the retained fingerprint advances; no duplicate
+    source.close()
+
+
 def test_opencode_source_revisits_the_phase_boundary_row_when_parts_arrive(tmp_path):
     db = _opencode_db(tmp_path / "opencode.db")
     sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"

@@ -118,6 +118,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -141,6 +142,12 @@ EXCERPT_CHARS = 100
 #: Poll interval when the file/DB has not changed. A session log grows in
 #: bursts of one human/model turn, so sub-second polling buys nothing.
 DEFAULT_INTERVAL_S = 1.0
+
+# A late part is expected while a turn is still live, not years after the
+# session ended. Keep a bounded recent-row view so that checking for that
+# late part remains indexed point lookups rather than a whole-database scan.
+# The phase-one anchor and the newest settled rows share this same window.
+OPENCODE_TRACKED_ROWS = 128
 
 
 class JsonlTailer:
@@ -408,10 +415,13 @@ class OpencodeAnchor:
     The cursor identifies the newest message row that phase 1 saw. Its part
     fingerprint lets phase 2 notice text parts appended to that same row
     while phase 1 was reading it; a cursor alone would skip those updates.
+    ``tracked`` carries the same bounded fingerprint view for recent rows
+    before the cursor, whose parts can also still arrive after phase 1.
     """
 
     cursor: tuple[int, str]
     fingerprint: tuple | None = None
+    tracked: tuple[tuple[tuple[int, str], tuple], ...] = ()
 
 
 class OpencodeSource:
@@ -424,6 +434,7 @@ class OpencodeSource:
         self, db: Path, session_id: str, config: ExtractConfig, lossless_mode: bool,
         cursor: tuple[int, str] | None = None,
         anchor_fingerprint: tuple | None = None,
+        tracked_fingerprints: tuple[tuple[tuple[int, str], tuple], ...] = (),
     ):
         self._conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         self._session_id = session_id
@@ -433,6 +444,11 @@ class OpencodeSource:
         self._seq = 0
         self._anchor_cursor = self._cursor if anchor_fingerprint is not None else None
         self._anchor_fingerprint = anchor_fingerprint
+        self._tracked_rows: OrderedDict[tuple[int, str], tuple] = OrderedDict()
+        for key, fingerprint in tracked_fingerprints:
+            self._remember_tracked(key, fingerprint)
+        if self._anchor_cursor is not None and self._anchor_fingerprint is not None:
+            self._remember_tracked(self._anchor_cursor, self._anchor_fingerprint)
         self._pending_key: tuple[int, str] | None = None
         self._pending_fingerprint: tuple | None = None
         self._pending_stable = False
@@ -446,6 +462,12 @@ class OpencodeSource:
             (msg_id,),
         ).fetchall()
         return (data_json, tuple(parts))
+
+    def _remember_tracked(self, key: tuple[int, str], fingerprint: tuple) -> None:
+        self._tracked_rows[key] = fingerprint
+        self._tracked_rows.move_to_end(key)
+        while len(self._tracked_rows) > OPENCODE_TRACKED_ROWS:
+            self._tracked_rows.popitem(last=False)
 
     def _arrival(self, msg_id: str, time_created: int, data_json: str) -> Arrival | None:
         if self._lossless:
@@ -518,27 +540,56 @@ class OpencodeSource:
         self._anchor_fingerprint = (
             fingerprint if fingerprint is not None else self._fingerprint(row[0], row[2])
         )
+        self._remember_tracked(key, self._anchor_fingerprint)
 
     def _poll_anchor(self) -> list[Arrival]:
-        """Emit a changed phase-boundary row without re-emitting it unchanged."""
-        if self._anchor_cursor is None:
+        """Emit changed tracked rows without re-emitting unchanged rows.
+
+        The newest row is the usual late-part case, but opencode may finish
+        an older message after a newer message has advanced the cursor too.
+        Every tracked row is checked by its exact primary key; the bounded
+        window keeps this work proportional to recent live rows, never to the
+        size of the message table.
+        """
+        if self._anchor_cursor is not None and self._anchor_fingerprint is not None:
+            # Some callers from before the bounded window was added supplied
+            # the private anchor fields directly. Preserve that compatible
+            # shape while bringing it into the same tracking path.
+            self._remember_tracked(self._anchor_cursor, self._anchor_fingerprint)
+
+        if not self._tracked_rows:
             return []
-        anchor_time, anchor_id = self._anchor_cursor
-        row = self._conn.execute(
-            "SELECT id, time_created, data FROM message WHERE session_id = ? "
-            "AND time_created = ? AND id = ?",
-            (self._session_id, anchor_time, anchor_id),
-        ).fetchone()
-        if row is None:
-            return []
-        fingerprint = self._fingerprint(row[0], row[2])
-        if fingerprint == self._anchor_fingerprint:
-            return []
-        old_fingerprint = self._anchor_fingerprint
-        self._anchor_fingerprint = fingerprint
-        texts = self._changed_texts(old_fingerprint, fingerprint)
-        arrival = self._arrival_for_texts(row[0], row[1], row[2], texts)
-        return [arrival] if arrival is not None else []
+
+        arrivals: list[Arrival] = []
+        # Cursor order, rather than OrderedDict insertion order, preserves
+        # normal message order when more than one older row changes together.
+        for key in sorted(tuple(self._tracked_rows)):
+            old_fingerprint = self._tracked_rows.get(key)
+            if old_fingerprint is None:
+                continue
+            row = self._conn.execute(
+                "SELECT id, time_created, data FROM message WHERE session_id = ? "
+                "AND time_created = ? AND id = ?",
+                (self._session_id, key[0], key[1]),
+            ).fetchone()
+            if row is None:
+                # A deleted row cannot produce a text contribution. Drop it
+                # so a deletion does not consume one of the bounded slots on
+                # every future poll.
+                self._tracked_rows.pop(key, None)
+                continue
+            fingerprint = self._fingerprint(row[0], row[2])
+            if fingerprint == old_fingerprint:
+                continue
+            self._tracked_rows[key] = fingerprint
+            self._tracked_rows.move_to_end(key)
+            if key == self._anchor_cursor:
+                self._anchor_fingerprint = fingerprint
+            texts = self._changed_texts(old_fingerprint, fingerprint)
+            arrival = self._arrival_for_texts(row[0], row[1], row[2], texts)
+            if arrival is not None:
+                arrivals.append(arrival)
+        return arrivals
 
     def _remember_pending(self, row) -> None:
         key = (row[1], row[0])

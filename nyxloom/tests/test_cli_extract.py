@@ -8,6 +8,7 @@ these two commands own.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -1338,6 +1339,39 @@ def test_follow_anchor_returns_the_opencode_message_and_part_fingerprint(tmp_pat
     assert anchor.cursor == (2, "m0b")
     assert anchor.fingerprint[0]  # message data JSON
     assert anchor.fingerprint[1][0][0] == "p0b"
+    assert [key for key, _fingerprint in anchor.tracked] == [
+        (1, "m0a"), (2, "m0b"),
+    ]
+    assert anchor.tracked[-1][1] == anchor.fingerprint
+
+
+def test_follow_anchor_bounds_the_opencode_recent_row_fingerprint_view(tmp_path):
+    from nyxloom.session_extract.follow import OPENCODE_TRACKED_ROWS
+
+    db = _write_opencode_fixture(tmp_path)
+    sid = "s0"
+    conn = sqlite3.connect(db)
+    for timestamp in range(3, OPENCODE_TRACKED_ROWS + 8):
+        msg_id = f"late-{timestamp}"
+        conn.execute(
+            "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+            (msg_id, sid, timestamp, timestamp, json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+            (f"part-{timestamp}", msg_id, sid, timestamp, timestamp,
+             json.dumps({"type": "text", "text": msg_id})),
+        )
+    conn.commit()
+    conn.close()
+
+    anchor = cli._follow_anchor(db, "opencode", sid)
+    assert len(anchor.tracked) == OPENCODE_TRACKED_ROWS
+    keys = [key for key, _fingerprint in anchor.tracked]
+    assert keys == sorted(keys)
+    assert keys[0] == (anchor.cursor[0] - OPENCODE_TRACKED_ROWS + 1, f"late-{keys[0][0]}")
+    assert keys[-1] == anchor.cursor
+    assert anchor.tracked[-1][1] == anchor.fingerprint
 
 
 def test_follow_anchor_opencode_uses_a_read_only_sqlite_uri(tmp_path, monkeypatch):

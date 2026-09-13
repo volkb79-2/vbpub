@@ -762,7 +762,8 @@ def _validate_render_and_follow_flags(args) -> str | None:
 def _follow_anchor(path: Path, fmt: str, session_id: str | None):
     """Where phase 2 picks up, captured BEFORE phase 1 parses anything: the
     start of the file's current final (possibly partial) line, or opencode's
-    newest (time_created, id) row plus its part fingerprint.
+    newest (time_created, id) row plus a bounded recent-row part-fingerprint
+    view.
 
     Deliberately measured BEFORE rather than after. A record appended while
     phase 1 is parsing then appears twice (once in the one-shot brief, once
@@ -799,22 +800,32 @@ def _follow_anchor(path: Path, fmt: str, session_id: str | None):
     db = opencode_adapter._db_path(path)
     if db is None:
         return None
-    from .session_extract.follow import OpencodeAnchor
+    from .session_extract.follow import OPENCODE_TRACKED_ROWS, OpencodeAnchor
 
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT time_created, id, data FROM message WHERE session_id = ? "
-            "ORDER BY time_created DESC, id DESC LIMIT 1",
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            return OpencodeAnchor((-1, ""))
-        parts = conn.execute(
-            "SELECT id, time_updated, data FROM part WHERE message_id = ? ORDER BY id ASC",
-            (row[1],),
+            "ORDER BY time_created DESC, id DESC LIMIT ?",
+            (session_id, OPENCODE_TRACKED_ROWS),
         ).fetchall()
-        return OpencodeAnchor((row[0], row[1]), (row[2], tuple(parts)))
+        if not rows:
+            return OpencodeAnchor((-1, ""))
+        tracked = []
+        for row in reversed(rows):
+            parts = conn.execute(
+                "SELECT id, time_updated, data FROM part "
+                "WHERE message_id = ? ORDER BY id ASC",
+                (row[1],),
+            ).fetchall()
+            fingerprint = (row[2], tuple(parts))
+            tracked.append(((row[0], row[1]), fingerprint))
+        newest = rows[0]
+        return OpencodeAnchor(
+            (newest[0], newest[1]),
+            tracked[-1][1],
+            tuple(tracked),
+        )
     finally:
         conn.close()
 
@@ -848,12 +859,15 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
         if isinstance(anchor, follow_mod.OpencodeAnchor):
             cursor = anchor.cursor
             anchor_fingerprint = anchor.fingerprint
+            tracked_fingerprints = anchor.tracked
         else:
             cursor = anchor
             anchor_fingerprint = None
+            tracked_fingerprints = ()
         source = follow_mod.OpencodeSource(
             db, session_id, config, lossless_mode, cursor=cursor,
             anchor_fingerprint=anchor_fingerprint,
+            tracked_fingerprints=tracked_fingerprints,
         )
     else:
         source = follow_mod.JsonlSource(
