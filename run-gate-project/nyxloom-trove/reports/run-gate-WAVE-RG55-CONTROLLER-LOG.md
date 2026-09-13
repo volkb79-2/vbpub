@@ -1060,3 +1060,10 @@ retained under `assay/artifacts/assay-v6.2.0/`. cmru could not synchronize the
 local checkout automatically because the operator backlog is dirty; the
 controller will merge the already-pushed release commit with `--no-ff` while
 preserving that dirty file outside the index.
+
+### RW-68 — 2026-09-13 11:23:23Z — verify assay deployment and changelog
+
+The published assay wheel's sidecar hash matches the retained local artifact,
+and `/home/vscode/.venv/bin/assay --version` reports `6.2.0`. The stale
+post-release `[Unreleased]` body was cleared in a docs-only commit and pushed
+to `origin/main`; the operator backlog remains the only working-tree change.
