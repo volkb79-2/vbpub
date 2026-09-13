@@ -1122,3 +1122,13 @@ detached Luna implementer sessions expired at the platform usage limit after
 the campaigns; the controller may seed fresh Luna xhigh sessions now that the
 window is available. No package is merge-ready until survivor triage, final
 gates, and the fresh Sol xhigh review are complete.
+
+### RW-74 — 2026-09-13 15:31:32Z — P1 closeout evidence is ready for review
+
+Fresh Luna xhigh closeout completed P1 on branch `rg55-profiler-daemon` at
+`920231186fdfb81ea3d9e9adb2d0b57ed11ab6fd`. The five fresh-r2 survivors are
+all explicitly dispositioned (four behaviorally equivalent, and the prior
+summary oracle gap is killed by the focused test). Final `r0-r1` and `r3`
+both exited 0 with 100% line and branch coverage and 7/7 canaries rejected;
+D-15 safety was checked and the daemon is down. A fresh Sol xhigh review is
+required before this branch can merge.
