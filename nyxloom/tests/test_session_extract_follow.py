@@ -26,6 +26,7 @@ from nyxloom.session_extract.follow import (
     JsonlSource,
     JsonlTailer,
     OpencodeSource,
+    OPENCODE_TRACKED_ROWS,
     _prime_interview_pending,
     deliver,
 )
@@ -888,6 +889,32 @@ def test_attention_hook_stdout_does_not_contaminate_the_content_stream(tmp_path,
     follower.close()
     assert "hook-output" not in out.getvalue()
     assert "hook-output" in capsys.readouterr().err
+
+
+def test_opencode_source_bounds_the_tracked_recent_row_window(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    source = OpencodeSource(
+        db, "ses_04bd4e9b4ffeBJm48T6v130DS6", ExtractConfig(), False,
+    )
+
+    for i in range(OPENCODE_TRACKED_ROWS + 1):
+        source._remember_tracked((i, f"m{i}"), (f"fingerprint-{i}", ()))
+
+    assert len(source._tracked_rows) == OPENCODE_TRACKED_ROWS
+    assert (0, "m0") not in source._tracked_rows
+    assert (OPENCODE_TRACKED_ROWS, f"m{OPENCODE_TRACKED_ROWS}") in source._tracked_rows
+    source.close()
+
+
+def test_opencode_source_ignores_a_defensive_none_tracked_fingerprint(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    source = OpencodeSource(
+        db, "ses_04bd4e9b4ffeBJm48T6v130DS6", ExtractConfig(), False,
+    )
+    source._tracked_rows[(10, "missing")] = None
+
+    assert source._poll_anchor() == []
+    source.close()
 
 
 def test_live_attention_hook_and_notification_payloads_are_redacted(tmp_path, monkeypatch):

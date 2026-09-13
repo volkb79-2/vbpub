@@ -341,3 +341,52 @@ def test_parse_record_returns_empty_for_empty_messages_and_unknown_items():
         {"type": "event_msg", "payload": {"type": "item_completed",
          "item": {"type": "FutureItem"}}}, 0, "m", config
     ) == []
+
+
+def test_discovery_helpers_bound_scans_and_skip_malformed_records(tmp_path, monkeypatch):
+    beyond_window = tmp_path / "beyond.jsonl"
+    beyond_window.write_text("\n".join(["{}"] * 11) + "\n", encoding="utf-8")
+    assert codex._first_session_meta(beyond_window) is None
+
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text(
+        "\nnot json\n"
+        + json.dumps({"type": "event_msg", "timestamp": "t0"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert codex._first_session_meta(malformed) is None
+    assert codex._scan_event_counts(malformed) == (1, "t0", "t0")
+
+    empty_meta = tmp_path / "empty-meta.jsonl"
+    empty_meta.write_text(json.dumps({"type": "session_meta", "payload": []}) + "\n")
+    assert codex._first_session_meta(empty_meta) is None
+
+    def fail_open(_self, *_args, **_kwargs):
+        raise OSError("read denied")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    assert codex._first_session_meta(malformed) is None
+    assert codex._scan_event_counts(malformed) == (0, None, None)
+
+
+def test_list_agents_handles_missing_metadata_and_unrelated_rollouts(tmp_path):
+    no_meta = tmp_path / "rollout-no-meta.jsonl"
+    no_meta.write_text("{}\n", encoding="utf-8")
+    assert codex.list_agents(no_meta) == []
+
+    no_id = tmp_path / "rollout-no-id.jsonl"
+    no_id.write_text(json.dumps({"type": "session_meta", "payload": {}}) + "\n")
+    assert codex.list_agents(no_id) == []
+
+    root = tmp_path / "rollout-root.jsonl"
+    root.write_text(json.dumps({"type": "session_meta", "payload": {
+        "session_id": "root", "id": "root", "thread_source": "user",
+    }}) + "\n", encoding="utf-8")
+    unrelated = tmp_path / "rollout-unrelated.jsonl"
+    unrelated.write_text(json.dumps({"type": "session_meta", "payload": {
+        "session_id": "other", "id": "other", "thread_source": "user",
+    }}) + "\n", encoding="utf-8")
+
+    nodes = codex.list_agents(root)
+    assert [node.id for node in nodes] == ["root"]

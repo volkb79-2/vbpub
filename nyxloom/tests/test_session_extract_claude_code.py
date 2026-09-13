@@ -241,6 +241,31 @@ def test_sniff_skips_blank_lines(tmp_path):
     assert claude_code.sniff(fp)
 
 
+def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_agent(tmp_path):
+    root = tmp_path / "root.jsonl"
+    root.write_text("{}\n", encoding="utf-8")
+    subagents = tmp_path / "root" / "subagents"
+    subagents.mkdir(parents=True)
+
+    (subagents / "agent-bad.meta.json").write_text("not json", encoding="utf-8")
+    (subagents / "agent-bad.jsonl").write_text("{}\n", encoding="utf-8")
+    (subagents / "agent-orphan.meta.json").write_text(json.dumps({
+        "description": "orphan",
+        "toolUseId": "not-dispatched",
+        "spawnDepth": 1,
+    }), encoding="utf-8")
+    (subagents / "agent-orphan.jsonl").write_text("{}\n", encoding="utf-8")
+
+    nodes = claude_code.list_agents(root)
+
+    bad = next(node for node in nodes if node.id.endswith("agent-bad.jsonl"))
+    orphan = next(node for node in nodes if node.id.endswith("agent-orphan.jsonl"))
+    assert bad.label == "(sub-agent)"
+    assert bad.parent_id is None
+    assert orphan.parent_id == str(root)
+    assert "orphan (spawnDepth 1)" == orphan.label
+
+
 def test_sniff_gives_up_past_the_scan_window(tmp_path):
     # A real match beyond _SNIFF_SCAN_LINES (50) must NOT be found -- the
     # scan-forward-a-bit design is deliberately bounded, not unlimited.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -326,6 +327,65 @@ def test_duplicate_candidate_paths_are_deduplicated(home, monkeypatch):
     candidate.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(locate, "_claude_matches_in", lambda *_args: [candidate, candidate])
     assert resolve_session_ref(_UUID, Path("/workspaces/vbpub")).path == candidate
+
+
+def test_scan_directory_distinguishes_missing_non_directory_and_scan_errors(tmp_path, monkeypatch):
+    with pytest.raises(LocateError, match="could not inspect"):
+        locate._scan_directory(tmp_path / "missing")
+
+    regular = tmp_path / "regular"
+    regular.write_text("file", encoding="utf-8")
+    assert locate._scan_directory(regular) == []
+
+    original_stat = locate.Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == tmp_path / "denied":
+            raise PermissionError("metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="could not inspect"):
+        locate._scan_directory(denied)
+
+
+def test_scan_directory_treats_a_disappearing_directory_as_configured(tmp_path, monkeypatch):
+    disappearing = tmp_path / "disappearing"
+    disappearing.mkdir()
+    original_iterdir = Path.iterdir
+
+    def fail_iterdir(path):
+        if path == disappearing:
+            raise FileNotFoundError("directory disappeared")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(locate.Path, "iterdir", fail_iterdir)
+    assert locate._scan_directory(disappearing, missing_ok=True) == []
+    with pytest.raises(LocateError, match="could not scan"):
+        locate._scan_directory(disappearing)
+
+
+def test_entry_mode_reports_metadata_failure(tmp_path):
+    with pytest.raises(LocateError, match="could not inspect"):
+        locate._entry_mode(tmp_path / "missing")
+
+
+def test_claude_match_scan_ignores_a_non_directory_non_file_entry(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    odd = project / "socket-like"
+    odd.write_text("not a session", encoding="utf-8")
+    original_entry_mode = locate._entry_mode
+
+    def fake_entry_mode(path):
+        if path == odd:
+            return stat.S_IFIFO
+        return original_entry_mode(path)
+
+    monkeypatch.setattr(locate, "_entry_mode", fake_entry_mode)
+    assert locate._claude_matches_in(project, _UUID) == []
 
 
 def test_opencode_lookup_reports_a_database_open_failure_as_indeterminate(home, monkeypatch):

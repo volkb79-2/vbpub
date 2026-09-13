@@ -7,7 +7,14 @@ matches the style of test_session_extract_render.py's hand-built events.
 from __future__ import annotations
 
 from nyxloom.session_extract.config import ExtractConfig
-from nyxloom.session_extract.debug_diff import _note_color, render_debug
+from nyxloom.session_extract.debug_diff import (
+    _drop_reason,
+    _expected_kinds,
+    _marker_lookup,
+    _note_color,
+    _parse_header,
+    render_debug,
+)
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 
 _RESET = "\x1b[0m"
@@ -321,3 +328,49 @@ def test_note_color_returns_none_not_a_falsy_placeholder_for_plain_text():
     assert _note_color("ordinary kept text, no bracket prefix at all") is None
     assert _note_color("[gap: 3 lossless blocks dropped]") == _CYAN
     assert _note_color("[files read: a.py]") == _GREEN
+
+
+def test_debug_helpers_report_malformed_headers_and_unmatched_event_kinds():
+    assert _parse_header("not a lossless header") is None
+    assert _expected_kinds("ASSISTANT thinking") == (EventKind.THINKING,)
+    assert _expected_kinds("unrecognized-tag") == ()
+
+    event = NormalizedEvent(1, "m1", "t", EventKind.OPERATOR_TEXT, "operator")
+    assert _marker_lookup(None, "USER", {}) is None
+    assert _marker_lookup("missing", "USER", {}) is None
+    assert _marker_lookup("m1", "ASSISTANT", {"m1": [event]}) is None
+
+
+def test_debug_drop_reason_uses_the_resolved_api_error_event():
+    event = NormalizedEvent(
+        1, "m1", "t", EventKind.ASSISTANT_TEXT,
+        "[API ERROR: rate_limit] limit reached",
+        checkpoint_score=0.0,
+    )
+    reason = _drop_reason(
+        "m1", "ASSISTANT", "ordinary block", ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"m1": [event]}, kept_markers=set(),
+    )
+    assert "real event for this exact record matched" in reason
+
+
+def test_debug_drop_reason_explains_resolved_checkpoint_and_finding_events():
+    checkpoint = NormalizedEvent(
+        1, "checkpoint", "t", EventKind.ASSISTANT_TEXT, "status",
+        checkpoint_score=5.0,
+    )
+    reason = _drop_reason(
+        "checkpoint", "ASSISTANT", "status", ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"checkpoint": [checkpoint]}, kept_markers=set(),
+    )
+    assert "scored 5.0 as a checkpoint" in reason
+
+    finding = NormalizedEvent(
+        2, "finding", "t", EventKind.ASSISTANT_TEXT, "Found the bug",
+        checkpoint_score=0.0,
+    )
+    reason = _drop_reason(
+        "finding", "ASSISTANT", finding.text, ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"finding": [finding]}, kept_markers=set(),
+    )
+    assert "reports a concrete finding" in reason

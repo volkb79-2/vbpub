@@ -175,6 +175,21 @@ def test_doctor_error(sample_project, tmp_state, capsys, monkeypatch):
     assert "critical" in out
 
 
+def test_doctor_project_id_filters_the_project_checks(sample_project, tmp_state, capsys, monkeypatch):
+    checked = []
+
+    def mock_doctor_project(cfg):
+        checked.append(cfg.project_id)
+        return []
+
+    monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
+
+    exit_code = cli.main(["doctor", "--project-id", "demo"])
+
+    assert exit_code == 0
+    assert checked == ["demo"]
+
+
 def test_doctor_rebuild(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 3: doctor --rebuild prints diffs."""
     def mock_doctor_project(cfg):

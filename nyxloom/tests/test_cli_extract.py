@@ -795,6 +795,28 @@ def test_extract_sessions_opencode_shows_forked_session(tmp_path, capsys):
     assert lines[kid_idx].startswith("  -")  # nested under the parent
 
 
+def test_extract_sessions_opencode_accepts_the_store_directory(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db.parent)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Parent session" in out and "Explore subtask" in out
+
+
+def test_extract_sessions_codex_directory_scans_each_family_once(tmp_path, capsys):
+    parent, _child = _write_codex_family_fixture(tmp_path)
+    (tmp_path / "rollout-invalid.jsonl").write_text("not a rollout\n", encoding="utf-8")
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path), "--format", "codex"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert out.count("[root-thread]") == 1
+    assert "Ada (depth 1)" in out
+    assert "[child-thread]" in out
+
+
 def test_extract_sessions_json_output(tmp_path, capsys):
     db = _write_opencode_family_fixture(tmp_path)
     exit_code = cli.main(["extract-sessions", str(db), "--json"])
@@ -851,6 +873,51 @@ def test_extract_sessions_directory_hints_at_subdirectory_one_level_down(tmp_pat
     assert "did you mean" in err
     assert str(subproj) in err
 
+
+def test_extract_sessions_empty_directory_without_a_hint_is_explicit(tmp_path, capsys):
+    (tmp_path / "not-a-session-directory").mkdir()
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "no Claude Code" in err
+    assert "pass a specific session-log file instead" in err
+
+
+def test_session_discovery_rejects_an_unsupported_directory_format(tmp_path):
+    from nyxloom.session_extract import sessions
+
+    with pytest.raises(ValueError, match="does not support 'unknown'"):
+        sessions.list_agents(tmp_path, fmt="unknown")
+
+
+def test_session_discovery_rejects_an_adapter_without_list_agents(tmp_path, monkeypatch):
+    from nyxloom.session_extract import sessions
+    from nyxloom.session_extract import adapters
+
+    class Adapter:
+        name = "fixture"
+
+    monkeypatch.setattr(adapters, "get_adapter", lambda _fmt: Adapter())
+    with pytest.raises(ValueError, match="does not support 'fixture'"):
+        sessions.list_agents(tmp_path / "session.log", fmt="fixture")
+
+
+def test_session_discovery_hint_is_indeterminate_when_directory_scan_fails(tmp_path, monkeypatch):
+    from nyxloom.session_extract import sessions
+
+    def fail_iterdir(_path):
+        raise PermissionError("directory denied")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+    assert sessions._one_level_down_hint(tmp_path) is None
+
+
+def test_render_tree_empty_is_explicit():
+    from nyxloom.session_extract.sessions import render_tree
+
+    assert render_tree([]) == "(no sessions found)\n"
 
 # --- handoff-to-a-fresh-agent flags (--task/--task-file/--strip-stale-wakeups/
 # --redact-pattern) -- session_extract/mangle.py, verified against a real
