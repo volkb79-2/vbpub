@@ -705,3 +705,78 @@ findings (S6-S11) closed. `assay-r2` launch condition changed mid-session
 by controller ruling RW-52 (no longer gated on P1/P6's container lanes,
 memory PSI alone) — see the r2 status note this session appends below
 before the final return.
+
+## Session 7 — corrected synthetic-tree R2 survivor triage (RW71-RW73)
+
+### Evidence identity and disclosure
+
+The merge-tip mutation attempt recorded in RW71 was not valid evidence:
+assay's first-parent changed-line resolver selected `b72cba31` and found no
+changed executable lines, yielding `INCONCLUSIVE/NO_MUTANTS`. RW72 then
+constructed the exact-tree non-merge judgment commit
+`cd6780ed49ff06c259578b37c7b4e2dd0b7f23f9`, with parent
+`fccba080d0d35b9eb536489e8b6e6fd30ff2c52d` and the same tree as final branch
+tip `d4c57c1ac631a027d0bdfb6fb0d1219c9f4bca98`; the tree comparison was empty.
+This commit was ephemeral assay identity only and is not product history.
+
+The corrected run was launched from `run-gate-project` with HEAD quiet and
+host memory PSI full avg10 `0.23%` at launch:
+
+```console
+$ nice -n 19 ionice -c 3 ./run-gate.py --base main assay-r2
+run-gate: comparison base main (from --base) → --request-base
+run-gate: rev 42 | lane assay-r2 | env built-in 'bare-host'
+assay-6.1.1.pyz: OK
+r2: FAIL/MUTANTS_SURVIVED (exit 1)
+  commit: cd6780ed49ff06c259578b37c7b4e2dd0b7f23f9
+run-gate: lane 'assay-r2' exit 1
+ASSAY_EXIT=1
+```
+
+The verdict was read separately from
+`.assay/verdict-r2.json`: R0 `PASS`; R2 `FAIL/MUTANTS_SURVIVED`; 57
+candidates, 43 killed, 14 survived, 0 equivalent, 0 budget-exceeded, 0
+crashed. The completion marker was
+`/tmp/rg55-p4-corrected-r2.Mn6ZDQ/DONE.marker` with `ASSAY_EXIT=1`.
+
+### Survivor dispositions
+
+All 14 survivors were executable-behavior oracle gaps, not equivalent
+mutants. The focused regression tests below pin the intended behavior. No
+executable source was changed; the pending change is tests plus this
+evidence, so the branch source tree remains identical to the judged
+synthetic tree and the controller-requested fresh R2 is required after the
+commit.
+
+| # | survivor | disposition and focused oracle |
+|---:|---|---|
+| 1 | `run-gate.py:507 True→False` (`flush=True` in the load-time stall warning) | Real immediate-disclosure contract; pinned by `TestBareHostStallTimeoutWarning.test_load_time_warning_is_flushed_for_immediate_disclosure`. |
+| 2 | `:1834 True→False` (`capture_output=True` in self-container inspection) | Real subprocess-capture contract; pinned by `TestResolveSelfContainerIdDirectBranches.test_docker_inspect_captures_stdout_and_stderr`. |
+| 3 | `:2007 Or→And` (daemon version document fallback) | Real daemon-status disclosure contract; pinned by `TestBareHostProfilingWiring.test_daemon_path_targets_self_id_scope_and_injects_token`. |
+| 4 | `:2025 And→Or` (non-boolean baseline guard) | Real unknown-baseline contract; pinned by `TestBareHostProfilingWiring.test_daemon_path_missing_baseline_discloses_unknown`. |
+| 5 | `:2065 Lt→LtE` (zero resident-page validation) | Real zero-page boundary contract; pinned by `TestSelfRssBytes.test_zero_resident_pages_is_a_valid_read`. |
+| 6 | `:2290 True→False` (`flush=True` in footprint disclosure) | Real immediate-disclosure contract; pinned by `TestFootprintDisclosureLine.test_footprint_line_flushes_after_writing_the_disclosure`. |
+| 7 | `:3665 Eq→NotEq` (rusage source flag) | Real any-rusage-series disclosure contract; pinned by `TestHistory...test_lane_stats_source_flag_is_true_for_an_all_rusage_series`. |
+| 8 | `:3876 Or→And` (profiled `peak_at_floor` fallback) | Real most-recent-profiled-entry contract; pinned by `TestFootprintManifestBuild.test_peak_at_floor_comes_from_the_most_recent_profiled_entry`. |
+| 9 | `:5580 And→Or` (bare-host stall-timeout doctor filter) | Real environment-specific doctor contract; pinned by `TestBareHostStallTimeoutWarning.test_doctor_does_not_warn_for_a_bare_host_lane_without_stall_timeout`. |
+| 10 | `:5853 Lt→LtE` (stale-lock cutoff) | Real strict “older than one day” boundary; pinned by `TestDoctorStaleLockCheck.test_lock_exactly_one_day_old_is_not_stale`. |
+| 11 | `:7003 True→False` (`flush=True` in foreign-record refusal) | Real immediate refusal disclosure; pinned by `TestInflight...test_fresh_refuses_to_remove_a_foreign_record`. |
+| 12 | `:7854 True→False` (`flush=True` in DEVCONTAINER-WIDE disclosure) | Real immediate disclosure; pinned by `TestBareHostProfilingWiring.test_daemon_path_targets_self_id_scope_and_injects_token`. |
+| 13 | `:7901 Or→And` (preserve existing profiler warning on wait4 failure) | Real error-preservation contract; pinned by `TestBareHostProfilingWiring.test_getrusage_raising_never_aborts_the_lane`. |
+| 14 | `:7946 True→False` (`flush=True` in cleanup-crash warning) | Real immediate cleanup-failure disclosure; pinned by `TestBareHostProfilingWiring.test_cleanup_crash_never_escapes_the_lane`. |
+
+Focused regression, run after the test-only changes and before the fresh R2:
+
+```console
+$ python3 -m py_compile run-gate.py tests/test_run_gate.py
+$ nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py -q -k 'load_time_warning_is_flushed or docker_inspect_captures_stdout_and_stderr or daemon_path_targets_self_id_scope_and_injects_token or daemon_path_missing_baseline_discloses_unknown or zero_resident_pages_is_a_valid_read or lane_stats_source_flag_is_true_for_an_all_rusage_series or peak_at_floor_comes_from_the_most_recent_profiled_entry or footprint_line_flushes_after_writing_the_disclosure or doctor_does_not_warn_for_a_bare_host_lane_without_stall_timeout or lock_exactly_one_day_old_is_not_stale or fresh_refuses_to_remove_a_foreign_record or getrusage_raising_never_aborts_the_lane or cleanup_crash_never_escapes_the_lane'
+.............                                                            [100%]
+13 passed, 1047 deselected in 4.72s
+exit 0
+```
+
+The pre-R2 test/report commit will be made on `rg55-followups-run-gate`
+after this section is recorded. A fresh exact-tree non-merge assay identity
+will then be created from that committed branch tree; no commit will be
+made while detached. The fresh R2 verdict, final selftest, assay-r1, and
+assay-r3 will be appended in the next session section.

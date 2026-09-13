@@ -1395,3 +1395,58 @@ round 3 with reviewer `a076c67bd8b7a7c2a` → release 23.8.0 + verify
 rev 42), and a self-authored retention prompt. Tip unchanged by this
 entry's own commit: `23e91ce4` (this LOG commit lands on top, docs-only
 as always).
+
+## Session 7 — survivor triage before controller-requested fresh R2 (RW71-RW73)
+
+Switched from the detached assay identity back to branch
+`rg55-followups-run-gate` at `d4c57c1ac631a027d0bdfb6fb0d1219c9f4bca98` before
+editing. Verified that `git diff --name-status
+cd6780ed49ff06c259578b37c7b4e2dd0b7f23f9^{tree}
+d4c57c1ac631a027d0bdfb6fb0d1219c9f4bca98^{tree}` was empty. The working
+change is limited to `tests/test_run_gate.py`; `run-gate.py` has no diff.
+
+RW71 disclosed that the first merge-tip R2 was invalid
+(`INCONCLUSIVE/NO_MUTANTS`) because first-parent resolution selected
+`b72cba31`. RW72 disclosed the correction: synthetic non-merge commit
+`cd6780ed49ff06c259578b37c7b4e2dd0b7f23f9`, parent
+`fccba080d0d35b9eb536489e8b6e6fd30ff2c52d`, exactly the final branch tree;
+it was assay identity only and never product history. RW73 reported its
+valid corrected verdict: R0 `PASS`, R2 `FAIL/MUTANTS_SURVIVED`, 57
+candidates, 43 killed, 14 survived, 0 budget/crash. The verdict artifact
+was read separately at `.assay/verdict-r2.json`; the completion marker was
+`/tmp/rg55-p4-corrected-r2.Mn6ZDQ/DONE.marker` and recorded `ASSAY_EXIT=1`.
+
+Every survivor was triaged as a real oracle gap. The focused tests added are:
+
+| survivor lines | focused test(s) |
+|---|---|
+| 507, 7003, 7854, 7946 | flush-sensitive warning/refusal/disclosure assertions in `test_run_gate.py` |
+| 1834 | `TestResolveSelfContainerIdDirectBranches.test_docker_inspect_captures_stdout_and_stderr` |
+| 2007, 2025 | `TestBareHostProfilingWiring.test_daemon_path_targets_self_id_scope_and_injects_token`; `test_daemon_path_missing_baseline_discloses_unknown` |
+| 2065 | `TestSelfRssBytes.test_zero_resident_pages_is_a_valid_read` |
+| 2290 | `TestFootprintDisclosureLine.test_footprint_line_flushes_after_writing_the_disclosure` |
+| 3665 | `TestHistory...test_lane_stats_source_flag_is_true_for_an_all_rusage_series` |
+| 3876 | `TestFootprintManifestBuild.test_peak_at_floor_comes_from_the_most_recent_profiled_entry` |
+| 5580 | `TestBareHostStallTimeoutWarning.test_doctor_does_not_warn_for_a_bare_host_lane_without_stall_timeout` |
+| 5853 | `TestDoctorStaleLockCheck.test_lock_exactly_one_day_old_is_not_stale` |
+| 7901 | `TestBareHostProfilingWiring.test_getrusage_raising_never_aborts_the_lane` |
+
+The exact focused command was:
+
+```console
+nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py -q -k 'load_time_warning_is_flushed or docker_inspect_captures_stdout_and_stderr or daemon_path_targets_self_id_scope_and_injects_token or daemon_path_missing_baseline_discloses_unknown or zero_resident_pages_is_a_valid_read or lane_stats_source_flag_is_true_for_an_all_rusage_series or peak_at_floor_comes_from_the_most_recent_profiled_entry or footprint_line_flushes_after_writing_the_disclosure or doctor_does_not_warn_for_a_bare_host_lane_without_stall_timeout or lock_exactly_one_day_old_is_not_stale or fresh_refuses_to_remove_a_foreign_record or getrusage_raising_never_aborts_the_lane or cleanup_crash_never_escapes_the_lane'
+```
+
+Result: `13 passed, 1047 deselected in 4.72s`, exit 0. `python3 -m
+py_compile run-gate.py tests/test_run_gate.py` also exited 0. The stale-lock
+oracle was tightened after its first focused run: the initial assertion
+matched the benign `[OK] ... none older than 1 day` wording; the corrected
+assertion distinguishes the forbidden `[INFO]` stale result and the
+`1 entry older than 1 day` detail.
+
+This test-only triage changes no executable source, but the controller has
+now explicitly requested a fresh R2. Therefore commit this test/report/log
+checkpoint on the branch, create a new exact non-merge judged tree from its
+tree, keep HEAD quiet throughout R2, and return to the branch before any
+further commit. Do not treat the earlier `cd6780ed` survivor verdict as a
+passing R2; only the fresh post-triage verdict can close this step.

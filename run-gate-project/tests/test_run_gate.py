@@ -7185,6 +7185,15 @@ class TestHistoryTableResourceColumns:
         assert stats["memory_source_rusage"] is True
         assert stats["memory_peak_at_floor"] is True
 
+    def test_lane_stats_source_flag_is_true_for_an_all_rusage_series(self):
+        # The mixed-mode ANY test above cannot distinguish == from !=: each
+        # inverted comparison still matches one of its two entries. A
+        # homogeneous rusage series pins the source comparison itself.
+        entries = [{"outcome": "pass",
+                    "resources": {"memory": {"source": "rusage-maxrss",
+                                                 "peak_at_floor": False}}}]
+        assert run_gate._lane_stats(entries)["memory_source_rusage"] is True
+
     def test_history_table_in_process_prints_the_resource_line(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path)
@@ -7345,6 +7354,16 @@ class TestFootprintManifestBuild:
         m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
         assert m["lanes"]["suite"]["scope"] == "container-shared"
         assert m["lanes"]["suite"]["method"] == "daemon"
+
+    def test_peak_at_floor_comes_from_the_most_recent_profiled_entry(self):
+        summary = json.loads(json.dumps(SUMMARY_V1))
+        summary["memory"]["source"] = "rusage-maxrss"
+        summary["memory"]["peak_at_floor"] = True
+        entries = [self._entry("a", summary)]
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": entries}}}
+        m = run_gate.build_footprint_manifest(store, {"suite": {}}, 10, "H")
+        assert m["lanes"]["suite"]["peak_at_floor"] is True
 
     def test_last_commit_and_at_name_the_overall_last_entry_even_unprofiled(self):
         entries = [self._entry("a", SUMMARY_V1, started="2026-01-01T00:00:00Z"),
@@ -7756,6 +7775,21 @@ class TestFootprintDisclosureLine:
                            "host": {"memory_full_stall_seconds": 0.0}}
         run_gate.print_footprint_line("suite", tmp_path, cgroup_resources)
         assert "[source: rusage-maxrss]" not in capsys.readouterr().out
+
+    def test_footprint_line_flushes_after_writing_the_disclosure(
+            self, tmp_path, monkeypatch):
+        calls = []
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(run_gate, "print", spy, raising=False)
+        resources = {"memory": {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB},
+                     "cpu": {"cores_avg": 0.5},
+                     "host": {"memory_full_stall_seconds": 0.0}}
+        run_gate.print_footprint_line("suite", tmp_path, resources)
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
 
 
 class TestFootprintDoctorChecks:
@@ -10046,6 +10080,15 @@ class TestInflightRecordDecisions:
         # branch in `resolve_inflight`, `--fresh` included, so it must
         # refuse here too rather than "helpfully" cleaning up a runner it
         # does not own.
+        calls = []
+        real_print = print
+
+        def spy(*args, **kwargs):
+            if args and "foreign record" in args[0]:
+                calls.append(kwargs)
+            return real_print(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "print", spy, raising=False)
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
                        runner="exec")
@@ -10056,6 +10099,8 @@ class TestInflightRecordDecisions:
                if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
         assert len(lane_runs(log)) == 1
         assert (state / "dstdns-98535c-test-runner").exists()
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
 
     def test_a_record_with_no_runner_key_is_treated_as_the_container_path(
             self, tmp_path, monkeypatch, capsys):
@@ -11213,6 +11258,24 @@ class TestBareHostStallTimeoutWarning:
         # Config still loads, exit code / behavior otherwise unchanged.
         assert cfg["lanes"]["selftest"]["stall_timeout"] == "5m"
 
+    def test_load_time_warning_is_flushed_for_immediate_disclosure(
+            self, tmp_path, monkeypatch):
+        # The warning is emitted before the lane starts. Keep its deliberate
+        # flush so a redirected long-running gate does not hide the operator
+        # action until process exit.
+        calls = []
+
+        def spy(*args, **kwargs):
+            if args and "stall_timeout is inert" in args[0]:
+                calls.append(kwargs)
+
+        monkeypatch.setattr(run_gate, "print", spy, raising=False)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        run_gate.load_config(proj)
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
+
     def test_doctor_warns_too_same_wording(self, tmp_path, monkeypatch,
                                            capsys):
         repo = make_repo(tmp_path)
@@ -11252,6 +11315,22 @@ class TestBareHostStallTimeoutWarning:
         run_gate.load_config(proj)
         err = capsys.readouterr().err
         assert "stall_timeout is inert" not in err
+
+    def test_doctor_does_not_warn_for_a_bare_host_lane_without_stall_timeout(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.plain]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["doctor"]) == 0
+        assert "stall_timeout is inert" not in capsys.readouterr().out
 
 
 class TestStallEndToEnd:
@@ -13615,6 +13694,20 @@ class TestDoctorStaleLockCheck:
         assert stale_dir.is_dir(), "doctor must never remove a stale lock"
         stale_dir.rmdir()  # this test's own cleanup, not doctor's
 
+    def test_lock_exactly_one_day_old_is_not_stale(self, tmp_path, monkeypatch,
+                                                    capsys):
+        # The contract says "older than 1 day": equality is still fresh.
+        now = 1_700_000_000.0
+        monkeypatch.setattr(run_gate.time, "time", lambda: now)
+        lock = _shared_lock_dir() / "run-gate-shared-exactly-one-day.lock"
+        lock.touch()
+        os.utime(lock, (now - 86400, now - 86400))
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
+        assert code == 0
+        assert "[OK] stale coordination locks" in out
+        assert "[INFO] stale coordination locks" not in out
+        assert "1 entry older than 1 day" not in out
+
     def test_lock_dir_not_yet_created_is_ok(self, tmp_path, monkeypatch,
                                             capsys):
         """`isolate_shared_lock_dir` always creates its own dir, but
@@ -14704,6 +14797,15 @@ class TestBareHostProfilingWiring:
 
     def test_daemon_path_targets_self_id_scope_and_injects_token(
             self, tmp_path, monkeypatch, capsys):
+        calls = []
+        real_print = print
+
+        def print_spy(*args, **kwargs):
+            if args and "DEVCONTAINER-WIDE" in args[0]:
+                calls.append(kwargs)
+            return real_print(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "print", print_spy, raising=False)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
@@ -14729,6 +14831,10 @@ class TestBareHostProfilingWiring:
         out = capsys.readouterr().out
         assert (f"profile session s-20260912T101500Z-9f01 is "
                f"DEVCONTAINER-WIDE") in out
+        assert "profiler cgprofile-host-daemon (cgprofile 1.0.0, damon available)" \
+            in out
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
         assert "'suite'" in out
         start_calls = [c for c in docker_execs(log) if len(c) > 4 and c[4] == "start"]
         assert len(start_calls) == 1
@@ -14743,6 +14849,27 @@ class TestBareHostProfilingWiring:
         assert latest["resources"]["scope"] == "container-shared"
         assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
         assert latest["profile_error"] is None
+
+    def test_daemon_path_missing_baseline_discloses_unknown(
+            self, tmp_path, monkeypatch, capsys):
+        # A daemon may omit its optional baseline. The session still starts;
+        # the display must use the unknown marker rather than dividing None.
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        fake_docker(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = json.loads((RG55_FIXTURES / "start-v1.json").read_text())
+        start["target"]["baseline_memory_bytes"] = None
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           version=(version, None, None),
+                           start=(json.dumps(start), None, None),
+                           stop=(stop, None, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        assert run_gate.main(["suite"]) == 0
+        assert "baseline ? MiB" in capsys.readouterr().out
 
     def test_rusage_mode_never_injects_a_token(self, tmp_path, monkeypatch):
         # The rusage path starts no daemon session for a token to identify
@@ -14818,6 +14945,8 @@ class TestBareHostProfilingWiring:
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
+        assert "not running in a container" in latest["profile_error"]
+        assert "wait4 exploded" not in latest["profile_error"]
 
     def test_returncode_is_set_after_wait4_reaps_the_child(
             self, tmp_path, monkeypatch):
@@ -14981,6 +15110,15 @@ class TestBareHostProfilingWiring:
         # for -- proving the lane's own exit code and the run record's
         # `profile_error` both survive it, mirroring
         # `TestProfilingNeverRaisesEndToEnd`'s container-lane precedent.
+        calls = []
+        real_print = print
+
+        def spy(*args, **kwargs):
+            if args and "cleanup crashed unexpectedly" in args[0]:
+                calls.append(kwargs)
+            return real_print(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "print", spy, raising=False)
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
@@ -14998,6 +15136,8 @@ class TestBareHostProfilingWiring:
         assert latest["profile_error"] == (
             "profiling cleanup crashed unexpectedly: planted: "
             "finish_bare_host_profiling exploded")
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
 
     def test_direct_call_with_no_run_record_still_profiles(
             self, tmp_path, monkeypatch):
@@ -15218,6 +15358,12 @@ class TestSelfRssBytes:
         self._fake_proc_root(tmp_path, monkeypatch, "10000 -5 100 50 0 900 0\n")
         assert run_gate._self_rss_bytes() is None
 
+    def test_zero_resident_pages_is_a_valid_read(self, tmp_path, monkeypatch):
+        # Zero is a valid kernel reading; only a negative page count is
+        # nonsensical. Do not turn the lower boundary into an unreadable one.
+        self._fake_proc_root(tmp_path, monkeypatch, "10000 0 100 50 0 900 0\n")
+        assert run_gate._self_rss_bytes() == 0
+
 
 class TestResolveSelfContainerIdDirectBranches:
     """RG-57's `resolve_self_container_id` -- the bare-host daemon path's
@@ -15269,6 +15415,25 @@ class TestResolveSelfContainerIdDirectBranches:
         container_id, reason = run_gate.resolve_self_container_id("docker")
         assert container_id is None
         assert "returned no id" in reason
+
+    def test_docker_inspect_captures_stdout_and_stderr(self, monkeypatch):
+        # The inspect response is read from both streams on its success and
+        # failure paths, so the subprocess must capture both of them.
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(["docker"], 0,
+                                         stdout="sha256:realid789\n", stderr="")
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen.update(kwargs)
+            return cp
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id == "sha256:realid789"
+        assert reason is None
+        assert seen["capture_output"] is True
+        assert seen["text"] is True
 
     def test_docker_inspect_success_returns_the_real_id(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
@@ -16125,4 +16290,3 @@ class TestReattachProfilingWiring:
         err = capsys.readouterr().err
         assert "WARNING profiling:" in err
         assert "no profile recorded" in err
-
