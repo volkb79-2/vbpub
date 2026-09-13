@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.5.1] - 2026-09-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=ceb742d4b7df37a13dbfe8a312736479f8971a5d -->
+
+### Fixed
+- fix(nyxloom): content-based format auto-detect + --include-sidechain for subagent transcripts (cf59594b)
+- fix(nyxloom): group extract --help into content selection / stop conditions / rendering sections (184e670e)
+- fix(nyxloom): extract CLI clarity pass -- stop-condition docs, -1 sentinels, extract-lossless split, gap-marker rendering (10e49bbc)
+
+### Changed
+- design(nyxloom): E-016 -- dstdns live evidence for a WEDGED (not dead) Agent-tool child, and extract-after-autocompact null result (feeds B46/checkpoint-reset) (8c746cf4)
+
 ## [0.5.0] - 2026-09-11
 <!-- cmru: generated -->
 <!-- cmru: source-end=f7abb474e43254907f4c0df52f1ab8ee09fc803e -->
