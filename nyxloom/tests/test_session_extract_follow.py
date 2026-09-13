@@ -679,6 +679,36 @@ def test_interview_pending_fires_on_an_unanswered_question_and_clears_on_the_ans
     assert pending == {}
 
 
+def test_a_tool_result_in_a_non_user_record_does_not_answer_a_question():
+    # The pairing is structural: only a user record can carry the later
+    # tool_result that answers an AskUserQuestion. A tool_result-shaped block
+    # in an assistant record must leave the question outstanding.
+    pending = {"tu1": "Ship it?"}
+    assistant = _rec(type="assistant", uuid="a2", timestamp=_TS, message={
+        "role": "assistant", "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": "not an answer"},
+        ],
+    })
+
+    assert claude_code.update_interview_pending(assistant, pending) is None
+    assert pending == {"tu1": "Ship it?"}
+
+
+def test_a_non_dict_user_content_block_does_not_answer_a_question():
+    # Malformed/non-block content is not a tool_result. It must be ignored
+    # while the actual unanswered AskUserQuestion remains pending.
+    pending = {"tu1": "Ship it?"}
+    user = _rec(type="user", uuid="u2", timestamp=_TS, message={
+        "role": "user", "content": [
+            "not a content block",
+            {"type": "tool_result", "tool_use_id": "other", "content": "unrelated"},
+        ],
+    })
+
+    assert claude_code.update_interview_pending(user, pending) is None
+    assert pending == {"tu1": "Ship it?"}
+
+
 def test_an_ordinary_tool_call_is_not_an_interview_signal():
     pending: dict[str, str] = {}
     rec = _rec(type="assistant", uuid="a1", timestamp=_TS, message={
