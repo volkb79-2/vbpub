@@ -1298,3 +1298,9 @@ def test_extract_json_rejects_highlight_as_text_only(tmp_path, capsys):
 def test_extract_family_reports_an_unresolvable_path_before_dispatch(tmp_path, capsys, verb):
     assert cli.main([verb, str(tmp_path / "missing-session.jsonl")]) == 1
     assert "neither an existing path" in capsys.readouterr().err
+
+
+def test_session_log_resolution_failure_returns_no_resolution(tmp_path, capsys):
+    args = type("Args", (), {"path": str(tmp_path / "missing-session.jsonl")})()
+    assert cli._resolve_session_log(args) is None
+    assert "neither an existing path" in capsys.readouterr().err
