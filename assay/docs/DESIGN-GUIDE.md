@@ -952,6 +952,17 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Rejudge help follows the canonical vocabulary (B096)
+
+`assay.verdict.MUTATION_BUCKETS` is the one owner of mutation outcome bucket
+names. The `--rejudge-outcome` help is built from that tuple at parser
+construction time, so a future canonical bucket cannot be accepted by the
+runtime while remaining absent from the operator-facing help. The CLI-only
+`error` convenience spelling stays outside the tuple and is described
+separately as an alias for canonical `crashed`; it must never become a verdict
+or resume-state bucket. The parser and runtime therefore share the canonical
+source without making the alias look like a second canonical outcome.
+
 ### Filtered native-R2 judge identity (B092)
 
 Some repositories deliberately keep generated reports and trove evidence in

@@ -9629,14 +9629,18 @@ large events files; no timing threshold replaces those behavioral checks.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** CLI help manually
-transcribes `MUTATION_BUCKETS`. Derive accepted bucket spellings from that
-source and retain the documented `error` alias for `crashed`. The earlier
-cleanup removed the unused import; reintroduce it only with its real use.
+**FIXED in this change, 2026-09-13.** CLI help now derives accepted canonical
+bucket spellings from `assay.verdict.MUTATION_BUCKETS` through a helper at
+parser-construction time, while retaining `error` as a separately described
+CLI-only alias for `crashed`. The alias is not added to the owner vocabulary.
+
+The regression appends a temporary vocabulary value and proves the real
+`assay run --help` output changes with it, alongside every current canonical
+member and the alias. README, DESIGN-GUIDE and CONSUMERS now identify the same
+canonical source and accepted spellings.
 
 Oracle: real CLI help names every accepted bucket and the alias, and a
 temporary vocabulary addition changes the help without a second edit.
-Keep README, DESIGN-GUIDE and CONSUMERS aligned with accepted spellings.
 
 ## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
 

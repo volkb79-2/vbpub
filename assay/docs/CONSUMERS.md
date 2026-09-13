@@ -2428,6 +2428,16 @@ directly, leading and trailing stretches included.
 
 ### `--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`: force specific candidates to re-execute (B091 A5)
 
+#### Rejudge-outcome bucket spellings (B096)
+
+The canonical bucket names are owned by `assay.verdict.MUTATION_BUCKETS` and
+are surfaced by `assay run --help`: `killed`, `survived`, `crashed`,
+`budget_exceeded`, `equivalent`, and `hung`. The help derives that list from
+the owner tuple, so it follows a future canonical vocabulary addition. The
+CLI-only convenience alias `error` is accepted for canonical `crashed`, but
+it is not itself a `MUTATION_BUCKETS` value and never appears in a verdict or
+resume-state record.
+
 `--resume` (above) treats a matching state record as authoritative once both
 halves of its identity hold. Sometimes that is exactly what you do **not**
 want for one or a few candidates — a `hung` classification you suspect was a

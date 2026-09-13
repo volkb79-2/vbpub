@@ -166,6 +166,24 @@ def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
     )
 
 
+def _rejudge_outcome_help() -> str:
+    """Build the ``--rejudge-outcome`` bucket text from its owner (B096).
+
+    The import is kept at the construction boundary so the help reads the
+    current owner tuple, including when a caller is inspecting a vocabulary
+    extension in-process.  ``error`` is deliberately described separately:
+    it is a CLI convenience alias for the canonical ``crashed`` bucket, not a
+    member of :data:`assay.verdict.MUTATION_BUCKETS`.
+    """
+    from .verdict import MUTATION_BUCKETS
+
+    return (
+        f"One of {', '.join(MUTATION_BUCKETS)}; the CLI-only convenience "
+        "alias 'error' is accepted for the canonical 'crashed' bucket; a "
+        "union with --rejudge when both are given. Requires --resume."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="assay",
@@ -255,10 +273,8 @@ def build_parser() -> argparse.ArgumentParser:
             "selected by a resumed record's own persisted outcome bucket "
             "rather than by explicit id -- e.g. "
             "'hung,budget_exceeded,error' re-executes every previously "
-            "hung/budget-exceeded/crashed candidate. One of killed, "
-            "survived, crashed (or its alias 'error'), budget_exceeded, "
-            "equivalent, hung; a union with --rejudge when both are given. "
-            "Requires --resume."
+            "hung/budget-exceeded/crashed candidate. "
+            f"{_rejudge_outcome_help()}"
         ),
     )
     _add_request_base_argument(run)

@@ -546,6 +546,14 @@ existing `budget_exceeded` bucket while unrelated candidates continue.
 The mutation score remains `killed / (killed + survived)`; `crashed`,
 `budget_exceeded`, `equivalent`, and `hung` are reported buckets outside that
 denominator.
+When reusing mutation state, `--rejudge-outcome BUCKET[,BUCKET...]` accepts
+those canonical `MUTATION_BUCKETS` names plus the CLI-only convenience alias
+`error` for `crashed`; the `assay run --help` list is derived from that shipped
+vocabulary, so it stays aligned when a canonical bucket is added. See
+[Mutation resume and rejudge help](docs/DESIGN-GUIDE.md#rejudge-help-follows-the-canonical-vocabulary-b096)
+for why the alias remains outside the owner tuple and
+[the consumer guide](docs/CONSUMERS.md#rejudge-outcome-bucket-spellings-b096)
+for the pasteable command.
 Progress is opt-in and consumer-directed: `assay run <lane> --progress PATH`
 appends a compact NDJSON event to PATH -- a `run` header naming the commit and
 start time, then one event after the baseline and one after each completed
