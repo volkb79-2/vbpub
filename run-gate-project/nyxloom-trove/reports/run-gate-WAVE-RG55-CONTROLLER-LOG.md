@@ -1109,3 +1109,16 @@ canary merge was missing four source lines. P4 R2 is therefore judged on
 the report; the ephemeral commit is not a release or product-history commit.
 The final branch remains at `d4c57c1a` until the valid mutation evidence and
 final review are complete.
+
+### RW-73 — 2026-09-13 15:17:21Z — mutation campaigns completed; triage/resume required
+
+The resumed P4 mutation campaign on the exact non-merge synthetic tree
+completed 57 candidates with 43 killed and 14 survived. The fresh P1 campaign
+completed 208 candidates with 203 killed and 5 survived. The resumed P6
+campaign reached its lane budget after 484 candidates (368 killed, 40
+survived, 76 `budget_exceeded`), so it remains a BUDGET_EXCEEDED lane and must
+be resumed from the exact judged tree until every candidate is judged. The
+detached Luna implementer sessions expired at the platform usage limit after
+the campaigns; the controller may seed fresh Luna xhigh sessions now that the
+window is available. No package is merge-ready until survivor triage, final
+gates, and the fresh Sol xhigh review are complete.
