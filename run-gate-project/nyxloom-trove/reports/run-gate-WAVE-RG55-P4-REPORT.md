@@ -853,3 +853,21 @@ The earlier wrong-directory launch was not a verdict: its log recorded
 `ionice: failed to execute ./run-gate.py: No such file or directory` and
 `ASSAY_EXIT=127`, with no verdict artifact. The successful relaunch from the
 project directory is the valid evidence above.
+
+## Session 10 — final branch gates and review handoff
+
+The controller ran the final gates on clean branch tip
+`97d294c034d6b54c7d99a10d1734b2b23ef79b8c` after the exact-tree R2 records
+were transferred. The reported results were:
+
+| gate | result |
+|---|---|
+| `./run-gate.py selftest` | exit 0; 1159 passed; coverage `208/208` changed executable lines and `66/66` branches |
+| `./run-gate.py assay-r1` | exit 0; verdict `PASS` |
+| `./run-gate.py assay-r3` | exit 0; 2 canaries rejected, 0 survived |
+
+The separate attempted command `./run-gate.py --base main assay-r3` was a
+command-lane refusal with exit 2, not a gate run, and is excluded from the
+gate verdicts. No implementation source changed after the final exact-tree
+R2. This package is ready for a fresh Sol xhigh adversarial review only;
+there was no reviewer dispatch, merge, or release.

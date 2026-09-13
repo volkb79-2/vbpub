@@ -1583,3 +1583,31 @@ the line-2065 `LtE->Lt` gap was closed by
 `TestSelfRssBytes.test_zero_page_size_is_rejected`. The final exact-tree R2
 verified all 57 candidates killed. This record is ready for final selftest,
 assay-r1, and assay-r3 on the quiet branch tip.
+
+## Session 10 — final branch gates and review handoff
+
+The controller completed final gates on clean branch tip
+`97d294c034d6b54c7d99a10d1734b2b23ef79b8c`. The exact reported gate records
+are:
+
+```text
+./run-gate.py selftest
+exit=0
+pytest=1159 passed
+coverage=208/208 changed executable lines; branches=66/66
+
+./run-gate.py assay-r1
+exit=0
+verdict=PASS
+
+./run-gate.py assay-r3
+exit=0
+canaries=2 rejected; survived=0
+```
+
+The separately attempted `./run-gate.py --base main assay-r3` returned exit
+2 because `assay-r3` is a command lane that does not delegate a comparison
+base. It was a refusal preflight, not a gate run, and is not counted above.
+No implementation source changed after the final R2. No duplicate gate was
+started here, and there was no reviewer dispatch, merge, or release. The
+branch is ready to hand to a fresh Sol xhigh adversarial review session.
