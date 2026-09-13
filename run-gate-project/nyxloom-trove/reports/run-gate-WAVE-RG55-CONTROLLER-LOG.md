@@ -1325,3 +1325,15 @@ It is isolated in a successor assay worktree based on the accepted B092+B098
 tip; it must not modify the running B092 gate tree or the P6 judged tree. The
 implementation, tests, docs, and fresh adversarial review use Luna xhigh;
 Sol remains reserved for an actually unsolvable Luna issue.
+
+### RW-96 — 2026-09-13 23:33:43Z — dispatch independent assay B097
+
+While P6's mutation resume and the B092+B098 registered gate remain
+asynchronous, the controller opened assay B097 (P7 B6-b) in isolated worktree
+`assay-b097`, based on the B096 branch. The package covers pid and optional
+xdist-worker stamping, per-process event parsing, owner-only session-finish
+detection, and legacy-record compatibility; it must preserve B6-a's
+progressing-tail guard. The implementer is Luna xhigh, with focused tests,
+the three adopter-facing documents, backlog, CHANGES, and a report required.
+No mutation campaign, merge, release, or dstdns action is authorized by this
+ruling; a fresh Luna xhigh adversarial review is required before any merge.
