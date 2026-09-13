@@ -2,6 +2,7 @@
 kind: backlog
 schema_version: 1
 items:
+  - {id: B092, title: "Native-R2 judge identity may explicitly exclude report-only POSIX path globs from the frozen tree-content digest", type: feature, component: mutation, context_estimate: medium}
   - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bug, component: liveness, context_estimate: small}
   - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bug, component: mutation, context_estimate: small}
   - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bug, component: liveness, context_estimate: small}
@@ -9463,7 +9464,21 @@ during the same wave B091 shipped in. Follows B088 (resume identity, the
 mechanism this backlog row is about) and is a direct, live incident of it —
 not a hypothetical.
 
-**Status:** OPEN.
+**Status:** **IMPLEMENTED in this change, 2026-09-13.**
+
+**Implementation evidence:** `config.MutationConfig` now loads and
+normalizes the native-R2-only `identity_exclude` list with loud refusal of
+empty, absolute, backslash, NUL, and `.`/`..` spellings. The frozen
+`SnapshotRepository` manifest derives a tagged B092 digest using
+case-sensitive POSIX `fnmatch` and no second filesystem walk; `run_mutation`
+passes that one digest to both resume readers and state-record writers. The
+omitted key keeps the B088 whole-tree serialization byte-for-byte, while an
+explicit empty list is a distinct filtered domain. Focused config and digest
+regressions cover report-only, mixed included/excluded, case-sensitive,
+omitted-path, malformed, omitted-vs-empty, and legacy-compatibility cases.
+Consumer documentation is synchronized in README, DESIGN-GUIDE, and
+CONSUMERS; the implementation report records the non-mutation verification
+boundary.
 
 ### The observation
 
@@ -9532,10 +9547,11 @@ which stay folded in exactly as B088 already documents. Declaring it is an
 explicit, written-down claim the lane's own author makes ("these paths
 cannot affect this lane's judged suite"), not a default assay infers —
 matching this project's own `A-036`/`argv_declared` discipline of never
-guessing at consent on the consumer's behalf. A reasonable starting
-default-if-declared-empty stays today's behavior (whole tree, unchanged) —
-this is additive, opt-in, never a silent narrowing of what B088 already
-protects.
+guessing at consent on the consumer's behalf. A present empty list excludes
+no paths but deliberately selects the new, tagged filtered identity domain,
+so it is distinct from an omitted key and does not silently reuse legacy
+records. This is additive, opt-in, never a silent narrowing of what B088
+already protects.
 
 ### Oracles
 
@@ -9648,10 +9664,12 @@ Update README, DESIGN-GUIDE and CONSUMERS in the same change.
 
 ## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
 
-**OPEN, deferred by RW-57 (2026-09-13 filing).** The docstring lists
-`budget_exceeded`, `hung`, `equivalent` and `discarded` as excluded but
-omits `crashed`. Scoring already uses only `killed + survived`; this is the
-remaining documentation omission after S7, with no arithmetic repair due.
+**FIXED in this change, 2026-09-13.** The public `mutation_pct` docstring
+now names every excluded canonical bucket — `crashed`, `budget_exceeded`,
+`equivalent`, and `hung` — while its existing `killed / (killed + survived)`
+arithmetic and zero-denominator behavior remain unchanged. README,
+DESIGN-GUIDE, and CONSUMERS carry the same contract, and a regression oracle
+derives the excluded set from `MUTATION_BUCKETS`.
 
 Oracle: enumerate every excluded bucket, including `crashed`, against
 `MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and

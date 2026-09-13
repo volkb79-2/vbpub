@@ -6,6 +6,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+### Added
+- feat(assay): B092 native-R2 `judge.mutation.identity_exclude` filters
+  report-only paths from the tree-content half of `judge_sha256` while
+  preserving the omitted-key legacy identity.
+
+### Fixed
+- fix(assay): B098 documents every excluded mutation bucket, including
+  `crashed`, while preserving the `killed / (killed + survived)` arithmetic.
+
+### Documentation
+- docs(assay): sync README, DESIGN-GUIDE, and CONSUMERS with B092 adoption
+  semantics and B098's canonical mutation-score vocabulary.
+
+### Testing
+- test(assay): cover B092 normalization, malformed declarations, native-only
+  scope, legacy digest compatibility, filtered-tree directions, and B098's
+  canonical bucket enumeration.
+
 ## [6.2.0] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=b54aa1f23ac9f91ddacf66aec02b59cc394603ef -->

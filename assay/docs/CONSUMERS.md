@@ -588,6 +588,66 @@ Three consequences worth planning around:
   above: a lane declaring `link_paths` is only as reproducible as the linked
   directory, and that now applies to its resume records too.
 
+### Exclude report-only paths from native-R2 resume identity (B092)
+
+If a tracked report or trove record changes without changing the files that
+judge the mutation, a native-R2 lane can opt into a filtered tree-content
+identity. Paste this complete schema-v2 lane shape into the consumer's lane
+file and change the command, source root, and operator to match the project:
+
+```toml
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "tests", "-q"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs = 2
+max_mutants = 500
+operators = ["python:compare-swap"]
+identity_exclude = ["nyxloom-trove/**"]
+```
+
+`identity_exclude` is native-R2-only and explicitly opt-in. Each entry is a
+non-empty relative POSIX path glob; assay normalizes it and matches it
+case-sensitively with `fnmatch` against normalized Git-tree paths. The example
+therefore excludes tracked evidence beneath `nyxloom-trove/` from the
+tree-content digest, but does not exclude mutation candidates or any command,
+environment, cwd, project-prefix, link, or outside-tree identity input. The
+filter is applied to the frozen Git manifest, not by asking the local
+filesystem.
+
+Omit the key to retain the legacy whole-tree digest exactly. An explicit
+`identity_exclude = []` excludes no paths but is a new identity domain, so it
+does not resume records made with the omitted key. A filtered declaration also
+changes the digest domain; changing the declaration or removing a path from
+the filter intentionally causes a cache miss and re-executes candidates.
+
+### Native mutation score vocabulary (B098)
+
+For every mutation payload, the score is `killed / (killed + survived)`.
+`crashed`, `budget_exceeded`, `equivalent`, and `hung` are real reported
+mutation buckets, but all four are excluded from that denominator. `hung` is
+still kept separate from `budget_exceeded` for triage. An ingested report's
+`discarded` list is a separate accounting field for candidates the foreign
+tool did not attempt; it is also outside the score, but is not one of the
+canonical `MUTATION_BUCKETS` values.
+
 **When nothing resumes, the run says so.** The `resume` progress event
 carries `rejected_total` alongside `resumed_total` and is emitted whenever
 records were found *or refused* — so a store that is being rejected on every
@@ -1615,9 +1675,11 @@ Any value in `0.0..100.0` loads. The floor lands in the verdict as
 `judgment.r2.fail_under`, which is REQUIRED under `producer = "ingested"` and
 FORBIDDEN under `"native"` — a native R2 has no floor at all, so a native
 document carrying one would record a policy that nothing applied. The score is
-`killed / (killed + survived)` as a percentage; `budget_exceeded`,
-`equivalent` and `discarded` are all outside that denominator, each for the
-reason its own row below gives. A claim with recorded survivors is
+`killed / (killed + survived)` as a percentage; `crashed`,
+`budget_exceeded`, `equivalent`, and `hung` are all outside that denominator.
+An ingested report's separate `discarded` list is also outside the denominator
+because those candidates were never in a canonical mutation bucket. A claim
+with recorded survivors is
 `FAIL`/`MUTANTS_SURVIVED` **iff** the score is below the declared floor, so an
 ingested lane at `fail_under = 90.0` can PASS while listing the survivors it
 tolerated — and `assay verify` re-derives that same PASS by reading the floor

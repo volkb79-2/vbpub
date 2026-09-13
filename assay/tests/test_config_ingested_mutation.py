@@ -185,6 +185,15 @@ def test_orchestration_keys_are_refused_on_an_ingested_lane(
     assert "assay executes no mutant at all" in str(error)
 
 
+def test_identity_exclude_is_refused_on_an_ingested_lane(app_project: Project):
+    error = _refusal(
+        app_project,
+        _mutation_key(INGESTED_LANE, 'identity_exclude = ["nyxloom-trove/**"]'),
+    )
+    assert "identity_exclude" in str(error)
+    assert "forbidden on an INGESTED lane" in str(error)
+
+
 # --------------------------------------------------------------------------
 # The ingested keys' own grammar
 # --------------------------------------------------------------------------

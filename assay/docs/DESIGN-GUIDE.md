@@ -952,6 +952,45 @@ Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
 
+### Filtered native-R2 judge identity (B092)
+
+Some repositories deliberately keep generated reports and trove evidence in
+the judged Git tree. Those paths are not part of the test suite, but B088's
+whole-tree `judge_sha256` quite correctly invalidates every mutation record
+when any tracked path changes. B092 makes that policy explicit rather than
+guessing from filenames: native R2 may declare
+`judge.mutation.identity_exclude` as a list of relative POSIX path globs.
+
+The loader rejects empty patterns, backslashes, NULs, absolute paths, and `.`,
+`..` components, then normalizes the remaining spellings. Matching is one
+deterministic lexical rule: case-sensitive `fnmatch` against normalized
+Git-tree-relative POSIX paths. It runs over the already frozen manifest used
+by `SnapshotRepository`, including its declared omitted leaves; it never walks
+the local filesystem or filters mutation candidates, argv, environment, cwd,
+project prefix, links, or anything outside the tree.
+
+The omitted key is the compatibility path and retains the B088
+`assay-snapshot-tree/2` serialization byte-for-byte. A present key uses a
+separate `assay-snapshot-tree/3-identity-exclude` domain and includes the
+normalized declarations in sorted, length-prefixed form before serializing
+the remaining entries. Consequently an explicit empty list excludes nothing
+but is intentionally distinct from omission, while reordering equivalent
+patterns is not an identity change. This is an opt-in native-R2 policy and
+needs no lane-schema bump; its declaration is recorded by the lane's normal
+resolved configuration and the resulting digest is shared by resume readers
+and state-record writers.
+
+### Mutation score's excluded buckets (B098)
+
+The score arithmetic remains `killed / (killed + survived)`. The canonical
+`MUTATION_BUCKETS` vocabulary also reports `crashed`, `budget_exceeded`,
+`equivalent`, and `hung`; all four are excluded from that denominator because
+they do not measure whether the test suite caught a valid, completed mutant.
+The names belong in the public score contract even when a particular lane has
+none of those outcomes. `crashed` is not silently folded into an absent
+payload, and `hung` remains its own diagnostic bucket rather than being
+renamed `budget_exceeded`.
+
 ### Infrastructure fact injection (B013)
 
 Infrastructure declarations are resolved at the plan boundary, in the invoking

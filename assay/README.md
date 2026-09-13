@@ -88,6 +88,15 @@ assay exists to close that gap mechanically, not by policy:
   for staleness, never verified) are three distinct, clearly labeled tiers —
   see [§3 of the design guide](docs/DESIGN-GUIDE.md#3-the-three-tiers-of-evidence).
   A stale or missing review can never quietly read as "this was checked."
+- **Native R2 can opt out of report-only tree paths when judging resume state.**
+  Set `judge.mutation.identity_exclude` to a normalized, case-sensitive list of
+  POSIX path globs to remove matching paths from only the tree-content part of
+  `judge_sha256`. The key is optional and native-R2-only: omission preserves the
+  legacy whole-tree identity exactly, while an explicit empty list is a distinct
+  filtered identity domain. `argv`, declared environment names and values,
+  ambient environment names, cwd, links, project prefix, and assay version
+  remain identity inputs. See the
+  [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -534,6 +543,9 @@ path grammar and must be gitignored, exactly like a coverage artifact.
 Every mutation lane may declare optional `budget_per_candidate` with the same
 duration grammar as `budget`. A candidate whose command exceeds it enters the
 existing `budget_exceeded` bucket while unrelated candidates continue.
+The mutation score remains `killed / (killed + survived)`; `crashed`,
+`budget_exceeded`, `equivalent`, and `hung` are reported buckets outside that
+denominator.
 Progress is opt-in and consumer-directed: `assay run <lane> --progress PATH`
 appends a compact NDJSON event to PATH -- a `run` header naming the commit and
 start time, then one event after the baseline and one after each completed

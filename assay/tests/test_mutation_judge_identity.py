@@ -133,6 +133,81 @@ def test_declared_omissions_participate_in_the_tree_digest():
     ) != isolation._manifest_sha256(_manifest(*entries, omitted=("danger/link",)))
 
 
+def test_omitted_identity_filter_preserves_the_legacy_tree_digest():
+    """B092's omitted-key compatibility promise is byte-for-byte, not merely
+    semantic: the old whole-tree serialization remains the default path."""
+    manifest = _manifest(
+        _entry("src/app.py", "a" * 40),
+        _entry("tests/test_app.py", "b" * 40),
+        omitted=("danger/link",),
+    )
+    assert isolation._manifest_sha256(manifest) == (
+        "cf62f90ce6217e7fac362d8385d19c7ad15e59da080314fca4435db1d1b2d9b9"
+    )
+
+
+def test_identity_filter_changes_only_matching_tree_content():
+    """B092: report-only changes are ignored, but an included source change
+    still invalidates the judging suite, including when both change together.
+    """
+    base = _manifest(
+        _entry("src/app.py", "a" * 40),
+        _entry("nyxloom-trove/reports/run.md", "b" * 40),
+    )
+    report_changed = _manifest(
+        _entry("src/app.py", "a" * 40),
+        _entry("nyxloom-trove/reports/run.md", "c" * 40),
+    )
+    both_changed = _manifest(
+        _entry("src/app.py", "d" * 40),
+        _entry("nyxloom-trove/reports/run.md", "c" * 40),
+    )
+    filtered = ("nyxloom-trove/**",)
+    assert isolation._manifest_sha256(base, identity_exclude=filtered) == (
+        isolation._manifest_sha256(report_changed, identity_exclude=filtered)
+    )
+    assert isolation._manifest_sha256(base, identity_exclude=filtered) != (
+        isolation._manifest_sha256(both_changed, identity_exclude=filtered)
+    )
+
+
+def test_identity_filter_is_case_sensitive_and_filters_omitted_paths():
+    manifest = _manifest(
+        _entry("nyxloom-trove/reports/run.md", "a" * 40),
+        _entry("NYXLOOM-TROVE/reports/run.md", "b" * 40),
+        omitted=("nyxloom-trove/unsafe-link",),
+    )
+    filtered = ("nyxloom-trove/**",)
+    changed_case = _manifest(
+        _entry("nyxloom-trove/reports/run.md", "a" * 40),
+        _entry("NYXLOOM-TROVE/reports/run.md", "c" * 40),
+        omitted=("nyxloom-trove/unsafe-link",),
+    )
+    assert isolation._manifest_sha256(manifest, identity_exclude=filtered) != (
+        isolation._manifest_sha256(changed_case, identity_exclude=filtered)
+    )
+    assert isolation._manifest_sha256(
+        _manifest(_entry("src/app.py", "a" * 40), omitted=("nyxloom-trove/x",)),
+        identity_exclude=filtered,
+    ) == isolation._manifest_sha256(
+        _manifest(_entry("src/app.py", "a" * 40)),
+        identity_exclude=filtered,
+    )
+
+
+def test_explicit_empty_identity_filter_is_a_new_identity_domain():
+    manifest = _manifest(_entry("tests/test_app.py", "a" * 40))
+    assert isolation._manifest_sha256(manifest) != isolation._manifest_sha256(
+        manifest, identity_exclude=()
+    )
+    assert isolation._manifest_sha256(manifest, identity_exclude=()) != (
+        isolation._manifest_sha256(
+            _manifest(_entry("tests/test_app.py", "b" * 40)),
+            identity_exclude=(),
+        )
+    )
+
+
 def test_entry_order_does_not_reach_the_tree_digest():
     """A property, stated over a real permutation rather than asserted: the
     digest answers "what is in this tree", never "in what order did the walk
@@ -566,6 +641,12 @@ max_mutants = 10
 operators = ["python:bool-const-flip"]
 """
 
+_FILTERED_LANE = _LANE.replace(
+    'operators = ["python:bool-const-flip"]\n',
+    'operators = ["python:bool-const-flip"]\n'
+    'identity_exclude = ["nyxloom-trove/**"]\n',
+)
+
 #: Every mutant survives: the judge looks at nothing.
 _BLIND_JUDGE = "exit 0\n"
 
@@ -576,8 +657,8 @@ _BLIND_JUDGE = "exit 0\n"
 _STRICT_JUDGE = "grep -q '^a = False$' pkg/flags.py && exit 1\nexit 0\n"
 
 
-def _seed(repo: GitRepo, judge: str) -> None:
-    repo.write("assay.toml", _LANE)
+def _seed(repo: GitRepo, judge: str, lane: str = _LANE) -> None:
+    repo.write("assay.toml", lane)
     repo.write("pkg/flags.py", "a = True\n")
     repo.write("tests/judge.sh", judge)
     repo.commit_all("lane")
@@ -679,6 +760,26 @@ def test_an_unchanged_suite_resumes_exactly_as_before(git_repo: GitRepo, tmp_pat
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
     assert _resumed(second) == 1
     assert _candidates(second) == [], "an unchanged suite must re-execute nothing"
+
+
+def test_filtered_identity_resumes_across_an_excluded_report_commit(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B092's end-to-end seam: the runner's one resolved filter reaches both
+    the resume reader and the state-record writer, so a report-only commit
+    does not reject the prior candidate record."""
+    _seed(git_repo, _BLIND_JUDGE, lane=_FILTERED_LANE)
+    state_dir = tmp_path / "state"
+
+    first = _run(git_repo, state_dir, tmp_path / "first.jsonl")
+    assert len(_candidates(first)) == 1
+
+    git_repo.write("nyxloom-trove/reports/run.md", "report-only evidence\n")
+    git_repo.commit_all("record the run")
+
+    second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
+    assert _resumed(second) == 1
+    assert _candidates(second) == []
 
 
 def test_a_touched_but_unchanged_test_file_still_resumes(

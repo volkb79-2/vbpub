@@ -1897,6 +1897,10 @@ def run_mutation(
     #: Mode-B instances): the store went away with the worktree. It is a
     #: root, not a project root, and it is named for what it is.
     state_root: Path | str | None = None,
+    #: (B092) The native-R2 lane's explicitly resolved identity filter. `None`
+    #: preserves the legacy B088 whole-tree digest; an empty tuple is an
+    #: explicit filtered identity domain and must remain distinct from it.
+    identity_exclude: Sequence[str] | None = None,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
@@ -2228,7 +2232,11 @@ def run_mutation(
         # be pure cost.
         judge = (
             judge_sha256(
-                tree_sha256=prepared.tree_sha256,
+                tree_sha256=(
+                    prepared.tree_sha256
+                    if identity_exclude is None
+                    else prepared.tree_sha256_for_identity_exclude(identity_exclude)
+                ),
                 plan=plan,
                 link_paths=prepared.spec.snapshot_policy.link_paths,
                 tool_version=_tool_version(),
@@ -3353,16 +3361,16 @@ def _lines_without_candidates(
 def mutation_pct(mutation: Mutation) -> float:
     """(B046) The mutation score: ``killed / (killed + survived)``, percent.
 
-    The denominator is deliberately NOT ``total``. ``budget_exceeded`` says
+    The denominator is deliberately NOT ``total``. ``crashed`` says the
+    candidate did not produce a valid test result, ``budget_exceeded`` says
     the experiment did not finish, ``hung`` (B091) says a `LivenessRunner`
     stopped it because it had gone idle -- another way of saying the
     experiment did not finish -- and ``equivalent`` says the mutant could
-    never have been caught. None of the three is evidence about the tests,
-    so including them would move the score for reasons that have nothing to
-    do with what the suite does. ``discarded`` is not in the payload at all,
-    for the same reason one field over. (Round-1 S7: the arithmetic below
-    already excluded ``hung`` by construction; this enumeration of the
-    closed vocabulary had simply not been updated for the new bucket.)
+    never have been caught. All four are reported mutation buckets, but none
+    is evidence about the tests, so including any of them would move the
+    score for reasons that have nothing to do with what the suite does.
+    (B098: the arithmetic already excluded these buckets; the public
+    enumeration had simply omitted ``crashed``.)
 
     A zero denominator is ``0.0``, never ``100.0``: this is A-026/A-035's
     0/0-is-100% bug, and the only caller reaches this function on a branch

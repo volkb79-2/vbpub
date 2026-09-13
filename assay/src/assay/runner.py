@@ -4326,6 +4326,10 @@ def _run_prepared_lane(
                     equivalence_artifact=equivalence_artifact,
                     kill_signal_artifact=kill_signal_artifact,
                     baseline_equivalence=unit.baseline_equivalence,
+                    # (B092) One resolved native-R2 identity declaration is
+                    # handed to `run_mutation`, which derives the one judge
+                    # digest shared by resume reads and state-record writes.
+                    identity_exclude=lane.judge.mutation.identity_exclude,
                     budget_per_candidate_seconds=explicit_budget_per_candidate_seconds,
                     budget_per_candidate_auto=budget_per_candidate_auto,
                     progress_stream=progress_stream,

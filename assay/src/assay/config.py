@@ -427,6 +427,9 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "budget_per_candidate",
     "shard_index",
     "shard_count",
+    # (B092) Explicit native-R2 opt-in for filtering only the frozen
+    # tree-content half of `judge_sha256`.
+    "identity_exclude",
     # (B091/RW-36) native-only, like the three above -- refused on an
     # ingested lane by `_load_ingested_mutation`'s own `orchestration_only`
     # set, on `budget_per_candidate`'s own footing (assay orchestrates no
@@ -550,6 +553,12 @@ class MutationConfig:
     #: loader boundary -- `assay.liveness.inject_liveness_plugin` and this
     #: field's own :meth:`as_declared` echo both read the string form only.
     liveness: str | None = None
+    #: (B092) The explicitly declared, normalized POSIX path-glob list used
+    #: only for the native-R2 tree-content identity. ``None`` means the key
+    #: was omitted and preserves B088's legacy whole-tree encoding; ``()`` is
+    #: an explicit empty policy and therefore uses the new filtered-domain
+    #: encoding even though it excludes no paths.
+    identity_exclude: tuple[str, ...] | None = None
     #: (P34/W4) SQL-only. ``None`` for every other language -- `_load_mutation`
     #: refuses either key at load for a non-``"sql"`` lane, so a non-``None``
     #: value here is only ever possible on a ``judge.language = "sql"`` lane.
@@ -618,6 +627,8 @@ class MutationConfig:
             payload["budget_per_candidate"] = self.budget_per_candidate
         if self.liveness is not None:
             payload["liveness"] = self.liveness
+        if self.identity_exclude is not None:
+            payload["identity_exclude"] = list(self.identity_exclude)
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count
@@ -3045,6 +3056,11 @@ def _load_mutation(
             f"with the declared/derived budget_per_candidate as the only "
             f"bound"
         )
+    identity_exclude = (
+        _load_identity_exclude(value["identity_exclude"], where)
+        if "identity_exclude" in value
+        else None
+    )
     shard_index = value.get("shard_index")
     shard_count = value.get("shard_count")
     shard_specified = "shard_index" in value or "shard_count" in value
@@ -3080,6 +3096,7 @@ def _load_mutation(
         equivalence_artifact=equivalence_artifact,
         budget_per_candidate=budget_per_candidate,
         liveness=liveness,
+        identity_exclude=identity_exclude,
         shard_index=shard_index,
         shard_count=shard_count,
     )
@@ -3112,7 +3129,8 @@ def _load_ingested_mutation(
         )
 
     native_only = sorted(
-        set(value) & (set(_MUTATION_FIELDS) | {"equivalence_artifact"})
+        set(value)
+        & (set(_MUTATION_FIELDS) | {"equivalence_artifact", "identity_exclude"})
     )
     if native_only:
         raise LaneConfigError(
@@ -3558,6 +3576,52 @@ def _as_str_list(value: Any, where: str, field: str) -> list[str]:
                 f"{_type_name(item)}"
             )
     return list(value)
+
+
+def _load_identity_exclude(value: Any, where: str) -> tuple[str, ...]:
+    """Load the native-R2 ``identity_exclude`` POSIX glob list (B092).
+
+    Patterns are normalized with :class:`PurePosixPath` after rejecting
+    ambiguous namespace spellings. The normalized values are matched against
+    normalized Git tree paths by ``fnmatch.fnmatchcase`` in the frozen-manifest
+    digest code; no local filesystem fact participates.
+    """
+    patterns = _as_str_list(value, where, "judge.mutation.identity_exclude")
+    normalized: list[str] = []
+    for index, pattern in enumerate(patterns):
+        field = f"judge.mutation.identity_exclude[{index}]"
+        if not pattern:
+            raise LaneConfigError(
+                f"{where}: '{field}' must be a non-empty string"
+            )
+        if "\\" in pattern:
+            raise LaneConfigError(
+                f"{where}: '{field}' {pattern!r} must use POSIX separators; "
+                f"backslashes are forbidden"
+            )
+        if "\x00" in pattern:
+            raise LaneConfigError(
+                f"{where}: '{field}' {pattern!r} contains a NUL character"
+            )
+        candidate = PurePosixPath(pattern)
+        if candidate.is_absolute():
+            raise LaneConfigError(
+                f"{where}: '{field}' {pattern!r} must be relative to the "
+                f"judged repository root"
+            )
+        components = pattern.split("/")
+        if any(component in {".", ".."} for component in components):
+            raise LaneConfigError(
+                f"{where}: '{field}' {pattern!r} contains a '.' or '..' "
+                f"path component"
+            )
+        normalized_pattern = candidate.as_posix()
+        if not normalized_pattern or normalized_pattern == ".":
+            raise LaneConfigError(
+                f"{where}: '{field}' {pattern!r} is not a usable POSIX glob"
+            )
+        normalized.append(normalized_pattern)
+    return tuple(normalized)
 
 
 def _as_str_table(value: Any, where: str, field: str) -> dict[str, str]:
