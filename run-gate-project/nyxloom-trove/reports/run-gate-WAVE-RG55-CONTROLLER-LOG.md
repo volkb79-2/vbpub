@@ -1033,3 +1033,12 @@ committed release-preparation commits. The controller fetched and merged
 the operator's dirty backlog outside the index. Local `main` is now one
 connected committed history and is ready for the normal push; no reset, rebase,
 force-push, or dirty-file commit is permitted.
+
+### RW-65 — 2026-09-13 10:53:52Z — P2 final review accepted
+
+Fresh Sol xhigh adversarial review round 3 accepted P2 with no blockers. The
+review verified the repaired R3 canary (`2 rejected, 0 survived`), retained
+R0/R1 evidence, exact 875/875 changed-line and 336/336 changed-branch
+coverage, doctor, R-36h containment, and the RW-58 mutation disclosure.
+The review record is `run-gate-WAVE-RG55-P2-REVIEW-round3.md`; merge remains
+serial and release/install still follow.
