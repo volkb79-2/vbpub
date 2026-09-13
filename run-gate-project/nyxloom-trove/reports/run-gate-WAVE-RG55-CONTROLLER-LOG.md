@@ -1204,3 +1204,11 @@ The RW-81 P6 resume exited 4 with `oom=false` and left the same five
 budget, 0 crashed out of 484. Blind retries are paused; Luna xhigh must
 triage the causal hang and make a focused repair, if warranted, before a
 fresh judged-tree R2.
+
+### RW-83 — 2026-09-13 18:26:56Z — P4 fresh R2 is green
+
+P4's fresh exact-tree R2 completed normally on the repaired tree. The
+separately read progress/verdict records show 57 candidates, 57 killed, 0
+survived, 0 `budget_exceeded`, and 0 crashed; the assay process exited 0.
+P4 may proceed from the detached judged tree to its branch for final gates,
+but no detached-tree commit was made.
