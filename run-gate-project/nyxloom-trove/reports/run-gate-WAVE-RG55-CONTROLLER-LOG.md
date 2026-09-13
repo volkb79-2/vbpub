@@ -1132,3 +1132,12 @@ summary oracle gap is killed by the focused test). Final `r0-r1` and `r3`
 both exited 0 with 100% line and branch coverage and 7/7 canaries rejected;
 D-15 safety was checked and the daemon is down. A fresh Sol xhigh review is
 required before this branch can merge.
+
+### RW-75 — 2026-09-13 15:34:08Z — Sol xhigh review dispatch not honored
+
+Two fresh review dispatches requested with model `gpt-5.6-sol` and
+`xhigh` reasoning identified themselves as GPT-5/Codex and refused to certify
+the review. Neither changed files or created a commit. The controller counts
+neither as a review round and will not merge P1 without a reviewer whose
+runtime identity is actually Sol xhigh; implementation and mutation work may
+continue meanwhile.
