@@ -135,6 +135,8 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_stats_opencode.py",
   "tests/test_session_extract_stats.py",
   "tests/test_cli_extract.py",
+  "tests/test_session_extract_follow.py",
+  "tests/test_session_extract_locate.py",
   "tests/test_cli_help.py",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
