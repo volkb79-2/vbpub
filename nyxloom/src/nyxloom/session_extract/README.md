@@ -654,6 +654,12 @@ adapter's code path — a "dumb," independent implementation, so it forms a
 trustworthy superset rather than inheriting the real extractor's own blind
 spots. Two things it's for:
 
+Text dumps append the same `format`/`marker` footer as `extract`, so a saved
+`extract-lossless` result can be supplied to `--since-file`. Claude Code uses
+the adapter-compatible `uuid` marker, or the stable `lineN` position among
+valid conversation records when a record has no uuid; this includes the
+rare UUID-less system record and keeps chained resumes consistent.
+
 1. **A ground-truth baseline for judging and tuning the real classifier.**
    `select()`'s job is to pick a small, curated subset of a session's
    prose; judging whether it picked well requires reading everything it
@@ -890,5 +896,6 @@ column now measures each row's own call latency, not a gap to the previous
 row), and `extract-debug`'s colored lossless-vs-kept diff (`E-014`,
 `debug_diff.py` — including a real design correction: it diffs
 `lossless.py`'s own dump against `extract()`'s own render as TEXT, not by
-marker, since `lossless.py` deliberately shares no marker space with the
-adapters).
+marker. The two outputs share the same opaque marker convention for
+resumption and exact source-record lookup, while the diff remains text-based
+because its visible comparison is still about prose, not event identity.)

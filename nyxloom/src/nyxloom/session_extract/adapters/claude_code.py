@@ -757,6 +757,26 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
     # same on-disk file from scratch.
     indexed = list(enumerate(all_records))
 
+    # These two values describe the whole transcript, not only the requested
+    # output span. A --since cut may begin after the AskUserQuestion tool_use
+    # that gives a later tool_result its QA_PAIR shape, and it may leave only
+    # sidechain records in the visible suffix even though the file has a
+    # primary thread. Derive both before slicing so one-shot extraction has
+    # the same state as a forward parse of the complete file.
+    has_primary_thread = any(not r.get("isSidechain") for r in all_records)
+    askuserquestion_inputs: dict[str, list[Any]] = {}
+    for rec in all_records:
+        if rec.get("isSidechain") and has_primary_thread:
+            continue
+        if rec.get("type") != "assistant":
+            continue
+        for block in rec.get("message", {}).get("content", []) or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
+                tid = block.get("id")
+                if tid:
+                    questions = block.get("input", {}).get("questions")
+                    askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
+
     if config.since_marker is not None:
         idx = next((i for i, r in indexed if (r.get("uuid") or f"line{i}") == config.since_marker), None)
         if idx is None:
@@ -772,21 +792,6 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
                 f"--until marker {config.until_marker!r} not found as a uuid in {path}"
             )
         indexed = [(i, r) for i, r in indexed if i <= idx]
-
-    # tool_use_id -> its own input.questions list (question/header/options),
-    # captured here (not just an id set) so the tool_result branch below can
-    # re-render the Q&A pair with each question's real options shown,
-    # instead of the harness's own flattened '"Q"="A"' string verbatim.
-    askuserquestion_inputs: dict[str, list[Any]] = {}
-    for _, rec in indexed:
-        if rec.get("type") != "assistant":
-            continue
-        for block in rec.get("message", {}).get("content", []) or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
-                tid = block.get("id")
-                if tid:
-                    questions = block.get("input", {}).get("questions")
-                    askuserquestion_inputs[tid] = questions if isinstance(questions, list) else []
 
     # isSidechain targeting is auto-detected from the file's OWN content, not
     # a CLI flag (an earlier --include-sidechain flag was removed 2026-09-11,
@@ -811,8 +816,6 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
     # `nyxloom extract <path to that agent's file>` -- same as targeting any
     # other adapter's session, no separate flag required. See this module's
     # own docstring for the nested-subagent (subagent-spawns-subagent) case.
-    has_primary_thread = any(not r.get("isSidechain") for _, r in indexed)
-
     state = StreamState(
         has_primary_thread=has_primary_thread, askuserquestion_inputs=askuserquestion_inputs
     )

@@ -689,6 +689,52 @@ def test_chained_since_on_uuid_less_records_never_reindexes_from_zero(tmp_path):
     assert hop3 == []
 
 
+def test_since_preserves_qa_pair_state_from_the_unsliced_prefix(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="question", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "aq1", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": "Deploy where?", "options": [
+                     {"label": "staging"}, {"label": "production"},
+                 ]}]},
+             }]}),
+        _rec(type="user", uuid="cut", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "continue"}),
+        _rec(type="user", uuid="answer", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": [{
+                 "type": "tool_result", "tool_use_id": "aq1",
+                 "content": '"Deploy where?"="staging"',
+             }]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="cut"))
+
+    assert len(events) == 1
+    assert events[0].kind is EventKind.QA_PAIR
+    assert "INTERVIEW: Deploy where?" in events[0].text
+    assert "OPERATOR: staging" in events[0].text
+
+
+def test_since_preserves_primary_thread_detection_from_the_unsliced_prefix(tmp_path):
+    records = [
+        _rec(type="user", uuid="primary-before", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "primary"}),
+        _rec(type="user", uuid="cut", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "anchor"}),
+        _rec(type="assistant", uuid="side-after", timestamp="2026-01-01T00:00:02Z",
+             isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": "sidechain leak"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="cut"))
+
+    assert events == []
+
+
 def test_task_notification_with_attributes_and_body_is_fully_stripped(tmp_path):
     # Adversarial-review finding: the harness-tag regex only fully
     # consumed a tag's body when its opening tag had zero attributes; an

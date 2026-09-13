@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from nyxloom import cli
+from nyxloom.session_extract import read_since_marker
 from nyxloom.session_extract.locate import escape_cwd
 
 
@@ -123,6 +124,21 @@ def test_extract_lossless_works_for_codex_too(tmp_path, capsys):
 
     assert exit_code == 0
     assert "hi" in out
+
+
+def test_extract_lossless_since_file_resumes_from_its_marker(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.txt"
+
+    assert cli.main(["extract-lossless", str(fp), "--until", "a1"]) == 0
+    prior.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a1")
+
+    assert cli.main(["extract-lossless", str(fp), "--since-file", str(prior)]) == 0
+    out = capsys.readouterr().out
+    assert "Let me check." not in out
+    assert "Done -- everything landed" in out
+    assert "marker=a2" in out
 
 
 def test_extract_lossless_format_flag_rejects_an_unregistered_adapter_name(tmp_path, capsys):
@@ -1165,6 +1181,9 @@ def test_extract_lossless_highlight_colors_the_dump(tmp_path, capsys):
     assert "\x1b[" in out
     plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
     assert "===[a2 |" in plain and "## Status" in plain
+    prior = tmp_path / "highlighted.txt"
+    prior.write_text(out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a2")
 
 
 def test_extract_lossless_no_color_disables_highlight_ansi(tmp_path, capsys):

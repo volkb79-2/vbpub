@@ -101,7 +101,7 @@ excerpt:
 
 ```bash
 nyxloom extract /path/to/session.jsonl --follow --attention-min-chars 4000 \
-  --on-attention 'printf "%s: %s\\n" "$NYXLOOM_ATTENTION_REASON" "$NYXLOOM_ATTENTION_EXCERPT" >&2'
+  --on-attention 'printf "%s: %s\n" "$NYXLOOM_ATTENTION_REASON" "$NYXLOOM_ATTENTION_EXCERPT" >&2'
 ```
 
 `--notify-project PROJECT_ID` can additionally use the `[notify]` channel of

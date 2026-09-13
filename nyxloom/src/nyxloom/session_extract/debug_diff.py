@@ -21,7 +21,7 @@ against the real, fully-scored pre-selection event list
 (`ExtractResult.all_events`) by exact marker/uuid identity, per operator
 direction: "we should always know why we excluded something ... should
 never happen [that the reason is unclear]." `lossless.py`'s block headers
-now carry the SAME marker (`uuid`, or an `L<n>`/positional fallback) the
+now carry the SAME marker (`uuid`, or a `line<n>`/positional fallback) the
 real adapter assigns as a NormalizedEvent's own `.marker` -- see each
 `dump_*` function's own docstring -- so a lossless block and the event the
 real adapter derived from the identical source record can be looked up by
@@ -103,12 +103,13 @@ _GREEN_NOTE_PREFIXES = ("[files read:", "[files edited:", "[commits created:", "
 
 
 def _lossless_blocks(text: str) -> list[str]:
+    text = _MARKER_FOOTER_RE.sub("", text.strip())
     # lossless.py's own block-join separator is exactly "\n\n" between two
     # "===[...]===" headers -- split right before each header, matching it.
     # (`={3}` spelled as a repetition, not 4 stacked literal "=" chars,
     # since "(?===\[)" is only 3 "=" total -- one too few, and silently
     # matches nothing rather than raising, which is what "\n\n===[" needs.)
-    parts = re.split(r"\n\n(?=={3}\[)", text.strip())
+    parts = re.split(r"\n\n(?=={3}\[)", text)
     return [p for p in parts if p.strip()]
 
 

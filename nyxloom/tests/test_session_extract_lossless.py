@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom.session_extract import lossless
+from nyxloom.session_extract import lossless, read_since_marker
 
 
 def _rec(**kw):
@@ -93,6 +93,27 @@ def test_since_and_until_together_bound_a_span(tmp_path):
     assert "assistant prose" in out
     assert "internal reasoning" in out
     assert "final prose" not in out
+
+
+def test_claude_dump_emits_a_resumable_marker_for_uuidless_records(tmp_path):
+    records = [
+        _rec(type="user", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "first"}),
+        _rec(type="assistant", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": "second"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    first = lossless.dump_claude_code(fp, until_marker="line0")
+    prior = tmp_path / "prior.txt"
+    prior.write_text(first, encoding="utf-8")
+
+    assert read_since_marker(prior) == ("claude-code", "line0")
+    resumed = lossless.dump_claude_code(fp, since_marker="line0")
+    assert "first" not in resumed
+    assert "second" in resumed
+    assert "marker=line1" in resumed
 
 
 def test_unknown_since_marker_raises(tmp_path):

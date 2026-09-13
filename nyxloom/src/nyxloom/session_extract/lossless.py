@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +89,8 @@ _BOOKKEEPING_TYPES = {
     "file-history-delta", "atis-latch", "last-prompt", "ai-title",
     "queue-operation", "cost-state",
 }
+_CLAUDE_CONVERSATION_TYPES = {"user", "assistant", "system"}
+_MARKER_FOOTER = "<!-- nyxloom-extract: format={format} marker={marker} -->"
 
 
 @dataclass(frozen=True)
@@ -110,8 +113,27 @@ class LosslessBlock:
     header: str
     text: str
 
-    def render(self) -> str:
-        return f"{self.header}\n{self.text}"
+    def render(self, block_render: Callable[[str], str] | None = None) -> str:
+        text = block_render(self.text) if block_render is not None else self.text
+        return f"{self.header}\n{text}"
+
+
+def _render_dump(
+    blocks: list[LosslessBlock],
+    format_name: str,
+    last_marker: str | None,
+    block_render: Callable[[str], str] | None = None,
+) -> str:
+    """Render a dump and, when it has a cursor, make it resumable.
+
+    The footer is the same opaque marker contract used by ``extract``'s text
+    renderer and consumed by ``--since-file``.  Apply formatting only to
+    block prose so the footer remains machine-readable under ``--highlight``.
+    """
+    text = "\n\n".join(block.render(block_render) for block in blocks) + "\n"
+    if last_marker is not None:
+        text += "\n" + _MARKER_FOOTER.format(format=format_name, marker=last_marker) + "\n"
+    return text
 
 
 def claude_code_blocks(rec: dict, fallback_marker: str) -> list[LosslessBlock]:
@@ -258,17 +280,25 @@ def opencode_blocks(
     return [block] if block is not None else []
 
 
-def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: str | None = None) -> str:
+def dump_claude_code(
+    path: Path,
+    since_marker: str | None = None,
+    until_marker: str | None = None,
+    *,
+    block_render: Callable[[str], str] | None = None,
+) -> str:
     """Render every text/thinking block in `path` as delimited plain text,
-    optionally bounded to (since_marker, until_marker] by uuid (same marker
+    optionally bounded to (since_marker, until_marker] by the Claude marker
     convention as ExtractConfig.since_marker/until_marker). Raises
     ValueError if a given marker isn't found as a uuid in the file -- same
     contract as the adapters' own since/until handling, so a typo'd or
     wrong-file marker fails loudly rather than silently returning everything
-    or nothing.
+    or nothing.  The returned text ends with the same marker footer as
+    ``extract`` when a record contributed prose, so it can be passed back via
+    ``--since-file``.
 
     Each block's own header names the record's real `uuid` (falling back to
-    `L<line-number>` only for the rare record with none, e.g. a synthetic
+    `line<conversation-index>` only for the rare record with none, e.g. a synthetic
     "system" record) -- the SAME marker adapters/claude_code.py's parse()
     assigns as a NormalizedEvent's own `.marker` for a user/assistant
     record, deliberately, so debug_diff.py can look up "does a real,
@@ -288,12 +318,14 @@ def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: 
     adapter-level reason instead of falling back to "no matching event
     found."
     """
-    blocks: list[str] = []
+    blocks: list[LosslessBlock] = []
     in_span = since_marker is None
     found_until = False
+    last_marker = since_marker
+    conversation_index = 0
 
     with Path(path).open("r", errors="ignore") as f:
-        for i, line in enumerate(f):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -302,27 +334,40 @@ def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: 
             except json.JSONDecodeError:
                 continue
 
-            uuid = rec.get("uuid")
+            if not isinstance(rec, dict) or rec.get("type") not in _CLAUDE_CONVERSATION_TYPES:
+                continue
+
+            marker = rec.get("uuid") or f"line{conversation_index}"
+            conversation_index += 1
             if not in_span:
-                if uuid == since_marker:
+                if marker == since_marker:
                     in_span = True
                 continue
 
-            blocks += [b.render() for b in claude_code_blocks(rec, f"L{i}")]
+            record_blocks = claude_code_blocks(rec, marker)
+            blocks.extend(record_blocks)
+            if record_blocks:
+                last_marker = marker
 
-            if until_marker is not None and uuid == until_marker:
+            if until_marker is not None and marker == until_marker:
                 found_until = True
                 break
 
     if since_marker is not None and not in_span:
-        raise ValueError(f"--since marker {since_marker!r} not found as a uuid in {path}")
+        raise ValueError(f"--since marker {since_marker!r} not found as a Claude Code marker in {path}")
     if until_marker is not None and not found_until:
-        raise ValueError(f"--until marker {until_marker!r} not found as a uuid in {path}")
+        raise ValueError(f"--until marker {until_marker!r} not found as a Claude Code marker in {path}")
 
-    return "\n\n".join(blocks) + "\n"
+    return _render_dump(blocks, "claude-code", last_marker, block_render)
 
 
-def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | None = None) -> str:
+def dump_codex(
+    path: Path,
+    since_marker: str | None = None,
+    until_marker: str | None = None,
+    *,
+    block_render: Callable[[str], str] | None = None,
+) -> str:
     """Render every UserMessage/AgentMessage/Reasoning text block plus every
     compaction-boundary marker in a Codex rollout `path` as delimited plain
     text, optionally bounded to (since_marker, until_marker] -- same
@@ -361,9 +406,10 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
             if is_top_level_record(rec):
                 filtered.append(rec)
 
-    blocks: list[str] = []
+    blocks: list[LosslessBlock] = []
     in_span = since_marker is None
     found_until = False
+    last_marker = since_marker
 
     for i, rec in enumerate(filtered):
         marker = str(rec.get("ordinal", i))
@@ -372,7 +418,10 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
                 in_span = True
             continue
 
-        blocks += [b.render() for b in codex_blocks(rec, marker)]
+        record_blocks = codex_blocks(rec, marker)
+        blocks.extend(record_blocks)
+        if record_blocks:
+            last_marker = marker
 
         if until_marker is not None and marker == until_marker:
             found_until = True
@@ -383,11 +432,16 @@ def dump_codex(path: Path, since_marker: str | None = None, until_marker: str | 
     if until_marker is not None and not found_until:
         raise ValueError(f"--until marker {until_marker!r} not found as an ordinal in {path}")
 
-    return "\n\n".join(blocks) + "\n"
+    return _render_dump(blocks, "codex", last_marker, block_render)
 
 
 def dump_opencode(
-    path: Path, session_id: str, since_marker: str | None = None, until_marker: str | None = None
+    path: Path,
+    session_id: str,
+    since_marker: str | None = None,
+    until_marker: str | None = None,
+    *,
+    block_render: Callable[[str], str] | None = None,
 ) -> str:
     """Render every `part.data.type == "text"` fragment of every
     user/assistant message in one opencode session (identified by
@@ -421,9 +475,10 @@ def dump_opencode(
             (session_id,),
         ).fetchall()
 
-        blocks: list[str] = []
+        blocks: list[LosslessBlock] = []
         in_span = since_marker is None
         found_until = False
+        last_marker = since_marker
 
         for msg_id, time_created, data_json in rows:
             if not in_span:
@@ -431,7 +486,10 @@ def dump_opencode(
                     in_span = True
                 continue
 
-            blocks += [b.render() for b in opencode_blocks(conn, msg_id, time_created, data_json)]
+            record_blocks = opencode_blocks(conn, msg_id, time_created, data_json)
+            blocks.extend(record_blocks)
+            if record_blocks:
+                last_marker = msg_id
 
             if until_marker is not None and msg_id == until_marker:
                 found_until = True
@@ -442,6 +500,6 @@ def dump_opencode(
         if until_marker is not None and not found_until:
             raise ValueError(f"--until marker {until_marker!r} not found in session {session_id}")
 
-        return "\n\n".join(blocks) + "\n"
+        return _render_dump(blocks, "opencode", last_marker, block_render)
     finally:
         conn.close()

@@ -184,7 +184,7 @@ them as worked examples.
 | `events <project> [--since --type --tail --json]` | Dump the event store as JSONL. |
 | `init <project_folder>` | Scaffold a `nyxloom-trove/` from templates. |
 | `onboard <project_folder> [--maturity --docs --mode --scan-path --scan --questionnaire --check-gate --scaffold-gate]` | Guided onboarding (see §3). `--scaffold-gate`: if no gate is declared, write a reviewable gate-runner Dockerfile + `[gates.*]` skeleton — a review skeleton, not a guaranteed-working gate; adopt run-gate+assay after adjusting it. |
-| `free-models list [--source] \| refresh [--source] [--dry-run]` | Discover currently-free models & refresh routes (see §5). |
+| `free-models list [--source] \| refresh [--source] [--dry-run]` | Discover currently-free models & refresh routes (see §6). |
 | `capability-map refresh [--dry-run] [--emit-findings PROJECT]` | Refresh `routes.toml`'s model catalog from a live capability probe; optionally record `cost_crossover` findings under a registered project. |
 | `route doctor [--no-probe]` | Validate `routes.toml` and live-probe each declared route (`--no-probe`: schema-only, offline-safe). |
 | `finding record --project-id PROJECT_ID --kind KIND --title TITLE [--body BODY] [--field KEY=VALUE]... [--task-id TASK_ID] [--severity SEVERITY] \| list [--project-id PROJECT_ID] [--kind KIND]` | Record / list structured findings against a registered project (FN-4). |
@@ -197,7 +197,37 @@ add `-i` for stdin heredocs).
 
 ---
 
-## 5. free-models — dynamic free-model discovery
+## 5. Session-log extraction
+
+The `extract-*` family reads a Claude Code, Codex, or opencode session log.
+Use a path or a bare session ID when nyxloom can resolve exactly one matching
+session; pass `--opencode-session ID` when a SQLite store contains several.
+
+| Command | Purpose |
+|---|---|
+| `extract SESSION_LOG` | Produce a compact, classified brief with operator text, Q&A pairs, and selected checkpoints. |
+| `extract-lossless SESSION_LOG` | Dump every recoverable prose/thinking block, dropping only tool calls and harness bookkeeping. |
+| `extract-debug SESSION_LOG` | Compare the lossless dump with what `extract` keeps, including drop reasons. |
+| `extract-report SESSION_LOG` | Report tool calls, compactions, and session activity in condensed, detailed, or JSON form. |
+| `extract-sessions SESSION_LOG` | List the root session and discovered subagent transcripts. |
+
+`extract` and `extract-lossless` can be bounded with `--since MARKER` and
+`--until MARKER`. Their text and JSON output embed a marker that can be read
+back from a saved file:
+
+```bash
+nyxloom extract /path/to/session.jsonl --until a1 > brief.txt
+nyxloom extract /path/to/session.jsonl --since-file brief.txt
+```
+
+For a live log, add `--follow`; `extract` applies normal selection to new
+records, while `extract-lossless` prints each new prose/thinking block. Use
+`--render-markdown` for reading or `--highlight` to preserve markdown source;
+`--on-attention`, `--bell`, and `--notify-project` deliver optional attention
+notifications. See the [consumer recipes](CONSUMERS.md#extract-a-session-log)
+for pasteable follow, redaction, and hook examples.
+
+## 6. free-models — dynamic free-model discovery
 
 nyxloom can discover currently-**free** model endpoints across multiple
 providers and regenerate `routes.toml`'s `[tiers.free-high]` block, instead of
@@ -253,7 +283,7 @@ account-tier property carried as a per-provider constant.
 
 ---
 
-## 6. Worked use cases
+## 7. Worked use cases
 
 **Onboard a new microservice (code-only).** `project add svc /repos/svc` →
 `pause svc` → `onboard /repos/svc --maturity mature --docs absent --mode

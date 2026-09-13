@@ -919,9 +919,7 @@ class Follower:
 
             if self._lossless:
                 for block in arrival.blocks:
-                    self._write(
-                        self._block_render(block.render()) if self._block_render else block.render()
-                    )
+                    self._write(block.render(self._block_render))
                     printed += 1
                     if classifier.shape_score(block.text) >= self._config.checkpoint_score_threshold:
                         self._fire("checkpoint_detected", block.text)

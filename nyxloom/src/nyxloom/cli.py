@@ -1189,7 +1189,9 @@ def cmd_extract_lossless(args) -> int:
     block_render = _block_render_for(args)
 
     def _emit(text: str) -> None:
-        print(block_render(text) if block_render else text)
+        # The lossless dumpers render each prose block themselves, leaving
+        # the machine-readable marker footer byte-exact for --since-file.
+        print(text)
 
     anchor = None
     follow_session = session_id
@@ -1204,9 +1206,15 @@ def cmd_extract_lossless(args) -> int:
         anchor = _follow_anchor(path, fmt, follow_session)
 
     if fmt == "claude-code":
-        _emit(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_claude_code(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
     elif fmt == "codex":
-        _emit(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_codex(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
@@ -1223,7 +1231,8 @@ def cmd_extract_lossless(args) -> int:
                     f"--opencode-session (e.g. {sessions[0]!r})"
                 )
         _emit(lossless.dump_opencode(
-            path, resolved_session, since_marker=since_marker, until_marker=args.until
+            path, resolved_session, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
         ))
         follow_session = resolved_session
     else:
