@@ -68,6 +68,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   reachable only through this same "profiler" check.
 
 ### Fixed (detail)
+- **The R3 `median-not-mean-series-stats` canary tracked the pre-RG-55
+  `series_stats` block and became a false "broken canary" after byte-valued
+  series moved to nearest-rank p50 (R-36k).** Its target now anchors the
+  non-byte branch, which the existing CPU/stall outlier assertions exercise;
+  the canary again rejects the arithmetic-mean mutant.
+
 - **RG-53 — BREAKING: `tools/coverage_gate.py` now reads `missing_branches`
   and refuses a 0/0 diff.** Two independent semantic changes to the vendored
   diff-coverage gate the `selftest` lane's floor rests on:

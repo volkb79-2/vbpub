@@ -117,6 +117,10 @@ echo "run-gate-project assay-r1 canary"
 # target whichever copy appears FIRST in the file (duration_stats,
 # correct today only by position), leaving series_stats' own median
 # un-canaried. Two canaries now, one per function, each unambiguous.
+# R-36k later split series_stats' byte-valued path from its non-byte path;
+# the second canary anchors the else branch so its existing non-byte outlier
+# assertion remains the oracle rather than mutating an intentionally
+# nearest-rank byte path.
 canary median-not-mean run-gate.py \
   '                "max_seconds": None}
     mid = len(values) // 2
@@ -128,13 +132,13 @@ canary median-not-mean run-gate.py \
   tests/test_run_gate.py::TestHistoryRollingSeries::test_one_slow_outlier_does_not_become_the_typical_cost
 
 canary median-not-mean-series-stats run-gate.py \
-  '        return {"count": 0, "min": None, "median": None, "max": None}
-    mid = len(values) // 2
-    median = values[mid] if len(values) % 2 else \
-        round((values[mid - 1] + values[mid]) / 2, 3)' \
-  '        return {"count": 0, "min": None, "median": None, "max": None}
-    mid = len(values) // 2
-    median = round(sum(values) / len(values), 3)' \
+  '    else:
+        mid = len(values) // 2
+        median = values[mid] if len(values) % 2 else \
+            round((values[mid - 1] + values[mid]) / 2, 3)' \
+  '    else:
+        mid = len(values) // 2
+        median = round(sum(values) / len(values), 3)' \
   tests/test_run_gate.py::TestHistoryResourceSeries::test_median_resists_a_10x_outlier_and_absent_entries_are_excluded
 
 echo
