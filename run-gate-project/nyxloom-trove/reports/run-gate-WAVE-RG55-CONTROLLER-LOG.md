@@ -1141,3 +1141,11 @@ the review. Neither changed files or created a commit. The controller counts
 neither as a review round and will not merge P1 without a reviewer whose
 runtime identity is actually Sol xhigh; implementation and mutation work may
 continue meanwhile.
+
+### RW-76 — 2026-09-13 15:36:45Z — P4 survivor-oracle repair requires fresh judgment
+
+Fresh Luna xhigh triage committed P4's focused survivor tests and updated
+LOG/REPORT at `12e4e150`. The branch is clean and the previously surviving
+P4 mutants are now covered by explicit oracles; because the judged test tree
+changed, the controller requires a fresh R2 on this committed tree before
+review or merge.
