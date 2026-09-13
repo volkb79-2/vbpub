@@ -169,12 +169,12 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The first complete R0/R1 run measured 201 candidates; 250 leaves modest
-# headroom for the final source shape without turning this into an open-ended
+# The discovery-only plan measured 282 candidates after the final source shape;
+# 300 leaves modest finite headroom without turning this into an open-ended
 # campaign. budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 250
+max_mutants = 300
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
