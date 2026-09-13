@@ -1248,3 +1248,12 @@ dispatched from BRIEF-10 with a narrowed, bounded task: test whether adding
 pytest fail-fast (`-x`) to the assay mutation argv is the minimal honest fix
 for the five deterministic timeout mutants, commit only an evidence-backed
 config/record change, and wait for controller approval before any new R2.
+
+### RW-88 — 2026-09-13 18:58:43Z — approve fresh P6 R2 after fail-fast fix
+
+Luna xhigh committed P6's evidence-backed one-token assay configuration fix
+as `5c2134ed`: r2 now invokes `pytest tests -q -x`, matching the established
+full-gate command. Assay config tests (72 passed) and the focused project
+suite (103 passed, 6 skipped) are green; no production code changed. The
+controller approves exactly one fresh R2 on this new tree, with assay resume
+identity kept to the new judged tree and no commit while detached.
