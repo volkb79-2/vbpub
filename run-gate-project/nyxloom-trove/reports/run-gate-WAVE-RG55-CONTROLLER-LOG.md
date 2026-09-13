@@ -1014,3 +1014,13 @@ and pyflakes clean. The controller closed the stale session-10 gate notes,
 committed the gate record, and merged branch `assay-liveness` with `--no-ff`;
 P7's release remains pending cmru's local-snapshot requirement and a PSI-safe
 launch.
+
+### RW-63 — 2026-09-13 10:50:05Z — cmru release requires committed main at origin
+
+`cmru release --project assay --set-version 6.2.0` and the same command with
+`--ref HEAD` both refused before mutation because committed local `main` was
+ahead of `origin/main` (41, then 42 commits after the P7 merge). `--ref` selects
+the comparison ref but is not an override for the pushed-snapshot safety gate.
+The controller will push committed `main` as the normal release workflow;
+the operator's dirty `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` remains
+unstaged and is excluded from that push.
