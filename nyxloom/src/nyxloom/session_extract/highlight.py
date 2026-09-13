@@ -20,6 +20,8 @@ here is that the characters are untouched.
 
 from __future__ import annotations
 
+import re
+
 
 def highlight_markdown(text: str, color: bool = True) -> str:
     """Markdown source with ANSI syntax coloring (or verbatim when
@@ -33,12 +35,28 @@ def highlight_markdown(text: str, color: bool = True) -> str:
     from pygments.formatters import TerminalFormatter
     from pygments.lexers import MarkdownLexer
 
-    # Pygments normalizes trailing newlines before appending its own formatter
-    # terminator. Preserve the source suffix ourselves, then remove exactly
-    # that generated terminator.
-    trailing_count = len(text) - len(text.rstrip("\n"))
-    body = text[:-trailing_count] if trailing_count else text
+    # Pygments normalizes line endings and treats all trailing newlines as its
+    # own formatter terminator. Keep the source's trailing newline suffix out
+    # of the lexer, then restore it verbatim along with internal line endings.
+    trailing_start = len(text)
+    while trailing_start:
+        match = re.search(r"(?:\r\n|\r|\n)\Z", text[:trailing_start])
+        if match is None or match.end() != trailing_start:
+            break
+        trailing_start = match.start()
+    body = text[:trailing_start]
+    trailing = text[trailing_start:]
+    if not body:
+        return text
+    line_endings = re.findall(r"\r\n|\r|\n", body)
+    body = re.sub(r"\r\n|\r", "\n", body)
     rendered = highlight(body, MarkdownLexer(), TerminalFormatter())
     if rendered.endswith("\n"):
         rendered = rendered[:-1]
-    return rendered + ("\n" * trailing_count)
+    rendered_parts = rendered.split("\n")
+    if len(rendered_parts) == len(line_endings) + 1:
+        rendered = "".join(
+            part + (line_endings[i] if i < len(line_endings) else "")
+            for i, part in enumerate(rendered_parts)
+        )
+    return rendered + trailing

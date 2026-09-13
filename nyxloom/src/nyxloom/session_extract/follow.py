@@ -126,7 +126,13 @@ from . import classifier, render
 from .adapters import claude_code, codex, opencode
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
-from .lossless import LosslessBlock, claude_code_blocks, codex_blocks, opencode_blocks
+from .lossless import (
+    LosslessBlock,
+    claude_code_blocks,
+    codex_blocks,
+    opencode_block_for_texts,
+    opencode_blocks,
+)
 from .select import decide
 
 #: How much of the flagged text an attention payload carries.
@@ -286,6 +292,7 @@ class JsonlSource:
 
     def poll(self) -> list[Arrival]:
         arrivals: list[Arrival] = []
+        records: list[dict] = []
         for line in self.tailer.poll():
             rec = _parse_line(line)
             if rec is None:
@@ -295,6 +302,16 @@ class JsonlSource:
                     continue
             elif not codex.is_top_level_record(rec):
                 continue
+            records.append(rec)
+
+        # A follow can begin on an empty file. Once a primary record arrives,
+        # sidechain records in that same poll (and every later poll) are
+        # noise, matching parse()'s whole-file policy as soon as the fact is
+        # knowable from the stream.
+        if self._fmt == "claude-code" and any(not rec.get("isSidechain") for rec in records):
+            self._state.has_primary_thread = True
+
+        for rec in records:
 
             marker = f"follow{self._seq}"
             if self._lossless:
@@ -369,6 +386,51 @@ class OpencodeSource:
         self._seq += 1
         return arrival
 
+    def _changed_texts(self, old_fingerprint: tuple, new_fingerprint: tuple) -> list[str]:
+        """Return only text added or changed since the last boundary view.
+
+        New parts are the normal streaming shape. If opencode extends an
+        existing text part instead, emit only its new suffix when the old
+        value is a prefix; an in-place rewrite cannot retract bytes already
+        printed, so its replacement is the only honest contribution.
+        """
+        old_parts = {part[0]: part for part in old_fingerprint[1]}
+        texts: list[str] = []
+        for part_id, updated, part_json in new_fingerprint[1]:
+            previous = old_parts.get(part_id)
+            if previous is not None and previous == (part_id, updated, part_json):
+                continue
+            try:
+                part = json.loads(part_json)
+            except json.JSONDecodeError:
+                continue
+            if part.get("type") != "text" or not part.get("text"):
+                continue
+            text = part["text"]
+            if previous is not None:
+                try:
+                    old_part = json.loads(previous[2])
+                except json.JSONDecodeError:
+                    old_part = {}
+                old_text = old_part.get("text") if old_part.get("type") == "text" else None
+                if isinstance(old_text, str) and text.startswith(old_text):
+                    text = text[len(old_text):]
+            if text:
+                texts.append(text)
+        return texts
+
+    def _arrival_for_texts(
+        self, msg_id: str, time_created: int, data_json: str, texts: list[str]
+    ) -> Arrival | None:
+        if self._lossless:
+            block = opencode_block_for_texts(msg_id, time_created, data_json, texts)
+            arrival = Arrival(blocks=[block]) if block is not None else None
+        else:
+            ev = opencode.event_for_texts(self._seq, msg_id, time_created, data_json, texts)
+            arrival = Arrival(events=[ev]) if ev is not None else None
+        self._seq += 1
+        return arrival
+
     def _poll_anchor(self) -> list[Arrival]:
         """Emit a changed phase-boundary row without re-emitting it unchanged."""
         if self._anchor_cursor is None:
@@ -384,8 +446,10 @@ class OpencodeSource:
         fingerprint = self._fingerprint(row[0], row[2])
         if fingerprint == self._anchor_fingerprint:
             return []
+        old_fingerprint = self._anchor_fingerprint
         self._anchor_fingerprint = fingerprint
-        arrival = self._arrival(row[0], row[1], row[2])
+        texts = self._changed_texts(old_fingerprint, fingerprint)
+        arrival = self._arrival_for_texts(row[0], row[1], row[2], texts)
         return [arrival] if arrival is not None else []
 
     def _remember_pending(self, row) -> None:

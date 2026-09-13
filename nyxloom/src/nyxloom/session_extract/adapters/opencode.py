@@ -180,6 +180,27 @@ def list_sessions(path: Path) -> list[str]:
         conn.close()
 
 
+def event_for_texts(
+    seq: int, msg_id: str, time_created: int, data_json: str, texts: list[str]
+) -> NormalizedEvent | None:
+    """Build one message event from selected text contributions.
+
+    Follow mode uses this for a changed boundary row: the message's
+    already-emitted parts must not be rendered a second time.
+    """
+    try:
+        data = json.loads(data_json)
+    except json.JSONDecodeError:
+        return None
+    role = data.get("role")
+    if role not in ("user", "assistant") or not texts:
+        return None
+
+    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
+    kind = EventKind.OPERATOR_TEXT if role == "user" else EventKind.ASSISTANT_TEXT
+    return NormalizedEvent(seq, msg_id, ts, kind, "\n".join(texts))
+
+
 def event_for_row(
     conn: sqlite3.Connection, seq: int, msg_id: str, time_created: int, data_json: str
 ) -> NormalizedEvent | None:
@@ -194,14 +215,6 @@ def event_for_row(
     mid-stream can legitimately have no text yet; see follow.py's
     OpencodeSource for the settle rule that handles that.
     """
-    try:
-        data = json.loads(data_json)
-    except json.JSONDecodeError:
-        return None
-    role = data.get("role")
-    if role not in ("user", "assistant"):
-        return None
-
     part_rows = conn.execute(
         "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
     ).fetchall()
@@ -213,14 +226,7 @@ def event_for_row(
             continue
         if part.get("type") == "text" and part.get("text"):
             texts.append(part["text"])
-    if not texts:
-        return None
-
-    # time_created is Unix milliseconds (verified against a real row's value
-    # against its session's human-readable title).
-    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
-    kind = EventKind.OPERATOR_TEXT if role == "user" else EventKind.ASSISTANT_TEXT
-    return NormalizedEvent(seq, msg_id, ts, kind, "\n".join(texts))
+    return event_for_texts(seq, msg_id, time_created, data_json, texts)
 
 
 def parse(path: Path, session_id: str, config: ExtractConfig) -> list[NormalizedEvent]:

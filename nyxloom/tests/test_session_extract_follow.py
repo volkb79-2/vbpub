@@ -526,6 +526,26 @@ def test_a_subagent_transcript_is_followed_rather_than_filtered_to_nothing(tmp_p
     follower.close()
 
 
+def test_jsonl_follow_promotes_a_new_primary_before_filtering_same_tick_sidechains(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"")
+    source = JsonlSource(fp, "claude-code", 0, ExtractConfig(), False,
+                         has_primary_thread=False)
+    _append(
+        fp,
+        _assistant("a1", "## Primary\n\nreal conversation"),
+        _rec(type="assistant", uuid="side", timestamp=_TS, isSidechain=True,
+             message={"role": "assistant", "content": [
+                 {"type": "text", "text": "sidechain noise"},
+             ]}),
+    )
+    arrivals = source.poll()
+    assert [e.text for a in arrivals for e in a.events] == [
+        "## Primary\n\nreal conversation"
+    ]
+    source.close()
+
+
 # --------------------------------------------------------------------------
 # Attention signals + delivery
 # --------------------------------------------------------------------------
@@ -804,6 +824,16 @@ def test_highlight_preserves_source_trailing_newlines():
     assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == source
 
 
+def test_highlight_preserves_crlf_line_endings():
+    import re
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    source = "hello\r\nworld\r\n"
+    colored = highlight_markdown(source, color=True)
+    assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == source
+
+
 def test_run_forever_stops_cleanly_on_keyboard_interrupt(monkeypatch):
     class Source:
         def __init__(self):
@@ -940,6 +970,59 @@ def test_opencode_source_revisits_the_phase_boundary_row_when_parts_arrive(tmp_p
 
     arrivals = source.poll()
     assert [e.text for a in arrivals for e in a.events] == ["arrived after phase one"]
+    source.close()
+
+
+def test_opencode_source_emits_only_new_text_from_changed_boundary_parts(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "already printed")
+    conn = sqlite3.connect(db)
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), False, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO part VALUES ('p-m1-new1', 'm1', ?, 11, 11, ?)",
+                 (sid, json.dumps({"type": "text", "text": "new-1"})))
+    conn.commit()
+    conn.close()
+    assert [e.text for a in source.poll() for e in a.events] == ["new-1"]
+
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO part VALUES ('p-m1-new2', 'm1', ?, 12, 12, ?)",
+                 (sid, json.dumps({"type": "text", "text": "new-2"})))
+    conn.commit()
+    conn.close()
+    assert [e.text for a in source.poll() for e in a.events] == ["new-2"]
+    source.close()
+
+
+def test_opencode_lossless_source_emits_only_new_changed_boundary_text(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    _opencode_message(db, "m1", 10, "assistant", "already printed")
+    conn = sqlite3.connect(db)
+    data = conn.execute("SELECT data FROM message WHERE id = 'm1'").fetchone()[0]
+    parts = conn.execute(
+        "SELECT id, time_updated, data FROM part WHERE message_id = 'm1'"
+    ).fetchall()
+    conn.execute("INSERT INTO part VALUES ('p-m1-new', 'm1', ?, 11, 11, ?)",
+                 (sid, json.dumps({"type": "text", "text": "new text"})))
+    conn.commit()
+    conn.close()
+    source = OpencodeSource(
+        db, sid, ExtractConfig(), True, cursor=(10, "m1"),
+        anchor_fingerprint=(data, tuple(parts)),
+    )
+    arrivals = source.poll()
+    assert [b.text for a in arrivals for b in a.blocks] == ["new text"]
     source.close()
 
 

@@ -217,21 +217,32 @@ def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
     return []
 
 
+def opencode_block_for_texts(
+    msg_id: str, time_created: int, data_json: str, texts: list[str]
+) -> LosslessBlock | None:
+    """Build a lossless block from selected text contributions.
+
+    Follow mode calls this for a message whose part list changed, so it can
+    preserve the message boundary while emitting only text not printed by
+    phase one or an earlier poll.
+    """
+    try:
+        data = json.loads(data_json)
+    except json.JSONDecodeError:
+        return None
+    role = data.get("role")
+    if role not in ("user", "assistant") or not texts:
+        return None
+    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
+    return LosslessBlock(f"===[{msg_id} | {ts} | {role.upper()}]===", "\n".join(texts))
+
+
 def opencode_blocks(
     conn: sqlite3.Connection, msg_id: str, time_created: int, data_json: str
 ) -> list[LosslessBlock]:
     """The one block a `message` row contributes, its `part` rows' text
     fragments joined -- see dump_opencode's docstring. Takes the open
     connection because the parts are a second query, not part of the row."""
-    try:
-        data = json.loads(data_json)
-    except json.JSONDecodeError:
-        data = {}
-    role = data.get("role")
-    if role not in ("user", "assistant"):
-        # a non-user/assistant role (if any exists) -- no prose to lose.
-        return []
-
     part_rows = conn.execute(
         "SELECT data FROM part WHERE message_id = ? ORDER BY id ASC", (msg_id,)
     ).fetchall()
@@ -243,10 +254,8 @@ def opencode_blocks(
             continue
         if part.get("type") == "text" and part.get("text"):
             texts.append(part["text"])
-    if not texts:
-        return []
-    ts = datetime.fromtimestamp(time_created / 1000, tz=timezone.utc).isoformat()
-    return [LosslessBlock(f"===[{msg_id} | {ts} | {role.upper()}]===", "\n".join(texts))]
+    block = opencode_block_for_texts(msg_id, time_created, data_json, texts)
+    return [block] if block is not None else []
 
 
 def dump_claude_code(path: Path, since_marker: str | None = None, until_marker: str | None = None) -> str:

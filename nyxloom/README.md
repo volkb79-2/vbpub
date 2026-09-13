@@ -123,7 +123,7 @@ copy-pasteable markdown, `extract` and `extract-lossless` support
 also support `--follow`/`-f` for incremental live output, with optional
 attention reasons `interview_pending`, `checkpoint_detected`, and `long_block`
 delivered through a terminal bell, an operator hook, or a registered project’s
-notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--session-log-location-presentation-and-follow-mode)
+notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
 and the [session extraction guide](src/nyxloom/session_extract/README.md) for
 the complete flag behavior and adoption examples.
 
