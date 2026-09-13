@@ -1143,6 +1143,11 @@ def cmd_extract_lossless(args) -> int:
     from .session_extract import lossless
     from .session_extract.adapters import detect
 
+    if getattr(args, "redact_pattern", None):
+        print("error: extract-lossless is a verbatim dump and does not support "
+              "--redact-pattern; use extract for redacted output", file=sys.stderr)
+        return 1
+
     resolved = _resolve_session_log(args)
     if resolved is None:
         return 1
@@ -3134,6 +3139,11 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_lossless_parser.add_argument("--until",
                                           help="Same meaning as extract's --until -- stop at this "
                                                "marker (inclusive), symmetric with --since")
+    extract_lossless_parser.add_argument(
+        "--redact-pattern", action="append", default=None, metavar="REGEX",
+        help="Rejected: extract-lossless is a verbatim dump; use extract when redaction is "
+             "required",
+    )
     extract_lossless_parser.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
     lossless_color_group = extract_lossless_parser.add_mutually_exclusive_group()
     lossless_color_group.add_argument("--color", dest="color", action="store_const", const=True,

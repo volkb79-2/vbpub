@@ -122,7 +122,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import classifier, render
+from . import classifier, mangle, render
 from .adapters import claude_code, codex, opencode
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
@@ -157,10 +157,11 @@ class JsonlTailer:
     Three ways the file can change out from under us, all guarded: the inode
     changes (rotation/replacement), the file shrinks below our offset
     (truncation), or it was truncated AND regrown past our offset between two
-    ticks -- the last invisible to any size comparison, caught instead by
-    that newline invariant. None of this is expected for these harness logs,
-    which are append-only, but the failure mode without it is silent garbage
-    rather than an error.
+    ticks. The last case is checked with a bounded prefix fingerprint as well
+    as the boundary newline: a same-inode rewrite can preserve the old
+    boundary newline while replacing the bytes before it. None of this is
+    expected for these harness logs, which are append-only, but the failure
+    mode without it is silent garbage rather than an error.
     """
 
     def __init__(self, path: Path, offset: int = 0):
@@ -172,6 +173,8 @@ class JsonlTailer:
         self.bytes_read = 0
         self._handle = None
         self._inode: int | None = None
+        self._stat_signature: tuple[int, int, int, int] | None = None
+        self._prefix_fingerprint: tuple[bytes, bytes] | None = None
         # The caller's starting offset is a plain file size (cli.py's
         # _follow_anchor), so it CAN sit mid-line if the harness was writing
         # at that moment; only offsets this tailer committed itself satisfy
@@ -188,11 +191,33 @@ class JsonlTailer:
             self._handle.close()
             self._handle = None
 
+    def _prefix_snapshot(self) -> tuple[bytes, bytes]:
+        """Capture bounded fingerprints on both sides of the consumed prefix.
+
+        The tailer must not re-read a large session on every unchanged poll,
+        but checking only ``offset - 1`` lets a same-inode replacement hide
+        behind a preserved newline. Two bounded samples catch ordinary
+        rewrites without turning validation into another whole-file scan.
+        """
+        sample_size = 4096
+        self._handle.seek(0)
+        head = self._handle.read(min(self.offset, sample_size))
+        tail_start = max(0, self.offset - sample_size)
+        self._handle.seek(tail_start)
+        tail = self._handle.read(self.offset - tail_start)
+        return head, tail
+
     def _rewritten(self) -> bool:
         if not self._own_offset or self.offset == 0:
             return False
+        if self._prefix_fingerprint is not None:
+            return self._prefix_snapshot() != self._prefix_fingerprint
         self._handle.seek(self.offset - 1)
         return self._handle.read(1) != b"\n"
+
+    @staticmethod
+    def _stat_signature_for(st) -> tuple[int, int, int, int]:
+        return st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
     def poll(self) -> list[str]:
         """Every COMPLETE new line since the last poll."""
@@ -203,16 +228,22 @@ class JsonlTailer:
 
         if self._handle is None:
             self._open()
+        signature = self._stat_signature_for(st)
+        metadata_changed = signature != self._stat_signature
         # Checked on EVERY poll including the first, deliberately: the handle
         # having just been opened says nothing about whether the file still
         # matches the offset we were handed.
-        if st.st_ino != self._inode or st.st_size < self.offset or self._rewritten():
+        if (st.st_ino != self._inode or st.st_size < self.offset
+                or (metadata_changed and self._rewritten())):
             self.close()
             self.offset = 0
             self._own_offset = False
+            self._prefix_fingerprint = None
+            self._stat_signature = None
             self._open()
 
         if st.st_size <= self.offset:
+            self._stat_signature = signature
             return []
 
         previous_offset = self.offset
@@ -233,6 +264,8 @@ class JsonlTailer:
         # the offset forward.
         if self.offset > previous_offset:
             self._own_offset = True
+            self._prefix_fingerprint = self._prefix_snapshot()
+        self._stat_signature = signature
         return [p.decode("utf-8", "replace") for p in parts[:-1] if p.strip()]
 
 
@@ -259,6 +292,40 @@ def _parse_line(line: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _prime_interview_pending(
+    path: Path, upto_bytes: int, has_primary_thread: bool,
+) -> dict[str, str]:
+    """Reconstruct unanswered Claude questions before a follow anchor.
+
+    ``prime_stream_state`` seeds the parser's question metadata, but its
+    state is intentionally about formatting a later answer. Attention needs
+    the separate unanswered-question view: replay the same raw records
+    through the adapter's public pairing helper, stopping at the phase-one
+    boundary. This is a startup-only read; subsequent polls remain tail-only.
+    """
+    pending: dict[str, str] = {}
+    if upto_bytes <= 0:
+        return pending
+    consumed = 0
+    try:
+        handle = Path(path).open("rb")
+    except OSError:
+        return pending
+    with handle:
+        for raw_line in handle:
+            next_consumed = consumed + len(raw_line)
+            if next_consumed > upto_bytes:
+                break
+            consumed = next_consumed
+            rec = _parse_line(raw_line.decode("utf-8", "replace"))
+            if rec is None or not claude_code.is_conversation_record(rec):
+                continue
+            if rec.get("isSidechain") and has_primary_thread:
+                continue
+            claude_code.update_interview_pending(rec, pending)
+    return pending
+
+
 class JsonlSource:
     """New Claude Code / Codex records, byte-offset tailed.
 
@@ -281,11 +348,15 @@ class JsonlSource:
         self._lossless = lossless_mode
         self._seq = 0
         self._state = claude_code.StreamState(has_primary_thread=has_primary_thread)
+        self.initial_interview_pending: dict[str, str] = {}
         if self._fmt == "claude-code":
             # The first live answer may refer to an AskUserQuestion whose
             # tool_use was already in phase 1. Rehydrate that small
             # cross-record state once; later polls remain tail-only.
             claude_code.prime_stream_state(path, self._state, offset)
+            self.initial_interview_pending = _prime_interview_pending(
+                path, offset, has_primary_thread,
+            )
 
     def close(self) -> None:
         self.tailer.close()
@@ -700,7 +771,11 @@ class Follower:
         # Phase 1 normally printed something already, so the first live block
         # needs a separator in front of it too.
         self._printed_any = printed_any
-        self._interview_pending: dict[str, str] = {}
+        self._startup_interview_pending = dict(
+            getattr(source, "initial_interview_pending", {})
+        )
+        self._interview_pending: dict[str, str] = dict(self._startup_interview_pending)
+        self._startup_attention_fired: set[str] = set()
 
     def close(self) -> None:
         close = getattr(self._source, "close", None)
@@ -715,6 +790,17 @@ class Follower:
 
     def _excerpt(self, text: str) -> str:
         return text[:EXCERPT_CHARS]
+
+    def _redact(self, ev: NormalizedEvent) -> None:
+        """Apply extract's post-selection redaction to live output too.
+
+        Redaction is deliberately after selection, matching
+        ``session_extract.extract``. The selector therefore sees the same
+        original prose it saw in phase one, while the event is sanitized
+        before it can reach stdout (or an attention excerpt).
+        """
+        if self._config.redact_patterns:
+            mangle.redact_paragraphs([ev], list(self._config.redact_patterns))
 
     def _fire(self, reason: str, text: str) -> None:
         deliver(
@@ -752,10 +838,22 @@ class Follower:
                     self._fire("long_block", ev.text)
                 result = self._selector.feed(ev)
                 for emitted in result.emitted:
+                    self._redact(emitted)
                     self._write(render.render_event_block(emitted, self._block_render))
                     printed += 1
                 for checkpoint in result.checkpoints:
                     self._fire("checkpoint_detected", checkpoint.text)
+
+        # A follow may start after Claude has already asked its question. The
+        # question is in phase one's prefix, so no new arrival would trigger
+        # the ordinary per-record detector. Deliver it once after processing
+        # this tick's arrivals, which also lets a just-arrived answer clear it
+        # before we announce attention.
+        for tool_use_id, question in self._startup_interview_pending.items():
+            if (tool_use_id not in self._startup_attention_fired
+                    and tool_use_id in self._interview_pending):
+                self._fire("interview_pending", question)
+                self._startup_attention_fired.add(tool_use_id)
 
         if printed:
             self._out.flush()

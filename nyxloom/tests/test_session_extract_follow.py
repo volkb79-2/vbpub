@@ -137,6 +137,24 @@ def test_tailer_detects_a_rewrite_that_regrew_past_its_own_offset(tmp_path):
     tailer.close()
 
 
+def test_tailer_detects_same_inode_replacement_that_preserves_the_boundary_newline(tmp_path):
+    # A replacement can leave the byte at offset - 1 as `\\n`, so the old
+    # one-byte check incorrectly treated the replacement as an append and
+    # skipped its rewritten prefix.
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"old prefix\n")
+    tailer = JsonlTailer(fp, offset=0)
+    assert tailer.poll() == ["old prefix"]
+    inode = fp.stat().st_ino
+    old_offset = tailer.offset
+
+    fp.write_bytes(b"new prefix\nreplacement tail\n")
+    assert fp.stat().st_ino == inode
+    assert old_offset == len(b"old prefix\n")
+    assert tailer.poll() == ["new prefix", "replacement tail"]
+    tailer.close()
+
+
 def test_a_caller_supplied_mid_line_anchor_is_not_second_guessed(tmp_path):
     # The starting offset is a plain file size taken while a LIVE session may
     # be mid-write, so it can land mid-line. Validating it would mean
@@ -447,6 +465,34 @@ def _follower(fp, out, lossless_mode=False, follow_config=None, config=None, fmt
         follow_config=follow_config or FollowConfig(), out=out,
         lossless_mode=lossless_mode, printed_any=False, bell_out=bell_out,
     )
+
+
+def test_startup_follow_delivers_attention_for_a_preexisting_unanswered_question(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _rec(type="assistant", uuid="q1", timestamp=_TS, message={
+        "role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+             "input": {"questions": [{"question": "Ship the release?"}]}},
+        ],
+    }))
+    sink = tmp_path / "attention.txt"
+    script = (
+        f'printf "%s\\n%s\\n" "$NYXLOOM_ATTENTION_REASON" '
+        f'"$NYXLOOM_ATTENTION_EXCERPT" > "{sink}"'
+    )
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(
+        fp, out,
+        follow_config=FollowConfig(bell=True, on_attention=script), bell_out=bell,
+    )
+
+    assert follower.tick() == 0  # no new record is needed to surface phase-one attention
+    follower.close()
+
+    assert bell.getvalue() == "\a"
+    assert sink.read_text(encoding="utf-8").splitlines() == [
+        "interview_pending", "Ship the release?",
+    ]
 
 
 def test_extract_follow_streams_only_checkpoint_worthy_new_content(tmp_path):
