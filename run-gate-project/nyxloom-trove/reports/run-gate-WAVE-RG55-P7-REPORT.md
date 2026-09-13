@@ -1002,3 +1002,15 @@ a real wheel in a container, which is exactly where sessions 7/8's five
 findings lived (`test_standalone.py`'s real-R2-through-the-wheel documents,
 the pyflakes lane, the untrusted-JSON sweep). Treat the package as
 gate-unverified on this tip until that run exists.
+
+### Final registered gate on the repaired tip
+
+The historical session-10 BLOCKED note above is superseded by the controller
+session-11 run on `cd1f84fe96388335d68d847d8c6a32bc974377bd`. The controller
+launched exactly one `./run-gate.py tester-unified` from `assay/` after a PSI
+check. Container `reverent_lederberg` was immediately capped at 3 CPUs under
+`dev-background.slice`. The wheel-installed gate exited 0 and reported
+`tester-unified: PASS`, B006(a) qualification with R0/R1/R2/R3 PASS,
+independent self-hosting PASS, and pyflakes clean; its final marker was
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. The gate history record binds the clean
+run to this exact commit with exit 0 and duration 1177.521 seconds.

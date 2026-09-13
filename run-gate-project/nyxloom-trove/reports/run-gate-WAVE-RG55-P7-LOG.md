@@ -1140,3 +1140,19 @@ Continues BRIEF-9's contract; B1 (`802f0855`) was already done.
   option.
 - No container was created, started, stopped or removed by this session.
 - The tip is clean and needs no further edits before that run.
+
+### `cd1f84fe` -- final registered gate (controller session 11)
+
+- The historical session-10 BLOCKED record above is superseded for the
+  repaired tip. After the P6 mutation slot was the only other active lane,
+  the controller launched exactly one registered `./run-gate.py
+  tester-unified` from `assay/` on `cd1f84fe`.
+- Container `reverent_lederberg` was capped immediately with
+  `docker update --cpus=3 reverent_lederberg` and ran under
+  `dev-background.slice`; the gate exited 0. Its wheel-installed assay
+  version was `6.1.2.dev83+gcd1f84fe` and its final output included
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, B006(a) R0/R1/R2/R3 PASS,
+  independent self-hosting PASS, and pyflakes clean.
+- The shared `assay/.run-gate/history.json` record binds the run to this
+  exact commit, clean tree, exit 0, and `history_eligible: true`; the
+  duration was 1177.521 seconds.
