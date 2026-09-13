@@ -104,9 +104,10 @@ artifact = "coverage.json"
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "edc55648": the commit immediately before this session's two
-# session_extract commits (43f8da48, de61854f), NOT origin/main -- see the
-# run-gate.toml comment beside this lane for why.
+# base = "3d27c67e": the reviewed feature boundary immediately before this
+# session's session_extract work. The earlier edc55648 pin predated the
+# separate CLI-wide project-id/help wave and made this narrow lane judge that
+# unrelated diff as well; this boundary keeps R1/R2 scoped to this feature.
 #
 # rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
 # R2 (native python mutation) is added in a follow-up edit once R1 is
@@ -155,10 +156,10 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "edc55648"
+base = "3d27c67e"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
-# reuses R1's SAME base=edc55648 diff, so this mutates exactly the lines
+# reuses R1's SAME base=3d27c67e diff, so this mutates exactly the lines
 # this session touched, not the whole package. jobs=1 (serial), NOT higher:
 # the argv already runs pytest -n auto (up to 8 xdist workers on this
 # host), so N concurrent mutation jobs would mean up to N*8 worker
