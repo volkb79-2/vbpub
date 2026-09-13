@@ -1257,3 +1257,11 @@ full-gate command. Assay config tests (72 passed) and the focused project
 suite (103 passed, 6 skipped) are green; no production code changed. The
 controller approves exactly one fresh R2 on this new tree, with assay resume
 identity kept to the new judged tree and no commit while detached.
+
+### RW-89 — 2026-09-13 19:04:36Z — launch the approved P6 R2
+
+The approved fresh P6 R2 was launched from detached tree `5c2134ed` after the
+memory-PSI gate (`full avg10=1.35`). The exact container is
+`run-gate-vbpub-r2-3944182-1789326240`, running under `dev-background.slice`
+with `NanoCpus=3000000000`; no duplicate mutation lane was launched. The
+controller will read the wrapper exit marker and assay verdict separately.
