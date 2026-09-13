@@ -1329,7 +1329,7 @@ def test_extract_follow_opencode_accepts_the_legacy_tuple_anchor_shape(
     assert seen == {"cursor": (-1, ""), "fingerprint": None}
 
 
-def test_extract_follow_opencode_does_not_list_sessions_when_session_is_explicit(
+def test_extract_follow_opencode_does_not_discover_twice_when_session_is_explicit(
     tmp_path, monkeypatch
 ):
     from nyxloom.session_extract import follow as follow_mod
@@ -1337,14 +1337,21 @@ def test_extract_follow_opencode_does_not_list_sessions_when_session_is_explicit
 
     db = _write_opencode_fixture(tmp_path)
 
-    def _unexpected_list_sessions(*args, **kwargs):
-        raise AssertionError("an explicit session id must not trigger discovery")
+    calls = []
+    real_list_sessions = opencode_adapter.list_sessions
 
-    monkeypatch.setattr(opencode_adapter, "list_sessions", _unexpected_list_sessions)
+    def _list_sessions(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_list_sessions(*args, **kwargs)
+
+    monkeypatch.setattr(opencode_adapter, "list_sessions", _list_sessions)
     monkeypatch.setattr(follow_mod.Follower, "run_forever", lambda self: 0)
     assert cli.main([
         "extract", str(db), "--follow", "--opencode-session", "s0",
     ]) == 0
+    # One call belongs to extract()'s ordinary validation. A second call would
+    # mean the pre-phase follow resolver ignored the explicit id.
+    assert len(calls) == 1
 
 
 def test_extract_lossless_follow_opencode_resolves_a_single_session(
