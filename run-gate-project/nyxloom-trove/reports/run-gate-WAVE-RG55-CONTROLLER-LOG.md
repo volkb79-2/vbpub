@@ -1337,3 +1337,12 @@ progressing-tail guard. The implementer is Luna xhigh, with focused tests,
 the three adopter-facing documents, backlog, CHANGES, and a report required.
 No mutation campaign, merge, release, or dstdns action is authorized by this
 ruling; a fresh Luna xhigh adversarial review is required before any merge.
+
+### RW-97 — 2026-09-13 23:34:58Z — triage operator RG-45 addendum
+
+The shared checkout contains an uncommitted operator-owned addendum under
+RG-45 documenting a distinct fixed-lane-budget timeout observation (dstdns
+P192, 714.67 seconds against a 600-second lane budget). A repository-wide
+search found no committed or worktree duplicate. It is already filed upstream
+in the run-gate backlog; this wave neither edits nor commits it, and no
+product decision is inferred from it.
