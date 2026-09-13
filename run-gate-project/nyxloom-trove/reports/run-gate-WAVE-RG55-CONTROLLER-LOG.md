@@ -1301,3 +1301,16 @@ full serial suite interrupted at approximately 54%. Because no review report
 or verdict was issued, this does not consume a review round or provide merge
 evidence. A fresh Luna xhigh reviewer must be seeded from the same handoff;
 Sol remains reserved for an actually unsolvable Luna issue.
+
+### RW-94 — 2026-09-13 23:10:08Z — relaunch P6 asynchronously after budget checkpoint
+
+P6's first four-hour run ended with 260 killed, 34 survived, and 190
+budget-exceeded candidates, leaving 296/484 records judged. The controller
+confirmed the detached judged tree remained exactly `5c2134ed`, the prior
+inflight record was cleared, and memory PSI `full avg10=0.00` before launch.
+A fresh asynchronous resume was then started from
+`scripts/cgroup-profiler` with `--resume --progress` supplied by run-gate;
+the exact container is `run-gate-vbpub-r2-4167718-1789340985` under
+`dev-background.slice` with `NanoCpus=3000000000`. Its wrapper is detached
+with an explicit `RUN_GATE_EXIT` marker in `/tmp/rg55-p6-r2-resume-2.log`.
+The assay verdict and wrapper exit will be read separately when it finishes.
