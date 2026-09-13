@@ -1177,6 +1177,14 @@ This is not a review round and does not satisfy the pre-merge reviewer gate;
 P1 remains merge-blocked until a genuine Sol xhigh reviewer completes the
 adversarial review.
 
+### RW-84 — 2026-09-13 18:39:47Z — Sol xhigh P4 reviewer runtime unavailable
+
+A fresh final-review dispatch for P4 was explicitly constrained to
+`gpt-5.6-sol` at xhigh. The returned runtime identified itself as Codex based
+on GPT-5, stopped immediately, ran no probes, wrote no review record, and
+issued no verdict. This is not a review round; P4 remains merge-blocked until
+a genuine Sol xhigh reviewer completes the adversarial review.
+
 ### RW-80 — 2026-09-13 17:40:27Z — P6 resume advances but remains budget-incomplete
 
 The exact P6 resume container
