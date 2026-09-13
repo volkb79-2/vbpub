@@ -1004,3 +1004,13 @@ the bare-host assay process, confirmed its child pytest was gone, and will not
 launch another gate until a fresh PSI reading is below 5%. This run is not
 evidence: the earlier R1 PASS was on the pre-canary tip, and this interrupted
 attempt is discarded. No product conclusion or ruling is changed.
+
+### RW-62 — 2026-09-13 10:48:23Z — P7 repair accepted and merged
+
+Sol xhigh's fresh final review round 3 ACCEPTed P7 on `cd1f84fe` with no
+blocker. The registered tester-unified gate on that exact tip exited 0, with
+wheel installation, B006(a) R0/R1/R2/R3 PASS, independent self-hosting PASS,
+and pyflakes clean. The controller closed the stale session-10 gate notes,
+committed the gate record, and merged branch `assay-liveness` with `--no-ff`;
+P7's release remains pending cmru's local-snapshot requirement and a PSI-safe
+launch.
