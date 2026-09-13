@@ -308,8 +308,33 @@ into any scoped roadmap feature.
 
 items that must be folded in somewhere, should not be forgotten
 
-- support for Kitty keyboard protocol/ modern terminal 
+- support for Kitty keyboard protocol/ modern terminal? allow drawing pixels for graphs in terminal? 
 - defined cgroup values focussed view (use case: add columns for any type of set cgroup type , show all set limits/guarantees like `memory.min`, MemoryMax, MemorySwapMax, IOReadIOPSMax, IOReadBandwidthMax. so you see the whole tree.)
 - automatically warn on inconsistent cgroup config / not in effect (e.g. parent missing `memory.min`/ `memory.low`  while a leaf has it set. role of memory_recursiveprot)
 - integration/visualization of kernel PSI - indicator for stalling on ressources not available
 - support of kitty grafics protocol desired? or other way to create nice diagrams/pixel level on terminal? (e.g. https://sw.kovidgoyal.net/kitty/graphics-protocol/, https://akmatori.com/blog/terminal-graphics-protocols )
+
+
+```
+On slice vs. scope, for every knob (not just memory):
+
+cgroup v2 doesn't distinguish "slice knobs" from "scope knobs" at all; .slice/.scope/.service are systemd's own unit-type labels for lifecycle/ownership purposes (slice = pure grouping, scope = externally-created process group — exactly what Docker creates per container, service = systemd-managed), but as actual cgroup directories they expose the identical controller files. io.max/io.weight (iops/bps, proportional share), cpu.max/cpu.weight, memory.max/memory.high/memory.low — any of these can be written on a leaf scope exactly as on a parent slice, same file format, same kernel behavior. You don't have to take my word for it: ciu's governance.py already injects read_iops/write_iops/io_weight/read_bps/write_bps/cpus directly onto each container's own scope today (--cpus, blkio_config compose keys) — that's the exact mechanism you're asking about, already live in this stack for IO and CPU, just not yet extended to memory.min/memory.high.
+
+The one real exception, and it's not slice-vs-scope — it's specific to memory.min (and, more weakly, memory.low). These two carry a kernel-enforced ancestor-chain requirement: the protection actually granted at any cgroup is capped by how much protected headroom every ancestor above it — slice or scope, doesn't matter which — is itself declaring and passing down. A perfectly-configured memory.min on a container's own scope sitting under a slice with MemoryMin=0 is just as inert as the reverse. Every other knob you listed — io.max/io.weight, cpu.max/cpu.weight, memory.max, memory.high — is a pure independent ceiling/throttle enforced wherever you set it, zero ancestor cooperation required, fully effective on a leaf scope alone.
+```
+we we need to show the hierachy like `systemd-cgls` does, show in columns the values set e.g. for `memory.min` and the *effective* value that a leaf gets. e.g. we see a docker scope below a slice:
+```
+CGroup /:
+-.slice
+├─wings.slice
+│ ├─wings-mgmt.slice
+│ │ └─docker-d0acc69c5279ad5ec9a9add1a2120b7a7559fad42eda056b4cffac89a4b959da.scope …
+│ │   └─2317201 /usr/bin/wings --config /etc/pterodactyl/config.yml
+│ └─wings-b87c0a5b23874a1c8863ff23e6800a1d.slice
+│   └─docker-5c8e199272897e67caed677902d4425316dac8d0067ae0eaa72f065389f83dfe.scope …
+│     ├─2050036 /usr/bin/tini -g -- /entrypoint.sh
+│     ├─2050286 /bin/bash /entrypoint.sh
+│     └─2063843 /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping DLC_Level01_Main 
+```
+
+- add `https://github.com/facebookincubator/below` as hard competitor. solves several of our use cases, e.g. diffrent views as tabs, drilldown/collapse on tree
