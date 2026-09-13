@@ -1050,3 +1050,13 @@ The P2 no-ff merge was initially refused because the operator's uncommitted
 The controller will use a path-scoped temporary stash solely to preserve and
 restore that addendum around the merge; it remains outside all controller
 commits and is not a product decision.
+
+### RW-67 — 2026-09-13 11:20:26Z — assay 6.2.0 released
+
+The authorized cmru release transaction completed successfully. Its
+registered tester-unified gate passed in 1322.2 seconds, the release was
+tagged and published as `assay-v6.2.0`, and the hash-bound artifacts are
+retained under `assay/artifacts/assay-v6.2.0/`. cmru could not synchronize the
+local checkout automatically because the operator backlog is dirty; the
+controller will merge the already-pushed release commit with `--no-ff` while
+preserving that dirty file outside the index.
