@@ -1060,3 +1060,19 @@ retained under `assay/artifacts/assay-v6.2.0/`. cmru could not synchronize the
 local checkout automatically because the operator backlog is dirty; the
 controller will merge the already-pushed release commit with `--no-ff` while
 preserving that dirty file outside the index.
+
+### RW-68 — 2026-09-13 11:23:23Z — verify assay deployment and changelog
+
+The published assay wheel's sidecar hash matches the retained local artifact,
+and `/home/vscode/.venv/bin/assay --version` reports `6.2.0`. The stale
+post-release `[Unreleased]` body was cleared in a docs-only commit and pushed
+to `origin/main`; the operator backlog remains the only working-tree change.
+
+### RW-69 — 2026-09-13 11:24:01Z — run-gate release excludes operator backlog
+
+The first `cmru release --project run-gate-project --set-version 23.7.0`
+attempt refused before creating a transaction because the shared checkout has
+the operator's uncommitted backlog addendum. The controller will rerun with
+cmru's explicit `--allow-uncommitted` escape hatch: the release source is the
+pushed `origin/main` snapshot and the known dirty path is excluded by the
+operator-file rule. No gate or release mutation ran in the refused attempt.
