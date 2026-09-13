@@ -1167,6 +1167,21 @@ def test_follow_preserves_sidechain_only_primary_detection(tmp_path, monkeypatch
     assert seen == {"has_primary_thread": False}
 
 
+def test_follow_keeps_primary_thread_true_for_codex_jsonl(tmp_path, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_codex_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["has_primary_thread"] = self._source._state.has_primary_thread
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract", str(fp), "--follow"]) == 0
+    assert seen == {"has_primary_thread": True}
+
+
 def test_follow_anchor_rewinds_to_the_start_of_a_partial_jsonl_record(tmp_path):
     prefix = b'{"type":"user"}\n'
     partial = b'{"type":"assistant","message":{"content":['
