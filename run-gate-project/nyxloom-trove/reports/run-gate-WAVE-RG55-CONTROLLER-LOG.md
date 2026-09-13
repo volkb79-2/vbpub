@@ -1159,3 +1159,11 @@ the exact container exited normally without OOM. The controller requires
 another PSI-gated `--resume` on the same judged tree until
 `budget_exceeded=0`. In parallel, P4's fresh R2 remains active after its
 triage commit.
+
+### RW-78 — 2026-09-13 17:05:40Z — P4 fresh judgment leaves one survivor
+
+P4's fresh R2 on the repaired tree completed normally with 57 candidates,
+56 killed, one survived (`run-gate.py:2065`, `LtE->Lt`), and zero
+budget/crashed candidates. The controller requires Luna xhigh disposition of
+that single survivor and, if it is an oracle gap, another exact-tree R2 before
+P4 review or merge.
