@@ -1332,3 +1332,55 @@ for the controller to decide — both are real, neither is a blocker, and
 S13 in particular is the kind of gap this estate's "findings about a TOOL
 … filed in the tool's own backlog" convention exists for if it is not
 fixed here.
+
+## T6 close-out — RW-58 accepted mutation evidence and survivor triage
+
+The final mutation record is read from `.assay/verdict-r2.json` separately
+from the progress stream and is keyed to the judged tree
+`186461de5ef5e58031c10a65c3ebf1087dfae76f`: `BUDGET_EXCEEDED` /
+`LANE_TIMEOUT`, exit 4, 283 candidates, 263 killed, 18 survived, 2
+`budget_exceeded`, 0 crashed, 0 equivalent. The two budget placeholders were
+never executed: `run-gate.py:2097` (`True->False`) and `run-gate.py:2476`
+(`None->[]`). The authorized short resume reproduced this same partial record;
+the R0 baseline was PASS, but no full mutation PASS was obtained. Under RW-58
+the run-2 record is accepted with this disclosure. The baseline failures in the
+other short attempts were the pre-existing RG-62 lock-directory leak
+(`test_unusable_lock_path_is_infra_failure_not_traceback`, repaired on P4's
+RW-46a branch); `PYTEST_ADDOPTS` did not propagate through assay 6.1.1.
+
+Candidate 105 (`coverage_gate.py:128`, `Eq->NotEq`) was terminated by the
+controller as a runaway under RW-50 and its state is classified **killed**, not
+one of the 18 survivors.
+
+The 18 survivors were reviewed against the exact line/operator/context table
+in BRIEF-7. The dispositions are:
+
+| line | operator / mutation | disposition |
+|---:|---|---|
+| 1056, 1434 | bool-const-flip `text=True->False` | Accepted as output-format-only under the current `json.loads(bytes)` contract; `errors="replace"` and R-36h keep the profiler optional and verdict-neutral. |
+| 1190 | compare `>`→`>=` | Equivalent on a tie: the selected maximum rate is numerically unchanged. |
+| 1207 | `is not None`→`is None` | Telemetry-only oracle gap; it can alter a limit-drift count for an unreadable pair, but cannot alter a lane verdict under R-36h. |
+| 1233, 1234 | host-presence `or`→`and`; `None`→`[]` | Telemetry-only oracle gaps in an unavailable host-pressure path; verdict-neutral under R-36h. |
+| 1275 | presence `and`→`or` | Telemetry-only oracle gap in the defensive over-baseline calculation; outer profiling containment preserves the verdict. |
+| 1473 | host-read `and`→`or` | Telemetry-only oracle gap in the basic sampler's host snapshot; profiling cannot block or change the verdict. |
+| 1623 | presence `or`→`and` | Disclosure-only host PSI line gap; no lane verdict effect under R-36h. |
+| 1686 | type guard `and`→`or` | Baseline display-format gap (`?` versus numeric text) in profiling metadata; verdict-neutral. |
+| 1759, 1764, 1775, 1779, 1833 | `flush=True`→`False` | Equivalent for content and verdict; only buffering timing changes. |
+| 3442 | unknown-lane `or`→`and` | Same refusal/exit status; only the empty-known-lane diagnostic changes from `(none)` handling. |
+| 5160 | manifest-presence `and`→`or` | Doctor disclosure-path gap only; no execution/verdict effect. |
+| 5249 | pressure fallback `or`→`and` | Doctor's optional profiler telemetry gap; the profiler check remains non-failing and verdict-neutral. |
+
+The non-equivalent telemetry survivors are retained as explicit, non-blocking
+oracle gaps rather than falsely called killed; no production behavior was
+changed to manufacture a mutation PASS. This is consistent with R-36h:
+profiling and its diagnostics never block or change the tested lane verdict.
+
+Final gates on branch tip `050c641740646091ec19c95e7111eab431e81d0` were run
+after the R3 canary repair: selftest `1087 passed, 3 skipped`, diff coverage
+`875/875` changed lines and `336/336` branches; `assay-r1` PASS; `assay-r3`
+PASS with `2 rejected, 0 survived`; `doctor` exit 0 with 6 OK, 2 warnings,
+2 skipped, and 1 info. The canary repair itself is documented in CHANGES and
+its direct invocation also returned `CANARY_EXIT=0`.
+
+This supersedes the earlier close-out wording that left S11/S13 as open
+decision asks: S11 is fixed by RW-24/R-36k, while S13 is filed as RG-60.
