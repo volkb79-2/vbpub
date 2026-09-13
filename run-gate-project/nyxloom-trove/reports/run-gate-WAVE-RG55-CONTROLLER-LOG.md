@@ -1176,3 +1176,12 @@ refused the assignment, ran no probes, wrote no review, and created no commit.
 This is not a review round and does not satisfy the pre-merge reviewer gate;
 P1 remains merge-blocked until a genuine Sol xhigh reviewer completes the
 adversarial review.
+
+### RW-80 — 2026-09-13 17:40:27Z — P6 resume advances but remains budget-incomplete
+
+The exact P6 resume container
+`run-gate-vbpub-r2-2892668-1789318878` exited 4 with `oom=false`. Its
+separately read cumulative verdict is 484 candidates: 436 killed, 43
+survived, 5 `budget_exceeded`, and 0 crashed. The lane remains unfinished;
+the controller requires another PSI-gated exact-tree resume until no budget
+placeholders remain.
