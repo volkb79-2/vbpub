@@ -1478,3 +1478,11 @@ seeded with its package review handoff and exact current tip, may write only
 its round-1 review file, and must perform the handoff's live probes and gates
 under the host PSI rules. No Sol runtime is used; no product source or merge
 is authorized by this dispatch.
+
+### RW-111 — 2026-09-14 00:37:03Z — preserve historical P4 review rounds
+
+The P4 worktree already contains the historical Opus review rounds 1 and 2,
+including their committed conditional-acceptance records. The fresh Luna
+xhigh reviewer dispatched under RW-110 is therefore assigned round 3 and may
+write only `run-gate-WAVE-RG55-P4-REVIEW-round3.md`; it must not overwrite the
+existing records. This correction changes no product or review evidence.
