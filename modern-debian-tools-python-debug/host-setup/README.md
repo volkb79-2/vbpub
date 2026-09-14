@@ -324,31 +324,21 @@ once this package's `install.sh` has run. Rebuilding a devcontainer from
 an updated template against a host that has not yet been upgraded will
 fail to start, not merely run with a missing feature.
 
-**Fresh host, never ran mdt host-setup before:** the existing "Quick start"
-section below already covers you end to end — it now seeds/renders
-`dev-gates.slice` and the `/run/cgprofile` tmpfiles.d entry along with
-everything else, one pass, nothing additional to do. Only a host that ran
-`install.sh` BEFORE `dev-gates.slice` existed needs the different sequence
-immediately below.
+**Fresh host, never ran mdt host-setup before:** run `install.sh --wizard`.
+The wizard writes a host-sized candidate in temporary storage, validates it,
+and only then lets the installer create `/etc/mdt`, render units, and activate
+the policy. A plain first run refuses the intentionally incomplete example and
+does not persist it. Only a host that ran `install.sh` BEFORE `dev-gates.slice`
+existed needs the upgrade sequence immediately below.
 
 ## Upgrading a host that already runs mdt host-setup
 
 **From before `dev-gates.slice` existed:** a plain re-run of `install.sh`
-alone renders `dev-gates.slice` UNBOUNDED, not merely "using old defaults" —
-verified by reading `install.sh` end to end (round-1 review B4): its
-`--force` branch (`cp` to back up, `cp` the example over `/etc/mdt/
-host-setup.env`, echo "REVIEW IT and re-run to apply edits") has **no
-`exit`** and falls straight through into sourcing the fresh config and
-running apt-get, every unit render, the `daemon.json` merge, `daemon-
-reload`, `systemctl start` of every slice and `systemctl enable --now` of
-the timer/buildkitd/watcher — i.e. `--force` doesn't just re-seed the file,
-it ACTIVATES the example's 16 GiB-host numbers estate-wide, live, in the
-same run. On a host that isn't 16 GiB that is a real, if brief,
-misconfiguration of every OTHER tier too, not only the new one — avoid it
-for a routine key-pickup. `install.sh` now also prints a named `WARN` for
-every key your `/etc/mdt/host-setup.env` predates (see below), so this is
-no longer a silent trap even if you do forget a step. The additive sequence
-below is one render pass and never discards existing tuning:
+validates the existing config before touching host state and refuses if it is
+missing any newly required key. It never replaces an existing config with the
+incomplete example. To preserve existing tuning while adding the new fields,
+use `--wizard`; it presents existing values as defaults, validates the
+completed candidate, then backs up and installs it before rendering:
 
 ```bash
 sudo cp /etc/mdt/host-setup.env /etc/mdt/host-setup.env.bak-$(date +%F)
@@ -367,23 +357,18 @@ sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
 ```
 Then rebuild/recreate your devcontainer (above).
 
-`sudo ./install.sh --force` remains available, but only for a scheduled
-maintenance window (it re-renders and ACTIVATES every tier from the
-example's own numbers live, across the whole estate, the instant it runs —
-see above) — never for a routine key pickup. `sudo ./install.sh --wizard`
-is the interactive alternative to the manual diff/edit steps above: it
-backs up the same way, then walks every section it knows with your
-EXISTING values pre-filled as defaults so Enter reproduces prior tuning
-walks every governed slice's four memory controls and CPU/IO settings with
-existing values pre-filled, and rejects hierarchy or live-host aggregate
+`--force` is accepted only together with `--wizard`; after the candidate
+passes validation it permits the normal backup-and-replace operation. This
+keeps the explicit re-seed intent without ever activating example values
+blindly. The wizard walks every section it knows with existing values
+pre-filled as defaults, and rejects hierarchy or live-host aggregate
 violations before rendering.
 
 ## Quick start
 
 ```bash
 sudo ./install.sh --wizard         # preferred: derive live host values and write the config
-# or: sudo ./install.sh              # seed only; fill host-specific values before re-running
-sudo vi /etc/mdt/host-setup.env    # only needed for the manual path
+# or: edit a complete, host-specific /etc/mdt/host-setup.env, then run install.sh
 sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~4 min saturated IO — quiet window!)
 sudo mdt-host-check.sh             # verify
 ```
@@ -394,11 +379,10 @@ percentages, every governed slice's four memory controls, CPU/IO weights,
 the memory-min-guaranteed ceiling, buildkitd, Docker daemon.json keys) and
 proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
 instead of the shipped example's fixed figures — Enter accepts the shown
-default at every step, and it falls
-through into the same render/apply logic either way. Both paths write the
-same `/etc/mdt/host-setup.env`; the raw file is still there for operators
-who'd rather edit it directly (`--wizard` never replaces it silently — it
-only runs when you pass the flag, and backs up any existing config first).
+default at every step, and it falls through into the same render/apply logic
+after candidate validation. The manual path requires a complete valid config;
+the wizard writes its candidate only after validation and backs up any existing
+config only after that point.
 
 Then recreate the containers that should be governed (placement is
 create-time): rebuild the devcontainer, `docker compose up -d --force-recreate`

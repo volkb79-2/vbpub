@@ -13,6 +13,12 @@ sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
 
+On a fresh host, use the wizard: a plain first run refuses the incomplete
+example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a
+complete, host-specific config already present. `--force` is accepted only
+with `--wizard`, and replacement/backup happens only after the generated
+candidate passes strict validation.
+
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, and I/O
 baseline facts. It walks `dev.slice`, the guaranteed sibling,
 `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and

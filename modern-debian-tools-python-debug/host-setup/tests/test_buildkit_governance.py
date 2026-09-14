@@ -256,7 +256,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertIn("memory hierarchy", str(raised.exception))
 
         install = (ROOT / "install.sh").read_text()
-        self.assertIn("--validate-config /etc/mdt/host-setup.env", install)
+        self.assertIn('--validate-config "$CANDIDATE_PATH"', install)
         self.assertIn("--meminfo-path /proc/meminfo", install)
 
     def test_template_has_all_memory_controls_and_managed_buildkit(self) -> None:
@@ -301,6 +301,17 @@ class BuildKitGovernanceTests(unittest.TestCase):
         scripts = [ROOT.parent / "scripts/ensure-release-builder.sh", ROOT.parent / "scripts/release-bake.sh"]
         result = subprocess.run(["bash", "-n", *map(str, scripts)], check=False)
         self.assertEqual(result.returncode, 0)
+
+    def test_installer_validates_candidate_before_installing_or_backing_up(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        validate = install.index('--validate-config "$CANDIDATE_PATH"')
+        install_config = install.index('mkdir -p "$CONFIG_DIR" /var/lib/mdt')
+        self.assertLess(validate, install_config)
+        self.assertIn('CANDIDATE_DIR="$(mktemp -d', install)
+        self.assertIn('cp -- "$HERE/host-setup.env.example" "$CANDIDATE_PATH"', install)
+        self.assertIn("no valid /etc/mdt/host-setup.env exists; the shipped example is incomplete", install)
+        self.assertIn("--force requires --wizard", install)
+        self.assertNotIn('cp -- "$HERE/host-setup.env.example" /etc/mdt/host-setup.env', install)
 
 
 if __name__ == "__main__":
