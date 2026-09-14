@@ -1810,3 +1810,14 @@ both expected rejection probes (`median-not-mean` and
 `median-not-mean-series-stats`) as OK, with `2 rejected, 0 survived`. The
 non-mutation P4 gates are therefore green through r3; assay-r2 remains the
 last required P4 gate after survivor triage and a quiet judged tip.
+
+### RW-138 — 2026-09-14 04:45:17Z — CMRU coverage repair committed; fresh final review
+
+CMRU's same-process coverage repair is committed at
+`700ef5f86ae09cbed1214687cb75e1797c346c30`. The implementer reports focused
+release-sync `17 passed, 89 deselected` and full coverage `1,779 passed, 3
+skipped; 100.00%` line and branch coverage, with production code unchanged.
+Because the test/report commit changes the judged tree, the prior 99.90%
+coverage result is not reused. Fresh Luna xhigh reviewer Dirac is reviewing
+the exact tip and will commit `cmru-release-dirty-sync-REVIEW-final-3.md`
+before the registered gate is rerun.
