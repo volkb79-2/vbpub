@@ -422,6 +422,55 @@ def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(
     assert events.count("test") == 98
 
 
+def test_xdist_worker_finish_is_ignored_until_owner_finishes(
+    tmp_path: Path,
+) -> None:
+    """B097: stamped worker completion cannot arm the owner's grace timer."""
+    clock = _FakeClock()
+    proc = _ScriptedProc(pid=4247)
+    runner, cwd = _runner(
+        tmp_path,
+        proc=proc,
+        clock=clock,
+        cpu_reader=lambda pid: clock.t,
+        expect_next_event_within_s=600.0,
+    )
+    events_path = runner._events_path_for_cwd(cwd)
+
+    def sleep_and_write(dt: float) -> None:
+        clock.advance(dt)
+        record = None
+        if clock.t == 1.0:
+            record = {
+                "event": "session_finish",
+                "pid": 5001,
+                "xdist_worker": "gw0",
+            }
+        elif clock.t == 2.0:
+            record = {
+                "event": "test",
+                "pid": 5002,
+                "xdist_worker": "gw1",
+                "nodeid": "test_tail",
+            }
+        elif clock.t == 40.0:
+            record = {"event": "session_finish", "pid": 4247}
+        if record is not None:
+            with events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({**record, "t": clock.t}) + "\n")
+        if clock.t == 70.0:
+            proc.finish(0)
+
+    runner._sleep = sleep_and_write
+    result = runner(("pytest", "-n", "2", "-q"), env={}, cwd=cwd, timeout=600.0)
+    assert result.returncode == 0
+    # Without candidate-pid ownership, the worker finish at t=1 would arm
+    # the old finish-only branch and kill at t=31, long before the owner
+    # finish and normal process exit.
+    assert clock.t == 70.0
+    assert not proc.waited
+
+
 # --------------------------------------------------------------------------
 # normal completion -- returns a real CompletedProcess, no exception
 # --------------------------------------------------------------------------

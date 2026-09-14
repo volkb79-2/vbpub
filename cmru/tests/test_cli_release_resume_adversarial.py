@@ -5,7 +5,7 @@ import pytest
 from cmru import cli, transaction
 
 
-def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, tmp_path, capsys):
+def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
@@ -25,7 +25,13 @@ def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, 
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda w: calls.append("backup"))
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda w: calls.append("workspace"))
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: calls.append("forget"))
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: False)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+        ),
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml"),
@@ -39,4 +45,6 @@ def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, 
     assert calls[2:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out
     assert "Could not sync local main automatically" in output
+    assert "caller checkout is dirty" in output
+    assert "rebase conflict" not in output
     assert "isolated worktree removed" in output

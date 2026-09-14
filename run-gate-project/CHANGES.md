@@ -9,6 +9,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release; NOT empty as of this note (RG-61, 2026-09-12) -- 100+ lines accumulated since, all of it the RG-55 wave's own P1/P2 base package (rev 41) plus this P4 follow-up package (rev 42, RG-57/58/59/60/61 below). `__revision__` 41 -> 42 in this same revision bump; every entry below names its own RG id. -->
 
+- fix(run-gate): make `gate-full` propagate an explicit comparison base to
+  its delegating `assay-r1` sub-lane, so linked worktrees can run the complete
+  gate with `--base REF`.
+
 ### Added
 - **RG-57 — bare-host lanes are profiled (RW-27b).** Bare-host lanes used
   to be categorically UNPROFILED (no container/cgroup of run-gate's own

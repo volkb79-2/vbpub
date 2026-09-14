@@ -218,6 +218,20 @@ def test_a_met_floor_falls_through_the_survived_branch_to_pass():
     assert judge_mutation(baseline, mutation, fail_under=90.0) == (Outcome.PASS, None)
 
 
+def test_mutation_pct_docstring_names_every_excluded_canonical_bucket():
+    """B098: the public score contract must enumerate the live vocabulary."""
+    from assay.mutation import mutation_pct
+    from assay.verdict import MUTATION_BUCKETS
+
+    excluded = set(MUTATION_BUCKETS) - {"killed", "survived"}
+    documentation = mutation_pct.__doc__ or ""
+    assert excluded <= {
+        bucket
+        for bucket in MUTATION_BUCKETS
+        if f"``{bucket}``" in documentation
+    }
+
+
 def test_the_comparison_is_strict_so_a_floor_one_notch_higher_fails():
     """90.0 < 90.5, so the same payload refuses; the boundary is `<`, not `<=`."""
     mutation = _nine_killed_one_survived()

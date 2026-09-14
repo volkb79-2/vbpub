@@ -2,6 +2,7 @@
 kind: backlog
 schema_version: 1
 items:
+  - {id: B092, title: "Native-R2 judge identity may explicitly exclude report-only POSIX path globs from the frozen tree-content digest", type: feature, component: mutation, context_estimate: medium}
   - {id: B093, title: "P7 S1: guard liveness writes in the judged tree and define side-file cleanup", type: bug, component: liveness, context_estimate: small}
   - {id: B094, title: "P7 S3 / N5: distinguish unknown --rejudge ids from unreadable state artifacts", type: bug, component: mutation, context_estimate: small}
   - {id: B095, title: "P7 S5: bound monitor CPU history and reduce hot-loop file/proc cost", type: bug, component: liveness, context_estimate: small}
@@ -9463,7 +9464,21 @@ during the same wave B091 shipped in. Follows B088 (resume identity, the
 mechanism this backlog row is about) and is a direct, live incident of it —
 not a hypothetical.
 
-**Status:** OPEN.
+**Status:** **IMPLEMENTED in this change, 2026-09-13.**
+
+**Implementation evidence:** `config.MutationConfig` now loads and
+normalizes the native-R2-only `identity_exclude` list with loud refusal of
+empty, absolute, backslash, NUL, and `.`/`..` spellings. The frozen
+`SnapshotRepository` manifest derives a tagged B092 digest using
+case-sensitive POSIX `fnmatch` and no second filesystem walk; `run_mutation`
+passes that one digest to both resume readers and state-record writers. The
+omitted key keeps the B088 whole-tree serialization byte-for-byte, while an
+explicit empty list is a distinct filtered domain. Focused config and digest
+regressions cover report-only, mixed included/excluded, case-sensitive,
+omitted-path, malformed, omitted-vs-empty, and legacy-compatibility cases.
+Consumer documentation is synchronized in README, DESIGN-GUIDE, and
+CONSUMERS; the implementation report records the non-mutation verification
+boundary.
 
 ### The observation
 
@@ -9532,10 +9547,11 @@ which stay folded in exactly as B088 already documents. Declaring it is an
 explicit, written-down claim the lane's own author makes ("these paths
 cannot affect this lane's judged suite"), not a default assay infers —
 matching this project's own `A-036`/`argv_declared` discipline of never
-guessing at consent on the consumer's behalf. A reasonable starting
-default-if-declared-empty stays today's behavior (whole tree, unchanged) —
-this is additive, opt-in, never a silent narrowing of what B088 already
-protects.
+guessing at consent on the consumer's behalf. A present empty list excludes
+no paths but deliberately selects the new, tagged filtered identity domain,
+so it is distinct from an omitted key and does not silently reuse legacy
+records. This is additive, opt-in, never a silent narrowing of what B088
+already protects.
 
 ### Oracles
 
@@ -9613,45 +9629,53 @@ large events files; no timing threshold replaces those behavioral checks.
 
 ## B096 — P7 S6: derive `--rejudge-outcome` help from the vocabulary
 
-**OPEN, deferred by RW-53/RW-57 (2026-09-13 filing).** CLI help manually
-transcribes `MUTATION_BUCKETS`. Derive accepted bucket spellings from that
-source and retain the documented `error` alias for `crashed`. The earlier
-cleanup removed the unused import; reintroduce it only with its real use.
+**FIXED in this change, 2026-09-13.** CLI help now derives accepted canonical
+bucket spellings from `assay.verdict.MUTATION_BUCKETS` through a helper at
+parser-construction time, while retaining `error` as a separately described
+CLI-only alias for `crashed`. The alias is not added to the owner vocabulary.
+
+The regression appends a temporary vocabulary value and proves the real
+`assay run --help` output changes with it, alongside every current canonical
+member and the alias. README, DESIGN-GUIDE and CONSUMERS now identify the same
+canonical source and accepted spellings.
 
 Oracle: real CLI help names every accepted bucket and the alias, and a
 temporary vocabulary addition changes the help without a second edit.
-Keep README, DESIGN-GUIDE and CONSUMERS aligned with accepted spellings.
 
 ## B097 — P7 B6-b: pid stamping and per-process xdist liveness parsing
 
-**OPEN follow-up, explicitly deferred beyond this 6.2.0 repair by RW-57
-(2026-09-13 filing).** One events file receives every xdist worker's and
-controller's session records. B6-a now requires a full idle grace after any
-finish, preventing the reviewed kill of a progressing candidate. Remaining
-defects: duplicated `tests_completed` (review measured 8 records for 4
-tests) and baseline gaps computed from a merged timeline that can be
-tighter than any worker's worst gap.
+**FIXED in this change, 2026-09-13.** One events file receives every xdist
+worker's and controller's session records. The materialized plugin now stamps
+the producer's positive `pid` and optional non-empty `PYTEST_XDIST_WORKER`,
+without mutating the hook's input record. The monitor recognizes only its
+candidate process's stamped `session_finish`; post-run test readers use the
+owner pid from the first `session_start`, so four controller test records are
+counted once rather than merged with worker duplicates. Baseline gaps are
+computed per pid after ordering each process's records by event timestamp,
+then the largest process-local gap is used, including the owner's leading gap.
 
-Stamp `os.getpid()` and available `PYTEST_XDIST_WORKER` identity in `_append`;
-recognize the candidate's own `session_finish`, count its test records, and
-compute baseline gaps per pid before taking the worst. Decide and document
-handling of older records without pid; the review proposes retaining their
-current interpretation. No stamping, per-pid parser or xdist WARN ships in
-this repair. CONSUMERS discloses the current limits (B6-c); evaluate any new
-WARN with the follow-up rather than silently adding policy here.
+Records with no usable pid (missing, boolean, non-integer, or non-positive)
+remain valid. When the relevant records are mixed or malformed, the parser
+retains the existing merged interpretation rather than dropping evidence or
+inventing an identity from `xdist_worker`. No new WARN, schema number, or
+liveness policy was added. The B6-a progressing-tail and single-process
+behavior remain covered.
 
-Oracle: real `pytest -n 2` with four tests yields four completed tests,
-worker finish cannot stand in for controller finish, and interleaved fast
-workers cannot shrink a slow worker's calibrated gap. Preserve the B6-a
-progressing-tail regression, single-process and legacy-file behavior.
-Update README, DESIGN-GUIDE and CONSUMERS in the same change.
+Oracle: the focused behavioral suite covers materialized subprocess records,
+an interleaved controller-plus-two-workers fixture with four owner test
+records, owner-only finish detection, reordered per-pid timestamps, malformed
+and mixed legacy-compatible records, and the B6-a progressing-tail regression.
+See `nyxloom-trove/reports/assay-B097-REPORT.md` for the implementation
+traceability and deferred verification notes.
 
 ## B098 — P7 N3: `mutation_pct` omits `crashed` in its enumeration
 
-**OPEN, deferred by RW-57 (2026-09-13 filing).** The docstring lists
-`budget_exceeded`, `hung`, `equivalent` and `discarded` as excluded but
-omits `crashed`. Scoring already uses only `killed + survived`; this is the
-remaining documentation omission after S7, with no arithmetic repair due.
+**FIXED in this change, 2026-09-13.** The public `mutation_pct` docstring
+now names every excluded canonical bucket — `crashed`, `budget_exceeded`,
+`equivalent`, and `hung` — while its existing `killed / (killed + survived)`
+arithmetic and zero-denominator behavior remain unchanged. README,
+DESIGN-GUIDE, and CONSUMERS carry the same contract, and a regression oracle
+derives the excluded set from `MUTATION_BUCKETS`.
 
 Oracle: enumerate every excluded bucket, including `crashed`, against
 `MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and

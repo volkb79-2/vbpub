@@ -1212,3 +1212,45 @@ make `run-gate.toml`'s assay pin DERIVE from the `cmru.toml` declaration
 at gate-run time instead of duplicating the version/path literally, so
 there is only one place to update. (a) is the smaller change; (b) removes
 the duplication that makes the drift possible in the first place.
+
+### KI-28 — release cleanup attempted to rebase a dirty caller `main` after `--allow-uncommitted`
+
+**Status:** FIXED 2026-09-14 (code, behavioral tests, SPEC, and operational
+guidance landed together).
+
+**Incident:** On 2026-09-13, `./cmru.release.sh --allow-uncommitted` correctly
+kept caller edits out of the isolated release snapshot. The child then failed
+its required gate. During parent cleanup, the caller `main` still had unstaged
+changes, so cleanup printed Git's `cannot rebase: You have unstaged changes`,
+followed by the misleading `fatal: no rebase in progress`, and the useful child
+failure was accompanied by noise that looked like a second release failure.
+
+**Root cause:** `transaction.sync_local_main` fetched `origin/main` and invoked
+`git rebase origin/main` whenever the caller was currently on `main`, without
+first checking for tracked, untracked, or ignored changes. It then unconditionally
+tried `git rebase --abort` for every non-zero rebase result, even when Git had
+refused to start a rebase because the worktree was dirty. The parent also ignored
+the boolean result on the plan-refusal and child-failure cleanup paths and
+described the success-path false result as a conflict without checking the actual
+state.
+
+**Shipped behavior:** The boolean `sync_local_main` API is preserved. After the
+fetch, a dirty current `main`—including ignored files and directories—returns
+false before either rebase command runs; the dirty files and local `main` ref
+remain untouched. A private per-call result records whether a clean rebase
+established an actual unmerged conflict, or instead failed for an undetermined
+other reason, and all three parent cleanup branches report that captured reason.
+`--allow-uncommitted` remains only a release preflight override and never imports
+caller dirt into the immutable remote snapshot. Clean current-main rebases, clean
+non-current fast-forwards, and diverged non-current-main refusal retain their
+prior behavior.
+
+**Evidence:** `cmru/tests/test_release_transaction.py` constructs tracked,
+ordinary untracked, and ignored dirt on current `main`, advances `origin/main`,
+including by making an ignored local path remotely tracked, proves no rebase or
+rebase-abort runs, and proves content/ref preservation. It also proves a failed
+pre-rebase hook is reported as an undetermined non-conflict. The parent
+child-failure and plan-refusal tests prove false cleanup results are reported
+without calling them conflicts. The normative contract is `docs/SPEC.md`
+S-CLI.5/S-CLI.5a; operator steps are in `docs/RELEASE-TRANSACTIONS.md` under
+Caller-main cleanup.

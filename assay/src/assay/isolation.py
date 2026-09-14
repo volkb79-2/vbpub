@@ -33,6 +33,7 @@ false-PASS attack O4 is written against.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import math
 import os
@@ -44,7 +45,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Callable, ContextManager, Iterator, Mapping
+from typing import Callable, ContextManager, Iterator, Mapping, Sequence
 
 from . import git as _git
 from .config import IsolationConfig
@@ -272,6 +273,7 @@ class _Manifest:
 #: digest is persisted in resume records, and two builds that disagree about
 #: what they hashed must never collide.
 _TREE_DIGEST_LABEL = "assay-snapshot-tree/2"
+_FILTERED_TREE_DIGEST_LABEL = "assay-snapshot-tree/3-identity-exclude"
 
 
 def netstring(value: str) -> str:
@@ -291,7 +293,11 @@ def netstring(value: str) -> str:
     return f"{len(value)}:{value}"
 
 
-def _manifest_sha256(manifest: _Manifest) -> str:
+def _manifest_sha256(
+    manifest: _Manifest,
+    *,
+    identity_exclude: Sequence[str] | None = None,
+) -> str:
     """(B088) A content digest of the whole frozen commit tree.
 
     This is what the caller needs to answer "is the thing that will JUDGE a
@@ -344,18 +350,60 @@ def _manifest_sha256(manifest: _Manifest) -> str:
     which is blob bytes and CAN contain ``\\0`` -- can impersonate a
     separator or a neighbouring field.
     """
-    parts: list[str] = [_TREE_DIGEST_LABEL]
-    entries = sorted(manifest.entries, key=lambda entry: str(entry.path))
+    if identity_exclude is None:
+        parts: list[str] = [_TREE_DIGEST_LABEL]
+        entries = sorted(manifest.entries, key=lambda entry: str(entry.path))
+        parts.append(str(len(entries)))
+        for entry in entries:
+            parts.extend(
+                netstring(field)
+                for field in (str(entry.path), entry.mode, entry.oid, entry.target or "")
+            )
+        omitted = sorted(str(path) for path in manifest.omitted)
+        parts.append(str(len(omitted)))
+        parts.extend(netstring(path) for path in omitted)
+        return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+    # (B092) The new form is deliberately tagged and carries the normalized
+    # declaration as a sorted set. An explicit empty list therefore cannot
+    # collide with the legacy omitted-key form, and two declarations with the
+    # same effective matching rule do not depend on TOML list order.
+    patterns = tuple(sorted(identity_exclude))
+    parts = [_FILTERED_TREE_DIGEST_LABEL, str(len(patterns))]
+    parts.extend(netstring(pattern) for pattern in patterns)
+    entries = sorted(
+        (
+            entry
+            for entry in manifest.entries
+            if not _identity_excluded(entry.path, patterns)
+        ),
+        key=lambda entry: str(entry.path),
+    )
     parts.append(str(len(entries)))
     for entry in entries:
         parts.extend(
             netstring(field)
             for field in (str(entry.path), entry.mode, entry.oid, entry.target or "")
         )
-    omitted = sorted(str(path) for path in manifest.omitted)
+    omitted = sorted(
+        str(path)
+        for path in manifest.omitted
+        if not _identity_excluded(path, patterns)
+    )
     parts.append(str(len(omitted)))
     parts.extend(netstring(path) for path in omitted)
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _identity_excluded(path: PurePosixPath, patterns: Sequence[str]) -> bool:
+    """Return whether *path* matches a B092 identity-exclusion pattern.
+
+    Matching is case-sensitive ``fnmatch`` against the normalized Git
+    tree-relative POSIX spelling. This is intentionally a lexical operation
+    over the frozen manifest, never a filesystem query in another namespace.
+    """
+    path_text = path.as_posix()
+    return any(fnmatch.fnmatchcase(path_text, pattern) for pattern in patterns)
 
 
 def _prove_manifest_materialized(manifest: _Manifest, root: Path) -> None:
@@ -536,6 +584,21 @@ class SnapshotRepository:
         See :func:`_manifest_sha256` for exactly what is covered and why.
         """
         return _manifest_sha256(self._manifest)
+
+    def tree_sha256_for_identity_exclude(
+        self, identity_exclude: Sequence[str]
+    ) -> str:
+        """Return the B092 filtered digest for this frozen manifest.
+
+        The caller supplies the loader-normalized declaration. Keeping this
+        operation on the prepared repository means the filtered form uses the
+        same Git manifest as the legacy :attr:`tree_sha256` property and adds
+        no filesystem walk or materialized-snapshot dependency.
+        """
+        return _manifest_sha256(
+            self._manifest,
+            identity_exclude=identity_exclude,
+        )
 
     def _check_open(self) -> None:
         with self._lock:

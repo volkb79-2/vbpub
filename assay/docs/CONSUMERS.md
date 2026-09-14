@@ -588,6 +588,66 @@ Three consequences worth planning around:
   above: a lane declaring `link_paths` is only as reproducible as the linked
   directory, and that now applies to its resume records too.
 
+### Exclude report-only paths from native-R2 resume identity (B092)
+
+If a tracked report or trove record changes without changing the files that
+judge the mutation, a native-R2 lane can opt into a filtered tree-content
+identity. Paste this complete schema-v2 lane shape into the consumer's lane
+file and change the command, source root, and operator to match the project:
+
+```toml
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "tests", "-q"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs = 2
+max_mutants = 500
+operators = ["python:compare-swap"]
+identity_exclude = ["nyxloom-trove/**"]
+```
+
+`identity_exclude` is native-R2-only and explicitly opt-in. Each entry is a
+non-empty relative POSIX path glob; assay normalizes it and matches it
+case-sensitively with `fnmatch` against normalized Git-tree paths. The example
+therefore excludes tracked evidence beneath `nyxloom-trove/` from the
+tree-content digest, but does not exclude mutation candidates or any command,
+environment, cwd, project-prefix, link, or outside-tree identity input. The
+filter is applied to the frozen Git manifest, not by asking the local
+filesystem.
+
+Omit the key to retain the legacy whole-tree digest exactly. An explicit
+`identity_exclude = []` excludes no paths but is a new identity domain, so it
+does not resume records made with the omitted key. A filtered declaration also
+changes the digest domain; changing the declaration or removing a path from
+the filter intentionally causes a cache miss and re-executes candidates.
+
+### Native mutation score vocabulary (B098)
+
+For every mutation payload, the score is `killed / (killed + survived)`.
+`crashed`, `budget_exceeded`, `equivalent`, and `hung` are real reported
+mutation buckets, but all four are excluded from that denominator. `hung` is
+still kept separate from `budget_exceeded` for triage. An ingested report's
+`discarded` list is a separate accounting field for candidates the foreign
+tool did not attempt; it is also outside the score, but is not one of the
+canonical `MUTATION_BUCKETS` values.
+
 **When nothing resumes, the run says so.** The `resume` progress event
 carries `rejected_total` alongside `resumed_total` and is emitted whenever
 records were found *or refused* — so a store that is being rejected on every
@@ -1615,9 +1675,11 @@ Any value in `0.0..100.0` loads. The floor lands in the verdict as
 `judgment.r2.fail_under`, which is REQUIRED under `producer = "ingested"` and
 FORBIDDEN under `"native"` — a native R2 has no floor at all, so a native
 document carrying one would record a policy that nothing applied. The score is
-`killed / (killed + survived)` as a percentage; `budget_exceeded`,
-`equivalent` and `discarded` are all outside that denominator, each for the
-reason its own row below gives. A claim with recorded survivors is
+`killed / (killed + survived)` as a percentage; `crashed`,
+`budget_exceeded`, `equivalent`, and `hung` are all outside that denominator.
+An ingested report's separate `discarded` list is also outside the denominator
+because those candidates were never in a canonical mutation bucket. A claim
+with recorded survivors is
 `FAIL`/`MUTANTS_SURVIVED` **iff** the score is below the declared floor, so an
 ingested lane at `fail_under = 90.0` can PASS while listing the survivors it
 tolerated — and `assay verify` re-derives that same PASS by reading the floor
@@ -2141,16 +2203,29 @@ making progress, on EITHER of two branches:
   30 s grace (P7 round-2 B6, RW-57).
 
 **xdist (`-n` / `--numprocesses`).** Workers and the controller share the
-events file. An early worker finish cannot expire a candidate while another
-worker keeps reporting events or output. Test records are still counted
-from that merged file, so `tests_completed` can count a test twice, and
-baseline gap calibration can be tighter than the worst individual worker
-gap. Pid stamping and per-process parsing are deferred (B097); this release
-adds no xdist-specific WARN. The existing `liveness = false` setting in
-`[lanes.<name>.judge.mutation]` disables liveness when those limitations are
-unsuitable; the declared per-candidate budget still applies. The
-[design rationale](DESIGN-GUIDE.md#liveness-session-finish-grace) explains
-why the grace uses subsequent progress.
+events file. Every materialized-plugin record carries its positive producer
+`pid` and, when non-empty, the descriptive `PYTEST_XDIST_WORKER` value. The
+worker label is never used as identity. When all relevant test records carry
+usable pids, `tests_completed` reads the records owned by the process that
+wrote the first `session_start` (the controller), so worker reports forwarded
+to that controller do not duplicate the count; repeated records with an equal
+`nodeid` remain separate events. The monitor recognizes only its candidate
+process's stamped `session_finish`, so a worker finish cannot arm the
+post-finish grace while the candidate is still progressing.
+
+When all timestamped baseline records carry usable pids, gap calibration orders
+each pid's records by event timestamp, computes that process's own gaps, and
+uses the largest per-process worst gap. The leading gap is taken from the
+process owning the first `session_start`. A legacy file with no pid, or a
+relevant set containing a missing, boolean, non-integer, or non-positive pid,
+keeps the old merged interpretation; no evidence is dropped and no pid is
+invented from `xdist_worker`. The same compatibility rule applies to mixed
+records. There is no xdist-specific WARN or schema change. The existing
+`liveness = false` setting in `[lanes.<name>.judge.mutation]` still disables
+liveness when that policy is unsuitable; the declared per-candidate budget
+still applies. The [design rationale](DESIGN-GUIDE.md#liveness-session-finish-grace)
+explains why the grace uses subsequent progress and why the owner identity is
+separate from the worker label.
 
 **The residual limitation, stated plainly (P7 round-1 B2, item 3).** The
 events side file is in practice the ONLY live progress signal a pytest
@@ -2283,7 +2358,7 @@ never says `coverage_parsed`.
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4 — that candidate's own liveness event count; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no test event yet, distinct meanings) |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (now including `hung`, B091/RW-33 — see below), `elapsed_seconds`, `tests_completed` (B091 A4/B097 — the count of owner-process `test` records; `None` when liveness never ran for this lane, `0` when it ran and genuinely observed no owner test event yet, distinct meanings) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
@@ -2341,7 +2416,7 @@ way:
 
 | field | meaning |
 | --- | --- |
-| `worst_gap_s` | the largest interval between two consecutive events in the BASELINE's own side file — the measurement the bound is derived from. `null` on the plugin-inactive fallback path |
+| `worst_gap_s` | the largest per-process interval between consecutive events in the BASELINE's own side file, after each pid timeline is ordered by event timestamp — the measurement the bound is derived from. `null` on the plugin-inactive fallback path |
 | `expect_next_event_within_s` | `max(3 x worst_gap_s, 15s)` — how long a candidate may go silent once it has produced at least one event |
 | `pre_first_event_within_s` | `max(3 x the baseline's LEADING gap, 15s)` — the bound in force before a candidate has produced any event at all |
 | `slowest_test_s` | the slowest `call`-phase duration in the baseline. **Unchanged in meaning**, and since 6.2.0 no longer the input to either bound (see below) |
@@ -2365,6 +2440,16 @@ was about to kill honestly. The plugin now stamps `session_start` (from
 directly, leading and trailing stretches included.
 
 ### `--rejudge <id>[,...]` / `--rejudge-outcome BUCKET[,...]`: force specific candidates to re-execute (B091 A5)
+
+#### Rejudge-outcome bucket spellings (B096)
+
+The canonical bucket names are owned by `assay.verdict.MUTATION_BUCKETS` and
+are surfaced by `assay run --help`: `killed`, `survived`, `crashed`,
+`budget_exceeded`, `equivalent`, and `hung`. The help derives that list from
+the owner tuple, so it follows a future canonical vocabulary addition. The
+CLI-only convenience alias `error` is accepted for canonical `crashed`, but
+it is not itself a `MUTATION_BUCKETS` value and never appears in a verdict or
+resume-state record.
 
 `--resume` (above) treats a matching state record as authoritative once both
 halves of its identity hold. Sometimes that is exactly what you do **not**

@@ -35,7 +35,7 @@ from conftest import R0_LANE, R1_LANE, GitRepo, set_key, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay import cli as cli_module
-from assay import git, provenance
+from assay import git, provenance, verdict as verdict_module
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -96,6 +96,29 @@ def _run_parser_description() -> str:
     with contextlib.redirect_stdout(captured), pytest.raises(SystemExit):
         main(["run", "--help"])
     return captured.getvalue()
+
+
+def test_rejudge_outcome_help_derives_canonical_buckets_and_alias(monkeypatch):
+    """B096: help must follow the owner vocabulary, not a second literal.
+
+    Appending a vocabulary value is the controlled future-extension case: a
+    manually transcribed help list stays green for today's buckets but fails
+    to tell an operator about the newly accepted value.
+    """
+    canonical = verdict_module.MUTATION_BUCKETS + ("future_bucket",)
+    monkeypatch.setattr(verdict_module, "MUTATION_BUCKETS", canonical)
+
+    description = " ".join(_run_parser_description().split())
+
+    for bucket in canonical:
+        assert bucket in description
+    assert "CLI-only convenience alias 'error'" in description
+    assert "canonical 'crashed' bucket" in description
+    expected = (
+        f"One of {', '.join(canonical)}; the CLI-only convenience alias "
+        "'error' is accepted for the canonical 'crashed' bucket;"
+    )
+    assert expected in description
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:

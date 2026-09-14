@@ -88,6 +88,15 @@ assay exists to close that gap mechanically, not by policy:
   for staleness, never verified) are three distinct, clearly labeled tiers —
   see [§3 of the design guide](docs/DESIGN-GUIDE.md#3-the-three-tiers-of-evidence).
   A stale or missing review can never quietly read as "this was checked."
+- **Native R2 can opt out of report-only tree paths when judging resume state.**
+  Set `judge.mutation.identity_exclude` to a normalized, case-sensitive list of
+  POSIX path globs to remove matching paths from only the tree-content part of
+  `judge_sha256`. The key is optional and native-R2-only: omission preserves the
+  legacy whole-tree identity exactly, while an explicit empty list is a distinct
+  filtered identity domain. `argv`, declared environment names and values,
+  ambient environment names, cwd, links, project prefix, and assay version
+  remain identity inputs. See the
+  [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
 - **Zero runtime dependencies.** assay imports nothing but the Python
   standard library. It consumes the *output* of tools like `coverage.py`; it
   never imports them. Adoption risk is close to zero — there is no
@@ -267,7 +276,15 @@ silently consuming a whole `budget_per_candidate` window — see
 An early xdist worker finish does not expire a candidate still emitting
 events or output: the post-finish grace requires 30 s without either.
 See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
-and the consumer section's xdist measurement limitations.
+and the consumer section's xdist identity rules. Every materialized-plugin
+record now carries its positive producer `pid` and, when present, the
+descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test records are read
+from the process owning the first `session_start`, so controller/worker
+duplicates do not inflate `tests_completed`; baseline gaps are computed on
+each pid timeline and the largest per-process gap is used. The monitor's own
+candidate pid is the only stamped `session_finish` that arms the finish grace.
+Old, malformed, or mixed records retain the merged legacy interpretation, and
+the worker label is never used as identity.
 **B073 itself is not resolved**: this is per-test data for one runner
 (pytest) on one rigor tier (R2 candidates + the R1/R0 baseline), driven by a
 plugin assay itself materializes — not the general, per-language,
@@ -534,6 +551,17 @@ path grammar and must be gitignored, exactly like a coverage artifact.
 Every mutation lane may declare optional `budget_per_candidate` with the same
 duration grammar as `budget`. A candidate whose command exceeds it enters the
 existing `budget_exceeded` bucket while unrelated candidates continue.
+The mutation score remains `killed / (killed + survived)`; `crashed`,
+`budget_exceeded`, `equivalent`, and `hung` are reported buckets outside that
+denominator.
+When reusing mutation state, `--rejudge-outcome BUCKET[,BUCKET...]` accepts
+those canonical `MUTATION_BUCKETS` names plus the CLI-only convenience alias
+`error` for `crashed`; the `assay run --help` list is derived from that shipped
+vocabulary, so it stays aligned when a canonical bucket is added. See
+[Mutation resume and rejudge help](docs/DESIGN-GUIDE.md#rejudge-help-follows-the-canonical-vocabulary-b096)
+for why the alias remains outside the owner tuple and
+[the consumer guide](docs/CONSUMERS.md#rejudge-outcome-bucket-spellings-b096)
+for the pasteable command.
 Progress is opt-in and consumer-directed: `assay run <lane> --progress PATH`
 appends a compact NDJSON event to PATH -- a `run` header naming the commit and
 start time, then one event after the baseline and one after each completed

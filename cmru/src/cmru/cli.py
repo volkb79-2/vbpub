@@ -108,6 +108,15 @@ def log_error(message: str) -> None:
     print(f"[ERROR] {message}", file=sys.stderr, flush=True)
 
 
+def _sync_local_main_and_report(repo_root: Path) -> bool:
+    """Attempt caller-main cleanup and expose every false result accurately."""
+    result = transaction._sync_local_main_result(repo_root)
+    if result.ok:
+        return True
+    log_warn(result.reason)
+    return False
+
+
 def _apply_output_options(args: object) -> None:
     """Carry explicit console/logging choices into all child step processes."""
     if getattr(args, "show_run_details", False):
@@ -2361,13 +2370,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
                         transaction.forget_release_scope(repo_root, workspace)
-                        if transaction.sync_local_main(repo_root):
+                        if _sync_local_main_and_report(repo_root):
                             log_info("Local main synced with origin/main.")
-                        else:
-                            log_warn(
-                                "Could not sync local main automatically (a rebase "
-                                "conflict); resolve manually — `git rebase origin/main`."
-                            )
                         log_info("Release transaction complete; isolated worktree removed.")
                     elif transaction.plan_was_refused(repo_root, workspace):
                         # The release plan itself refused (S12.2a/S12.2b) before any
@@ -2378,7 +2382,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # (the detailed refusal was already printed by the child above).
                         transaction.remove_workspace(workspace)
                         transaction.forget_release_scope(repo_root, workspace)
-                        transaction.sync_local_main(repo_root)
+                        _sync_local_main_and_report(repo_root)
                         log_error(
                             "Release plan refused before any project started; no changes "
                             "were made (see the error above). Worktree discarded."
@@ -2414,7 +2418,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                                     "have advanced, or the revert conflicted) — manual cleanup "
                                     f"required: inspect branch {workspace.branch}."
                                 )
-                        transaction.sync_local_main(repo_root)
+                        _sync_local_main_and_report(repo_root)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
                             f"on branch {workspace.branch} for inspection/resume."
