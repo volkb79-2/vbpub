@@ -1785,3 +1785,11 @@ a gate (`run-gate: lane 'assay-r1' delegates its comparison base; pass --base
 REF`). No P4 evidence is accepted from that invocation; it will be relaunched
 with `--base main` when PSI and the mutation-slot rules permit. CMRU's gate is
 blocked on its committed same-process coverage repair and a fresh review.
+
+### RW-135 — 2026-09-14 04:37:15Z — relaunch P4 r1 with its recorded comparison tree
+
+The failed P4 r1 refusal is superseded by a PSI-gated watcher PID `451699`
+running `./run-gate.py --base 186461de assay-r1` from the P4 worktree. This is
+the handoff's recorded accepted P2 comparison tree; the watcher will report an
+explicit `RUN_GATE_EXIT` marker. It is a non-mutation bare-host gate and may
+run alongside P1/P6, subject to the host PSI gate.
