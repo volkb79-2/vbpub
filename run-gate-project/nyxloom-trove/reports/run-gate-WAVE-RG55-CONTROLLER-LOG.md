@@ -2092,3 +2092,14 @@ The merged CMRU dirty-main repair (`35e83083`) was built and installed into
 `5.2.2.dev212+g8df7b01d.d20260914`. Its release preflight remains correctly
 fail-closed while this local `main` is ahead of `origin/main`; publishing the
 RG-55 commits still requires the operator to synchronize/push `main` first.
+
+### RW-165 — 2026-09-14 11:34:25Z — B096 repair gate remains red at P25
+
+The authoritative B096 gate on repair commit `84baffb4` passed wheel
+installation, attestation, schema hard-cut checks, the 110-test verdict phase,
+and the self-hosted tester lane, but P25 still failed its
+`declared-base-as-tag` scenario with `FAIL/COMMAND_FAILED`. The terminal
+failure is not mutation evidence and B096 remains unmerged. A fresh Luna
+xhigh repair implementer is diagnosing the preserved disposable-repository
+scenario from `assay-B096-BRIEF-2.md`; the existing round-2 review remains
+unchanged until a repair is committed and gated.
