@@ -1668,3 +1668,13 @@ P6's implementer launched its focused regression suite in the exact container
 pytest-only (not an assay mutation lane) and immediately applied the standing
 3-CPU cap; Docker reports `NanoCpus=3000000000`. This focused run is allowed to
 continue while the host PSI gate remains closed for new mutation work.
+
+### RW-124 — 2026-09-14 04:09:38Z — queue CMRU's registered gate behind host PSI
+
+The fresh CMRU final review ACCEPTed exact repair tip `2eff6bdd`; its three
+review artifacts are committed on `cmru-release-dirty-sync` as `443e4d75`.
+The registered `./run-gate.py gate` was therefore queued from the clean CMRU
+worktree as watcher PID `416958`, log `/tmp/rg55-cmru-gate-watch.log`. The
+watcher launches only at memory PSI `full avg10 <= 5`, uses the required
+nice/ionice priority, and writes an explicit `RUN_GATE_EXIT` marker; no CMRU
+gate container had launched at ruling time.
