@@ -2182,3 +2182,13 @@ without executing them, so this is not a final P6 verdict. Assay 6.2.0's
 supported `--rejudge-outcome budget_exceeded` continuation is required against
 the unchanged judged tree. Its launch is deferred until memory PSI `full
 avg10` is at or below 5; P1's one active mutation container remains running.
+
+### RW-173 — 2026-09-14 12:56:15Z — rejudge watcher made session-detached
+
+The first P6 rejudge watcher was started with `nohup` but died during its
+initial PSI wait when the controller shell ended; its log contains no launch,
+marker, worktree switch, or mutation container, so it is not evidence and no
+state changed. The replacement is `setsid`-detached and is the sole P6
+rejudge supervisor. It will launch the exact assay 6.2.0 continuation only
+after the same PSI/slot gate, then record independent Docker wait/log/remove
+statuses and restore the branch.
