@@ -1469,3 +1469,12 @@ The P2 implementer launched the first approved retry from detached judged tree
 container was created. The assay baseline is running under the same nice/IO
 priority; the implementer will read its verdict separately from the wrapper
 status and will switch back to the branch before any commit.
+
+### RW-110 — 2026-09-14 00:34:17Z — dispatch fresh Luna final reviews for P1 and P4
+
+The controller dispatched independent fresh Luna xhigh adversarial reviewers
+for the still merge-blocked P1 daemon and P4 run-gate follow-ups. Each is
+seeded with its package review handoff and exact current tip, may write only
+its round-1 review file, and must perform the handoff's live probes and gates
+under the host PSI rules. No Sol runtime is used; no product source or merge
+is authorized by this dispatch.
