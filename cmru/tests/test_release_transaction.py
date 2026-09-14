@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager, nullcontext
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1897,7 +1898,28 @@ def test_sync_local_main_reports_conflict_when_abort_fails(monkeypatch):
         assert ["git", "rebase", "--abort"] in calls
 
 
-def test_sync_local_main_reports_active_non_conflict_when_abort_fails(monkeypatch):
+def test_sync_local_main_result_keeps_its_captured_outcome_immutable():
+    result = transaction._SyncLocalMainResult(False, "captured reason")
+
+    with pytest.raises(FrozenInstanceError):
+        result.ok = True
+    with pytest.raises(FrozenInstanceError):
+        result.reason = "replacement reason"
+
+    assert result.ok is False
+    assert result.reason == "captured reason"
+
+
+@pytest.mark.parametrize(
+    ("abort_returncode", "expected_reason", "unexpected_reason"),
+    [
+        (1, "in-progress state could not be aborted", "was aborted successfully"),
+        (0, "in-progress state was aborted successfully", "could not be aborted"),
+    ],
+)
+def test_sync_local_main_classifies_active_non_conflict_after_abort_attempt(
+    monkeypatch, abort_returncode, expected_reason, unexpected_reason,
+):
     with _OriginAndClone() as h:
         (h.repo_root / "local.txt").write_text("local\n")
         _git("add", "local.txt", cwd=h.repo_root)
@@ -1922,7 +1944,9 @@ def test_sync_local_main_reports_active_non_conflict_when_abort_fails(monkeypatc
         def fail_abort(argv, *args, **kwargs):
             calls.append(list(argv))
             if list(argv) == ["git", "rebase", "--abort"]:
-                return SimpleNamespace(returncode=1)
+                if kwargs.get("check") is not False:
+                    raise subprocess.CalledProcessError(1, argv)
+                return SimpleNamespace(returncode=abort_returncode)
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(transaction.subprocess, "run", fail_abort)
@@ -1931,7 +1955,8 @@ def test_sync_local_main_reports_active_non_conflict_when_abort_fails(monkeypatc
 
         assert result.ok is False
         assert "without an established content conflict" in result.reason
-        assert "in-progress state could not be aborted" in result.reason
+        assert expected_reason in result.reason
+        assert unexpected_reason not in result.reason
         assert "genuine conflict" not in result.reason
         assert ["git", "rebase", "--abort"] in calls
 

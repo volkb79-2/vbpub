@@ -1250,14 +1250,27 @@ def _sync_local_main_result(repo_root: Path) -> _SyncLocalMainResult:
                 "caller checkout may still require manual inspection before retrying.",
             )
 
-        if rebase_active is True and abort_result is not None and abort_result.returncode != 0:
-            return _SyncLocalMainResult(
-                False,
-                "Could not sync local main automatically: the rebase failed without an "
-                "established content conflict, and its in-progress state could not be "
-                "aborted. The cause is undetermined; inspect the caller checkout before "
-                "retrying.",
-            )
+        # ``abort_result`` is assigned only after observing
+        # ``rebase_active is True``. Its presence therefore records the state
+        # transition that required an abort; keep the return-code check nested
+        # so an absent result cannot be confused with a failed abort.
+        if abort_result is not None:
+            if abort_result.returncode != 0:
+                return _SyncLocalMainResult(
+                    False,
+                    "Could not sync local main automatically: the rebase failed without an "
+                    "established content conflict, and its in-progress state could not be "
+                    "aborted. The cause is undetermined; inspect the caller checkout before "
+                    "retrying.",
+                )
+            if conflict_known:
+                return _SyncLocalMainResult(
+                    False,
+                    "Could not sync local main automatically: the rebase failed without an "
+                    "established content conflict, and its in-progress state was aborted "
+                    "successfully. The cause is undetermined; local main was not claimed to be "
+                    "synchronized. Inspect the caller checkout before retrying.",
+                )
         if rebase_active is None or not conflict_known:
             return _SyncLocalMainResult(
                 False,
