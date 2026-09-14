@@ -1709,6 +1709,16 @@ was queued behind memory PSI as watcher PID `432284`, log
 `/tmp/rg55-p1-r2-watch.log`. It has not launched while the PSI gate is closed;
 the exact assay container will be capped immediately when it appears.
 
+### RW-129 — 2026-09-14 04:21:36Z — P1 r2 and CMRU assay launch under the two-lane cap
+
+The PSI gate admitted two queued operations as the MDT workload subsided:
+P1's fresh r2 mutation run in exact container
+`run-gate-vbpub-r2-435521-1789359672` and CMRU's registered gate's first
+assay sub-lane in exact container `run-gate-vbpub-assay-435525-1789359674`.
+The controller immediately capped both to 3 CPUs and verified
+`NanoCpus=3000000000`. This is the estate's two active container lanes; P6
+r2 remains prohibited until one is free. The P4 r1 watcher remains PSI-gated.
+
 ### RW-128 — 2026-09-14 04:20:56Z — record the operator MDT release outcome without touching its dirty checkout
 
 The operator-owned `cmru.release.log` transaction reached its explicit
