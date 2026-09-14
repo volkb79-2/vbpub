@@ -1774,3 +1774,14 @@ and verified `NanoCpus=3000000000` immediately. P1's
 `run-gate-vbpub-r2-435521-1789359672` remains capped at 3 CPUs; these are now
 the two active mutation lanes estate-wide. No further mutation container may
 launch until one of these reaches a terminal verdict.
+
+### RW-134 — 2026-09-14 04:36:01Z — resume controller and correct the P4 r1 launcher
+
+The controller has resumed the RG-55 close-out. P1 and P6 fresh r2 mutation
+runs are active and capped at 3 CPUs in their exact containers. P4's queued
+r1 watcher reached the PSI gate but invoked `assay-r1` without its required
+comparison base on a worktree with no upstream, so it exited 2 before starting
+a gate (`run-gate: lane 'assay-r1' delegates its comparison base; pass --base
+REF`). No P4 evidence is accepted from that invocation; it will be relaunched
+with `--base main` when PSI and the mutation-slot rules permit. CMRU's gate is
+blocked on its committed same-process coverage repair and a fresh review.
