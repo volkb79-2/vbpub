@@ -820,11 +820,12 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   not a structural guarantee — it has no way to distinguish a genuine
   trailing footer from prose that coincidentally follows it and looks like
   one. Narrow enough not to have a known real trigger.
-- `lossless.py`'s `--since`/`--until` compare raw `uuid` only, with no
-  `f"line{i}"`-style fallback for a uuid-less record — unlike the real
-  adapter, it cannot resume from or bound to such a record. Acceptable for
-  its current use (a manual debugging/ground-truth tool, not part of the
-  automated chained-snapshot pipeline), but worth knowing if that changes.
+- `lossless.py`'s Claude Code `--since`/`--until` use the adapter-compatible
+  `uuid` marker or `lineN` fallback for UUID-less conversation records, and
+  text dumps append a resumable `format`/`marker` footer consumable by
+  `--since-file`. The positional fallback remains stable only while the
+  source file's valid-conversation ordering is unchanged; inserting or
+  reordering earlier records can invalidate it.
 
 ## Open design questions (raised 2026-09-10, not yet decided)
 
