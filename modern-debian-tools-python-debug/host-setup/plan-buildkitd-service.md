@@ -1,10 +1,9 @@
 # Plan — Host-Managed `buildkitd` Container + Buildx `remote` Driver
 
-Status: **DECIDED, implementing** (see `git log` for the commit that lands
+Status: **IMPLEMENTED, fail-closed** (see `git log` for the commit that lands
 alongside this doc). Authored 2026-08-03, superseding the earlier
 native-systemd-daemon draft after verifying the actual root cause. Scope:
-replace the `docker-container`-driver builders (`mdt-governed-v1`,
-`pwmcp-governed-v1`) with one host-managed, rootless `buildkitd` **container**
+replace the `docker-container`-driver builders with one host-managed, rootless `buildkitd` **container**
 — not a native daemon — reliably placed in its own slice, reached by Buildx
 via the `remote` driver over a Unix socket.
 
@@ -66,6 +65,8 @@ Description=Host-managed BuildKit worker — shared build cache, reliable slice 
 Before=slices.target
 
 [Slice]
+MemoryMin=@DEV_BUILDKITD_MEMORY_MIN@
+MemoryLow=@DEV_BUILDKITD_MEMORY_LOW@
 MemoryHigh=@DEV_BUILDKITD_MEMORY_HIGH@
 MemoryMax=@DEV_BUILDKITD_MEMORY_MAX@
 MemorySwapMax=@DEV_BUILDKITD_MEMORY_SWAP_MAX@
@@ -142,20 +143,20 @@ docker run --rm --name mdt-buildkitd \
   unauthenticated build-execution endpoint on the shared network — a real
   added piece deliberately avoided by choosing the socket).
 - **Persistent cache**: a named volume (`mdt-buildkitd-cache`), not
-  per-consumer — this is the whole point of a shared builder over N separate
-  `docker-container` builders each with their own cold cache.
+  per-consumer — this is the whole point of a shared remote over N separate
+  container-driver workers each with their own cold cache.
 
-## 3. Systemd unit — supervises `docker run` directly, no bespoke script
+## 3. Systemd unit — supervises `docker run` directly
 
 No native `buildkitd` binary, so no privilege plumbing to author — but the
 *container's* lifecycle still needs supervision (start at boot, restart on
-crash, clean recreation if config changes). Rather than writing a
-drift-detecting Python/bash "ensure" script (the `ensure-release-builder.sh`
-pattern), this uses systemd's own service supervision directly: `docker run`
+crash, clean recreation if config changes). This uses systemd's own service
+supervision directly: `docker run`
 (foreground, no `-d`) *is* the `ExecStart=` — a well-established pattern for
 running Docker containers under systemd. `Restart=` gives crash recovery for
 free; a config change just needs `systemctl restart` after re-running
-`install.sh`. No new script, no idempotency logic to get right by hand.
+`install.sh`; the separate builder helper only registers the remote node after
+the service is ready.
 
 ```ini
 # units/mdt-buildkitd.service.in
@@ -197,39 +198,34 @@ around the `docker` CLI client, negligible resource use; only the
 **container** it creates (via `--cgroup-parent`) does the real work and
 needs the tier's accounting.
 
-## 4. Reaching it from the devcontainer — optional mount
+## 4. Reaching it from the devcontainer — mandatory mount
 
 ```jsonc
-// templates/devcontainer.json, in "mounts" (commented out by default —
-// see rollout note below)
-// "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind"
+// templates/devcontainer.json, in "mounts"
+"source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind"
 ```
 
 ```jsonc
 // containerEnv
-// "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
+"BUILDX_BUILDER": "mdt-managed",
+"BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
 ```
 
-`docker buildx create --name host-buildkitd --driver remote
-"$BUILDKIT_HOST"` then works exactly like the existing `docker-container`
-builders, no other client-side change.
+The installer runs the equivalent explicit remote registration as
+`mdt-managed` after the service socket is ready. The finalizer only verifies or
+reuses this named node; no consumer runs a create/remove migration command.
 
-**Decided: optional, commented out**, same style as the template's other
-optional mounts (e.g. the `/etc/letsencrypt` line already there) — every
-consumer repo vendors this file into its own `.devcontainer/`, so an
-unconditional entry would break container start for anyone who hasn't also
-run the updated `install.sh` on their host yet. Uncomment once this is the
-assumed baseline.
+**Decided: mandatory.** The host must be installed before rebuilding a derived
+devcontainer. Docker's bind mount then fails closed when the authoritative
+socket source is absent; the template cannot silently fall back to embedded
+BuildKit.
 
 ## 5. `ensure-release-builder.sh` and consumer wiring
 
-**Postponed, TBD** — this plan installs the host-side service; wiring
-`cmru.toml`'s `BUILDX_BUILDER`, `ensure-release-builder.sh`'s own
-health-check contract (now "is the remote reachable and the right version,"
-not "recreate the container on drift" — there's no longer a
-per-consumer container to drift), and pwmcp's equivalent are explicitly
-deferred to a follow-up once the host-side half is validated with a real
-build.
+**Implemented.** `cmru.toml` selects `mdt-managed` and the socket endpoint;
+`ensure-release-builder.sh` verifies that exact remote and has no
+container-driver creation or drift-repair path. The same environment is
+mandatory in the MDT template and dstdns devcontainer.
 
 ## 6. `--force` reinstall
 
@@ -242,21 +238,22 @@ already there" behavior.
 
 ## 7. Migration / rollback
 
-- **Client-side rollback is cheap:** `docker buildx use default` (or
-  recreate a `docker-container` builder) reverts any consumer instantly.
+- **Rollback is deliberate:** removing the explicit environment is not a
+  supported MDT release path; restore a prior repository/host policy only in a
+  scheduled maintenance window.
 - **Service-side:** `systemctl disable --now mdt-buildkitd.service`, remove
   the unit + slice + named volume, matches the existing "Uninstall" section's
   style.
-- **Coexistence during rollout:** nothing requires retiring
-  `mdt-governed-v1`/`pwmcp-governed-v1` on day one; `docker buildx use`
-  switches per-invocation.
+- **No normal coexistence:** accidental Buildx worker containers are handled by
+  the installed guard (`terminate` by default, `report-only` when explicitly
+  configured). The host-managed service remains the only normal backend.
 
 ## 8. Remaining open questions
 
 1. **Concurrency sizing numbers** — confirmed needed, real Memory
    High/Max/SwapMax figures still TBD from observed usage rather than the
    proposed starting points.
-2. **`ensure-release-builder.sh`'s new contract** — postponed (§5).
+2. **`ensure-release-builder.sh`'s new contract** — implemented in §5.
 3. **Named volume GC** — `mdt-buildkitd-cache` grows unbounded like any
    BuildKit cache; whether/how to bound it (BuildKit's own `--oci-worker-gc`
    flags, or leave to manual `docker system df`/`buildctl du` review) is

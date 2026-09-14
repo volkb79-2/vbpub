@@ -14,6 +14,7 @@ Before=slices.target
 # Generous ceilings: this tier is also the VS Code / IDE server — a too-low
 # MemoryMax OOM-kills the IDE. memory.high throttling into zswap is the
 # intended pressure valve; the hard cap is only the leak backstop.
+MemoryMin=@DEV_INTERACTIVE_MEMORY_MIN@
 MemoryHigh=@DEV_INTERACTIVE_MEMORY_HIGH@
 MemoryMax=@DEV_INTERACTIVE_MEMORY_MAX@
 # Soft protection of the IDE working set against OTHER tiers' pressure.

@@ -20,6 +20,8 @@ Before=slices.target
 # so these properties are set HERE ONLY — not duplicated as `docker run
 # --memory`/`--cpus` flags on the container itself (see
 # units/mdt-buildkitd.service.in). One number, one place to look.
+MemoryMin=@DEV_BUILDKITD_MEMORY_MIN@
+MemoryLow=@DEV_BUILDKITD_MEMORY_LOW@
 MemoryHigh=@DEV_BUILDKITD_MEMORY_HIGH@
 MemoryMax=@DEV_BUILDKITD_MEMORY_MAX@
 # Auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of

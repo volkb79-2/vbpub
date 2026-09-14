@@ -42,14 +42,10 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}", wrapper)
         self.assertIn("attest+=type=sbom", wrapper)
 
-    def test_builder_and_repack_limits_are_configured(self) -> None:
-        self.assertTrue(self.env["BUILDX_BUILDER"])
+    def test_release_uses_the_host_managed_remote_builder(self) -> None:
+        self.assertEqual(self.env["BUILDX_BUILDER"], "mdt-managed")
+        self.assertEqual(self.env["BUILDKIT_HOST"], "unix:///run/mdt-buildkitd/buildkitd.sock")
         for key in (
-            "MDT_BUILDER_MEMORY",
-            "MDT_BUILDER_MEMORY_SWAP",
-            "MDT_BUILDER_CPU_SHARES",
-            "MDT_BUILDER_CPU_QUOTA",
-            "MDT_BUILDER_CPU_PERIOD",
             "REPACK_JOBS",
             "REPACK_CONCURRENCY",
             "REPACK_VMEM_KB",
@@ -58,9 +54,11 @@ class ReleaseFlowTests(unittest.TestCase):
             self.assertTrue(self.env[key], key)
 
         builder = (ROOT / "scripts/ensure-release-builder.sh").read_text()
-        self.assertIn('driver}" != "docker-container"', builder)
-        self.assertIn('actual_memory}" != "${expected_memory}', builder)
-        self.assertIn('docker buildx rm "${BUILDER}"', builder)
+        self.assertIn('BUILDX_BUILDER" != mdt-managed', builder)
+        self.assertIn('mdt_buildkit_builder.py" verify', builder)
+        self.assertNotIn("buildx create", builder)
+        self.assertNotIn("buildx rm", builder)
+        self.assertNotIn("docker-container", builder)
 
     def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()

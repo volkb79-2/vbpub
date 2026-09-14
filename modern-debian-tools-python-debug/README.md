@@ -329,8 +329,12 @@ sudo mdt-host-check.sh
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
 says. Read it before changing any weight.
 
-BuildKit builders are governed separately; see
-[docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md).
+All MDT devcontainer and release builds use the host-managed `mdt-managed`
+Buildx remote backed by `mdt-buildkitd.service`; the template supplies
+`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. Host installation, the
+accidental-worker guard, and the fail-closed memory policy are documented in
+[the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
+and [consumer instructions](docs/CONSUMERS.md).
 
 ## Building and publishing
 
@@ -343,8 +347,9 @@ BuildKit builders are governed separately; see
 ```
 
 Step and environment configuration is [`cmru.toml`](cmru.toml); the build
-matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds run on the resource-confined
-named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.toml`.
+matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds require the
+host-managed remote selected by `BUILDX_BUILDER=mdt-managed`; `cmru.toml` also
+records its `BUILDKIT_HOST` endpoint. The host slice owns resource limits.
 
 ### Release caches
 
@@ -574,6 +579,7 @@ production-quality. Windows as of June 2026:
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
+| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable managed BuildKit host, devcontainer, and release adoption |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |

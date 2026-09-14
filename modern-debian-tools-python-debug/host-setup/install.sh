@@ -40,6 +40,20 @@ done
 # After arg parsing so --help works unprivileged.
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+DOCKER_BIN=/usr/bin/docker
+if [ ! -x "$DOCKER_BIN" ]; then
+  echo "ERROR: $DOCKER_BIN is unavailable; install Docker Engine before applying MDT host setup" >&2
+  exit 2
+fi
+if ! "$DOCKER_BIN" info >/dev/null 2>&1; then
+  echo "ERROR: Docker is unavailable or unreachable; start dockerd and re-run install.sh" >&2
+  exit 2
+fi
+if ! "$DOCKER_BIN" buildx version >/dev/null 2>&1; then
+  echo "ERROR: Docker Buildx is unavailable; install/enable the Buildx CLI plugin and re-run install.sh" >&2
+  exit 2
+fi
+
 echo "== reactive per-container cap watcher: inotify availability check =="
 # mdt-dev-cap-watcher.py needs a working inotify_init1() — true on any
 # kernel since 2.6.27, but checked explicitly rather than let a confusing
@@ -105,8 +119,25 @@ while IFS= read -r key; do
   grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
 done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
 if [ -n "$MISSING_KEYS" ]; then
-  echo "WARN: your /etc/mdt/host-setup.env predates these keys:${MISSING_KEYS} — the rendered unit(s) using them will be unbounded (directive dropped, not defaulted). Add them from host-setup.env.example (see README.md \"Upgrading a host that already runs mdt host-setup\" for the additive sequence), then re-run this script. (--force/--wizard also pick them up, but re-render/reactivate the WHOLE estate from the example's numbers live — see the same README section before using either on an already-tuned host.)"
+  echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
+  echo "Add them from host-setup.env.example (or use --wizard), review the result, then re-run install.sh." >&2
+  exit 2
 fi
+
+case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
+  terminate|report-only) ;;
+  *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
+esac
+for _required_var in DEV_BUILDKITD_IMAGE DEV_MEMORY_HIGH DEV_MEMORY_MAX \
+  DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
+  DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
+  DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX \
+  DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
+  if [ -z "${!_required_var:-}" ]; then
+    echo "ERROR: $_required_var is empty; refusing to render an unbounded governed slice" >&2
+    exit 2
+  fi
+done
 
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
@@ -211,17 +242,18 @@ fi
 
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
-DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACTIVE_MEMORY_LOW \
+DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
+DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
 DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_QUOTA \
 DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
-DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
+DEV_BACKGROUND_MEMORY_MIN DEV_BACKGROUND_MEMORY_LOW DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_CPU_QUOTA DEV_BACKGROUND_IO_WEIGHT \
 DEV_BACKGROUND_OOM_PRESSURE_LIMIT DEV_BACKGROUND_ZSWAP_WRITEBACK \
-DEV_MEMORY_MIN_GUARANTEED_CEILING \
-DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
+DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_MEMORY_MIN_GUARANTEED_LOW DEV_MEMORY_MIN_GUARANTEED_HIGH DEV_MEMORY_MIN_GUARANTEED_MAX \
+DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
 DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
 DEV_GATES_ZSWAP_WRITEBACK \
-DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
+DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
@@ -256,6 +288,7 @@ fi
 # see scripts/mdt-io-cap-watcher.sh for why it can't use the same mechanism
 # as mdt-dev-cap-watcher.py above.
 install -m 0644 "$HERE/units/mdt-io-cap-watcher.service" /etc/systemd/system/mdt-io-cap-watcher.service
+install -m 0644 "$HERE/units/mdt-buildkit-guard.service" /etc/systemd/system/mdt-buildkit-guard.service
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
@@ -346,8 +379,11 @@ install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply
 install -m 0755 "$HERE/scripts/mdt-io-cap-watcher.sh"  /usr/local/sbin/mdt-io-cap-watcher.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
 install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
+install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
+install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
+install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
 if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-dev-cap-watcher.py" /usr/local/sbin/mdt-dev-cap-watcher.py
 fi
@@ -367,11 +403,41 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
+for _slice in dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-gates.slice dev-buildkitd.slice; do
+  _load_state=$(systemctl show "$_slice" --property=LoadState --value)
+  _fragment=$(systemctl show "$_slice" --property=FragmentPath --value)
+  if [ "$_load_state" != loaded ] || [ -z "$_fragment" ]; then
+    echo "ERROR: rendered $_slice is not a loaded systemd unit (LoadState=$_load_state FragmentPath=$_fragment)" >&2
+    exit 2
+  fi
+done
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
-  dev-gates.slice dev-buildkitd.slice 2>/dev/null || true
+  dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
-systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker
+if systemctl is-active --quiet mdt-buildkitd.service; then
+  echo "restarting mdt-buildkitd.service; active builds will be interrupted"
+  systemctl restart mdt-buildkitd.service
+else
+  systemctl enable --now mdt-buildkitd.service
+fi
+systemctl enable mdt-buildkitd.service
+for _attempt in $(seq 1 30); do
+  [ -S /run/mdt-buildkitd/buildkitd.sock ] && break
+  sleep 1
+done
+if [ ! -S /run/mdt-buildkitd/buildkitd.sock ]; then
+  echo "ERROR: mdt-buildkitd.service did not expose /run/mdt-buildkitd/buildkitd.sock" >&2
+  systemctl status mdt-buildkitd.service --no-pager || true
+  exit 2
+fi
+python3 "$HERE/scripts/mdt-buildkit-guard.py" \
+  --config /etc/mdt/host-setup.env --docker "$DOCKER_BIN" \
+  --verify-managed-container mdt-buildkitd
+python3 "$HERE/../scripts/mdt_buildkit_builder.py" configure \
+  --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock
+systemctl enable --now mdt-buildkit-guard.service
+systemctl restart mdt-buildkit-guard.service
 if [ "$INOTIFY_OK" = 1 ]; then
   systemctl enable --now mdt-dev-cap-watcher.service  # reactive per-container MemoryMax
 fi

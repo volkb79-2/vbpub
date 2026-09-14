@@ -377,36 +377,132 @@ def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
     MemAvailable — what's actually free on THIS host right now, already net
     of anything else (including a co-located production tier) using memory —
     NOT off MemTotal, which would overstate real headroom on a shared host.
-    MemoryMin (a small, STABLE protection floor) scales off MemTotal
-    instead, deliberately: a protection floor should not shrink just because
-    something else is momentarily using more RAM. Percentages are round,
-    easily-explained fractions of this HOST's own live numbers — never this
-    project's own shipped example figures (15.6Gi/~70G swap), which are
-    tied to a different physical host. Swap-max proposals are NOT part of
-    this dict — see step_cpu_and_swap_cascade()."""
+    MemoryMin is not invented for ordinary slices: the only MemoryMin in this
+    design is the explicit, opt-in shared guarantee prompted separately.
+    Percentages are round, easily-explained fractions of this HOST's own live
+    numbers — never this project's shipped example figures. Swap-max proposals
+    are NOT part of this dict — the slice-first flow asks those per slice."""
 
     def frac(base_kib: int, percent: int, min_mib: int = 0) -> str:
         return kib_to_size_str(base_kib * percent // 100, min_mib=min_mib)
 
-    # The three MemoryHigh fractions (interactive/background/buildkitd) are
-    # deliberately kept BELOW 100% combined (30+30+25=85%, not e.g. 35+35+30)
-    # -- step e's leftover-after-step-d suggestion divides MemAvailable minus
-    # those three figures (PLUS dev-gates.slice's own fixed MemoryHigh, added
-    # separately in main() since this wizard does not host-scale that tier --
-    # round-1 review S2), so if the three below alone summed to 100% the
-    # "leftover" would already be degenerate (always ~0, on every host)
-    # before dev-gates.slice's own claim even enters the sum, let alone a
-    # real, host-varying number after it.
     return {
-        "DEV_INTERACTIVE_MEMORY_MIN": frac(total_kib, 3, min_mib=128),
+        "DEV_MEMORY_HIGH": kib_to_size_str(avail_kib),
+        "DEV_MEMORY_MAX": kib_to_size_str(max(total_kib, avail_kib)),
         "DEV_INTERACTIVE_MEMORY_LOW": frac(avail_kib, 15),
         "DEV_INTERACTIVE_MEMORY_HIGH": frac(avail_kib, 30),
         "DEV_INTERACTIVE_MEMORY_MAX": frac(avail_kib, 50),
         "DEV_BACKGROUND_MEMORY_HIGH": frac(avail_kib, 30),
         "DEV_BACKGROUND_MEMORY_MAX": frac(avail_kib, 50),
+        "DEV_GATES_MEMORY_HIGH": frac(avail_kib, 10),
+        "DEV_GATES_MEMORY_MAX": frac(avail_kib, 20),
         "DEV_BUILDKITD_MEMORY_HIGH": frac(avail_kib, 25),
         "DEV_BUILDKITD_MEMORY_MAX": frac(avail_kib, 45),
     }
+
+
+def validate_positive_size(value: str) -> str | None:
+    """A configured memory limit must be positive; ``0`` is a hard zero,
+    not an unset value. Unconfigured fields are represented explicitly by the
+    slice flow and are never passed to this validator."""
+    error = validate_size_required(value)
+    if error:
+        return error
+    if parse_size_to_kib(value) <= 0:
+        return "a memory limit must be greater than zero; use the documented 'none' entry when this slice has no such directive"
+    return None
+
+
+def validate_optional_positive_size(value: str) -> str | None:
+    if not value:
+        return None
+    return validate_positive_size(value)
+
+
+def validate_weight(value: str) -> str | None:
+    if not value:
+        return "an IOWeight/CPUWeight is required (systemd accepts an integer from 1 to 10000)"
+    try:
+        weight = int(value)
+    except ValueError:
+        return f"{value!r} is not an integer weight"
+    if not 1 <= weight <= 10000:
+        return f"{weight} is outside systemd's 1-10000 weight range"
+    return None
+
+
+def validate_guard_policy(value: str) -> str | None:
+    if value not in ("terminate", "report-only"):
+        return "choose 'terminate' (remove unapproved Buildx workers) or 'report-only' (detect and log only)"
+    return None
+
+
+def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
+    """Return (key, message) pairs for cgroup memory hierarchy violations.
+
+    Values are normalized to KiB before comparison. Empty entries are the
+    explicit architectural ``none`` state and are not compared; configured
+    fields are ordered exactly as the cgroup v2 hierarchy requires.
+    """
+    groups = (
+        ("dev.slice", ("DEV_MEMORY_MIN_GUARANTEED_CEILING", "DEV_MEMORY_LOW", "DEV_MEMORY_HIGH", "DEV_MEMORY_MAX")),
+        ("dev-interactive.slice", ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_INTERACTIVE_MEMORY_LOW", "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_INTERACTIVE_MEMORY_MAX")),
+        ("dev-background.slice", ("DEV_BACKGROUND_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_LOW", "DEV_BACKGROUND_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_MAX")),
+        ("dev-gates.slice", ("DEV_GATES_MEMORY_MIN", "DEV_GATES_MEMORY_LOW", "DEV_GATES_MEMORY_HIGH", "DEV_GATES_MEMORY_MAX")),
+        ("dev-buildkitd.slice", ("DEV_BUILDKITD_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_MAX")),
+        ("dev-memory_min_guaranteed.slice", ("DEV_MEMORY_MIN_GUARANTEED_CEILING", "DEV_MEMORY_MIN_GUARANTEED_LOW", "DEV_MEMORY_MIN_GUARANTEED_HIGH", "DEV_MEMORY_MIN_GUARANTEED_MAX")),
+    )
+    errors: list[tuple[str, str]] = []
+    for slice_name, keys in groups:
+        parsed = [(key, parse_size_to_kib(values.get(key, ""))) for key in keys if values.get(key, "")]
+        for (left_key, left), (right_key, right) in zip(parsed, parsed[1:]):
+            if left > right:
+                errors.append(
+                    (
+                        right_key,
+                        f"{slice_name}: {left_key}={values[left_key]} must be <= {right_key}={values[right_key]} (comparison is in KiB; re-enter the right-hand field)",
+                    )
+                )
+    return errors
+
+
+def memory_aggregate_error(avail_kib: int, values: dict[str, str]) -> str | None:
+    highs = sum(
+        parse_size_to_kib(values.get(key, ""))
+        for key in (
+            "DEV_INTERACTIVE_MEMORY_HIGH",
+            "DEV_BACKGROUND_MEMORY_HIGH",
+            "DEV_GATES_MEMORY_HIGH",
+            "DEV_BUILDKITD_MEMORY_HIGH",
+        )
+    )
+    root_high = parse_size_to_kib(values.get("DEV_MEMORY_HIGH", ""))
+    root_max = parse_size_to_kib(values.get("DEV_MEMORY_MAX", ""))
+    minimum = parse_size_to_kib(values.get("DEV_MEMORY_MIN_GUARANTEED_CEILING", ""))
+    child_minimum = sum(
+        parse_size_to_kib(values.get(key, ""))
+        for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")
+    )
+    child_maximum = max(
+        parse_size_to_kib(values.get(key, ""))
+        for key in ("DEV_INTERACTIVE_MEMORY_MAX", "DEV_BACKGROUND_MEMORY_MAX", "DEV_GATES_MEMORY_MAX", "DEV_BUILDKITD_MEMORY_MAX")
+    )
+    if highs > root_high:
+        return f"child MemoryHigh values ({kib_to_size_str(highs)} combined) exceed dev.slice MemoryHigh ({kib_to_size_str(root_high)}); increase the parent or reduce a child"
+    if child_maximum > root_max:
+        return f"a child MemoryMax ({kib_to_size_str(child_maximum)}) exceeds dev.slice MemoryMax ({kib_to_size_str(root_max)}); increase the parent or reduce that child"
+    if child_minimum and not minimum:
+        return "a child MemoryMin was configured while dev.slice MemoryMin is empty; the parent must explicitly carry the hard protection budget"
+    if minimum and minimum < child_minimum:
+        return f"child MemoryMin values ({kib_to_size_str(child_minimum)} combined) exceed dev.slice MemoryMin ({kib_to_size_str(minimum)}); increase the parent or reduce a child"
+    if highs + minimum > avail_kib:
+        return (
+            "aggregate memory exceeds live MemAvailable: "
+            f"MemoryHigh values ({kib_to_size_str(highs)} combined) + "
+            f"MemoryMin ({kib_to_size_str(minimum)}) > MemAvailable ({kib_to_size_str(avail_kib)}); "
+            "reduce/re-enter a MemoryHigh or leave the optional MemoryMin empty"
+        )
+    return None
 
 
 def propose_memory_min_guaranteed_suggestion(
@@ -1062,13 +1158,12 @@ def step_memory_tiers(
         hang="  ",
     )
     for key, label in (
-        ("DEV_INTERACTIVE_MEMORY_MIN", "  MemoryMin"),
         ("DEV_INTERACTIVE_MEMORY_LOW", "  MemoryLow"),
         ("DEV_INTERACTIVE_MEMORY_HIGH", "  MemoryHigh"),
         ("DEV_INTERACTIVE_MEMORY_MAX", "  MemoryMax"),
     ):
         values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals[key], validate=validate_size_required
+            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
         )
 
     out()
@@ -1080,11 +1175,13 @@ def step_memory_tiers(
         hang="  ",
     )
     for key, label in (
+        ("DEV_BACKGROUND_MEMORY_MIN", "  MemoryMin (empty = none)"),
+        ("DEV_BACKGROUND_MEMORY_LOW", "  MemoryLow (empty = none)"),
         ("DEV_BACKGROUND_MEMORY_HIGH", "  MemoryHigh"),
         ("DEV_BACKGROUND_MEMORY_MAX", "  MemoryMax"),
     ):
         values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals[key], validate=validate_size_required
+            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
         )
 
     out()
@@ -1097,11 +1194,17 @@ def step_memory_tiers(
         hang="  ",
     )
     for key, label in (
-        ("DEV_BUILDKITD_MEMORY_HIGH", "  MemoryHigh"),
-        ("DEV_BUILDKITD_MEMORY_MAX", "  MemoryMax"),
+        ("DEV_GATES_MEMORY_MIN", "  MemoryMin (empty = none)"),
+        ("DEV_GATES_MEMORY_LOW", "  MemoryLow (empty = none)"),
+        ("DEV_GATES_MEMORY_HIGH", "  MemoryHigh"),
+        ("DEV_GATES_MEMORY_MAX", "  MemoryMax"),
+        ("DEV_BUILDKITD_MEMORY_MIN", "  BuildKit MemoryMin (empty = none)"),
+        ("DEV_BUILDKITD_MEMORY_LOW", "  BuildKit MemoryLow (empty = none)"),
+        ("DEV_BUILDKITD_MEMORY_HIGH", "  BuildKit MemoryHigh"),
+        ("DEV_BUILDKITD_MEMORY_MAX", "  BuildKit MemoryMax"),
     ):
         values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals[key], validate=validate_size_required
+            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
         )
 
     return values
@@ -1386,6 +1489,179 @@ def step_cpu_and_swap_cascade(
     return values
 
 
+def _none_memory_field(slice_name: str, field: str, reason: str) -> None:
+    out(f"  {field}: none ({slice_name} has no {field}= directive; {reason})")
+
+
+def _prompt_slice_memory(
+    slice_name: str,
+    fields: tuple[tuple[str, str, Validator], ...],
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+    proposals: dict[str, str],
+    values: dict[str, str],
+) -> None:
+    out(f"\n  {slice_name} memory hierarchy")
+    out(
+        "  MemoryMin is hard protection that participates in the parent/child "
+        "hierarchy; MemoryLow is soft best-effort protection; MemoryHigh is a "
+        "soft throttle into reclaim; MemoryMax is the hard RAM ceiling. Values "
+        "are entered with binary units (K/M/G, converted to KiB for validation); "
+        "MemorySwapMax is asked separately because it is the swap ceiling."
+    )
+    for field, key, validator in fields:
+        value = walk_key(f"  {field}", key, cfg_current, example_defaults, proposals.get(key), validator)
+        values[key] = value
+
+
+def _reprompt_memory_constraints(
+    avail_kib: int,
+    values: dict[str, str],
+) -> None:
+    """Reject hierarchy/aggregate mistakes and ask again; never clamp."""
+    for _ in range(32):
+        errors = memory_relationship_errors(values)
+        if errors:
+            key, message = errors[0]
+            out(f"invalid: {message}", indent="  ")
+            before = values[key]
+            values[key] = ask(
+                f"  corrected value for {key}",
+                before,
+                validate=validate_optional_positive_size if ("_MIN" in key or "_LOW" in key or key == "DEV_MEMORY_LOW") else validate_positive_size,
+            )
+            if values[key] == before and memory_relationship_errors(values):
+                raise ValueError("memory hierarchy is still invalid after re-prompt")
+            continue
+        aggregate = memory_aggregate_error(avail_kib, values)
+        if aggregate is None:
+            return
+        out(f"invalid: {aggregate}", indent="  ")
+        minimum = parse_size_to_kib(values.get("DEV_MEMORY_MIN_GUARANTEED_CEILING", ""))
+        high_keys = (
+            "DEV_INTERACTIVE_MEMORY_HIGH",
+            "DEV_BACKGROUND_MEMORY_HIGH",
+            "DEV_GATES_MEMORY_HIGH",
+            "DEV_BUILDKITD_MEMORY_HIGH",
+        )
+        root_high = parse_size_to_kib(values.get("DEV_MEMORY_HIGH", ""))
+        child_high_total = sum(parse_size_to_kib(values[key]) for key in high_keys)
+        if child_high_total > root_high:
+            key = "DEV_MEMORY_HIGH"
+        elif any(parse_size_to_kib(values[key]) > parse_size_to_kib(values["DEV_MEMORY_MAX"]) for key in ("DEV_INTERACTIVE_MEMORY_MAX", "DEV_BACKGROUND_MEMORY_MAX", "DEV_GATES_MEMORY_MAX", "DEV_BUILDKITD_MEMORY_MAX")):
+            key = "DEV_MEMORY_MAX"
+        elif any(values.get(key, "") for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")) and not minimum:
+            key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
+        elif minimum and sum(parse_size_to_kib(values.get(key, "")) for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")) > minimum:
+            key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
+        elif minimum:
+            key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
+        else:
+            key = max(high_keys, key=lambda candidate: parse_size_to_kib(values[candidate]))
+        before = values.get(key, "")
+        values[key] = ask(
+            f"  corrected value for {key}",
+            before,
+            validate=validate_size_or_empty if key.startswith("DEV_MEMORY_MIN") else validate_positive_size,
+        )
+        if values[key] == before and memory_aggregate_error(avail_kib, values):
+            raise ValueError("aggregate memory remains above live MemAvailable after re-prompt")
+    raise ValueError("memory constraints did not converge after 32 correction prompts")
+
+
+def step_slice_first_resources(
+    meminfo: dict[str, int],
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+) -> dict[str, str]:
+    """Walk each governed slice as one unit of policy, from parent to leaves."""
+    total_kib = meminfo.get("MemTotal", 0)
+    avail_kib = meminfo.get("MemAvailable", total_kib)
+    if avail_kib <= 0:
+        raise ValueError("MemAvailable is missing or zero; refusing to invent memory limits")
+    proposals = propose_memory_tiers(total_kib, avail_kib)
+    values: dict[str, str] = {}
+
+    out("\n-- d. Governed slices (slice-first) --")
+    out(
+        f"Live host facts: MemTotal={kib_to_size_str(total_kib)}, "
+        f"MemAvailable={kib_to_size_str(avail_kib)}. Suggestions use "
+        "MemAvailable from /proc/meminfo, then every entered value is checked "
+        "in KiB against the cgroup hierarchy and the aggregate live budget."
+    )
+    out(
+        "Configure one slice completely before advancing. The fixed architecture "
+        "choices are shown as explicit 'none': ordinary slices do not receive a "
+        "fabricated MemoryMin, the root uses absolute measured IO caps rather than "
+        "IOWeight, and the guaranteed sibling has only the shared MemoryMin. The "
+        "resource values and the terminate/report-only policy remain configurable."
+    )
+    _, suggestion_kib, formula = propose_memory_min_guaranteed_suggestion(
+        avail_kib,
+        {key: proposals[key] for key in (
+            "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_HIGH",
+            "DEV_GATES_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_HIGH",
+        )},
+    )
+    out(f"Computed MemoryMin suggestion (not auto-selected): {formula}.")
+    if suggestion_kib:
+        out(f"A conservative optional ceiling would be {kib_to_size_str(suggestion_kib)}; Enter keeps it empty.")
+
+    # Parent slice: this existing key is the only authoritative dev.slice
+    # MemoryMin and is mirrored byte-for-byte on the guaranteed sibling below.
+    out("\n  dev.slice — shared parent")
+    out("  MemoryMin is an optional hard protection budget for explicitly admitted containers; it is not a per-IDE floor.")
+    values["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = walk_key(
+        "  MemoryMin (empty = no guaranteed tier)",
+        "DEV_MEMORY_MIN_GUARANTEED_CEILING", cfg_current, example_defaults,
+        proposal=None, validate=validate_size_or_empty,
+    )
+    values["DEV_MEMORY_LOW"] = walk_key("  MemoryLow (empty = none)", "DEV_MEMORY_LOW", cfg_current, example_defaults, validate=validate_optional_positive_size)
+    values["DEV_MEMORY_HIGH"] = walk_key("  MemoryHigh", "DEV_MEMORY_HIGH", cfg_current, example_defaults, proposals["DEV_MEMORY_HIGH"], validate=validate_positive_size)
+    values["DEV_MEMORY_MAX"] = walk_key("  MemoryMax", "DEV_MEMORY_MAX", cfg_current, example_defaults, proposals["DEV_MEMORY_MAX"], validate=validate_positive_size)
+    values["DEV_CPU_RESERVE_CORES"] = walk_key("  host CPU reserve", "DEV_CPU_RESERVE_CORES", cfg_current, example_defaults, validate_nonneg_int)
+    values["DEV_SUBSLICE_CPU_RESERVE_CORES"] = walk_key("  child-slice CPU reserve", "DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults, validate_nonneg_int)
+    values["DEV_CPU_QUOTA"] = walk_key("  CPUQuota (empty = auto-detect from host nproc)", "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota)
+    values["DEV_ZSWAP_WRITEBACK"] = walk_yn_key("  MemoryZSwapWriteback", "DEV_ZSWAP_WRITEBACK", cfg_current, example_defaults)
+    values["DEV_SWAP_CASCADE_PCT"] = walk_key("  swap cascade percentage", "DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults, validate=validate_pct_1_100)
+    values["DEV_SWAP_MAX"] = walk_key("  MemorySwapMax (empty = host-swap cascade)", "DEV_SWAP_MAX", cfg_current, example_defaults, validate=validate_size_or_auto)
+    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key("  child IOPS sub-ceiling percentage", "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults, validate=validate_pct_1_100)
+    out("  IOWeight: none (dev.slice uses one measured IORead/WriteBandwidthMax and IOPSMax pool for all children).")
+
+    # This sibling is fully described even though its MemoryMin is deliberately
+    # not independently editable: two independently chosen values would drift.
+    out("\n  dev-memory_min_guaranteed.slice — admitted hard-floor sibling")
+    out(f"  MemoryMin: exact mirror of dev.slice ({values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'})")
+    for field, key in (("MemoryLow", "DEV_MEMORY_MIN_GUARANTEED_LOW"), ("MemoryHigh", "DEV_MEMORY_MIN_GUARANTEED_HIGH"), ("MemoryMax", "DEV_MEMORY_MIN_GUARANTEED_MAX")):
+        values[key] = walk_key(f"  {field} (empty = none)", key, cfg_current, example_defaults, validate=validate_optional_positive_size)
+    out("  CPUQuota, CPUWeight, IOWeight, MemorySwapMax: inherited/not configured on this admission-only sibling.")
+
+    child_specs = (
+        ("dev-interactive.slice", "DEV_INTERACTIVE", ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_INTERACTIVE_MEMORY_LOW", "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_INTERACTIVE_MEMORY_MAX")),
+        ("dev-background.slice", "DEV_BACKGROUND", ("DEV_BACKGROUND_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_LOW", "DEV_BACKGROUND_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_MAX")),
+        ("dev-gates.slice", "DEV_GATES", ("DEV_GATES_MEMORY_MIN", "DEV_GATES_MEMORY_LOW", "DEV_GATES_MEMORY_HIGH", "DEV_GATES_MEMORY_MAX")),
+        ("dev-buildkitd.slice", "DEV_BUILDKITD", ("DEV_BUILDKITD_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_MAX")),
+    )
+    for slice_name, prefix, keys in child_specs:
+        out(f"\n  {slice_name}")
+        for field, key in zip(("MemoryMin", "MemoryLow", "MemoryHigh", "MemoryMax"), keys):
+            validator = validate_positive_size if field in ("MemoryHigh", "MemoryMax") else validate_optional_positive_size
+            values[key] = walk_key(f"  {field} (empty = none)" if field in ("MemoryMin", "MemoryLow") else f"  {field}", key, cfg_current, example_defaults, proposals.get(key), validator)
+        values[f"{prefix}_CPU_WEIGHT"] = walk_key("  CPUWeight", f"{prefix}_CPU_WEIGHT", cfg_current, example_defaults, validate=validate_weight)
+        values[f"{prefix}_CPU_QUOTA"] = walk_key("  CPUQuota (empty = auto-detect from host nproc)", f"{prefix}_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota)
+        values[f"{prefix}_IO_WEIGHT"] = walk_key("  IOWeight", f"{prefix}_IO_WEIGHT", cfg_current, example_defaults, validate=validate_weight)
+        values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key("  MemorySwapMax (empty = swap cascade)", f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, validate=validate_size_or_auto)
+        values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key("  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK", cfg_current, example_defaults)
+        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
+            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key("  ManagedOOMMemoryPressureLimit", f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults, validate=validate_pct_1_100)
+        if prefix == "DEV_BUILDKITD":
+            values["DEV_BUILDKITD_IMAGE"] = walk_key("  BuildKit image", "DEV_BUILDKITD_IMAGE", cfg_current, example_defaults, validate=validate_nonempty)
+            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key("  accidental Buildx container policy", "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults, validate=validate_guard_policy)
+
+    _reprompt_memory_constraints(avail_kib, values)
+    return values
+
+
 def step_watcher(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
@@ -1532,42 +1808,17 @@ def main(argv: list[str] | None = None) -> int:
     walked["DEV_IO_CAP_PCT"] = dev_pct
     walked["SWEEP_IO_CAP_PCT"] = sweep_pct
 
-    tier_values = step_memory_tiers(meminfo, swap_kib, cfg_current, example_defaults)
-    walked.update(tier_values)
-
-    high_values = {k: v for k, v in tier_values.items() if k.endswith("_MEMORY_HIGH")}
-    # dev-gates.slice (RG-55 P8, round-1 review S2) is a FOURTH tier that also
-    # claims a MemoryHigh, but this wizard does not walk it interactively
-    # (D-19's sizing is fixed, not host-scaled the way step d's three are) --
-    # so its value never appears in tier_values above. Without adding it here
-    # too, the leftover this earmark sum computes is systematically
-    # OVERSTATED by whatever dev-gates.slice actually claims, and an
-    # overstated leftover is the failure direction CGROUP-NOTES.md warns
-    # about (a too-generous suggested ceiling leaks protection to
-    # dev-interactive.slice/dev-background.slice). Resolved through the SAME
-    # rule every other walked key uses (resolve_default: an already-
-    # configured host's own value wins, else the shipped example's) even
-    # though this key is not itself walked/rewritten here -- the wizard's own
-    # key-surgery write path (`text = example_text` + `apply_value()` on
-    # `walked` only) already carries DEV_GATES_* through verbatim regardless.
-    high_values["DEV_GATES_MEMORY_HIGH"] = resolve_default(
-        "DEV_GATES_MEMORY_HIGH", cfg_current, example_defaults, None
-    )
-    avail_kib = meminfo.get("MemAvailable", meminfo.get("MemTotal", 0))
-    walked["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = step_memory_min_guaranteed(
-        avail_kib, high_values, cfg_current, example_defaults
-    )
-
-    image, cpu_quota = step_buildkitd(cfg_current, example_defaults)
-    walked["DEV_BUILDKITD_IMAGE"] = image
-    walked["DEV_BUILDKITD_CPU_QUOTA"] = cpu_quota
+    try:
+        walked.update(step_slice_first_resources(meminfo, cfg_current, example_defaults))
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     cgroup_parent, backstop_max, backstop_swap = step_docker_daemon(cfg_current, example_defaults)
     walked["DOCKER_DAEMON_CGROUP_PARENT"] = cgroup_parent
     walked["DOCKER_SCOPE_BACKSTOP_MEMORY_MAX"] = backstop_max
     walked["DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX"] = backstop_swap
 
-    walked.update(step_cpu_and_swap_cascade(cfg_current, example_defaults))
     walked.update(step_watcher(cfg_current, example_defaults))
 
     text = example_text

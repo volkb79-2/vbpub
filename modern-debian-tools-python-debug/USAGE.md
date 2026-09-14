@@ -33,34 +33,34 @@ controls the slice size used by the repack flow.
 
 ### Builder governance (`BUILDX_BUILDER`)
 
-Release builds use a resource-confined, **named** buildx builder rather than
-whatever builder happens to be the current default. `cmru.toml` owns the
-limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
-automatically recreates a project-owned builder whose driver or limits drifted,
-and fails closed if Docker does not apply the configured values.
+Every MDT devcontainer build and release build requires
+`BUILDX_BUILDER=mdt-managed` with
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`. The host installer
+maintains the rootless `mdt-buildkitd.service` in `dev-buildkitd.slice` and
+creates the durable Buildx `remote` node after the service socket is ready.
+`scripts/ensure-release-builder.sh` only verifies that contract; it cannot
+create or repair an ungoverned worker.
 
-Do not create or update the release builder by copying a `docker buildx create`
-command from this guide. Run the normal build entry point; it reads the current
-name and limits from `cmru.toml`, creates the builder when absent, repairs
-configuration drift, and verifies Docker's applied limits before building.
+Do not copy a generated `docker buildx create` command. Run host setup first,
+then the normal build entry point. The in-container finalizer safely reuses the
+same named remote and fails clearly if either environment variable, endpoint,
+or builder identity is inconsistent. `docker build` delegates to Buildx with
+the explicit `BUILDX_BUILDER` selection, and `docker buildx build` uses the same
+selection unless an operator explicitly overrides it (which MDT release hooks
+reject).
 
 Caveats:
 
-- The `cgroup-parent` Buildx driver option is not relied upon with Docker's
-  systemd cgroup driver. The release instead verifies the container leaf's
-  memory, memory+swap, CPU shares, and CPU quota. True placement in a specific
-  host slice requires a host-managed BuildKit service and the Buildx `remote`
-  driver.
+- The service is a plain `docker run --cgroup-parent=dev-buildkitd.slice`.
+  The design does not rely on Buildx's container-driver `cgroup-parent` option.
 - I/O caps (e.g. read/write IOPS) are not expressible via buildx driver-opts at all; if you need
   them, apply them host-side against the running `buildx_buildkit_<name>_*` container's cgroup
   (the same mechanism host operators use for any other container — see
   [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
   (cgroups/slices)" for the underlying primitives).
-- Seeing `dockerd` in `system.slice/docker.service` is normal. The governed
-  `docker-container` builder puts the CPU- and memory-heavy BuildKit worker in
-  a separate generated container scope, where Docker enforces the values from
-  `cmru.toml`. Plain `docker build` does not select this named builder and
-  therefore bypasses that project-owned confinement.
+- Seeing `dockerd` in `system.slice/docker.service` is normal. The managed
+  BuildKit worker is the separately-labelled `mdt-buildkitd` container in
+  `dev-buildkitd.slice`; Dockerfile execution is performed by that remote.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
   `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
   priority, and the caller's cgroup. The default does not impose a virtual
