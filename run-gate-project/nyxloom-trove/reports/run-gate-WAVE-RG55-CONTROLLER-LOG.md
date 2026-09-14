@@ -2499,3 +2499,14 @@ executed and make the lane BUDGET_EXCEEDED. P1's judged tree remains clean and
 untouched; resume those exact candidates after P6 frees the second mutation
 slot, then record the final report and rerun required gates/review on the
 final tip.
+
+### RW-203 — 2026-09-14 23:15:01Z — RG-56 repair checkpoint sent to same reviewer
+
+The Luna xhigh RG-56 repair is clean at `ec4445440022c8d05518b83f2b136cfe28d607f7`.
+It is design-only and resolves the original admission blockers with a
+targetless atomic reservation, normalized `reservation_bytes`, host-produced
+systemd/registry/PSI facts, committed footprint provenance, bounded wait and
+dynamic `additional_slots`; it retains the current two-container cap until a
+producer exists. The original Dewey reviewer was sent the repair for the
+required same-reviewer fix-verification round. No merge or implementation is
+authorized on this design package yet.
