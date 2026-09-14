@@ -1646,8 +1646,8 @@ postcondition checks only `rebase-merge`; valid `rebase.backend=apply` and
 valid global `core.hooksPath` settings therefore defeat the oracle. The
 NamedTuple replacement and default live probes passed. A fresh Luna xhigh
 repair pass is dispatched to configure a repository-local hook path, accept
- either Git rebase layout, and raise the child failsafe to 60 seconds; no CMRU
- gate, merge, or release is authorized until a fresh final review ACCEPTs.
+either Git rebase layout, and raise the child failsafe to 60 seconds; no CMRU
+gate, merge, or release is authorized until a fresh final review ACCEPTs.
 
 ### RW-122 — 2026-09-14 04:01:36Z — resume controller operations and preserve the quiet-host gate
 
