@@ -1708,3 +1708,15 @@ tree, the old r2 verdict is not reused. A fresh registered `./run-gate.py r2`
 was queued behind memory PSI as watcher PID `432284`, log
 `/tmp/rg55-p1-r2-watch.log`. It has not launched while the PSI gate is closed;
 the exact assay container will be capped immediately when it appears.
+
+### RW-128 — 2026-09-14 04:20:56Z — record the operator MDT release outcome without touching its dirty checkout
+
+The operator-owned `cmru.release.log` transaction reached its explicit
+`MDT_RELEASE_EXIT=0`. The image build log contains a BuildKit cache-export
+warning (`ref layer ... locked ... unavailable`), but the build flow continued,
+the required release-flow gate passed (`25 tests, 1 skipped`), the image was
+promoted, and the release completed. CMRU then could not rebase the dirty
+operator checkout (`cannot rebase: You have unstaged changes`), emitted its
+warning, and still returned zero. The controller leaves that checkout and all
+operator files untouched; the CMRU release-sync repair remains the remedy for
+future dirty-main releases.
