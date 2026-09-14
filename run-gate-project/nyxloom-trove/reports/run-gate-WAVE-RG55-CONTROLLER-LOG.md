@@ -1396,3 +1396,14 @@ self-hosted phases. Its existing Topos qualification then failed scenario
 merge evidence. The gate must be rerun from the same quiet B096 tip after the
 fresh reviewer verdict and a safe PSI reading, with the failure disclosed if
 the required retry policy exhausts.
+
+### RW-103 — 2026-09-14 00:06:57Z — disclose B096 retry launch PSI race
+
+The controller intended to launch one B096 gate retry after a safe PSI check,
+but the combined launch command's fresh reading was
+`full avg10=11.41%`; the retry therefore started above the 5% gate. The exact
+container `vigilant_ganguly` was capped immediately at `NanoCpus=3000000000`
+under `dev-background.slice`. No additional launch will occur until a
+separate fresh check is safe. This run's evidence remains provisional and its
+launch deviation is disclosed in the final report; it cannot be treated as a
+clean PSI-gated retry.
