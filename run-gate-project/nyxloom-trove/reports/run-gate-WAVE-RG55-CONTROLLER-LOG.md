@@ -2005,3 +2005,14 @@ active: the shared checkout has no modification to that file. No operator file
 was discarded. The only remaining shared-checkout modification is the
 operator-owned `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` addendum, which
 remains untouched and uncommitted.
+
+### RW-156 — 2026-09-14 09:23:17Z — RG-26 sidecar review requires a real-config oracle
+
+Fresh Luna xhigh review of the isolated `84fab73e` `gate-full --base`
+propagation fix accepted the runtime shape, safety, documentation, targeted
+tests, and live acceptance probe, but rejected the change because no committed
+test reads the shipped `run-gate-project/run-gate.toml`; all existing tests use
+synthetic conjunction TOML. The sidecar remains isolated for that proof repair
+and is not merged into `main`. RG-59 itself is already implemented on the
+checkpointed P4 branch (`b5e4a9c6`, with subsequent false-positive and exit
+status repairs), so its redundant sidecar was stopped and removed.
