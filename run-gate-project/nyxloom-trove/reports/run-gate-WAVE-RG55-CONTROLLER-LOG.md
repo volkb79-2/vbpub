@@ -2383,3 +2383,13 @@ but 156 remain explicitly `budget_exceeded` placeholders alongside 316 killed
 and 12 survived candidates. Therefore P6 has no active container now, but its
 r2 evidence is not accepted as fully judged; a true `--resume` mutation pass
 is still required. P1 remains the sole active mutation container.
+
+### RW-193 — 2026-09-14 22:09:59Z — P6 true mutation resume relaunched
+
+After P6's placeholder-only rejudge stopped, host memory PSI was
+`full avg10=0.03` with one active mutation container. The unchanged P6 judged
+tree `0426fd15` was clean and resumed through its repository `run-gate.py r2`
+resume path; its exact container is
+`run-gate-vbpub-r2-1915324-1789423800`, immediately updated to 3 CPUs. P1 and
+P6 now occupy the two allowed mutation slots; no third mutation launch is
+permitted until one terminates.
