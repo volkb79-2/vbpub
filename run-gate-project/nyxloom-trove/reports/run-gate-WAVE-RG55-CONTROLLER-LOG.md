@@ -2016,3 +2016,15 @@ synthetic conjunction TOML. The sidecar remains isolated for that proof repair
 and is not merged into `main`. RG-59 itself is already implemented on the
 checkpointed P4 branch (`b5e4a9c6`, with subsequent false-positive and exit
 status repairs), so its redundant sidecar was stopped and removed.
+
+### RW-157 — 2026-09-14 09:30:05Z — B096 authoritative gate is red in pre-existing P25 qualification
+
+The authoritative `assay/run-gate.py tester-unified` run on B096 commit
+`51d9701e` passed wheel installation, attestation, schema hard-cut checks,
+the 110-test verdict phase, and the self-hosted tester lane, but failed P25's
+`declared-base-as-tag` qualification with
+`FAIL/COMMAND_FAILED`. The disposable scenario creates a tag on its baseline,
+then the assay snapshot-side check appears unable to resolve that symbolic ref
+after snapshot materialization. B096 is not merged. A fresh Luna xhigh repair
+implementer is dispatched from `assay-B096-BRIEF-2.md`; this is a real gate
+failure, not waived evidence.
