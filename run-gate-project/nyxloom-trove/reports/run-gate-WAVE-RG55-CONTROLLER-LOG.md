@@ -1926,3 +1926,17 @@ for the run, and restores its branch afterward. A corrected P4 watcher PID
 `675036` will admit only after both supervisors emit their PASS markers; it
 normalizes absent counters to zero and is currently parked. No mutation run
 has been restarted or duplicated.
+
+### RW-149 — 2026-09-14 07:49:30Z — triage release-log failure and operator backlog edit
+
+Read-only inspection of `cmru.release.log` confirms the prior release
+transaction completed its package build, required gate, promotion, and
+publication; its final local-main synchronization warning was caused by
+unstaged caller-checkout changes (`error: cannot rebase: You have unstaged
+changes`). The CMRU repair branch `b1150e6d` has the corresponding dirty-main
+preservation and explicit sync-outcome implementation, tests, documentation,
+and final adversarial acceptance; its registered full gate remains queued
+behind the two active mutation containers. The operator's dirty
+`KNOWN_ISSUES_TODO_BACKLOG.md` addendum records a further RG-45 timeout
+observation, not a new RG-55 item; it is preserved byte-for-byte and is not
+staged or committed.
