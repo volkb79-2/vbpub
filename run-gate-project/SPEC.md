@@ -1650,8 +1650,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   1).** run-gate NEVER depends on the daemon being present: every lane
   still gets a profile — "daemon" (precise, DAMON hot-set included) when
   the daemon answers, "basic" (in-lane cgroup sampling, container/exec
-  lanes only) or "rusage" (`getrusage`-based process accounting,
-  bare-host lanes only, RG-57/`R-43i`) when it does not — and no profile
+  lanes only) or "rusage" (`os.wait4()` accounting for the bare-host lane's
+  own child, with `ru_maxrss * 1024` converting Linux KiB to bytes, and no
+  cgroup/pressure/DAMON/events data; bare-host lanes only, RG-57/`R-43i`)
+  when it does not — and no profile
   at all only when profiling is disabled outright. A profile never
   changes a lane's verdict (`R-04`/`R-36h`'s rule, one more place it
   applies).

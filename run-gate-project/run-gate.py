@@ -2069,7 +2069,7 @@ def _self_rss_bytes() -> int | None:
 
 # RG-57/RW-27b: the schema-1 Summary's non-rusage sections, built once so
 # `finish_bare_host_profiling`'s rusage branch does not hand-roll four
-# separate all-null dicts inline. Every leaf here is a fact getrusage()
+# separate all-null dicts inline. Every leaf here is a fact wait4()
 # structurally cannot supply (contract Sec 1.7: absent means unknown, never
 # fabricated) -- `pressure`/`faults`/`events`/`host`/`pids`/`damon` are all
 # session- or cgroup-scoped facts a wait4()-based accounting call has no way
@@ -2115,8 +2115,8 @@ def finish_bare_host_profiling(state: dict, ru,
     contract's `scope` enum (`"container"|"container-shared"`) describes a
     CGROUP relationship, and rusage measures via `wait4()`/process
     accounting, never a cgroup read at all — no contract value is honest
-    here, and the handoff's own "everything getrusage cannot give is null"
-    rule extends naturally to a fact (cgroup scope) getrusage structurally
+    here, and the handoff's own "everything wait4 cannot give is null"
+    rule extends naturally to a fact (cgroup scope) wait4 structurally
     cannot supply. `memory.peak_bytes` is `ru.ru_maxrss * 1024` (Linux
     reports KiB) — the lane's own child's peak RSS (`source:
     "rusage-maxrss"` discloses exactly that caveat downstream, in
@@ -7705,10 +7705,17 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # daemon path does no per-tick work (RW-12) and profiling-off ticks
     # never, so both simply block until the process exits, exactly as
     # `subprocess.run(argv).returncode` did before this rewrite.
-    basic_active = profiler_state["mode"] == "basic"
-    tick = PROFILE_SAMPLE_SECONDS if basic_active else None
-    proc = subprocess.Popen(argv)
+    # RG-60: the cleanup boundary MUST include Popen itself. A synchronous
+    # spawn failure is a lane-execution failure, but the record written above
+    # still belongs to this invocation and must be cleared. If Popen succeeds
+    # and this client is killed externally, Python never reaches this finally
+    # and the record survives for reconciliation (the required client-death
+    # behavior).
+    proc = None
     try:
+        basic_active = profiler_state["mode"] == "basic"
+        tick = PROFILE_SAMPLE_SECONDS if basic_active else None
+        proc = subprocess.Popen(argv)
         while True:
             try:
                 code = proc.wait(timeout=tick)
@@ -7747,21 +7754,23 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 run_record["profile_error"] = \
                     f"profiling cleanup crashed unexpectedly: {exc}"
                 run_record.setdefault("profile_ref", None)
-        # S10 (round-1 review): Ctrl-C on an exec lane left the `docker exec`
-        # CLIENT process (this `proc`) running after the base's plain
-        # `subprocess.run(argv)` would have killed and reaped it on
-        # interrupt — the inner container process is unaffected either way
-        # (this only cleans up run-gate's own client-side handle). A no-op
-        # when `proc` already exited normally (`Popen.kill()`/`.wait()` on an
-        # already-reaped process are no-ops in stdlib).
-        proc.kill()
-        proc.wait()
-        # RG-60/RW-1: cleared in the SAME finally that just finished
-        # profiling, mirroring run_container_lane's own rule (the record's
-        # two facts — a session may exist, this client is watching it —
-        # stop being true at the same instant here too, even though there
-        # is no container of run-gate's own to remove alongside it).
-        clear_inflight_record(project_dir, lane_name)
+        try:
+            if proc is not None:
+                # S10 (round-1 review): Ctrl-C on an exec lane left the
+                # `docker exec` CLIENT process (this `proc`) running after
+                # the base's plain `subprocess.run(argv)` would have killed
+                # and reaped it on interrupt — the inner container process is
+                # unaffected either way. A no-op when `proc` already exited
+                # normally (`Popen.kill()`/`.wait()` on an already-reaped
+                # process are no-ops in stdlib).
+                proc.kill()
+                proc.wait()
+        finally:
+            # RG-60/RW-1: clear in the OUTERMOST finally, even when Popen
+            # raises synchronously or profiling cleanup itself fails. When a
+            # child exists and this client is killed externally, this finally
+            # is never entered, so the record remains for reconciliation.
+            clear_inflight_record(project_dir, lane_name)
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 
@@ -7872,7 +7881,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # as a plain `subprocess.run(argv)` raising would (a lane-execution
     # failure, not a profiling one, out of R-36h's scope). Only the
     # `wait4()` bracket AFTER the child is already running is guarded
-    # (R-36h: "OR the getrusage calls" extends to wait4 now): an ordinary
+    # (R-36h's resource-accounting guard extends to wait4 now): an ordinary
     # `Exception` there (unreachable in practice -- fixed, valid arguments
     # -- but this promise is "never", not "almost never") degrades to `ru`
     # staying `None`, which `finish_bare_host_profiling`'s own "attempted

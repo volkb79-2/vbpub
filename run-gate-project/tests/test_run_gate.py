@@ -14663,9 +14663,10 @@ class TestAwaitContainerProfilingWiring:
 class TestBareHostProfilingWiring:
     """RG-57/RW-27b: a bare-host lane IS profiled once `[profile]` is
     enabled -- the daemon path (self container id + token, scope ALWAYS
-    `container-shared`) when a daemon is reachable, coarse `getrusage
-    (RUSAGE_CHILDREN)` accounting (`method: "rusage"`, NEVER a
-    `BasicSampler` -- RW-27b, explicit and deliberate) when it is not."""
+    `container-shared`) when a daemon is reachable, coarse `os.wait4()`
+    accounting for the lane's own child (`ru_maxrss * 1024`, method
+    `"rusage"`, with no cgroup/pressure/DAMON data and NEVER a `BasicSampler`
+    -- RW-27b, explicit and deliberate) when it is not."""
 
     def _config(self):
         return """\
@@ -14903,7 +14904,7 @@ class TestBareHostProfilingWiring:
         # NeverRaisesEndToEnd plants one in ProfilerClient._ctl for the
         # container/exec paths. Unlike that class's assertions, this
         # degrades to a STILL-VALID rusage profile (the crash only means no
-        # daemon target was ever found -- the getrusage bracket around the
+        # daemon target was ever found -- the wait4 accounting around the
         # lane's own child runs regardless and succeeds), so the disclosed
         # WARNING is the proof here, not a null record.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
@@ -14923,10 +14924,10 @@ class TestBareHostProfilingWiring:
         assert latest["resources"]["method"] == "rusage"
         assert latest["profile_error"] is None
 
-    def test_getrusage_raising_never_aborts_the_lane(self, tmp_path, monkeypatch):
+    def test_wait4_raising_never_aborts_the_lane(self, tmp_path, monkeypatch):
         # R-36h's "OR the wait4 calls" clause (RW-43/B1: the rusage path
-        # now reaps its own child via `os.wait4`, not `resource.getrusage`
-        # bracketed around a separately-launched `subprocess.run`) -- the
+        # now reaps its own child via `os.wait4`, not a before/after process
+        # accounting bracket around a separately-launched `subprocess.run`) -- the
         # `wait4()` bracket is guarded individually (never left to raise
         # through the surrounding try/finally), so a planted failure
         # degrades to `resources: None` -- the child is still reaped via a
@@ -15102,8 +15103,8 @@ class TestBareHostProfilingWiring:
         # R-36h/B1d: the OUTER guard around `finish_bare_host_profiling` +
         # `print_profile_warning` + `print_footprint_line` + the run
         # record's own resources/profile_error/profile_ref update --
-        # distinct from `test_getrusage_raising_never_aborts_the_lane`
-        # (which plants inside the getrusage bracket itself, still caught
+        # distinct from `test_wait4_raising_never_aborts_the_lane`
+        # (which plants inside the wait4 bracket itself, still caught
         # by the INNER try and still producing a valid degraded profile).
         # This plants directly in `finish_bare_host_profiling`, the kind of
         # "should never happen" internal crash the outer try/except exists
@@ -16064,6 +16065,34 @@ class TestExecLaneInflightRecord:
         assert seen["record"]["profile_session"] is None
         # Cleared in the SAME finally that finishes profiling.
         assert not run_gate.inflight_path(repo, "suite").exists()
+
+    def test_popen_failure_clears_record_and_reports_lane_failure(
+            self, tmp_path, monkeypatch):
+        """RG-60: a synchronous failure to spawn the exec client is still
+        reported to the caller, and cannot strand the record written before
+        the spawn attempt. This is distinct from an external client kill
+        after a child exists, where Python never reaches the finally and the
+        record must survive for reconciliation."""
+        profile_plan = {"enabled": False,
+                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "interval": "1s", "damon": True, "source": "test",
+                        "token": None, "disabled_reason": "disabled"}
+
+        real_popen = run_gate.subprocess.Popen
+
+        def _boom(argv, *args, **kwargs):
+            if len(argv) > 1 and argv[1] == "exec":
+                assert run_gate.inflight_path(
+                    tmp_path / "repo", "suite").exists()
+                raise OSError("planted: docker exec spawn failed")
+            return real_popen(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _boom)
+        with pytest.raises(OSError, match="planted: docker exec spawn failed"):
+            self._exec_lane_call(tmp_path, monkeypatch, ["true"], {},
+                                 profile_plan)
+
+        assert not run_gate.inflight_path(tmp_path / "repo", "suite").exists()
 
     def test_profile_session_recorded_only_on_the_daemon_path(
             self, tmp_path, monkeypatch):

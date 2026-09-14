@@ -57,8 +57,10 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 6. **Profiling (RG-55/RG-57) needs nothing from a consumer to be SAFE, but
    one thing to be PRECISE.** run-gate profiles EVERY lane kind — container,
    exec, AND bare-host (RG-57) — with no consumer action at all: a coarse
-   in-lane sample (cgroup-based for container/exec lanes, `getrusage`-based
-   for bare-host, RG-57) when no daemon answers, every time, unless
+   in-lane sample (cgroup-based for container/exec lanes; for bare-host,
+   `os.wait4()` reaps the lane's own child and records `ru_maxrss * 1024`
+   in bytes, with no cgroup/pressure/DAMON/events data, RG-57) when no daemon
+   answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
    path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
    is host infrastructure, started once from the vbpub checkout** — `cd

@@ -4386,12 +4386,11 @@ mechanism exec-mode already relies on. The reported cgroup numbers
 `container-shared` scope already carries for exec lanes, not a new one.
 
 **Alternative for hosts with no daemon reachable at all:**
-`resource.getrusage(RUSAGE_CHILDREN)` read immediately after `wait()`,
-recorded as `method: "rusage"` in the summary (`maxrss` = the largest
-single child's peak, not a sum; `ru_utime`/`ru_stime` = exact CPU seconds
-for that child) — coarser than the daemon path (no PSI, no DAMON, no
-sampling series) but requires nothing beyond the stdlib and works even
-with the daemon down.
+`os.wait4()` on the lane's own child, recorded as `method: "rusage"` in the
+summary (`ru_maxrss * 1024` converts Linux KiB to bytes; `ru_utime` and
+`ru_stime` are that child's exact CPU seconds) — coarser than the daemon path
+(no cgroup, PSI, DAMON, or sampling series) but requires nothing beyond the
+stdlib and works even with the daemon down.
 
 Conjunction lanes stay unprofiled by design either way (RG-55 plan §3.1:
 "members record their own"); this entry is about the leaf `bare-host`
@@ -4403,21 +4402,22 @@ lane, not the conjunction wrapping it.
   assert `ctl start` is called with `--target containerid:<devcontainer id>
   --scope container-shared --token <the exported token>` and the returned
   summary is stored exactly as `container-shared` numbers are today.
-- The daemon-absent path: assert `getrusage(RUSAGE_CHILDREN)` deltas
-  (before/after wait) become a `method: "rusage"` summary with the correct
-  key subset (no `damon`, no `host.slice`, no `pressure` beyond what
-  `getrusage` cannot provide — i.e. `null`, never fabricated).
+- The daemon-absent path: assert `os.wait4()` on the lane's own child becomes a
+  `method: "rusage"` summary with `ru_maxrss * 1024` bytes and the correct
+  key subset (no `damon`, `host.slice`, cgroup, or pressure data — i.e.
+  `null`, never fabricated).
 
 ### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `c37b6e94`), SPEC
 `R-43i`
 
 Both halves shipped as filed (RW-27b): daemon path via self container id +
 token, scope always `container-shared`, disclosed DEVCONTAINER-WIDE;
-daemon-absent path is `resource.getrusage(RUSAGE_CHILDREN)`,
-`method: "rusage"`, `memory.source: "rusage-maxrss"`, `scope: null` (a
-design decision — rusage measures via `wait4()`, not a cgroup read, so no
-contract `scope` value is honest), everything else `getrusage` cannot
-supply left `null`, NEVER falls back to a `BasicSampler` on this path.
+daemon-absent path is `os.wait4()` on the lane's own child,
+`method: "rusage"`, `memory.source: "rusage-maxrss"`,
+`memory.peak_bytes = ru_maxrss * 1024`, `scope: null` (a design decision —
+rusage measures via `wait4()`, not a cgroup read, so no contract `scope` value
+is honest), everything else `wait4()` cannot supply left `null`, NEVER falls
+back to a `BasicSampler` on this path.
 `RESOURCE_SERIES_GETTERS`/`series_stats`/`_lane_stats`/
 `build_footprint_manifest` needed zero code changes; `build_footprint_
 manifest` gained one new `source` key, disclosed by `footprint`/`doctor`
