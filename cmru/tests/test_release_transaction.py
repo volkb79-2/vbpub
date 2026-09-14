@@ -1593,6 +1593,71 @@ def test_sync_local_main_rebases_local_only_commits_instead_of_failing():
         assert ahead >= 1
 
 
+@pytest.mark.parametrize("git_outcome", ["runtime-error", "empty"])
+def test_git_path_exists_reports_unreadable_git_path(monkeypatch, tmp_path, git_outcome):
+    if git_outcome == "runtime-error":
+        def failing_git(*_args, **_kwargs):
+            raise RuntimeError("git metadata unavailable")
+
+        monkeypatch.setattr(transaction, "_git", failing_git)
+    else:
+        monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "")
+
+    assert transaction._git_path_exists(tmp_path, "rebase-merge") is None
+
+
+def test_git_path_exists_resolves_relative_git_path_against_repository(monkeypatch, tmp_path):
+    state = tmp_path / "metadata" / "rebase-merge"
+    state.parent.mkdir()
+    state.touch()
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: "metadata/rebase-merge")
+
+    assert transaction._git_path_exists(tmp_path, "rebase-merge") is True
+
+
+def test_git_path_exists_reports_oserror_without_guessing(monkeypatch, tmp_path):
+    state = tmp_path / "rebase-merge"
+    monkeypatch.setattr(transaction, "_git", lambda *_args, **_kwargs: str(state))
+
+    def unreadable(_path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(type(state), "exists", unreadable)
+
+    assert transaction._git_path_exists(tmp_path, "rebase-merge") is None
+
+
+def test_rebase_in_progress_is_unknown_when_either_layout_cannot_be_inspected(
+    monkeypatch, tmp_path,
+):
+    observations = iter([False, None])
+    monkeypatch.setattr(
+        transaction, "_git_path_exists", lambda *_args, **_kwargs: next(observations),
+    )
+
+    assert transaction._rebase_in_progress(tmp_path) is None
+
+
+def test_sync_local_main_refuses_clean_checkout_with_existing_rebase(monkeypatch):
+    with _OriginAndClone() as h:
+        monkeypatch.setattr(transaction, "_rebase_in_progress", lambda _root: True)
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "a rebase is already in progress" in result.reason
+        assert "no new rebase or abort was attempted" in result.reason
+        assert not any(argv[1:2] == ["rebase"] for argv in calls)
+
+
 def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
     """A dirty caller must not let cleanup invoke rebase or rebase-abort."""
     with _OriginAndClone() as h:
@@ -1701,6 +1766,84 @@ def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_
         assert _git("status", "--porcelain", cwd=h.repo_root) == ""
 
 
+def test_sync_local_main_reports_indeterminate_state_when_rebase_state_is_unknown(monkeypatch):
+    with _OriginAndClone() as h:
+        (h.repo_root / "local.txt").write_text("local\n")
+        _git("add", "local.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local work", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "remote.txt").write_text("remote\n")
+        _git("add", "remote.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        hook = h.repo_root / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\nexit 42\n")
+        hook.chmod(0o755)
+        states = iter([False, None])
+        monkeypatch.setattr(
+            transaction, "_rebase_in_progress", lambda _root: next(states),
+        )
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "conflict state could not be determined" in result.reason
+        assert "cause is undetermined" in result.reason
+        assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
+
+
+def test_sync_local_main_reports_indeterminate_state_when_ls_files_cannot_be_inspected(
+    monkeypatch,
+):
+    with _OriginAndClone() as h:
+        (h.repo_root / "local.txt").write_text("local\n")
+        _git("add", "local.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local work", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "remote.txt").write_text("remote\n")
+        _git("add", "remote.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        hook = h.repo_root / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\nexit 42\n")
+        hook.chmod(0o755)
+        real_git = transaction._git
+
+        def failing_ls_files(repo_root, *args, **kwargs):
+            if args == ("ls-files", "-u"):
+                raise RuntimeError("index inspection unavailable")
+            return real_git(repo_root, *args, **kwargs)
+
+        monkeypatch.setattr(transaction, "_git", failing_ls_files)
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "conflict state could not be determined" in result.reason
+        assert "local main was not claimed to be synchronized" in result.reason
+        assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
+
+
 def test_sync_local_main_aborts_cleanly_on_real_conflict():
     with _OriginAndClone() as h:
         (h.repo_root / "README.md").write_text("local edit\n")
@@ -1722,6 +1865,77 @@ def test_sync_local_main_aborts_cleanly_on_real_conflict():
         assert "dirty" not in reason
 
 
+def test_sync_local_main_reports_conflict_when_abort_fails(monkeypatch):
+    with _OriginAndClone() as h:
+        (h.repo_root / "README.md").write_text("local edit\n")
+        _git("add", "README.md", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local edit to README", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "README.md").write_text("conflicting release edit\n")
+        _git("add", "README.md", cwd=other)
+        _git("commit", "-q", "-m", "conflicting release edit", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fail_abort(argv, *args, **kwargs):
+            calls.append(list(argv))
+            if list(argv) == ["git", "rebase", "--abort"]:
+                return SimpleNamespace(returncode=1)
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", fail_abort)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "genuine conflict" in result.reason
+        assert "automatic rebase cleanup failed" in result.reason
+        assert "was aborted" not in result.reason
+        assert ["git", "rebase", "--abort"] in calls
+
+
+def test_sync_local_main_reports_active_non_conflict_when_abort_fails(monkeypatch):
+    with _OriginAndClone() as h:
+        (h.repo_root / "local.txt").write_text("local\n")
+        _git("add", "local.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local work", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "remote.txt").write_text("remote\n")
+        _git("add", "remote.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        hook = h.repo_root / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\nexit 42\n")
+        hook.chmod(0o755)
+        states = iter([False, True])
+        monkeypatch.setattr(
+            transaction, "_rebase_in_progress", lambda _root: next(states),
+        )
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fail_abort(argv, *args, **kwargs):
+            calls.append(list(argv))
+            if list(argv) == ["git", "rebase", "--abort"]:
+                return SimpleNamespace(returncode=1)
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", fail_abort)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "without an established content conflict" in result.reason
+        assert "in-progress state could not be aborted" in result.reason
+        assert "genuine conflict" not in result.reason
+        assert ["git", "rebase", "--abort"] in calls
+
+
 def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():
     with _OriginAndClone() as h:
         _git("branch", "extra-main-commit", cwd=h.repo_root)
@@ -1740,6 +1954,37 @@ def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
         assert transaction.sync_local_main(h.repo_root) is False
+        assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
+
+
+def test_sync_local_main_reports_failure_to_update_non_current_main(monkeypatch):
+    with _OriginAndClone() as h:
+        _git("checkout", "-q", "-b", "other-branch", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "new.txt").write_text("remote\n")
+        _git("add", "new.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+        stale_main = _git("rev-parse", "main", cwd=h.repo_root)
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fail_branch_update(argv, *args, **kwargs):
+            calls.append(list(argv))
+            if list(argv) == ["git", "branch", "-f", "main", "origin/main"]:
+                return SimpleNamespace(returncode=1)
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", fail_branch_update)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "updating the non-current local main ref failed" in result.reason
+        assert "left untouched" in result.reason
+        assert ["git", "branch", "-f", "main", "origin/main"] in calls
         assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
 
 
