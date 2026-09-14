@@ -2339,3 +2339,12 @@ repository `run-gate.py r2`; its exact container is
 `run-gate-vbpub-r2-1804772-1789419205`, immediately updated to 3 CPUs. P6's
 rejudge remains the other and only mutation lane. The P1 supervisor records
 the child exit and restores the branch only after the verdict is written.
+
+### RW-188 — 2026-09-14 21:34:02Z — merged-assay sidecar review dispatched
+
+A fresh Luna xhigh adversarial reviewer was dispatched in an isolated worktree
+against the merged assay lineage, covering B092/B098/B096/B097 and the three
+user-facing documents. It is limited to serial targeted checks and live probes
+under the PSI gate while P1 and P6 continue asynchronously; it may commit a
+red-first product fix plus evidence, or an ACCEPT report. It must not merge,
+release, touch dstdns, or alter operator-owned files.
