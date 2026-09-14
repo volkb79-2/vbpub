@@ -2112,3 +2112,13 @@ after two queued prompts. It was explicitly retired, and a fresh Luna xhigh
 successor was dispatched on clean tip `84baffb4` with a bounded reproduce,
 repair-or-BRIEF checkpoint contract. P1 and P6 mutation containers remain
 untouched.
+
+### RW-167 — 2026-09-14 12:09:43Z — narrow final B096 repair dispatch
+
+The second fresh Luna xhigh B096 repair worker also remained alive for more
+than ten minutes without a process, file change, or checkpoint after the
+focused diagnostic ended. It was explicitly retired. A final fresh Luna
+xhigh worker was dispatched with a narrower contract: capture the exact P25
+artifact/reason, make the smallest principled repair with focused tests, or
+commit a BRIEF immediately; the full gate is deferred until such a repair is
+committed. P1/P6 mutation containers remain untouched.
