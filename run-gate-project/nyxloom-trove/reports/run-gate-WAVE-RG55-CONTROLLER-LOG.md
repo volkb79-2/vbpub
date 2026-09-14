@@ -1764,3 +1764,13 @@ collection. No merge or release is authorized. Fresh Luna xhigh implementer
 Poincare is repairing this with same-process/coverage-aware behavioral oracles
 on `cmru-release-dirty-sync`; a new final review and complete gate are required
 after its commit.
+
+### RW-133 — 2026-09-14 04:28:59Z — launch and cap P6 fresh r2 in the second mutation slot
+
+As PSI reached `full avg10=3.42%`, the queued P6 watcher launched its fresh
+mutation run in exact container `run-gate-vbpub-r2-441342-1789360023` against
+quiet tree `0426fd15675997f97febb2dfaf2e219e183f8ea8`. The controller applied
+and verified `NanoCpus=3000000000` immediately. P1's
+`run-gate-vbpub-r2-435521-1789359672` remains capped at 3 CPUs; these are now
+the two active mutation lanes estate-wide. No further mutation container may
+launch until one of these reaches a terminal verdict.
