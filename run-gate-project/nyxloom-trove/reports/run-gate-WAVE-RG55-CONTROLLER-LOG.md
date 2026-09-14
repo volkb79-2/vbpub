@@ -1858,3 +1858,14 @@ fresh memory-PSI check, runs with `nice -n 19 ionice -c 3`, records
 `ASSAY_B097_R1_EXIT`, and caps any exact `run-gate-vbpub-*` container it sees
 with zero CPUs to 3 CPUs. Its first check read `full avg10=5.93%`, so it has
 not launched yet. P1 and P6 remain the only active mutation lanes.
+
+### RW-143 — 2026-09-14 05:23:31Z — B097 R1 admitted on a detached new-session watcher
+
+The earlier B097 queue shell exited before admission, so it is not treated as
+a run. A corrected `setsid` watcher is now confirmed reparented to PID 1 as
+PID `534923` in `/tmp/rg55-assay-b097-r1-watch.log`; it admitted the exact
+clean tip `0303a24d` after reading `full avg10=0.15%` and launched
+`./run-gate.py --base main assay-r1` (run PID `534927`). The assay R1 process
+is active, no additional mutation container was created, and P1/P6 remain the
+only active mutation lanes. The watcher records its exit marker and caps any
+exact gate container it observes.
