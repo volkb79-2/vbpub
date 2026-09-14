@@ -1889,3 +1889,14 @@ reports both required canaries (`median-not-mean` and
 no verdict JSON artifact by lane design; the wrapper and canary output are the
 authoritative evidence. B097's R1 and R3 non-mutation gates are now green;
 its registered full gate remains required before merge.
+
+### RW-146 — 2026-09-14 05:29:22Z — keep exact mutation-container caps enforced asynchronously
+
+Because the earlier short-lived cap shell did not survive the terminal
+session, the controller started a detached new-session cap watcher PID
+`556604`, reparented to PID 1, with log `/tmp/rg55-cap-watch.log`. It launches
+nothing; every five seconds it inspects the exact active
+`run-gate-vbpub-r2-*` names and applies `docker update --cpus=3` only when an
+exact container reports zero CPUs. It exits after P1, P6, and the CMRU gate
+watcher have all ended and no r2 container remains. Current P1/P6 caps are
+already 3 CPUs.
