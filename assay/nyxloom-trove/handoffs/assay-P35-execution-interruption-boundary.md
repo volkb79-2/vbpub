@@ -1,6 +1,6 @@
 ---
 schema_version: 1
-id: assay-P34-execution-interruption-boundary
+id: assay-P35-execution-interruption-boundary
 project: assay
 title: "An orchestrator interruption cannot become a functional assay result"
 tier: luna-high
@@ -42,12 +42,12 @@ escalate_if:
 mutexes: [merge-lane]
 ---
 
-# P34 — execution interruption boundary
+# P35 — execution interruption boundary
 
 ## Worktree and branch
 
-Work only in `/workspaces/vbpub/.worktrees/assay-P34-execution-interruption-boundary`
-on branch `feat/assay-P34-execution-interruption-boundary`. The companion
+Work only in `/workspaces/vbpub/.worktrees/assay-P35-execution-interruption-boundary`
+on branch `feat/assay-P35-execution-interruption-boundary`. The companion
 run-gate work is a separate package and must not be implemented by editing
 `/workspaces/vbpub/run-gate-project` from this worktree.
 
@@ -315,8 +315,11 @@ not dispatchable.
 
 This package does not alter RG-55 D-1..D-30, the existing `Outcome` exit-code
 numbers, B078's verified-complete report semantics, assay adapters, coverage
-parsers, or the mutation engine's current candidate buckets. It does not add a
-performance lane or infer host pressure. It does not touch dstdns,
+parsers, or the mutation engine's current candidate buckets. Assay currently
+has no `performance-testing` lane vocabulary; this package adds none. A future
+performance lane needs its own closed config/product decision and must not be
+inferred from a functional assay lane. This package does not infer host
+pressure. It does not touch dstdns,
 run-gate-project files, or operator-owned dirty files.
 
 ## BLOCKED rule

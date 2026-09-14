@@ -9691,7 +9691,7 @@ but it cannot observe host PSI, the run-gate liveness watcher, or the outer
 container's termination cause. A post-hoc `resources.host.memory_full_stall_seconds`
 summary is disclosure/trend data, not proof that a particular execution was
 interrupted by pressure. The self-contained implementation packet is
-[`handoffs/assay-P34-execution-interruption-boundary.md`](handoffs/assay-P34-execution-interruption-boundary.md).
+[`handoffs/assay-P35-execution-interruption-boundary.md`](handoffs/assay-P35-execution-interruption-boundary.md).
 
 ### Contract to implement
 
@@ -9755,8 +9755,9 @@ assay; it must not reuse `LANE_TIMEOUT`, `CANDIDATE_HUNG`, or
 - run-gate writes the interruption receipt before every liveness/budget kill,
   fails closed if it cannot write it, and does not relabel a run from the
   final RG-55 profile summary alone;
-- an explicitly performance-testing lane is outside the functional assay
-  claim and is not silently converted into a functional result.
+- assay currently has no `performance-testing` lane vocabulary; this carve adds
+  none. A future performance lane needs its own closed config/product decision
+  and must not be inferred from a functional assay lane.
 
 ### Status and ownership
 
