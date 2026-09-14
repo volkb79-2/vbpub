@@ -1751,3 +1751,16 @@ tree, the old r2 evidence is invalid; a fresh `./run-gate.py r2` is queued
 behind PSI as watcher PID `439173`, log `/tmp/rg55-p6-r2-watch.log`. It will
 consume the second mutation slot only after PSI permits launch; P1 remains
 the first.
+
+### RW-132 — 2026-09-14 04:27:58Z — CMRU coverage gate fails on four new-path statements
+
+CMRU's registered gate stopped after its coverage sub-lane: `1770 passed,
+11 skipped`, but total line/branch coverage was `99.90%` against the required
+100%. The coverage JSON identifies only `cmru/src/cmru/transaction.py:1257,
+1258,1265,1266` and their five branches, all in the new non-conflict
+`abort_result` classification. The accepted real interrupted-rebase fixture
+executes in a child process, so those lines do not enter the parent coverage
+collection. No merge or release is authorized. Fresh Luna xhigh implementer
+Poincare is repairing this with same-process/coverage-aware behavioral oracles
+on `cmru-release-dirty-sync`; a new final review and complete gate are required
+after its commit.
