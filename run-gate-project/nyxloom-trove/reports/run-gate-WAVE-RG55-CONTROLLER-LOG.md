@@ -2208,3 +2208,15 @@ after five minutes without a report and still produced no filesystem artifact
 or response in the following minute. It was explicitly closed. No repository
 file, gate, daemon, or mutation state was changed; the final adversarial review
 will be performed fresh after P4's post-repair R2 and package gates are green.
+
+### RW-176 — 2026-09-14 13:16:26Z — queue the authoritative combined assay gate
+
+The accepted B092+B098 implementation is carried by the clean `assay-b097`
+tip `0303a24d`, together with B097's liveness identity work. A detached Luna-
+policy supervisor `/tmp/rg55-assay-b097-gate-supervisor.sh` now waits for
+memory PSI `full avg10 <= 5` and fewer than two exact `run-gate-vbpub-*`
+containers, then runs the authoritative `tester-unified` gate with independent
+exit markers. It has not launched because PSI is still above the admission
+threshold. This is a non-mutation assay gate and does not alter P1/P6's
+judged trees; no merge or release is authorized until its job status and assay
+verdict are both read separately.
