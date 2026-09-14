@@ -2523,3 +2523,24 @@ operator-facing diagnostics/docs/backlog evidence. Local and tester-unified
 coverage gates were reported green by the implementer. A fresh Luna xhigh
 adversarial reviewer was dispatched; no merge or release is authorized until
 that review accepts the marker state machine and cleanup semantics.
+
+### RW-205 — 2026-09-14 23:32:37Z — RG-56 verification remains NOT READY
+
+Dewey's same-reviewer fix verification accepted the repaired demand,
+host-fact, registry, manifest, PSI, and basic TOCTOU design, but found four
+blocking omissions: D-20 placement/enforcement for bare-host and fallback
+exec paths plus manifest-derived Docker caps; owner/lane/project/worktree/
+commit/profiler-token/scope binding on `start`; checked aggregate reservation
+overflow; and current-loader/wire integration for `admission_wait` and the
+exact gates-unit field. The findings were sent back to the same Luna xhigh
+repair implementer. RG-56 remains design-only and the two-container cap stays
+binding.
+
+### RW-206 — 2026-09-14 23:32:37Z — P35 repair sent for same-reviewer verification
+
+P35's corrected design checkpoint `40b2106e3efe91c718b8555c30d38957a4040f5f`
+adds the P36 companion producer handoff and resolves the prior eight blockers
+without implementing product code. It explicitly keeps current RG-55
+interruption handling report-only until the pre-kill receipt capability is
+accepted. The same Helmholtz Luna xhigh reviewer was sent the repair for
+fix-verification; P35 is not accepted or dispatchable yet.
