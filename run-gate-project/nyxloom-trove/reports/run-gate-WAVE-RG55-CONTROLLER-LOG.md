@@ -1802,3 +1802,11 @@ separate step. The controller discarded the prior exit-2 refusal. P4's
 non-delegating `assay-r3` canary is now queued behind PSI as watcher PID
 `481080`, log `/tmp/rg55-p4-final-r3-watch.log`; it is intentionally invoked
 without `--base`, which that lane refuses by contract.
+
+### RW-137 — 2026-09-14 04:41:35Z — P4 r3 canary passes
+
+P4's assay-r3 completed under the PSI gate with exit 0. The canary reported
+both expected rejection probes (`median-not-mean` and
+`median-not-mean-series-stats`) as OK, with `2 rejected, 0 survived`. The
+non-mutation P4 gates are therefore green through r3; assay-r2 remains the
+last required P4 gate after survivor triage and a quiet judged tip.
