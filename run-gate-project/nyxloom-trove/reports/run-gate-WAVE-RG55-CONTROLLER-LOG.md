@@ -1829,3 +1829,11 @@ report is committed at `b1150e6dd05d279989264ae2eb4486d674cf2076`; it records
 the real-hook live probes, full tests, and 100% coverage. CMRU's complete
 registered `./run-gate.py gate` is queued behind the two active P1/P6 mutation
 containers and the PSI gate; no pre-review evidence is reused.
+
+### RW-140 — 2026-09-14 04:56:49Z — park CMRU gate until a mutation slot is free
+
+The CMRU complete-gate watcher is PID `511432`, log
+`/tmp/rg55-cmru-final-gate-watch.log`. It checks host memory PSI and the exact
+active P1/P6 `r2` container count before invoking `./run-gate.py gate`; the
+initial check observed PSI `4.44%` and two active mutation containers, so it
+remains parked. Its terminal `RUN_GATE_EXIT` marker will be read separately.
