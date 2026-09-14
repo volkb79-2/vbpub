@@ -2524,6 +2524,17 @@ coverage gates were reported green by the implementer. A fresh Luna xhigh
 adversarial reviewer was dispatched; no merge or release is authorized until
 that review accepts the marker state machine and cleanup semantics.
 
+### RW-207 — 2026-09-14 23:40:39Z — CMRU review NOT READY on push/marker crash window
+
+Fresh Luna xhigh review of `028a26667b155e8330e72a73134413ca44fbefe7`
+returned NOT READY. The reviewer reproduced that a real remote promotion can
+succeed and then fail while writing `.promotion-complete`; the parent would
+then classify it as pre-promotion and skip the required revert. The review
+also requires README/DESIGN-GUIDE/CONSUMERS synchronization and parent-level
+regression coverage for this boundary and for per-project marker isolation.
+The BuildKit OOM/EOF diagnosis is accepted as infrastructure, but the CMRU
+repair remains unmerged pending a same-reviewer fix round.
+
 ### RW-205 — 2026-09-14 23:32:37Z — RG-56 verification remains NOT READY
 
 Dewey's same-reviewer fix verification accepted the repaired demand,
