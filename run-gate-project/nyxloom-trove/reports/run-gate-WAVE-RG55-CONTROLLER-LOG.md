@@ -1837,3 +1837,14 @@ The CMRU complete-gate watcher is PID `511432`, log
 active P1/P6 `r2` container count before invoking `./run-gate.py gate`; the
 initial check observed PSI `4.44%` and two active mutation containers, so it
 remains parked. Its terminal `RUN_GATE_EXIT` marker will be read separately.
+
+### RW-141 — 2026-09-14 05:13:48Z — mutation lanes remain live; preserve the queued gate
+
+The controller's fresh process, container, and progress check confirms P1's
+exact r2 run is active at 47/252 candidates and P6's exact r2 run is active at
+55/484. Both exact containers report `running`, `OOMKilled=false`, and
+`NanoCpus=3000000000`; their in-container pytest children are executing. No
+`RUN_GATE_EXIT` marker exists for either wrapper. The CMRU complete-gate watcher
+PID `511432` remains alive and correctly waits while two
+`run-gate-vbpub-r2-*` containers exist or memory PSI exceeds 5%. No judged tree
+was switched or committed, and no new lane was launched.
