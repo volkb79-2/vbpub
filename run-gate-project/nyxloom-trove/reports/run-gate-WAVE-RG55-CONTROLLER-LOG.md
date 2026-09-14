@@ -1086,3 +1086,488 @@ retained the artifact manifest under
 sync warning is caused only by the preserved operator backlog; the controller
 will merge the pushed release commit with `--no-ff`, install the exact wheel,
 and verify revision 41.
+
+### RW-71 — 2026-09-13 11:48:28Z — P4 merge-tip mutation gate is not evidence
+
+P4's final R2 invocation on merge tip `d4c57c1a` returned
+`INCONCLUSIVE/NO_MUTANTS`, not a green mutation result. Assay's B008
+first-parent merge resolution selected `b72cba31` as the comparison base,
+therefore the merge itself exposed no changed executable lines even though the
+P4 source diff exists. The controller rules this run invalid for the P4
+mutation claim and requires a resumed R2 on a non-merge P4 judged tree, with
+source identity checked against the final merge tip; the already-green R1/R3
+results remain separate final-tip evidence. This is a gate-procedure ruling,
+not a reopening of any settled product decision.
+
+### RW-72 — 2026-09-13 12:00:28Z — exact-tree non-merge assay judgment
+
+The P4 source comparison verified that the complete final source tree at
+`d4c57c1a` is represented by ephemeral non-merge commit `cd6780ed` (parent
+`fccba080`; identical tree), while the existing non-merge tip before the P2
+canary merge was missing four source lines. P4 R2 is therefore judged on
+`cd6780ed`, with its exact tree identity and `--request-base main` recorded in
+the report; the ephemeral commit is not a release or product-history commit.
+The final branch remains at `d4c57c1a` until the valid mutation evidence and
+final review are complete.
+
+### RW-73 — 2026-09-13 15:17:21Z — mutation campaigns completed; triage/resume required
+
+The resumed P4 mutation campaign on the exact non-merge synthetic tree
+completed 57 candidates with 43 killed and 14 survived. The fresh P1 campaign
+completed 208 candidates with 203 killed and 5 survived. The resumed P6
+campaign reached its lane budget after 484 candidates (368 killed, 40
+survived, 76 `budget_exceeded`), so it remains a BUDGET_EXCEEDED lane and must
+be resumed from the exact judged tree until every candidate is judged. The
+detached Luna implementer sessions expired at the platform usage limit after
+the campaigns; the controller may seed fresh Luna xhigh sessions now that the
+window is available. No package is merge-ready until survivor triage, final
+gates, and the fresh Sol xhigh review are complete.
+
+### RW-74 — 2026-09-13 15:31:32Z — P1 closeout evidence is ready for review
+
+Fresh Luna xhigh closeout completed P1 on branch `rg55-profiler-daemon` at
+`920231186fdfb81ea3d9e9adb2d0b57ed11ab6fd`. The five fresh-r2 survivors are
+all explicitly dispositioned (four behaviorally equivalent, and the prior
+summary oracle gap is killed by the focused test). Final `r0-r1` and `r3`
+both exited 0 with 100% line and branch coverage and 7/7 canaries rejected;
+D-15 safety was checked and the daemon is down. A fresh Sol xhigh review is
+required before this branch can merge.
+
+### RW-75 — 2026-09-13 15:34:08Z — Sol xhigh review dispatch not honored
+
+Two fresh review dispatches requested with model `gpt-5.6-sol` and
+`xhigh` reasoning identified themselves as GPT-5/Codex and refused to certify
+the review. Neither changed files or created a commit. The controller counts
+neither as a review round and will not merge P1 without a reviewer whose
+runtime identity is actually Sol xhigh; implementation and mutation work may
+continue meanwhile.
+
+### RW-76 — 2026-09-13 15:36:45Z — P4 survivor-oracle repair requires fresh judgment
+
+Fresh Luna xhigh triage committed P4's focused survivor tests and updated
+LOG/REPORT at `12e4e150`. The branch is clean and the previously surviving
+P4 mutants are now covered by explicit oracles; because the judged test tree
+changed, the controller requires a fresh R2 on this committed tree before
+review or merge.
+
+### RW-77 — 2026-09-13 16:58:01Z — continue P6 from ten remaining placeholders
+
+The first P6 resume after the handoff ended at exit 4 with cumulative counts
+484 candidates, 431 killed, 43 survived, and 10 `budget_exceeded`. It made
+progress through the 66-candidate remainder but did not judge the last ten;
+the exact container exited normally without OOM. The controller requires
+another PSI-gated `--resume` on the same judged tree until
+`budget_exceeded=0`. In parallel, P4's fresh R2 remains active after its
+triage commit.
+
+### RW-78 — 2026-09-13 17:05:40Z — P4 fresh judgment leaves one survivor
+
+P4's fresh R2 on the repaired tree completed normally with 57 candidates,
+56 killed, one survived (`run-gate.py:2065`, `LtE->Lt`), and zero
+budget/crashed candidates. The controller requires Luna xhigh disposition of
+that single survivor and, if it is an oracle gap, another exact-tree R2 before
+P4 review or merge.
+
+### RW-79 — 2026-09-13 17:14:39Z — Sol xhigh reviewer runtime unavailable again
+
+A fresh final-review dispatch for P1 was explicitly constrained to
+`gpt-5.6-sol` at xhigh. The returned runtime identified itself as GPT-5/Codex,
+refused the assignment, ran no probes, wrote no review, and created no commit.
+This is not a review round and does not satisfy the pre-merge reviewer gate;
+P1 remains merge-blocked until a genuine Sol xhigh reviewer completes the
+adversarial review.
+
+### RW-84 — 2026-09-13 18:39:47Z — Sol xhigh P4 reviewer runtime unavailable
+
+A fresh final-review dispatch for P4 was explicitly constrained to
+`gpt-5.6-sol` at xhigh. The returned runtime identified itself as Codex based
+on GPT-5, stopped immediately, ran no probes, wrote no review record, and
+issued no verdict. This is not a review round; P4 remains merge-blocked until
+a genuine Sol xhigh reviewer completes the adversarial review.
+
+### RW-80 — 2026-09-13 17:40:27Z — P6 resume advances but remains budget-incomplete
+
+The exact P6 resume container
+`run-gate-vbpub-r2-2892668-1789318878` exited 4 with `oom=false`. Its
+separately read cumulative verdict is 484 candidates: 436 killed, 43
+survived, 5 `budget_exceeded`, and 0 crashed. The lane remains unfinished;
+the controller requires another PSI-gated exact-tree resume until no budget
+placeholders remain.
+
+### RW-81 — 2026-09-13 17:43:26Z — P6 exact-tree resume relaunched
+
+After the RW-80 pass, the controller woke the Luna xhigh P6 implementer and
+confirmed a new exact-tree resume. Container
+`run-gate-vbpub-r2-3305136-1789321303` started at 17:41:46Z with
+`oom=false`, `NanoCpus=3000000000`, and `dev-background.slice`; its baseline
+was observed running. No detached-tree switch or commit is permitted until
+this resume exits.
+
+### RW-82 — 2026-09-13 18:16:44Z — P6 timeout mutants are deterministic
+
+The RW-81 P6 resume exited 4 with `oom=false` and left the same five
+`budget_exceeded` candidates: `lib/serve.py:610` `Or->And`, `:1461`
+`Is->IsNot`, `:1700` `Eq->NotEq`, `:1700` `And->Or`, and `:2034`
+`True->False`. The cumulative evidence remains 436 killed, 43 survived, 5
+budget, 0 crashed out of 484. Blind retries are paused; Luna xhigh must
+triage the causal hang and make a focused repair, if warranted, before a
+fresh judged-tree R2.
+
+### RW-83 — 2026-09-13 18:26:56Z — P4 fresh R2 is green
+
+P4's fresh exact-tree R2 completed normally on the repaired tree. The
+separately read progress/verdict records show 57 candidates, 57 killed, 0
+survived, 0 `budget_exceeded`, and 0 crashed; the assay process exited 0.
+P4 may proceed from the detached judged tree to its branch for final gates,
+but no detached-tree commit was made.
+
+### RW-85 — 2026-09-13 18:41:50Z — P6 fresh Luna successor for gate mechanics
+
+The prior P6 Luna session completed the causal triage but did not advance the
+remaining budget placeholders. It was TaskStopped before a successor was
+dispatched. A fresh Luna xhigh implementer was dispatched from committed
+BRIEF-10/LOG state to test the minimal mutation-argv fail-fast configuration
+(`pytest ... -x`) or reject it with evidence, then commit any justified
+non-production fix and rerun the exact judged tree. No reviewer, merge, or
+release was dispatched.
+
+### RW-86 — 2026-09-13 18:46:24Z — terminate stale orphaned pytest
+
+The controller found an unrelated orphaned non-mutation pytest process
+(`PID 2482699`, scratchpad cwd, age over two days, 0% CPU, waiting for a
+missing partner). It was not part of any live RG-55 lane. The controller
+terminated that exact process with SIGTERM and verified it was gone; no
+files or worktrees were changed.
+
+### RW-87 — 2026-09-13 18:52:05Z — checkpoint P6 successor and narrow the task
+
+The first fresh P6 Luna successor did not produce a shell/test result or
+commit after repeated wake/checkpoint messages, so it was TaskStopped before
+any mutation or source change. A second fresh Luna xhigh successor was
+dispatched from BRIEF-10 with a narrowed, bounded task: test whether adding
+pytest fail-fast (`-x`) to the assay mutation argv is the minimal honest fix
+for the five deterministic timeout mutants, commit only an evidence-backed
+config/record change, and wait for controller approval before any new R2.
+
+### RW-88 — 2026-09-13 18:58:43Z — approve fresh P6 R2 after fail-fast fix
+
+Luna xhigh committed P6's evidence-backed one-token assay configuration fix
+as `5c2134ed`: r2 now invokes `pytest tests -q -x`, matching the established
+full-gate command. Assay config tests (72 passed) and the focused project
+suite (103 passed, 6 skipped) are green; no production code changed. The
+controller approves exactly one fresh R2 on this new tree, with assay resume
+identity kept to the new judged tree and no commit while detached.
+
+### RW-89 — 2026-09-13 19:04:36Z — launch the approved P6 R2
+
+The approved fresh P6 R2 was launched from detached tree `5c2134ed` after the
+memory-PSI gate (`full avg10=1.35`). The exact container is
+`run-gate-vbpub-r2-3944182-1789326240`, running under `dev-background.slice`
+with `NanoCpus=3000000000`; no duplicate mutation lane was launched. The
+controller will read the wrapper exit marker and assay verdict separately.
+
+### RW-90 — 2026-09-13 19:09:47Z — Sol reviewer runtime unavailable again
+
+A fresh P1 final-review dispatch requested explicitly as Sol xhigh reported
+that its runtime identity could not be verified as exactly `gpt-5.6-sol` at
+`xhigh`; it stopped before repository inspection, probes, or modifications.
+This is not review evidence and P1 remains merge-blocked.
+
+### RW-91 — 2026-09-13 19:15:05Z — Sol reviewer runtime unavailable for P4
+
+A fresh P4 final-review dispatch requested explicitly as Sol xhigh exposed only
+a generic GPT-5 identity and could not verify `gpt-5.6-sol` at `xhigh`; it
+stopped before reading the handoff, inspecting the repository, probing, or
+writing a review. This is not review evidence and P4 remains merge-blocked.
+
+### RW-92 — 2026-09-13 22:14:41Z — fold assay B092 and B098 into the wave
+
+The operator authorized immediate implementation of assay backlog B092
+(explicit per-tree mutation identity exclusions) and B098 (complete the
+`mutation_pct` excluded-bucket documentation). The work is isolated to a new
+assay worktree and must not modify the active P6 judged tree or any other
+package. The implementation and its tests use Luna xhigh; Sol is reserved for
+an unsolvable Luna blocker. B092's public configuration, hash-identity
+compatibility, validation, docs, and regression oracles are part of the work,
+and B098 must retain the existing arithmetic while documenting `crashed`.
+
+### RW-93 — 2026-09-13 23:00:05Z — discard non-verdict B092+B098 review session
+
+The first fresh Luna xhigh adversarial reviewer was stopped after repeated
+completion prompts produced no report or verdict. It modified no product
+files; its partial evidence was 150 focused tests, 42 documentation checks,
+67 additional targeted tests, and passing live loader/digest probes, with the
+full serial suite interrupted at approximately 54%. Because no review report
+or verdict was issued, this does not consume a review round or provide merge
+evidence. A fresh Luna xhigh reviewer must be seeded from the same handoff;
+Sol remains reserved for an actually unsolvable Luna issue.
+
+### RW-94 — 2026-09-13 23:10:08Z — relaunch P6 asynchronously after budget checkpoint
+
+P6's first four-hour run ended with 260 killed, 34 survived, and 190
+budget-exceeded candidates, leaving 296/484 records judged. The controller
+confirmed the detached judged tree remained exactly `5c2134ed`, the prior
+inflight record was cleared, and memory PSI `full avg10=0.00` before launch.
+A fresh asynchronous resume was then started from
+`scripts/cgroup-profiler` with `--resume --progress` supplied by run-gate;
+the exact container is `run-gate-vbpub-r2-4167718-1789340985` under
+`dev-background.slice` with `NanoCpus=3000000000`. Its wrapper is detached
+with an explicit `RUN_GATE_EXIT` marker in `/tmp/rg55-p6-r2-resume-2.log`.
+The assay verdict and wrapper exit will be read separately when it finishes.
+
+### RW-95 — 2026-09-13 23:14:57Z — continue with independent assay B096
+
+The operator authorized continued progress while the long P6 mutation gate
+runs asynchronously. B096 is adopted as a small, independent assay change:
+derive the `--rejudge-outcome` CLI help's canonical bucket list from
+`MUTATION_BUCKETS` while retaining the CLI-only `error` alias for `crashed`.
+It is isolated in a successor assay worktree based on the accepted B092+B098
+tip; it must not modify the running B092 gate tree or the P6 judged tree. The
+implementation, tests, docs, and fresh adversarial review use Luna xhigh;
+Sol remains reserved for an actually unsolvable Luna issue.
+
+### RW-96 — 2026-09-13 23:33:43Z — dispatch independent assay B097
+
+While P6's mutation resume and the B092+B098 registered gate remain
+asynchronous, the controller opened assay B097 (P7 B6-b) in isolated worktree
+`assay-b097`, based on the B096 branch. The package covers pid and optional
+xdist-worker stamping, per-process event parsing, owner-only session-finish
+detection, and legacy-record compatibility; it must preserve B6-a's
+progressing-tail guard. The implementer is Luna xhigh, with focused tests,
+the three adopter-facing documents, backlog, CHANGES, and a report required.
+No mutation campaign, merge, release, or dstdns action is authorized by this
+ruling; a fresh Luna xhigh adversarial review is required before any merge.
+
+### RW-97 — 2026-09-13 23:34:58Z — triage operator RG-45 addendum
+
+The shared checkout contains an uncommitted operator-owned addendum under
+RG-45 documenting a distinct fixed-lane-budget timeout observation (dstdns
+P192, 714.67 seconds against a 600-second lane budget). A repository-wide
+search found no committed or worktree duplicate. It is already filed upstream
+in the run-gate backlog; this wave neither edits nor commits it, and no
+product decision is inferred from it.
+
+### RW-98 — 2026-09-13 23:38:34Z — cap an independently discovered mutation lane
+
+During the B096 gate launch, an unrelated exact container appeared:
+`run-gate-vbpub-session-extract-10141-1789342673`, running the old
+`session-extract-follow` mutation command under `dev-background.slice` with
+`NanoCpus=0`. It was not launched by this controller, but it is an active
+mutation lane on the shared host; the controller verified its exact command
+and applied `docker update --cpus=3` to that exact name. The estate now has
+two active mutation lanes (this lane and P6); no third mutation launch is
+authorized.
+
+### RW-99 — 2026-09-13 23:39:09Z — B096 accepted; combined assay gate running
+
+The fresh Luna xhigh B096 adversarial review returned ACCEPT with no ranked
+findings. Its report is being committed on `assay-b096`; the controller then
+started the required registered `tester-unified` gate from the quiet combined
+tip asynchronously. Exact gate container: `sweet_blackburn`, under
+`dev-background.slice`, `NanoCpus=3000000000`; it built wheel
+`assay-6.2.1.dev36+g2d80012a`. The gate is not yet a verdict: its terminal
+markers and exit status must be read separately before merge.
+
+### RW-100 — 2026-09-13 23:41:38Z — defer new launches under memory PSI
+
+The shared host's fresh `/proc/pressure/memory` reading reached
+`full avg10=14.75%`, above the wave's launch gate of 5%. Existing capped
+containers remain undisturbed, but no new test, gate, or mutation process may
+be launched until a fresh reading is at or below the threshold. B097 editing
+may continue; its implementer was explicitly told to defer PSI-gated tests.
+
+### RW-101 — 2026-09-13 23:56:25Z — B097 validation green; final review dispatched
+
+The B097 implementer committed `1daf6e62`; controller validation initially
+found and repaired one test-only missing `json` import in `a8ac0d5c`. The
+serial PSI-gated focused suite then passed 116 liveness tests, and the
+cross-document suite passed 42 tests. The review handoff was frozen in
+`b83b9941`, and a fresh Luna xhigh adversarial reviewer was dispatched against
+that exact tip. The B097 registered gate remains pending until review accepts;
+no merge or release is authorized by this ruling.
+
+### RW-104 — 2026-09-14 00:10:31Z — B097 review fix-verification
+
+The fresh B097 Luna xhigh review found no behavioral P0/P1/P2 defect but
+rejected the tip for one extra EOF blank line in the committed brief. The
+controller removed that single blank line, confirmed
+`git diff --check ee41553d..HEAD` clean, and committed the review report plus
+whitespace fix as `23b75167`. The same reviewer is resumed for fix-verification
+against that exact tip; no new review round or product repair is authorized
+unless it reports another finding.
+
+### RW-102 — 2026-09-14 00:04:58Z — B096 registered gate failed qualification
+
+The asynchronous B096 `tester-unified` gate passed its wheel-installed,
+attestation, verdict-v5, schema-successor, verdict-v11, judge-provenance, and
+self-hosted phases. Its existing Topos qualification then failed scenario
+`current-full-pass`: expected exit 0, got 1. The exact wrapper recorded
+`RUN_GATE_EXIT=1`; no B096 product source changed during the run. This is not
+merge evidence. The gate must be rerun from the same quiet B096 tip after the
+fresh reviewer verdict and a safe PSI reading, with the failure disclosed if
+the required retry policy exhausts.
+
+### RW-103 — 2026-09-14 00:06:57Z — disclose B096 retry launch PSI race
+
+The controller intended to launch one B096 gate retry after a safe PSI check,
+but the combined launch command's fresh reading was
+`full avg10=11.41%`; the retry therefore started above the 5% gate. The exact
+container `vigilant_ganguly` was capped immediately at `NanoCpus=3000000000`
+under `dev-background.slice`. No additional launch will occur until a
+separate fresh check is safe. This run's evidence remains provisional and its
+launch deviation is disclosed in the final report; it cannot be treated as a
+clean PSI-gated retry.
+
+### RW-105 — 2026-09-14 00:11:57Z — B097 review accepted after fix-verification
+
+The same fresh Luna xhigh reviewer accepted the B097 whitespace fix at
+`23b75167`: `git diff --check ee41553d..23b75167` exits 0 and the fix delta
+contains no product-file changes. The verification report was committed as
+`aa075851`, making that the current quiet review tip. B097 still requires a
+registered gate on its final tip before merge; the active B096 retry remains
+the only tester gate and must finish first.
+
+### RW-106 — 2026-09-14 00:21:47Z — dispatch P2 finalization in freed mutation slot
+
+The independently discovered session-extract mutation container has finished,
+leaving one of the two estate mutation slots available; P6 remains the other
+active mutation lane. A fresh Luna xhigh P2 finalization implementer was
+dispatched in `rg55-run-gate-client`, seeded with P2 BRIEF-7. It is authorized
+to perform the prescribed up-to-three `assay-r2 --resume` attempts from
+detached judged tree `186461de`, subject to a fresh PSI gate and immediate
+3-CPU cap on its exact container, then survivor triage and final non-mutation
+gates. It must not commit while detached and must not merge or release.
+
+### RW-108 — 2026-09-14 00:29:31Z — clean B096 gate retry launched
+
+The prior B096 retry completed `RUN_GATE_EXIT=0` and all terminal phases, but
+was excluded as clean evidence because its launch PSI was above threshold. A
+condition-guarded fresh launch then read `full avg10=2.79%` and started the
+same unchanged B096 tip. Its exact container is `heuristic_jones`, under
+`dev-background.slice`, immediately capped at `NanoCpus=3000000000`. This is
+the clean-evidence candidate; its wrapper marker and terminal phases remain
+pending.
+
+### RW-109 — 2026-09-14 00:33:21Z — P2 finalization superseded by already-shipped state
+
+The P2 finalization dispatch was stopped after the first prescribed retry
+returned `NO_MEASUREMENT/BASE_IS_HEAD`: the handoff's judged tree
+`186461de` is already an ancestor of current `main`, because the P2 client
+was merged by `b54aa1f2` and its 23.7.0 release was recorded by the existing
+wave history. Therefore `--base main` resolves to the detached HEAD and
+cannot measure a delta. This is a stale handoff instruction, not a product
+failure or valid mutation result; no further P2 retry, triage, merge, or
+release is authorized. The Luna xhigh worker was interrupted without a
+commit.
+
+### RW-107 — 2026-09-14 00:27:40Z — P2 R2 retry attempt 1 running
+
+The P2 implementer launched the first approved retry from detached judged tree
+`186461de` with `PYTEST_ADDOPTS=-p no:randomly`, `nice -n 19`, and
+`ionice -c 3`; its prelaunch run-gate reading recorded memory PSI
+`full avg10=0.28%`. This is the bare-host lane, so no Docker mutation
+container was created. The assay baseline is running under the same nice/IO
+priority; the implementer will read its verdict separately from the wrapper
+status and will switch back to the branch before any commit.
+
+### RW-110 — 2026-09-14 00:34:17Z — dispatch fresh Luna final reviews for P1 and P4
+
+The controller dispatched independent fresh Luna xhigh adversarial reviewers
+for the still merge-blocked P1 daemon and P4 run-gate follow-ups. Each is
+seeded with its package review handoff and exact current tip, may write only
+its round-1 review file, and must perform the handoff's live probes and gates
+under the host PSI rules. No Sol runtime is used; no product source or merge
+is authorized by this dispatch.
+
+### RW-111 — 2026-09-14 00:37:03Z — preserve historical P4 review rounds
+
+The P4 worktree already contains the historical Opus review rounds 1 and 2,
+including their committed conditional-acceptance records. The fresh Luna
+xhigh reviewer dispatched under RW-110 is therefore assigned round 3 and may
+write only `run-gate-WAVE-RG55-P4-REVIEW-round3.md`; it must not overwrite the
+existing records. This correction changes no product or review evidence.
+
+### RW-112 — 2026-09-14 02:43:52Z — controller snapshot and continuation plan
+
+The controller has resumed the wave. The CMRU dirty-main release-cleanup
+repair is complete at `f6972c98`, with the fresh Luna xhigh review accepted in
+round 3 and the registered CMRU gate still running its mutation phase in exact
+container `run-gate-vbpub-mutation-226339-1789351650`, capped at 3 CPUs.
+The independent `session-extract-follow` assay lane is also active and capped
+at 3 CPUs; it is not a mutation campaign.
+
+Assay B092+B098 is accepted by its fresh Luna review at `176a06a5` but has no
+registered final gate yet. B096 is accepted but its first gate failed Topos
+qualification and its clean-PSI retry remains to be independently read;
+B097's same-reviewer fix verification is accepted at `23b75167`/`aa075851`
+but its final registered gate is still pending. P6 remains detached at judged
+tree `5c2134ed`, with cumulative R2 outcome `BUDGET_EXCEEDED` and two
+placeholders left to judge.
+
+Continuation order is: finish/read the CMRU gate; resume P6's two placeholders
+under the second mutation slot; complete the assay final combined gate on the
+B097 tip and merge/release the resulting assay patch; repair P1 and P4 using
+fresh Luna xhigh implementers and reviewers; finish their gates and releases,
+then P6/P5 and the P3 live-probe/report close-out. No operator-owned dirty
+file or `/workspaces/dstdns` content is in scope.
+
+### RW-113 — 2026-09-14 02:46:16Z — relaunch P6 from the exact judged tree
+
+The first resume invocation only re-attached to the already-collected
+`run-gate-vbpub-r2-4167718-1789340985` container and returned its existing
+`BUDGET_EXCEEDED/LANE_TIMEOUT` verdict; it started no new container and is not
+new evidence. With a fresh memory-PSI reading of `full avg10=1.36%`, the
+controller then used run-gate's explicit `--fresh` path from detached tree
+`5c2134ed`. The old exact container had no inflight record to remove. The new
+container is `run-gate-vbpub-r2-266908-1789353957`, under
+`dev-background.slice`, immediately capped to `NanoCpus=3000000000`; no commit
+has been made while detached.
+
+### RW-114 — 2026-09-14 02:49:02Z — CMRU mutation survivors require repair
+
+The registered CMRU release-cleanup gate reached its mutation result and
+failed with three survivors among 43 candidates: `transaction.py:65`
+`bool-const-flip` (`True->False` on the private result dataclass),
+`transaction.py:1234` `bool-const-flip` (`check=False` on defensive rebase
+abort), and `transaction.py:1253` `boolop-swap` in the abort-failure guard.
+The result is not merge evidence. A fresh Luna xhigh implementer must
+triage each survivor: add a real behavioral oracle or make an evidence-backed
+equivalence/structure change, then rerun the required final review and the
+registered gate on the new quiet tip. The worktree remains clean at
+`f6972c98`; no release or install has been attempted.
+
+### RW-115 — 2026-09-14 03:04:31Z — repair workers returned; P6 rejudge deferred
+
+The CMRU mutation-survivor repair worker returned clean commit
+`08692bf2`, adding meaningful frozen-result, failed-abort, and defensive
+state-transition oracles. The P4 repair worker returned clean commit
+`28bc3feb`, fixing synchronous exec-launch cleanup and correcting the current
+os.wait4/own-child rusage documentation. Neither package has been reviewed or
+re-gated after these commits.
+
+P6's `--fresh` run from `5c2134ed` completed with the unchanged
+`BUDGET_EXCEEDED/LANE_TIMEOUT` verdict: its baseline passed, but ordinary
+`--resume` merged all 484 persisted records, including the two budget records,
+without re-executing them. The explicit assay rejudge option is required for
+those two records. A correctly mounted direct rejudge continuation is
+prepared, but its fresh launch check read memory PSI `full avg10=11.96%`, so
+the launch is deferred under the host gate. This exposes a run-gate follow-up:
+run-gate's fixed `--resume` argv cannot request assay's supported
+`--rejudge-outcome budget_exceeded` recovery path.
+
+### RW-116 — 2026-09-14 03:08:11Z — launch the P6 explicit budget rejudge
+
+The first manual direct-rejudge attempt used the correct dual-mount shape and
+was immediately CPU-capped, but its command imported the P6 branch-local
+assay CLI, which correctly refused the newer `--rejudge-outcome` option. The
+exact failed container `run-gate-vbpub-r2-rejudge-20260914-030714` was removed
+by name and its result is discarded; no P6 source or judged-tree commit was
+changed.
+
+After a fresh PSI reading of `full avg10=1.07%`, the controller launched the
+explicit continuation using the released/main assay judge source, whose CLI
+supports the option, against the unchanged P6 tree and resume store. Exact
+container `run-gate-vbpub-r2-rejudge-20260914-030755` is running under
+`dev-background.slice` with `NanoCpus=3000000000`. This is a continuation of
+the registered P6 R2 evidence; the branch-local run-gate limitation and the
+judge-source correction will be disclosed in the P6 report.
