@@ -2122,3 +2122,14 @@ xhigh worker was dispatched with a narrower contract: capture the exact P25
 artifact/reason, make the smallest principled repair with focused tests, or
 commit a BRIEF immediately; the full gate is deferred until such a repair is
 committed. P1/P6 mutation containers remain untouched.
+
+### RW-168 — 2026-09-14 12:15:23Z — B096 reproduction must run in tester-unified
+
+Halley's checkpoint `99e588e9` established only an environment fact: the
+cockpit lacks `/opt/tester-venv`, so its `ERROR/EXEC_FAILED` result was not
+evidence about P25. The worker was closed after checkpointing. A fresh Luna
+xhigh successor was dispatched to reproduce the exact
+`declared-base-as-tag` case inside `tester-unified:local` with both repository
+mounts, the governed cgroup parent, and separate container wait/log statuses;
+no code repair is permitted before that artifact and pytest evidence is
+captured.
