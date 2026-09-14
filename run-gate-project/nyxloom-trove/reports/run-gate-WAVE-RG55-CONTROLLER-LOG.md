@@ -1977,3 +1977,13 @@ keeping cgprofile detached at the exact judged tree
 `c18301225be36cc3d727c8bd20136638a6985775`; no source commit or mutation
 identity changes. The failed attempt's container exited 2 and was removed;
 its stale verdict remains untouched until the corrected recovery completes.
+
+### RW-153 — 2026-09-14 08:54:44Z — B097 final non-mutation gates green
+
+On branch `assay-b097` at `0303a24d`, the corrected final gate sequence ran
+with independent exit markers and completed green: `selftest` reported 1087
+passed and 3 skipped; `--base main assay-r1` reported `PASS`; and `assay-r3`
+reported 2 rejected and 0 survived. The supervisor checked memory PSI before
+each phase and did not start an R2 mutation campaign. This evidence is
+eligible for the assay sidecar's final merge gate once the fresh B092+B098 and
+B096 reviews complete.
