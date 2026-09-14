@@ -9,8 +9,15 @@ Build all variants:
 ```
 
 This runs the environment resolver (MCR check, tool version resolution, artifact
-staging), saves the resolved state to `.build-env.json`, then builds and
-publishes the release targets through the governed builder.
+staging), saves the resolved state to `.build-env.json`, then builds the release
+targets through the governed builder.
+
+For the configured CMRU release (`RELEASE_IMAGE_FLOW=load`), `--build` resolves
+and builds the release targets into OCI layouts; it does not publish them. The
+CMRU lifecycle is build and manifest extraction, the release gate, source
+promotion, then a post-gate `--push` that publishes those exact layouts. The
+named BuildKit builder is `mdt-governed-v1`, selected and checked by
+`scripts/ensure-release-builder.sh` from the release configuration.
 
 For the end-to-end data path, cgroup and slice boundaries, resource defaults,
 and guidance for attributing load in `top`, Docker stats, and systemd, read
@@ -18,15 +25,30 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
 
 `RELEASE_IMAGE_FLOW` controls the release path:
 
-- `push` is the default release mode. It publishes the governed BuildKit output
-  directly without loading it into dockerd's image store.
-- `repack` is an optional compression experiment. It builds to OCI tar streams,
-  extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
-  (default `2GB`), validates the candidate by importing it through BuildKit,
-  and only then publishes it. It does not load the original image into dockerd
-  and does not use `skopeo`. The affected image currently fails this gate due
-  to the repacker defect recorded in the architecture guide.
-- `load` keeps the daemon-first split for local-only validation.
+- `load` is the configured canonical source-first release mode. The governed
+  BuildKit worker writes unrepacked OCI layouts without loading images into
+  dockerd. After the CMRU gate and source promotion, `build-push.py --push`
+  copies the exact layouts with `regctl` and verifies every remote digest with
+  `crane`. For example, an immutable published coordinate may be
+  `trixie-py3.14-php8.5-20260913`.
+- `push` is an explicit alternate mode. The governed BuildKit worker exports
+  directly to the registry during the build, before the CMRU gate and source
+  promotion. Its later CMRU push step is an explicit already-published terminal
+  state; it does not publish a second time.
+- `repack` is an optional compression experiment. It builds OCI tar streams,
+  extracts them into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
+  (default `2GB`), validates the candidate structurally and by importing it
+  through BuildKit, and publishes only after those checks. It does not load the
+  original image into dockerd and does not use `skopeo`. Its publication occurs
+  during the build, so its later CMRU push step is also an explicit
+  already-published terminal state. The affected image currently fails closed
+  in this lane because of the repacker defect recorded in the architecture
+  guide.
+
+The value in `cmru.toml` is the project default; the current value is
+`RELEASE_IMAGE_FLOW = "load"`. CMRU runs the configured build, gate, promotion,
+and push steps in that order. The `push` and `repack` alternatives deliberately
+publish during the build and therefore have different release ordering.
 
 The release config toggle is `RELEASE_IMAGE_FLOW`; `REPACK_TARGET_SIZE`
 controls the slice size used by the repack flow.
@@ -88,7 +110,7 @@ Environment configuration:
 Optional overrides (environment variables):
 
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
-- `RELEASE_IMAGE_FLOW` (`push` is the default, `repack` is the validated optional compression lane, `load` is daemon-first local compatibility mode)
+- `RELEASE_IMAGE_FLOW` (`load` is the configured source-first release lane, `push` is a direct registry-export alternative, and `repack` is the validated optional compression lane)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
 - `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
@@ -151,18 +173,24 @@ To do both in one command:
 ./build-push.py --rebuild
 ```
 
-When `RELEASE_IMAGE_FLOW=push` or `repack`, the push step becomes a no-op because
-publication happens during the build phase. The canonical in-image manifest is
-exported through the governed builder; it is not loaded into Docker's local
-image store. `docker-repack` changes digests, so evidence from an optional
-repack run must refer to the artifact that was actually published. If its
-validation fails, retain the default `push` lane rather than copying an invalid
-OCI layout to the registry.
+For the configured `load` flow, `--push` loads the saved `.build-env.json` and
+publishes the OCI layouts produced by the preceding `--build`. It does not run
+the resolver or a second Bake/build. `regctl` copies each tagged descriptor and
+`crane` compares the remote digest with the local layout; a missing layout,
+failed copy, missing remote manifest, or digest mismatch returns nonzero.
 
-In the non-release `load` mode, the later push is a second Bake invocation.
-BuildKit checks its cache, but changed inputs can rebuild layers and the result
-is unrepacked. In the default `push` mode, publication already happens during
-the build phase.
+When `RELEASE_IMAGE_FLOW=push` or `repack`, publication happens during the
+build phase and the later CMRU push step reports an already-published terminal
+state. `push` publishes the unrepacked BuildKit output. `repack` publishes the
+validated repacked artifact, whose digests differ from the source layout. If
+repack validation fails, retain the canonical `load` lane rather than copying
+an invalid OCI layout to the registry.
+
+For a full direct build-and-publish cycle, `--rebuild` runs `--build` followed
+by `--push`. In the canonical `load` flow this is still a build-then-verified-
+layout-copy sequence; it is not the same as a CMRU release, because it does not
+provide CMRU's gate and source-promotion ordering. Use `./cmru.release.sh` for
+the release lifecycle.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

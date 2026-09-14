@@ -337,14 +337,18 @@ BuildKit builders are governed separately; see
 ### Entry point
 
 ```bash
-./build-push.py --build      # resolve env + build locally
-./build-push.py --push       # push previously built images
-./build-push.py --rebuild    # build then push
+./build-push.py --build      # resolve env + build local OCI layouts (load flow)
+./build-push.py --push       # publish saved layouts with digest verification (load flow)
+./build-push.py --rebuild    # build then publish; bypasses the CMRU gate
 ```
 
 Step and environment configuration is [`cmru.toml`](cmru.toml); the build
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds run on the resource-confined
-named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.toml`.
+named builder `mdt-governed-v1` selected by `BUILDX_BUILDER`, with limits defined
+in `cmru.toml`. The configured CMRU release flow is `load`: build and manifest
+extraction run first, then the gate and source promotion, then the post-gate
+layout publication. The alternate `push` and `repack` flows publish during the
+build and therefore do not provide source-first publication ordering.
 
 ### Release caches
 
@@ -465,9 +469,12 @@ a manual package-settings toggle. Note that **new GHCR packages default to priva
 one reason flavors are tag variants rather than new package names: no new family means no
 new visibility state to sync.
 
-The canonical direct-push release path publishes through BuildKit and does **not** call
-`skopeo`. CMRU supplies the release identity and performs Docker login. Manual release
-commands must export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
+The canonical source-first `load` release path does **not** call `skopeo`: after
+the CMRU gate and source promotion, `build-push.py --push` copies the exact OCI
+layouts with `regctl` and verifies each remote digest with `crane`. The explicit
+`push` alternate publishes through BuildKit during the build and also does not
+call `skopeo`. CMRU supplies the release identity and performs Docker login.
+Manual release commands must export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
 `GITHUB_OWNER_TYPE`, and `GITHUB_PUSH_PAT` inputs; workspace-local credential-file
 fallbacks are not supported.
 
@@ -503,7 +510,7 @@ That optional path is OCI-layout-native: bake writes one OCI tar per target, the
 extracted into disk-backed scratch, `docker-repack` writes a second OCI layout, and the
 governed BuildKit builder validates it by importing and unpacking before publication — no
 daemon round-trip, no `skopeo` copy. It currently trips the fail-closed gate because of the
-repacker defect recorded in the architecture guide; use the default `push` lane rather than
+repacker defect recorded in the architecture guide; use the default `load` lane rather than
 copying an invalid layout.
 
 Counting layers, source vs target:
