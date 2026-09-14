@@ -1987,3 +1987,12 @@ reported 2 rejected and 0 survived. The supervisor checked memory PSI before
 each phase and did not start an R2 mutation campaign. This evidence is
 eligible for the assay sidecar's final merge gate once the fresh B092+B098 and
 B096 reviews complete.
+
+### RW-154 — 2026-09-14 09:10:41Z — distinguish supplemental and authoritative assay gates
+
+The green B097 sequence recorded in RW-153 exercised the shared
+`run-gate-project` consumer lanes (`selftest`, `assay-r1`, and `assay-r3`);
+it is supplemental evidence for the branch's run-gate integration, not the
+assay package's authoritative `assay/run-gate.py tester-unified` gate. The
+correct authoritative gate is running on B096's combined branch at
+`51d9701e`, and its outcome is the merge gate for the B092/B098/B096 sidecar.
