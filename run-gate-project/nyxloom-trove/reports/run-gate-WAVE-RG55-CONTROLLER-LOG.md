@@ -1587,3 +1587,23 @@ After the PSI gate fell to `full avg10=4.19%`, the registered branch-local
 `dev-background.slice` and was immediately capped to 3 CPUs. This run should
 select only the two pending candidates; its wrapper exit and assay verdict
 will be read separately.
+
+### RW-118 — 2026-09-14 03:24:44Z — controller takeover and PSI-aborted P4 gate
+
+The current controller has taken over the checkpointed RG-55 wave under the
+operator's Luna xhigh-only policy. P1's repair worker completed B1-B8 at
+`72db8f8f`; its focused serial suite is `420 passed, 1 skipped`, with
+compilation and diff checks green. P4's fresh repair verification is ACCEPT at
+`28bc3feb` (review record committed as `74464fed`), but its required post-main-
+merge registered gates are still outstanding.
+
+A P4 `selftest` launch was attempted after a reading that raced with a host
+memory-PSI rise; the observed `full avg10=10.55` exceeded the launch limit.
+The controller stopped/confirmed absence of that just-launched process before
+it produced any verdict. It is not gate evidence and will not be reported as
+green. Future launches remain PSI-gated at `full avg10 <= 5`.
+
+P6's valid identity-preserving retry has now completed with all 484 candidates
+accounted for: 439 killed, 45 survived, 0 budget-exceeded, 0 crashed. The
+verdict is therefore `FAIL/MUTANTS_SURVIVED`, not a budget exhaustion; the 45
+survivors require explicit triage before P6 can be certified.
