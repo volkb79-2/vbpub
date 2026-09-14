@@ -1782,6 +1782,24 @@ def _prompt_slice_memory(
         values[key] = value
 
 
+def _prompt_shared_memory_min(values: dict[str, str]) -> None:
+    """Confirm the guaranteed sibling's ``MemoryMin`` without adding a key.
+
+    ``DEV_MEMORY_MIN_GUARANTEED_CEILING`` is intentionally both the parent
+    ``dev.slice`` value and the sibling's value.  This prompt is a second
+    operator-facing confirmation in the sibling's complete field sequence,
+    not a second configuration field: a different answer updates this one
+    shared value before the remaining sibling fields are collected.
+    """
+    key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
+    authoritative = values[key]
+    values[key] = ask(
+        f"  MemoryMin ({key}; shared with dev.slice; Enter confirms, a different value updates both)",
+        authoritative,
+        validate=validate_size_or_empty,
+    )
+
+
 def _reprompt_memory_constraints(
     avail_kib: int,
     values: dict[str, str],
@@ -1861,7 +1879,9 @@ def step_slice_first_resources(
         "Configure one slice completely before advancing. The fixed architecture "
         "choices are shown as explicit 'none': ordinary slices do not receive a "
         "fabricated MemoryMin, the root uses absolute measured IO caps rather than "
-        "IOWeight, and the guaranteed sibling has only the shared MemoryMin. The "
+        "IOWeight, and the guaranteed sibling has four memory controls: its "
+        "MemoryMin is shared with the parent and its MemoryLow/High/Max are sibling "
+        "controls. The "
         "resource values and the terminate/report-only policy remain configurable."
     )
     _, suggestion_kib, formula = propose_memory_min_guaranteed_suggestion(
@@ -1896,10 +1916,12 @@ def step_slice_first_resources(
     values["DEV_SUBSLICE_IOPS_PCT"] = walk_key("  child IOPS sub-ceiling percentage", "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults, validate=validate_pct_1_100)
     out("  IOWeight: none (dev.slice uses one measured IORead/WriteBandwidthMax and IOPSMax pool for all children).")
 
-    # This sibling is fully described even though its MemoryMin is deliberately
-    # not independently editable: two independently chosen values would drift.
+    # Walk the sibling's complete memory sequence.  MemoryMin is prompted as an
+    # explicit confirmation, but edits the same authoritative key already used
+    # for dev.slice rather than introducing a shadow sibling variable.
     out("\n  dev-memory_min_guaranteed.slice — admitted hard-floor sibling")
-    out(f"  MemoryMin: exact mirror of dev.slice ({values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'})")
+    _prompt_shared_memory_min(values)
+    out(f"  MemoryMin is now mirrored on dev.slice ({values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'}); no separate sibling MemoryMin key exists.")
     for field, key in (("MemoryLow", "DEV_MEMORY_MIN_GUARANTEED_LOW"), ("MemoryHigh", "DEV_MEMORY_MIN_GUARANTEED_HIGH"), ("MemoryMax", "DEV_MEMORY_MIN_GUARANTEED_MAX")):
         values[key] = walk_key(f"  {field} (empty = none)", key, cfg_current, example_defaults, validate=validate_optional_positive_size)
     out("  CPUQuota, CPUWeight, IOWeight, MemorySwapMax: inherited/not configured on this admission-only sibling.")

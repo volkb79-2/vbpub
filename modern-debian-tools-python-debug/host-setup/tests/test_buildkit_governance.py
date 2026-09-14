@@ -187,6 +187,16 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIsNotNone(WIZARD.memory_aggregate_error(3 * 1024 * 1024, values))
         self.assertEqual(WIZARD.parse_size_to_kib("1.5G"), 1572864)
 
+    def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
+        values = {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "1G"}
+        with mock.patch.object(WIZARD, "_prompt", return_value="2G") as prompt:
+            WIZARD._prompt_shared_memory_min(values)
+
+        self.assertEqual(values, {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "2G"})
+        prompt_text = prompt.call_args.args[0]
+        self.assertIn("DEV_MEMORY_MIN_GUARANTEED_CEILING", prompt_text)
+        self.assertIn("updates both", prompt_text)
+
     def test_wizard_validates_manual_config_and_guaranteed_sibling_aggregate(self) -> None:
         example = (ROOT / "host-setup.env.example").read_text()
         valid = example.replace("DEV_MEMORY_HIGH=\n", "DEV_MEMORY_HIGH=32G\n")
@@ -265,6 +275,21 @@ class BuildKitGovernanceTests(unittest.TestCase):
         release = (ROOT.parent / "scripts/ensure-release-builder.sh").read_text()
         self.assertNotIn("docker-container", release)
         self.assertNotIn("buildx rm", release)
+
+    def test_live_build_docs_use_managed_remote_names(self) -> None:
+        docs = (
+            ROOT.parent / "USAGE.md",
+            ROOT.parent / "docs/BUILD-ARCHITECTURE.md",
+            ROOT.parent / "docs/OCI-IMAGE-TOOLING.md",
+            ROOT.parent / "docs/DOCKER-IMAGE-STORE.md",
+            ROOT / "README.md",
+        )
+        stale_names = ("mdt-governed-v1", "host-buildkitd", "builder_container", "docker-container")
+        for path in docs:
+            text = path.read_text()
+            for stale in stale_names:
+                self.assertNotIn(stale, text, f"stale live builder guidance in {path}: {stale}")
+            self.assertIn("mdt-managed", text, f"managed remote is not named in {path}")
 
     def test_release_shell_scripts_parse(self) -> None:
         scripts = [ROOT.parent / "scripts/ensure-release-builder.sh", ROOT.parent / "scripts/release-bake.sh"]

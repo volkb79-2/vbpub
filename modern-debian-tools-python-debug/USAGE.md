@@ -53,11 +53,14 @@ Caveats:
 
 - The service is a plain `docker run --cgroup-parent=dev-buildkitd.slice`.
   The design does not rely on Buildx's container-driver `cgroup-parent` option.
-- I/O caps (e.g. read/write IOPS) are not expressible via buildx driver-opts at all; if you need
-  them, apply them host-side against the running `buildx_buildkit_<name>_*` container's cgroup
-  (the same mechanism host operators use for any other container — see
-  [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
-  (cgroups/slices)" for the underlying primitives).
+- I/O caps (for example read/write IOPS) are not expressible via Buildx driver
+  options. The canonical worker receives its host-side caps from
+  `dev-buildkitd.slice` and its `mdt-buildkitd.service` placement; no generated
+  Buildx worker cgroup is part of this path. A `buildx_buildkit_*` container is
+  an accidental/non-canonical worker covered by the host guard and watcher, not
+  the worker to inspect for an MDT build. See
+  [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource
+  governance (cgroups/slices)" for the underlying primitives.
 - Seeing `dockerd` in `system.slice/docker.service` is normal. The managed
   BuildKit worker is the separately-labelled `mdt-buildkitd` container in
   `dev-buildkitd.slice`; Dockerfile execution is performed by that remote.

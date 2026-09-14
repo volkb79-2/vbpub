@@ -307,7 +307,8 @@ No single `top` row represents the entire build. Use the phase and cgroup to
 attribute it:
 
 - High CPU in `buildkitd` or its executor descendants is a Dockerfile build,
-  layer export, or publication phase. Check the named builder container first.
+  layer export, or publication phase. Check the `mdt-buildkitd` service
+  container first.
 - High CPU in the `docker-buildx` client can occur while it receives and writes
   an OCI output stream. That client is local to the caller and inherits the
   caller's slice; Dockerfile executors still run in the governed worker.
@@ -359,7 +360,7 @@ docker inspect mdt-buildkitd --format \
 systemctl show dev-buildkitd.slice mdt-buildkitd.service -p ControlGroup -p MemoryCurrent -p MemoryHigh -p MemoryMax
 
 # Resource use by the governed worker
-docker stats --no-stream "$builder_container"
+docker stats --no-stream mdt-buildkitd
 
 # Attribute host processes by command and cgroup
 ps -eo pid,ppid,pcpu,pmem,cgroup,comm,args --sort=-pcpu | head -40
@@ -371,10 +372,9 @@ systemctl show dev-interactive.slice dev-background.slice \
 ```
 
 Run the name-resolution commands from the
-`modern-debian-tools-python-debug` directory. The generated container name is
-an implementation detail of the Docker-container driver; the configured
-builder name in `cmru.toml` is the durable interface used by the release
-scripts.
+`modern-debian-tools-python-debug` directory. `mdt-managed` is the durable
+remote node name and `mdt-buildkitd` is the stable service-container name;
+neither is a generated Buildx worker name.
 
 Run the `ps` and `systemctl` checks on the host. A container commonly has a
 private PID and cgroup namespace, so host PIDs from `docker inspect` may not
@@ -408,18 +408,20 @@ cat /sys/fs/cgroup/io.stat        # cumulative bytes and operations by device
 cat /sys/fs/cgroup/io.pressure
 ```
 
-On the host, obtain the builder's real cgroup path from its PID rather than
-guessing its slice:
+On the host, obtain the managed worker's real cgroup path from its service
+container PID rather than guessing its slice:
 
 ```bash
-pid=$(docker inspect "$builder_container" --format '{{.State.Pid}}')
+pid=$(docker inspect mdt-buildkitd --format '{{.State.Pid}}')
 cat "/proc/$pid/cgroup"
-systemd-cgls --all | rg 'buildx_buildkit|dockerd|docker-repack|build-push'
+systemd-cgls --all | rg 'mdt-buildkitd|dockerd|docker-repack|build-push'
 ```
 
-This is the authoritative way to distinguish the builder's limited Docker
-scope from `docker.service` and from the invoking devcontainer. The cgroup path
-can differ with the host's Docker cgroup driver and systemd configuration.
+This is the authoritative way to distinguish the managed worker's limited
+service-container scope from `docker.service` and the invoking devcontainer.
+The cgroup path can differ with the host's Docker cgroup driver and systemd
+configuration. If an accidental `buildx_buildkit_*` container exists, inspect
+it only as a guard violation; it is not the canonical worker.
 
 The host-wide PSI files under `/proc/pressure/` reveal global contention, while
 the cgroup files above attribute it to a workload. Zswap is also host-wide

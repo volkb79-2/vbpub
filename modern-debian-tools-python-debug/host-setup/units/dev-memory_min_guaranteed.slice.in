@@ -30,10 +30,10 @@ MemoryLow=@DEV_MEMORY_MIN_GUARANTEED_LOW@
 MemoryHigh=@DEV_MEMORY_MIN_GUARANTEED_HIGH@
 MemoryMax=@DEV_MEMORY_MIN_GUARANTEED_MAX@
 
-# No MemoryHigh/Max here deliberately. Those stay per-container (ciu's
-# existing mem_limit/mem_reservation injection already applies them directly
-# to a container's own scope) -- only the min floor requires ancestor
-# cooperation, so only it belongs on the shared slice.
+# This slice exposes the complete four-control memory sequence. MemoryMin is
+# the shared DEV_MEMORY_MIN_GUARANTEED_CEILING authoritative value, also
+# rendered on dev.slice; MemoryLow/High/Max are this sibling's own optional
+# controls. Per-container claims may still add tighter limits below this slice.
 #
 # Containers join via an explicit `docker run
 # --cgroup-parent=dev-memory_min_guaranteed.slice` or compose
