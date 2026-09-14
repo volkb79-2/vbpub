@@ -2421,3 +2421,20 @@ dstdns, operator-owned files, current mutation trees, merge/release, or full
 mutation/gate runs. They must commit either an honest red-first implementation
 or a concrete next-wave handoff when a missing cross-package dependency makes
 implementation premature.
+
+### RW-196 — 2026-09-14 22:23:51Z — contention agnosticism and forward progress
+
+Correction to the controller's earlier wording: RG-55 is not trying to
+eliminate scheduler contention. Contention is an allowed, planned operating
+condition; the 5-CPU gates-slice cap is an environment constraint. The
+structural requirement is that functional test results remain deterministic
+and contention-agnostic, with pressure-affected or incomplete runs identified
+as infrastructure/inconclusive evidence rather than product outcomes.
+
+Standing operating rule: a long-running test is an evidence dependency, not a
+reason to pause development. Keep it detached with a mechanical completion
+marker; continue non-overlapping implementation, review, docs, triage, and
+fixes in separate worktrees. Once evidence returns, run the fix → focused
+tests → gate/review verification cycle and integrate the verified change until
+each tracked item can truthfully be marked closed. Never use polling, partial
+evidence, or a budget timeout as a closure claim.
