@@ -2685,6 +2685,15 @@ The file tailer reads the appended payload on growth plus only bounded
 prefix/tail fingerprints as needed for rewrite detection; unchanged polls read
 no content. It never performs a whole-file rescan.
 
+**Decision: active follow failures are not idle polls.** A path missing before
+the first successful open remains a legitimate startup state: the tailer can
+wait for a producer that has not created the session file yet. Once it owns an
+open handle, however, a failed `stat()` cannot distinguish disappearance,
+permission loss, and other metadata I/O failure from “there is no new
+content”. `JsonlTailer` therefore raises `FollowSourceError`; the CLI reports
+the precise `error:` diagnostic and exits 1. This fail-closed boundary keeps a
+broken active stream from waiting forever while looking healthy to a consumer.
+
 The fixed-span handoff transform is intentionally not part of the live
 surface: `--strip-stale-wakeups` collapses a trailing run only after the
 complete selected span is known. Applying it incrementally would require

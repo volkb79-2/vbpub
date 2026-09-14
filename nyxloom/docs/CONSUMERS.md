@@ -80,6 +80,15 @@ appended payload plus only bounded prefix/tail fingerprints as needed for
 rewrite detection. Unchanged polls read no content, and no poll performs a
 whole-file rescan.
 
+The incremental tailer treats a path that is absent before its first open as
+startup readiness: a later poll can open it after the producer creates it.
+Once the stream is active, a disappeared file or a metadata (`stat()`) I/O
+error is a terminal failure. The CLI reports `error: followed session file
+disappeared while following: PATH` for disappearance, or an `error: cannot
+stat followed session file while following PATH: ...` diagnostic for another
+metadata failure, and exits 1; consumers must not interpret either case as
+“no new content”.
+
 For live redaction, use `extract`: its `--redact-pattern` applies to both the
 initial brief and newly streamed phase-two output.
 

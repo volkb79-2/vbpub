@@ -220,6 +220,11 @@ nyxloom extract /path/to/session.jsonl --until a1 > brief.txt
 nyxloom extract /path/to/session.jsonl --since-file brief.txt
 ```
 
+The saved marker is checked against the explicit `--format`, or against the
+adapter detected from the session path when `--format` is omitted. A marker
+from a different adapter is refused with an error instead of being used as an
+ambiguous resume boundary.
+
 For a live log, add `--follow`; `extract` applies normal selection to new
 records, while `extract-lossless` prints each new prose/thinking block. Use
 `--render-markdown` for reading or `--highlight` to preserve markdown source;

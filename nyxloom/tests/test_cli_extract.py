@@ -15,6 +15,7 @@ import pytest
 
 from nyxloom import cli
 from nyxloom.session_extract import read_since_marker
+from nyxloom.session_extract import follow as follow_mod
 from nyxloom.session_extract.locate import escape_cwd
 
 
@@ -630,6 +631,62 @@ def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
     assert exit_code == 1
     assert "codex" in captured.err
     assert "claude-code" in captured.err
+
+
+def test_extract_since_file_auto_detected_valid_marker_resumes(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.txt"
+
+    assert cli.main(["extract", str(fp), "--until", "a1"]) == 0
+    prior.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a1")
+
+    assert cli.main(["extract", str(fp), "--since-file", str(prior)]) == 0
+    out = capsys.readouterr().out
+    assert "Done -- everything landed" in out
+
+
+@pytest.mark.parametrize("command", ["extract", "extract-lossless"])
+def test_extract_since_file_auto_detected_format_mismatch_errors_cleanly(
+    tmp_path, capsys, command,
+):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.json"
+    prior.write_text(
+        json.dumps({"format": "codex", "events": [], "last_marker": "5"}),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main([command, str(fp), "--since-file", str(prior)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.err == (
+        "error: --since-file was produced by the 'codex' adapter, but the "
+        "session log was auto-detected as 'claude-code'\n"
+    )
+
+
+def test_extract_lossless_follow_reports_active_source_disappearance(
+    tmp_path, capsys, monkeypatch,
+):
+    fp = _write_claude_code_fixture(tmp_path)
+
+    def fail_after_disappearance(self):
+        assert self._source.tailer.poll() == []  # establishes the active handle
+        fp.unlink()
+        try:
+            self._source.tailer.poll()
+        finally:
+            self.close()
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", fail_after_disappearance)
+
+    assert cli.main(["extract-lossless", str(fp), "--follow"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"error: followed session file disappeared while following: {fp}\n"
+    )
 
 
 def test_extract_lossless_opencode_single_session_needs_no_session_flag(tmp_path, capsys):

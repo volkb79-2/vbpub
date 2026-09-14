@@ -13,6 +13,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from nyxloom.session_extract import classifier
 from nyxloom.session_extract.adapters import claude_code
 from nyxloom.session_extract.config import ExtractConfig
@@ -22,6 +24,7 @@ from nyxloom.session_extract.follow import (
     FollowConfig,
     Follower,
     FollowSelector,
+    FollowSourceError,
     Arrival,
     JsonlSource,
     JsonlTailer,
@@ -103,6 +106,54 @@ def test_tailer_holds_back_a_partial_line_until_it_is_complete(tmp_path):
     lines = tailer.poll()
     assert len(lines) == 1
     assert json.loads(lines[0])["message"]["content"] == "complete record"
+    tailer.close()
+
+
+def test_tailer_waits_for_a_missing_startup_file_then_opens_it(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    tailer = JsonlTailer(fp, offset=0)
+
+    assert tailer.poll() == []
+    _append(fp, _user("u1", "created after follow started"))
+    assert len(tailer.poll()) == 1
+    tailer.close()
+
+
+def test_tailer_fails_closed_when_an_active_file_disappears(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u1", "already observed"))
+    tailer = JsonlTailer(fp, offset=fp.stat().st_size)
+    assert tailer.poll() == []  # establishes the active handle
+
+    fp.unlink()
+    with pytest.raises(
+        FollowSourceError,
+        match=r"^followed session file disappeared while following: "
+              + str(fp),
+    ):
+        tailer.poll()
+    tailer.close()
+
+
+def test_tailer_fails_closed_on_metadata_io_failure_after_open(tmp_path, monkeypatch):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u1", "already observed"))
+    tailer = JsonlTailer(fp, offset=fp.stat().st_size)
+    assert tailer.poll() == []  # establishes the active handle
+    real_stat = Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == fp:
+            raise PermissionError(13, "Permission denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_stat)
+    with pytest.raises(
+        FollowSourceError,
+        match=r"^cannot stat followed session file while following "
+              + str(fp) + r": \[Errno 13\] Permission denied$",
+    ):
+        tailer.poll()
     tailer.close()
 
 

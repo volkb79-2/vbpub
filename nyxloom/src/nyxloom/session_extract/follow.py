@@ -143,6 +143,17 @@ EXCERPT_CHARS = 100
 #: bursts of one human/model turn, so sub-second polling buys nothing.
 DEFAULT_INTERVAL_S = 1.0
 
+
+class FollowSourceError(RuntimeError):
+    """The source of an active follow stream became unreadable.
+
+    A source that has not been opened yet may legitimately be absent: this is
+    how a follow started just before a new session file is created waits for
+    startup.  Once the tailer owns an open handle, however, an unavailable
+    path or failed metadata read is indeterminate, not an empty poll.  This
+    typed error makes that distinction visible to the CLI and callers.
+    """
+
 # A late part is expected while a turn is still live, not years after the
 # session ended. Keep a bounded recent-row view so that checking for that
 # late part remains indexed point lookups rather than a whole-database scan.
@@ -230,8 +241,23 @@ class JsonlTailer:
         """Every COMPLETE new line since the last poll."""
         try:
             st = self.path.stat()
-        except OSError:
-            return []
+        except FileNotFoundError as exc:
+            # Before the first successful open, a missing path is a valid
+            # startup state: the session producer may create it shortly.  An
+            # active stream losing its path is different; returning [] would
+            # report disappearance as "no new content" and wait forever.
+            if self._handle is None:
+                return []
+            raise FollowSourceError(
+                f"followed session file disappeared while following: {self.path}"
+            ) from exc
+        except OSError as exc:
+            # Permission errors and other metadata I/O failures are equally
+            # indeterminate after a stream exists.  Fail closed rather than
+            # silently converting them into an idle poll.
+            raise FollowSourceError(
+                f"cannot stat followed session file while following {self.path}: {exc}"
+            ) from exc
 
         if self._handle is None:
             self._open()

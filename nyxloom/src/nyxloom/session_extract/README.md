@@ -484,6 +484,15 @@ additional content reads, and it never rescans the whole file. The offset is
 committed only past complete lines,
 leaving a partial line (a writer caught mid-flush) for the next tick.
 
+The tailer distinguishes startup absence from an active-stream failure. A
+missing path before the first successful open is an allowed startup state and
+is polled again. After an open handle exists, `stat()` failure is indeterminate:
+file disappearance raises `FollowSourceError` with `followed session file
+disappeared while following: PATH`, while permission and other metadata I/O
+failures raise the corresponding `cannot stat followed session file while
+following PATH: ...` diagnostic. The CLI surfaces these as `error:` and exits
+1; it never turns an active source failure into “no new content”.
+
 Confirmed in a real process, not just asserted in a unit test: `strace` of a
 live `extract-lossless --follow` against a 314KB session file being appended
 to showed payload reads starting at the saved anchors (`314354 → 314641 →
@@ -606,10 +615,12 @@ session:
   and only the new delta prose comes back, ready to hand to a freshly
   forked session alongside the prior snapshot.
 
-`--since-file`'s embedded format is cross-checked against `--format` (or
-the auto-detected adapter) before running — a marker from one adapter is
+`--since-file`'s embedded format is cross-checked against `--format` (or the
+auto-detected adapter) before running — a marker from one adapter is
 meaningless fed to another, and this fails loudly instead of silently
-returning nothing or garbage.
+returning nothing or garbage. Auto-detection is resolved before this check,
+so a Codex marker against a detected Claude Code log is refused even when
+`--format` was omitted.
 
 `--until <marker>` is the symmetric bound: stop at a given marker
 (inclusive) instead of walking to the end of the log. Its main use isn't

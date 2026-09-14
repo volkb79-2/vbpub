@@ -660,13 +660,17 @@ def cmd_render(args) -> int:
     return 0
 
 
-def _resolve_since_marker(args) -> tuple[str | None, int | None]:
+def _resolve_since_marker(
+    args, detected_format: str | None = None
+) -> tuple[str | None, int | None]:
     """Resolve --since/--since-file (shared by `extract` and
     `extract-lossless`) into an opaque marker. Returns (marker, None) on
     success, or (None, exit_code) after printing an error -- --since-file's
     embedded (format, marker) is cross-checked against --format/the
     auto-detected one, since a marker minted by one adapter is meaningless
-    fed into another.
+    fed into another. ``detected_format`` is supplied by the caller after it
+    has resolved the session path; keeping that fact explicit prevents the
+    auto-detected branch from accidentally checking only explicit formats.
     """
     from pathlib import Path
 
@@ -675,9 +679,14 @@ def _resolve_since_marker(args) -> tuple[str | None, int | None]:
     since_marker = args.since
     if args.since_file:
         since_format, since_marker = read_since_marker(Path(args.since_file))
-        if args.format and args.format != since_format:
+        expected_format = args.format or detected_format
+        if expected_format and expected_format != since_format:
+            if args.format:
+                detail = f"--format={args.format!r} was requested"
+            else:
+                detail = f"the session log was auto-detected as {expected_format!r}"
             print(f"error: --since-file was produced by the {since_format!r} adapter, "
-                  f"but --format={args.format!r} was requested", file=sys.stderr)
+                  f"but {detail}", file=sys.stderr)
             return None, 1
     return since_marker, None
 
@@ -999,7 +1008,13 @@ def cmd_extract(args) -> int:
         return 1
     path, session_id = resolved
 
-    since_marker, err = _resolve_since_marker(args)
+    detected_format = None
+    if args.format is None and (args.since_file or args.follow):
+        from .session_extract.adapters import detect
+
+        detected_format = detect(path).name
+
+    since_marker, err = _resolve_since_marker(args, detected_format)
     if err is not None:
         return err
 
@@ -1072,9 +1087,7 @@ def cmd_extract(args) -> int:
     follow_fmt = None
     anchor = None
     if args.follow:
-        from .session_extract.adapters import detect
-
-        follow_fmt = args.format or detect(path).name
+        follow_fmt = args.format or detected_format
         follow_session = session_id
         if follow_fmt == "opencode" and follow_session is None:
             from .session_extract.adapters import opencode as opencode_adapter
@@ -1181,11 +1194,10 @@ def cmd_extract_lossless(args) -> int:
         print(f"error: {flag_error}", file=sys.stderr)
         return 1
 
-    since_marker, err = _resolve_since_marker(args)
+    fmt = args.format or detect(path).name
+    since_marker, err = _resolve_since_marker(args, fmt)
     if err is not None:
         return err
-
-    fmt = args.format or detect(path).name
     block_render = _block_render_for(args)
 
     def _emit(text: str) -> None:
