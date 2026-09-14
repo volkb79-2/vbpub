@@ -1522,3 +1522,16 @@ controller then used run-gate's explicit `--fresh` path from detached tree
 container is `run-gate-vbpub-r2-266908-1789353957`, under
 `dev-background.slice`, immediately capped to `NanoCpus=3000000000`; no commit
 has been made while detached.
+
+### RW-114 — 2026-09-14 02:49:02Z — CMRU mutation survivors require repair
+
+The registered CMRU release-cleanup gate reached its mutation result and
+failed with three survivors among 43 candidates: `transaction.py:65`
+`bool-const-flip` (`True->False` on the private result dataclass),
+`transaction.py:1234` `bool-const-flip` (`check=False` on defensive rebase
+abort), and `transaction.py:1253` `boolop-swap` in the abort-failure guard.
+The result is not merge evidence. A fresh Luna xhigh implementer must
+triage each survivor: add a real behavioral oracle or make an evidence-backed
+equivalence/structure change, then rerun the required final review and the
+registered gate on the new quiet tip. The worktree remains clean at
+`f6972c98`; no release or install has been attempted.
