@@ -1660,3 +1660,11 @@ files modified and no commit yet. P4's PSI-gated selftest watcher remains
 parked. CMRU's fresh final review of repair `2eff6bdd` remains pending. The
 next safe actions are to consume those results, launch the required quiet-tip
 gates, and retain the previously stated P6 fresh-r2 critical path.
+
+### RW-123 — 2026-09-14 04:04:32Z — cap P6 focused verification and keep it non-mutation
+
+P6's implementer launched its focused regression suite in the exact container
+`cgprofile-p6-focused-394169`. The controller verified that the command is
+pytest-only (not an assay mutation lane) and immediately applied the standing
+3-CPU cap; Docker reports `NanoCpus=3000000000`. This focused run is allowed to
+continue while the host PSI gate remains closed for new mutation work.
