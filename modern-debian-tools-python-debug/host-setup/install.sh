@@ -7,17 +7,17 @@
 #
 #   sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
 #
-# Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
-# it, then re-run to apply your edits). --wizard walks that seeding step
-# interactively instead (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers
-# against THIS host's own /proc/meminfo rather than the example's fixed
-# numbers, then falls through into the same render/apply logic below either
-# way. --with-baseline additionally runs the fio benchmark (~4 min of
-# saturated disk — quiet window!). --force backs up an already-installed
-# /etc/mdt/host-setup.env and re-seeds it from the current example (needed to
-# pick up newly-added variables — otherwise this script never touches a
-# config that's already there; --wizard does this backup-then-regenerate
-# automatically too, whenever a config already exists). --restart-docker will
+# Idempotent. First run requires --wizard: it produces a host-sized candidate
+# in a temporary directory, validates that candidate, and only then installs it
+# under /etc/mdt. A plain first run never persists the incomplete example.
+# --wizard walks that configuration step interactively instead
+# (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers against
+# THIS host's own /proc/meminfo rather than the example's fixed numbers, then
+# falls through into the same render/apply logic below. --with-baseline
+# additionally runs the fio benchmark (~4 min of saturated disk — quiet
+# window!). --force is accepted only with --wizard; after successful candidate
+# validation it backs up and replaces an existing /etc/mdt/host-setup.env.
+# --restart-docker will
 # automatically restart docker.socket and docker.service at the end (warning:
 # disrupts all running containers). See README.md.
 set -euo pipefail
@@ -39,6 +39,11 @@ for arg in "$@"; do
 done
 # After arg parsing so --help works unprivileged.
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
+
+if [ "$FORCE" = 1 ] && [ "$WIZARD" != 1 ]; then
+  echo "ERROR: --force requires --wizard; refusing to re-seed an unvalidated example" >&2
+  exit 2
+fi
 
 DOCKER_BIN=/usr/bin/docker
 if [ ! -x "$DOCKER_BIN" ]; then
@@ -74,35 +79,36 @@ else
 fi
 
 echo "== config =="
-mkdir -p /etc/mdt /var/lib/mdt
+CONFIG_DIR=/etc/mdt
+CONFIG_PATH="$CONFIG_DIR/host-setup.env"
 BUILDX_CONFIG_DIR=/etc/mdt/buildx
-install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
+HAD_CONFIG=0
+if [ -f "$CONFIG_PATH" ]; then
+  HAD_CONFIG=1
+fi
+
+# Keep all candidate work outside /etc/mdt. In particular, do not create the
+# destination directory, back up the old config, or persist the example until
+# the exact file that will be sourced below has passed the data-only validator.
+CANDIDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mdt-host-setup.XXXXXXXX")"
+trap 'rm -rf -- "$CANDIDATE_DIR"' EXIT
+CANDIDATE_PATH="$CANDIDATE_DIR/host-setup.env"
 if [ "$WIZARD" = 1 ]; then
-  # Runs BEFORE (instead of) the cp-based seed/re-seed below — the wizard's
-  # only contract with the rest of this script is "produce a valid
-  # /etc/mdt/host-setup.env," identical in shape to what a human hand-edit
-  # (or the plain seed below) would produce; everything downstream (render(),
-  # RENDER_VARS, unit installation) is unmodified and runs exactly as it
-  # always has against whatever the wizard wrote.
-  if [ -f /etc/mdt/host-setup.env ]; then
-    backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
-    cp /etc/mdt/host-setup.env "$backup"
-    echo "--wizard: backed up existing config to $backup before regenerating it interactively"
+  # Copy only to the safe candidate path so the wizard can use existing values
+  # as defaults without being able to damage the installed config on failure.
+  if [ "$HAD_CONFIG" = 1 ]; then
+    cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
   fi
   python3 "$HERE/mdt-host-setup-wizard.py" \
     --example "$HERE/host-setup.env.example" \
-    --output /etc/mdt/host-setup.env \
+    --output "$CANDIDATE_PATH" \
     --io-baseline-script "$HERE/scripts/mdt-io-baseline.py" \
     --install-script "$HERE/install.sh" \
     --skip-run-offer
-elif [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
-  backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
-  cp /etc/mdt/host-setup.env "$backup"
-  cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
-  echo "--force: backed up existing config to $backup, re-seeded from example — REVIEW IT and re-run to apply edits"
-elif [ ! -f /etc/mdt/host-setup.env ]; then
-  cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
-  echo "seeded /etc/mdt/host-setup.env from example — REVIEW IT and re-run to apply edits"
+elif [ "$HAD_CONFIG" = 1 ]; then
+  cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
+else
+  cp -- "$HERE/host-setup.env.example" "$CANDIDATE_PATH"
 fi
 
 # Validate the complete file before sourcing it. The wizard owns this
@@ -112,15 +118,33 @@ fi
 # MemAvailable; a bad config fails before apt, units, Docker, or systemd are
 # changed.
 if ! python3 "$HERE/mdt-host-setup-wizard.py" \
-  --validate-config /etc/mdt/host-setup.env \
+  --validate-config "$CANDIDATE_PATH" \
   --example "$HERE/host-setup.env.example" \
   --meminfo-path /proc/meminfo; then
-  echo "ERROR: /etc/mdt/host-setup.env failed strict validation; no host changes were applied" >&2
+  if [ "$HAD_CONFIG" = 0 ] && [ "$WIZARD" = 0 ]; then
+    echo "ERROR: no valid /etc/mdt/host-setup.env exists; the shipped example is incomplete" >&2
+    echo "Run ./install.sh --wizard to create and review a host-sized configuration, then re-run install.sh" >&2
+  else
+    echo "ERROR: candidate host-setup.env failed strict validation; no host policy/config changes were applied" >&2
+  fi
   exit 2
 fi
 
+# Candidate validation passed. Only now may the installed config directory,
+# backup, and replacement be touched.
+mkdir -p "$CONFIG_DIR" /var/lib/mdt
+install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
+if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
+  if [ "$HAD_CONFIG" = 1 ]; then
+    backup="$CONFIG_PATH.bak-$(date +%Y%m%dT%H%M%S)"
+    cp -- "$CONFIG_PATH" "$backup"
+    echo "backed up existing config to $backup"
+  fi
+  install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
+fi
+
 # shellcheck disable=SC1091
-. /etc/mdt/host-setup.env
+. "$CONFIG_PATH"
 
 # A config that predates a key added to host-setup.env.example since has NO
 # line for it at all (not even empty) -- render()'s own "empty/unset =
@@ -133,7 +157,7 @@ fi
 # IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
 MISSING_KEYS=""
 while IFS= read -r key; do
-  grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
+  grep -qE "^${key}=" "$CONFIG_PATH" 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
 done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
 if [ -n "$MISSING_KEYS" ]; then
   echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
