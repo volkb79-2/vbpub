@@ -143,7 +143,7 @@ if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
   install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
 fi
 
-# shellcheck disable=SC1091
+# shellcheck disable=SC1090,SC1091
 . "$CONFIG_PATH"
 
 # A config that predates a key added to host-setup.env.example since has NO
