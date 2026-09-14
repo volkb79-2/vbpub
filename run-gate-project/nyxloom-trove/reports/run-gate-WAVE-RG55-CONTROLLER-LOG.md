@@ -1965,3 +1965,15 @@ which adds the token and documents the linked-worktree invocation. Its
 targeted propagation test and dry-run passed; a live acceptance is running.
 No main files, judged mutation trees, or operator-owned dirty files were
 changed by this sidecar work.
+
+### RW-152 — 2026-09-14 08:41:03Z — use shipped assay A5 for P1 recovery
+
+The first P1 `--rejudge-outcome budget_exceeded` recovery attempt exited
+before any candidate work because the P1 judged worktree's pre-A5 assay
+source rejected that option. This is a judge-tool compatibility boundary,
+not a cgprofile verdict: B091/A5 is already shipped in assay 6.2.0. The
+recovery will therefore invoke the main checkout's assay 6.2 source while
+keeping cgprofile detached at the exact judged tree
+`c18301225be36cc3d727c8bd20136638a6985775`; no source commit or mutation
+identity changes. The failed attempt's container exited 2 and was removed;
+its stale verdict remains untouched until the corrected recovery completes.
