@@ -1437,3 +1437,13 @@ to perform the prescribed up-to-three `assay-r2 --resume` attempts from
 detached judged tree `186461de`, subject to a fresh PSI gate and immediate
 3-CPU cap on its exact container, then survivor triage and final non-mutation
 gates. It must not commit while detached and must not merge or release.
+
+### RW-107 — 2026-09-14 00:27:40Z — P2 R2 retry attempt 1 running
+
+The P2 implementer launched the first approved retry from detached judged tree
+`186461de` with `PYTEST_ADDOPTS=-p no:randomly`, `nice -n 19`, and
+`ionice -c 3`; its prelaunch run-gate reading recorded memory PSI
+`full avg10=0.28%`. This is the bare-host lane, so no Docker mutation
+container was created. The assay baseline is running under the same nice/IO
+priority; the implementer will read its verdict separately from the wrapper
+status and will switch back to the branch before any commit.
