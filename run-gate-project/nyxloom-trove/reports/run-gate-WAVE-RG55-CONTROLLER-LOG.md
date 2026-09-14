@@ -2296,3 +2296,12 @@ This is stronger evidence of host saturation than the worker-local symptom;
 it is not evidence of OOM (`docker inspect` still reports `OOMKilled=false`).
 No process or container was changed, and no new launch is permitted until the
 standing PSI gate clears.
+
+### RW-184 — 2026-09-14 14:17:20Z — no stale RG-55 gate process is consuming the host
+
+The host process audit found only the authorized P1 `python3 ./run-gate.py r2`
+among the RG-55/run-gate/assay search terms. The only live RG-55-looking
+mutation container is its exact `tester-unified:local` container; P6 and the
+combined assay supervisor have not launched containers. Therefore no stale
+RG-55 process is a safe cleanup target, and the controller leaves all existing
+workloads untouched.
