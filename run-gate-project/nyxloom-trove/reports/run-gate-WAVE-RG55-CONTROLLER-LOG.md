@@ -1869,3 +1869,14 @@ clean tip `0303a24d` after reading `full avg10=0.15%` and launched
 is active, no additional mutation container was created, and P1/P6 remain the
 only active mutation lanes. The watcher records its exit marker and caps any
 exact gate container it observes.
+
+### RW-144 — 2026-09-14 05:26:15Z — B097 R1 passes; queue the R3 canary
+
+The B097 R1 wrapper `/tmp/rg55-assay-b097-r1-watch.log` recorded
+`ASSAY_B097_R1_EXIT=0`, and its verdict JSON independently reports
+`outcome=PASS`, commit `0303a24d`, schema 11, and required branch-aware 100%
+R1 coverage. The controller then admitted the non-mutation R3 canary from
+the same quiet tip after a fresh `full avg10=4.54%` check. Persistent watcher
+PID `553845` and run PID `553849` are recorded in
+`/tmp/rg55-assay-b097-r3-watch.log`; the canary has no comparison-base
+override and has not yet produced its exit marker.
