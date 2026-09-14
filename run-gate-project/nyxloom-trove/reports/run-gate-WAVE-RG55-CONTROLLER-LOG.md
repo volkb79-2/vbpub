@@ -2374,3 +2374,12 @@ found no blocker. It ran 439 focused serial tests, 42 documentation tests,
 35 anchor checks, and fresh combined/live liveness probes; `git diff --check`
 was clean. Its committed report `e8d7a79a` was merged no-ff as
 `32690ad8`; no product backport was necessary.
+
+### RW-192 — 2026-09-14 22:08:25Z — P6 rejudge stopped, not mutation-complete
+
+The P6 rejudge container ended at `2026-09-14T21:41:44Z` with exit 4 and
+`BUDGET_EXCEEDED/LANE_TIMEOUT`. Its verdict contains all 484 candidate slots,
+but 156 remain explicitly `budget_exceeded` placeholders alongside 316 killed
+and 12 survived candidates. Therefore P6 has no active container now, but its
+r2 evidence is not accepted as fully judged; a true `--resume` mutation pass
+is still required. P1 remains the sole active mutation container.
