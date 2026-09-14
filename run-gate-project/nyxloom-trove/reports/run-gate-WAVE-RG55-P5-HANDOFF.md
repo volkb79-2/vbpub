@@ -1,4 +1,4 @@
-# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-62 transport/watch/placement, RG-56 admission)
+# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-63 transport/watch/placement, RG-56 admission)
 
 **Implementer:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
@@ -43,7 +43,7 @@ brief (controller's).
 
 ## Deliverables (commit each separately, in this order)
 
-**C1 — backlog rows.** File **RG-62** (policy author / watch consumer /
+**C1 — backlog rows.** File **RG-63** (policy author / watch consumer /
 transport seam / placement requests — mechanism, proposed contract, oracle
 sketch per row convention, provenance RW-29..RW-35) and update RG-56's
 "next wave" wording to "this package (P5)". No code.
