@@ -1698,3 +1698,13 @@ mutation. The controller verified the command and immediately applied the
 standing 3-CPU cap (`NanoCpus=3000000000`). The run's explicit `PYTEST_RC`
 marker will be read separately; no additional P6 test container is permitted
 until this one exits and the PSI gate permits it.
+
+### RW-127 — 2026-09-14 04:18:24Z — queue the fresh P1 r2 after its history report commit
+
+P1's prior round-1 reviewer report was committed as historical evidence in
+`c1830122`; the branch is clean at exact tip
+`c18301225be36cc3d727c8bd20136638a6985775`. Because assay identity is per
+tree, the old r2 verdict is not reused. A fresh registered `./run-gate.py r2`
+was queued behind memory PSI as watcher PID `432284`, log
+`/tmp/rg55-p1-r2-watch.log`. It has not launched while the PSI gate is closed;
+the exact assay container will be capped immediately when it appears.
