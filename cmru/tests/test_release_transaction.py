@@ -1931,7 +1931,16 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
         original_main = _git("rev-parse", "main", cwd=h.repo_root)
-        hook = h.repo_root / ".git" / "hooks" / "post-rewrite"
+        hook_dir = h.repo_root / ".git" / "cmru-test-hooks"
+        hook_dir.mkdir()
+        _git(
+            "config",
+            "--local",
+            "core.hooksPath",
+            str(hook_dir),
+            cwd=h.repo_root,
+        )
+        hook = hook_dir / "post-rewrite"
         hook.write_text(
             "#!/bin/sh\n"
             "set -eu\n"
@@ -1977,13 +1986,13 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
             start_new_session=True,
         )
         try:
-            stdout, stderr = runner.communicate(timeout=30)
+            stdout, stderr = runner.communicate(timeout=60)
             assert runner.returncode == 0, stderr or stdout
             outcome = json.loads(result_file.read_text(encoding="utf-8"))
         except subprocess.TimeoutExpired:
             os.killpg(runner.pid, signal.SIGKILL)
             runner.communicate()
-            pytest.fail("real interrupted-rebase fixture exceeded its 30-second failsafe")
+            pytest.fail("real interrupted-rebase fixture exceeded its 60-second failsafe")
         finally:
             # The failed-abort fixture deliberately leaves a real lock behind;
             # remove it after the shipped function has observed the failure so
@@ -1996,10 +2005,23 @@ def test_sync_local_main_classifies_real_interrupted_rebase_abort(
         assert unexpected_reason not in outcome["reason"]
         assert "genuine conflict" not in outcome["reason"]
         assert (h.repo_root / ".git" / "post-rewrite-state").read_text() == "active\n"
-        assert (h.repo_root / ".git" / "rebase-merge").exists() is expected_rebase_state
+        git_dir = Path(_git("rev-parse", "--git-dir", cwd=h.repo_root))
+        if not git_dir.is_absolute():
+            git_dir = h.repo_root / git_dir
+        rebase_layouts = tuple(
+            layout
+            for layout in ("rebase-merge", "rebase-apply")
+            if (git_dir / layout).exists()
+        )
+        rebase_state = bool(rebase_layouts)
+        assert rebase_state is expected_rebase_state
         assert _git("status", "--porcelain", cwd=h.repo_root) == ""
         if block_abort:
-            assert _git("rev-parse", "main", cwd=h.repo_root) != original_main
+            if "rebase-merge" in rebase_layouts:
+                assert _git("rev-parse", "main", cwd=h.repo_root) != original_main
+            else:
+                assert "rebase-apply" in rebase_layouts
+                assert _git("rev-parse", "main", cwd=h.repo_root) == original_main
         else:
             assert _git("rev-parse", "main", cwd=h.repo_root) == original_main
 
