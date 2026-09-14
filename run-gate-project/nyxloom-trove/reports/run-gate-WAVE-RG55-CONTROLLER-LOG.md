@@ -2330,3 +2330,12 @@ falsely reported as released.
 P1's resumable supervisor is now waiting for `memory full avg10 <= 5` and a
 mutation-slot count below two before resuming the exact judged tree
 `5fd0ef13`; no commit will be made in that detached tree during the run.
+
+### RW-187 — 2026-09-14 20:53:36Z — P1 exact-tree mutation resume relaunched
+
+The host PSI gate cleared at `full avg10=0.00` with one active mutation
+container. The detached P1 tree `5fd0ef13` was clean and resumed via the
+repository `run-gate.py r2`; its exact container is
+`run-gate-vbpub-r2-1804772-1789419205`, immediately updated to 3 CPUs. P6's
+rejudge remains the other and only mutation lane. The P1 supervisor records
+the child exit and restores the branch only after the verdict is written.
