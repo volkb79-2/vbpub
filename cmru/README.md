@@ -80,6 +80,10 @@ transaction is the pre-publish debug/recovery path; see
 `build` is local-consumption/diagnostic only; do not chain it to `publish` expecting its
 retained artifact record to be published. The safe end-to-end verb is `release`; the deliberate
 design question is tracked in [KI-10](KNOWN_ISSUES_TODO_BACKLOG.md#ki-10--cmru-build-artifacts-cannot-safely-feed-cmru-publish--open-decision-required).
+After the transaction, CMRU reports whether caller `main` was synchronized. A dirty caller
+checkout—including ignored files or directories—is left untouched before any rebase attempt,
+including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
+and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch).
 
 `cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
 it requires a project scope and `--yes` (or `--dry-run`), accepts only that project's

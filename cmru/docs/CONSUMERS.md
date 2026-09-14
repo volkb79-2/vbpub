@@ -162,6 +162,28 @@ cmru cleanup --discard-build-worktree <PATH> --yes
 retained `cmru-build-…` worktree and **never publishes** (KI-10). Do not expect
 `cmru build` then `cmru publish` to ship the reviewed artifact — use `cmru release` for that.
 
+After a release transaction, CMRU also cleans up the caller's local `main` when it can. If
+that checkout is dirty, including with tracked or untracked files, ignored files, or ignored
+directories, CMRU refuses the cleanup rebase before invoking either rebase command and leaves
+the files and local ref untouched.
+This warning does not put caller edits into the immutable remote snapshot, and
+`--allow-uncommitted` does not change that boundary. From a clean caller checkout, use the
+remedy printed by CMRU:
+
+```sh
+git status --short --ignored
+git stash -a                 # or commit/move the caller changes
+git rebase origin/main
+git stash pop                # only if the stash is the desired work
+```
+
+A real rebase conflict is reported as a conflict, separately from a dirty-checkout refusal;
+another clean-rebase failure is reported as undetermined rather than guessed to be a conflict.
+The same diagnostic is printed after a successful release, a plan refusal, or a child failure;
+the primary release result and retained-worktree behavior remain unchanged. See the normative
+[`S-CLI.5a`](SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch) contract
+and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cleanup).
+
 ---
 
 ## 4. Failure modes worth knowing before your first release
