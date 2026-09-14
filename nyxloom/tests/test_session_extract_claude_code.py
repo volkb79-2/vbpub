@@ -1132,3 +1132,14 @@ def test_update_interview_pending_ignores_non_tool_user_blocks_and_other_records
         ]}},
         pending,
     ) == "(question)"
+
+
+def test_update_interview_pending_requires_user_type_for_tool_results():
+    pending = {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "old", "content": "answer"},
+        ]}},
+        pending,
+    ) is None
+    assert pending == {"old": "old question"}
