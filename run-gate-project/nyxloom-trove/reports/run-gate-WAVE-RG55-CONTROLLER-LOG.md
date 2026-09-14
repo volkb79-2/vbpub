@@ -1571,3 +1571,19 @@ container `run-gate-vbpub-r2-rejudge-20260914-030755` is running under
 `dev-background.slice` with `NanoCpus=3000000000`. This is a continuation of
 the registered P6 R2 evidence; the branch-local run-gate limitation and the
 judge-source correction will be disclosed in the P6 report.
+
+### RW-117 — 2026-09-14 03:14:49Z — P6 identity-preserving budget retry launched
+
+The main-assay direct attempt was stopped before mutation because its newer
+judge hash rejected all 484 old records. The controller therefore preserved
+the original branch-local judge identity by moving only the two exact
+`budget_exceeded` resume records into the recoverable ignored backup
+`.assay/budget-retry-backup-rw116-20260914-031346/`. The remaining 482 records
+were left untouched; the detached tree remains exactly `5c2134ed`.
+
+After the PSI gate fell to `full avg10=4.19%`, the registered branch-local
+`./run-gate.py r2 --fresh` was launched. Exact container
+`run-gate-vbpub-r2-315586-1789355675` is running under
+`dev-background.slice` and was immediately capped to 3 CPUs. This run should
+select only the two pending candidates; its wrapper exit and assay verdict
+will be read separately.
