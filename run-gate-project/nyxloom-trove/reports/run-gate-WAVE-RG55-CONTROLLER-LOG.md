@@ -2066,3 +2066,13 @@ live `gate-full`, and mutation-of-the-config red checks. It was merged
 no-ff into `main` as `6f595186`. The separate controller duplicate gate was
 terminated and is excluded from evidence; P4 already carries the production
 config fix, and the merged proof will travel with the next run-gate release.
+
+### RW-162 — 2026-09-14 10:32:23Z — discard the stale P1 r2 after coverage failure
+
+The P1 r2 started on `88606ed0` was intentionally stopped before meaningful
+judging could occur: the package's preceding r0-r1 gate had 1153 passing
+tests but exit 2 because whole-package coverage was 99%, with uncovered
+defensive branches in `cgprofile.py`, `serve.py`, and `damon.py`. The exact
+P1 tester container `run-gate-vbpub-r2-1155345-1789380973` was captured,
+terminated, and auto-removed; its partial `exit 137` is not mutation
+evidence. A coverage repair is being added before the next quiet-tip r2.
