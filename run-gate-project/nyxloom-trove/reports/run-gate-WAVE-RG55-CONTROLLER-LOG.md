@@ -2170,3 +2170,15 @@ repairing those two findings with focused behavioral tests and documentation;
 the existing reviewed mutation evidence remains valid, and no new mutation
 lane is launched while P1/P6 occupy the estate's two mutation slots. The
 repair must receive a fresh final adversarial review before P4 merge.
+
+### RW-172 — 2026-09-14 12:52:37Z — P6 ordinary resume exhausted; rejudge required
+
+P6's supervisor completed all five ordinary `--resume` attempts. The fresh
+verdict was read only after the final child/container exited and remains
+`BUDGET_EXCEEDED/LANE_TIMEOUT` on tree `0426fd15`: the durable progress stream
+contains 484 candidates with 466 killed, 12 survived, and 6
+`budget_exceeded` records. Ordinary resume merged those six placeholders
+without executing them, so this is not a final P6 verdict. Assay 6.2.0's
+supported `--rejudge-outcome budget_exceeded` continuation is required against
+the unchanged judged tree. Its launch is deferred until memory PSI `full
+avg10` is at or below 5; P1's one active mutation container remains running.
