@@ -2510,3 +2510,16 @@ dynamic `additional_slots`; it retains the current two-container cap until a
 producer exists. The original Dewey reviewer was sent the repair for the
 required same-reviewer fix-verification round. No merge or implementation is
 authorized on this design package yet.
+
+### RW-204 — 2026-09-14 23:26:10Z — CMRU BuildKit failure repair under fresh review
+
+The failed MDT release was diagnosed as two distinct facts: BuildKit was
+OOM-killed (exit 137) while exporting its approximately 46 GiB local cache
+after the OCI export had completed, and CMRU's old ref-equality diagnostic
+incorrectly treated the pre-promotion failure as a successful no-op promotion.
+The Luna xhigh repair at `028a26667b155e8330e72a73134413ca44fbefe7` adds a
+transaction-local successful-promotion marker, regression coverage, and
+operator-facing diagnostics/docs/backlog evidence. Local and tester-unified
+coverage gates were reported green by the implementer. A fresh Luna xhigh
+adversarial reviewer was dispatched; no merge or release is authorized until
+that review accepts the marker state machine and cleanup semantics.
