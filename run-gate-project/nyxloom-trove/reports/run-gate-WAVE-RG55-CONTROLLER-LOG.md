@@ -1719,6 +1719,14 @@ The controller immediately capped both to 3 CPUs and verified
 `NanoCpus=3000000000`. This is the estate's two active container lanes; P6
 r2 remains prohibited until one is free. The P4 r1 watcher remains PSI-gated.
 
+### RW-130 — 2026-09-14 04:23:24Z — CMRU advances to coverage under the cap
+
+CMRU's assay sub-lane completed and its registered gate launched the next
+coverage sub-lane as exact container `run-gate-vbpub-coverage-437087-1789359745`.
+The controller immediately applied and verified the 3-CPU cap
+(`NanoCpus=3000000000`). P1's r2 remains the sole active mutation lane; CMRU's
+coverage lane is non-mutation and may run beside it.
+
 ### RW-128 — 2026-09-14 04:20:56Z — record the operator MDT release outcome without touching its dirty checkout
 
 The operator-owned `cmru.release.log` transaction reached its explicit
