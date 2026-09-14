@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Mapping, Sequence
+from typing import Iterator, Mapping, NamedTuple, Sequence
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -62,8 +62,7 @@ class ReleaseWorkspace:
     base: str
 
 
-@dataclass(frozen=True)
-class _SyncLocalMainResult:
+class _SyncLocalMainResult(NamedTuple):
     """The private outcome of one caller-main synchronization attempt."""
 
     ok: bool

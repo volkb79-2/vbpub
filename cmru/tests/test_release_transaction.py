@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager, nullcontext
-from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1898,27 +1899,25 @@ def test_sync_local_main_reports_conflict_when_abort_fails(monkeypatch):
         assert ["git", "rebase", "--abort"] in calls
 
 
-def test_sync_local_main_result_keeps_its_captured_outcome_immutable():
-    result = transaction._SyncLocalMainResult(False, "captured reason")
-
-    with pytest.raises(FrozenInstanceError):
-        result.ok = True
-    with pytest.raises(FrozenInstanceError):
-        result.reason = "replacement reason"
-
-    assert result.ok is False
-    assert result.reason == "captured reason"
-
-
 @pytest.mark.parametrize(
-    ("abort_returncode", "expected_reason", "unexpected_reason"),
+    ("block_abort", "expected_reason", "unexpected_reason", "expected_rebase_state"),
     [
-        (1, "in-progress state could not be aborted", "was aborted successfully"),
-        (0, "in-progress state was aborted successfully", "could not be aborted"),
+        (
+            False,
+            "in-progress state was aborted successfully",
+            "could not be aborted",
+            False,
+        ),
+        (
+            True,
+            "in-progress state could not be aborted",
+            "was aborted successfully",
+            True,
+        ),
     ],
 )
-def test_sync_local_main_classifies_active_non_conflict_after_abort_attempt(
-    monkeypatch, abort_returncode, expected_reason, unexpected_reason,
+def test_sync_local_main_classifies_real_interrupted_rebase_abort(
+    block_abort, expected_reason, unexpected_reason, expected_rebase_state,
 ):
     with _OriginAndClone() as h:
         (h.repo_root / "local.txt").write_text("local\n")
@@ -1931,34 +1930,78 @@ def test_sync_local_main_classifies_active_non_conflict_after_abort_attempt(
         _git("commit", "-q", "-m", "advance origin main", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        hook = h.repo_root / ".git" / "hooks" / "pre-rebase"
-        hook.write_text("#!/bin/sh\nexit 42\n")
-        hook.chmod(0o755)
-        states = iter([False, True])
-        monkeypatch.setattr(
-            transaction, "_rebase_in_progress", lambda _root: next(states),
+        original_main = _git("rev-parse", "main", cwd=h.repo_root)
+        hook = h.repo_root / ".git" / "hooks" / "post-rewrite"
+        hook.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'git_dir=$(git rev-parse --git-dir)\n'
+            'if test -d "$git_dir/rebase-merge" || test -d "$git_dir/rebase-apply"; then\n'
+            '    printf "active\\n" > "$git_dir/post-rewrite-state"\n'
+            'else\n'
+            '    printf "inactive\\n" > "$git_dir/post-rewrite-state"\n'
+            "fi\n"
+            + (' : > "$git_dir/index.lock"\n' if block_abort else "")
+            + 'kill -TERM "$PPID"\n',
         )
-        calls: list[list[str]] = []
-        real_run = subprocess.run
+        hook.chmod(0o755)
+        result_file = h.tmp / "sync-result.json"
+        runner_code = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "from cmru import transaction\n"
+            "result = transaction._sync_local_main_result(Path(sys.argv[1]))\n"
+            "Path(sys.argv[2]).write_text(\n"
+            "    json.dumps({'ok': result.ok, 'reason': result.reason}),\n"
+            "    encoding='utf-8',\n"
+            ")\n"
+        )
+        runner_env = os.environ.copy()
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        runner_env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (source_root, runner_env.get("PYTHONPATH", "")) if part
+        )
+        runner = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                runner_code,
+                str(h.repo_root),
+                str(result_file),
+            ],
+            cwd=h.repo_root,
+            env=runner_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = runner.communicate(timeout=30)
+            assert runner.returncode == 0, stderr or stdout
+            outcome = json.loads(result_file.read_text(encoding="utf-8"))
+        except subprocess.TimeoutExpired:
+            os.killpg(runner.pid, signal.SIGKILL)
+            runner.communicate()
+            pytest.fail("real interrupted-rebase fixture exceeded its 30-second failsafe")
+        finally:
+            # The failed-abort fixture deliberately leaves a real lock behind;
+            # remove it after the shipped function has observed the failure so
+            # the temporary repository can be discarded normally.
+            (h.repo_root / ".git" / "index.lock").unlink(missing_ok=True)
 
-        def fail_abort(argv, *args, **kwargs):
-            calls.append(list(argv))
-            if list(argv) == ["git", "rebase", "--abort"]:
-                if kwargs.get("check") is not False:
-                    raise subprocess.CalledProcessError(1, argv)
-                return SimpleNamespace(returncode=abort_returncode)
-            return real_run(argv, *args, **kwargs)
-
-        monkeypatch.setattr(transaction.subprocess, "run", fail_abort)
-
-        result = transaction._sync_local_main_result(h.repo_root)
-
-        assert result.ok is False
-        assert "without an established content conflict" in result.reason
-        assert expected_reason in result.reason
-        assert unexpected_reason not in result.reason
-        assert "genuine conflict" not in result.reason
-        assert ["git", "rebase", "--abort"] in calls
+        assert outcome["ok"] is False
+        assert "without an established content conflict" in outcome["reason"]
+        assert expected_reason in outcome["reason"]
+        assert unexpected_reason not in outcome["reason"]
+        assert "genuine conflict" not in outcome["reason"]
+        assert (h.repo_root / ".git" / "post-rewrite-state").read_text() == "active\n"
+        assert (h.repo_root / ".git" / "rebase-merge").exists() is expected_rebase_state
+        assert _git("status", "--porcelain", cwd=h.repo_root) == ""
+        if block_abort:
+            assert _git("rev-parse", "main", cwd=h.repo_root) != original_main
+        else:
+            assert _git("rev-parse", "main", cwd=h.repo_root) == original_main
 
 
 def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():
