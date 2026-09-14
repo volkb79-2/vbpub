@@ -2028,3 +2028,12 @@ then the assay snapshot-side check appears unable to resolve that symbolic ref
 after snapshot materialization. B096 is not merged. A fresh Luna xhigh repair
 implementer is dispatched from `assay-B096-BRIEF-2.md`; this is a real gate
 failure, not waived evidence.
+
+### RW-158 — 2026-09-14 09:37:54Z — RG-26 duplicate wrapper terminated
+
+The controller's corrected RG-26 gate wrapper was started after the delegated
+implementer had already launched the authoritative `gate-full --base main`
+run. The duplicate wrapper was terminated by its exact recorded PIDs; the
+implementer's original gate was left untouched and remains the only RG-26 gate
+evidence. The initial wrapper had already failed before launching because its
+working directory was unset; neither wrapper result is evidence.
