@@ -1438,6 +1438,16 @@ detached judged tree `186461de`, subject to a fresh PSI gate and immediate
 3-CPU cap on its exact container, then survivor triage and final non-mutation
 gates. It must not commit while detached and must not merge or release.
 
+### RW-108 — 2026-09-14 00:29:31Z — clean B096 gate retry launched
+
+The prior B096 retry completed `RUN_GATE_EXIT=0` and all terminal phases, but
+was excluded as clean evidence because its launch PSI was above threshold. A
+condition-guarded fresh launch then read `full avg10=2.79%` and started the
+same unchanged B096 tip. Its exact container is `heuristic_jones`, under
+`dev-background.slice`, immediately capped at `NanoCpus=3000000000`. This is
+the clean-evidence candidate; its wrapper marker and terminal phases remain
+pending.
+
 ### RW-107 — 2026-09-14 00:27:40Z — P2 R2 retry attempt 1 running
 
 The P2 implementer launched the first approved retry from detached judged tree
