@@ -2366,3 +2366,11 @@ The required SPEC-V8 Appendix D.6 note is present on main in
 by the amendment commits. It correctly remains labeled a pending operator
 note for the next v8 review round; RG-55 does not rewrite it into a completed
 v8 feature or touch the operator's CIU round-4 files.
+
+### RW-191 — 2026-09-14 22:06:56Z — merged-assay sidecar ACCEPT
+
+The fresh Luna xhigh review of the merged assay B092/B098/B096/B097 delta
+found no blocker. It ran 439 focused serial tests, 42 documentation tests,
+35 anchor checks, and fresh combined/live liveness probes; `git diff --check`
+was clean. Its committed report `e8d7a79a` was merged no-ff as
+`32690ad8`; no product backport was necessary.
