@@ -2263,3 +2263,13 @@ the already-prohibitive PSI, not proof of a CMRU code defect. The controller
 did not touch the operator job, stop any container, or file a speculative
 backlog fix; future CMRU release behavior will be re-evaluated after this
 build has a real terminal status.
+
+### RW-181 — 2026-09-14 14:01:45Z — Python's subprocess timeout works in control
+
+The P1 run's persisted header proves the 600-second bound is declared, while
+the candidate workers have exceeded it. A low-priority, non-pytest control
+using the same cockpit Python runtime and `subprocess.run(..., timeout=2)`
+raised `TimeoutExpired` at 2.01 seconds. Therefore this is not a generic
+Python timeout failure; it remains an unresolved candidate/runner or host
+interaction to diagnose after the live judged run, and no active process was
+changed.
