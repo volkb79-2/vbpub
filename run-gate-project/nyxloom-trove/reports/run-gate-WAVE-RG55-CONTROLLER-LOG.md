@@ -2200,3 +2200,11 @@ commit `ea3c248a` on branch `rg55-p5-handoff-prep`: its title and C1 now use
 RG-63, leaving P4's RG-62 flaky-test row unambiguous. This documentation
 commit is not merged or dispatched yet; it will be carried into the P5 branch
 after P4 and P6 are released, as required by the wave sequence.
+
+### RW-175 — 2026-09-14 13:08:26Z — retire silent P4 review session
+
+The fresh Luna xhigh P4 reviewer was given a bounded review/checkpoint prompt
+after five minutes without a report and still produced no filesystem artifact
+or response in the following minute. It was explicitly closed. No repository
+file, gate, daemon, or mutation state was changed; the final adversarial review
+will be performed fresh after P4's post-repair R2 and package gates are green.
