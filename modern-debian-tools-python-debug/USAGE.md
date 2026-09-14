@@ -18,49 +18,55 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
 
 `RELEASE_IMAGE_FLOW` controls the release path:
 
-- `push` is the default release mode. It publishes the governed BuildKit output
-  directly without loading it into dockerd's image store.
+- `load` is the shipped/default source-first release mode. It builds each target
+  once to a local OCI layout, then the later `--push` phase publishes that exact
+  layout with digest verification. The historical name does not mean a daemon
+  image-store load, and this path does not use `skopeo`.
+- `push` is an optional direct-registry mode. It publishes the governed BuildKit
+  output directly during `--build`; the later push phase is a no-op.
 - `repack` is an optional compression experiment. It builds to OCI tar streams,
   extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
   (default `2GB`), validates the candidate by importing it through BuildKit,
   and only then publishes it. It does not load the original image into dockerd
   and does not use `skopeo`. The affected image currently fails this gate due
   to the repacker defect recorded in the architecture guide.
-- `load` keeps the daemon-first split for local-only validation.
 
 The release config toggle is `RELEASE_IMAGE_FLOW`; `REPACK_TARGET_SIZE`
 controls the slice size used by the repack flow.
 
 ### Builder governance (`BUILDX_BUILDER`)
 
-Release builds use a resource-confined, **named** buildx builder rather than
-whatever builder happens to be the current default. `cmru.toml` owns the
-limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
-automatically recreates a project-owned builder whose driver or limits drifted,
-and fails closed if Docker does not apply the configured values.
+Every MDT devcontainer build and release build requires
+`BUILDX_BUILDER=mdt-managed` with
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`. The host installer
+maintains the rootless `mdt-buildkitd.service` in `dev-buildkitd.slice` and
+creates the durable Buildx `remote` node after the service socket is ready.
+`scripts/ensure-release-builder.sh` only verifies that contract; it cannot
+create or repair an ungoverned worker.
 
-Do not create or update the release builder by copying a `docker buildx create`
-command from this guide. Run the normal build entry point; it reads the current
-name and limits from `cmru.toml`, creates the builder when absent, repairs
-configuration drift, and verifies Docker's applied limits before building.
+Do not copy a generated `docker buildx create` command. Run host setup first,
+then the normal build entry point. The in-container finalizer safely reuses the
+same named remote and fails clearly if either environment variable, endpoint,
+or builder identity is inconsistent. `docker build` delegates to Buildx with
+the explicit `BUILDX_BUILDER` selection, and `docker buildx build` uses the same
+selection unless an operator explicitly overrides it (which MDT release hooks
+reject).
 
 Caveats:
 
-- The `cgroup-parent` Buildx driver option is not relied upon with Docker's
-  systemd cgroup driver. The release instead verifies the container leaf's
-  memory, memory+swap, CPU shares, and CPU quota. True placement in a specific
-  host slice requires a host-managed BuildKit service and the Buildx `remote`
-  driver.
-- I/O caps (e.g. read/write IOPS) are not expressible via buildx driver-opts at all; if you need
-  them, apply them host-side against the running `buildx_buildkit_<name>_*` container's cgroup
-  (the same mechanism host operators use for any other container — see
-  [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
-  (cgroups/slices)" for the underlying primitives).
-- Seeing `dockerd` in `system.slice/docker.service` is normal. The governed
-  `docker-container` builder puts the CPU- and memory-heavy BuildKit worker in
-  a separate generated container scope, where Docker enforces the values from
-  `cmru.toml`. Plain `docker build` does not select this named builder and
-  therefore bypasses that project-owned confinement.
+- The service is a plain `docker run --cgroup-parent=dev-buildkitd.slice`.
+  The design does not rely on Buildx's container-driver `cgroup-parent` option.
+- I/O caps (for example read/write IOPS) are not expressible via Buildx driver
+  options. The canonical worker receives its host-side caps from
+  `dev-buildkitd.slice` and its `mdt-buildkitd.service` placement; no generated
+  Buildx worker cgroup is part of this path. A `buildx_buildkit_*` container is
+  an accidental/non-canonical worker covered by the host guard and watcher, not
+  the worker to inspect for an MDT build. See
+  [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource
+  governance (cgroups/slices)" for the underlying primitives.
+- Seeing `dockerd` in `system.slice/docker.service` is normal. The managed
+  BuildKit worker is the separately-labelled `mdt-buildkitd` container in
+  `dev-buildkitd.slice`; Dockerfile execution is performed by that remote.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
   `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
   priority, and the caller's cgroup. The default does not impose a virtual
@@ -88,7 +94,7 @@ Environment configuration:
 Optional overrides (environment variables):
 
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
-- `RELEASE_IMAGE_FLOW` (`push` is the default, `repack` is the validated optional compression lane, `load` is daemon-first local compatibility mode)
+- `RELEASE_IMAGE_FLOW` (`load` is the shipped/default source-first OCI-layout lane, `push` is optional direct registry export, `repack` is the optional compression lane)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
 - `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
@@ -154,15 +160,16 @@ To do both in one command:
 When `RELEASE_IMAGE_FLOW=push` or `repack`, the push step becomes a no-op because
 publication happens during the build phase. The canonical in-image manifest is
 exported through the governed builder; it is not loaded into Docker's local
-image store. `docker-repack` changes digests, so evidence from an optional
-repack run must refer to the artifact that was actually published. If its
-validation fails, retain the default `push` lane rather than copying an invalid
-OCI layout to the registry.
+image store. In the default `load` lane, the push phase publishes the exact
+build output and verifies its registry digest. `docker-repack` changes digests,
+so evidence from an optional repack run must refer to the artifact that was
+actually published. If its validation fails, retain the default `load` lane
+rather than copying an invalid OCI layout to the registry.
 
-In the non-release `load` mode, the later push is a second Bake invocation.
-BuildKit checks its cache, but changed inputs can rebuild layers and the result
-is unrepacked. In the default `push` mode, publication already happens during
-the build phase.
+The `load` lane is not a second Bake invocation: the later push consumes the
+layouts produced by the build phase. Build-once identity is therefore preserved
+even when a later push is retried. In `push` mode, publication already happens
+during the build phase.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

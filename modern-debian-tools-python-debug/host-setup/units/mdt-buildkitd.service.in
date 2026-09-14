@@ -70,6 +70,9 @@ RuntimeDirectoryMode=0777
 ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
 ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
 ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
+  --label io.volkb79.mdt.buildkit.managed=true \
+  --label io.volkb79.mdt.buildkit.builder=mdt-managed \
+  --label io.volkb79.mdt.buildkit.slice=dev-buildkitd.slice \
   --cgroup-parent=dev-buildkitd.slice \
   --device /dev/fuse \
   --security-opt seccomp=unconfined \

@@ -50,7 +50,7 @@ and the [storage-driver selection guide](https://docs.docker.com/engine/storage/
 | Capability | Legacy `overlay2` graphdriver store | containerd image store |
 | --- | --- | --- |
 | Single-platform images and normal containers | Yes | Yes |
-| Store a complete multi-platform image/index locally | No; an external `docker-container` Buildx builder can build and push it without loading it | Yes |
+| Store a complete multi-platform image/index locally | No; a separate Buildx builder can build and push it without loading it | Yes |
 | Store BuildKit provenance and SBOM attestations with the local image | No complete image-index model | Yes |
 | Default filesystem implementation | Linux OverlayFS through `overlay2` | Linux OverlayFS through the `overlayfs` snapshotter |
 | Alternative snapshotters | No | Architecture supports snapshotters such as stargz for lazy pulling and nydus/dragonfly for other distribution models |
@@ -63,11 +63,13 @@ The [multi-platform build guide](https://docs.docker.com/build/building/multi-pl
 also explains why the classic store cannot load a complete manifest list even
 though a separate Buildx builder can publish one directly to a registry.
 
-For MDT this means the current governed `docker-container` Buildx builder is
-not made obsolete. It remains useful for isolated cache and resource control.
-The containerd store would make the daemon itself a better OCI consumer and
-local inspection target; it does not automatically flatten images, improve the
-Dockerfile, or make a repacker correct.
+For MDT, the canonical build worker is the host-managed `mdt-managed` remote at
+`unix:///run/mdt-buildkitd/buildkitd.sock`, with its service container in
+`dev-buildkitd.slice`. Its persistent BuildKit cache remains separate from the
+Docker daemon image store; the containerd store does not replace or migrate
+that remote cache. The containerd store would make the daemon itself a better
+OCI consumer and local inspection target; it does not automatically flatten
+images, improve the Dockerfile, or make a repacker correct.
 
 “Supports lazy snapshotters” is also not the same as “all pulls become lazy.”
 The default remains the `overlayfs` snapshotter. A remote/lazy snapshotter has
@@ -95,7 +97,7 @@ docker info --format '{{json .DriverStatus}}'
 docker system df -v
 docker ps -a --size
 docker buildx ls
-docker buildx du --builder mdt-governed-v1
+docker buildx du --builder mdt-managed
 findmnt -T /var/lib/docker
 df -hT /var/lib/docker
 ```
@@ -230,9 +232,10 @@ image store is not available with user-namespace remapping enabled.
 3. Restore persistent data only when required. Named volumes/bind mounts may
    still exist independently of the image-store metadata, but verify each path,
    owner and service contract rather than assuming it.
-4. Recreate or reselect governed Buildx builders and verify their resource
-   limits and cache ownership. Do not assume the daemon image-store switch
-   migrated a `docker-container` builder's separate cache.
+4. Re-establish the host-managed `mdt-managed` remote and verify the
+   `mdt-buildkitd` service's resource limits, endpoint, and cache ownership.
+   Do not assume the daemon image-store switch migrated that separate remote
+   cache.
 5. Run stack health, application smoke, restart and reboot tests. Include an MDT
    devcontainer cold pull/rebuild and first-connect timing.
 6. Verify multi-platform/index and attestation behavior with a known image. The

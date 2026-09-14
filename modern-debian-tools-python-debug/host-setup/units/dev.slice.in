@@ -46,7 +46,13 @@ MemoryZSwapWriteback=@DEV_ZSWAP_WRITEBACK@
 # proportional redistribution, to dev-interactive.slice and
 # dev-background.slice too -- both rendered from the SAME
 # DEV_MEMORY_MIN_GUARANTEED_CEILING env var for exactly this reason.
+# DEV_MEMORY_MIN_GUARANTEED_CEILING is the authoritative dev.slice MemoryMin
+# and is deliberately shared with dev-memory_min_guaranteed.slice. The three
+# other root controls have their own DEV_MEMORY_* keys below.
 MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
+MemoryLow=@DEV_MEMORY_LOW@
+MemoryHigh=@DEV_MEMORY_HIGH@
+MemoryMax=@DEV_MEMORY_MAX@
 #
 # Static boot-window fallbacks (deliberately tight — mdt-host-slices.service
 # overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the

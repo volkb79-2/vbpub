@@ -7,17 +7,17 @@
 #
 #   sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
 #
-# Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
-# it, then re-run to apply your edits). --wizard walks that seeding step
-# interactively instead (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers
-# against THIS host's own /proc/meminfo rather than the example's fixed
-# numbers, then falls through into the same render/apply logic below either
-# way. --with-baseline additionally runs the fio benchmark (~4 min of
-# saturated disk — quiet window!). --force backs up an already-installed
-# /etc/mdt/host-setup.env and re-seeds it from the current example (needed to
-# pick up newly-added variables — otherwise this script never touches a
-# config that's already there; --wizard does this backup-then-regenerate
-# automatically too, whenever a config already exists). --restart-docker will
+# Idempotent. First run requires --wizard: it produces a host-sized candidate
+# in a temporary directory, validates that candidate, and only then installs it
+# under /etc/mdt. A plain first run never persists the incomplete example.
+# --wizard walks that configuration step interactively instead
+# (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers against
+# THIS host's own /proc/meminfo rather than the example's fixed numbers, then
+# falls through into the same render/apply logic below. --with-baseline
+# additionally runs the fio benchmark (~4 min of saturated disk — quiet
+# window!). --force is accepted only with --wizard; after successful candidate
+# validation it backs up and replaces an existing /etc/mdt/host-setup.env.
+# --restart-docker will
 # automatically restart docker.socket and docker.service at the end (warning:
 # disrupts all running containers). See README.md.
 set -euo pipefail
@@ -40,6 +40,25 @@ done
 # After arg parsing so --help works unprivileged.
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+if [ "$FORCE" = 1 ] && [ "$WIZARD" != 1 ]; then
+  echo "ERROR: --force requires --wizard; refusing to re-seed an unvalidated example" >&2
+  exit 2
+fi
+
+DOCKER_BIN=/usr/bin/docker
+if [ ! -x "$DOCKER_BIN" ]; then
+  echo "ERROR: $DOCKER_BIN is unavailable; install Docker Engine before applying MDT host setup" >&2
+  exit 2
+fi
+if ! "$DOCKER_BIN" info >/dev/null 2>&1; then
+  echo "ERROR: Docker is unavailable or unreachable; start dockerd and re-run install.sh" >&2
+  exit 2
+fi
+if ! "$DOCKER_BIN" buildx version >/dev/null 2>&1; then
+  echo "ERROR: Docker Buildx is unavailable; install/enable the Buildx CLI plugin and re-run install.sh" >&2
+  exit 2
+fi
+
 echo "== reactive per-container cap watcher: inotify availability check =="
 # mdt-dev-cap-watcher.py needs a working inotify_init1() — true on any
 # kernel since 2.6.27, but checked explicitly rather than let a confusing
@@ -60,36 +79,72 @@ else
 fi
 
 echo "== config =="
-mkdir -p /etc/mdt /var/lib/mdt
+CONFIG_DIR=/etc/mdt
+CONFIG_PATH="$CONFIG_DIR/host-setup.env"
+BUILDX_CONFIG_DIR=/etc/mdt/buildx
+HAD_CONFIG=0
+if [ -f "$CONFIG_PATH" ]; then
+  HAD_CONFIG=1
+fi
+
+# Keep all candidate work outside /etc/mdt. In particular, do not create the
+# destination directory, back up the old config, or persist the example until
+# the exact file that will be sourced below has passed the data-only validator.
+CANDIDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mdt-host-setup.XXXXXXXX")"
+trap 'rm -rf -- "$CANDIDATE_DIR"' EXIT
+CANDIDATE_PATH="$CANDIDATE_DIR/host-setup.env"
 if [ "$WIZARD" = 1 ]; then
-  # Runs BEFORE (instead of) the cp-based seed/re-seed below — the wizard's
-  # only contract with the rest of this script is "produce a valid
-  # /etc/mdt/host-setup.env," identical in shape to what a human hand-edit
-  # (or the plain seed below) would produce; everything downstream (render(),
-  # RENDER_VARS, unit installation) is unmodified and runs exactly as it
-  # always has against whatever the wizard wrote.
-  if [ -f /etc/mdt/host-setup.env ]; then
-    backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
-    cp /etc/mdt/host-setup.env "$backup"
-    echo "--wizard: backed up existing config to $backup before regenerating it interactively"
+  # Copy only to the safe candidate path so the wizard can use existing values
+  # as defaults without being able to damage the installed config on failure.
+  if [ "$HAD_CONFIG" = 1 ]; then
+    cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
   fi
   python3 "$HERE/mdt-host-setup-wizard.py" \
     --example "$HERE/host-setup.env.example" \
-    --output /etc/mdt/host-setup.env \
+    --output "$CANDIDATE_PATH" \
     --io-baseline-script "$HERE/scripts/mdt-io-baseline.py" \
     --install-script "$HERE/install.sh" \
     --skip-run-offer
-elif [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
-  backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
-  cp /etc/mdt/host-setup.env "$backup"
-  cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
-  echo "--force: backed up existing config to $backup, re-seeded from example — REVIEW IT and re-run to apply edits"
-elif [ ! -f /etc/mdt/host-setup.env ]; then
-  cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
-  echo "seeded /etc/mdt/host-setup.env from example — REVIEW IT and re-run to apply edits"
+elif [ "$HAD_CONFIG" = 1 ]; then
+  cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
+else
+  cp -- "$HERE/host-setup.env.example" "$CANDIDATE_PATH"
 fi
+
+# Validate the complete file before sourcing it. The wizard owns this
+# non-interactive validator too, so a hand-edited file cannot bypass the
+# same memory hierarchy, live aggregate, and closed-vocabulary checks used by
+# --wizard. It parses the file as data (not shell), and reads this host's live
+# MemAvailable; a bad config fails before apt, units, Docker, or systemd are
+# changed.
+if ! python3 "$HERE/mdt-host-setup-wizard.py" \
+  --validate-config "$CANDIDATE_PATH" \
+  --example "$HERE/host-setup.env.example" \
+  --meminfo-path /proc/meminfo; then
+  if [ "$HAD_CONFIG" = 0 ] && [ "$WIZARD" = 0 ]; then
+    echo "ERROR: no valid /etc/mdt/host-setup.env exists; the shipped example is incomplete" >&2
+    echo "Run ./install.sh --wizard to create and review a host-sized configuration, then re-run install.sh" >&2
+  else
+    echo "ERROR: candidate host-setup.env failed strict validation; no host policy/config changes were applied" >&2
+  fi
+  exit 2
+fi
+
+# Candidate validation passed. Only now may the installed config directory,
+# backup, and replacement be touched.
+mkdir -p "$CONFIG_DIR" /var/lib/mdt
+install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
+if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
+  if [ "$HAD_CONFIG" = 1 ]; then
+    backup="$CONFIG_PATH.bak-$(date +%Y%m%dT%H%M%S)"
+    cp -- "$CONFIG_PATH" "$backup"
+    echo "backed up existing config to $backup"
+  fi
+  install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
+fi
+
 # shellcheck disable=SC1091
-. /etc/mdt/host-setup.env
+. "$CONFIG_PATH"
 
 # A config that predates a key added to host-setup.env.example since has NO
 # line for it at all (not even empty) -- render()'s own "empty/unset =
@@ -102,11 +157,28 @@ fi
 # IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
 MISSING_KEYS=""
 while IFS= read -r key; do
-  grep -qE "^${key}=" /etc/mdt/host-setup.env 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
+  grep -qE "^${key}=" "$CONFIG_PATH" 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
 done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
 if [ -n "$MISSING_KEYS" ]; then
-  echo "WARN: your /etc/mdt/host-setup.env predates these keys:${MISSING_KEYS} — the rendered unit(s) using them will be unbounded (directive dropped, not defaulted). Add them from host-setup.env.example (see README.md \"Upgrading a host that already runs mdt host-setup\" for the additive sequence), then re-run this script. (--force/--wizard also pick them up, but re-render/reactivate the WHOLE estate from the example's numbers live — see the same README section before using either on an already-tuned host.)"
+  echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
+  echo "Add them from host-setup.env.example (or use --wizard), review the result, then re-run install.sh." >&2
+  exit 2
 fi
+
+case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
+  terminate|report-only) ;;
+  *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
+esac
+for _required_var in DEV_BUILDKITD_IMAGE DEV_MEMORY_HIGH DEV_MEMORY_MAX \
+  DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
+  DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
+  DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX \
+  DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
+  if [ -z "${!_required_var:-}" ]; then
+    echo "ERROR: $_required_var is empty; refusing to render an unbounded governed slice" >&2
+    exit 2
+  fi
+done
 
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
@@ -211,17 +283,18 @@ fi
 
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
-DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_INTERACTIVE_MEMORY_LOW \
+DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
+DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
 DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_INTERACTIVE_CPU_WEIGHT DEV_INTERACTIVE_CPU_QUOTA \
 DEV_INTERACTIVE_IO_WEIGHT DEV_INTERACTIVE_ZSWAP_WRITEBACK \
-DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
+DEV_BACKGROUND_MEMORY_MIN DEV_BACKGROUND_MEMORY_LOW DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX \
 DEV_BACKGROUND_CPU_WEIGHT DEV_BACKGROUND_CPU_QUOTA DEV_BACKGROUND_IO_WEIGHT \
 DEV_BACKGROUND_OOM_PRESSURE_LIMIT DEV_BACKGROUND_ZSWAP_WRITEBACK \
-DEV_MEMORY_MIN_GUARANTEED_CEILING \
-DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
+DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_MEMORY_MIN_GUARANTEED_LOW DEV_MEMORY_MIN_GUARANTEED_HIGH DEV_MEMORY_MIN_GUARANTEED_MAX \
+DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_GATES_MEMORY_SWAP_MAX \
 DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESSURE_LIMIT \
 DEV_GATES_ZSWAP_WRITEBACK \
-DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
+DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
@@ -256,6 +329,7 @@ fi
 # see scripts/mdt-io-cap-watcher.sh for why it can't use the same mechanism
 # as mdt-dev-cap-watcher.py above.
 install -m 0644 "$HERE/units/mdt-io-cap-watcher.service" /etc/systemd/system/mdt-io-cap-watcher.service
+install -m 0644 "$HERE/units/mdt-buildkit-guard.service" /etc/systemd/system/mdt-buildkit-guard.service
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
@@ -346,8 +420,11 @@ install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply
 install -m 0755 "$HERE/scripts/mdt-io-cap-watcher.sh"  /usr/local/sbin/mdt-io-cap-watcher.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
 install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
+install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
+install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
+install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
 if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-dev-cap-watcher.py" /usr/local/sbin/mdt-dev-cap-watcher.py
 fi
@@ -367,11 +444,49 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
+for _slice in dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-gates.slice dev-buildkitd.slice; do
+  _load_state=$(systemctl show "$_slice" --property=LoadState --value)
+  _fragment=$(systemctl show "$_slice" --property=FragmentPath --value)
+  if [ "$_load_state" != loaded ] || [ -z "$_fragment" ]; then
+    echo "ERROR: rendered $_slice is not a loaded systemd unit (LoadState=$_load_state FragmentPath=$_fragment)" >&2
+    exit 2
+  fi
+done
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
-  dev-gates.slice dev-buildkitd.slice 2>/dev/null || true
+  dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
-systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker
+if systemctl is-active --quiet mdt-buildkitd.service; then
+  echo "restarting mdt-buildkitd.service; active builds will be interrupted"
+  systemctl restart mdt-buildkitd.service
+else
+  systemctl enable --now mdt-buildkitd.service
+fi
+systemctl enable mdt-buildkitd.service
+for _attempt in $(seq 1 30); do
+  [ -S /run/mdt-buildkitd/buildkitd.sock ] && break
+  sleep 1
+done
+if [ ! -S /run/mdt-buildkitd/buildkitd.sock ]; then
+  echo "ERROR: mdt-buildkitd.service did not expose /run/mdt-buildkitd/buildkitd.sock" >&2
+  systemctl status mdt-buildkitd.service --no-pager || true
+  exit 2
+fi
+python3 "$HERE/scripts/mdt-buildkit-guard.py" \
+  --config /etc/mdt/host-setup.env --docker "$DOCKER_BIN" \
+  --verify-managed-container mdt-buildkitd
+python3 "$HERE/../scripts/mdt_buildkit_builder.py" configure \
+  --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock \
+  --buildx-config "$BUILDX_CONFIG_DIR"
+# Buildx's shared state contains only the public remote-node registration. Keep
+# the directory root-owned and readable, but not writable, for ordinary users:
+# their exported BUILDX_BUILDER selects this node directly and never falls back
+# to a per-user Docker builder. Any user who can use Docker can read the
+# registration; only root can change which endpoint the host profile selects.
+find "$BUILDX_CONFIG_DIR" -xdev -type d -exec chown root:root {} + -exec chmod 0755 {} +
+find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0644 {} +
+systemctl enable --now mdt-buildkit-guard.service
+systemctl restart mdt-buildkit-guard.service
 if [ "$INOTIFY_OK" = 1 ]; then
   systemctl enable --now mdt-dev-cap-watcher.service  # reactive per-container MemoryMax
 fi

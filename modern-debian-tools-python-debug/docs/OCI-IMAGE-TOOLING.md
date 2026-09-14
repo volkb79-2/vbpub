@@ -36,6 +36,11 @@ Every MDT and dstdns image stored in a conforming registry already has an OCI or
 Docker-distribution manifest; there is nothing extra to opt into. What should be
 adopted is explicit digest evidence:
 
+MDT's canonical build backend is the host-managed `mdt-managed` remote at
+`unix:///run/mdt-buildkitd/buildkitd.sock`; its persistent cache is the cache to
+measure for MDT builds. The host service is `mdt-buildkitd` in
+`dev-buildkitd.slice`, not a generated Buildx worker.
+
 - record the published index digest and per-platform manifest digest after the
   final mutation/repack step;
 - verify the tag resolves to the expected digest before reporting a release;
@@ -130,13 +135,13 @@ Measure the relevant stores instead:
 
 ```bash
 docker system df -v
-docker buildx du --builder mdt-governed-v1
+docker buildx du --builder mdt-managed
 docker history --no-trunc IMAGE
 docker image inspect IMAGE --format '{{len .RootFS.Layers}}'
 ```
 
 At the time of this review, Docker reported about 276.8 GB of reclaimable image
-data and the named MDT builder reported about 32.2 GB reclaimable cache.
+data and the `mdt-managed` remote reported about 32.2 GB reclaimable cache.
 Flattening a newly published image does not garbage-collect either store. An
 explicit reviewed retention/prune policy addresses accumulation; repacking
 addresses distribution size and topology.

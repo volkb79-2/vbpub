@@ -288,8 +288,22 @@ fi
 ) || fail "_bytes_of regression case failed (B7) -- see stderr above"
 pass "check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the correct byte count and returns ? (never a bash syntax error, never a silent mis-compare) for non-byte-comparable forms (50%, bogus)"
 
+# --- focused BuildKit/config/wizard identity tests --------------------------
+GOVERNANCE_TEST_OUT="$TMP/buildkit-governance-tests.log"
+if python3 "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
+  GOV_RC=0
+else
+  GOV_RC=$?
+fi
+if [ "$GOV_RC" -ne 0 ]; then
+  sed -n '1,240p' "$GOVERNANCE_TEST_OUT"
+  fail "focused BuildKit governance tests failed"
+fi
+echo "GOVERNANCE_TEST_EXIT=$GOV_RC"
+pass "focused BuildKit guard identity, policy, builder idempotency, memory constraints, and template invariants"
+
 # --- bash -n + shellcheck (if available) on every shell script this package touches --
-SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-apply-dev-caps.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-dev-cap-watcher.py" "${BASH_SOURCE[0]}")
+SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-apply-dev-caps.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-dev-cap-watcher.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
     *.py) python3 -m py_compile "$s" || fail "py_compile failed: $s" ;;

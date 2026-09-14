@@ -19,6 +19,8 @@ Before=slices.target
 # auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
 # dev.slice's own derived ceiling) unless set explicitly — see
 # host-setup.env.example.
+MemoryMin=@DEV_BACKGROUND_MEMORY_MIN@
+MemoryLow=@DEV_BACKGROUND_MEMORY_LOW@
 MemoryHigh=@DEV_BACKGROUND_MEMORY_HIGH@
 MemoryMax=@DEV_BACKGROUND_MEMORY_MAX@
 MemorySwapMax=@DEV_BACKGROUND_MEMORY_SWAP_MAX@

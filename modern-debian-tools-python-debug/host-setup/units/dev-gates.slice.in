@@ -21,6 +21,8 @@ Before=slices.target
 # admission (RG-56 in run-gate, S16.6.1 in ciu v8) keys on; its
 # memory.pressure is THE pressure signal admission reads (D-6: "swap usage
 # is never the gate; PSI is").
+MemoryMin=@DEV_GATES_MEMORY_MIN@
+MemoryLow=@DEV_GATES_MEMORY_LOW@
 MemoryHigh=@DEV_GATES_MEMORY_HIGH@
 MemoryMax=@DEV_GATES_MEMORY_MAX@
 # Relaxed swap ceiling, same reasoning as dev-background.slice's own: a gate

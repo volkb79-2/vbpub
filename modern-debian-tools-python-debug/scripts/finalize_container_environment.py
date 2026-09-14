@@ -63,6 +63,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, "/usr/local/lib")
+try:
+    from mdt_buildkit_builder import (
+        BuilderError,
+        MANAGED_BUILDER,
+        MANAGED_ENDPOINT,
+        ensure_managed_builder,
+    )
+except ImportError:
+    # Source-tree tests import this module before the Dockerfile has installed
+    # the shared helper.
+    from scripts.mdt_buildkit_builder import (  # type: ignore
+        BuilderError,
+        MANAGED_BUILDER,
+        MANAGED_ENDPOINT,
+        ensure_managed_builder,
+    )
+
 # ── tiny logging (no color when not a tty) ──────────────────────────────────
 _TTY = sys.stdout.isatty()
 SHARED_PROFILE = Path("/usr/local/share/modern-debian-tools-python-debug/profile.sh")
@@ -273,83 +291,39 @@ def setup_vscode_settings(env_type: str) -> None:
         warn(f"vscode settings: {e}")
 
 
-def setup_buildkit_builder() -> None:
-    """Register the host-managed BuildKit worker (mdt host-setup
-    plan-buildkitd-service.md) as the default buildx builder, when a consumer
-    has opted in via BUILDKIT_HOST — optional, mirrors ciu's
-    ship-and-encourage-but-never-enforce pattern (TODO.md "Principle"): a
-    devcontainer that hasn't mounted the socket / set the env var gets a
-    silent no-op here, never a failed postCreate.
+def setup_buildkit_builder(*, required: bool = False) -> bool:
+    """Validate and reuse the one host-managed remote builder.
 
-    Without this, plain `docker build`/`docker buildx build` fall through to
-    the daemon's embedded builder, which host-setup/README.md documents as
-    NOT reliably honoring this host's IO governance for its own build-step
-    execution (verified live 2026-09-12: a build-step exec cgroup landed at a
-    malformed, unnested name outside dev.slice entirely). The host-managed
-    worker sidesteps that because it's a plain `docker run
-    --cgroup-parent=dev-buildkitd.slice`, never created through any Buildx
-    driver.
+    A devcontainer must carry both variables explicitly. Any partial or
+    different configuration is an error; generic finalization never falls
+    back to Docker's embedded builder or creates a per-container worker.
     """
+    builder = os.environ.get("BUILDX_BUILDER", "").strip()
     endpoint = os.environ.get("BUILDKIT_HOST", "").strip()
-    if not endpoint:
-        return
-    if shutil.which("docker") is None:
-        warn("BUILDKIT_HOST is set but docker is not on PATH — skipped buildx builder setup")
-        return
-
-    builder_name = "host-buildkitd"
-    inspected = subprocess.run(
-        ["docker", "buildx", "inspect", builder_name],
-        capture_output=True, text=True,
-    )
-    exists = inspected.returncode == 0
-
-    if exists:
-        registered_endpoint = next(
-            (
-                line.partition(":")[2].strip()
-                for line in inspected.stdout.splitlines()
-                if line.lstrip().startswith("Endpoint:")
-            ),
-            "",
+    if not builder and not endpoint:
+        if required:
+            err("devcontainer must set BUILDX_BUILDER=mdt-managed and BUILDKIT_HOST=" + MANAGED_ENDPOINT)
+            return False
+        return True
+    if builder != MANAGED_BUILDER or endpoint != MANAGED_ENDPOINT:
+        err(
+            "inconsistent managed BuildKit environment: expected "
+            f"BUILDX_BUILDER={MANAGED_BUILDER} and BUILDKIT_HOST={MANAGED_ENDPOINT}, "
+            f"got BUILDX_BUILDER={builder or '<empty>'} BUILDKIT_HOST={endpoint or '<empty>'}"
         )
-        if registered_endpoint != endpoint:
-            warn(
-                f"buildx builder '{builder_name}' points at {registered_endpoint or '<unknown>'}, "
-                f"not current BUILDKIT_HOST {endpoint} — recreating it"
-            )
-            removed = subprocess.run(
-                ["docker", "buildx", "rm", builder_name],
-                capture_output=True, text=True,
-            )
-            if removed.returncode != 0:
-                warn(
-                    f"could not remove stale buildx builder '{builder_name}': "
-                    f"{removed.stderr.strip()[:200]} — plain docker build stays on the "
-                    "existing builder"
-                )
-                return
-            exists = False
-
-    if not exists:
-        created = subprocess.run(
-            ["docker", "buildx", "create", "--name", builder_name, "--driver", "remote", endpoint],
-            capture_output=True, text=True,
-        )
-        if created.returncode != 0:
-            warn(
-                f"could not create buildx builder '{builder_name}' ({endpoint}): "
-                f"{created.stderr.strip()[:200]} — plain docker build stays on the "
-                "ungoverned embedded builder"
-            )
-            return
-        ok(f"buildx builder '{builder_name}' created ({endpoint})")
-
-    used = subprocess.run(["docker", "buildx", "use", builder_name], capture_output=True, text=True)
-    if used.returncode == 0:
-        ok(f"buildx default builder set to '{builder_name}' — docker build/docker buildx build use it with no --builder flag")
-    else:
-        warn(f"could not set '{builder_name}' as the default buildx builder: {used.stderr.strip()[:200]}")
+        return False
+    docker = shutil.which("docker")
+    if docker is None:
+        err("BUILDX_BUILDER is configured but docker is not on PATH; install Docker/Buildx or fix the devcontainer")
+        return False
+    try:
+        info(f"verifying remote builder {MANAGED_BUILDER} at {MANAGED_ENDPOINT}")
+        ensure_managed_builder(docker, MANAGED_ENDPOINT, create_if_missing=True)
+    except (BuilderError, OSError) as exc:
+        err(str(exc))
+        return False
+    ok(f"using host-managed BuildKit builder {MANAGED_BUILDER}")
+    return True
 
 
 def verify_base_tools() -> None:
@@ -512,7 +486,7 @@ def repair_docker_socket_relay() -> None:
          "unusable; fall back to DOCKER_HOST=unix:///var/run/docker-host.sock")
 
 
-def run_generic_steps(envd: dict) -> None:
+def run_generic_steps(envd: dict) -> bool:
     info("generic mdt steps…")
     setup_shell_bootstrap()
     setup_customization_root()
@@ -520,8 +494,9 @@ def run_generic_steps(envd: dict) -> None:
     setup_editor_links()
     setup_vscode_settings(envd["env_type"])
     repair_docker_socket_relay()
-    setup_buildkit_builder()
+    buildkit_ok = setup_buildkit_builder(required=envd["env_type"] == "devcontainer")
     verify_base_tools()
+    return buildkit_ok
 
 
 # ── consumer hook discovery + execution ─────────────────────────────────────
@@ -602,17 +577,18 @@ def main() -> int:
     }
 
     consumer_ok = True
+    generic_ok = True
     if not args.no_hooks:
         consumer_ok &= run_hooks("pre", dc_dir, hook_env, strict)
     if not args.hooks_only and (consumer_ok or not strict):
-        run_generic_steps(envd)
+        generic_ok = run_generic_steps(envd)
     if not args.no_hooks and (consumer_ok or not strict):
         consumer_ok &= run_hooks("post", dc_dir, hook_env, strict)
 
-    if consumer_ok:
+    if consumer_ok and generic_ok:
         ok("finalize complete")
         return 0
-    err("finalize completed with consumer-hook failures (see above)")
+    err("finalize did not complete successfully (consumer hooks or managed BuildKit setup failed)")
     return 1
 
 

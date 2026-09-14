@@ -6,6 +6,54 @@ CPU, memory, swap, and I/O. The release configuration is code: defaults and
 limits live in [`cmru.toml`](../cmru.toml), not in an operator's
 shell history.
 
+## Managed BuildKit backend
+
+Decision (2026-09-14): `BUILDX_BUILDER=mdt-managed` is canonical for every
+MDT devcontainer build and every release build. `BUILDKIT_HOST` is the matching
+authoritative endpoint, `unix:///run/mdt-buildkitd/buildkitd.sock`. Host setup
+renders and maintains a rootless `mdt-buildkitd.service` in
+`dev-buildkitd.slice`, labels and verifies that service container, waits for
+its socket, then creates or verifies exactly one durable Buildx node:
+
+```text
+mdt-managed  --driver remote-->  unix:///run/mdt-buildkitd/buildkitd.sock
+                                      |
+                                      +-- mdt-buildkitd.service
+                                          docker run --cgroup-parent=dev-buildkitd.slice
+```
+
+The service's plain Docker cgroup placement is authoritative. The design does
+not use the Buildx container-driver `cgroup-parent` option and does not create
+`buildx_buildkit_*` workers for release or devcontainer builds. `docker build`
+and `docker buildx build` receive the explicit `BUILDX_BUILDER` selection; the
+release hook rejects any other builder or endpoint. The finalizer reuses the
+named remote idempotently and fails closed on partial/inconsistent environment.
+
+Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`.
+The MDT template and derived dstdns container explicitly carry both exports
+and a mandatory `/run/mdt-buildkitd` socket mount, so a missing host setup is a
+visible container-start failure rather than an embedded-Builder fallback.
+
+The installed Docker-events guard inspects every reserved
+`buildx_buildkit_*`/`buildkit_buildkit_*` candidate. It approves only matching
+name, configured image, `dev-buildkitd.slice` cgroup parent, and service labels.
+The policy vocabulary is `terminate` (default: remove an unapproved worker) or
+`report-only` (log without removal). Invalid/missing policy is an error; an
+inspect failure is indeterminate and stops the watcher for systemd to restart.
+
+The host wizard follows the same fail-closed resource model. It is slice-first,
+asks all four memory controls for every governed slice, permits an explicit
+empty value only where the operator chooses no directive, and compares parsed
+binary units in KiB. It rejects and re-prompts until configured values satisfy
+`MemoryMin <= MemoryLow <= MemoryHigh <= MemoryMax`, and checks child
+MemoryHigh/Max/Min totals against live `MemAvailable`. `MemoryMin` is hard
+hierarchical protection; `MemoryLow` is soft best-effort protection;
+`MemoryHigh` is soft reclaim throttling; `MemoryMax` is the hard RAM ceiling.
+The existing `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the sole root `dev.slice`
+MemoryMin key and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`
+are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are
+walked inside each slice's flow.
+
 Current registry publication uses OCI media types and forced native zstd level
 3 compression. BuildKit preserves the normal layer topology and attaches max
 provenance plus an SPDX SBOM. These settings live in `cmru.toml`. See
@@ -15,17 +63,22 @@ between OCI manifests, attestations and MDT's human manifest.
 
 ## Canonical release path
 
-`RELEASE_IMAGE_FLOW=push` is the configured release path. The governed BuildKit
-worker publishes its build result directly to GHCR, without loading it into the
-Docker daemon image store and without requiring `skopeo`.
+`RELEASE_IMAGE_FLOW=load` is the shipped release mode. Despite the historical
+name, this is the source-first OCI-layout path: the governed BuildKit worker
+builds each target once to a local layout, and the later push phase publishes
+that exact layout with digest verification. It does not load the image into the
+Docker daemon image store and does not require `skopeo`. Set
+`RELEASE_IMAGE_FLOW=push` for the optional direct registry-export path, or
+`RELEASE_IMAGE_FLOW=repack` for the optional OCI repack path.
 
 ```mermaid
 flowchart LR
     A[build-push.py / CMRU] --> B[resolve upstream versions]
     B --> C[stage pinned artifacts and wheels]
     C --> D[Buildx Bake group: all]
-    D --> E[BuildKit registry export]
-    E --> H[GHCR immutable and floating tags]
+    D --> E[BuildKit OCI-layout export]
+    E --> F[Digest-verified crane push]
+    F --> H[GHCR immutable and floating tags]
     H --> I[visibility sync and release metadata]
 ```
 
@@ -38,11 +91,12 @@ The phases are:
 2. `docker-bake.hcl` defines the target graph. The `all` group is the release
    matrix; `everything` is a broader local-development matrix.
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
-   release matrix with `--push`. BuildKit performs Dockerfile execution, cache
-   lookup, layer compression, and registry export inside its limited worker.
+   release matrix as one target at a time with an OCI-layout output. BuildKit
+   performs Dockerfile execution, cache lookup, layer compression, and local
+   layout export inside its limited worker.
 4. `build-push.py` extracts the canonical in-image manifests, records release
-   metadata, and the later CMRU push step becomes a no-op because publication
-   already occurred during the build step.
+   metadata, then pushes the same layouts with `crane` and verifies the
+   registry digest. No second image build is introduced.
 
 ### Optional OCI-layout repack lane
 
@@ -82,7 +136,7 @@ rejected it during the validation import, before any tag was pushed. Until the
 repacker defect is fixed and covered by an automated structural regression
 test, the optional `repack` lane is expected to fail closed for the affected
 image. Do not bypass this check with a raw OCI-layout copy: that would upload
-the invalid layer rather than repair it. The default `push` lane is the safe
+the invalid layer rather than repair it. The shipped `load` lane is the safe
 unrepacked release path.
 
 The source and repacked layouts are temporary release scratch. Do not place
@@ -91,11 +145,11 @@ and destination layouts coexist.
 
 ### Cache ownership
 
-The named `docker-container` builder owns a persistent BuildKit cache distinct
-from Docker's default builder. Its first release is therefore cold even if a
-different builder recently built the same Dockerfile; later releases reuse its
-layers and cache mounts. Recreating the builder to correct configuration drift
-also discards that builder-local cache.
+The named `mdt-managed` remote owns a persistent BuildKit cache distinct from
+Docker's embedded builder. Its first release is therefore cold even if another
+builder recently built the same Dockerfile; later releases reuse its layers
+and cache mounts. Host service replacement may interrupt active builds, but the
+named remote is preserved and verified rather than silently recreated.
 
 Volatile OCI labels such as revision, creation time, and release version are
 applied after all filesystem instructions in the Dockerfile. Changing release
@@ -126,52 +180,49 @@ On the intended systemd/cgroup-v2 host, the relationship is typically:
 ```mermaid
 flowchart TD
     R[cgroup root] --> S[system.slice]
-    R --> I[dev-interactive.slice]
-    R --> B[dev-background.slice]
+    R --> V[dev.slice]
+    V --> I[dev-interactive.slice]
+    V --> B[dev-background.slice]
+    V --> K[dev-buildkitd.slice]
     S --> D[docker.service / dockerd]
-    S --> K[BuildKit docker scope<br/>4 GiB RAM, 12 GiB RAM+swap, 4 CPU quota]
+    K --> W[mdt-buildkitd.service<br/>mdt-managed remote]
     I --> V[MDT devcontainer]
     V --> C[build-push / docker-buildx / tar]
     V --> P[docker-repack<br/>one target, concurrency 2]
     B --> T[dstdns stacks and test-runner]
 ```
 
-The exact Docker scope name is runtime-generated. With systemd's cgroup driver,
-the builder is normally a separate `docker-<id>.scope` under `system.slice`, a
-sibling of `docker.service`, even though `dockerd` is its process-level parent.
-Its hard leaf limits still apply. `dev-background.slice` is shown for context: the
-dstdns stack uses it, while local release processes inherit the invoking
-devcontainer's `dev-interactive.slice`.
+The managed service container is intentionally in `dev-buildkitd.slice`, while
+`dockerd` remains in `system.slice`. The `mdt-managed` remote endpoint is a
+Unix socket mounted into the devcontainer; no generated Buildx worker scope is
+part of the normal path. `dev-background.slice` is shown for context: dstdns
+uses it, while release orchestration runs in the invoking devcontainer's
+`dev-interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
-| Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | The container backing the configured `BUILDX_BUILDER` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
+| Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | `mdt-buildkitd` in `dev-buildkitd.slice` via the `mdt-managed` remote | Host systemd `MemoryMin/Low/High/Max`, swap, CPU, IO, and the service cgroup parent |
 | Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `dev-interactive.slice` |
 | Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count and compression concurrency; an optional diagnostic virtual-memory ceiling is disabled by default |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
 | Registry upload | BuildKit worker, `dockerd`, network stack | Builder limits still apply; host networking and Docker service work remain outside the builder leaf |
 
-`scripts/ensure-release-builder.sh` creates `mdt-governed-v1` with the
-`docker-container` driver and verifies its driver and every configured hard
-limit before each release. Because it is a project-owned builder, a stale or
-mismatched instance is automatically recreated before work starts. The
-important distinction is:
+`scripts/ensure-release-builder.sh` verifies `mdt-managed` and its exact remote
+endpoint before each release. It has no create/remove path, so a stale or
+mismatched instance fails before work starts. The important distinction is:
 
 - A systemd **slice** controls an aggregate workload tier. The shipped
   devcontainer template requests `dev-interactive.slice`; dstdns stack containers
   normally request `dev-background.slice`. Slice policy is installed and owned by
   the host.
-- A Docker **container cgroup leaf** can enforce hard memory and CPU limits even
-  though its scope is in `system.slice`. That is how the governed BuildKit
-  worker is bounded; `dockerd` itself is not given the builder's 4 GiB cap.
-- `cgroup-parent` is not used for the Buildx container. With Docker's systemd
-  cgroup driver, Buildx's `cgroup-parent` driver option is not reliable. True
-  placement of buildkitd in `dev-background.slice` would require a host-managed
-  buildkitd service in that slice and a Buildx `remote` driver.
+- The managed service's Docker container is placed directly in
+  `dev-buildkitd.slice`; `dockerd` itself remains in `system.slice`.
+- The Buildx node is `remote`, so no Buildx worker container or Buildx
+  `cgroup-parent` driver option participates in placement.
 - Docker has no Buildx driver option for the host's dynamic per-device I/O
-  ceilings. A host setup service may additionally find
-  `buildx_buildkit_*` containers and apply leaf I/O controls. That is an
-  optional host policy, not something this repository silently assumes.
+  ceilings. The installed guard terminates or reports accidental
+  `buildx_buildkit_*`/`buildkit_buildkit_*` containers according to the
+  explicit host policy.
 
 The default controls are deliberately layered. The BuildKit worker's hard
 cgroup limits contain a runaway build. Repack is a local process: worker count
@@ -262,7 +313,8 @@ No single `top` row represents the entire build. Use the phase and cgroup to
 attribute it:
 
 - High CPU in `buildkitd` or its executor descendants is a Dockerfile build,
-  layer export, or publication phase. Check the named builder container first.
+  layer export, or publication phase. Check the `mdt-buildkitd` service
+  container first.
 - High CPU in the `docker-buildx` client can occur while it receives and writes
   an OCI output stream. That client is local to the caller and inherits the
   caller's slice; Dockerfile executors still run in the governed worker.
@@ -299,21 +351,22 @@ Resident memory, page cache, and swap are also different signals: a high
 Useful live checks:
 
 ```bash
-# Resolve names from release configuration; do not copy a generated container
-# name from another host or an old run.
+# The stable node name and endpoint are the release contract.
 builder=$(python3 -c \
   'import tomllib; print(tomllib.load(open("cmru.toml", "rb"))["env"]["BUILDX_BUILDER"])')
-builder_container="buildx_buildkit_${builder}0"
+endpoint=$(python3 -c \
+  'import tomllib; print(tomllib.load(open("cmru.toml", "rb"))["env"]["BUILDKIT_HOST"])')
 
-# Builder identity, driver and current endpoint
+# Builder identity, driver and current endpoint; must be remote + endpoint.
 docker buildx inspect "$builder"
 
-# Hard limits actually applied to the builder leaf
-docker inspect "$builder_container" --format \
-  'memory={{.HostConfig.Memory}} memory+swap={{.HostConfig.MemorySwap}} shares={{.HostConfig.CpuShares}} quota={{.HostConfig.CpuQuota}}/{{.HostConfig.CpuPeriod}}'
+# Host service identity and cgroup placement
+docker inspect mdt-buildkitd --format \
+  'image={{.Config.Image}} cgroup={{.HostConfig.CgroupParent}} labels={{json .Config.Labels}}'
+systemctl show dev-buildkitd.slice mdt-buildkitd.service -p ControlGroup -p MemoryCurrent -p MemoryHigh -p MemoryMax
 
 # Resource use by the governed worker
-docker stats --no-stream "$builder_container"
+docker stats --no-stream mdt-buildkitd
 
 # Attribute host processes by command and cgroup
 ps -eo pid,ppid,pcpu,pmem,cgroup,comm,args --sort=-pcpu | head -40
@@ -325,10 +378,9 @@ systemctl show dev-interactive.slice dev-background.slice \
 ```
 
 Run the name-resolution commands from the
-`modern-debian-tools-python-debug` directory. The generated container name is
-an implementation detail of the Docker-container driver; the configured
-builder name in `cmru.toml` is the durable interface used by the release
-scripts.
+`modern-debian-tools-python-debug` directory. `mdt-managed` is the durable
+remote node name and `mdt-buildkitd` is the stable service-container name;
+neither is a generated Buildx worker name.
 
 Run the `ps` and `systemctl` checks on the host. A container commonly has a
 private PID and cgroup namespace, so host PIDs from `docker inspect` may not
@@ -362,18 +414,20 @@ cat /sys/fs/cgroup/io.stat        # cumulative bytes and operations by device
 cat /sys/fs/cgroup/io.pressure
 ```
 
-On the host, obtain the builder's real cgroup path from its PID rather than
-guessing its slice:
+On the host, obtain the managed worker's real cgroup path from its service
+container PID rather than guessing its slice:
 
 ```bash
-pid=$(docker inspect "$builder_container" --format '{{.State.Pid}}')
+pid=$(docker inspect mdt-buildkitd --format '{{.State.Pid}}')
 cat "/proc/$pid/cgroup"
-systemd-cgls --all | rg 'buildx_buildkit|dockerd|docker-repack|build-push'
+systemd-cgls --all | rg 'mdt-buildkitd|dockerd|docker-repack|build-push'
 ```
 
-This is the authoritative way to distinguish the builder's limited Docker
-scope from `docker.service` and from the invoking devcontainer. The cgroup path
-can differ with the host's Docker cgroup driver and systemd configuration.
+This is the authoritative way to distinguish the managed worker's limited
+service-container scope from `docker.service` and the invoking devcontainer.
+The cgroup path can differ with the host's Docker cgroup driver and systemd
+configuration. If an accidental `buildx_buildkit_*` container exists, inspect
+it only as a guard violation; it is not the canonical worker.
 
 The host-wide PSI files under `/proc/pressure/` reveal global contention, while
 the cgroup files above attribute it to a workload. Zswap is also host-wide
@@ -403,19 +457,23 @@ lane.
 | `RELEASE_IMAGE_FLOW` | Behavior | Intended use |
 | --- | --- | --- |
 | `repack` | Bake to OCI layouts, repack, validate structurally and by importing, then publish; later push step is a no-op | Optional compression experiment; currently blocked for the affected image by the known repacker defect above |
-| `load` | Build with `--load`; a later push performs a separate unrepacked registry build | Local compatibility/debugging only, not a release gate |
-| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Canonical release lane |
+| `load` | Build once to OCI layouts; later push publishes those exact layouts with digest verification | Shipped/default source-first release lane |
+| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Optional direct-registry lane |
 
-`load` exists only to troubleshoot compatibility. `push` retains the original
-BuildKit layer topology; that smaller optimization scope is the safety tradeoff
-while repack validation is blocked.
+`load` is the default because it leaves a reviewable local artifact between
+build and publication while preserving build-once identity. `push` retains the
+original BuildKit layer topology and is the simpler optional direct-export
+lane; `repack` changes layer topology and therefore remains gated separately.
 
 ## Configuration and prerequisites
 
 The governed defaults are in the `[env]` table of
 [`cmru.toml`](../cmru.toml):
 
-- `BUILDX_BUILDER` and `MDT_BUILDER_*` control the BuildKit worker.
+- `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
+  select the host-managed remote; host-setup's slice config controls its
+  resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is `terminate` or
+  `report-only`.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
   `REPACK_CONCURRENCY`, `REPACK_COMPRESSION_LEVEL`, and `REPACK_VMEM_KB`
   control repack. `REPACK_VMEM_KB` accepts `unlimited` or a positive numeric
@@ -443,9 +501,9 @@ layer topology.
 
 ## Failure boundaries
 
-- If the named builder differs from the configured driver or limits,
-  `ensure-release-builder.sh` recreates it before the build. If Docker still
-  does not apply the requested limits, the release fails closed.
+- If `mdt-managed` is absent, points at another endpoint, or is not a reachable
+  `remote` node, `ensure-release-builder.sh` fails before the build. It never
+  removes or creates a replacement worker.
 - If a Bake target has no tags or OCI source layout, publication stops before a
   partial target can be reported as successful.
 - A candidate repacked layout must be successfully imported and unpacked by

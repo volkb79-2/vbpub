@@ -110,6 +110,45 @@ BFQ's 1..1000 range, so "1000 vs 100" would be 1.81:1, not 10:1 — express IO
 ratios by lowering the loser, never raising the winner.
 [CGROUP-NOTES.md §BFQ](CGROUP-NOTES.md#bfq-caveats) has the mapping table.
 
+## Managed BuildKit backend (mandatory)
+
+The installer owns one rootless `mdt-buildkitd.service` in
+`dev-buildkitd.slice` and registers one durable Buildx remote builder named
+`mdt-managed` at `unix:///run/mdt-buildkitd/buildkitd.sock`. This is the only
+normal backend for MDT builds, including release builds. The service is a
+plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
+Buildx container-driver cgroup option.
+
+The installer verifies Docker and Buildx before changing host state, waits for
+the service socket, verifies the service container's image/cgroup/labels, then
+creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
+with `BUILDX_BUILDER=mdt-managed` and the socket endpoint. The devcontainer
+template repeats both variables explicitly and bind-mounts `/run/mdt-buildkitd`;
+the mount is mandatory, so a missing host prerequisite fails container start.
+
+The accidental-worker guard is an event-driven systemd service. It inspects
+reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
+the exact managed service identity (name, configured image, cgroup parent, and
+labels), and logs every decision. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` is the
+closed vocabulary: `terminate` (default) removes an unapproved BuildKit worker;
+`report-only` detects and logs it without removal. Missing or invalid policy
+configuration stops the guard rather than weakening the boundary.
+
+The wizard is slice-first. For every governed slice it asks `MemoryMin`,
+`MemoryLow`, `MemoryHigh`, and `MemoryMax`; an operator may enter an explicit
+empty value where that slice should omit a directive. It explains `MemoryMin`
+as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
+`MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
+It converts systemd binary units to KiB and rejects/re-prompts unless every
+configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
+high/max/min totals against live host facts. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
+is the single authoritative root `dev.slice` MemoryMin and is mirrored on the
+guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX` are the other root controls.
+Each child slice flow includes `CPUWeight`, `CPUQuota`, `IOWeight`, swap, and
+zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
+for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
+pasteable consumer configuration.
+
 ## dev-gates: why
 
 `dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`
@@ -285,31 +324,21 @@ once this package's `install.sh` has run. Rebuilding a devcontainer from
 an updated template against a host that has not yet been upgraded will
 fail to start, not merely run with a missing feature.
 
-**Fresh host, never ran mdt host-setup before:** the existing "Quick start"
-section below already covers you end to end — it now seeds/renders
-`dev-gates.slice` and the `/run/cgprofile` tmpfiles.d entry along with
-everything else, one pass, nothing additional to do. Only a host that ran
-`install.sh` BEFORE `dev-gates.slice` existed needs the different sequence
-immediately below.
+**Fresh host, never ran mdt host-setup before:** run `install.sh --wizard`.
+The wizard writes a host-sized candidate in temporary storage, validates it,
+and only then lets the installer create `/etc/mdt`, render units, and activate
+the policy. A plain first run refuses the intentionally incomplete example and
+does not persist it. Only a host that ran `install.sh` BEFORE `dev-gates.slice`
+existed needs the upgrade sequence immediately below.
 
 ## Upgrading a host that already runs mdt host-setup
 
 **From before `dev-gates.slice` existed:** a plain re-run of `install.sh`
-alone renders `dev-gates.slice` UNBOUNDED, not merely "using old defaults" —
-verified by reading `install.sh` end to end (round-1 review B4): its
-`--force` branch (`cp` to back up, `cp` the example over `/etc/mdt/
-host-setup.env`, echo "REVIEW IT and re-run to apply edits") has **no
-`exit`** and falls straight through into sourcing the fresh config and
-running apt-get, every unit render, the `daemon.json` merge, `daemon-
-reload`, `systemctl start` of every slice and `systemctl enable --now` of
-the timer/buildkitd/watcher — i.e. `--force` doesn't just re-seed the file,
-it ACTIVATES the example's 16 GiB-host numbers estate-wide, live, in the
-same run. On a host that isn't 16 GiB that is a real, if brief,
-misconfiguration of every OTHER tier too, not only the new one — avoid it
-for a routine key-pickup. `install.sh` now also prints a named `WARN` for
-every key your `/etc/mdt/host-setup.env` predates (see below), so this is
-no longer a silent trap even if you do forget a step. The additive sequence
-below is one render pass and never discards existing tuning:
+validates the existing config before touching host state and refuses if it is
+missing any newly required key. It never replaces an existing config with the
+incomplete example. To preserve existing tuning while adding the new fields,
+use `--wizard`; it presents existing values as defaults, validates the
+completed candidate, then backs up and installs it before rendering:
 
 ```bash
 sudo cp /etc/mdt/host-setup.env /etc/mdt/host-setup.env.bak-$(date +%F)
@@ -320,8 +349,7 @@ sudo vi /etc/mdt/host-setup.env    # paste in the missing keys (the
                                     # dev-gates.slice block, DEV_CAP_GATES_
                                     # MEMORY_MAX); size them for this host
 sudo ./install.sh                  # ONE render/install/activate pass --
-                                    # also prints a WARN naming any key
-                                    # you're still missing
+                                    # now fails if a declared key is missing
 sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
                                     # memory.max/high now FAIL loudly (not
                                     # print unbounded silently) if a key is
@@ -329,39 +357,32 @@ sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
 ```
 Then rebuild/recreate your devcontainer (above).
 
-`sudo ./install.sh --force` remains available, but only for a scheduled
-maintenance window (it re-renders and ACTIVATES every tier from the
-example's own numbers live, across the whole estate, the instant it runs —
-see above) — never for a routine key pickup. `sudo ./install.sh --wizard`
-is the interactive alternative to the manual diff/edit steps above: it
-backs up the same way, then walks every section it knows with your
-EXISTING values pre-filled as defaults so Enter reproduces prior tuning
-(the new `DEV_GATES_*`/`WATCHER_PER_CONTAINER_GATES_MEMORY_MAX` keys are not walked
-individually — it carries them through from the example verbatim since it
-also does not re-render/activate until it falls through into the same
-render/install/daemon-reload/start/sweep pass as the plain `install.sh`
-step above; review `/etc/mdt/host-setup.env`'s new sections afterwards the
-same way).
+`--force` is accepted only together with `--wizard`; after the candidate
+passes validation it permits the normal backup-and-replace operation. This
+keeps the explicit re-seed intent without ever activating example values
+blindly. The wizard walks every section it knows with existing values
+pre-filled as defaults, and rejects hierarchy or live-host aggregate
+violations before rendering.
 
 ## Quick start
 
 ```bash
-sudo ./install.sh                  # seeds /etc/mdt/host-setup.env on first run
-sudo vi /etc/mdt/host-setup.env    # size the tiers for THIS host
+sudo ./install.sh --wizard         # preferred: derive live host values and write the config
+# or: edit a complete, host-specific /etc/mdt/host-setup.env, then run install.sh
 sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~4 min saturated IO — quiet window!)
 sudo mdt-host-check.sh             # verify
 ```
 
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, IO cap
-percentages, per-tier memory, the memory-min-guaranteed ceiling, buildkitd,
-Docker daemon.json keys) and proposes starting numbers scaled off THIS
-host's own live `/proc/meminfo` instead of the shipped example's fixed
-figures — Enter accepts the shown default at every step, and it falls
-through into the same render/apply logic either way. Both paths write the
-same `/etc/mdt/host-setup.env`; the raw file is still there for operators
-who'd rather edit it directly (`--wizard` never replaces it silently — it
-only runs when you pass the flag, and backs up any existing config first).
+percentages, every governed slice's four memory controls, CPU/IO weights,
+the memory-min-guaranteed ceiling, buildkitd, Docker daemon.json keys) and
+proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
+instead of the shipped example's fixed figures — Enter accepts the shown
+default at every step, and it falls through into the same render/apply logic
+after candidate validation. The manual path requires a complete valid config;
+the wizard writes its candidate only after validation and backs up any existing
+config only after that point.
 
 Then recreate the containers that should be governed (placement is
 create-time): rebuild the devcontainer, `docker compose up -d --force-recreate`
@@ -373,6 +394,9 @@ the test stacks.
 |---|---|---|
 | `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-gates.slice.in`, `units/dev-memory_min_guaranteed.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
+| `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
+| `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
+| `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-host-slices.service` | systemd (enabled) | boot-time apply of the runtime half |
 | `units/mdt-host-slices.timer.in` | systemd (enabled) | periodic re-apply (default 5min) — now a backstop, see "Persistence model" |
@@ -391,6 +415,14 @@ the test stacks.
 
 ## Persistence model — why units AND a service/timer
 
+The managed BuildKit service and named remote are persistent state. Re-rendering
+the service and restarting it interrupts active builds; the installer says so
+and waits for the new socket before verifying/reusing the builder. Existing
+`mdt-managed` drift is refused rather than deleted. Schedule the restart, run
+host setup, then rebuild devcontainers so their mandatory socket mount and
+explicit environment are present. A running devcontainer is not required to
+register the builder.
+
 Reboot-survival works in three layers; each exists because the previous one
 cannot express the next:
 
@@ -407,16 +439,13 @@ cannot express the next:
      `dev-background.slice` combined) — `systemctl set-property --runtime`,
      reapplied each boot;
    - **per-container** caps for `buildx_buildkit_*`, `*test-runner*` and
-     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and buildkit
-     additionally get `IOWeight=1` — the devcontainer does **not**, it is the
-     IDE): docker scopes are *transient*, they only exist while the container
-     runs, so no unit file can pre-configure them, and buildkit workers are
-     created on demand by buildx AND — source-verified, see
-     [BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md) — Buildx's
-     `cgroup-parent` driver-opt is unreliable under the systemd cgroup driver,
-     so they can never be placed under `dev.slice` via compose either; this
-     is still their only *placement-independent* governance, full stop, not a
-     backstop for a placement mechanism that also works. **This sweep is the
+     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and any accidental
+     buildkit worker additionally get `IOWeight=1` — the devcontainer does
+     **not**, it is the IDE): docker scopes are *transient*, they only exist
+     while the container runs, so no unit file can pre-configure them. The
+     normal MDT backend is the host-managed `mdt-buildkitd` service in
+     `dev-buildkitd.slice`; these per-container rules cover non-MDT containers
+     and accidental workers that should not exist. **This sweep is the
      BACKSTOP, not the primary mechanism:** `mdt-io-cap-watcher.service`
      applies the same caps within the same second a matching container
      starts, via `docker events` rather than periodic re-scanning — see
@@ -454,11 +483,10 @@ DIFFERENT reactive mechanism than `mdt-dev-cap-watcher.py`'s inotify watch
 FIXED, already-known cgroup path (`dev-interactive.slice`/
 `dev-background.slice`/`dev-gates.slice`) because its targets ARE reliably
 placed there at create time — it only reacts to attributes WITHIN a cgroup
-Docker already placed correctly. `buildx_buildkit_*` workers are the case
-layer 2's own bullet above already documents as NOT reliably placed
-anywhere (Buildx's `cgroup-parent` driver-opt unreliable under the systemd
-cgroup driver) — there is no fixed path to inotify-watch for them in the
-first place. Verified live 2026-09-12: one landed at a malformed, unnested
+Docker already placed correctly. `buildx_buildkit_*` workers are
+accidental/non-canonical; unlike the managed `mdt-buildkitd` service they have
+no fixed path to inotify-watch. A historical placement example from
+2026-09-12 landed at a malformed, unnested
 `system.slice/dev-background.slice:docker:<id>`, a name that only *looks*
 like the real slice. `docker events` sidesteps this because it comes from
 the daemon's own bookkeeping regardless of where a container's cgroup ended
@@ -478,39 +506,20 @@ running as backstop for the restart window.
    (D-G8, see "What gets installed") exists specifically to put a floor under
    that failure mode.
 
-**The `daemon.json` `cgroup-parent` default does not reach BuildKit's own
-build-step execution (verified live, 2026-09-12).** It correctly places a
-normal `docker run`/`docker create` container (confirmed: the devcontainer
-itself lands at `dev.slice/dev-interactive.slice/docker-<id>.scope` with the
-expected `io.max`) — but a plain `docker build` or `docker buildx build`
-using the **default `docker` driver** (no separate buildx worker container at
-all; the build executes inside `dockerd`'s own embedded BuildKit) does not
-reliably land its RUN-step exec cgroup under the real `dev.slice` hierarchy
-either: caught one live mid-build at a malformed, unnested
-`system.slice/dev-background.slice:docker:<id>` — a flat, colon-suffixed name
-that only *looks* like the real `dev-background.slice`, sitting outside
-`dev.slice` entirely and outside any of this host's IO governance. This is
-the same class of problem already documented above for Buildx's
-`docker-container` driver (`cgroup-parent` unreliable under the systemd
-cgroup driver) — it isn't limited to separately-created buildx workers; the
-default, no-driver-specified build path has it too.
+**Historical Docker/BuildKit placement finding (verified live,
+2026-09-12).** The `daemon.json` `cgroup-parent` default correctly places
+ordinary `docker run`/`docker create` containers, but it did not reliably govern
+BuildKit's embedded or container-driver worker execution under this host's
+systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 
-**Use `mdt-buildkitd` for anything that actually needs governed build IO** —
-it's the one build path confirmed working, precisely because it sidesteps
-this: a plain `docker run --cgroup-parent=dev-buildkitd.slice`
-(`mdt-buildkitd.service`), never through any Buildx driver, so there's no
-BuildKit-internal cgroup-naming logic in the way — `dev-buildkitd.slice`
-shows the correct `io.max`/`io.weight` every time. `templates/devcontainer.json`
-ships the socket bind mount + `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`;
-once a consumer's devcontainer sets `BUILDKIT_HOST`,
-`scripts/finalize_container_environment.py`'s `setup_buildkit_builder()`
-registers the `host-buildkitd` remote builder as the buildx default
-automatically on every container start (idempotent, silent no-op if
-`BUILDKIT_HOST` is unset) — no manual `docker buildx create` step. Until a
-consumer repo's `devcontainer.json` sets `BUILDKIT_HOST`, its plain
-`docker build`/`docker buildx build` calls are not governed by any of this
-— the memory/CPU/IO caps only bind containers, not BuildKit's own internal
-build-step execution.
+**Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
+`buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
+`mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
+ships the socket bind mount plus the explicit `BUILDX_BUILDER=mdt-managed` and
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The in-container
+finalizer validates and reuses that remote on every start. A missing or
+inconsistent variable, endpoint, builder, or host service is an error; MDT does
+not fall through to embedded BuildKit or create a per-container worker.
 
 Alternatives considered for layer 2: a boot-only oneshot misses buildkit
 workers created mid-session; a docker-events watcher daemon reacts instantly
