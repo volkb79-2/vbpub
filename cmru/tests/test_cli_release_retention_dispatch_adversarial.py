@@ -27,7 +27,10 @@ def _dispatch_fixture(monkeypatch, tmp_path, retained):
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(True),
+    )
     return workspace, seen
 
 

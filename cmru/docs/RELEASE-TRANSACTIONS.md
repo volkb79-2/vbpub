@@ -114,19 +114,21 @@ skipped for the artifact half, not an error.
 After a successful release, a plan refusal, or a child failure, cmru attempts the same
 caller-main cleanup; the primary release result is not replaced by a cleanup warning. If the
 caller is currently on `main`, cmru fetches `origin/main` and checks the caller worktree before
-rebasing. Any tracked or untracked change makes cleanup return false before either `git rebase`
-or `git rebase --abort` is run. The dirty files and local `main` ref stay exactly where they
-were, and the terminal reports that the caller checkout is dirty rather than claiming a rebase
-conflict. The warning tells the operator to commit or stash all changes (use `git stash -u` to
-include untracked files), then run `git rebase origin/main` from the clean checkout.
+rebasing. Any tracked or untracked change, including ignored files and directories, makes
+cleanup return false before either `git rebase` or `git rebase --abort` is run. The dirty files
+and local `main` ref stay exactly where they were, and the terminal reports that the caller
+checkout is dirty rather than claiming a rebase conflict. The warning tells the operator to
+commit or stash all changes (use `git stash -a` when ignored files must be included), then run
+`git rebase origin/main` from the clean checkout.
 
 `--allow-uncommitted` applies only to the preflight that keeps caller edits out of the immutable
 remote release snapshot. It does not authorize cleanup to rebase, stash, or otherwise consume
 those edits. A clean current `main` still fast-forwards or rebases as before; a real rebase
-conflict is aborted and reported distinctly. When `main` is not checked out, the existing safe
-behavior remains: a clean checkout may fast-forward its local `main`, while a diverged local
-`main` is left untouched rather than force-moved. A false cleanup result is reported on the
-success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
+conflict is aborted and reported distinctly, while another clean-rebase failure is reported as
+undetermined rather than guessed to be a conflict. When `main` is not checked out, the existing
+safe behavior remains: a clean checkout may fast-forward its local `main`, while a diverged
+local `main` is left untouched rather than force-moved. A false cleanup result is reported on
+the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
 
 `cmru build` uses the same fetched snapshot but stops before every release action. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact

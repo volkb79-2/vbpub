@@ -38,7 +38,10 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli.transaction, "promotion_landed", lambda *args: True)
     monkeypatch.setattr(cli.transaction, "read_release_progress", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "revert_promotion", lambda *args, **kwargs: result)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(True),
+    )
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("failed releases retain worktree")))
     with pytest.raises(SystemExit) as exc:
         cli.main(["release", "--project", "alpha", "--config", str(tmp_path / "cmru.toml")])

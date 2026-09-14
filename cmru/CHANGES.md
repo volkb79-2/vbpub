@@ -12,7 +12,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: release history -->
 
 ### Fixed
-- fix(cmru): refuse cleanup rebase from a dirty caller `main`, preserve its files/ref, and report the accurate cleanup reason on every release outcome
+- fix(cmru): refuse cleanup rebase from dirty caller `main` including ignored content, preserve its files/ref, and report the per-call cleanup reason on every release outcome
 
 ## [5.2.1] - 2026-09-13
 <!-- cmru: generated -->

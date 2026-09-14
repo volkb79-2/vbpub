@@ -110,9 +110,10 @@ def log_error(message: str) -> None:
 
 def _sync_local_main_and_report(repo_root: Path) -> bool:
     """Attempt caller-main cleanup and expose every false result accurately."""
-    if transaction.sync_local_main(repo_root):
+    result = transaction._sync_local_main_result(repo_root)
+    if result.ok:
         return True
-    log_warn(transaction.sync_local_main_failure_reason(repo_root))
+    log_warn(result.reason)
     return False
 
 

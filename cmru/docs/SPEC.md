@@ -97,10 +97,13 @@ never touch the same files. When the caller is currently on `main`, cmru first r
 checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
 false sync result without invoking `git rebase` or `git rebase --abort`, leaves both the dirty
 files and local `main` ref untouched, and reports that exact reason with the remedy to commit
-or stash the changes before running `git rebase origin/main`. Only a clean checkout's genuine
-content conflict invokes `git rebase --abort`; that failure also leaves local main untouched
-and is reported as a conflict. A false cleanup result does not change the primary release
-outcome, but it MUST be reported rather than ignored.
+or stash all the changes (including ignored content, for example with `git stash -a`) before
+running `git rebase origin/main`. A clean checkout's genuine content conflict invokes
+`git rebase --abort` and is reported as a conflict. A different clean-rebase failure (such as
+a hook, an already-active rebase, or another Git/host failure) is reported as undetermined,
+not as a conflict; any active rebase state is aborted only when Git shows that state exists.
+A false cleanup result does not change the primary release outcome, but it MUST be reported
+rather than ignored.
 
 ```
 Before the release:
@@ -148,8 +151,10 @@ now-redundant ref — A1/B1 are already permanently part of `origin/main`'s hist
 branch's job is done. That deletion does nothing to `local main` by itself; `sync_local_main`
 is the only step that touches it. If synchronization returns false, the parent reports
 whether the caller was dirty, a clean rebase conflicted, or a non-current diverged local
-`main` was deliberately not force-moved; it never presents a dirty checkout as a rebase
-conflict or claims that local main was synchronized.
+`main` was deliberately not force-moved; it never presents a dirty checkout or another
+undetermined clean-rebase failure as a rebase conflict, or claims that local main was
+synchronized. The warning is the reason captured by that synchronization call, not a later
+guess based only on the checkout's final state.
 
 On failure: the local worktree/branch and its origin backup are retained for inspection —
 `release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to

@@ -155,11 +155,13 @@ def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: True)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: False)
     monkeypatch.setattr(
         cli.transaction,
-        "sync_local_main_failure_reason",
-        lambda *args: "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+        "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+        ),
     )
     removed = []
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: removed.append("removed"))

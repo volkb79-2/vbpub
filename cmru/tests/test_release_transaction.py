@@ -306,7 +306,10 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-        monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+        monkeypatch.setattr(
+            transaction, "_sync_local_main_result",
+            lambda _root: transaction._SyncLocalMainResult(True),
+        )
 
         with pytest.raises(SystemExit) as exc:
             cli.main(["release", "--config", str(config), "--project", "alpha", "--allow-uncommitted"])
@@ -341,7 +344,10 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
         monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
         monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-        monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+        monkeypatch.setattr(
+            transaction, "_sync_local_main_result",
+            lambda _root: transaction._SyncLocalMainResult(True),
+        )
 
         with pytest.raises(SystemExit) as exc:
             cli.main(["release", "--config", str(config), "--project", "alpha", "--dry-run"])
@@ -386,7 +392,10 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _workspace: calls.append("backup-removed"))
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
+    monkeypatch.setattr(
+        transaction, "_sync_local_main_result",
+        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
@@ -446,11 +455,12 @@ cwd = "alpha"
         transaction, "revert_promotion",
         lambda _w, *, from_sha=None: calls.append("reverted") or transaction.RevertResult(ok=True, reverted=True),
     )
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or False)
     monkeypatch.setattr(
-        transaction,
-        "sync_local_main_failure_reason",
-        lambda _root: "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+        transaction, "_sync_local_main_result",
+        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+        ),
     )
     remove_calls: list[object] = []
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
@@ -506,7 +516,10 @@ cwd = "alpha"
         transaction, "revert_promotion",
         lambda _w, **_kw: calls.append("reverted") or transaction.RevertResult(ok=True, reverted=True),
     )
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
+    monkeypatch.setattr(
+        transaction, "_sync_local_main_result",
+        lambda _root: calls.append("synced") or transaction._SyncLocalMainResult(True),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.main(["release", "--config", str(config), "--project", "alpha"])
@@ -571,7 +584,10 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+    monkeypatch.setattr(
+        transaction, "_sync_local_main_result",
+        lambda _root: transaction._SyncLocalMainResult(True),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
@@ -631,7 +647,10 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+    monkeypatch.setattr(
+        transaction, "_sync_local_main_result",
+        lambda _root: transaction._SyncLocalMainResult(True),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
@@ -686,7 +705,10 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: None)
     monkeypatch.setattr(transaction, "forget_release_scope", lambda _root, _w: None)
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: None)
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
+    monkeypatch.setattr(
+        transaction, "_sync_local_main_result",
+        lambda _root: transaction._SyncLocalMainResult(True),
+    )
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
@@ -1600,8 +1622,83 @@ def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
         assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before
         assert (h.repo_root / "README.md").read_text() == content_before
         assert (h.repo_root / "untracked.txt").read_text() == "caller-only\n"
-        assert "dirty" in transaction.sync_local_main_failure_reason(h.repo_root)
-        assert "conflict" not in transaction.sync_local_main_failure_reason(h.repo_root)
+        result = transaction._sync_local_main_result(h.repo_root)
+        assert result.ok is False
+        assert "dirty" in result.reason
+        assert "ignored files and directories" in result.reason
+        assert "conflict" not in result.reason
+
+
+def test_sync_local_main_refuses_ignored_untracked_content_before_rebase(monkeypatch):
+    """Ignored local content must survive when rebase would make its path tracked."""
+    with _OriginAndClone() as h:
+        (h.repo_root / ".gitignore").write_text("ignored-local.txt\nignored-dir/\n")
+        _git("add", ".gitignore", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "chore: ignore local files", cwd=h.repo_root)
+        (h.repo_root / "ignored-local.txt").write_text("must survive\n")
+        (h.repo_root / "ignored-dir").mkdir()
+        (h.repo_root / "ignored-dir" / "nested.txt").write_text("also survives\n")
+        local_tip_before = _git("rev-parse", "main", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "ignored-local.txt").write_text("remote tracked file\n")
+        _git("add", "ignored-local.txt", cwd=other)
+        _git("commit", "-q", "-m", "track the former ignored path", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "ignored files and directories" in result.reason
+        assert not any(argv[1:2] == ["rebase"] for argv in calls)
+        assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
+        assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before
+        assert (h.repo_root / "ignored-local.txt").read_text() == "must survive\n"
+        assert (h.repo_root / "ignored-dir" / "nested.txt").read_text() == "also survives\n"
+
+
+def test_sync_local_main_does_not_call_abort_or_claim_conflict_for_other_rebase_failure(monkeypatch):
+    """A failed hook is not a content conflict and needs no post-hoc guess."""
+    with _OriginAndClone() as h:
+        (h.repo_root / "local.txt").write_text("local\n")
+        _git("add", "local.txt", cwd=h.repo_root)
+        _git("commit", "-q", "-m", "local work", cwd=h.repo_root)
+        local_tip_before = _git("rev-parse", "main", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "remote.txt").write_text("remote\n")
+        _git("add", "remote.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        hook = h.repo_root / ".git" / "hooks" / "pre-rebase"
+        hook.write_text("#!/bin/sh\nexit 42\n")
+        hook.chmod(0o755)
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        assert result.ok is False
+        assert "without establishing a content conflict" in result.reason
+        assert "undetermined" in result.reason
+        assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
+        assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before
+        assert _git("status", "--porcelain", cwd=h.repo_root) == ""
 
 
 def test_sync_local_main_aborts_cleanly_on_real_conflict():
@@ -1616,10 +1713,11 @@ def test_sync_local_main_aborts_cleanly_on_real_conflict():
         _git("commit", "-q", "-m", "conflicting release edit", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        assert transaction.sync_local_main(h.repo_root) is False
+        result = transaction._sync_local_main_result(h.repo_root)
+        assert result.ok is False
         assert _git("status", "--porcelain", cwd=h.repo_root) == ""  # rebase --abort ran
         assert (h.repo_root / "README.md").read_text() == "local edit\n"  # untouched
-        reason = transaction.sync_local_main_failure_reason(h.repo_root)
+        reason = result.reason
         assert "genuine conflict" in reason
         assert "dirty" not in reason
 

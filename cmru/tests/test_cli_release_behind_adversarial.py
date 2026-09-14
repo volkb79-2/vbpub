@@ -27,7 +27,10 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(True),
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
@@ -68,7 +71,10 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(True),
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
@@ -104,7 +110,10 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.transaction, "remove_backup_branch", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(
+        cli.transaction, "_sync_local_main_result",
+        lambda *args: transaction._SyncLocalMainResult(True),
+    )
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),

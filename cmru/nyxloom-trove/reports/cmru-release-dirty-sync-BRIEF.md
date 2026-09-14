@@ -78,13 +78,14 @@ task and return the commit SHA, changed paths, tests, and any residual concern.
 
 ## Implementation report
 
-The bounded fix is complete. `transaction.sync_local_main` retains its `bool`
-return API and now refuses a dirty current `main` after fetching, before either
-rebase command. Tracked and untracked caller files plus the local `main` ref
-remain untouched. `sync_local_main_failure_reason` provides a read-only,
-classified diagnostic; the parent reports it on success, plan refusal, and
-child-failure cleanup. Clean rebase, clean non-current fast-forward, and
-diverged non-current-main behavior remain covered.
+The bounded repair is complete. `transaction.sync_local_main` retains its
+`bool` return API and now refuses a dirty current `main` after fetching, before
+either rebase command; the guard includes ignored files and directories. Caller
+content and the local `main` ref remain untouched. A private per-call result
+records the synchronization reason, and the parent reports that exact result on
+success, plan refusal, and child-failure cleanup, without guessing that every
+clean-rebase failure is a conflict. Clean rebase, clean non-current fast-forward,
+and diverged non-current-main behavior remain covered.
 
 Changed paths are limited to CMRU source, behavioral tests, user-facing and
 normative documentation, the canonical CMRU backlog, and this report:
@@ -94,6 +95,9 @@ normative documentation, the canonical CMRU backlog, and this report:
 - `tests/test_release_transaction.py`
 - `tests/test_ki12_cli_wiring.py`
 - `tests/test_cli_release_resume_adversarial.py`
+- `tests/test_cli_release_behind_adversarial.py`
+- `tests/test_cli_release_retention_dispatch_adversarial.py`
+- `tests/test_cli_release_revert_outcomes_adversarial.py`
 - `docs/SPEC.md`
 - `docs/RELEASE-TRANSACTIONS.md`
 - `README.md`
@@ -105,6 +109,7 @@ normative documentation, the canonical CMRU backlog, and this report:
 Serial verification completed:
 
 - `python -m pytest tests/test_release_transaction.py -k 'sync_local_main or parent_reverts_promotion_and_reports_sync_failure_on_child_failure' -q` — 7 passed.
+- `python -m pytest tests/test_release_transaction.py -k 'sync_local_main' -q` — 8 passed.
 - `python -m pytest tests/test_ki12_cli_wiring.py -k 'parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure' -q` — 1 passed.
 - `python -m pytest tests/test_cli_release_resume_adversarial.py -q` — 1 passed.
 - `python -m pytest tests/test_release_transaction.py -q` — 91 passed.
