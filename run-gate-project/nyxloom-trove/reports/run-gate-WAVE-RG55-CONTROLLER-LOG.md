@@ -2209,6 +2209,14 @@ or response in the following minute. It was explicitly closed. No repository
 file, gate, daemon, or mutation state was changed; the final adversarial review
 will be performed fresh after P4's post-repair R2 and package gates are green.
 
+### RW-177 — 2026-09-14 13:21:28Z — retire silent P3 readiness sidecar
+
+The read-only Luna xhigh P3 close-out audit sidecar was given a bounded
+checkpoint request after it produced no artifact or response. It still wrote
+no `/tmp/rg55-p3-readiness-luna.md` and changed no repository, gate, daemon, or
+external-worktree state, so it was closed. P3 will be audited directly after
+the daemon releases, using the authoritative live-probe and release evidence.
+
 ### RW-176 — 2026-09-14 13:16:26Z — queue the authoritative combined assay gate
 
 The accepted B092+B098 implementation is carried by the clean `assay-b097`
