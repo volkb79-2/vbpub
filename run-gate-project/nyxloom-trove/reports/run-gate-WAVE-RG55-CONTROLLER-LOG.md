@@ -1689,3 +1689,12 @@ stage and is not a verdict change. The next required P4 gate,
 `./run-gate.py assay-r1`, is queued behind the PSI gate as watcher PID
 `425870`, log `/tmp/rg55-p4-final-r1-watch.log`; no new mutation lane was
 launched.
+
+### RW-126 — 2026-09-14 04:12:09Z — cap P6 full-suite verification
+
+P6's implementer started its full serial pytest verification in exact
+container `cgprofile-p6-full-420454`, with a five-minute timeout and no assay
+mutation. The controller verified the command and immediately applied the
+standing 3-CPU cap (`NanoCpus=3000000000`). The run's explicit `PYTEST_RC`
+marker will be read separately; no additional P6 test container is permitted
+until this one exits and the PSI gate permits it.
