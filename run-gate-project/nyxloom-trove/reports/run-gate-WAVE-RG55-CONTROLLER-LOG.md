@@ -2485,3 +2485,17 @@ full run-gate/cgprofile-to-assay lifecycle, keep incomplete execution out of
 functional and mutation outcomes, and return a clean design checkpoint before
 the same reviewer performs fix verification. No merge or release is authorized
 for P35 yet.
+
+### RW-202 — 2026-09-14 23:12:49Z — P1 resume leaves two unexecuted candidates
+
+The P1 resume against the unchanged judged tree
+`5fd0ef135dbc6ca36d3e0e51d2c0595adc41b004` completed with the actual assay
+exit 4 and a separately read verdict of 252 candidates: 243 killed, 7
+survived, and 2 `budget_exceeded` placeholders. The seven survivors are
+currently mapped to behaviorally equivalent teardown/return predicates (the
+four already documented equivalents plus three DAMON invariant-redundant
+predicates); this is triage, not closure. The two placeholders were never
+executed and make the lane BUDGET_EXCEEDED. P1's judged tree remains clean and
+untouched; resume those exact candidates after P6 frees the second mutation
+slot, then record the final report and rerun required gates/review on the
+final tip.
