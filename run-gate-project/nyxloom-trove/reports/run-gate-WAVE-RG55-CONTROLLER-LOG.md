@@ -2103,3 +2103,12 @@ failure is not mutation evidence and B096 remains unmerged. A fresh Luna
 xhigh repair implementer is diagnosing the preserved disposable-repository
 scenario from `assay-B096-BRIEF-2.md`; the existing round-2 review remains
 unchanged until a repair is committed and gated.
+
+### RW-166 — 2026-09-14 11:58:53Z — replace an uncheckpointed B096 repair worker
+
+The first fresh Luna xhigh B096 repair worker remained alive after its focused
+diagnostic container ended, but produced no filesystem change or checkpoint
+after two queued prompts. It was explicitly retired, and a fresh Luna xhigh
+successor was dispatched on clean tip `84baffb4` with a bounded reproduce,
+repair-or-BRIEF checkpoint contract. P1 and P6 mutation containers remain
+untouched.
