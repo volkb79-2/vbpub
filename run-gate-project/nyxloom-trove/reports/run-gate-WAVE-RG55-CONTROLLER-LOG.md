@@ -2045,3 +2045,24 @@ so it could never launch P4 after P1 recovery. The exact watcher PID was
 terminated; no gate or container was affected. A replacement watcher will be
 created only after P1 and P6 have terminal mutation evidence and their final
 package gates are complete.
+
+### RW-160 — 2026-09-14 10:24:00Z — P1 mutation survivors require new oracles
+
+The exact P1 r2 verdict on `c18301225` was read separately: 252 candidates,
+236 killed, 16 survived, 0 budget-exceeded/crashed, overall
+`FAIL/MUTANTS_SURVIVED`. A fresh Luna xhigh triage classified 9 survivors as
+genuine behavioral gaps (including foreign-DAMON ownership preservation,
+orphan DAMON replay, stop-series reporting, and missing CPU-delta input) and
+7 as the previously accepted equivalents with line drift. P1 is not green by
+classification alone. The nine focused tests were added in `88606ed0`, and a
+fresh r2 is running on that exact quiet tip with its container capped at 3
+CPUs; the old verdict is not reused as a pass.
+
+### RW-161 — 2026-09-14 10:24:00Z — RG-26 proof sidecar merged
+
+The RG-26 sidecar's final fresh Luna xhigh review accepted commit `e766b75a`
+after the shipped `run-gate.toml` construction oracle, focused tests, dry-run,
+live `gate-full`, and mutation-of-the-config red checks. It was merged
+no-ff into `main` as `6f595186`. The separate controller duplicate gate was
+terminated and is excluded from evidence; P4 already carries the production
+config fix, and the merged proof will travel with the next run-gate release.
