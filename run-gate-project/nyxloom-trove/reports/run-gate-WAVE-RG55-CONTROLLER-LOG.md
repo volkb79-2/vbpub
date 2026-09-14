@@ -1486,3 +1486,39 @@ including their committed conditional-acceptance records. The fresh Luna
 xhigh reviewer dispatched under RW-110 is therefore assigned round 3 and may
 write only `run-gate-WAVE-RG55-P4-REVIEW-round3.md`; it must not overwrite the
 existing records. This correction changes no product or review evidence.
+
+### RW-112 — 2026-09-14 02:43:52Z — controller snapshot and continuation plan
+
+The controller has resumed the wave. The CMRU dirty-main release-cleanup
+repair is complete at `f6972c98`, with the fresh Luna xhigh review accepted in
+round 3 and the registered CMRU gate still running its mutation phase in exact
+container `run-gate-vbpub-mutation-226339-1789351650`, capped at 3 CPUs.
+The independent `session-extract-follow` assay lane is also active and capped
+at 3 CPUs; it is not a mutation campaign.
+
+Assay B092+B098 is accepted by its fresh Luna review at `176a06a5` but has no
+registered final gate yet. B096 is accepted but its first gate failed Topos
+qualification and its clean-PSI retry remains to be independently read;
+B097's same-reviewer fix verification is accepted at `23b75167`/`aa075851`
+but its final registered gate is still pending. P6 remains detached at judged
+tree `5c2134ed`, with cumulative R2 outcome `BUDGET_EXCEEDED` and two
+placeholders left to judge.
+
+Continuation order is: finish/read the CMRU gate; resume P6's two placeholders
+under the second mutation slot; complete the assay final combined gate on the
+B097 tip and merge/release the resulting assay patch; repair P1 and P4 using
+fresh Luna xhigh implementers and reviewers; finish their gates and releases,
+then P6/P5 and the P3 live-probe/report close-out. No operator-owned dirty
+file or `/workspaces/dstdns` content is in scope.
+
+### RW-113 — 2026-09-14 02:46:16Z — relaunch P6 from the exact judged tree
+
+The first resume invocation only re-attached to the already-collected
+`run-gate-vbpub-r2-4167718-1789340985` container and returned its existing
+`BUDGET_EXCEEDED/LANE_TIMEOUT` verdict; it started no new container and is not
+new evidence. With a fresh memory-PSI reading of `full avg10=1.36%`, the
+controller then used run-gate's explicit `--fresh` path from detached tree
+`5c2134ed`. The old exact container had no inflight record to remove. The new
+container is `run-gate-vbpub-r2-266908-1789353957`, under
+`dev-background.slice`, immediately capped to `NanoCpus=3000000000`; no commit
+has been made while detached.
