@@ -2422,6 +2422,15 @@ mutation/gate runs. They must commit either an honest red-first implementation
 or a concrete next-wave handoff when a missing cross-package dependency makes
 implementation premature.
 
+### RW-197 — 2026-09-14 22:36:31Z — RG-56 design review dispatched
+
+A separate fresh Luna xhigh reviewer was dispatched for the committed RG-56
+design-only handoff before it is merged. The review targets admission
+arithmetic, missing-vs-empty safety, namespace provenance, loaded slice
+verification, PSI semantics, dynamic slot calculation, dry-run/override
+boundaries, and the atomic start-side race. It is read-only with respect to
+the handoff and cannot touch dstdns or operator-owned files.
+
 ### RW-196 — 2026-09-14 22:23:51Z — contention agnosticism and forward progress
 
 Correction to the controller's earlier wording: RG-55 is not trying to
