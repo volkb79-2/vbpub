@@ -2158,3 +2158,15 @@ pre-launch PSI readings, and a direct 714.67-second green suite exceeding the
 fixed ten-minute assay budget. This is valid backlog evidence, but it is
 operator-owned and outside RG-55's dispatched scope. Leave it dirty and do not
 stage, rewrite, or commit it; no RG-55 package adopts it in this wave.
+
+### RW-171 — 2026-09-14 12:43:35Z — P4 round-3 repair is dispatched
+
+The current P4 branch `rg55-followups-run-gate` contains the final exact-tree
+R2 PASS and branch gates, but its fresh round-3 adversarial review found two
+merge-blocking defects: an exec inflight record can leak when `Popen` fails
+synchronously, and the public SPEC/CONSUMERS overview contradicts the shipped
+`wait4` child-rusage implementation. A fresh Luna xhigh implementer is
+repairing those two findings with focused behavioral tests and documentation;
+the existing reviewed mutation evidence remains valid, and no new mutation
+lane is launched while P1/P6 occupy the estate's two mutation slots. The
+repair must receive a fresh final adversarial review before P4 merge.
