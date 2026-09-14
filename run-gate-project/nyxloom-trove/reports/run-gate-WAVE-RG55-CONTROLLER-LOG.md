@@ -2410,3 +2410,14 @@ number in the follow-up with gates-slice capacity admission: sum measured or
 derived expected footprints, reserve production headroom, and gate on memory
 PSI. No literal third container is launched on this 8-core production host
 until that admission path is implemented and proven.
+
+### RW-195 — 2026-09-14 22:20:45Z — structural follow-up sidecars dispatched
+
+Two fresh Luna xhigh sidecars were dispatched in isolated worktrees while P1
+and P6 continue: one to carve/implement the assay B078 extension for
+pressure-affected structured test results, and one to carve/implement the
+run-gate RG-56 capacity-admission seam. Both are forbidden from touching
+dstdns, operator-owned files, current mutation trees, merge/release, or full
+mutation/gate runs. They must commit either an honest red-first implementation
+or a concrete next-wave handoff when a missing cross-package dependency makes
+implementation premature.
