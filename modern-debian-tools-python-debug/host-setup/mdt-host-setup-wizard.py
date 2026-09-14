@@ -404,10 +404,13 @@ def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
         "DEV_INTERACTIVE_MEMORY_LOW": frac(avail_kib, 15),
         "DEV_INTERACTIVE_MEMORY_HIGH": frac(avail_kib, 30),
         "DEV_INTERACTIVE_MEMORY_MAX": frac(avail_kib, 50),
+        "DEV_BACKGROUND_MEMORY_LOW": frac(avail_kib, 15),
         "DEV_BACKGROUND_MEMORY_HIGH": frac(avail_kib, 30),
         "DEV_BACKGROUND_MEMORY_MAX": frac(avail_kib, 50),
+        "DEV_GATES_MEMORY_LOW": frac(avail_kib, 5),
         "DEV_GATES_MEMORY_HIGH": frac(avail_kib, 10),
         "DEV_GATES_MEMORY_MAX": frac(avail_kib, 20),
+        "DEV_BUILDKITD_MEMORY_LOW": frac(avail_kib, 10),
         "DEV_BUILDKITD_MEMORY_HIGH": frac(avail_kib, 25),
         "DEV_BUILDKITD_MEMORY_MAX": frac(avail_kib, 45),
     }

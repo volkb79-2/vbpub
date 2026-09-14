@@ -63,17 +63,22 @@ between OCI manifests, attestations and MDT's human manifest.
 
 ## Canonical release path
 
-`RELEASE_IMAGE_FLOW=push` is the configured release path. The governed BuildKit
-worker publishes its build result directly to GHCR, without loading it into the
-Docker daemon image store and without requiring `skopeo`.
+`RELEASE_IMAGE_FLOW=load` is the shipped release mode. Despite the historical
+name, this is the source-first OCI-layout path: the governed BuildKit worker
+builds each target once to a local layout, and the later push phase publishes
+that exact layout with digest verification. It does not load the image into the
+Docker daemon image store and does not require `skopeo`. Set
+`RELEASE_IMAGE_FLOW=push` for the optional direct registry-export path, or
+`RELEASE_IMAGE_FLOW=repack` for the optional OCI repack path.
 
 ```mermaid
 flowchart LR
     A[build-push.py / CMRU] --> B[resolve upstream versions]
     B --> C[stage pinned artifacts and wheels]
     C --> D[Buildx Bake group: all]
-    D --> E[BuildKit registry export]
-    E --> H[GHCR immutable and floating tags]
+    D --> E[BuildKit OCI-layout export]
+    E --> F[Digest-verified crane push]
+    F --> H[GHCR immutable and floating tags]
     H --> I[visibility sync and release metadata]
 ```
 
@@ -86,11 +91,12 @@ The phases are:
 2. `docker-bake.hcl` defines the target graph. The `all` group is the release
    matrix; `everything` is a broader local-development matrix.
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
-   release matrix with `--push`. BuildKit performs Dockerfile execution, cache
-   lookup, layer compression, and registry export inside its limited worker.
+   release matrix as one target at a time with an OCI-layout output. BuildKit
+   performs Dockerfile execution, cache lookup, layer compression, and local
+   layout export inside its limited worker.
 4. `build-push.py` extracts the canonical in-image manifests, records release
-   metadata, and the later CMRU push step becomes a no-op because publication
-   already occurred during the build step.
+   metadata, then pushes the same layouts with `crane` and verifies the
+   registry digest. No second image build is introduced.
 
 ### Optional OCI-layout repack lane
 
@@ -130,7 +136,7 @@ rejected it during the validation import, before any tag was pushed. Until the
 repacker defect is fixed and covered by an automated structural regression
 test, the optional `repack` lane is expected to fail closed for the affected
 image. Do not bypass this check with a raw OCI-layout copy: that would upload
-the invalid layer rather than repair it. The default `push` lane is the safe
+the invalid layer rather than repair it. The shipped `load` lane is the safe
 unrepacked release path.
 
 The source and repacked layouts are temporary release scratch. Do not place
@@ -451,12 +457,13 @@ lane.
 | `RELEASE_IMAGE_FLOW` | Behavior | Intended use |
 | --- | --- | --- |
 | `repack` | Bake to OCI layouts, repack, validate structurally and by importing, then publish; later push step is a no-op | Optional compression experiment; currently blocked for the affected image by the known repacker defect above |
-| `load` | Build with `--load`; a later push performs a separate unrepacked registry build | Local compatibility/debugging only, not a release gate |
-| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Canonical release lane |
+| `load` | Build once to OCI layouts; later push publishes those exact layouts with digest verification | Shipped/default source-first release lane |
+| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Optional direct-registry lane |
 
-`load` exists only to troubleshoot compatibility. `push` retains the original
-BuildKit layer topology; that smaller optimization scope is the safety tradeoff
-while repack validation is blocked.
+`load` is the default because it leaves a reviewable local artifact between
+build and publication while preserving build-once identity. `push` retains the
+original BuildKit layer topology and is the simpler optional direct-export
+lane; `repack` changes layer topology and therefore remains gated separately.
 
 ## Configuration and prerequisites
 

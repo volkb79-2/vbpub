@@ -18,15 +18,18 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
 
 `RELEASE_IMAGE_FLOW` controls the release path:
 
-- `push` is the default release mode. It publishes the governed BuildKit output
-  directly without loading it into dockerd's image store.
+- `load` is the shipped/default source-first release mode. It builds each target
+  once to a local OCI layout, then the later `--push` phase publishes that exact
+  layout with digest verification. The historical name does not mean a daemon
+  image-store load, and this path does not use `skopeo`.
+- `push` is an optional direct-registry mode. It publishes the governed BuildKit
+  output directly during `--build`; the later push phase is a no-op.
 - `repack` is an optional compression experiment. It builds to OCI tar streams,
   extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
   (default `2GB`), validates the candidate by importing it through BuildKit,
   and only then publishes it. It does not load the original image into dockerd
   and does not use `skopeo`. The affected image currently fails this gate due
   to the repacker defect recorded in the architecture guide.
-- `load` keeps the daemon-first split for local-only validation.
 
 The release config toggle is `RELEASE_IMAGE_FLOW`; `REPACK_TARGET_SIZE`
 controls the slice size used by the repack flow.
@@ -91,7 +94,7 @@ Environment configuration:
 Optional overrides (environment variables):
 
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
-- `RELEASE_IMAGE_FLOW` (`push` is the default, `repack` is the validated optional compression lane, `load` is daemon-first local compatibility mode)
+- `RELEASE_IMAGE_FLOW` (`load` is the shipped/default source-first OCI-layout lane, `push` is optional direct registry export, `repack` is the optional compression lane)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
 - `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
@@ -157,15 +160,16 @@ To do both in one command:
 When `RELEASE_IMAGE_FLOW=push` or `repack`, the push step becomes a no-op because
 publication happens during the build phase. The canonical in-image manifest is
 exported through the governed builder; it is not loaded into Docker's local
-image store. `docker-repack` changes digests, so evidence from an optional
-repack run must refer to the artifact that was actually published. If its
-validation fails, retain the default `push` lane rather than copying an invalid
-OCI layout to the registry.
+image store. In the default `load` lane, the push phase publishes the exact
+build output and verifies its registry digest. `docker-repack` changes digests,
+so evidence from an optional repack run must refer to the artifact that was
+actually published. If its validation fails, retain the default `load` lane
+rather than copying an invalid OCI layout to the registry.
 
-In the non-release `load` mode, the later push is a second Bake invocation.
-BuildKit checks its cache, but changed inputs can rebuild layers and the result
-is unrepacked. In the default `push` mode, publication already happens during
-the build phase.
+The `load` lane is not a second Bake invocation: the later push consumes the
+layouts produced by the build phase. Build-once identity is therefore preserved
+even when a later push is retried. In `push` mode, publication already happens
+during the build phase.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

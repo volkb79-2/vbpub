@@ -470,8 +470,10 @@ a manual package-settings toggle. Note that **new GHCR packages default to priva
 one reason flavors are tag variants rather than new package names: no new family means no
 new visibility state to sync.
 
-The canonical direct-push release path publishes through BuildKit and does **not** call
-`skopeo`. CMRU supplies the release identity and performs Docker login. Manual release
+The shipped source-first `RELEASE_IMAGE_FLOW=load` path builds through the governed
+BuildKit remote and publishes the exact OCI layout with digest verification; it does
+**not** call `skopeo`. `RELEASE_IMAGE_FLOW=push` is an optional direct-push path. CMRU
+supplies the release identity and performs Docker login. Manual release
 commands must export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
 `GITHUB_OWNER_TYPE`, and `GITHUB_PUSH_PAT` inputs; workspace-local credential-file
 fallbacks are not supported.
@@ -508,7 +510,7 @@ That optional path is OCI-layout-native: bake writes one OCI tar per target, the
 extracted into disk-backed scratch, `docker-repack` writes a second OCI layout, and the
 governed BuildKit builder validates it by importing and unpacking before publication — no
 daemon round-trip, no `skopeo` copy. It currently trips the fail-closed gate because of the
-repacker defect recorded in the architecture guide; use the default `push` lane rather than
+repacker defect recorded in the architecture guide; use the default `load` lane rather than
 copying an invalid layout.
 
 Counting layers, source vs target:

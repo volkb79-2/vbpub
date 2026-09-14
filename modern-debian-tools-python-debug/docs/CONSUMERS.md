@@ -88,9 +88,13 @@ schema_version = 1
 [env]
 BUILDX_BUILDER = "mdt-managed"
 BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+RELEASE_IMAGE_FLOW = "load"
 ```
 
 `scripts/ensure-release-builder.sh` only verifies the remote endpoint before a
 release. If Docker/Buildx, the socket, the service identity, or the named
 builder is unavailable, the release stops; it cannot silently create an
-ungoverned replacement.
+ungoverned replacement. `load` is the shipped source-first OCI-layout flow:
+the build phase creates the artifact once and the push phase publishes that
+same artifact with digest verification. Set `push` for direct registry export,
+or `repack` for the optional validated OCI-layout compression path.

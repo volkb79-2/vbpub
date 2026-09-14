@@ -455,16 +455,13 @@ cannot express the next:
      `dev-background.slice` combined) — `systemctl set-property --runtime`,
      reapplied each boot;
    - **per-container** caps for `buildx_buildkit_*`, `*test-runner*` and
-     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and buildkit
-     additionally get `IOWeight=1` — the devcontainer does **not**, it is the
-     IDE): docker scopes are *transient*, they only exist while the container
-     runs, so no unit file can pre-configure them, and buildkit workers are
-     created on demand by buildx AND — source-verified, see
-     [BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md) — Buildx's
-     `cgroup-parent` driver-opt is unreliable under the systemd cgroup driver,
-     so they can never be placed under `dev.slice` via compose either; this
-     is still their only *placement-independent* governance, full stop, not a
-     backstop for a placement mechanism that also works. **This sweep is the
+     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and any accidental
+     buildkit worker additionally get `IOWeight=1` — the devcontainer does
+     **not**, it is the IDE): docker scopes are *transient*, they only exist
+     while the container runs, so no unit file can pre-configure them. The
+     normal MDT backend is the host-managed `mdt-buildkitd` service in
+     `dev-buildkitd.slice`; these per-container rules cover non-MDT containers
+     and accidental workers that should not exist. **This sweep is the
      BACKSTOP, not the primary mechanism:** `mdt-io-cap-watcher.service`
      applies the same caps within the same second a matching container
      starts, via `docker events` rather than periodic re-scanning — see
@@ -502,11 +499,10 @@ DIFFERENT reactive mechanism than `mdt-dev-cap-watcher.py`'s inotify watch
 FIXED, already-known cgroup path (`dev-interactive.slice`/
 `dev-background.slice`/`dev-gates.slice`) because its targets ARE reliably
 placed there at create time — it only reacts to attributes WITHIN a cgroup
-Docker already placed correctly. `buildx_buildkit_*` workers are the case
-layer 2's own bullet above already documents as NOT reliably placed
-anywhere (Buildx's `cgroup-parent` driver-opt unreliable under the systemd
-cgroup driver) — there is no fixed path to inotify-watch for them in the
-first place. Verified live 2026-09-12: one landed at a malformed, unnested
+Docker already placed correctly. `buildx_buildkit_*` workers are
+accidental/non-canonical; unlike the managed `mdt-buildkitd` service they have
+no fixed path to inotify-watch. A historical placement example from
+2026-09-12 landed at a malformed, unnested
 `system.slice/dev-background.slice:docker:<id>`, a name that only *looks*
 like the real slice. `docker events` sidesteps this because it comes from
 the daemon's own bookkeeping regardless of where a container's cgroup ended
@@ -526,36 +522,20 @@ running as backstop for the restart window.
    (D-G8, see "What gets installed") exists specifically to put a floor under
    that failure mode.
 
-**The `daemon.json` `cgroup-parent` default does not reach BuildKit's own
-build-step execution (verified live, 2026-09-12).** It correctly places a
-normal `docker run`/`docker create` container (confirmed: the devcontainer
-itself lands at `dev.slice/dev-interactive.slice/docker-<id>.scope` with the
-expected `io.max`) — but a plain `docker build` or `docker buildx build`
-using the **default `docker` driver** (no separate buildx worker container at
-all; the build executes inside `dockerd`'s own embedded BuildKit) does not
-reliably land its RUN-step exec cgroup under the real `dev.slice` hierarchy
-either: caught one live mid-build at a malformed, unnested
-`system.slice/dev-background.slice:docker:<id>` — a flat, colon-suffixed name
-that only *looks* like the real `dev-background.slice`, sitting outside
-`dev.slice` entirely and outside any of this host's IO governance. This is
-the same class of problem already documented above for Buildx's
-`docker-container` driver (`cgroup-parent` unreliable under the systemd
-cgroup driver) — it isn't limited to separately-created buildx workers; the
-default, no-driver-specified build path has it too.
+**Historical Docker/BuildKit placement finding (verified live,
+2026-09-12).** The `daemon.json` `cgroup-parent` default correctly places
+ordinary `docker run`/`docker create` containers, but it did not reliably govern
+BuildKit's embedded or container-driver worker execution under this host's
+systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 
-**Use `mdt-buildkitd` for anything that actually needs governed build IO** —
-it's the one build path confirmed working, precisely because it sidesteps
-this: a plain `docker run --cgroup-parent=dev-buildkitd.slice`
-(`mdt-buildkitd.service`), never through any Buildx driver, so there's no
-BuildKit-internal cgroup-naming logic in the way — `dev-buildkitd.slice`
-shows the correct `io.max`/`io.weight` every time. `templates/devcontainer.json`
-ships the socket bind mount + `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`;
-once a consumer's devcontainer sets `BUILDKIT_HOST`,
-`scripts/finalize_container_environment.py`'s `setup_buildkit_builder()`
-validates and reuses the exact `mdt-managed` remote on every container start.
-A missing or inconsistent variable, endpoint, builder, or host service is an
-error; it never falls through to the embedded builder or silently creates a
-per-container worker.
+**Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
+`buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
+`mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
+ships the socket bind mount plus the explicit `BUILDX_BUILDER=mdt-managed` and
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The in-container
+finalizer validates and reuses that remote on every start. A missing or
+inconsistent variable, endpoint, builder, or host service is an error; MDT does
+not fall through to embedded BuildKit or create a per-container worker.
 
 Alternatives considered for layer 2: a boot-only oneshot misses buildkit
 workers created mid-session; a docker-events watcher daemon reacts instantly

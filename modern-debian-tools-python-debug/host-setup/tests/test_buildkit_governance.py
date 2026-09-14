@@ -170,7 +170,13 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 
     def test_wizard_enforces_memory_order_and_live_aggregate(self) -> None:
-        self.assertEqual(WIZARD.propose_memory_tiers(16 * 1024 * 1024, 8 * 1024 * 1024)["DEV_MEMORY_HIGH"], "8G")
+        proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 2500 * 1024)
+        self.assertEqual(proposals["DEV_MEMORY_HIGH"], "2.5G")
+        for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
+            self.assertLessEqual(
+                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_LOW"]),
+                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
+            )
         values = {
             "DEV_MEMORY_HIGH": "8G", "DEV_MEMORY_MAX": "16G",
             "DEV_INTERACTIVE_MEMORY_MIN": "", "DEV_INTERACTIVE_MEMORY_LOW": "2G",
