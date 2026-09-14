@@ -1621,3 +1621,18 @@ two weak closures with either a contract-level immutable result construction
 or removal of the unnecessary representation seam, and a real interrupted-
 rebase oracle reaching active state after rebase state creation; then the
 same mutation gate and a fresh final review are required again.
+
+### RW-120 — 2026-09-14 03:42:29Z — CMRU evidence repair committed; final review pending
+
+The fresh Luna xhigh CMRU repair worker replaced the private frozen dataclass
+with an inherently immutable `NamedTuple` and replaced the manufactured
+pre-rebase-hook/monkeypatch survivor test with a real post-rewrite interrupted
+rebase fixture covering successful and failed aborts. Commit:
+`e224579c096834f9d86906afbf2a73a4389775b7`. Verification reported
+`1778 passed, 3 skipped`, compileall PASS, and diff-check PASS. The previous
+round-3 fix-verification report remains committed as historical evidence; a
+fresh independent Luna xhigh final reviewer is now reviewing this exact tip.
+
+The operator-owned MDT release remains active at its cache-export step and is
+outside RG-55's mutation/release worktrees. No gate is launched while memory
+PSI exceeds the standing threshold.
