@@ -67,3 +67,11 @@ controller work before merge. The B096 combined registered gate is already
 running asynchronously on the parent branch; B097 itself still needs a
 quiet-tip gate after review because this report update and import fix changed
 the tip.
+## Review status
+
+The fresh Luna xhigh adversarial review initially rejected only the extra EOF
+blank line in the brief (P2); all behavioral probes and compliant focused
+suites passed. The controller removed that blank line in `23b75167`, and the
+same reviewer accepted the fix-verification in
+`assay-B097-REVIEW-round2-fixverify.md`. The report commit is evidence only;
+the registered gate must judge the final tree that includes it.
