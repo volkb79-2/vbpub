@@ -2239,3 +2239,13 @@ optional analysis and may not edit the repository, launch gates, inspect
 mutation progress, touch dstdns, or alter running processes. No package or
 judged-tree state changed; the artifact is preparatory and does not authorize
 P3 close-out.
+
+### RW-179 — 2026-09-14 13:51:33Z — stage the P3 report in an isolated worktree
+
+The P3 sidecar stopped at its required discovery checkpoint. To make concrete
+progress without touching a judged tree, the controller created the fresh
+`rg55-closeout-prep` worktree and staged an explicitly incomplete
+`run-gate-WAVE-RG55-REPORT.md` containing the release-evidence matrix, live
+probe matrix, DAMON measurement table, adoption-brief constraints, and
+close-out checklist. The draft makes no live or release claims and will only
+be merged after the authoritative probes and package releases are complete.
