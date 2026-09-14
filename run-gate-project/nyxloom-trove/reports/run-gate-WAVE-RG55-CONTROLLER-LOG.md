@@ -1738,3 +1738,16 @@ operator checkout (`cannot rebase: You have unstaged changes`), emitted its
 warning, and still returned zero. The controller leaves that checkout and all
 operator files untouched; the CMRU release-sync repair remains the remedy for
 future dirty-main releases.
+
+### RW-131 — 2026-09-14 04:24:34Z — P6 oracle repair committed and fresh r2 queued
+
+P6's Luna xhigh implementer committed the 34 behavioral oracle tests and the
+complete 45-survivor disposition/report as
+`0426fd15675997f97febb2dfaf2e219e183f8ea8`. It reports focused `113 passed`,
+full `1378 passed, 4 warnings`, `docker wait=0`, `ExitCode=0`,
+`OOMKilled=false`, compileall and diff checks green, with production code
+unchanged. The branch is clean. Because the test commit changes the judged
+tree, the old r2 evidence is invalid; a fresh `./run-gate.py r2` is queued
+behind PSI as watcher PID `439173`, log `/tmp/rg55-p6-r2-watch.log`. It will
+consume the second mutation slot only after PSI permits launch; P1 remains
+the first.
