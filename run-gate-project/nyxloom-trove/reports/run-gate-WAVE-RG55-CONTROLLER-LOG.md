@@ -2084,3 +2084,11 @@ mutation supervisor, then stopped it before it could launch a container. RW-159
 requires P4 to wait for terminal mutation evidence and final package gates from
 both P1 and P6; that stronger condition remains binding. No P4 assay state was
 changed and no additional mutation lane was started.
+
+### RW-164 — 2026-09-14 11:13:41Z — install the verified CMRU release-flow repair
+
+The merged CMRU dirty-main repair (`35e83083`) was built and installed into
+`/home/vscode/.venv`; `cmru version` now reports
+`5.2.2.dev212+g8df7b01d.d20260914`. Its release preflight remains correctly
+fail-closed while this local `main` is ahead of `origin/main`; publishing the
+RG-55 commits still requires the operator to synchronize/push `main` first.
