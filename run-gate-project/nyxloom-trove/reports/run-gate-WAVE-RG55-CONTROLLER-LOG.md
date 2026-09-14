@@ -2273,3 +2273,15 @@ raised `TimeoutExpired` at 2.01 seconds. Therefore this is not a generic
 Python timeout failure; it remains an unresolved candidate/runner or host
 interaction to diagnose after the live judged run, and no active process was
 changed.
+
+### RW-182 — 2026-09-14 14:11:34Z — P1 workers remain live under prohibitive host PSI
+
+The P1 final r2 supervisor and its exact container are still alive. `docker
+inspect` reports the container `running` and `OOMKilled=false`; `docker top`
+shows two pytest workers running for about 51 minutes, while the append-only
+progress stream still ends at candidate 89. At the same observation,
+`/proc/pressure/memory` reported `full avg10=60.39` and CPU `full avg10=0.00`.
+This strengthens the host-load explanation but does not prove the candidate
+path's exact wait point. Keep the judged tree and process untouched; the
+existing supervisor remains the authoritative asynchronous run, and the
+post-terminal diagnosis must use its final marker, Docker status, and verdict.
