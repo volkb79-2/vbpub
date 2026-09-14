@@ -2358,3 +2358,11 @@ vitest's 60-second RPC heartbeat), with a direct green-suite reproduction. It
 does not describe a distinct RG-55 defect or a fix that belongs in this wave;
 no new row or backport is adopted. The addendum remains available for the
 future assay/RG-45 follow-up without committing the operator's dirty file.
+
+### RW-190 — 2026-09-14 21:36:00Z — SPEC-V8 D.6 already landed
+
+The required SPEC-V8 Appendix D.6 note is present on main in
+`ciu/docs/SPEC-V8.md`, introduced by the RG-55 P0 planning commit and retained
+by the amendment commits. It correctly remains labeled a pending operator
+note for the next v8 review round; RG-55 does not rewrite it into a completed
+v8 feature or touch the operator's CIU round-4 files.
