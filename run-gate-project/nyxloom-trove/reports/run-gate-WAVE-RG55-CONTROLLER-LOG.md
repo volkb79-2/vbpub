@@ -1940,3 +1940,11 @@ behind the two active mutation containers. The operator's dirty
 `KNOWN_ISSUES_TODO_BACKLOG.md` addendum records a further RG-45 timeout
 observation, not a new RG-55 item; it is preserved byte-for-byte and is not
 staged or committed.
+
+### RW-150 — 2026-09-14 07:51:37Z — focused CMRU transaction suite remains green
+
+With memory PSI below the launch gate, the isolated CMRU repair worktree ran
+`nice -n 19 ionice -c 3 python3 -m pytest cmru/tests/test_release_transaction.py
+-q`: 106 passed in 10.93 seconds, exit 0. The worktree remains clean; the
+registered tester-unified full gate is still authoritative and remains queued
+behind the active P1/P6 mutation containers.
