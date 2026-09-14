@@ -2249,3 +2249,17 @@ progress without touching a judged tree, the controller created the fresh
 probe matrix, DAMON measurement table, adoption-brief constraints, and
 close-out checklist. The draft makes no live or release claims and will only
 be merged after the authoritative probes and package releases are complete.
+
+### RW-180 — 2026-09-14 13:54:29Z — CMRU build stall diagnosed as host/buildkit pressure, not yet a CMRU defect
+
+The operator-owned MDT `cmru release` remains alive in `docker buildx bake`
+step `#59 exporting cache to client directory`, with ample filesystem space.
+A bounded `docker buildx ls` returned status 124 after five seconds and
+reported the governed `mdt-governed-v10` and `pwmcp-governed-v10` endpoints
+unable to become ready; the default builder was the only one reported
+running, while an unrelated `buildx_buildkit_keen_mestorf0` container was
+restarting with exit 137. This is evidence of Docker/host contention under
+the already-prohibitive PSI, not proof of a CMRU code defect. The controller
+did not touch the operator job, stop any container, or file a speculative
+backlog fix; future CMRU release behavior will be re-evaluated after this
+build has a real terminal status.
