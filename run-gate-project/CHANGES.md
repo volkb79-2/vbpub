@@ -9,6 +9,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
 
+- fix(run-gate): make `gate-full` propagate an explicit comparison base to
+  its delegating `assay-r1` sub-lane, so linked worktrees can run the complete
+  gate with `--base REF`.
+
 ### Added
 - **RG-55 — per-lane resource profiling, against the cgroup-profiler daemon
   contract (`RG55-INTERFACE-CONTRACT.md`).** Every lane invocation gets a

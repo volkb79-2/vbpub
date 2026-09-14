@@ -85,7 +85,9 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    encodes it goes red. Proves the suite is a real oracle, not a green
    checkmark that would pass on broken code too.
 5. **`gate-full`** — the conjunction: `selftest` + `assay-r1` + `assay-r3`
-   (r2 excluded for the reason above). Still not the release gate
+   (r2 excluded for the reason above). Its `{base}` token forwards an
+   explicit `--base REF` to `assay-r1`; use that form for a linked worktree
+   without an upstream. Still not the release gate
    (`cmru.toml`'s own comment says why): `selftest` alone remains it,
    deliberately, for now.
 

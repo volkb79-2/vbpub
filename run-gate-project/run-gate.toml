@@ -142,6 +142,9 @@ budget = "15m"
 [lanes.gate-full]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "./run-gate.py selftest && ./run-gate.py assay-r1 && ./run-gate.py assay-r3"]
+# assay-r1 delegates its comparison base. Carry the conjunction's resolved
+# base into that sub-invocation so `--base REF gate-full` is honored instead
+# of being refused before the sub-lane can run (RG-26).
+argv = ["bash", "-c", "./run-gate.py selftest && ./run-gate.py --base {base} assay-r1 && ./run-gate.py assay-r3"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "1h"

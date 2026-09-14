@@ -4908,6 +4908,45 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
         assert "Traceback" not in captured.err
 
 
+class TestShippedGateFullDeclaration:
+    """RG-26: pin the real project's conjunction declaration, not a fixture."""
+
+    def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
+        cfg_path = RUN_GATE_DIR / "run-gate.toml"
+        cfg = tomllib.loads(cfg_path.read_text())
+        lanes = cfg["lanes"]
+
+        assert cfg["schema_version"] == run_gate.SCHEMA_VERSION
+        assert set(lanes) == {"selftest", "assay-r1", "assay-r2",
+                              "assay-r3", "gate-full"}
+
+        gate_full = lanes["gate-full"]
+        assert gate_full["kind"] == "command"
+        assert gate_full["environment"] == "bare-host"
+        assert gate_full["argv"] == [
+            "bash",
+            "-c",
+            "./run-gate.py selftest && "
+            "./run-gate.py --base {base} assay-r1 && "
+            "./run-gate.py assay-r3",
+        ]
+        assert gate_full["clean_tree"] is False
+
+        assert lanes["selftest"]["kind"] == "command"
+        assert lanes["selftest"]["environment"] == "bare-host"
+        assert "./run-gate.py --base" not in lanes["selftest"]["argv"][-1]
+        assert lanes["assay-r1"]["kind"] == "assay"
+        assert lanes["assay-r1"]["assay_lane"] == "r1"
+        assert lanes["assay-r3"] == {
+            "kind": "command",
+            "environment": "bare-host",
+            "argv": ["bash", "-c", "exec tools/canary-run.sh"],
+            "budget": "15m",
+        }
+        assert lanes["assay-r2"]["assay_lane"] == "r2"
+        assert "assay-r2" not in gate_full["argv"][2]
+
+
 class TestComparisonBasePassthrough:
     """RG-26: assay 3.0.0 shipped `judge.base_source = "request"` (B019) — a
     changed-line lane that omits `judge.base` and takes its comparison base
@@ -14597,4 +14636,3 @@ class TestReattachProfilingWiring:
         err = capsys.readouterr().err
         assert "WARNING profiling:" in err
         assert "no profile recorded" in err
-
