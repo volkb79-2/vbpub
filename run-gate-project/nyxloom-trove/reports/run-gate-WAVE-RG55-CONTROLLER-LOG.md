@@ -1948,3 +1948,20 @@ With memory PSI below the launch gate, the isolated CMRU repair worktree ran
 -q`: 106 passed in 10.93 seconds, exit 0. The worktree remains clean; the
 registered tester-unified full gate is still authoritative and remains queued
 behind the active P1/P6 mutation containers.
+
+### RW-151 — 2026-09-14 08:27:24Z — correct gate invocation and isolate base-forwarding fix
+
+The CMRU repair gate was launched from its `run-gate-project/` directory. The
+first attempt used the repository-root path and exited 127 because that
+directory has no `run-gate.py`; the second used the stale lane name `gate` and
+exited 2 because the declared lanes are `selftest`, `assay-r1`, `assay-r2`,
+`assay-r3`, and `gate-full`. The corrected sequence is running as
+`selftest && --base main assay-r1 && assay-r3`, with its job exit marker
+preserved separately. A `gate-full --base main` attempt then exposed a real
+configuration defect: the conjunction carried no `{base}` token, so run-gate
+correctly refused the explicit base before `assay-r1`. A new isolated
+worktree, branch `rg55-gate-full-base-propagation`, carries commit `84fab73e`
+which adds the token and documents the linked-worktree invocation. Its
+targeted propagation test and dry-run passed; a live acceptance is running.
+No main files, judged mutation trees, or operator-owned dirty files were
+changed by this sidecar work.
