@@ -464,11 +464,28 @@ the idle clock, preserving a progressing worker tail while still expiring
 a process that stops reporting after the full 30 s grace. The calibrated
 idle/CPU branch and elapsed budget retain their existing rules.
 
-Pid stamping and per-process parsing are deferred to B097: this repair
-does not correct xdist test-count duplication or merged-stream calibration.
-RW-49/D3 calibration ends at `session_finish`; RW-57 accepts the remaining
-shutdown region under this idle grace (review N2 measured about 1 s with
-coverage). See CONSUMERS' liveness section for adoption and limitations.
+#### Liveness process identity and xdist parsing (B097)
+
+The materialized plugin copies each hook record before adding its timestamp,
+the producer's positive integer `os.getpid()` as `pid`, and the non-empty
+`PYTEST_XDIST_WORKER` value as optional descriptive metadata. The parser never
+turns that worker label into identity and never performs process lookup.
+
+When the relevant records carry usable pids, test records are read from the
+process owning the first `session_start` (the xdist controller's event
+timeline), preserving repeated records rather than deduplicating by `nodeid`.
+The monitor separately passes the actual candidate `proc.pid`, and only that
+pid's stamped `session_finish` arms the post-finish grace. Baseline timestamps
+are partitioned by pid, each partition is ordered by its event timestamp, and
+the maximum per-process gap is calibrated; the leading gap comes from the
+owner of the first `session_start`.
+
+This is deliberately fail-compatible with old side files. If the records
+needed for a result omit pid or contain a boolean, non-integer, or non-positive
+pid, the parser keeps the existing merged interpretation and retains every
+valid record. Mixed identity sets do not silently drop evidence. The change is
+side-file/parser behavior only: no schema number, warning, or public liveness
+policy changes, and the RW-49/D3 calibration still ends at `session_finish`.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an
@@ -951,6 +968,56 @@ both its absence (a pre-B088 record) and a mismatch are cache misses, checked
 Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
+
+### Rejudge help follows the canonical vocabulary (B096)
+
+`assay.verdict.MUTATION_BUCKETS` is the one owner of mutation outcome bucket
+names. The `--rejudge-outcome` help is built from that tuple at parser
+construction time, so a future canonical bucket cannot be accepted by the
+runtime while remaining absent from the operator-facing help. The CLI-only
+`error` convenience spelling stays outside the tuple and is described
+separately as an alias for canonical `crashed`; it must never become a verdict
+or resume-state bucket. The parser and runtime therefore share the canonical
+source without making the alias look like a second canonical outcome.
+
+### Filtered native-R2 judge identity (B092)
+
+Some repositories deliberately keep generated reports and trove evidence in
+the judged Git tree. Those paths are not part of the test suite, but B088's
+whole-tree `judge_sha256` quite correctly invalidates every mutation record
+when any tracked path changes. B092 makes that policy explicit rather than
+guessing from filenames: native R2 may declare
+`judge.mutation.identity_exclude` as a list of relative POSIX path globs.
+
+The loader rejects empty patterns, backslashes, NULs, absolute paths, and `.`,
+`..` components, then normalizes the remaining spellings. Matching is one
+deterministic lexical rule: case-sensitive `fnmatch` against normalized
+Git-tree-relative POSIX paths. It runs over the already frozen manifest used
+by `SnapshotRepository`, including its declared omitted leaves; it never walks
+the local filesystem or filters mutation candidates, argv, environment, cwd,
+project prefix, links, or anything outside the tree.
+
+The omitted key is the compatibility path and retains the B088
+`assay-snapshot-tree/2` serialization byte-for-byte. A present key uses a
+separate `assay-snapshot-tree/3-identity-exclude` domain and includes the
+normalized declarations in sorted, length-prefixed form before serializing
+the remaining entries. Consequently an explicit empty list excludes nothing
+but is intentionally distinct from omission, while reordering equivalent
+patterns is not an identity change. This is an opt-in native-R2 policy and
+needs no lane-schema bump; its declaration is recorded by the lane's normal
+resolved configuration and the resulting digest is shared by resume readers
+and state-record writers.
+
+### Mutation score's excluded buckets (B098)
+
+The score arithmetic remains `killed / (killed + survived)`. The canonical
+`MUTATION_BUCKETS` vocabulary also reports `crashed`, `budget_exceeded`,
+`equivalent`, and `hung`; all four are excluded from that denominator because
+they do not measure whether the test suite caught a valid, completed mutant.
+The names belong in the public score contract even when a particular lane has
+none of those outcomes. `crashed` is not silently folded into an absent
+payload, and `hung` remains its own diagnostic bucket rather than being
+renamed `budget_exceeded`.
 
 ### Infrastructure fact injection (B013)
 

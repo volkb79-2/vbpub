@@ -23,6 +23,7 @@ DECIDES once it is running.
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -533,6 +534,7 @@ def _load_materialized_plugin(tmp_path: Path):
 
     liveness_dir = tmp_path / "liveness"
     plugin_path = liveness.materialize_liveness_plugin(liveness_dir)
+    assert plugin_path.is_file()
     spec = importlib.util.spec_from_file_location(
         "assay_liveness_plugin_under_test_b1", plugin_path
     )
@@ -652,6 +654,7 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
 
     events_path = tmp_path / "events.ndjson"
     monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
 
     # (B091 round-1 B2) `when="setup"` is now RECORDED, as a `phase` event
     # carrying `when` -- it is a live sign of progress, and its `t` is what
@@ -686,8 +689,10 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     # `session_start` is written from `pytest_configure`, so it is the
     # FIRST stamped record -- which is what makes the leading gap (slow
     # collection, a slow session fixture) measurable.
-    assert set(records[0]) == {"event", "t"}
+    assert set(records[0]) == {"event", "t", "pid"}
     assert isinstance(records[0]["t"], float)
+    assert isinstance(records[0]["pid"], int) and records[0]["pid"] > 0
+    assert all("xdist_worker" not in record for record in records)
     assert records[1]["when"] == "setup" and records[1]["duration_s"] == 0.1
     assert records[4]["when"] == "teardown"
     first = records[2]
@@ -698,6 +703,7 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
         "outcome": "passed",
         "duration_s": 0.0125,
         "t": first["t"],
+        "pid": first["pid"],
     }
     assert isinstance(first["t"], float)
     second = records[3]
@@ -717,6 +723,93 @@ def test_materialized_plugin_writes_valid_json_events(tmp_path: Path, monkeypatc
     # can never reappear.
     assert "'pkg/test_mod.py::test_it'" not in lines[2]
     assert '"pkg/test_mod.py::test_it"' in lines[2]
+
+
+def test_materialized_plugin_records_pid_and_optional_xdist_worker_in_a_subprocess(
+    tmp_path: Path,
+) -> None:
+    """B097: the file a real pytest process writes carries its own pid.
+
+    The worker label is copied only when the producer environment supplies a
+    non-empty value. It is descriptive metadata, not the identity used by
+    the parser; this test only proves the producer's wire contract.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    test_file = project / "test_sample.py"
+    test_file.write_text("def test_sample():\n    assert True\n", encoding="utf-8")
+    liveness_dir = tmp_path / "liveness"
+    plugin_path = liveness.materialize_liveness_plugin(liveness_dir)
+    assert plugin_path.is_file()
+
+    def run_with_worker(worker: str | None) -> list[dict[str, object]]:
+        import json as _json
+        import os as _os
+        import subprocess as _subprocess
+        import sys as _sys
+
+        events_path = tmp_path / (
+            "events-worker.ndjson" if worker is not None else "events-no-worker.ndjson"
+        )
+        child_env = dict(_os.environ)
+        child_env[liveness.ASSAY_LIVENESS_EVENTS_ENV] = str(events_path)
+        child_env.pop(liveness.ASSAY_LIVENESS_EXIT_ENV, None)
+        if worker is None:
+            child_env.pop("PYTEST_XDIST_WORKER", None)
+        else:
+            child_env["PYTEST_XDIST_WORKER"] = worker
+        result = _subprocess.run(
+            [
+                _sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                liveness.LIVENESS_PLUGIN_MODULE_NAME,
+                str(test_file),
+            ],
+            cwd=project,
+            env={
+                **child_env,
+                "PYTHONPATH": _os.pathsep.join(
+                    [str(liveness_dir), child_env.get("PYTHONPATH", "")]
+                ).rstrip(_os.pathsep),
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        return [_json.loads(line) for line in events_path.read_text().splitlines()]
+
+    stamped = run_with_worker("gw0")
+    unstamped_worker = run_with_worker(None)
+    assert stamped
+    assert unstamped_worker
+    assert all(
+        isinstance(record.get("pid"), int) and not isinstance(record["pid"], bool)
+        and record["pid"] > 0
+        for record in stamped
+    )
+    assert {record.get("xdist_worker") for record in stamped} == {"gw0"}
+    assert all("xdist_worker" not in record for record in unstamped_worker)
+
+
+def test_materialized_plugin_append_does_not_mutate_or_reuse_identity_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = _load_materialized_plugin(tmp_path)
+    events_path = tmp_path / "append.ndjson"
+    monkeypatch.setenv(liveness.ASSAY_LIVENESS_EVENTS_ENV, str(events_path))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    record = {"event": "test", "pid": 999, "xdist_worker": "stale"}
+    plugin._append(record)
+    plugin._append(record)
+    assert record == {"event": "test", "pid": 999, "xdist_worker": "stale"}
+    records = [json.loads(line) for line in events_path.read_text().splitlines()]
+    assert len(records) == 2
+    assert all(isinstance(item["pid"], int) and item["pid"] > 0 for item in records)
+    assert all("xdist_worker" not in item for item in records)
 
 
 # --------------------------------------------------------------------------

@@ -163,6 +163,9 @@ import pytest
 
 _EXIT_STATUS = None  # sentinel: pytest_sessionfinish never ran/decided
 
+# B097: `_append` stamps the producer process. The worker label is descriptive
+# metadata; the consumer uses pid ownership when usable stamps are present.
+
 
 def _events_path():
     return os.environ.get("ASSAY_LIVENESS_EVENTS")
@@ -173,7 +176,17 @@ def _append(record):
         path = _events_path()
         if not path:
             return
+        record = dict(record)
+        # B097: the process that actually ran the hook is the authoritative
+        # identity. Remove caller-supplied identity fields before stamping
+        # so a reused hook record cannot leak stale data into a later event.
+        record.pop("pid", None)
+        record.pop("xdist_worker", None)
         record["t"] = time.time()
+        record["pid"] = os.getpid()
+        worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if worker:
+            record["xdist_worker"] = worker
         with open(path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\\n")
     except Exception:
@@ -660,6 +673,58 @@ def _iter_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
             yield record
 
 
+def _valid_pid(value: Any) -> int | None:
+    """Return *value* as a usable producer pid, or ``None``.
+
+    ``bool`` is an ``int`` subclass, so it has to be rejected explicitly.
+    The parser trusts only the pid stamped by the producer; it never tries to
+    resolve a descriptive xdist worker name or consult the process table.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _record_pid(record: Mapping[str, Any]) -> int | None:
+    return _valid_pid(record.get("pid"))
+
+
+def _session_owner_pid(records: Sequence[Mapping[str, Any]]) -> int | None:
+    """The pid owning the first session-start record, when it is stamped."""
+    for record in records:
+        if record.get("event") == SESSION_START_EVENT:
+            return _record_pid(record)
+    return None
+
+
+def _selected_test_events(events_path: "Path | None") -> list[dict[str, Any]]:
+    """Read test events with the owner-process rule, or legacy-merge them.
+
+    The xdist controller receives the worker reports as well as its own hook
+    reports. The controller is the process that owns the first
+    ``session_start`` record, so its stamped ``test`` events are the one
+    candidate/baseline timeline to count and forward. This is deliberately
+    an event-record count, not a nodeid set: retries or repeated reports must
+    not disappear merely because their nodeid is equal.
+
+    A usable pid is required on every relevant ``test`` record before this
+    partition is applied. Missing, malformed, or mixed pid records retain
+    the old merged interpretation, preserving evidence from legacy files.
+    A file without a usable session owner also remains merged because no
+    identity may be invented from ``xdist_worker``.
+    """
+    records = list(_iter_events(events_path))
+    test_records = [
+        record for record in records if record.get("event") == TEST_EVENT
+    ]
+    if not test_records or any(_record_pid(record) is None for record in test_records):
+        return test_records
+    owner_pid = _session_owner_pid(records)
+    if owner_pid is None:
+        return test_records
+    return [record for record in test_records if _record_pid(record) == owner_pid]
+
+
 def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
     """Yield every valid `test` event record in *events_path*, in file
     order.
@@ -687,9 +752,7 @@ def _iter_test_events(events_path: "Path | None") -> Iterator[dict[str, Any]]:
     exact pre-B2 meaning now that the plugin also records `setup`/`teardown`
     (as `phase`) and the two session brackets.
     """
-    for record in _iter_events(events_path):
-        if record.get("event") == TEST_EVENT:
-            yield record
+    yield from _selected_test_events(events_path)
 
 
 def baseline_slowest_test_s(baseline_events_path: "Path | None") -> float | None:
@@ -734,8 +797,12 @@ def baseline_test_events(baseline_events_path: Path) -> list[dict[str, Any]]:
 
 def count_test_events(events_path: "Path | None") -> int:
     """How many `test` events *events_path* carries -- B091 A4's own
-    per-candidate `tests_completed` progress field. `0` for a `None`,
-    absent, unreadable, or event-less path -- see :func:`_iter_test_events`.
+    per-candidate `tests_completed` progress field. For a fully stamped xdist
+    file this is the owner process's records, where the owner is the process
+    that wrote the first `session_start`; this avoids counting controller
+    reports and worker reports twice without deduplicating nodeids. `0` for a
+    `None`, absent, unreadable, or event-less path -- see
+    :func:`_iter_test_events`.
     """
     return sum(1 for _ in _iter_test_events(events_path))
 
@@ -745,22 +812,24 @@ class BaselineEventGaps(NamedTuple):
     long this suite goes QUIET, which is the only question the monitoring
     loop actually asks.
 
-    *worst_gap_s* is the largest interval between two consecutive stamped
-    records -- and because the plugin brackets the session with
-    `session_start` (from `pytest_configure`, before collection) and
-    `session_finish`, that interval set INCLUDES the leading gap (collection
-    plus whatever session/module fixture the first test needs) and the
-    trailing gap (session teardown). Those two are exactly the stretches the
-    pre-B2 `call`-duration calibration could not see.
+    *worst_gap_s* is the largest interval between consecutive stamped records
+    within any one producer pid timeline. Each timeline is ordered by its
+    event timestamp before its gaps are measured, and the largest process-local
+    gap wins. Because the plugin brackets the session with `session_start`
+    (from `pytest_configure`, before collection) and `session_finish`, that gap
+    set INCLUDES the leading gap (collection plus whatever session/module
+    fixture the first test needs) and the trailing gap (session teardown).
+    Those two are exactly the stretches the pre-B2 `call`-duration calibration
+    could not see.
 
-    *leading_gap_s* is the first interval specifically -- `session_start` to
-    the first report -- i.e. how long this suite takes to produce its first
+    *leading_gap_s* is the first interval on the process that owns the first
+    `session_start` -- i.e. how long this suite takes to produce its first
     sign of life. It calibrates the window before a CANDIDATE has produced
-    any event at all. When the file does not begin with `session_start`
-    (an older baseline, or a plugin whose `pytest_configure` write failed)
-    there is no honest leading measurement, so this falls back to
-    *worst_gap_s*, the conservative choice -- never a tighter bound derived
-    from an interval that is not the leading one.
+    any event at all. When that owner identity is unavailable (an older
+    baseline, a malformed/mixed pid set, or a plugin whose `pytest_configure`
+    write failed) there is no honest leading measurement, so this falls back
+    to *worst_gap_s*, the conservative choice -- never a tighter bound
+    derived from an interval that is not the leading one.
     """
 
     worst_gap_s: float
@@ -802,20 +871,74 @@ def baseline_event_gaps(
     read as "no time passed", never as a negative gap that would drag the
     maximum down.
     """
+    records = list(_iter_events(baseline_events_path))
     stamps: list[float] = []
     first_event: Any = None
-    for record in _iter_events(baseline_events_path):
+    timestamped: list[tuple[float, Any, int | None]] = []
+    for record in records:
         stamp = record.get("t")
         if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
             continue
         if not stamps:
             first_event = record.get("event")
-        stamps.append(float(stamp))
+        stamp_float = float(stamp)
+        stamps.append(stamp_float)
+        timestamped.append((stamp_float, record.get("event"), _record_pid(record)))
     if len(stamps) < 2:
         return None
-    gaps = [max(0.0, later - earlier) for earlier, later in zip(stamps, stamps[1:])]
-    worst_gap_s = max(gaps)
-    leading_gap_s = gaps[0] if first_event == SESSION_START_EVENT else worst_gap_s
+
+    # A legacy or mixed identity set must retain the old merged timeline. In
+    # particular, a malformed pid is not permission to drop a record before
+    # measuring it.
+    if any(pid is None for _, _, pid in timestamped):
+        gaps = [
+            max(0.0, later - earlier)
+            for earlier, later in zip(stamps, stamps[1:])
+        ]
+        worst_gap_s = max(gaps)
+        leading_gap_s = gaps[0] if first_event == SESSION_START_EVENT else worst_gap_s
+        return BaselineEventGaps(worst_gap_s=worst_gap_s, leading_gap_s=leading_gap_s)
+
+    by_pid: dict[int, list[tuple[float, Any]]] = {}
+    for stamp, event, pid in timestamped:
+        assert pid is not None
+        by_pid.setdefault(pid, []).append((stamp, event))
+    for events in by_pid.values():
+        events.sort(key=lambda item: item[0])
+    per_pid_gaps: dict[int, list[float]] = {
+        pid: [
+            max(0.0, later[0] - earlier[0])
+            for earlier, later in zip(events, events[1:])
+        ]
+        for pid, events in by_pid.items()
+        if len(events) >= 2
+    }
+    # If every stamped process contributed only one record, no per-process
+    # interval exists. Keep the established merged result rather than
+    # turning a populated file into a false "no measurement" fallback.
+    if not per_pid_gaps:
+        gaps = [
+            max(0.0, later - earlier)
+            for earlier, later in zip(stamps, stamps[1:])
+        ]
+        worst_gap_s = max(gaps)
+        leading_gap_s = gaps[0] if first_event == SESSION_START_EVENT else worst_gap_s
+        return BaselineEventGaps(worst_gap_s=worst_gap_s, leading_gap_s=leading_gap_s)
+
+    worst_gap_s = max(max(gaps) for gaps in per_pid_gaps.values())
+    owner_pid = _session_owner_pid(records)
+    owner_events = by_pid.get(owner_pid, []) if owner_pid is not None else []
+    if len(owner_events) >= 2:
+        owner_gaps = per_pid_gaps[owner_pid]
+        leading_gap_s = (
+            owner_gaps[0]
+            if owner_events[0][1] == SESSION_START_EVENT
+            else max(owner_gaps)
+        )
+    else:
+        # No stamped first session-start owner with a measurable interval is
+        # available, so the leading interval cannot honestly be identified.
+        leading_gap_s = worst_gap_s
     return BaselineEventGaps(worst_gap_s=worst_gap_s, leading_gap_s=leading_gap_s)
 
 
@@ -885,7 +1008,9 @@ def compute_liveness_calibration(
     )
 
 
-def _read_events_progress(events_path: Path, previous_count: int) -> tuple[int, bool]:
+def _read_events_progress(
+    events_path: Path, previous_count: int, candidate_pid: int | None = None
+) -> tuple[int, bool]:
     """Re-read *events_path* end to end and return ``(valid_record_count,
     saw_session_finish)``. Tolerant of a torn last line (``json.loads``
     failure is skipped, never raised) exactly like
@@ -898,6 +1023,11 @@ def _read_events_progress(events_path: Path, previous_count: int) -> tuple[int, 
     as a `call` report. It shares :func:`_iter_events` with the calibration
     so the writer's vocabulary is read back in exactly one place.
 
+    *candidate_pid* is the real candidate process's pid, when the monitor has
+    one. If every ``session_finish`` record is stamped, only that pid's finish
+    qualifies. An incomplete finish identity set falls back to the old
+    any-finish interpretation so old and mixed files remain usable.
+
     *previous_count* is unused
     by this function itself -- it exists only so a caller unable to import
     both this function's return convention and its own bookkeeping in one
@@ -905,13 +1035,19 @@ def _read_events_progress(events_path: Path, previous_count: int) -> tuple[int, 
     dropped) to keep every call site's own diff small and self-explanatory.
     """
     del previous_count  # Documented above: comparison is the CALLER's job.
-    valid = 0
-    saw_session_finish = False
-    for record in _iter_events(events_path):
-        valid += 1
-        if record.get("event") == SESSION_FINISH_EVENT:
-            saw_session_finish = True
-    return valid, saw_session_finish
+    records = list(_iter_events(events_path))
+    finishes = [
+        record for record in records if record.get("event") == SESSION_FINISH_EVENT
+    ]
+    saw_session_finish = bool(finishes)
+    candidate_pid = _valid_pid(candidate_pid)
+    if candidate_pid is not None and finishes and all(
+        _record_pid(record) is not None for record in finishes
+    ):
+        saw_session_finish = any(
+            _record_pid(record) == candidate_pid for record in finishes
+        )
+    return len(records), saw_session_finish
 
 
 def _safe_size(path: Path) -> int:
@@ -1150,7 +1286,7 @@ class LivenessRunner:
                 )
 
             event_count, saw_session_finish = _read_events_progress(
-                events_path, last_event_count
+                events_path, last_event_count, proc.pid
             )
             if event_count > last_event_count:
                 last_progress_at = now

@@ -229,6 +229,70 @@ def test_mutation_as_declared_round_trips_exactly(project: Project):
     }
 
 
+def test_identity_exclude_is_normalized_and_round_trips_explicitly(project: Project):
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["python:compare-swap"]\n'
+        'identity_exclude = ["nyxloom-trove//**", "src/*.py"]\n'
+    )
+    loaded = load_lane_file(project.write(lane)).lane("package")
+
+    assert loaded.judge is not None and loaded.judge.mutation is not None
+    assert loaded.judge.mutation.identity_exclude == (
+        "nyxloom-trove/**",
+        "src/*.py",
+    )
+    assert loaded.as_declared()["judge"]["mutation"]["identity_exclude"] == [
+        "nyxloom-trove/**",
+        "src/*.py",
+    ]
+
+
+def test_identity_exclude_omission_is_distinct_from_explicit_empty(project: Project):
+    omitted = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["python:compare-swap"]\n'
+    )
+    empty = omitted.replace(
+        'operators = ["python:compare-swap"]\n',
+        'operators = ["python:compare-swap"]\nidentity_exclude = []\n',
+    )
+
+    omitted_config = load_lane_file(project.write(omitted, name="omitted.toml"))
+    empty_config = load_lane_file(project.write(empty, name="empty.toml"))
+    assert omitted_config.lane("package").judge.mutation.identity_exclude is None
+    assert empty_config.lane("package").judge.mutation.identity_exclude == ()
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        '"src/**"',
+        "[1]",
+        '[""]',
+        '["/src/**"]',
+        r"['src\**']",
+        '["src/../**"]',
+        '["src/./**"]',
+    ],
+)
+def test_identity_exclude_malformed_declarations_are_refused(
+    declared: str, project: Project
+):
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
+        'operators = ["python:compare-swap"]\n'
+        f"identity_exclude = {declared}\n"
+    )
+    with pytest.raises(LaneConfigError, match="identity_exclude"):
+        load_lane_file(project.write(lane, name="malformed.toml"))
+
+
+def test_identity_exclude_nul_is_refused_by_the_load_helper():
+    with pytest.raises(LaneConfigError, match="NUL"):
+        config_module._load_identity_exclude(["src\x00/**"], "[lanes.package]")
+
+
 # ---------------------------------------------------------------------------
 # P34/W4 -- the two v6 artifact fields, unreserved ONLY for a sql lane
 # (A-227/A-230b's own refusal must survive for every other language).
