@@ -2348,3 +2348,13 @@ user-facing documents. It is limited to serial targeted checks and live probes
 under the PSI gate while P1 and P6 continue asynchronously; it may commit a
 red-first product fix plus evidence, or an ACCEPT report. It must not merge,
 release, touch dstdns, or alter operator-owned files.
+
+### RW-189 — 2026-09-14 21:35:00Z — triage operator RG-45 backlog addendum
+
+The uncommitted addendum in `KNOWN_ISSUES_TODO_BACKLOG.md` is operator-owned
+and remains un-staged. It documents a second symptom of RG-45's already-filed
+host-wide contention (the fixed 10-minute assay lane budget, in addition to
+vitest's 60-second RPC heartbeat), with a direct green-suite reproduction. It
+does not describe a distinct RG-55 defect or a fix that belongs in this wave;
+no new row or backport is adopted. The addendum remains available for the
+future assay/RG-45 follow-up without committing the operator's dirty file.
