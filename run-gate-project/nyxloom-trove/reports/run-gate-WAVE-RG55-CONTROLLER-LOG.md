@@ -1646,5 +1646,17 @@ postcondition checks only `rebase-merge`; valid `rebase.backend=apply` and
 valid global `core.hooksPath` settings therefore defeat the oracle. The
 NamedTuple replacement and default live probes passed. A fresh Luna xhigh
 repair pass is dispatched to configure a repository-local hook path, accept
-either Git rebase layout, and raise the child failsafe to 60 seconds; no CMRU
-gate, merge, or release is authorized until a fresh final review ACCEPTs.
+ either Git rebase layout, and raise the child failsafe to 60 seconds; no CMRU
+ gate, merge, or release is authorized until a fresh final review ACCEPTs.
+
+### RW-122 — 2026-09-14 04:01:36Z — resume controller operations and preserve the quiet-host gate
+
+The controller resumes the RG-55 closeout under the operator's Luna xhigh-only
+policy. The operator-owned modern-debian-tools-python-debug release remains
+alive in its BuildKit cache-export phase and is not touched; memory PSI remains
+above the launch threshold, so no new gate or mutation container is launched.
+P6's 34-oracle-gap test repair is in progress on its branch with four test
+files modified and no commit yet. P4's PSI-gated selftest watcher remains
+parked. CMRU's fresh final review of repair `2eff6bdd` remains pending. The
+next safe actions are to consume those results, launch the required quiet-tip
+gates, and retain the previously stated P6 fresh-r2 critical path.
