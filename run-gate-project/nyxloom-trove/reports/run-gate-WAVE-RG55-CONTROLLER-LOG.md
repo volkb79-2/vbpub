@@ -1848,3 +1848,13 @@ exact r2 run is active at 47/252 candidates and P6's exact r2 run is active at
 PID `511432` remains alive and correctly waits while two
 `run-gate-vbpub-r2-*` containers exist or memory PSI exceeds 5%. No judged tree
 was switched or committed, and no new lane was launched.
+
+### RW-142 — 2026-09-14 05:21:39Z — queue B097 R1 as a non-mutation lane
+
+The clean B097 tip `0303a24d66c704e03ba10d523f36572a41d0df7a` has its required
+non-mutation `./run-gate.py --base main assay-r1` queued in watcher PID
+`533996`, log `/tmp/rg55-assay-b097-r1-watch.log`. The watcher performs a
+fresh memory-PSI check, runs with `nice -n 19 ionice -c 3`, records
+`ASSAY_B097_R1_EXIT`, and caps any exact `run-gate-vbpub-*` container it sees
+with zero CPUs to 3 CPUs. Its first check read `full avg10=5.93%`, so it has
+not launched yet. P1 and P6 remain the only active mutation lanes.
