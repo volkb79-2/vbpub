@@ -1554,3 +1554,20 @@ prepared, but its fresh launch check read memory PSI `full avg10=11.96%`, so
 the launch is deferred under the host gate. This exposes a run-gate follow-up:
 run-gate's fixed `--resume` argv cannot request assay's supported
 `--rejudge-outcome budget_exceeded` recovery path.
+
+### RW-116 — 2026-09-14 03:08:11Z — launch the P6 explicit budget rejudge
+
+The first manual direct-rejudge attempt used the correct dual-mount shape and
+was immediately CPU-capped, but its command imported the P6 branch-local
+assay CLI, which correctly refused the newer `--rejudge-outcome` option. The
+exact failed container `run-gate-vbpub-r2-rejudge-20260914-030714` was removed
+by name and its result is discarded; no P6 source or judged-tree commit was
+changed.
+
+After a fresh PSI reading of `full avg10=1.07%`, the controller launched the
+explicit continuation using the released/main assay judge source, whose CLI
+supports the option, against the unchanged P6 tree and resume store. Exact
+container `run-gate-vbpub-r2-rejudge-20260914-030755` is running under
+`dev-background.slice` with `NanoCpus=3000000000`. This is a continuation of
+the registered P6 R2 evidence; the branch-local run-gate limitation and the
+judge-source correction will be disclosed in the P6 report.
