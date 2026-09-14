@@ -1821,3 +1821,11 @@ Because the test/report commit changes the judged tree, the prior 99.90%
 coverage result is not reused. Fresh Luna xhigh reviewer Dirac is reviewing
 the exact tip and will commit `cmru-release-dirty-sync-REVIEW-final-3.md`
 before the registered gate is rerun.
+
+### RW-139 — 2026-09-14 04:56:18Z — CMRU final review accepts; queue complete registered gate
+
+Fresh Luna xhigh reviewer Dirac accepted CMRU's exact repair tree. The review
+report is committed at `b1150e6dd05d279989264ae2eb4486d674cf2076`; it records
+the real-hook live probes, full tests, and 100% coverage. CMRU's complete
+registered `./run-gate.py gate` is queued behind the two active P1/P6 mutation
+containers and the PSI gate; no pre-review evidence is reused.
