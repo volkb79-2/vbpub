@@ -1448,6 +1448,18 @@ same unchanged B096 tip. Its exact container is `heuristic_jones`, under
 the clean-evidence candidate; its wrapper marker and terminal phases remain
 pending.
 
+### RW-109 — 2026-09-14 00:33:21Z — P2 finalization superseded by already-shipped state
+
+The P2 finalization dispatch was stopped after the first prescribed retry
+returned `NO_MEASUREMENT/BASE_IS_HEAD`: the handoff's judged tree
+`186461de` is already an ancestor of current `main`, because the P2 client
+was merged by `b54aa1f2` and its 23.7.0 release was recorded by the existing
+wave history. Therefore `--base main` resolves to the detached HEAD and
+cannot measure a delta. This is a stale handoff instruction, not a product
+failure or valid mutation result; no further P2 retry, triage, merge, or
+release is authorized. The Luna xhigh worker was interrupted without a
+commit.
+
 ### RW-107 — 2026-09-14 00:27:40Z — P2 R2 retry attempt 1 running
 
 The P2 implementer launched the first approved retry from detached judged tree
