@@ -9,6 +9,7 @@ items:
   - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bug, component: cli, context_estimate: small}
   - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
   - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
+  - {id: B099, title: "An orchestrator interruption receipt makes incomplete execution infrastructure/inconclusive, never functional PASS or FAIL", type: feature, component: execution, context_estimate: large}
   - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
@@ -9680,3 +9681,90 @@ derives the excluded set from `MUTATION_BUCKETS`.
 Oracle: enumerate every excluded bucket, including `crashed`, against
 `MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and
 empty-denominator behavior unchanged.
+
+## B099 — an orchestrator interruption receipt makes incomplete execution infrastructure/inconclusive, never functional PASS or FAIL
+
+**Carved 2026-09-14 as a design-only next wave.** This is the next concrete
+increment after B078's shipped Vitest structured-report tiebreak. It is not
+implemented in this change: assay can verify a framework report's completeness,
+but it cannot observe host PSI, the run-gate liveness watcher, or the outer
+container's termination cause. A post-hoc `resources.host.memory_full_stall_seconds`
+summary is disclosure/trend data, not proof that a particular execution was
+interrupted by pressure. The self-contained implementation packet is
+[`handoffs/assay-P34-execution-interruption-boundary.md`](handoffs/assay-P34-execution-interruption-boundary.md).
+
+### Contract to implement
+
+The ordinary assay path remains byte-compatible when run without an
+orchestrator receipt. A run-gate invocation supplies a fresh run id and a
+sidecar receipt path. The receipt starts as `state = "running"`; the observer
+atomically replaces it with `state = "interrupted"` **before** killing or
+expiring the lane. The v1 accepted interruption kinds are only
+`"liveness"` (the existing progress-file or log-stream watcher) and
+`"budget_expired"` (the outer safety ceiling). The accepted observers are
+`"run-gate.progress"`, `"run-gate.log-stream"`, and `"run-gate.budget"`.
+Host-pressure attribution is not accepted by v1: it needs a live cgprofile
+sample plus an independently decided threshold, not the final profile summary
+RG-55 currently records.
+
+Assay reads the receipt only after the wrapped command returns and verifies the
+bounded JSON document's schema, run id, lane, commit, and interruption pair.
+A verified-complete framework report always wins and determines PASS/FAIL from
+its own failure count, even if a receipt is present. If the report is absent,
+malformed, or incomplete and a verified interruption receipt is present, the
+affected claim(s) become `INCONCLUSIVE/INFRASTRUCTURE_INTERRUPTED`; no exit
+code, stderr text, CPU observation, or partial mutation/canary result may
+override that. A malformed, stale, mismatched, or unreadable supplied receipt
+is an explicit infrastructure refusal, never a fallback to functional FAIL.
+The valid initial `state = "running"` is not interruption evidence and keeps
+the normal no-interruption behavior; if run-gate cannot replace it before a
+forced termination, run-gate itself must refuse the gate rather than accept
+assay's result. With no receipt, B078's current exit-code fallback remains
+unchanged, including the rule that a generic nonzero exit cannot PASS.
+
+If the outer watcher kills assay before it can write a final verdict, run-gate
+must invoke the new no-test `assay reconcile` operation against assay's
+pre-command execution journal and the verified receipt. Reconciliation may
+preserve only already-complete claim boundaries recorded atomically in that
+journal; every unfinished declared rigor level is payload-free
+`INCONCLUSIVE/INFRASTRUCTURE_INTERRUPTED`. It must not rerun the test command.
+Receipt-write failure, missing journal, or a lost container is a gate-level
+infrastructure refusal and must not be recorded as a product FAIL.
+
+Assay-owned `BUDGET_EXCEEDED` terminals and their existing mutation-score
+exclusions remain intact when assay itself gets to emit them. The new receipt
+terminal is for an outer interruption whose owner is otherwise invisible to
+assay; it must not reuse `LANE_TIMEOUT`, `CANDIDATE_HUNG`, or
+`CANARY_INCONCLUSIVE`.
+
+### Acceptance shape
+
+- incomplete report + verified liveness receipt is inconclusive for both exit
+  0 and nonzero, and never creates a product failure;
+- incomplete report + verified budget-expiry receipt is likewise resumable and
+  never awards candidate credit;
+- complete clean/failed reports still determine PASS/FAIL in both exit-code
+  directions;
+- no receipt preserves the B078/A-073 fallback, and a generic nonzero exit
+  never becomes PASS;
+- wrong run id, lane, commit, state, kind, observer, symlink, size, or JSON
+  shape is a named infrastructure refusal, not an invented pressure fact;
+- an outer kill at every phase boundary yields a complete reconciled verdict,
+  preserves only complete prior claims, performs no test rerun, and leaves
+  `--resume` able to continue the mutation work;
+- run-gate writes the interruption receipt before every liveness/budget kill,
+  fails closed if it cannot write it, and does not relabel a run from the
+  final RG-55 profile summary alone;
+- an explicitly performance-testing lane is outside the functional assay
+  claim and is not silently converted into a functional result.
+
+### Status and ownership
+
+This item is **not dispatchable until the companion run-gate/cgprofile input
+contract and the schema-v12 decision are accepted**. Assay has no current
+interface from which to derive either fact. An assay-only implementation would
+either classify every incomplete report as inconclusive (misclassifying real
+crashes and product failures) or reuse a narrower closed reason code; both
+would be false certification. No user-facing capability shipped in this
+carve, so README, DESIGN-GUIDE, CONSUMERS, and CHANGES remain unchanged until
+the implementation packet lands.
