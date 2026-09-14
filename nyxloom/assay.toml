@@ -179,7 +179,6 @@ base = "3d27c67e"
 # The authoritative assay 6.1.1 discovery with a temporary cap above the
 # max+1 sentinel found 358 candidates after the final source shape; 358 is the
 # exact finite cap without turning this into an open-ended campaign.
-# exact finite cap without turning this into an open-ended campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
