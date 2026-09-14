@@ -2535,6 +2535,17 @@ regression coverage for this boundary and for per-project marker isolation.
 The BuildKit OOM/EOF diagnosis is accepted as infrastructure, but the CMRU
 repair remains unmerged pending a same-reviewer fix round.
 
+### RW-208 — 2026-09-14 23:43:58Z — P35 verification remains NOT READY
+
+Helmholtz's same-reviewer verification of P35 repair `40b2106e3efe91c718b8555c30d38957a4040f5f`
+closed F-2, F-3, F-4, and F-6 but found four remaining blockers: cgprofile
+pre-kill handshake ownership/scope is unspecified; journal bootstrap ownership
+and grammar contradict each other; the receipt nonce is specified as both
+32-hex and 64-hex; and the decision/dependency metadata is not
+machine-discoverable (`D-449` reference and a lint-invalid `implement-1`
+tier). Gibbs was sent these findings for another design-only repair pass.
+P35 remains neither accepted nor dispatchable.
+
 ### RW-205 — 2026-09-14 23:32:37Z — RG-56 verification remains NOT READY
 
 Dewey's same-reviewer fix verification accepted the repaired demand,
