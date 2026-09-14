@@ -2285,3 +2285,14 @@ This strengthens the host-load explanation but does not prove the candidate
 path's exact wait point. Keep the judged tree and process untouched; the
 existing supervisor remains the authoritative asynchronous run, and the
 post-terminal diagnosis must use its final marker, Docker status, and verdict.
+
+### RW-183 — 2026-09-14 14:16:37Z — host saturation confirmed at the Docker boundary
+
+A read-only snapshot of P1's exact container reports `NanoCpus=3000000000`
+under `dev-background.slice`, with no container memory cap. The Docker stats
+request could not return within its 12-second bound, while the host reported
+load averages `357.68 356.33 315.69` and memory PSI `full avg10=61.20`.
+This is stronger evidence of host saturation than the worker-local symptom;
+it is not evidence of OOM (`docker inspect` still reports `OOMKilled=false`).
+No process or container was changed, and no new launch is permitted until the
+standing PSI gate clears.
