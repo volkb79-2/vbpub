@@ -1385,3 +1385,14 @@ cross-document suite passed 42 tests. The review handoff was frozen in
 `b83b9941`, and a fresh Luna xhigh adversarial reviewer was dispatched against
 that exact tip. The B097 registered gate remains pending until review accepts;
 no merge or release is authorized by this ruling.
+
+### RW-102 — 2026-09-14 00:04:58Z — B096 registered gate failed qualification
+
+The asynchronous B096 `tester-unified` gate passed its wheel-installed,
+attestation, verdict-v5, schema-successor, verdict-v11, judge-provenance, and
+self-hosted phases. Its existing Topos qualification then failed scenario
+`current-full-pass`: expected exit 0, got 1. The exact wrapper recorded
+`RUN_GATE_EXIT=1`; no B096 product source changed during the run. This is not
+merge evidence. The gate must be rerun from the same quiet B096 tip after the
+fresh reviewer verdict and a safe PSI reading, with the failure disclosed if
+the required retry policy exhausts.
