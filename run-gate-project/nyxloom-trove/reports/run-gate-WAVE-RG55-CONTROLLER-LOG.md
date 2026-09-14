@@ -1793,3 +1793,12 @@ running `./run-gate.py --base 186461de assay-r1` from the P4 worktree. This is
 the handoff's recorded accepted P2 comparison tree; the watcher will report an
 explicit `RUN_GATE_EXIT` marker. It is a non-mutation bare-host gate and may
 run alongside P1/P6, subject to the host PSI gate.
+
+### RW-136 — 2026-09-14 04:41:07Z — P4 r1 passes; queue the r3 canary
+
+P4's corrected assay-r1 completed with `PASS`, exit 0, and commit
+`b4fb7b1b1b1c934d9a38f959b889629704dfd31d`; the verdict JSON was read in a
+separate step. The controller discarded the prior exit-2 refusal. P4's
+non-delegating `assay-r3` canary is now queued behind PSI as watcher PID
+`481080`, log `/tmp/rg55-p4-final-r3-watch.log`; it is intentionally invoked
+without `--base`, which that lane refuses by contract.
