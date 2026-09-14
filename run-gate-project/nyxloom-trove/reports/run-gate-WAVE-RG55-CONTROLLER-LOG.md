@@ -1996,3 +1996,12 @@ it is supplemental evidence for the branch's run-gate integration, not the
 assay package's authoritative `assay/run-gate.py tester-unified` gate. The
 correct authoritative gate is running on B096's combined branch at
 `51d9701e`, and its outcome is the merge gate for the B092/B098/B096 sidecar.
+
+### RW-155 — 2026-09-14 09:19:20Z — stale shared cgprofile edit ask is cleared by workspace state
+
+The P1 handoff's ask whether the controller may discard the shared
+`scripts/cgroup-profiler/cgprofile.py` `HERE`→`DEFAULT_OUT` edit is no longer
+active: the shared checkout has no modification to that file. No operator file
+was discarded. The only remaining shared-checkout modification is the
+operator-owned `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` addendum, which
+remains untouched and uncommitted.
