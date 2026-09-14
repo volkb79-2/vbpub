@@ -2431,6 +2431,26 @@ verification, PSI semantics, dynamic slot calculation, dry-run/override
 boundaries, and the atomic start-side race. It is read-only with respect to
 the handoff and cannot touch dstdns or operator-owned files.
 
+### RW-198 — 2026-09-14 22:51:15Z — RG-56 design review BLOCKED
+
+The fresh Luna xhigh review of handoff `36745e9b` returned BLOCKED and was
+not merged. It found that the handoff still conflated pre-start admission with
+the profiler's `containerid:` session operation, compared raw live medians to
+resolved candidate reservations, lacked host-authoritative systemd load facts,
+did not reconcile registry generations with actual gates-slice leaves, lacked
+footprint provenance/value validation, and left numeric/wire/wait semantics
+underspecified. These are design blockers, not implementation polish.
+
+### RW-199 — 2026-09-14 22:51:15Z — RG-56 design repair dispatched
+
+A fresh Luna xhigh repair implementer was dispatched in an isolated worktree,
+seeded with the blocked handoff and review. The repair must separate atomic
+pre-start reservation from profiling, normalize reservation units, require
+host-produced systemd/registry/provenance facts, close numeric and race
+semantics, and retain the current two-container RG-55 cap until producer and
+acceptance evidence exist. The original reviewer remains alive for fix
+verification; no merge or release is authorized yet.
+
 ### RW-196 — 2026-09-14 22:23:51Z — contention agnosticism and forward progress
 
 Correction to the controller's earlier wording: RG-55 is not trying to
