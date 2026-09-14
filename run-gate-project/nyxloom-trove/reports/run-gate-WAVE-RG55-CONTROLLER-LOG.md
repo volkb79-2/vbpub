@@ -2147,3 +2147,14 @@ Assay base-resolution defect, so no product repair is authorized from this
 evidence. B096 remains unmerged pending a deterministic Topos qualification
 command or repair of that Topos-owned test, followed by a fresh P25 and the
 registered gate.
+
+### RW-170 — 2026-09-14 12:35:25Z — retain the operator-owned RG-45 addendum
+
+The shared checkout's only dirty tracked file remains
+`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`. Its new 2026-09-12 addendum
+records a distinct lane-timeout manifestation of the already-filed RG-45/B078
+cross-container contention issue: four `ui_unit` timeouts despite quiet
+pre-launch PSI readings, and a direct 714.67-second green suite exceeding the
+fixed ten-minute assay budget. This is valid backlog evidence, but it is
+operator-owned and outside RG-55's dispatched scope. Leave it dirty and do not
+stage, rewrite, or commit it; no RG-55 package adopts it in this wave.
