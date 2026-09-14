@@ -1535,3 +1535,22 @@ triage each survivor: add a real behavioral oracle or make an evidence-backed
 equivalence/structure change, then rerun the required final review and the
 registered gate on the new quiet tip. The worktree remains clean at
 `f6972c98`; no release or install has been attempted.
+
+### RW-115 — 2026-09-14 03:04:31Z — repair workers returned; P6 rejudge deferred
+
+The CMRU mutation-survivor repair worker returned clean commit
+`08692bf2`, adding meaningful frozen-result, failed-abort, and defensive
+state-transition oracles. The P4 repair worker returned clean commit
+`28bc3feb`, fixing synchronous exec-launch cleanup and correcting the current
+os.wait4/own-child rusage documentation. Neither package has been reviewed or
+re-gated after these commits.
+
+P6's `--fresh` run from `5c2134ed` completed with the unchanged
+`BUDGET_EXCEEDED/LANE_TIMEOUT` verdict: its baseline passed, but ordinary
+`--resume` merged all 484 persisted records, including the two budget records,
+without re-executing them. The explicit assay rejudge option is required for
+those two records. A correctly mounted direct rejudge continuation is
+prepared, but its fresh launch check read memory PSI `full avg10=11.96%`, so
+the launch is deferred under the host gate. This exposes a run-gate follow-up:
+run-gate's fixed `--resume` argv cannot request assay's supported
+`--rejudge-outcome budget_exceeded` recovery path.
