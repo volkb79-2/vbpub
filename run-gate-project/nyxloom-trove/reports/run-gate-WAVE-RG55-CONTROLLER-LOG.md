@@ -1636,3 +1636,15 @@ fresh independent Luna xhigh final reviewer is now reviewing this exact tip.
 The operator-owned MDT release remains active at its cache-export step and is
 outside RG-55's mutation/release worktrees. No gate is launched while memory
 PSI exceeds the standing threshold.
+
+### RW-121 — 2026-09-14 03:50:23Z — CMRU final review finds Git-config fixture dependence
+
+Fresh Luna xhigh final review of CMRU tip `e224579c` returned `REJECT` for one
+test-isolation blocker. The real interrupted-rebase fixture installs its hook
+under `.git/hooks` without pinning the effective `core.hooksPath`, and its
+postcondition checks only `rebase-merge`; valid `rebase.backend=apply` and
+valid global `core.hooksPath` settings therefore defeat the oracle. The
+NamedTuple replacement and default live probes passed. A fresh Luna xhigh
+repair pass is dispatched to configure a repository-local hook path, accept
+either Git rebase layout, and raise the child failsafe to 60 seconds; no CMRU
+gate, merge, or release is authorized until a fresh final review ACCEPTs.
