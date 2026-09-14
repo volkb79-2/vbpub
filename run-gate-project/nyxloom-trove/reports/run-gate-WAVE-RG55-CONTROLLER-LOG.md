@@ -2133,3 +2133,17 @@ xhigh successor was dispatched to reproduce the exact
 mounts, the governed cgroup parent, and separate container wait/log statuses;
 no code repair is permitted before that artifact and pytest evidence is
 captured.
+
+### RW-169 — 2026-09-14 12:31:36Z — B096 P25 reproduction clears the base repair
+
+The final fresh Luna xhigh reproduction ran inside the correctly mounted and
+governed `tester-unified` container. Docker wait and logs both exited 0. The
+scenario resolved `p33-declared-base` to the expected immutable base OID and
+R1 passed; the ref-free P22 snapshot was also observed as expected. P25's
+`FAIL/COMMAND_FAILED` came from the pinned Topos command itself:
+`test_mounted_drill_screen_surfaces_unavailable_damon_controls` timed out
+under `topos/tests -q -n auto` after `1 failed, 2922 passed`. This is not an
+Assay base-resolution defect, so no product repair is authorized from this
+evidence. B096 remains unmerged pending a deterministic Topos qualification
+command or repair of that Topos-owned test, followed by a fresh P25 and the
+registered gate.
