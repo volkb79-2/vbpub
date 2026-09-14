@@ -2037,3 +2037,11 @@ run. The duplicate wrapper was terminated by its exact recorded PIDs; the
 implementer's original gate was left untouched and remains the only RG-26 gate
 evidence. The initial wrapper had already failed before launching because its
 working directory was unset; neither wrapper result is evidence.
+
+### RW-159 — 2026-09-14 09:40:03Z — retire the stale P4 launch watcher
+
+The original P4 r2 watcher was keyed to the exhausted P1 supervisor marker,
+so it could never launch P4 after P1 recovery. The exact watcher PID was
+terminated; no gate or container was affected. A replacement watcher will be
+created only after P1 and P6 have terminal mutation evidence and their final
+package gates are complete.
