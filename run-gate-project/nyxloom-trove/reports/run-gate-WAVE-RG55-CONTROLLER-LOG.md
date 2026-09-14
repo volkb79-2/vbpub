@@ -2305,3 +2305,13 @@ mutation container is its exact `tester-unified:local` container; P6 and the
 combined assay supervisor have not launched containers. Therefore no stale
 RG-55 process is a safe cleanup target, and the controller leaves all existing
 workloads untouched.
+
+### RW-185 — 2026-09-14 20:48:47Z — assay B092/B098/B096/B097 sidecar is merge-ready
+
+The isolated `assay-b097` tip `0303a24d` has a clean worktree, a fresh
+adversarial Luna xhigh ACCEPT for B092+B098, B097 round-2 fix verification
+ACCEPT, and an authoritative `tester-unified` PASS at that exact clean tip
+(exit 0, revision 41). The registered gate also records the expected
+`profile_error` for bare-host lanes under RG-57; it is not a failure. The
+controller may merge this sidecar serially onto main and then perform its
+versioned release workflow; no dstdns write is authorized.
