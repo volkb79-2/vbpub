@@ -2228,3 +2228,14 @@ exit markers. It has not launched because PSI is still above the admission
 threshold. This is a non-mutation assay gate and does not alter P1/P6's
 judged trees; no merge or release is authorized until its job status and assay
 verdict are both read separately.
+
+### RW-178 — 2026-09-14 13:46:58Z — bounded Luna P3 preflight sidecar
+
+While P1/P6 mutation supervisors and the combined assay gate remain
+asynchronous behind the host-PSI admission gate, a fresh Luna xhigh sidecar
+(`01a0a02b-8662-7392-a836-4f2c7f1a0e7e`) was dispatched for a read-only P3
+close-out preflight. It must write `/tmp/rg55-p3-preflight-luna.md` before
+optional analysis and may not edit the repository, launch gates, inspect
+mutation progress, touch dstdns, or alter running processes. No package or
+judged-tree state changed; the artifact is preparatory and does not authorize
+P3 close-out.
