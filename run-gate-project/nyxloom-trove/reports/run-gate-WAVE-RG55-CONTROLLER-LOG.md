@@ -1678,3 +1678,14 @@ worktree as watcher PID `416958`, log `/tmp/rg55-cmru-gate-watch.log`. The
 watcher launches only at memory PSI `full avg10 <= 5`, uses the required
 nice/ionice priority, and writes an explicit `RUN_GATE_EXIT` marker; no CMRU
 gate container had launched at ruling time.
+
+### RW-125 — 2026-09-14 04:11:23Z — P4 post-merge selftest passes; queue assay-r1
+
+P4's required post-main-merge `selftest` completed on exact tip `b4fb7b1b`
+with exit 0: `1160 passed, 3 skipped`, and the separate history record is
+`outcome=pass`, `commit=b4fb7b1b1b1c934d9a38f959b889629704dfd31d`,
+`history_eligible=true`. The daemon absence warning is expected at this
+stage and is not a verdict change. The next required P4 gate,
+`./run-gate.py assay-r1`, is queued behind the PSI gate as watcher PID
+`425870`, log `/tmp/rg55-p4-final-r1-watch.log`; no new mutation lane was
+launched.
