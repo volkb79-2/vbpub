@@ -177,12 +177,13 @@ base = "3d27c67e"
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
 # The authoritative assay 6.1.1 discovery with a temporary cap above the
-# max+1 sentinel found 351 candidates after the final source shape; 351 is the
+# max+1 sentinel found 358 candidates after the final source shape; 358 is the
+# exact finite cap without turning this into an open-ended campaign.
 # exact finite cap without turning this into an open-ended campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 351
+max_mutants = 358
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
