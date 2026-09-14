@@ -2076,3 +2076,11 @@ defensive branches in `cgprofile.py`, `serve.py`, and `damon.py`. The exact
 P1 tester container `run-gate-vbpub-r2-1155345-1789380973` was captured,
 terminated, and auto-removed; its partial `exit 137` is not mutation
 evidence. A coverage repair is being added before the next quiet-tip r2.
+
+### RW-163 — 2026-09-14 11:05:52Z — defer P4 until both daemon tracks clear their gates
+
+The controller briefly prepared a mechanical P4 r2 watcher keyed only to P6's
+mutation supervisor, then stopped it before it could launch a container. RW-159
+requires P4 to wait for terminal mutation evidence and final package gates from
+both P1 and P6; that stronger condition remains binding. No P4 assay state was
+changed and no additional mutation lane was started.
