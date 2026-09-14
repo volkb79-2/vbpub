@@ -1900,3 +1900,17 @@ nothing; every five seconds it inspects the exact active
 exact container reports zero CPUs. It exits after P1, P6, and the CMRU gate
 watcher have all ended and no r2 container remains. Current P1/P6 caps are
 already 3 CPUs.
+
+### RW-147 — 2026-09-14 06:41:59Z — queue B097 full gate and P4 final mutation
+
+B097's required registered `./run-gate.py gate` is parked in detached watcher
+PID `659783`, log `/tmp/rg55-assay-b097-gate-watch.log`. It admits only when
+memory PSI `full avg10` is at most 5% and fewer than two exact
+`tester-unified:local` containers exist. P4's final `assay-r2` is parked in
+detached watcher PID `660921`, log `/tmp/rg55-p4-r2-watch.log`; it admits only
+when memory PSI is at most 5% and fewer than two exact
+`run-gate-vbpub-r2-*` mutation containers exist. Both watchers are reparented
+to PID 1 and emit independent exit markers. At this ruling P1 is at
+131/252 and P6 at 161/484; both exact containers remain running, not
+OOM-killed, and capped at 3 CPUs. No new gate has launched, and no judged
+tree was switched or committed.
