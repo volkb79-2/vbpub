@@ -503,7 +503,7 @@ That optional path is OCI-layout-native: bake writes one OCI tar per target, the
 extracted into disk-backed scratch, `docker-repack` writes a second OCI layout, and the
 governed BuildKit builder validates it by importing and unpacking before publication — no
 daemon round-trip, no `skopeo` copy. It currently trips the fail-closed gate because of the
-repacker defect recorded in the architecture guide; use the default `push` lane rather than
+repacker defect recorded in the architecture guide; use the default `load` lane rather than
 copying an invalid layout.
 
 Counting layers, source vs target:

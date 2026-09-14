@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Build and push modern-debian-tools-python-debug images.
 
-NOTE: When invoked via cmru release, the built-in oci-image handler replaces this script.
-This file remains for manual/local use outside cmru.
+CMRU uses this script for the prepare phase and, for the source-first ``load``
+flow, its post-gate publication phase.  The latter is dispatched by
+``scripts/release-bake.sh push`` after the source commit has passed its gate.
+The other flows publish during their build and finish with an explicit
+already-published terminal state in that later step.
 
 Usage:
   ./build-push.py --build        # Resolve env, build images, save state
   ./build-push.py --push         # Load saved state, push images (skips resolver)
   ./build-push.py --rebuild      # Build then push sequentially
-                                 # (push/repack publish during build; their push step is a no-op)
+                                 # (push/repack publish during build; their later step is terminal)
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ from cmru.runner import run_step  # noqa: E402
 BUILD_ENV_FILE = ROOT / ".build-env.json"
 RESOLVER_SCRIPT = ROOT / "scripts" / "resolve-devcontainers-release.py"
 COUNTER_DIR = ROOT / "logs"
+_PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
 
 
 def parse_args() -> argparse.Namespace:
@@ -654,12 +658,22 @@ def do_push() -> None:
         # built — not a bash step, so the double-build it replaces cannot come back.
         _push_oci_layouts(env_vars)
     else:
+        if os.environ.get(_PUSH_STEP_GUARD) == "1":
+            raise SystemExit(
+                "[ERROR] build-push.py --push recursively reached the configured "
+                "push step for RELEASE_IMAGE_FLOW="
+                f"{release_image_flow!r}; configure that step to call "
+                "scripts/release-bake.sh push instead."
+            )
         config_path = ROOT / "cmru.toml"
+        os.environ[_PUSH_STEP_GUARD] = "1"
         try:
             run_step(config_path, "push")
         except subprocess.CalledProcessError as exc:
             sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
             raise SystemExit(exc.returncode) from None
+        finally:
+            os.environ.pop(_PUSH_STEP_GUARD, None)
 
     sys.stderr.write("[INFO] Step 3/3: Syncing GHCR package visibility ...\n")
     # PHP 8.5 is a TAG variant of the base families now, not a separate package name —

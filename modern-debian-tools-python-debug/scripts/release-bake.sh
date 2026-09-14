@@ -139,20 +139,26 @@ case "${FLOW}" in
         if [[ "${ACTION}" == "build" ]]; then
             oci_layout_bake
         else
-            echo "[INFO] RELEASE_IMAGE_FLOW=load: push is handled by build-push.py's" \
-                 "digest-verified crane push (not this script)."
+            echo "[INFO] RELEASE_IMAGE_FLOW=load: invoking build-push.py --push for" \
+                 "the digest-verified OCI-layout publication."
+            # CMRU's post-gate push step enters here.  Use exec so the
+            # publisher's status is the release step's status; a successful
+            # informational message must never stand in for publication.
+            exec python3 build-push.py --push
         fi
         ;;
     push)
         if [[ "${ACTION}" == "build" ]]; then
             registry_bake
         else
-            echo "[INFO] RELEASE_IMAGE_FLOW=push: build already published the images."
+            echo "[INFO] RELEASE_IMAGE_FLOW=push: already-published-during-build" \
+                 "terminal state; no second registry push is attempted."
         fi
         ;;
     repack)
         if [[ "${ACTION}" == "push" ]]; then
-            echo "[INFO] RELEASE_IMAGE_FLOW=repack: build already published the repacked OCI layouts."
+            echo "[INFO] RELEASE_IMAGE_FLOW=repack: already-published-during-build" \
+                 "terminal state; no second registry push is attempted."
             exit 0
         fi
 
