@@ -1880,3 +1880,12 @@ the same quiet tip after a fresh `full avg10=4.54%` check. Persistent watcher
 PID `553845` and run PID `553849` are recorded in
 `/tmp/rg55-assay-b097-r3-watch.log`; the canary has no comparison-base
 override and has not yet produced its exit marker.
+
+### RW-145 — 2026-09-14 05:26:52Z — B097 R3 canary passes
+
+The B097 R3 watcher recorded `ASSAY_B097_R3_EXIT=0`. Its separate run log
+reports both required canaries (`median-not-mean` and
+`median-not-mean-series-stats`) rejected and `2 rejected, 0 survived`. R3 has
+no verdict JSON artifact by lane design; the wrapper and canary output are the
+authoritative evidence. B097's R1 and R3 non-mutation gates are now green;
+its registered full gate remains required before merge.
