@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,14 +67,83 @@ class BuildKitGovernanceTests(unittest.TestCase):
         non_worker["Config"]["Image"] = "alpine:3.20"
         self.assertEqual(GUARD.decide(GUARD.from_inspect("x", [non_worker]), config).status, "ignored")
 
+    def test_guard_periodic_rescan_catches_container_after_initial_scan(self) -> None:
+        config = GUARD.GuardConfig("report-only", "moby/buildkit:buildx-stable-1-rootless")
+        scans = iter(([], ["created-between-scans"]))
+        reconciled = []
+
+        class Clock:
+            now = 0.0
+
+            def __call__(self):
+                return self.now
+
+        clock = Clock()
+
+        class Stream:
+            def readline(self):
+                return ""
+
+        class Process:
+            def __init__(self):
+                self.stdout = Stream()
+                self.stderr = None
+                self.returncode = None
+                self.waited = False
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                self.waited = True
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 1
+
+        process = Process()
+
+        class Selector:
+            def register(self, stream, event):
+                self.stream = stream
+
+            def select(self, timeout):
+                if clock.now == 0.0:
+                    clock.now = 1.0
+                    process.returncode = 0
+                    return []
+                process.returncode = 1
+                return [(self.stream, 1)]
+
+            def unregister(self, stream):
+                self.asserted_stream = stream
+
+            def close(self):
+                pass
+
+        with mock.patch.object(GUARD, "_container_ids", side_effect=lambda docker: next(scans)), \
+             mock.patch.object(GUARD, "reconcile", side_effect=lambda docker, container_id, cfg: reconciled.append(container_id)):
+            with self.assertRaises(GUARD.GuardError):
+                GUARD.watch(
+                    "docker",
+                    config,
+                    rescan_interval=1.0,
+                    popen=lambda *args, **kwargs: process,
+                    clock=clock,
+                    selector_factory=Selector,
+                )
+
+        self.assertEqual(reconciled, ["created-between-scans"])
+        self.assertTrue(process.waited)
+
     def test_builder_creates_only_explicit_remote_and_is_idempotent(self) -> None:
         class FakeDocker:
             def __init__(self):
                 self.calls = []
                 self.exists = False
 
-            def __call__(self, argv, **_kwargs):
-                self.calls.append(argv)
+            def __call__(self, argv, **kwargs):
+                self.calls.append((argv, kwargs))
                 if argv[1:4] == ["buildx", "inspect", BUILDER.MANAGED_BUILDER] and "--bootstrap" not in argv:
                     if not self.exists:
                         return subprocess.CompletedProcess(argv, 1, "", "missing")
@@ -83,13 +153,21 @@ class BuildKitGovernanceTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "", "")
 
         fake = FakeDocker()
-        BUILDER.ensure_managed_builder("docker", runner=fake)
-        BUILDER.ensure_managed_builder("docker", runner=fake)
-        creates = [call for call in fake.calls if call[1:3] == ["buildx", "create"]]
+        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
+        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
+        creates = [call for call, _ in fake.calls if call[1:3] == ["buildx", "create"]]
         self.assertEqual(len(creates), 1)
         self.assertIn("--driver", creates[0])
         self.assertIn("remote", creates[0])
+        self.assertIn("unix:///run/mdt-buildkitd/buildkitd.sock", creates[0])
         self.assertNotIn("docker-container", " ".join(creates[0]))
+        for _, kwargs in fake.calls:
+            self.assertEqual(kwargs["env"]["BUILDX_CONFIG"], "/etc/mdt/buildx")
+        profile = (ROOT / "etc/profile.d/mdt-buildkit.sh").read_text()
+        self.assertIn("export BUILDX_CONFIG=/etc/mdt/buildx", profile)
+        self.assertIn("export BUILDX_BUILDER=mdt-managed", profile)
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 
     def test_wizard_enforces_memory_order_and_live_aggregate(self) -> None:
         self.assertEqual(WIZARD.propose_memory_tiers(16 * 1024 * 1024, 8 * 1024 * 1024)["DEV_MEMORY_HIGH"], "8G")
@@ -108,6 +186,62 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertTrue(WIZARD.memory_relationship_errors(values))
         self.assertIsNotNone(WIZARD.memory_aggregate_error(3 * 1024 * 1024, values))
         self.assertEqual(WIZARD.parse_size_to_kib("1.5G"), 1572864)
+
+    def test_wizard_validates_manual_config_and_guaranteed_sibling_aggregate(self) -> None:
+        example = (ROOT / "host-setup.env.example").read_text()
+        valid = example.replace("DEV_MEMORY_HIGH=\n", "DEV_MEMORY_HIGH=32G\n")
+        valid = valid.replace("DEV_MEMORY_MAX=\n", "DEV_MEMORY_MAX=64G\n")
+        meminfo = "MemTotal: 67108864 kB\nMemAvailable: 67108864 kB\n"
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            config_path = directory_path / "host-setup.env"
+            meminfo_path = directory_path / "meminfo"
+            config_path.write_text(valid)
+            meminfo_path.write_text(meminfo)
+            WIZARD.validate_host_setup_config(
+                config_path, ROOT / "host-setup.env.example", meminfo_path
+            )
+            self.assertEqual(
+                WIZARD.main(
+                    [
+                        "--validate-config",
+                        str(config_path),
+                        "--example",
+                        str(ROOT / "host-setup.env.example"),
+                        "--meminfo-path",
+                        str(meminfo_path),
+                    ]
+                ),
+                0,
+            )
+
+            sibling_over_budget = valid.replace(
+                "DEV_MEMORY_MIN_GUARANTEED_HIGH=\n",
+                "DEV_MEMORY_MIN_GUARANTEED_HIGH=16G\n",
+            ).replace(
+                "DEV_MEMORY_MIN_GUARANTEED_MAX=\n",
+                "DEV_MEMORY_MIN_GUARANTEED_MAX=16G\n",
+            )
+            config_path.write_text(sibling_over_budget)
+            with self.assertRaises(WIZARD.TemplateError) as raised:
+                WIZARD.validate_host_setup_config(
+                    config_path, ROOT / "host-setup.env.example", meminfo_path
+                )
+            self.assertIn("memory aggregate", str(raised.exception))
+
+            invalid_hierarchy = valid.replace(
+                "DEV_BUILDKITD_MEMORY_LOW=\n", "DEV_BUILDKITD_MEMORY_LOW=7G\n"
+            )
+            config_path.write_text(invalid_hierarchy)
+            with self.assertRaises(WIZARD.TemplateError) as raised:
+                WIZARD.validate_host_setup_config(
+                    config_path, ROOT / "host-setup.env.example", meminfo_path
+                )
+            self.assertIn("memory hierarchy", str(raised.exception))
+
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn("--validate-config /etc/mdt/host-setup.env", install)
+        self.assertIn("--meminfo-path /proc/meminfo", install)
 
     def test_template_has_all_memory_controls_and_managed_buildkit(self) -> None:
         example = (ROOT / "host-setup.env.example").read_text()

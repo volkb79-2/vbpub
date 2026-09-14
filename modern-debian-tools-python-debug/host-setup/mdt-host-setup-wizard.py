@@ -197,7 +197,7 @@ class TemplateError(RuntimeError):
     loudly rather than silently writing a corrupt or unsubstituted file."""
 
 
-def parse_env_file(text: str) -> dict[str, str]:
+def parse_env_file(text: str, *, strict: bool = False) -> dict[str, str]:
     """Parse a shell-sourced KEY=value file into {key: value}, stripping one
     layer of matching quotes. Used only to recover PRIOR values (an existing
     /etc/mdt/host-setup.env, or host-setup.env.example's own shipped
@@ -209,15 +209,27 @@ def parse_env_file(text: str) -> dict[str, str]:
     resolve_default(), which has to distinguish "present" from "actually
     configured" precisely because of this."""
     out_map: dict[str, str] = {}
-    for line in text.splitlines():
+    for line_number, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            if strict:
+                raise TemplateError(
+                    f"invalid host-setup.env line {line_number}: {line!r}"
+                )
             continue
         key, _, value = stripped.partition("=")
         key = key.strip()
+        if strict and not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            raise TemplateError(
+                f"invalid host-setup.env key on line {line_number}: {key!r}"
+            )
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
+        if strict and key in out_map:
+            raise TemplateError(f"duplicate {key} in host-setup.env")
         out_map[key] = value
     return out_map
 
@@ -466,43 +478,265 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
     return errors
 
 
+MEMORY_CHILD_SPECS = (
+    ("dev-interactive.slice", (
+        "DEV_INTERACTIVE_MEMORY_MIN", "DEV_INTERACTIVE_MEMORY_LOW",
+        "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_INTERACTIVE_MEMORY_MAX",
+    )),
+    ("dev-background.slice", (
+        "DEV_BACKGROUND_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_LOW",
+        "DEV_BACKGROUND_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_MAX",
+    )),
+    ("dev-gates.slice", (
+        "DEV_GATES_MEMORY_MIN", "DEV_GATES_MEMORY_LOW",
+        "DEV_GATES_MEMORY_HIGH", "DEV_GATES_MEMORY_MAX",
+    )),
+    ("dev-buildkitd.slice", (
+        "DEV_BUILDKITD_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_LOW",
+        "DEV_BUILDKITD_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_MAX",
+    )),
+    ("dev-memory_min_guaranteed.slice", (
+        "DEV_MEMORY_MIN_GUARANTEED_CEILING", "DEV_MEMORY_MIN_GUARANTEED_LOW",
+        "DEV_MEMORY_MIN_GUARANTEED_HIGH", "DEV_MEMORY_MIN_GUARANTEED_MAX",
+    )),
+)
+MEMORY_CHILD_KEYS = tuple(
+    key for _, keys in MEMORY_CHILD_SPECS for key in keys
+)
+
+
 def memory_aggregate_error(avail_kib: int, values: dict[str, str]) -> str | None:
-    highs = sum(
-        parse_size_to_kib(values.get(key, ""))
-        for key in (
-            "DEV_INTERACTIVE_MEMORY_HIGH",
-            "DEV_BACKGROUND_MEMORY_HIGH",
-            "DEV_GATES_MEMORY_HIGH",
-            "DEV_BUILDKITD_MEMORY_HIGH",
+    """Check the aggregate controls at ``dev.slice``.
+
+    The four ordinary slices and ``dev-memory_min_guaranteed.slice`` are
+    siblings under ``dev.slice``.  The latter's MemoryMin is the same
+    authoritative value rendered on the parent, so it is counted once as a
+    child claim (not once as a parent and again as a child).  Max is checked
+    as the largest child ceiling because a parent's MemoryMax bounds the
+    combined subtree; High, Low, and Min are budgets whose sibling claims are
+    summed.  Empty values mean the documented explicit ``none`` state.
+    """
+    field_index = {"MEMORY_MIN": 0, "MEMORY_LOW": 1, "MEMORY_HIGH": 2, "MEMORY_MAX": 3}
+
+    def sum_field(field: str) -> int:
+        return sum(
+            parse_size_to_kib(values.get(keys[field_index[field]], ""))
+            for _, keys in MEMORY_CHILD_SPECS
         )
-    )
+
+    highs = sum_field("MEMORY_HIGH")
+    lows = sum_field("MEMORY_LOW")
+    child_minimum = sum_field("MEMORY_MIN")
     root_high = parse_size_to_kib(values.get("DEV_MEMORY_HIGH", ""))
+    root_low = parse_size_to_kib(values.get("DEV_MEMORY_LOW", ""))
     root_max = parse_size_to_kib(values.get("DEV_MEMORY_MAX", ""))
-    minimum = parse_size_to_kib(values.get("DEV_MEMORY_MIN_GUARANTEED_CEILING", ""))
-    child_minimum = sum(
-        parse_size_to_kib(values.get(key, ""))
-        for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")
+    minimum = parse_size_to_kib(
+        values.get("DEV_MEMORY_MIN_GUARANTEED_CEILING", "")
     )
     child_maximum = max(
-        parse_size_to_kib(values.get(key, ""))
-        for key in ("DEV_INTERACTIVE_MEMORY_MAX", "DEV_BACKGROUND_MEMORY_MAX", "DEV_GATES_MEMORY_MAX", "DEV_BUILDKITD_MEMORY_MAX")
+        (
+            parse_size_to_kib(values.get(keys[field_index["MEMORY_MAX"]], ""))
+            for _, keys in MEMORY_CHILD_SPECS
+        ),
+        default=0,
     )
     if highs > root_high:
-        return f"child MemoryHigh values ({kib_to_size_str(highs)} combined) exceed dev.slice MemoryHigh ({kib_to_size_str(root_high)}); increase the parent or reduce a child"
+        return (
+            f"sibling MemoryHigh values ({kib_to_size_str(highs)} combined) exceed "
+            f"dev.slice MemoryHigh ({kib_to_size_str(root_high)}); increase the parent "
+            "or reduce a child"
+        )
+    if lows and root_low and lows > root_low:
+        return (
+            f"sibling MemoryLow values ({kib_to_size_str(lows)} combined) exceed "
+            f"dev.slice MemoryLow ({kib_to_size_str(root_low)}); increase the parent "
+            "or reduce a child"
+        )
     if child_maximum > root_max:
-        return f"a child MemoryMax ({kib_to_size_str(child_maximum)}) exceeds dev.slice MemoryMax ({kib_to_size_str(root_max)}); increase the parent or reduce that child"
+        return (
+            f"a child MemoryMax ({kib_to_size_str(child_maximum)}) exceeds dev.slice "
+            f"MemoryMax ({kib_to_size_str(root_max)}); increase the parent or reduce "
+            "that child"
+        )
     if child_minimum and not minimum:
-        return "a child MemoryMin was configured while dev.slice MemoryMin is empty; the parent must explicitly carry the hard protection budget"
-    if minimum and minimum < child_minimum:
-        return f"child MemoryMin values ({kib_to_size_str(child_minimum)} combined) exceed dev.slice MemoryMin ({kib_to_size_str(minimum)}); increase the parent or reduce a child"
-    if highs + minimum > avail_kib:
+        return (
+            "a child MemoryMin was configured while dev.slice MemoryMin is empty; "
+            "the parent must explicitly carry the hard protection budget"
+        )
+    if minimum and child_minimum > minimum:
+        return (
+            f"sibling MemoryMin values ({kib_to_size_str(child_minimum)} combined) "
+            f"exceed dev.slice MemoryMin ({kib_to_size_str(minimum)}); increase the "
+            "parent or reduce a child"
+        )
+    if highs + child_minimum > avail_kib:
         return (
             "aggregate memory exceeds live MemAvailable: "
-            f"MemoryHigh values ({kib_to_size_str(highs)} combined) + "
-            f"MemoryMin ({kib_to_size_str(minimum)}) > MemAvailable ({kib_to_size_str(avail_kib)}); "
-            "reduce/re-enter a MemoryHigh or leave the optional MemoryMin empty"
+            f"sibling MemoryHigh values ({kib_to_size_str(highs)} combined) + "
+            f"MemoryMin claims ({kib_to_size_str(child_minimum)}) > MemAvailable "
+            f"({kib_to_size_str(avail_kib)}); reduce/re-enter a MemoryHigh or "
+            "leave an optional MemoryMin empty"
         )
     return None
+
+
+def _config_value_validators() -> dict[str, Validator]:
+    """Return the non-interactive equivalents of the wizard's field checks."""
+    validators: dict[str, Validator] = {
+        "IO_DEV_PATH": validate_io_dev_path,
+        "DEV_STATIC_RIOPS": validate_positive_int,
+        "DEV_STATIC_WIOPS": validate_positive_int,
+        "DEV_STATIC_RBW": validate_size_required,
+        "DEV_STATIC_WBW": validate_size_required,
+        "DEV_CPU_RESERVE_CORES": validate_nonneg_int,
+        "DEV_SUBSLICE_CPU_RESERVE_CORES": validate_nonneg_int,
+        "DEV_CPU_QUOTA": validate_cpu_quota,
+        "DEV_SWAP_CASCADE_PCT": validate_pct_1_100,
+        "DEV_SWAP_MAX": validate_size_or_auto,
+        "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
+        "DEV_ZSWAP_WRITEBACK": validate_yes_no,
+        "DEV_BUILDKITD_IMAGE": validate_nonempty,
+        "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
+        "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
+        "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_size_required,
+        "DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX": validate_size_required,
+        "WATCHER_PER_CONTAINER_MEMORY_MAX": validate_size_required,
+        "WATCHER_PER_CONTAINER_GATES_MEMORY_MAX": validate_size_required,
+        "WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT": validate_pct_1_100,
+        "CGROUP2_FLAGS": validate_cgroup2_flags,
+        "DEV_IO_CAP_PCT": validate_cap_pct,
+        "SWEEP_IO_CAP_PCT": validate_cap_pct,
+        "TESTRUNNER_IMAGE_PATTERNS": validate_nonempty,
+        "BUILDKIT_NAME_PATTERNS": validate_nonempty,
+        "DEVCONTAINER_NAME_PATTERNS": validate_nonempty,
+        "SWEEP_INTERVAL": validate_nonempty,
+        "IO_BASELINE_ENV": validate_nonempty,
+    }
+
+    for key in (
+        "DEV_INTERACTIVE_CPU_QUOTA",
+        "DEV_BACKGROUND_CPU_QUOTA",
+        "DEV_GATES_CPU_QUOTA",
+        "DEV_BUILDKITD_CPU_QUOTA",
+    ):
+        validators[key] = validate_cpu_quota
+    for key in (
+        "DEV_INTERACTIVE_MEMORY_SWAP_MAX",
+        "DEV_BACKGROUND_MEMORY_SWAP_MAX",
+        "DEV_GATES_MEMORY_SWAP_MAX",
+        "DEV_BUILDKITD_MEMORY_SWAP_MAX",
+    ):
+        validators[key] = validate_size_or_auto
+    for key in (
+        "DEV_INTERACTIVE_ZSWAP_WRITEBACK",
+        "DEV_BACKGROUND_ZSWAP_WRITEBACK",
+        "DEV_GATES_ZSWAP_WRITEBACK",
+        "DEV_BUILDKITD_ZSWAP_WRITEBACK",
+    ):
+        validators[key] = validate_yes_no
+    for key in (
+        "DEV_INTERACTIVE_CPU_WEIGHT",
+        "DEV_BACKGROUND_CPU_WEIGHT",
+        "DEV_GATES_CPU_WEIGHT",
+        "DEV_BUILDKITD_CPU_WEIGHT",
+        "DEV_INTERACTIVE_IO_WEIGHT",
+        "DEV_BACKGROUND_IO_WEIGHT",
+        "DEV_GATES_IO_WEIGHT",
+        "DEV_BUILDKITD_IO_WEIGHT",
+    ):
+        validators[key] = validate_weight
+    for key in ("DEV_BACKGROUND_OOM_PRESSURE_LIMIT", "DEV_GATES_OOM_PRESSURE_LIMIT"):
+        validators[key] = validate_systemd_pct_1_100
+
+    for key in (
+        "DEV_MEMORY_HIGH",
+        "DEV_MEMORY_MAX",
+        "DEV_INTERACTIVE_MEMORY_HIGH",
+        "DEV_INTERACTIVE_MEMORY_MAX",
+        "DEV_BACKGROUND_MEMORY_HIGH",
+        "DEV_BACKGROUND_MEMORY_MAX",
+        "DEV_GATES_MEMORY_HIGH",
+        "DEV_GATES_MEMORY_MAX",
+        "DEV_BUILDKITD_MEMORY_HIGH",
+        "DEV_BUILDKITD_MEMORY_MAX",
+    ):
+        validators[key] = validate_positive_size
+    validators["DEV_MEMORY_LOW"] = validate_optional_positive_size
+    validators["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = validate_size_or_empty
+    for _, keys in MEMORY_CHILD_SPECS:
+        for index, key in enumerate(keys):
+            if key == "DEV_MEMORY_MIN_GUARANTEED_CEILING":
+                continue
+            if index in (0, 1):
+                validators[key] = validate_optional_positive_size
+            elif index in (2, 3):
+                validators[key] = (
+                    validate_positive_size
+                    if key.startswith((
+                        "DEV_INTERACTIVE_",
+                        "DEV_BACKGROUND_",
+                        "DEV_GATES_",
+                        "DEV_BUILDKITD_",
+                    ))
+                    else validate_optional_positive_size
+                )
+    return validators
+
+
+def validate_host_setup_config(
+    config_path: Path,
+    example_path: Path,
+    meminfo_path: Path,
+) -> None:
+    """Apply wizard-equivalent checks to a manually supplied config.
+
+    This is intentionally data-only: it reads the config without sourcing it,
+    so install.sh can fail before any host mutation or shell expansion occurs.
+    """
+    try:
+        example = parse_env_file(example_path.read_text(encoding="utf-8"), strict=True)
+        values = parse_env_file(config_path.read_text(encoding="utf-8"), strict=True)
+        meminfo = parse_meminfo(meminfo_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise TemplateError(f"cannot read host-setup validation input: {exc}") from exc
+
+    missing = sorted(set(example) - set(values))
+    if missing:
+        raise TemplateError(
+            f"{config_path} is missing keys from {example_path}: {', '.join(missing)}"
+        )
+
+    validators = _config_value_validators()
+    unvalidated = sorted(set(example) - set(validators))
+    if unvalidated:
+        raise TemplateError(
+            "no strict validator is registered for: " + ", ".join(unvalidated)
+        )
+
+    field_errors: list[str] = []
+    for key, validator in validators.items():
+        if key not in values:
+            continue
+        error = validator(values[key])
+        if error:
+            field_errors.append(f"{key}: {error}")
+    if field_errors:
+        raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
+
+    avail_kib = meminfo.get("MemAvailable", 0)
+    if avail_kib <= 0:
+        raise TemplateError(
+            f"{meminfo_path} has no positive MemAvailable; refusing aggregate validation"
+        )
+    relationship_errors = memory_relationship_errors(values)
+    if relationship_errors:
+        raise TemplateError(
+            "invalid memory hierarchy: "
+            + "; ".join(message for _, message in relationship_errors)
+        )
+    aggregate_error = memory_aggregate_error(avail_kib, values)
+    if aggregate_error:
+        raise TemplateError("invalid memory aggregate: " + aggregate_error)
 
 
 def propose_memory_min_guaranteed_suggestion(
@@ -758,6 +992,15 @@ def validate_nonneg_int(value: str) -> str | None:
     return None
 
 
+def validate_positive_int(value: str) -> str | None:
+    error = validate_nonneg_int(value)
+    if error:
+        return error
+    if int(value) <= 0:
+        return "a positive whole number is required"
+    return None
+
+
 def validate_pct_1_100(value: str) -> str | None:
     """A bare integer percentage, 1-100, no band opinion attached — for keys
     where the shipped default is a reasonable starting point rather than a
@@ -770,6 +1013,31 @@ def validate_pct_1_100(value: str) -> str | None:
         return f"{value!r} is not an integer percentage (give a bare number, e.g. 80 -- no '%' sign)"
     if pct < 1 or pct > 100:
         return f"{pct} is outside 1-100"
+    return None
+
+
+def validate_systemd_pct_1_100(value: str) -> str | None:
+    """Validate systemd's percentage form, including its required ``%``."""
+    if not value:
+        return "a percentage is required (an integer followed by '%', 1-100)"
+    match = re.fullmatch(r"(\d+)%", value)
+    if not match:
+        return f"{value!r} is not a systemd percentage (use an integer followed by '%', e.g. '75%')"
+    pct = int(match.group(1))
+    if not 1 <= pct <= 100:
+        return f"{pct}% is outside 1-100%"
+    return None
+
+
+def validate_yes_no(value: str) -> str | None:
+    if value not in ("yes", "no"):
+        return "choose exactly 'yes' or 'no'"
+    return None
+
+
+def validate_cgroup2_flags(value: str) -> str | None:
+    if value not in ("fix", "warn"):
+        return "choose exactly 'fix' or 'warn'"
     return None
 
 
@@ -1653,7 +1921,7 @@ def step_slice_first_resources(
         values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key("  MemorySwapMax (empty = swap cascade)", f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, validate=validate_size_or_auto)
         values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key("  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK", cfg_current, example_defaults)
         if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key("  ManagedOOMMemoryPressureLimit", f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults, validate=validate_pct_1_100)
+            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key("  ManagedOOMMemoryPressureLimit", f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults, validate=validate_systemd_pct_1_100)
         if prefix == "DEV_BUILDKITD":
             values["DEV_BUILDKITD_IMAGE"] = walk_key("  BuildKit image", "DEV_BUILDKITD_IMAGE", cfg_current, example_defaults, validate=validate_nonempty)
             values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key("  accidental Buildx container policy", "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults, validate=validate_guard_policy)
@@ -1734,6 +2002,12 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--example", type=Path, default=DEFAULT_EXAMPLE, help="template to read from")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="file to write")
     parser.add_argument(
+        "--validate-config",
+        type=Path,
+        default=None,
+        help="validate an existing host-setup.env without prompting or writing",
+    )
+    parser.add_argument(
         "--io-baseline-script", type=Path, default=DEFAULT_IO_BASELINE_SCRIPT, help="path to mdt-io-baseline.py"
     )
     parser.add_argument(
@@ -1759,6 +2033,19 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_cli_args(argv)
+
+    if args.validate_config is not None:
+        try:
+            validate_host_setup_config(
+                args.validate_config,
+                args.example,
+                args.meminfo_path,
+            )
+        except (OSError, TemplateError, ValueError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"OK: strict validation passed for {args.validate_config}")
+        return 0
 
     if not args.example.exists():
         print(f"ERROR: template not found: {args.example}", file=sys.stderr)

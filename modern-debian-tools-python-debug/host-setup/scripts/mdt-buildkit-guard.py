@@ -12,9 +12,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import selectors
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -31,6 +33,7 @@ POLICY_KEY = "BUILDX_ACCIDENTAL_CONTAINER_POLICY"
 POLICIES = frozenset(("terminate", "report-only"))
 _ASSIGNMENT = re.compile(r"^\s*([A-Z][A-Z0-9_]*)=(.*)$")
 _CANDIDATE_PREFIXES = ("buildx_buildkit_", "buildkit_buildkit_")
+RESCAN_INTERVAL_SECONDS = 5.0
 
 
 class GuardError(RuntimeError):
@@ -212,6 +215,12 @@ def reconcile(docker: str, container_id: str, config: GuardConfig) -> Decision:
     return handle_container(docker, inspect_container(docker, container_id), config)
 
 
+def reconcile_all(docker: str, config: GuardConfig) -> None:
+    """Reconcile the complete container set using the inspect identity oracle."""
+    for container_id in _container_ids(docker):
+        reconcile(docker, container_id, config)
+
+
 def verify_managed_container(docker: str, container_id: str, config: GuardConfig) -> ContainerInfo:
     info = inspect_container(docker, container_id)
     if not is_approved_managed_container(info, config):
@@ -231,11 +240,35 @@ def _container_ids(docker: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def watch(docker: str, config: GuardConfig) -> int:
-    for container_id in _container_ids(docker):
-        reconcile(docker, container_id, config)
+def watch(
+    docker: str,
+    config: GuardConfig,
+    *,
+    rescan_interval: float = RESCAN_INTERVAL_SECONDS,
+    popen=None,
+    clock=None,
+    selector_factory=None,
+) -> int:
+    """Watch events and periodically reconcile all containers.
 
-    process = subprocess.Popen(
+    The initial ``ps`` cannot be made atomic with starting ``docker events``.
+    A periodic full scan closes that gap and also repairs a dropped or delayed
+    event without weakening the inspect-based identity check.  The injectable
+    timing/process primitives keep the race oracle deterministic without a
+    Docker daemon.
+    """
+    if rescan_interval <= 0:
+        raise GuardError("guard rescan interval must be greater than zero")
+    if popen is None:
+        popen = subprocess.Popen
+    if clock is None:
+        clock = time.monotonic
+    if selector_factory is None:
+        selector_factory = selectors.DefaultSelector
+
+    reconcile_all(docker, config)
+
+    process = popen(
         [
             docker,
             "events",
@@ -253,19 +286,39 @@ def watch(docker: str, config: GuardConfig) -> int:
         text=True,
     )
     assert process.stdout is not None
+    selector = selector_factory()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    next_rescan = clock() + rescan_interval
     try:
-        for line in process.stdout:
-            if not line.strip():
+        while True:
+            ready = selector.select(max(0.0, next_rescan - clock()))
+            now = clock()
+            if now >= next_rescan:
+                reconcile_all(docker, config)
+                next_rescan = now + rescan_interval
+
+            if not ready:
+                if process.poll() is not None:
+                    break
                 continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise GuardError(f"docker events returned invalid JSON: {exc}") from exc
-            container_id = str(event.get("id") or event.get("ID") or "").strip()
-            if not container_id:
-                raise GuardError(f"docker events event has no container id: {line.strip()!r}")
-            reconcile(docker, container_id, config)
+
+            line = process.stdout.readline()
+            if not line:
+                if process.poll() is not None:
+                    break
+                continue
+            if line.strip():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise GuardError(f"docker events returned invalid JSON: {exc}") from exc
+                container_id = str(event.get("id") or event.get("ID") or "").strip()
+                if not container_id:
+                    raise GuardError(f"docker events event has no container id: {line.strip()!r}")
+                reconcile(docker, container_id, config)
     finally:
+        selector.unregister(process.stdout)
+        selector.close()
         if process.poll() is None:
             process.terminate()
         process.wait()

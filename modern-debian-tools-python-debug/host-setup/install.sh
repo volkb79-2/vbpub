@@ -75,6 +75,8 @@ fi
 
 echo "== config =="
 mkdir -p /etc/mdt /var/lib/mdt
+BUILDX_CONFIG_DIR=/etc/mdt/buildx
+install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
 if [ "$WIZARD" = 1 ]; then
   # Runs BEFORE (instead of) the cp-based seed/re-seed below — the wizard's
   # only contract with the rest of this script is "produce a valid
@@ -102,6 +104,21 @@ elif [ ! -f /etc/mdt/host-setup.env ]; then
   cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
   echo "seeded /etc/mdt/host-setup.env from example — REVIEW IT and re-run to apply edits"
 fi
+
+# Validate the complete file before sourcing it. The wizard owns this
+# non-interactive validator too, so a hand-edited file cannot bypass the
+# same memory hierarchy, live aggregate, and closed-vocabulary checks used by
+# --wizard. It parses the file as data (not shell), and reads this host's live
+# MemAvailable; a bad config fails before apt, units, Docker, or systemd are
+# changed.
+if ! python3 "$HERE/mdt-host-setup-wizard.py" \
+  --validate-config /etc/mdt/host-setup.env \
+  --example "$HERE/host-setup.env.example" \
+  --meminfo-path /proc/meminfo; then
+  echo "ERROR: /etc/mdt/host-setup.env failed strict validation; no host changes were applied" >&2
+  exit 2
+fi
+
 # shellcheck disable=SC1091
 . /etc/mdt/host-setup.env
 
@@ -435,7 +452,15 @@ python3 "$HERE/scripts/mdt-buildkit-guard.py" \
   --config /etc/mdt/host-setup.env --docker "$DOCKER_BIN" \
   --verify-managed-container mdt-buildkitd
 python3 "$HERE/../scripts/mdt_buildkit_builder.py" configure \
-  --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock
+  --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock \
+  --buildx-config "$BUILDX_CONFIG_DIR"
+# Buildx's shared state contains only the public remote-node registration. Keep
+# the directory root-owned and readable, but not writable, for ordinary users:
+# their exported BUILDX_BUILDER selects this node directly and never falls back
+# to a per-user Docker builder. Any user who can use Docker can read the
+# registration; only root can change which endpoint the host profile selects.
+find "$BUILDX_CONFIG_DIR" -xdev -type d -exec chown root:root {} + -exec chmod 0755 {} +
+find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0644 {} +
 systemctl enable --now mdt-buildkit-guard.service
 systemctl restart mdt-buildkit-guard.service
 if [ "$INOTIFY_OK" = 1 ]; then

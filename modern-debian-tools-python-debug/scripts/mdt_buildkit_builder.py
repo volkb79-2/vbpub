@@ -9,6 +9,7 @@ never create a ``docker-container`` worker.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -57,13 +58,24 @@ def parse_builder_inspect(text: str) -> BuilderInfo:
 def _run_docker(
     docker: str,
     args: Sequence[str],
+    buildx_config: str | None = None,
     runner: Runner = subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
+    environment = None
+    if buildx_config is not None:
+        buildx_config = buildx_config.strip()
+        if not buildx_config or not buildx_config.startswith("/"):
+            raise BuilderError(
+                "BUILDX_CONFIG must be an absolute path when explicitly supplied"
+            )
+        environment = os.environ.copy()
+        environment["BUILDX_CONFIG"] = buildx_config
     return runner(
         [docker, *args],
         capture_output=True,
         text=True,
         check=False,
+        **({"env": environment} if environment is not None else {}),
     )
 
 
@@ -71,9 +83,12 @@ def inspect_builder(
     docker: str,
     name: str = MANAGED_BUILDER,
     *,
+    buildx_config: str | None = None,
     runner: Runner = subprocess.run,
 ) -> BuilderInfo | None:
-    result = _run_docker(docker, ["buildx", "inspect", name], runner)
+    result = _run_docker(
+        docker, ["buildx", "inspect", name], buildx_config, runner
+    )
     if result.returncode != 0:
         return None
     try:
@@ -98,6 +113,7 @@ def ensure_managed_builder(
     docker: str,
     endpoint: str = MANAGED_ENDPOINT,
     *,
+    buildx_config: str | None = None,
     create_if_missing: bool = True,
     select: bool = True,
     runner: Runner = subprocess.run,
@@ -115,7 +131,7 @@ def ensure_managed_builder(
             f"managed BuildKit endpoint must be an absolute Unix endpoint, got {endpoint!r}"
         )
 
-    info = inspect_builder(docker, runner=runner)
+    info = inspect_builder(docker, buildx_config=buildx_config, runner=runner)
     if info is None:
         if not create_if_missing:
             raise BuilderError(
@@ -134,6 +150,7 @@ def ensure_managed_builder(
                 "--use",
                 endpoint,
             ],
+            buildx_config,
             runner,
         )
         if result.returncode != 0:
@@ -142,7 +159,7 @@ def ensure_managed_builder(
                 f"could not create remote builder {MANAGED_BUILDER!r} at {endpoint!r}: "
                 f"{detail[:400]}"
             )
-        info = inspect_builder(docker, runner=runner)
+        info = inspect_builder(docker, buildx_config=buildx_config, runner=runner)
         if info is None:
             raise BuilderError(
                 f"Buildx created {MANAGED_BUILDER!r} but it cannot be inspected afterwards"
@@ -151,13 +168,18 @@ def ensure_managed_builder(
     _require_managed(info, endpoint)
 
     if select:
-        used = _run_docker(docker, ["buildx", "use", MANAGED_BUILDER], runner)
+        used = _run_docker(
+            docker, ["buildx", "use", MANAGED_BUILDER], buildx_config, runner
+        )
         if used.returncode != 0:
             detail = (used.stderr or used.stdout or "command failed").strip()
             raise BuilderError(f"could not select {MANAGED_BUILDER!r}: {detail[:400]}")
 
     bootstrapped = _run_docker(
-        docker, ["buildx", "inspect", MANAGED_BUILDER, "--bootstrap"], runner
+        docker,
+        ["buildx", "inspect", MANAGED_BUILDER, "--bootstrap"],
+        buildx_config,
+        runner,
     )
     if bootstrapped.returncode != 0:
         detail = (bootstrapped.stderr or bootstrapped.stdout or "command failed").strip()
@@ -173,11 +195,17 @@ def _cli() -> int:
     parser.add_argument("command", choices=("configure", "verify"))
     parser.add_argument("--docker", default="docker")
     parser.add_argument("--endpoint", default=MANAGED_ENDPOINT)
+    parser.add_argument(
+        "--buildx-config",
+        default=None,
+        help="explicit Buildx state directory (the host installer uses /etc/mdt/buildx)",
+    )
     args = parser.parse_args()
     try:
         info = ensure_managed_builder(
             args.docker,
             args.endpoint,
+            buildx_config=args.buildx_config,
             create_if_missing=args.command == "configure",
             select=args.command == "configure",
         )
