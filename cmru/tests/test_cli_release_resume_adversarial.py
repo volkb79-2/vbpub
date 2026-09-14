@@ -5,7 +5,7 @@ import pytest
 from cmru import cli, transaction
 
 
-def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, tmp_path, capsys):
+def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
@@ -39,4 +39,6 @@ def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, 
     assert calls[2:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out
     assert "Could not sync local main automatically" in output
+    assert "cause is undetermined" in output
+    assert "rebase conflict" not in output
     assert "isolated worktree removed" in output

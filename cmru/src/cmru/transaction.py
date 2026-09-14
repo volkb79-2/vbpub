@@ -1157,15 +1157,27 @@ def sync_local_main(repo_root: Path) -> bool:
     (e.g. ongoing work in another terminal) essentially never touch the same
     files, and replay conflict-free. ``git rebase`` degenerates to a plain
     fast-forward when local main hasn't moved at all (the common case). It is
-    only aborted (returning False, leaving local main untouched) on a genuine
-    content conflict, which is a signal of unusual overlap worth a human's
-    attention. Rewrites local main's own commits onto the new base — safe here
-    because they are, by construction, commits the release process never saw
-    and the developer has not necessarily pushed anywhere yet.
+    A checked-out ``main`` must be clean before the rebase is attempted. A
+    dirty caller is refused (returning False, without invoking either rebase
+    or rebase-abort) so its files and local ref remain untouched. A clean
+    caller's rebase is only aborted (also returning False, leaving local main
+    untouched) on a genuine content conflict, which is a signal of unusual
+    overlap worth a human's attention. Rewrites local main's own commits onto
+    the new base — safe here because they are, by construction, commits the
+    release process never saw and the developer has not necessarily pushed
+    anywhere yet.
     """
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
     current = _git(repo_root, "branch", "--show-current", check=False)
     if current == "main":
+        # ``git rebase`` refuses a dirty checkout itself, but calling it first
+        # would produce a misleading secondary ``rebase --abort`` error. The
+        # status guard also makes the important invariant explicit: allowing
+        # uncommitted caller edits for the immutable release snapshot never
+        # authorizes this cleanup step to touch those edits.
+        status = _git(repo_root, "status", "--porcelain", "--untracked-files=all")
+        if status:
+            return False
         result = subprocess.run(["git", "rebase", "origin/main"], cwd=repo_root)
         if result.returncode != 0:
             subprocess.run(["git", "rebase", "--abort"], cwd=repo_root, check=False)
@@ -1177,6 +1189,76 @@ def sync_local_main(repo_root: Path) -> bool:
             return False  # local main has commits of its own — do not force-move it
     result = subprocess.run(["git", "branch", "-f", "main", "origin/main"], cwd=repo_root)
     return result.returncode == 0
+
+
+def sync_local_main_failure_reason(repo_root: Path) -> str:
+    """Describe why a preceding :func:`sync_local_main` returned ``False``.
+
+    ``sync_local_main`` intentionally keeps its historical boolean API. The
+    parent uses this separate, read-only classifier to make a false result
+    observable without storing mutable process-global state. If the caller
+    checkout cannot be inspected, report that indeterminacy rather than
+    claiming it was clean or that a rebase conflicted.
+    """
+    try:
+        current = _git(repo_root, "branch", "--show-current")
+    except RuntimeError:
+        return (
+            "Could not sync local main automatically: the caller checkout could not be "
+            "inspected, so the cause is undetermined; local files and refs may require "
+            "manual inspection before synchronization."
+        )
+
+    if current == "main":
+        try:
+            status = _git(repo_root, "status", "--porcelain", "--untracked-files=all")
+        except RuntimeError:
+            return (
+                "Could not sync local main automatically: the caller checkout status "
+                "could not be inspected, so the cause is undetermined; local main was "
+                "not claimed to be synchronized."
+            )
+        if status:
+            return (
+                "Could not sync local main automatically: the caller checkout is dirty "
+                "(tracked or untracked changes), so no rebase or rebase-abort was "
+                "attempted and local main plus those files were left untouched. Commit "
+                "or stash all changes (including untracked files with `git stash -u`), "
+                "then run `git rebase origin/main` from the clean checkout."
+            )
+        return (
+            "Could not sync local main automatically: a clean checkout's rebase onto "
+            "origin/main hit a genuine conflict; the rebase was aborted and local main "
+            "was left untouched. Inspect the overlap, then rerun `git rebase origin/main` "
+            "from a clean checkout and resolve it manually."
+        )
+
+    try:
+        local_main = _git(repo_root, "rev-parse", "main")
+    except RuntimeError:
+        return (
+            "Could not sync local main automatically: the local main ref could not be "
+            "inspected or updated; it was not claimed to be synchronized. Inspect the "
+            "ref manually."
+        )
+    try:
+        merge_base = _git(repo_root, "merge-base", "main", "origin/main")
+    except RuntimeError:
+        return (
+            "Could not sync local main automatically: the relationship between local "
+            "main and origin/main could not be inspected; local main was left untouched."
+        )
+    if merge_base != local_main:
+        return (
+            "Could not sync local main automatically: local main has commits of its own "
+            "and is not checked out, so it was not force-moved. Reconcile that ref "
+            "manually; no caller checkout synchronization is claimed."
+        )
+    return (
+        "Could not sync local main automatically: updating the non-current local main "
+        "ref failed; local main was left untouched. Inspect the ref and synchronize it "
+        "manually."
+    )
 
 
 def run_child(

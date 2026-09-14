@@ -405,7 +405,9 @@ cwd = "alpha"
     assert "removed" in calls
 
 
-def test_parent_reverts_promotion_and_syncs_local_main_on_child_failure(tmp_path, monkeypatch):
+def test_parent_reverts_promotion_and_reports_sync_failure_on_child_failure(
+    tmp_path, monkeypatch, capsys,
+):
     config = tmp_path / "cmru.toml"
     config.write_text(
         """
@@ -444,7 +446,12 @@ cwd = "alpha"
         transaction, "revert_promotion",
         lambda _w, *, from_sha=None: calls.append("reverted") or transaction.RevertResult(ok=True, reverted=True),
     )
-    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
+    monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or False)
+    monkeypatch.setattr(
+        transaction,
+        "sync_local_main_failure_reason",
+        lambda _root: "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+    )
     remove_calls: list[object] = []
     monkeypatch.setattr(transaction, "remove_workspace", lambda _w: remove_calls.append("removed"))
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
@@ -454,6 +461,9 @@ cwd = "alpha"
 
     assert exc.value.code == 1
     assert calls.index("checked-promotion") < calls.index("reverted") < calls.index("synced")
+    output = capsys.readouterr().out
+    assert "caller checkout is dirty" in output
+    assert "rebase conflict" not in output
     # A failed release retains the worktree/branch for inspection — cleanup must not run.
     assert remove_calls == []
 
@@ -1561,6 +1571,39 @@ def test_sync_local_main_rebases_local_only_commits_instead_of_failing():
         assert ahead >= 1
 
 
+def test_sync_local_main_refuses_dirty_current_main_without_rebase(monkeypatch):
+    """A dirty caller must not let cleanup invoke rebase or rebase-abort."""
+    with _OriginAndClone() as h:
+        (h.repo_root / "README.md").write_text("dirty caller edit\n")
+        (h.repo_root / "untracked.txt").write_text("caller-only\n")
+        local_tip_before = _git("rev-parse", "main", cwd=h.repo_root)
+        content_before = (h.repo_root / "README.md").read_text()
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "remote.txt").write_text("remote release\n")
+        _git("add", "remote.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def spy_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(transaction.subprocess, "run", spy_run)
+
+        assert transaction.sync_local_main(h.repo_root) is False
+        assert not any(argv[1:2] == ["rebase"] for argv in calls)
+        assert not any(argv[1:3] == ["rebase", "--abort"] for argv in calls)
+        assert _git("rev-parse", "main", cwd=h.repo_root) == local_tip_before
+        assert (h.repo_root / "README.md").read_text() == content_before
+        assert (h.repo_root / "untracked.txt").read_text() == "caller-only\n"
+        assert "dirty" in transaction.sync_local_main_failure_reason(h.repo_root)
+        assert "conflict" not in transaction.sync_local_main_failure_reason(h.repo_root)
+
+
 def test_sync_local_main_aborts_cleanly_on_real_conflict():
     with _OriginAndClone() as h:
         (h.repo_root / "README.md").write_text("local edit\n")
@@ -1576,6 +1619,9 @@ def test_sync_local_main_aborts_cleanly_on_real_conflict():
         assert transaction.sync_local_main(h.repo_root) is False
         assert _git("status", "--porcelain", cwd=h.repo_root) == ""  # rebase --abort ran
         assert (h.repo_root / "README.md").read_text() == "local edit\n"  # untouched
+        reason = transaction.sync_local_main_failure_reason(h.repo_root)
+        assert "genuine conflict" in reason
+        assert "dirty" not in reason
 
 
 def test_sync_local_main_does_not_force_move_a_diverged_non_current_main():

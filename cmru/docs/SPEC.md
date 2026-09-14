@@ -85,16 +85,22 @@ progress rather than forever holding only the pre-run base. This ordering is wha
 project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
 within the same `cmru release` run, instead of always trailing one run behind.
 
-On success: the origin backup branch and the local worktree/branch are removed, and the
-caller's local `main` is synced with `origin/main`: a fast-forward when local main hasn't
-moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another terminal
-while the release built) — rebase, not merge, to stay consistent with the rest of this
-pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
+On success: the origin backup branch and the local worktree/branch are removed, and cmru
+attempts to sync the caller's local `main` with `origin/main`: a fast-forward when local main
+hasn't moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another
+terminal while the release built) — rebase, not merge, to stay consistent with the rest of
+this pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
 `revert_promotion`'s push, the "local main not ahead" precondition below); no other step here
 ever produces a merge commit. Safe to replay because a release only ever commits declared,
 mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
-never touch the same files. The rebase is aborted, leaving local main untouched, only on a
-genuine content conflict.
+never touch the same files. When the caller is currently on `main`, cmru first requires the
+checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
+false sync result without invoking `git rebase` or `git rebase --abort`, leaves both the dirty
+files and local `main` ref untouched, and reports that exact reason with the remedy to commit
+or stash the changes before running `git rebase origin/main`. Only a clean checkout's genuine
+content conflict invokes `git rebase --abort`; that failure also leaves local main untouched
+and is reported as a conflict. A false cleanup result does not change the primary release
+outcome, but it MUST be reported rather than ignored.
 
 ```
 Before the release:
@@ -127,15 +133,23 @@ shown here for two projects, "alpha" then "beta":
 Meanwhile, if the caller committed their own work locally while the release built:
   local main:      ──●(base)──●(D1)──●(D2)             [unrelated local work]
 
-sync_local_main rebases local main onto the new origin/main tip, once, after every
-project in this run has finished:
+When the caller checkout is clean, `sync_local_main` rebases local main onto the new
+origin/main tip, once, after every project in this run has finished:
   local main:      ──●(base)──●(A1)──●(B1)──●(D1')──●(D2')    ← D1/D2 replayed (new hashes), linear
+
+When the caller is dirty, cleanup refuses before the rebase instead:
+  local main:      ──●(base)──●(D1)──●(D2)             [dirty files also remain in place]
+  origin/main:     ──●(base)──●(A1)──●(B1)
+  result:          warning with the dirty-checkout reason; local main/ref untouched
 ```
 
 Deleting the release branch on success (both locally and its origin backup) is cleanup of a
 now-redundant ref — A1/B1 are already permanently part of `origin/main`'s history, so the
 branch's job is done. That deletion does nothing to `local main` by itself; `sync_local_main`
-is the only step that touches it.
+is the only step that touches it. If synchronization returns false, the parent reports
+whether the caller was dirty, a clean rebase conflicted, or a non-current diverged local
+`main` was deliberately not force-moved; it never presents a dirty checkout as a rebase
+conflict or claims that local main was synchronized.
 
 On failure: the local worktree/branch and its origin backup are retained for inspection —
 `release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to
@@ -157,8 +171,10 @@ untouched regardless, since a source-tree `git revert` never touches tags/Releas
 pushes.) The revert itself is always a plain
 `git revert` commit pushed on top of `origin/main` — never a force-push or history rewrite. It
 is skipped, requiring manual cleanup, if it does not apply cleanly or if `origin/main` has
-advanced past the release since promotion (a concurrent push landed on top). Local `main` is
-synced with `origin/main` (fast-forward or rebase, as above) regardless of outcome.
+advanced past the release since promotion (a concurrent push landed on top). Local `main`
+cleanup is attempted with the same clean-checkout guard regardless of outcome; a false result
+is reported and does not claim that local main was synchronized. This includes a child
+failure, while a plan refusal also performs and reports the same cleanup attempt.
 On a later `release` invocation (fresh or via `--resume`), each already-fully-released project
 in the failed attempt shows as unchanged (S12.2 is tag-based) and is skipped automatically —
 only the reverted project and anything after it in `project_order` are attempted again.

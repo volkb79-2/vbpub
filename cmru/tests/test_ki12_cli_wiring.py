@@ -136,7 +136,9 @@ def test_child_side_marks_plan_refused_and_exits_nonzero(monkeypatch, tmp_path, 
     assert "Traceback" not in err  # a clean operator message, not a raw traceback
 
 
-def test_parent_discards_worktree_on_a_plan_refusal_instead_of_retaining_it(monkeypatch, tmp_path):
+def test_parent_discards_worktree_on_a_plan_refusal_and_reports_sync_failure(
+    monkeypatch, tmp_path, capsys,
+):
     """The parent process: when the child's transaction was marked
     plan-refused, the worktree/branch MUST be removed exactly like a success
     would be -- never retained the way a genuine mid-release failure is."""
@@ -153,7 +155,12 @@ def test_parent_discards_worktree_on_a_plan_refusal_instead_of_retaining_it(monk
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: True)
-    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: False)
+    monkeypatch.setattr(
+        cli.transaction,
+        "sync_local_main_failure_reason",
+        lambda *args: "Could not sync local main automatically: caller checkout is dirty; local main was left untouched.",
+    )
     removed = []
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: removed.append("removed"))
     forgotten = []
@@ -176,3 +183,6 @@ def test_parent_discards_worktree_on_a_plan_refusal_instead_of_retaining_it(monk
     assert exc.value.code == 1
     assert removed == ["removed"]
     assert forgotten == ["forgotten"]
+    output = capsys.readouterr().out
+    assert "caller checkout is dirty" in output
+    assert "rebase conflict" not in output
