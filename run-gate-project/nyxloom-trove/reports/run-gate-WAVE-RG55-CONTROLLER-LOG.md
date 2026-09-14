@@ -2192,3 +2192,11 @@ state changed. The replacement is `setsid`-detached and is the sole P6
 rejudge supervisor. It will launch the exact assay 6.2.0 continuation only
 after the same PSI/slot gate, then record independent Docker wait/log/remove
 statuses and restore the branch.
+
+### RW-174 — 2026-09-14 12:59:32Z — reserve RG-63 for the P5 backlog row
+
+The P5 handoff's transport/watch/placement row was corrected in isolated
+commit `ea3c248a` on branch `rg55-p5-handoff-prep`: its title and C1 now use
+RG-63, leaving P4's RG-62 flaky-test row unambiguous. This documentation
+commit is not merged or dispatched yet; it will be carried into the P5 branch
+after P4 and P6 are released, as required by the wave sequence.
