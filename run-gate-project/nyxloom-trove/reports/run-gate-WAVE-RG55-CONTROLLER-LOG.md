@@ -1417,3 +1417,12 @@ under `dev-background.slice`. No additional launch will occur until a
 separate fresh check is safe. This run's evidence remains provisional and its
 launch deviation is disclosed in the final report; it cannot be treated as a
 clean PSI-gated retry.
+
+### RW-105 — 2026-09-14 00:11:57Z — B097 review accepted after fix-verification
+
+The same fresh Luna xhigh reviewer accepted the B097 whitespace fix at
+`23b75167`: `git diff --check ee41553d..23b75167` exits 0 and the fix delta
+contains no product-file changes. The verification report was committed as
+`aa075851`, making that the current quiet review tip. B097 still requires a
+registered gate on its final tip before merge; the active B096 retry remains
+the only tester gate and must finish first.
