@@ -2393,3 +2393,20 @@ resume path; its exact container is
 `run-gate-vbpub-r2-1915324-1789423800`, immediately updated to 3 CPUs. P1 and
 P6 now occupy the two allowed mutation slots; no third mutation launch is
 permitted until one terminates.
+
+### RW-194 — 2026-09-14 22:19:17Z — structural RG-45 policy and dynamic slots
+
+The operator's directive is adopted for the next structural follow-up: host
+scheduling pressure must never be silently interpreted as a product-test
+FAIL. A complete functional result must come from a verified framework report
+where available; an incomplete/pressure-affected run is infrastructure or
+inconclusive evidence requiring retry, never PASS and never a product failure.
+Mutation budgets remain operational safety ceilings only; exhaustion leaves
+unjudged work to resume and does not classify a candidate.
+
+The live RG-55 controller cap remains two mutation containers while this wave
+is in flight. "More mutation slots" is interpreted as replacing that fixed
+number in the follow-up with gates-slice capacity admission: sum measured or
+derived expected footprints, reserve production headroom, and gate on memory
+PSI. No literal third container is launched on this 8-core production host
+until that admission path is implemented and proven.
