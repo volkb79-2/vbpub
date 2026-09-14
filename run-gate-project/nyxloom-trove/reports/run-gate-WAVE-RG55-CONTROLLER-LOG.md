@@ -2467,3 +2467,21 @@ fixes in separate worktrees. Once evidence returns, run the fix → focused
 tests → gate/review verification cycle and integrate the verified change until
 each tracked item can truthfully be marked closed. Never use polling, partial
 evidence, or a budget timeout as a closure claim.
+
+### RW-200 — 2026-09-14 22:59:36Z — P35 design review NOT READY
+
+The fresh Luna xhigh review of assay P35 returned NOT READY and was not
+merged. It found eight cross-package blockers: no RG-55 daemon-watch kill
+receipt, non-durable interruption/reconcile state, no one-winner lifecycle
+CAS, an undefined run-gate budget producer, an incomplete execution-journal
+grammar, an unrepresentable mixed-claim v12 rollup, open receipt identity and
+refusal rules, and inconsistent dependency/scope metadata.
+
+### RW-201 — 2026-09-14 22:59:36Z — P35 design repair dispatched
+
+A fresh Luna xhigh repair implementer was dispatched in an isolated worktree,
+seeded with the P35 handoff and its eight-blocker review. It must resolve the
+full run-gate/cgprofile-to-assay lifecycle, keep incomplete execution out of
+functional and mutation outcomes, and return a clean design checkpoint before
+the same reviewer performs fix verification. No merge or release is authorized
+for P35 yet.
