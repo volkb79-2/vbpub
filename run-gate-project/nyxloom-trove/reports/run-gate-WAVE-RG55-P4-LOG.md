@@ -1611,3 +1611,61 @@ base. It was a refusal preflight, not a gate run, and is not counted above.
 No implementation source changed after the final R2. No duplicate gate was
 started here, and there was no reviewer dispatch, merge, or release. The
 branch is ready to hand to a fresh Sol xhigh adversarial review session.
+
+## Session 11 — round-3 B1/B2 repair follow-up (current branch tip `b4fb7b1b`)
+
+This session was dispatched against the current branch tip after the fresh
+round-3 review rejected the older repair tip for B1 and B2. The checkout was
+verified before editing:
+
+```console
+$ pwd
+/workspaces/vbpub/.worktrees/rg55-followups-run-gate
+$ git status --short --branch
+## rg55-followups-run-gate
+$ git rev-parse HEAD
+b4fb7b1b1b1c934d9a38f959b889629704dfd31d
+```
+
+The current tree already carries the behavioral B1 repair from `28bc3feb`:
+`run_exec_lane` assigns a nullable `proc`, puts `Popen(argv)` inside the
+cleanup boundary, and clears the record in the outermost `finally`. A
+synchronous spawn exception therefore remains the lane execution failure
+while the pre-spawn record is removed. An already-started child killed with
+the client still bypasses that `finally`, so its record remains for
+reconciliation. This session tightened the source/test prose so the
+historical rejected algorithm is named as historical and kept the existing
+behavioral test intact.
+
+The current B2 tree already carries the adopter-facing `SPEC.md` and
+`CONSUMERS.md` wording from `28bc3feb`: bare-host fallback is
+`os.wait4(pid, 0)` on the lane's own child, `ru_maxrss * 1024` bytes on Linux,
+and has no cgroup/pressure/DAMON/events data. The related test arithmetic
+docstring now labels the old `getrusage(RUSAGE_CHILDREN)` delta as the
+historical rejected algorithm. The current overview/test sweep was:
+
+```console
+$ rg -n -i 'getrusage|RUSAGE_CHILDREN' SPEC.md CONSUMERS.md tests/test_run_gate.py
+tests/test_run_gate.py:1291:               # resource.getrusage(RUSAGE_CHILDREN); RW-43/B1 replaced it
+tests/test_run_gate.py:15215:    the historical rejected before/after `getrusage(RUSAGE_CHILDREN)` delta
+SPEC.md:1769:    `wait4`, never the historical rejected `resource.getrusage(RUSAGE_CHILDREN)`
+SPEC.md:1771:    B1/RW-43: `RUSAGE_CHILDREN` is a monotone high-water mark over EVERY
+$ if rg -n -i 'getrusage|RUSAGE_CHILDREN' CONSUMERS.md; then exit 1; else echo 'PASS: CONSUMERS.md has no getrusage/RUSAGE_CHILDREN implementation wording'; fi
+PASS: CONSUMERS.md has no getrusage/RUSAGE_CHILDREN implementation wording
+```
+
+Focused verification (serial, no package gate or mutation campaign):
+
+```console
+$ git diff --check
+$ PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile run-gate.py tests/test_run_gate.py
+$ PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c 3 python3 -m pytest tests/test_run_gate.py -q -p no:randomly -p no:cacheprovider -k 'test_popen_failure_clears_record_and_reports_lane_failure or test_killed_client_leaves_the_record_on_disk or test_record_exists_when_exec_begins_and_cleared_after or test_daemon_absent_falls_back_to_rusage_and_discloses_why or test_wait4_raising_never_aborts_the_lane or test_returncode_is_set_after_wait4_reaps_the_child'
+......                                                                   [100%]
+6 passed, 1056 deselected in 4.29s
+```
+
+The existing committed mutation evidence and final exact-tree R2 evidence are
+preserved above; they are not relabeled as evidence for this repaired tree.
+A new `assay-r2` is REQUIRED after this code repair, before any package-ready
+claim. No whole-package gate, release, merge, controller-log edit, or release
+claim was made in this session.

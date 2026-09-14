@@ -1766,7 +1766,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     through `finish_lane_profiling` unchanged. Daemon-absent path (or ANY
     other failure — `ctl version`/`ctl start` failing): coarse process
     accounting via `os.wait4(pid, 0)` on the LANE'S OWN child (`Popen` +
-    `wait4`, never `resource.getrusage(RUSAGE_CHILDREN)` — round-1 review
+    `wait4`, never the historical rejected `resource.getrusage(RUSAGE_CHILDREN)`
+    algorithm — round-1 review
     B1/RW-43: `RUSAGE_CHILDREN` is a monotone high-water mark over EVERY
     child this process has ever reaped, so it credited a light lane with
     run-gate's own already-reaped tooling children, e.g. a `["true"]` lane

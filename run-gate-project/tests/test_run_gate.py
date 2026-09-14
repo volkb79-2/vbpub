@@ -1287,8 +1287,9 @@ def test_no_stdlib_violations():
                # unguessable, unlike run-gate's other identifiers.
                "secrets",
                # resource: RG-57's bare-host daemon-absent path originally
-               # used resource.getrusage(RUSAGE_CHILDREN); RW-43/B1
-               # replaced it with `os.wait4()` on the lane's own child
+               # The historical rejected implementation used
+               # resource.getrusage(RUSAGE_CHILDREN); RW-43/B1 replaced it
+               # with `os.wait4()` on the lane's own child
                # (exact per-child accounting, no import needed beyond
                # `os`, already allowed above) -- "resource" deliberately
                # NOT in this set any more: the import was removed.
@@ -15211,9 +15212,9 @@ class TestBareHostRusageArithmetic:
     that their VALUES are right -- round-1 review's mutation probe found
     the KiB->bytes conversion, the cpu-seconds sum and the mode/None guard
     all unpinned (M1/M2/M3/N4 in the round file); RW-43's rewrite replaced
-    the before/after `getrusage(RUSAGE_CHILDREN)` delta with a single `ru`
-    read directly off `os.wait4()`, so these oracles are written against
-    THAT shape."""
+    the historical rejected before/after `getrusage(RUSAGE_CHILDREN)` delta
+    with a single `ru` read directly off `os.wait4()`, so these oracles are
+    written against the CURRENT wait4 shape."""
 
     def test_exact_arithmetic_from_a_known_rusage(self):
         # M2 (`* 1024` -> `* 1`): 12345 KiB must become 12345*1024 bytes,

@@ -1,16 +1,15 @@
-# run-gate-WAVE-RG55-P4 — REPORT (partial: everything except `assay-r2`)
+# run-gate-WAVE-RG55-P4 — REPORT (historical evidence retained; current
+# round-3 repair follow-up is recorded in Session 11)
 
 Package P4 (run-gate follow-ups: RG-57, RG-58, RG-59, RG-60, RG-61) of the
-RG-55 wave, third track (RW-27). Written at the end of session 3, tip
-`7539a44e` on branch `rg55-followups-run-gate`. **This REPORT is not yet
-complete**: `assay-r2` (mutation) has not run — occupied by P2's own
-resume for the whole of this session (see the LOG's "`assay-r2` —
-occupied, not attempted" section and `run-gate-WAVE-RG55-P4-BRIEF-3.md`).
-Everything else the handoff's own Records section asks for is here.
-Claim only what was run — every line below is either a command this
-session actually executed (verbatim output, or the exact assertion from
-it) or explicitly marked as inherited from an earlier session's own LOG
-entry (cited by commit hash, not re-derived).
+RG-55 wave, third track (RW-27). The opening sections below are retained
+historical session records; their earlier partial-status header is
+superseded by Sessions 9–10. The current round-3 review found B1/B2, and
+Session 11 records the focused repair follow-up. Claim only what was run —
+every line below is either a command that session actually executed
+(verbatim output, or the exact assertion from it) or explicitly marked as
+inherited from an earlier session's own LOG entry (cited by commit hash, not
+re-derived).
 
 ## Deliverable-by-deliverable evidence
 
@@ -871,3 +870,38 @@ command-lane refusal with exit 2, not a gate run, and is excluded from the
 gate verdicts. No implementation source changed after the final exact-tree
 R2. This package is ready for a fresh Sol xhigh adversarial review only;
 there was no reviewer dispatch, merge, or release.
+
+## Session 11 — round-3 B1/B2 repair follow-up
+
+The current branch tip before this follow-up was `b4fb7b1b` on
+`rg55-followups-run-gate`, with a clean worktree. The round-3 blockers were
+rechecked against the current tree. The behavioral B1 repair is present from
+`28bc3feb`: `run_exec_lane` puts the synchronous `Popen` attempt inside the
+cleanup boundary and clears the pre-spawn record in the outermost `finally`,
+while a client killed after a child has started still leaves the record for
+reconciliation. The existing regression test exercises the synchronous
+failure and asserts both the propagated lane failure and record removal; the
+existing real client-death test continues to assert record survival.
+
+The adopter-facing B2 contract is also current: `SPEC.md` R-43/R-43i and
+`CONSUMERS.md` describe `os.wait4(pid, 0)` on the lane's own child,
+`ru_maxrss * 1024` Linux bytes, and the absence of cgroup/pressure/DAMON/events
+data in the fallback. The relevant test docstrings now identify
+`getrusage(RUSAGE_CHILDREN)` only as the historical rejected algorithm. The
+`CONSUMERS.md` sweep found no `getrusage` or `RUSAGE_CHILDREN` wording; the
+remaining SPEC/test matches are explicitly historical explanations.
+
+Focused serial verification for this follow-up:
+
+| check | result |
+|---|---|
+| `git diff --check` | exit 0 |
+| `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile run-gate.py tests/test_run_gate.py` | exit 0 |
+| focused B1/B2 pytest selector | 6 passed, 1056 deselected in 4.29s; exit 0 |
+| current overview/test `rg` sweep | only explicitly historical rejected-algorithm matches; `CONSUMERS.md` clean |
+
+The prior committed mutation evidence and final exact-tree R2 evidence remain
+preserved in Sessions 7–10. They do not certify this post-repair tree. A new
+`assay-r2` is required after this code repair; no package-ready or release
+claim is made here. This follow-up did not launch a whole-package gate,
+mutation campaign, merge, or release.

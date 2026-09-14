@@ -25,7 +25,8 @@ __revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
 # null` since rusage measures via wait4(), not a cgroup read), NEVER a
 # `BasicSampler` fallback on this path (RW-27b: no cgroup here is safely
 # attributable to one lane's own child). Round-1 review (RW-43) found the
-# FIRST cut of the daemon-absent path used `getrusage(RUSAGE_CHILDREN)`
+# Historical rejected first cut of the daemon-absent path used
+# `getrusage(RUSAGE_CHILDREN)`
 # deltas instead -- a monotone high-water mark over every child this
 # process had EVER reaped, so a `["true"]` lane was credited with
 # run-gate's own docker/git subprocess RSS (~36 MiB) instead of its own;
@@ -2101,7 +2102,7 @@ def finish_bare_host_profiling(state: dict, ru,
     `mode == 'rusage'` builds the schema-1 Summary BY HAND from `ru`, the
     `resource.struct_rusage` that `os.wait4(pid, 0)` hands back for the
     LANE'S OWN child and ONLY that child (round-1 review B1/RW-43: the
-    earlier `getrusage(RUSAGE_CHILDREN)`-delta shape was a monotone
+    historical rejected `getrusage(RUSAGE_CHILDREN)`-delta shape was a monotone
     high-water mark over EVERY child this run-gate process had ever reaped
     -- including its own `docker inspect`/`ctl version` subprocesses --
     so a lane smaller than something already reaped was credited with the
@@ -7872,7 +7873,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
     # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
     # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
-    # `getrusage(RUSAGE_CHILDREN)` snapshot around a plain `subprocess.run`
+    # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
+    # plain `subprocess.run`
     # -- `wait4` hands back the exact accounting of the ONE pid it waits
     # on, so the recorded numbers are always this lane's own child, never a
     # high-water mark borrowed from some other child run-gate happened to
