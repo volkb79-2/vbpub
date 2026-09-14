@@ -2315,3 +2315,18 @@ ACCEPT, and an authoritative `tester-unified` PASS at that exact clean tip
 `profile_error` for bare-host lanes under RG-57; it is not a failure. The
 controller may merge this sidecar serially onto main and then perform its
 versioned release workflow; no dstdns write is authorized.
+
+### RW-186 — 2026-09-14 20:51:29Z — merge B092/B098 sidecar; release awaits origin promotion
+
+The assay sidecar was merged no-ff as main commit `260c4013`, preserving the
+operator's dirty run-gate backlog and unrelated MDT host-setup note. The
+merged assay changes are clean under their project path and retain the exact
+gate/review evidence recorded in RW-185. CMRU's installed release flow
+correctly refuses to publish local-only commits while main is ahead of
+`origin/main`; no push is authorized in this controller session, so the
+assay 6.3.0 publication remains pending origin promotion rather than being
+falsely reported as released.
+
+P1's resumable supervisor is now waiting for `memory full avg10 <= 5` and a
+mutation-slot count below two before resuming the exact judged tree
+`5fd0ef13`; no commit will be made in that detached tree during the run.
