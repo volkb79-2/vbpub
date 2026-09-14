@@ -1607,3 +1607,17 @@ P6's valid identity-preserving retry has now completed with all 484 candidates
 accounted for: 439 killed, 45 survived, 0 budget-exceeded, 0 crashed. The
 verdict is therefore `FAIL/MUTANTS_SURVIVED`, not a budget exhaustion; the 45
 survivors require explicit triage before P6 can be certified.
+
+### RW-119 — 2026-09-14 03:27:06Z — CMRU evidence review rejects two survivor closures
+
+Fresh Luna xhigh fix-verification of CMRU repair commit `08692bf2` returned
+`REJECT` in `cmru-release-dirty-sync-REVIEW-round3-fixverify.md`. The
+`check=False` survivor is properly closed, but the frozen private dataclass
+test is implementation-detail evidence rather than a shipped behavioral
+contract, and the `And->Or` test pairs a pre-rebase hook failure with a
+monkeypatched active state that Git cannot produce in that transition. The
+repair remains unmerged. A fresh Luna xhigh implementer is to replace those
+two weak closures with either a contract-level immutable result construction
+or removal of the unnecessary representation seam, and a real interrupted-
+rebase oracle reaching active state after rebase state creation; then the
+same mutation gate and a fresh final review are required again.
