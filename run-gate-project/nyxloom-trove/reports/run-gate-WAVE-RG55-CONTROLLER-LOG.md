@@ -1386,6 +1386,16 @@ cross-document suite passed 42 tests. The review handoff was frozen in
 that exact tip. The B097 registered gate remains pending until review accepts;
 no merge or release is authorized by this ruling.
 
+### RW-104 — 2026-09-14 00:10:31Z — B097 review fix-verification
+
+The fresh B097 Luna xhigh review found no behavioral P0/P1/P2 defect but
+rejected the tip for one extra EOF blank line in the committed brief. The
+controller removed that single blank line, confirmed
+`git diff --check ee41553d..HEAD` clean, and committed the review report plus
+whitespace fix as `23b75167`. The same reviewer is resumed for fix-verification
+against that exact tip; no new review round or product repair is authorized
+unless it reports another finding.
+
 ### RW-102 — 2026-09-14 00:04:58Z — B096 registered gate failed qualification
 
 The asynchronous B096 `tester-unified` gate passed its wheel-installed,
