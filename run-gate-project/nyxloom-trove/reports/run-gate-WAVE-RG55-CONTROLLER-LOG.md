@@ -1914,3 +1914,15 @@ to PID 1 and emit independent exit markers. At this ruling P1 is at
 131/252 and P6 at 161/484; both exact containers remain running, not
 OOM-killed, and capped at 3 CPUs. No new gate has launched, and no judged
 tree was switched or committed.
+
+### RW-148 — 2026-09-14 06:52:15Z — make mutation-budget resumes explicit
+
+The fresh P1 and P6 runs each have a 14,400-second lane budget. Detached
+supervisors are now confirmed alive: P1 PID `672449` and P6 PID `673865`.
+After the original wrapper and exact container terminate, each supervisor
+reads the fresh verdict, resumes only on `BUDGET_EXCEEDED`, verifies the
+worktree is clean at its judged commit, switches detached to that exact tree
+for the run, and restores its branch afterward. A corrected P4 watcher PID
+`675036` will admit only after both supervisors emit their PASS markers; it
+normalizes absent counters to zero and is currently parked. No mutation run
+has been restarted or duplicated.
