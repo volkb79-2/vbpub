@@ -269,8 +269,23 @@ class BuildKitGovernanceTests(unittest.TestCase):
             fake_bin.mkdir()
             docker_log = root / "docker.log"
             config = root / "host-setup.env"
+            target = root / "baseline-target"
+            target.write_bytes(b"x")
+            baseline = root / "baseline.env"
+            baseline.write_text(
+                "SCHEMA_VERSION=2\n"
+                f"KERNEL_RELEASE={os.uname().release}\n"
+                "MEASURE_METHOD=iocost-coef-gen\nMEASURED_AT=now\n"
+                "RIOPS_MAX=1000\nWIOPS_MAX=1000\nRBW_MAX_BPS=1000000\nWBW_MAX_BPS=1000000\n"
+                "RBPS=1000\nRSEQIOPS=1000\nRRANDIOPS=1000\n"
+                "WBPS=1000\nWSEQIOPS=1000\nWRANDIOPS=1000\n"
+                "DEVNO=111\n"
+                f"TESTFILE_STAT_DEV=111\nDOCKER_STAT_DEV=111\n"
+                f"FINDMNT_SOURCE=/dev/fake\nTESTFILE={target}\nTESTFILE_SIZE_BYTES=1\n"
+            )
             config.write_text(
-                f"IO_DEV_PATH=/dev/fake\nIO_BASELINE_ENV={root / 'missing-baseline'}\n"
+                f"IO_DEV_PATH=/dev/fake\nIO_BASELINE_ENV={baseline}\n"
+                f"IO_BASELINE_TESTFILE={target}\n"
             )
             docker = fake_bin / "docker"
             docker.write_text(
@@ -307,6 +322,18 @@ esac
 """
             )
             docker.chmod(0o755)
+            stat = fake_bin / "stat"
+            stat.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"${1:-} ${2:-}\" in\n"
+                "  '-c %s') echo 1 ;;\n"
+                "  *) echo 111 ;;\n"
+                "esac\n"
+            )
+            stat.chmod(0o755)
+            findmnt = fake_bin / "findmnt"
+            findmnt.write_text("#!/usr/bin/env bash\necho /dev/fake\n")
+            findmnt.chmod(0o755)
             systemctl = fake_bin / "systemctl"
             systemctl.write_text("#!/usr/bin/env bash\nexit 0\n")
             systemctl.chmod(0o755)
@@ -323,9 +350,10 @@ esac
             )
             self.assertEqual(result.returncode, 1)
             self.assertIn("docker events stream ended (status=17)", result.stdout)
+            self.assertTrue(docker_log.exists(), result.stdout)
             self.assertIn("event-container-id", docker_log.read_text())
 
-    def test_no_baseline_uses_explicit_static_per_container_fallback(self) -> None:
+    def test_no_baseline_disables_per_container_io_caps(self) -> None:
         library = ROOT / "scripts" / "mdt-container-caps.lib.sh"
         with tempfile.TemporaryDirectory() as directory:
             env = os.environ.copy()
@@ -341,7 +369,7 @@ log() {{ :; }}
 _mdt_load_config
 _mdt_load_baseline
 _mdt_derive_watcher_caps
-printf '%s %s %s %s %s %s\\n' \\
+printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
   "$WATCHER_RIOPS" "$WATCHER_WIOPS" "$WATCHER_RBPS" "$WATCHER_WBPS" \\
   "$WATCHER_SRC" "$MDT_IO_BASELINE_VALID"
 """],
@@ -351,8 +379,15 @@ printf '%s %s %s %s %s %s\\n' \\
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertEqual(
                 result.stdout.strip(),
-                "200 400 31457280 31457280 static fallback — no baseline, run mdt-io-baseline.py 0",
+                "rio= wio= rbps= wbps= src=disabled — no current baseline; run mdt-io-baseline.py valid=0",
             )
+
+    def test_no_baseline_io_watcher_stays_alive_instead_of_restart_loop(self) -> None:
+        watcher = ROOT / "scripts" / "mdt-io-cap-watcher.sh"
+        source = watcher.read_text()
+        self.assertIn("no current baseline — watching Docker events", source)
+        self.assertNotIn("derived caps unusable — exiting for systemd to restart", source)
+        self.assertIn("Restart=always", (ROOT / "units/mdt-io-cap-watcher.service").read_text())
 
     def test_no_baseline_clears_only_mdt_runtime_io_properties(self) -> None:
         apply_script = ROOT / "scripts" / "mdt-apply-dev-caps.sh"
@@ -619,6 +654,7 @@ exit 0
                 "Starting proposals (review before accepting)",
                 "+-- dev-gates.slice",
                 "Static fallback values come from",
+                "matched-container IO caps stay disabled",
                 "no host mutation occurs",
                 "Docker is not restarted automatically",
                 "Sibling Min/Low/High controls are independent",

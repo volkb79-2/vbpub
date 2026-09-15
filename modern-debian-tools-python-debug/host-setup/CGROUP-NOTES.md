@@ -95,11 +95,15 @@ or no-device sweep, MDT also clears only its runtime `io.max` properties on
 `dev.slice` and its runtime IOPS sub-ceilings on `dev-gates.slice` and
 `dev-buildkitd.slice`, using empty systemd assignments so stale measured values
 cannot override the unit-file statics. It does not revert or clear unrelated
-cgroup properties. The matched per-container watcher has its own deliberately
-tight, host-independent fallback: **200 read / 400 write IOPS and 30 MiB/s
-read / write**. That fallback currently applies to devcontainers as well as
-test-runner and BuildKit matches; it is the fail-safe policy, not a guessed
-hardware number, until a valid baseline is measured.
+cgroup properties. Matched containers receive **no guessed per-container IO
+cap** until a valid baseline exists. A missing or invalid measurement is
+indeterminate; applying a host-independent 200/400-IOPS, 30-MiB/s fallback can
+turn normal interactive IO into D-state stalls. The Docker-events watcher
+remains connected but skips cap application, and the periodic sweep applies
+measured caps after the baseline is installed; restart the watcher after
+creating a baseline so its one-time configuration load sees it. The explicit
+`DEV_STATIC_*` values remain the boot-window fallback for the root unit and are
+a separate, operator-tunable policy.
 
 **Why the cap sits at 60–80% and never 100%:** a device driven to saturation
 queues everything behind the burst, which is precisely the stall the tiering

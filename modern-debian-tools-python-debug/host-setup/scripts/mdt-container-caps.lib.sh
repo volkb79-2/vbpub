@@ -51,7 +51,7 @@ _mdt_load_baseline() {
   # measured io.max value cannot outlive the baseline that justified it.
   MDT_IO_BASELINE_VALID=0
   RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD="" MEASURED_AT=""
-  [ -f "$IO_BASELINE_ENV" ] || { log "no $IO_BASELINE_ENV — per-container caps use the static fallback (run mdt-io-baseline.py)"; return; }
+  [ -f "$IO_BASELINE_ENV" ] || { log "no $IO_BASELINE_ENV — per-container IO caps are disabled until mdt-io-baseline.py succeeds"; return; }
   local _invalid=""
   # shellcheck disable=SC1090
   . "$IO_BASELINE_ENV" 2>/dev/null || true
@@ -59,13 +59,14 @@ _mdt_load_baseline() {
   [ "${MEASURE_METHOD:-}" = iocost-coef-gen ] || _invalid="${_invalid:-method is not iocost-coef-gen}"
   [ -n "${MEASURED_AT:-}" ] || _invalid="${_invalid:-MEASURED_AT is missing}"
   [ "${KERNEL_RELEASE:-}" = "$(uname -r)" ] || _invalid="${_invalid:-kernel release changed}"
-  for _baseline_key in RIOPS_MAX WIOPS_MAX RBW_MAX_BPS WBW_MAX_BPS RBPS RSEQIOPS RRANDIOPS WBPS WSEQIOPS WRANDIOPS DEVNO TESTFILE_STAT_DEV DOCKER_STAT_DEV TESTFILE TESTFILE_SIZE_BYTES; do
+  for _baseline_key in RIOPS_MAX WIOPS_MAX RBW_MAX_BPS WBW_MAX_BPS RBPS RSEQIOPS RRANDIOPS WBPS WSEQIOPS WRANDIOPS DEVNO TESTFILE_STAT_DEV DOCKER_STAT_DEV TESTFILE_SIZE_BYTES; do
     _baseline_value="${!_baseline_key:-}"
     case "$_baseline_value" in
       ''|*[!0-9]*) _invalid="${_invalid:-$_baseline_key is not a positive integer}" ;;
       0) _invalid="${_invalid:-$_baseline_key is zero}" ;;
     esac
   done
+  [ -n "${TESTFILE:-}" ] || _invalid="${_invalid:-TESTFILE is missing}"
   if [ -z "$_invalid" ]; then
     _testfile_dev=$(stat -c %d "$TESTFILE" 2>/dev/null || true)
     _docker_dev=$(stat -c %d /var/lib/docker 2>/dev/null || true)
@@ -82,7 +83,7 @@ _mdt_load_baseline() {
     _invalid="device identity is not current (run mdt-io-baseline.py)"
   fi
   if [ -n "$_invalid" ]; then
-    log "WARN: ignoring $IO_BASELINE_ENV — $_invalid; per-container and runtime estate caps use static fallbacks"
+    log "WARN: ignoring $IO_BASELINE_ENV — $_invalid; per-container IO caps are disabled until a current baseline exists"
     RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
   else
     MDT_IO_BASELINE_VALID=1
@@ -93,11 +94,12 @@ _mdt_load_baseline() {
 # WATCHER_SKIP=1 if the derived cap is unusable). Call after _mdt_load_config,
 # _mdt_load_baseline and _mdt_discover_io_dev_path.
 _mdt_derive_watcher_caps() {
-  # Deliberately tight, host-independent fail-safe values.  They are not a
-  # hardware estimate: a valid io.cost baseline replaces all four values.
-  WATCHER_RBPS="${WATCHER_RBPS:-31457280}"; WATCHER_WBPS="${WATCHER_WBPS:-31457280}"
-  WATCHER_RIOPS="${WATCHER_RIOPS:-200}";    WATCHER_WIOPS="${WATCHER_WIOPS:-400}"
-  WATCHER_SRC="static fallback — no baseline, run mdt-io-baseline.py"
+  # A missing baseline is indeterminate, not a measurement.  A guessed
+  # per-container cap can turn normal interactive IO into D-state stalls (the
+  # live incident that motivated this distinction), so it is safer to leave
+  # these transient properties unset until the official benchmark succeeds.
+  WATCHER_RBPS=""; WATCHER_WBPS=""; WATCHER_RIOPS=""; WATCHER_WIOPS=""
+  WATCHER_SRC="disabled — no current baseline; run mdt-io-baseline.py"
   WATCHER_SKIP=0
   # All four or none: a partial baseline would derive a 0 cap, and 0 in io.max
   # is not "unlimited", it stops the container's IO dead.
@@ -109,10 +111,13 @@ _mdt_derive_watcher_caps() {
     WATCHER_WBPS=$((  WBW_MAX_BPS * WATCHER_IO_CAP_PCT / 100 ))
     WATCHER_SRC="${WATCHER_IO_CAP_PCT}% of measured io.cost ceiling"
   else
-    log "per-container IO caps: static fail-safe fallback is 200 read/400 write IOPS and 30 MiB/s read/write (no valid baseline)"
+    log "per-container IO caps: disabled — no current baseline; run mdt-io-baseline.py before enabling measured caps"
+    WATCHER_SKIP=1
   fi
-  if [ "$WATCHER_RIOPS" -lt 1 ] || [ "$WATCHER_WIOPS" -lt 1 ] \
-     || [ "$WATCHER_RBPS" -lt 1 ] || [ "$WATCHER_WBPS" -lt 1 ]; then
+  if [ "$WATCHER_SKIP" = 0 ] && {
+       [ "$WATCHER_RIOPS" -lt 1 ] || [ "$WATCHER_WIOPS" -lt 1 ] \
+       || [ "$WATCHER_RBPS" -lt 1 ] || [ "$WATCHER_WBPS" -lt 1 ];
+     }; then
     log "WARN: derived per-container cap <= 0 (bad baseline?) — skipping container caps"
     WATCHER_SKIP=1
   fi

@@ -1354,7 +1354,7 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
         "Those four static values are not prompted here; edit the config deliberately if you need a different boot fallback.",
         "They are authoritative from boot until a valid baseline is applied.",
         "Empty or `auto` discovers with `findmnt`; no device omits static IO caps but keeps CPU/memory governance.",
-        "The watcher has separate per-container fallback behavior; there is no global IO off switch.",
+        "No valid baseline disables matched-container IO caps; there is no global IO off switch for other governance.",
         "This answer is checked for `/dev/...` shape only; host setup must run outside the devcontainer.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -1482,7 +1482,7 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
         "`WATCHER_IO_CAP_PCT` -> each matched container; sweep + Docker events protect tier members from each other.",
         "Buildx placement can bypass `dev.slice`, so direct watcher caps remain necessary.",
         "`IOWeight` is a relative share; `io.max` is an absolute rate cap.",
-        "No valid baseline -> static fail-safe: 200/400 IOPS and 30 MiB/s for matched containers.",
+        "No valid baseline -> matched-container IO caps stay disabled; no guessed rate is applied.",
         "No host device -> the watcher skips IO caps; it does not invent a device or number.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2094,7 +2094,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               - CPU auto-quota uses nproc minus the selected host/child reserve, floored
                 at one core.
               - IO percentages use measured io.cost ceilings: lower IOPS and sequential
-                bandwidth; no current cache leaves the static fallbacks authoritative.
+                bandwidth; no current cache leaves root unit statics authoritative and
+                disables guessed per-container IO caps.
 
             Important files and side effects
               - Reads: --example, existing --output, memory/swap facts, Docker mount,

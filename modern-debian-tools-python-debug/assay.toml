@@ -44,7 +44,11 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
   # coverage artifact itself. assay's literal-argv liveness detector cannot
   # see that in-process call; explicit false is intentional. The direct
   # process remains subject to the per-candidate wall-clock bound.
-  budget_per_candidate = "2m"
+  # A full host-setup pytest process is intentionally run serially. A few
+  # mutation variants exercise EOF/validation paths and need more than the
+  # ordinary test-suite duration; 4m keeps them bounded without turning a
+  # slow or leaked candidate into an unbounded gate.
+  budget_per_candidate = "4m"
   liveness = false
 
 [lanes.host_setup.judge.canary]
