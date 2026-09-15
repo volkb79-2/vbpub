@@ -63,6 +63,22 @@ review_focus:
 
 # Manual Sol xhigh prompt
 
+## Invocation contract
+
+The operator may hand this packet to the reviewer by path instead of pasting
+its body. The first message to the fresh Sol xhigh session should therefore
+contain these literal instructions (change only the target when appropriate):
+
+```
+REVIEW_TARGET=P4
+Read /workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
+Follow that packet as the review contract. Review exactly the selected target, make scoped repairs when needed, and return the required verdict and artifact. Do not merge or release.
+```
+
+`REVIEW_TARGET=P4` is an explicit task parameter, not a shell variable that
+the reviewer is expected to discover. If the line is absent or names anything
+outside `P1`, `P4`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
+
 Before pasting this packet, select the actual model route in the client and
 put one literal target line at the top of your prompt. For the currently ready
 package, use:

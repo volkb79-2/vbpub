@@ -2795,3 +2795,13 @@ test follow-up. Its new transport/watch/placement row and all P5 close-out
 references now consistently use RG-63. This is a handoff-only correction; P5
 still cannot dispatch until P4 and P6 are merged, and no current mutation tree
 was touched.
+
+### RW-227 — 2026-09-15 03:00:43Z — make path-based Sol handoff invocation explicit
+
+The operator correctly noted that `REVIEW_TARGET=P4` does not by itself tell
+a manually started session where the review contract lives. The packet now
+opens with an exact invocation block: select the Sol xhigh route, send the
+literal target line, explicitly read
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md`
+in full, and follow it. Missing or invalid targets remain a mechanical
+`BLOCKED`; no package tree was changed.
