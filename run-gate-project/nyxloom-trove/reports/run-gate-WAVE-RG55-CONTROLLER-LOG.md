@@ -2566,3 +2566,19 @@ without implementing product code. It explicitly keeps current RG-55
 interruption handling report-only until the pre-kill receipt capability is
 accepted. The same Helmholtz Luna xhigh reviewer was sent the repair for
 fix-verification; P35 is not accepted or dispatchable yet.
+
+### RW-209 — 2026-09-15 00:05:11Z — CMRU promotion recovery repair checkpoint
+
+The CMRU BuildKit/EOF repair was extended locally at candidate commit
+`cf2b62c7` (isolated worktree `cmru-buildkit-eof-20260914`). It now atomically
+records the fetched `origin/main` SHA, transaction branch, and prepared tip
+before every promotion push; failure handling accepts that evidence only when
+a changed tip is exactly at `origin/main`, while no-op, malformed, and advanced
+remote states fail closed. The completion record is transaction-scoped and is
+cleared with the existing marker at project-cycle start and cleanup. README,
+SPEC, CONSUMERS, operational recovery docs, changelog, backlog, and a
+self-verification report were updated. The focused suite passed 37 tests; the
+full local CMRU suite passed 1783 tests/3 skips with 100.00% line+branch
+coverage. No Docker-backed release gate or fresh Sol xhigh final review was
+run; per operator instruction no subagent was spawned, so this candidate is
+not merged or released.
