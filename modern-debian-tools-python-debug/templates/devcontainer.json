@@ -115,12 +115,16 @@
     // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds, owned by container ────────
     // Directory mounts (alphabetical by subdir name)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    // ClaudeLink durable hub state: nexus.db, scheduler state/logs, and related runtime files.
+    "source=${localEnv:HOME}/mdt--mounted-folders/.claudelink,target=/home/vscode/.claudelink,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.local,target=/home/vscode/.local,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
+    // Pi config and session root: sessions live below ~/.pi/agent/sessions/.
+    "source=${localEnv:HOME}/mdt--mounted-folders/.pi,target=/home/vscode/.pi,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",

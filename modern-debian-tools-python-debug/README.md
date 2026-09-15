@@ -267,8 +267,20 @@ duplicating secrets. Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`.
 
 To survive rebuilds, keep these persistent (the shipped mount layout already does):
-the workspace root, `/home/vscode/.claude`, `.codex`, `.reasonix`, `.openclaw`, and
-`/home/vscode/.config/modern-debian-tools-python-debug`.
+the workspace root, `/home/vscode/.claude`, `/home/vscode/.claudelink`, `/home/vscode/.codex`,
+`/home/vscode/.config`, `/home/vscode/.local`, `/home/vscode/.minisign`,
+`/home/vscode/.openclaw`, `/home/vscode/.pi`, `/home/vscode/.reasonix`, and
+`/home/vscode/.local/share/opencode`.
+
+The template's Pi mount preserves the whole `~/.pi` root, including `~/.pi/agent/sessions/`.
+Its ClaudeLink mount preserves the whole `~/.claudelink` root, including `nexus.db`, scheduler
+state/logs, and related runtime files. Their grouped host sources are
+`${localEnv:HOME}/mdt--mounted-folders/.pi` and
+`${localEnv:HOME}/mdt--mounted-folders/.claudelink`. The host bootstrap creates empty sources;
+OpenCode's `/home/vscode/.local/share/opencode` target is backed by the grouped
+`opencode-data` source. For the one-time migration from an existing host install, follow
+[the template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once)
+and then rebuild the container.
 
 ### Canonical manifest
 

@@ -69,11 +69,17 @@ Devcontainer-persisted state is grouped under a single host parent so a rebuild 
 | Source (host) | Target (container) | Notes |
 |---|---|---|
 | `~/mdt--mounted-folders/.ssh` | `/home/vscode/.ssh` (ro) | container-persisted ssh state |
-| `~/mdt--mounted-folders/.claude` `.codex` `.reasonix` `.openclaw` `.config` `.minisign` `.gnupg` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700` |
+| `~/mdt--mounted-folders/.claude` `.claudelink` `.codex` `.config` `.gnupg` `.minisign` `.openclaw` `.pi` `.reasonix` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700`; ClaudeLink and Pi are whole-directory mounts; Pi sessions are under `~/.pi/agent/sessions/` |
+| `~/mdt--mounted-folders/.local` | `/home/vscode/.local` | user-local CLI installs and state; the nested OpenCode path has its own mount |
+| `~/mdt--mounted-folders/opencode-data` | `/home/vscode/.local/share/opencode` | OpenCode auth, sessions, logs, and runtime state |
 | `~/mdt--mounted-folders/.claude.json` | `/home/vscode/.claude.json` | Claude Code auth/page-state (file-level mount) |
 | `~/mdt--mounted-folders/.reasonix.toml` | `/home/vscode/.reasonix.toml` | Reasonix global config (file-level mount) |
 | `~/mdt--mounted-folders/tmp` | `/tmp` | **persisted, host-backed `/tmp`** (`1777`) |
 | `~/.ssh` (host, native) | `/home/vscode/.ssh-host` (ro) | **dual-use exception**: the host's NATIVE keys, so the same keys work natively AND in the devcontainer |
+
+The new whole-directory mounts target `/home/vscode/.pi` and `/home/vscode/.claudelink`.
+Pi sessions are under `~/.pi/agent/sessions/`; ClaudeLink keeps `nexus.db`, scheduler
+state/logs, and related runtime files under `~/.claudelink`.
 
 The user-editable central API key file is `~/.config/modern-debian-tools-python-debug/ai.env`.
 Shell startup sources it once; Reasonix/OpenClaw/Codex also get tool-local `.env` symlinks back to
@@ -185,15 +191,21 @@ inherit the caller's slice.
 1. Point the `mounts` in `devcontainer.json` at `${localEnv:HOME}/mdt--mounted-folders/<name>` (+ keep
    the native `~/.ssh → .ssh-host` readonly mount), and add `~/mdt--mounted-folders/tmp → /tmp`.
 2. **Migrate once on the host** (the bootstrap only creates EMPTY dirs — existing state isn't copied):
+   Create the grouped parent, then copy the whole Pi and ClaudeLink roots plus the other
+   directory state. OpenCode's data is copied separately because its nested mount overlays
+   the broader `.local` mount:
    ```
-   for d in .claude .codex .reasonix .openclaw .config .minisign .gnupg; do
-     [ -d ~/"$d" ] && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/ 2>/dev/null || true
+   mkdir -p ~/mdt--mounted-folders
+   for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+     [ -d ~/"$d" ] && mkdir -p ~/mdt--mounted-folders/"$d" && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/
    done
+   [ -d ~/.local/share/opencode ] && mkdir -p ~/mdt--mounted-folders/opencode-data && cp -a ~/.local/share/opencode/. ~/mdt--mounted-folders/opencode-data/
    ```
-   ⚠️ The `.minisign` key (cmru release signing), gpg keys, and gh auth live here — migrate or you lose them.
+   The `.minisign` key (cmru release signing), gpg keys, gh auth, Pi state, and ClaudeLink
+   state live here — migrate the directories you use before rebuilding.
 3. Rebuild the container (the host bootstrap creates the structure first).
 4. Recreate sibling containers (e.g. `ciu render` + restart the test-runner) so they pick up the new `/tmp`.
-5. **Verify:** `ls ~/.claude`, `ls ~/.minisign`, `gpg --list-keys`, `ls /home/vscode/.ssh-host` non-empty;
+5. **Verify:** `ls ~/.claude`, `ls ~/.pi/agent`, `ls ~/.claudelink`, `ls ~/.minisign`, `gpg --list-keys`, `ls /home/vscode/.ssh-host` non-empty;
    `touch /tmp/__probe` then on the host `ls ~/mdt--mounted-folders/tmp/__probe`.
 6. **Rollback:** revert `devcontainer.json` + `initialize_container_environment.py` and rebuild; the host
    `~/mdt--mounted-folders/` is harmless leftover (canonical `~/.ssh` etc. are untouched).
