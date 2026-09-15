@@ -67,7 +67,7 @@ only a provisioning-and-policy one.
    (a future host, or a future hand-edit, could reintroduce it).
 
 4. **The 40-60%-of-baseline per-slice utilization cap (`DEV_IO_CAP_PCT`/
-   `SWEEP_IO_CAP_PCT`) is unaffected and untouched by this plan.** Per
+   `WATCHER_IO_CAP_PCT`) is unaffected and untouched by this plan.** Per
    CGROUP-NOTES.md "`io.max` still applies — the two mechanisms compose,
    they don't compete": `io.max` is blk-throttle, a separate rq-qos policy
    from `io.cost`'s latency-triggered throttling, scheduler-independent.
@@ -203,7 +203,7 @@ only a provisioning-and-policy one.
 
 ### Out of scope (explicitly, so a future reader doesn't assume it's covered)
 
-- Any change to `DEV_IO_CAP_PCT`/`SWEEP_IO_CAP_PCT` or `mdt-apply-dev-caps.sh`'s
+- Any change to `DEV_IO_CAP_PCT`/`WATCHER_IO_CAP_PCT` or `mdt-apply-dev-caps.sh`'s
   `io.max` logic — D1/finding 4.
 - Auto-running `iocost-calibrate.sh` from host-setup — D6.
 - A formula that derives `rlat`/`wlat` from the percentile table — D4.

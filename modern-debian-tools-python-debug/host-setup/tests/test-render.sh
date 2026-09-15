@@ -75,17 +75,17 @@ pass() { echo "ok: $*"; }
 
 # --- extract render() + RENDER_VARS verbatim from install.sh ----------------
 RENDER_SNIPPET="$TMP/render-snippet.sh"
-sed -n '/^RENDER_VARS="/,/SWEEP_INTERVAL"$/p' "$INSTALL_SH" > "$RENDER_SNIPPET"
+sed -n '/^RENDER_VARS="/,/WATCHER_INTERVAL"$/p' "$INSTALL_SH" > "$RENDER_SNIPPET"
 
 # Start-anchor guard (unchanged): did sed find RENDER_VARS at all?
 grep -q '^RENDER_VARS="' "$RENDER_SNIPPET" \
   || fail "could not extract RENDER_VARS from install.sh -- anchor patterns are stale, update this test"
 # End-anchor guard (NEW, B2): a start-anchor match alone does not prove the
-# range closed correctly -- if /SWEEP_INTERVAL"$/ ever stops matching,
+# range closed correctly -- if /WATCHER_INTERVAL"$/ ever stops matching,
 # sed ranges silently to EOF instead of failing, and the snippet becomes
 # most of install.sh. Assert the snippet's OWN last line is the expected
 # closing line, not just that the pattern occurs somewhere in the file.
-tail -n1 "$RENDER_SNIPPET" | grep -q 'SWEEP_INTERVAL"$' \
+tail -n1 "$RENDER_SNIPPET" | grep -q 'WATCHER_INTERVAL"$' \
   || fail "RENDER_VARS end anchor no longer matches install.sh -- extraction over-ran, update this test's anchor patterns before trusting anything below"
 
 sed -n '/^render() {/,/^}$/p' "$INSTALL_SH" >> "$RENDER_SNIPPET"
@@ -125,6 +125,17 @@ for tmpl in "$HERE"/units/*.in; do
 done
 [ "$rendered_any" = 1 ] || fail "no units/*.in templates found under $HERE/units"
 pass "every rendered unit is free of unresolved @VAR@ placeholders"
+
+# The managed daemon's TOML is rendered by the same install.sh helper but is
+# deliberately not a systemd unit. Exercise it explicitly so the new
+# max-parallelism setting cannot silently remain an unresolved token.
+BUILDKIT_TOML_OUT="$TMP/buildkitd.toml"
+render "$HERE/buildkitd.toml.in" "$BUILDKIT_TOML_OUT"
+grep -qxF "  max-parallelism = $DEV_BUILDKITD_MAX_PARALLELISM" "$BUILDKIT_TOML_OUT" \
+  || fail "buildkitd.toml.in did not render DEV_BUILDKITD_MAX_PARALLELISM"
+grep -qF 'buildkitd.toml.in' "$INSTALL_SH" \
+  || fail "install.sh never renders buildkitd.toml.in"
+pass "managed BuildKit TOML renders its configured solver parallelism"
 
 # --- (2) dev-gates.slice.in renders the shipped example's own values --------
 # ${VAR:?msg} rather than a bare ${VAR}: under `set -u` a mistyped/missing key

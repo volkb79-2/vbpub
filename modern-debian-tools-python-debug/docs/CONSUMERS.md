@@ -23,16 +23,26 @@ passes strict validation. Deleting the old file first loses those defaults and
 does not create the automatic backup.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
-configured `IO_BASELINE_ENV` cache, and Docker mount facts. It walks `dev.slice`, the guaranteed sibling,
+configured `IO_BASELINE_ENV` cache and `IO_BASELINE_TESTFILE`, and Docker mount
+facts. It walks `dev.slice`, the guaranteed sibling,
 `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and
 `dev-buildkitd.slice` in that order. For each it asks `MemoryMin`, `MemoryLow`,
 `MemoryHigh`, and `MemoryMax`, plus the applicable CPU, `IOWeight`, swap, and
 zswap controls. Empty means the operator explicitly chose no directive; it is
-not an invented fallback. The wizard compares binary sizes after converting
+not an invented fallback. Type `-` to omit any optional memory directive; Enter
+accepts its shown proposal. The wizard compares binary sizes after converting
 them to KiB and re-prompts on `MemoryMin <= MemoryLow <= MemoryHigh <=
-MemoryMax` or aggregate violations. A cache benchmark is offered only when
-`fio` is already installed; otherwise the installer installs it after
-validation and you run the benchmark later in a quiet window.
+MemoryMax` or configured-parent aggregate violations. MemoryMax is RAM only;
+MemorySwapMax is swap only. A baseline benchmark uses the official kernel
+`io.cost` matrix against the persistent `IO_BASELINE_TESTFILE`, never a raw
+device, and is reusable by identity rather than by age. It saturates the disk
+for about 12 minutes at default settings, so run it in a quiet window. The
+baseline run is offered only when `fio` and `pv` are already installed; otherwise
+the installer installs them after validation and you run the benchmark later.
+
+The wizard also asks for `DEV_BUILDKITD_MAX_PARALLELISM`. This limits one
+managed BuildKit daemon's internal solver parallelism; it does not serialize
+client requests and is separate from release repack concurrency.
 
 Host setup is host-only: run the installer and wizard from a shell on the
 Docker host, never from the consumer devcontainer. UID 0 in a devcontainer is

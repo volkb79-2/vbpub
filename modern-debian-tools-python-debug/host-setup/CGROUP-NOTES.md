@@ -69,7 +69,7 @@ the running container. Hence a sweep, not a unit.
 
 *Owned by:* `mdt-apply-dev-caps.sh` (`docker ps` → `/proc/<pid>/cgroup` → the
 scope name), re-run by `mdt-host-slices.timer` so containers created since boot
-get caught within `SWEEP_INTERVAL`.
+get caught within `WATCHER_INTERVAL`.
 
 > BuildKit nests its own sub-cgroups *inside* the container, so PID 1's cgroup
 > path continues below `docker-<id>.scope`. The script trims back to the

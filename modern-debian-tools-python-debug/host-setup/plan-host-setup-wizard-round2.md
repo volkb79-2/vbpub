@@ -70,7 +70,7 @@ EVERY call site that has a real shape constraint:
   choice — the validator must accept `""` there, and ONLY there (or
   wherever else empty is genuinely meaningful — check each field's own
   semantics before deciding, don't blanket-allow empty everywhere).
-- `DEV_IO_CAP_PCT`/`SWEEP_IO_CAP_PCT`: integer, and per the file's own
+- `DEV_IO_CAP_PCT`/`WATCHER_IO_CAP_PCT`: integer, and per the file's own
   documented 60-80% band reasoning (printed right above these prompts
   already) — decide whether to HARD-refuse outside some range or WARN
   and let the operator override (there's a real judgment call here:

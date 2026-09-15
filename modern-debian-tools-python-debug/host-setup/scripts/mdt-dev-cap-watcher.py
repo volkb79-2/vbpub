@@ -2,7 +2,7 @@
 """mdt host-setup — reactive dev-tier container cap watcher.
 
 Everything mdt-apply-dev-caps.sh's periodic sweep does for per-container
-caps, it does up to SWEEP_INTERVAL late: a container created right after a
+caps, it does up to WATCHER_INTERVAL late: a container created right after a
 sweep runs unbounded until the next one. This watches dev-interactive.slice,
 dev-background.slice AND dev-gates.slice directly via inotify and applies a
 per-slice default MemoryMax/MemoryHigh/MemorySwapMax the moment a new

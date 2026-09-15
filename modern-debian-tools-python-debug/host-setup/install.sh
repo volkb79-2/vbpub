@@ -19,7 +19,7 @@
 # (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers against
 # THIS host's own /proc/meminfo rather than the example's fixed numbers, then
 # falls through into the same render/apply logic below. --with-baseline
-# additionally runs the fio benchmark (~4 min of saturated disk — quiet
+# additionally runs the official io.cost benchmark (~12 min of saturated disk — quiet
 # window!). --force is accepted only with --wizard; it deliberately starts the
 # wizard from the current example instead of using the installed config as
 # defaults. After successful candidate validation the old config is backed up
@@ -29,6 +29,61 @@
 # disrupts all running containers). See README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+mdt host-setup installer
+
+Purpose
+  Configure the host's dev.slice resource hierarchy, runtime IO caps,
+  host-managed rootless BuildKit worker, and the owned cgroup-parent key in
+  /etc/docker/daemon.json. Run from the Docker host shell, never a
+  devcontainer: container root cannot control the host's systemd, cgroups,
+  mounts, or /etc.
+
+Usage
+  sudo ./install.sh --wizard [--force] [--with-baseline] [--restart-docker]
+  sudo ./install.sh --with-baseline
+  sudo ./install.sh --restart-docker
+  sudo ./install.sh --help
+
+Options
+  --wizard            Ask every host policy question, write a temporary
+                      candidate, validate it, then install and apply it.
+                      Required on a first install. Existing values are the
+                      defaults unless --force is also supplied.
+  --force             With --wizard, ignore the installed config as prompt
+                      defaults and start from the current example. The old
+                      config is backed up only after the candidate validates.
+                      It does not mean "skip validation" and is rejected alone.
+  --with-baseline     Run the official kernel io.cost coefficient benchmark
+                      against the configured persistent file target. It runs
+                      six fio passes (about 12 minutes minimum at defaults)
+                      and saturates that disk; use a quiet maintenance window.
+                      The cache is reused only when its device/target identity
+                      still matches; it has no time-based expiry.
+  --restart-docker    Restart docker.socket and docker.service after applying
+                      the policy. This disrupts running containers. Without
+                      it, changed Docker daemon defaults take effect after
+                      a later deliberate restart.
+  --help              Show this help and exit.
+
+Files and ownership
+  Read from this checkout: host-setup.env.example, unit templates, scripts,
+  and the io.cost generator under scripts/debian-install-v2/tools/.
+  Read on the host: /proc/meminfo, /proc/swaps, Docker mount discovery, and
+  Docker/Buildx state.
+  Write: /etc/mdt/host-setup.env and rendered /etc/systemd/system units;
+  /var/lib/mdt/io-baseline.env and its persistent test file when a baseline
+  is run; owned keys in /etc/docker/daemon.json. An existing config is backed
+  up as /etc/mdt/host-setup.env.bak-TIMESTAMP before replacement.
+
+Safety and result
+  The wizard validates the complete candidate before any host policy is
+  changed. A nonzero exit means the requested action did not complete; inspect
+  the printed error before retrying. The installer is idempotent.
+EOF
+}
 
 WITH_BASELINE=0
 FORCE=0
@@ -40,7 +95,7 @@ for arg in "$@"; do
     --with-baseline) WITH_BASELINE=1 ;;
     --force) FORCE=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -192,16 +247,10 @@ case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
   terminate|report-only) ;;
   *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
 esac
-for _required_var in DEV_BUILDKITD_IMAGE DEV_MEMORY_HIGH DEV_MEMORY_MAX \
-  DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
-  DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
-  DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX \
-  DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
-  if [ -z "${!_required_var:-}" ]; then
-    echo "ERROR: $_required_var is empty; refusing to render an unbounded governed slice" >&2
-    exit 2
-  fi
-done
+if [ -z "${DEV_BUILDKITD_IMAGE:-}" ]; then
+  echo "ERROR: DEV_BUILDKITD_IMAGE is empty; refusing to start the managed BuildKit service" >&2
+  exit 2
+fi
 
 # Device node for the static IO*Max lines (render-time; the runtime script
 # re-discovers independently, so an install-time miss only drops the statics).
@@ -339,24 +388,15 @@ else
 fi
 
 echo "== packages =="
-# fio: the baseline benchmark. systemd-oomd: without it every ManagedOOM*
+# fio/pv: dependencies of the official io.cost baseline benchmark.
+# systemd-oomd: without it every ManagedOOM*
 # setting in dev-background.slice is a silent no-op (separate package on Debian).
 apt-get update -qq || echo "WARN: apt-get update failed — install may use a stale index"
-apt-get install -y --no-install-recommends fio systemd-oomd \
-  || echo "WARN: apt install failed — install fio + systemd-oomd manually"
+apt-get install -y --no-install-recommends fio pv systemd-oomd \
+  || echo "WARN: apt install failed — install fio + pv + systemd-oomd manually"
 
-echo "== io baseline: bootstrap from an existing measurement if we have none yet =="
-# mdt owns /var/lib/mdt/io-baseline.env as its canonical path (no runtime
-# cross-reference to gstammtisch, which is scoped to wings/soulmask/tmpfs
-# only). If gstammtisch already measured this host recently, reuse those
-# values instead of re-running the ~4min disk-saturating benchmark.
 MDT_BASELINE="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
-GSTAMMTISCH_BASELINE=/var/lib/gstammtisch/io-baseline.env
-if [ ! -f "$MDT_BASELINE" ] && [ -f "$GSTAMMTISCH_BASELINE" ]; then
-  mkdir -p "$(dirname "$MDT_BASELINE")"
-  cp "$GSTAMMTISCH_BASELINE" "$MDT_BASELINE"
-  echo "bootstrapped $MDT_BASELINE from gstammtisch's existing measurement ($(grep -o 'MEASURED_AT=.*' "$MDT_BASELINE" || true))"
-fi
+MDT_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
 
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
@@ -373,10 +413,11 @@ DEV_GATES_CPU_WEIGHT DEV_GATES_CPU_QUOTA DEV_GATES_IO_WEIGHT DEV_GATES_OOM_PRESS
 DEV_GATES_ZSWAP_WRITEBACK \
 DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX \
 DEV_BUILDKITD_CPU_WEIGHT DEV_BUILDKITD_CPU_QUOTA DEV_BUILDKITD_IO_WEIGHT DEV_BUILDKITD_IMAGE \
+DEV_BUILDKITD_MAX_PARALLELISM \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
-IO_DEV_PATH SWEEP_INTERVAL"
+IO_DEV_PATH WATCHER_INTERVAL"
 render() { # render <template> <dest>
   local src="$1" dst="$2" v args=()
   for v in $RENDER_VARS; do args+=(-e "s|@$v@|${!v:-}|g"); done
@@ -397,6 +438,7 @@ render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
 render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
+render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
 install -m 0644 "$HERE/units/mdt-host-slices.service" /etc/systemd/system/mdt-host-slices.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
@@ -496,6 +538,9 @@ install -m 0644 "$HERE/scripts/mdt-container-caps.lib.sh" /usr/local/sbin/mdt-co
 install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply-dev-caps.sh
 install -m 0755 "$HERE/scripts/mdt-io-cap-watcher.sh"  /usr/local/sbin/mdt-io-cap-watcher.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
+install -d -m 0755 /usr/local/lib/mdt
+install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py" \
+  /usr/local/lib/mdt/iocost_coef_gen.py
 install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
@@ -577,9 +622,11 @@ fi
 systemctl enable mdt-io-cap-watcher.service         # reactive per-container IO caps (docker events)
 
 if [ "$WITH_BASELINE" = 1 ]; then
-  echo "== io baseline (fio — disk will be saturated for ~4 min) =="
-  IO_BASELINE_ENV="$MDT_BASELINE" \
-    /usr/local/sbin/mdt-io-baseline.py --force || echo "WARN: baseline failed — statics remain in force"
+  echo "== io.cost baseline (six fio runs — disk will be saturated for ~12 min) =="
+  IO_BASELINE_ENV="$MDT_BASELINE" IO_BASELINE_TESTFILE="$MDT_TESTFILE" \
+    IO_DEV_PATH="${IO_DEV_PATH:-}" \
+    /usr/local/sbin/mdt-io-baseline.py --force --output "$MDT_BASELINE" \
+    --testfile "$MDT_TESTFILE" || echo "WARN: baseline failed — statics remain in force"
 fi
 
 systemctl start mdt-host-slices.service           # apply runtime caps now

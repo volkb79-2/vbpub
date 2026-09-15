@@ -29,6 +29,14 @@ and `docker buildx build` receive the explicit `BUILDX_BUILDER` selection; the
 release hook rejects any other builder or endpoint. The finalizer reuses the
 named remote idempotently and fails closed on partial/inconsistent environment.
 
+Host setup renders `/etc/mdt/buildkitd.toml` from
+`DEV_BUILDKITD_MAX_PARALLELISM`. BuildKit uses this as the managed daemon's
+internal solver-operation ceiling: it limits simultaneous work within one
+daemon but does not serialize client requests or replace the daemon's cgroup
+CPU/memory/I/O limits. Local release repack has separate controls,
+`REPACK_JOBS` and `REPACK_CONCURRENCY`, because repack runs in the caller
+outside the BuildKit worker.
+
 Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`.
 The MDT template and derived dstdns container explicitly carry both exports
 and a mandatory `/run/mdt-buildkitd` socket mount, so a missing host setup is a
