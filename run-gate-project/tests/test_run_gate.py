@@ -10092,24 +10092,28 @@ class TestInflightRecordDecisions:
         assert record.read_text() == before    # not cleared, not rewritten
         assert (state / "dstdns-98535c-test-runner").exists()   # not removed
 
-    def test_live_run_refuses_a_foreign_record_and_runs_fresh_instead(
+    def test_live_run_refuses_a_foreign_record_without_starting_fresh(
             self, tmp_path, monkeypatch, capsys):
         # The live-run counterpart: NOT a dry run, and no `--fresh` either
-        # -- `resolve_inflight` must still refuse before any docker call
-        # touches the exec-written record, and the lane proceeds by
-        # starting its OWN fresh container (the normal "nothing to attach
-        # to" path), never by re-attaching to or removing the foreign one.
+        # -- `resolve_inflight` must refuse before any docker call touches
+        # the exec-written record.  Returning the same sentinel as "there
+        # is no record" would let the caller launch a new container and
+        # overwrite the protected record, so refusal is an exit-2 terminal
+        # state, not permission to start fresh.
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
-                       runner="exec")
-        assert run_gate.main(["suite"]) == 0
+        record = plant_inflight(
+            proj, repo, state, container="dstdns-98535c-test-runner",
+            runner="exec")
+        before = record.read_bytes()
+        assert run_gate.main(["suite"]) == 2
         out = capsys.readouterr().out
         assert "foreign record — refusing" in out
         assert [c for c in _docker_calls(log)
                if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
         assert [c for c in _docker_calls(log)
                if c[0] == "exec" and "dstdns-98535c-test-runner" in c] == []
-        assert len(lane_runs(log)) == 1        # a NEW container, not a re-attach
+        assert lane_runs(log) == []
+        assert record.read_bytes() == before
         assert (state / "dstdns-98535c-test-runner").exists()   # untouched
 
     def test_fresh_refuses_to_remove_a_foreign_record(
@@ -10130,14 +10134,17 @@ class TestInflightRecordDecisions:
 
         monkeypatch.setattr(run_gate, "print", spy, raising=False)
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
-        plant_inflight(proj, repo, state, container="dstdns-98535c-test-runner",
-                       runner="exec")
-        assert run_gate.main(["suite", "--fresh"]) == 0
+        record = plant_inflight(
+            proj, repo, state, container="dstdns-98535c-test-runner",
+            runner="exec")
+        before = record.read_bytes()
+        assert run_gate.main(["suite", "--fresh"]) == 2
         out = capsys.readouterr().out
         assert "foreign record — refusing" in out
         assert [c for c in _docker_calls(log)
                if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
-        assert len(lane_runs(log)) == 1
+        assert lane_runs(log) == []
+        assert record.read_bytes() == before
         assert (state / "dstdns-98535c-test-runner").exists()
         assert len(calls) == 1
         assert calls[0]["flush"] is True
@@ -13369,16 +13376,11 @@ class TestProfilerClient:
         assert doc is None
         assert "not running" in reason
 
-    def test_docker_reserved_exit_code_names_the_real_cause_even_with_no_recognizable_prefix(
+    def test_docker_exit_125_without_absence_evidence_is_indeterminate(
             self, tmp_path, monkeypatch):
-        """S2's OTHER branch: docker's own reserved exit code for "the CLI/
-        daemon could not even start the command" (125) must be sufficient
-        on its own -- docker CLI wording varies across versions/hosts, so
-        the exit code, not a specific string, is the unambiguous signal
-        for "this docker exec never reached cgprofile". S11 (round-2
-        review, RW-51) narrowed this to 125 specifically -- 126/127 are a
-        DIFFERENT condition, see
-        test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one."""
+        """Exit 125 says Docker itself failed, not why it failed.  A
+        permission/transport/configuration failure must never be certified
+        as the benign "daemon absent" state with a start-it remedy."""
         class _FakeCompleted:
             stdout = ""
             stderr = "no such file or directory: unknown"
@@ -13388,8 +13390,26 @@ class TestProfilerClient:
         client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
         doc, reason = client.version()
         assert doc is None
-        assert "not running" in reason
-        assert "ciu up" in reason
+        assert "failed before a valid cgprofile response" in reason
+        assert "exit 125" in reason
+        assert "not running" not in reason
+        assert "ciu up" not in reason
+
+    def test_docker_prefixed_permission_failure_is_not_called_absent(
+            self, monkeypatch):
+        class _FakeCompleted:
+            stdout = ""
+            stderr = "docker: permission denied while connecting to the daemon\n"
+            returncode = 1
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: _FakeCompleted())
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert "failed before a valid cgprofile response" in reason
+        assert "permission denied" in reason
+        assert "not running" not in reason
+        assert "ciu up" not in reason
 
     def test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one(
             self, tmp_path, monkeypatch):
@@ -13596,6 +13616,32 @@ class TestDoctorProfilerCheck:
         assert ("container/exec lanes fall back to basic (in-lane) "
                "sampling, bare-host lanes to coarse rusage accounting"
                ) in out
+        assert code == 0
+
+    def test_docker_ps_failure_is_indeterminate_not_daemon_absence(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        real_run = subprocess.run
+
+        def fail_ps(argv, *args, **kwargs):
+            if len(argv) > 1 and argv[1] == "ps":
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="",
+                    stderr="permission denied while connecting to Docker\n")
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        out = capsys.readouterr().out
+        profiler_line = next(
+            line for line in out.splitlines() if "profiler daemon" in line)
+        assert "state could not be determined" in profiler_line
+        assert "permission denied" in profiler_line
+        assert "not running" not in profiler_line
+        assert "ciu up" not in profiler_line
         assert code == 0
 
     def test_daemon_running_but_ctl_version_fails_warns_by_name(
@@ -14912,6 +14958,33 @@ class TestBareHostProfilingWiring:
         assert run_gate.main(["suite"]) == 0
         assert "baseline ? MiB" in capsys.readouterr().out
 
+    def test_daemon_start_with_null_optional_target_still_stops_session(
+            self, tmp_path, monkeypatch):
+        """`target` is optional response metadata.  A valid session with
+        JSON null there must remain a daemon session and reach exactly one
+        stop; it must not crash after start and silently leak the session."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log = fake_docker(tmp_path, monkeypatch)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        start = json.loads((RG55_FIXTURES / "start-v1.json").read_text())
+        start["target"] = None
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           version=(version, None, None),
+                           start=(json.dumps(start), None, None),
+                           stop=(stop, None, None))
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        assert run_gate.main(["suite"]) == 0
+        ctl = [c for c in docker_execs(log) if len(c) > 4]
+        assert len([c for c in ctl if c[4] == "start"]) == 1
+        assert len([c for c in ctl if c[4] == "stop"]) == 1
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"]["method"] == "daemon"
+        assert latest["profile_error"] is None
+
     def test_rusage_mode_never_injects_a_token(self, tmp_path, monkeypatch):
         # The rusage path starts no daemon session for a token to identify
         # -- nothing would ever read it -- so, unlike the daemon path, the
@@ -14964,7 +15037,8 @@ class TestBareHostProfilingWiring:
         assert latest["resources"]["method"] == "rusage"
         assert latest["profile_error"] is None
 
-    def test_wait4_raising_never_aborts_the_lane(self, tmp_path, monkeypatch):
+    def test_wait4_raising_never_aborts_the_lane(
+            self, tmp_path, monkeypatch, capsys):
         # R-36h's "OR the wait4 calls" clause (RW-43/B1: the rusage path
         # now reaps its own child via `os.wait4`, not a before/after process
         # accounting bracket around a separately-launched `subprocess.run`) -- the
@@ -14987,7 +15061,11 @@ class TestBareHostProfilingWiring:
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
         assert "not running in a container" in latest["profile_error"]
-        assert "wait4 exploded" not in latest["profile_error"]
+        assert "wait4 exploded" in latest["profile_error"]
+        err = capsys.readouterr().err
+        assert "wait4 exploded" in err
+        assert "no profile recorded" in err
+        assert "coarse rusage sampling only" not in err
 
     def test_returncode_is_set_after_wait4_reaps_the_child(
             self, tmp_path, monkeypatch):
@@ -15264,7 +15342,8 @@ class TestBareHostRusageArithmetic:
         ru = _FakeRusage(ru_maxrss=12345, ru_utime=1.25, ru_stime=0.5)
         state = {"mode": "rusage", "warning": None}
         result = run_gate.finish_bare_host_profiling(
-            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z",
+            2.0)
         assert result["profile_error"] is None
         assert result["profile_ref"] is None
         res = result["resources"]
@@ -15296,7 +15375,8 @@ class TestBareHostRusageArithmetic:
         # `run_bare_host_lane` relies on to degrade cleanly).
         state = {"mode": "rusage", "warning": "planted: wait4 failed"}
         result = run_gate.finish_bare_host_profiling(
-            state, None, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+            state, None, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z",
+            2.0)
         assert result["resources"] is None
         assert result["profile_error"] == "planted: wait4 failed"
         assert result["profile_ref"] is None
@@ -15305,9 +15385,20 @@ class TestBareHostRusageArithmetic:
         ru = _FakeRusage(ru_maxrss=100, ru_utime=0.0, ru_stime=0.0)
         state = {"mode": "rusage", "warning": None}
         result = run_gate.finish_bare_host_profiling(
-            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z")
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z",
+            0.0)
         assert result["resources"]["duration_seconds"] == 0.0
         assert result["resources"]["cpu"]["cores_avg"] is None
+
+    def test_subsecond_duration_uses_the_measured_elapsed_time(self):
+        ru = _FakeRusage(ru_maxrss=100, ru_utime=0.15, ru_stime=0.05)
+        state = {"mode": "rusage", "warning": None}
+        result = run_gate.finish_bare_host_profiling(
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:00Z",
+            0.375)
+        resources = result["resources"]
+        assert resources["duration_seconds"] == 0.375
+        assert resources["cpu"]["cores_avg"] == pytest.approx(0.2 / 0.375)
 
     # -- RW-46b: memory.floor_bytes / memory.peak_at_floor -----------------
 
@@ -15320,7 +15411,8 @@ class TestBareHostRusageArithmetic:
         ru = _FakeRusage(ru_maxrss=12345, ru_utime=1.0, ru_stime=0.0)
         state = {"mode": "rusage", "warning": None}
         result = run_gate.finish_bare_host_profiling(
-            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z")
+            state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:02Z",
+            2.0)
         mem = result["resources"]["memory"]
         assert mem["floor_bytes"] is None
         assert mem["peak_at_floor"] is None
@@ -15336,7 +15428,7 @@ class TestBareHostRusageArithmetic:
             state = {"mode": "rusage", "warning": None}
             result = run_gate.finish_bare_host_profiling(
                 state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:01Z",
-                floor)
+                1.0, floor)
             mem = result["resources"]["memory"]
             assert mem["floor_bytes"] == floor
             assert mem["peak_at_floor"] is True, (maxrss_kib, floor)
@@ -15347,7 +15439,7 @@ class TestBareHostRusageArithmetic:
         state = {"mode": "rusage", "warning": None}
         result = run_gate.finish_bare_host_profiling(
             state, ru, "2026-09-12T10:00:00Z", "2026-09-12T10:00:01Z",
-            11 * 1024 * 1024)
+            1.0, 11 * 1024 * 1024)
         mem = result["resources"]["memory"]
         assert mem["floor_bytes"] == 11 * 1024 * 1024
         assert mem["peak_at_floor"] is False
@@ -15467,32 +15559,75 @@ class TestResolveSelfContainerIdDirectBranches:
         assert "returned no id" in reason
 
     def test_docker_inspect_captures_stdout_and_stderr(self, monkeypatch):
-        # The inspect response is read from both streams on its success and
-        # failure paths, so the subprocess must capture both of them.
+        # Both identity comparisons are argv-safe subprocesses whose output
+        # must be captured: inspect resolves the candidate object, then exec
+        # reads that object's mount namespace for the same-object proof.
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
-        cp = subprocess.CompletedProcess(["docker"], 0,
-                                         stdout="sha256:realid789\n", stderr="")
-        seen = {}
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+        seen = []
 
-        def fake_run(*args, **kwargs):
-            seen.update(kwargs)
-            return cp
+        def fake_run(argv, **kwargs):
+            seen.append((argv, kwargs))
+            if argv[1] == "inspect":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=RG55_CONTAINER_ID + "\n", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 0, stdout="mnt:[4026534299]\n", stderr="")
 
         monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
         container_id, reason = run_gate.resolve_self_container_id("docker")
-        assert container_id == "sha256:realid789"
+        assert container_id == RG55_CONTAINER_ID
         assert reason is None
-        assert seen["capture_output"] is True
-        assert seen["text"] is True
+        assert len(seen) == 2
+        assert all(kwargs["capture_output"] is True for _, kwargs in seen)
+        assert all(kwargs["text"] is True for _, kwargs in seen)
+        assert seen[1][0] == [
+            "docker", "exec", RG55_CONTAINER_ID, "/usr/bin/readlink",
+            "/proc/self/ns/mnt"]
 
     def test_docker_inspect_success_returns_the_real_id(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
-        cp = subprocess.CompletedProcess(["docker"], 0,
-                                         stdout="sha256:realid789\n", stderr="")
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+
+        def fake_run(argv, **kwargs):
+            stdout = (RG55_CONTAINER_ID + "\n" if argv[1] == "inspect"
+                      else "mnt:[4026534299]\n")
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout,
+                                               stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id == RG55_CONTAINER_ID
+        assert reason is None
+
+    def test_hostname_collision_with_another_container_is_rejected(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+
+        def fake_run(argv, **kwargs):
+            stdout = (RG55_CONTAINER_ID + "\n" if argv[1] == "inspect"
+                      else "mnt:[4026534999]\n")
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout,
+                                               stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "does not identify this process's container" in reason
+
+    def test_malformed_inspect_id_is_not_accepted_as_an_object_identity(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(
+            ["docker"], 0, stdout="sha256:not-an-id\n", stderr="")
         monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
         container_id, reason = run_gate.resolve_self_container_id("docker")
-        assert container_id == "sha256:realid789"
-        assert reason is None
+        assert container_id is None
+        assert "malformed container id" in reason
 
 
 class TestEphemeralProfilingWiring:
@@ -15690,6 +15825,32 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            stop=('{"ok": true, "contract": 1}', None, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.stop("s-20260912T101500Z-9f01")
+        assert doc is None
+        assert reason is not None and "summary" in reason
+
+    @pytest.mark.parametrize("session", [None, "", 7, {}])
+    def test_start_with_unusable_session_value_degrades(
+            self, tmp_path, monkeypatch, session):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        body = json.dumps({"ok": True, "contract": 1, "session": session})
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           start=(body, None, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.start(RG55_CONTAINER_ID, "container")
+        assert doc is None
+        assert reason is not None and "session" in reason
+
+    @pytest.mark.parametrize("summary", [None, "", 7, []])
+    def test_stop_with_non_object_summary_degrades(
+            self, tmp_path, monkeypatch, summary):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        body = json.dumps({"ok": True, "contract": 1, "summary": summary})
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           stop=(body, None, None))
         client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
