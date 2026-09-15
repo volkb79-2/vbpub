@@ -43,11 +43,16 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
             ;;
           run)
             : > "$state/mounts"
+            : > "$state/environment"
             while (($#)); do
               case "$1" in
                 -v)
                   value=$2
                   printf '%s -> %s\\n' "${value%%:*}" "${value#*:}" >> "$state/mounts"
+                  shift 2
+                  ;;
+                -e)
+                  printf '%s\\n' "$2" >> "$state/environment"
                   shift 2
                   ;;
                 --cgroup-parent)
@@ -74,6 +79,8 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
               printf '1003|%s|3000000000|%s\\n' "$(<"$state/cgroup")" "$(<"$state/workdir")"
             elif [[ $* == *'.Mounts'* ]]; then
               sed -n '1,$p' "$state/mounts"
+            elif [[ $* == *'.Config.Env'* ]]; then
+              sed -n '1,$p' "$state/environment"
             else
               printf '[{"Id":"fake"}]\\n'
             fi
@@ -155,16 +162,18 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     assert "logs tester-unified-contract-test" in calls
     assert "rm tester-unified-contract-test" in calls
 
-    mounts = (log.parent / "mounts").read_text().splitlines()
-    temp_sources = [line.removesuffix(" -> /tmp") for line in mounts
-                    if line.endswith(" -> /tmp")]
-    assert len(temp_sources) == 1
+    environment = (log.parent / "environment").read_text().splitlines()
+    temp_values = [line.removeprefix("TMPDIR=") for line in environment
+                   if line.startswith("TMPDIR=")]
+    assert len(temp_values) == 1
     worktree_relative = REPO.relative_to(Path(workspace))
     expected_temp_parent = (
-        Path(host_workspace) / worktree_relative
+        Path(workspace) / worktree_relative
         / ".assay" / "tester-unified-tmp"
     )
-    assert temp_sources[0].startswith(f"{expected_temp_parent}/run.")
+    assert temp_values[0].startswith(f"{expected_temp_parent}/run.")
+    assert f"TMP={temp_values[0]}" in environment
+    assert f"TEMP={temp_values[0]}" in environment
     run_evidence = evidence / "tester-unified-contract-test"
     assert (run_evidence / "container.inspect.json").read_text().startswith("[")
     assert (run_evidence / "docker-wait.exit").read_text() == "0\n"

@@ -12,7 +12,7 @@ tester-unified/run --workdir run-gate-project -- ./run-gate.py --base BASE_SHA a
 
 For a linked worktree, invoke that worktree's launcher or give an absolute
 workdir. The launcher derives the enclosing workspace bind and records the
-exact commit and container facts it used.
+exact commit, temp root, and container facts it used.
 
 To place evidence somewhere else, use an explicit path:
 

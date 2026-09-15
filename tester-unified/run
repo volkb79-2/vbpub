@@ -191,9 +191,11 @@ container_id=$("$docker_bin" run -d \
     --group-add "$socket_gid" \
     -e "CGROUP_PARENT_DEV_BACKGROUND=$cgroup_parent" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    -e "TMPDIR=$tmp_dir" \
+    -e "TMP=$tmp_dir" \
+    -e "TEMP=$tmp_dir" \
     -v "$host_workspace:$host_workspace" \
     -v "$host_workspace:$workspace_root" \
-    -v "$host_tmp:/tmp" \
     -v "$docker_socket:$docker_socket" \
     -w "$workdir" \
     "$image" \
@@ -217,6 +219,8 @@ fi
 
 mounts=$("$docker_bin" inspect "$name" --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}') \
     || abort_started "could not inspect the accepted launch mounts"
+accepted_env=$("$docker_bin" inspect "$name" --format '{{range .Config.Env}}{{println .}}{{end}}') \
+    || abort_started "could not inspect the accepted launch environment"
 require_mount() {
     local wanted="$1 -> $2" line
     while IFS= read -r line; do
@@ -227,10 +231,21 @@ require_mount() {
 }
 if ! require_mount "$host_workspace" "$host_workspace" \
     || ! require_mount "$host_workspace" "$workspace_root" \
-    || ! require_mount "$host_tmp" /tmp \
     || ! require_mount "$docker_socket" "$docker_socket"; then
     abort_started "Docker did not accept the complete mount topology"
 fi
+require_environment() {
+    local wanted=$1 line
+    while IFS= read -r line; do
+        [[ $line == "$wanted" ]] && return 0
+    done <<<"$accepted_env"
+    return 1
+}
+for expected_env in "TMPDIR=$tmp_dir" "TMP=$tmp_dir" "TEMP=$tmp_dir"; do
+    if ! require_environment "$expected_env"; then
+        abort_started "Docker did not accept required environment '$expected_env'"
+    fi
+done
 
 {
     printf 'container_id=%s\n' "$container_id"
@@ -243,6 +258,7 @@ fi
     printf 'git_head=%s\n' "$(git -C "$git_root" rev-parse HEAD)"
     printf 'workspace_target=%s\n' "$workspace_root"
     printf 'workspace_host_fsroot=%s\n' "$host_workspace"
+    printf 'temp_container_path=%s\n' "$tmp_dir"
     printf 'temp_host_path=%s\n' "$host_tmp"
 } > "$run_evidence/launch.txt"
 "$docker_bin" inspect "$name" > "$run_evidence/container.inspect.json" \
