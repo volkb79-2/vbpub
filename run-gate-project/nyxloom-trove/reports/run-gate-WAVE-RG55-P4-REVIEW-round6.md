@@ -59,3 +59,26 @@ failures, not product failures or passes. They are preserved under
 `.assay/final-gates-0a875494/`; no final package, coverage, or mutation verdict
 is claimed. Creating this review record changes the judged tree, so all earlier
 per-tree Assay evidence remains historical only.
+
+## B9 — high — moving-progress oracle depends on scheduler timing
+
+- Location: `run-gate-project/tests/test_run_gate.py`,
+  `TestStallEndToEnd.test_a_moving_lane_is_never_stopped`.
+- Observable failure: the test sets a 1-second stall threshold, asks a daemon
+  thread to append every 0.1 seconds, and assumes it will be scheduled often
+  enough while the main thread and fake Docker subprocess are active. Under
+  the contained Assay R1 snapshot it advanced only to candidate 3, then the
+  real watch correctly observed one second of silence and stopped the lane.
+- Reproduction: canonical container `rg55-p4-r1-b3f3d5c3-20260915`, exact
+  tree `b3f3d5c30612cf175b56ecacef2dadd021f4e5ae`, returned Docker wait 1 and
+  `TESTER_UNIFIED_JOB_EXIT=1`; R1 reported one failure, 1193 passes, and 3
+  skips. The failure text says candidate 3/172 was silent for 1 second.
+- Behavioral consequence: host contention, rather than the liveness contract,
+  can flip the release verdict. This violates the packet's explicit oracle
+  rule A and the contention-agnostic verdict requirement.
+- Exact prescription: synchronize the writer with the watch's real poll
+  boundary. Each liveness evaluation must wait (with a 60-second suite
+  failsafe only) for a real progress append before invoking the shipped poll;
+  then release the fake container and assert the observable zero exit and
+  absence of a STALLED result. Do not enlarge the 1-second threshold or rely
+  on a faster append interval.
