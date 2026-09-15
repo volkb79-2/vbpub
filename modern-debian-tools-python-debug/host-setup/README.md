@@ -474,8 +474,10 @@ cannot express the next:
    sub-ceilings on `dev-gates.slice`/`dev-buildkitd.slice`. That makes the
    configured static unit-file values authoritative again instead of allowing
    stale measured values to survive; unrelated cgroup properties are untouched.
-   Matched containers receive **no guessed per-container IO cap** until a valid
-   baseline is available. A missing or invalid measurement is indeterminate;
+   On a no-baseline or no-device transition, MDT also clears its previously
+   applied transient caps from currently matched containers; otherwise an old
+   cap would remain indefinitely. Matched containers then receive **no guessed
+   per-container IO cap** until a valid baseline is available. A missing or invalid measurement is indeterminate;
    applying a host-independent 200/400-IOPS, 30-MiB/s fallback can turn normal
    interactive IO into D-state stalls. The Docker-events watcher remains
    connected but skips cap application, and the periodic sweep applies measured

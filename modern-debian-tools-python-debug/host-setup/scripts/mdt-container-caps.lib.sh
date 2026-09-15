@@ -23,6 +23,23 @@ _mdt_load_config() {
   IO_BASELINE_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
 }
 
+# _mdt_scope_path <container-id>: resolve the transient Docker scope while
+# keeping the namespace-sensitive proc root injectable for tests.  The live
+# default is /proc; tests use a private tree because a container cannot safely
+# fabricate another process's cgroup membership.
+_mdt_scope_path() {
+  local cid="$1" pid scope_rel scope
+  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || return 1
+  { [ -z "$pid" ] || [ "$pid" = "0" ]; } && return 1
+  scope_rel=$(awk -F: '/^0::/{print $3; exit}' "${MDT_PROC_ROOT:-/proc}/$pid/cgroup" 2>/dev/null)
+  [ -n "$scope_rel" ] && [ "$scope_rel" != / ] || return 1
+  scope="${CG:-/sys/fs/cgroup}$scope_rel"
+  # buildkitd nests sub-cgroups INSIDE its container; limits on the scope
+  # cover the whole subtree.
+  case "$scope" in *".scope/"*) scope="${scope%%.scope/*}.scope" ;; esac
+  printf '%s\n' "$scope"
+}
+
 # _mdt_discover_io_dev_path: sets IO_DEV_PATH if not already set. Deliberately
 # does NOT strip partition/mapper indirection — caps on the partition node
 # work; set IO_DEV_PATH yourself for the whole-disk node.
@@ -114,6 +131,11 @@ _mdt_derive_watcher_caps() {
     log "per-container IO caps: disabled — no current baseline; run mdt-io-baseline.py before enabling measured caps"
     WATCHER_SKIP=1
   fi
+  if [ -z "${IO_DEV_PATH:-}" ]; then
+    log "per-container IO caps: disabled — no host IO device was discovered"
+    WATCHER_SRC="disabled — no host IO device"
+    WATCHER_SKIP=1
+  fi
   if [ "$WATCHER_SKIP" = 0 ] && {
        [ "$WATCHER_RIOPS" -lt 1 ] || [ "$WATCHER_WIOPS" -lt 1 ] \
        || [ "$WATCHER_RBPS" -lt 1 ] || [ "$WATCHER_WBPS" -lt 1 ];
@@ -139,19 +161,13 @@ _mdt_match() {
 # capping its peak rate is the goal, making it lose every IO race to a
 # sibling is not.
 _mdt_apply_container_caps() {
-  local cid="$1" label="$2" deprio="${3:-0}" pid scope scope_rel unit props=()
-  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || return 0
-  { [ -z "$pid" ] || [ "$pid" = "0" ]; } && return 0
+  local cid="$1" label="$2" deprio="${3:-0}" scope unit props=()
   [ -n "${IO_DEV_PATH:-}" ] || { log "WARN: $label ($cid): no io device — skipped"; return 0; }
-  scope_rel=$(awk -F: '/^0::/{print $3; exit}' "/proc/$pid/cgroup" 2>/dev/null)
-  if [ -z "$scope_rel" ] || [ "$scope_rel" = / ]; then
-    log "WARN: $label ($cid): no usable unified cgroup path in /proc/$pid/cgroup — skipped; a later sweep will retry"
+  scope=$(_mdt_scope_path "$cid")
+  if [ -z "$scope" ]; then
+    log "WARN: $label ($cid): no usable unified cgroup path — skipped; a later sweep will retry"
     return 0
   fi
-  scope="$CG$scope_rel"
-  # buildkitd nests sub-cgroups INSIDE its container; trim to the scope
-  # component — limits on the scope cover the whole subtree.
-  case "$scope" in *".scope/"*) scope="${scope%%.scope/*}.scope" ;; esac
   for _scope_attempt in 1 2 3 4 5 6 7 8 9 10; do
     [ -d "$scope" ] && break
     sleep 0.1
@@ -176,6 +192,46 @@ _mdt_apply_container_caps() {
   # systemd does not manage this attribute the write survives daemon-reload.
   [ "$deprio" = 1 ] && { echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null || true; }
   return 0
+}
+
+# Remove only the IO properties this library owns from currently matching
+# containers.  This is required when a baseline becomes invalid or the host
+# device cannot be discovered: simply skipping the next apply would leave an
+# old transient io.max behind indefinitely, which was the direct cause of the
+# observed interactive D-state stalls.  The matching categories are MDT's
+# ownership boundary; unrelated containers and properties remain untouched.
+_mdt_clear_container_caps() {
+  local cid img name scope unit deprio label props=()
+  for cid in $(docker ps -q 2>/dev/null); do
+    img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
+    name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | tr -d '/' || true)
+    deprio=0
+    if _mdt_match "$img" "$WATCHER_TESTRUNNER_IMAGE_PATTERNS"; then
+      label="bench:$name"
+      deprio=1
+    elif _mdt_match "$name" "$WATCHER_BUILDKIT_NAME_PATTERNS"; then
+      label="buildkit:$name"
+      deprio=1
+    elif _mdt_match "$name" "$WATCHER_DEVCONTAINER_NAME_PATTERNS"; then
+      label="devcontainer:$name"
+    else
+      continue
+    fi
+    scope=$(_mdt_scope_path "$cid")
+    [ -n "$scope" ] || { log "WARN: $label ($cid): no usable cgroup scope while clearing stale IO caps"; continue; }
+    [ -d "$scope" ] || { log "WARN: $label ($cid): cgroup scope $scope is not present while clearing stale IO caps"; continue; }
+    unit="${scope##*/}"
+    props=(IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=)
+    [ "$deprio" = 1 ] && props+=(IOWeight=)
+    if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
+      # io.bfq.weight is not a systemd property. Restore the normal default
+      # after removing MDT's bench/buildkit deprioritisation.
+      [ "$deprio" = 1 ] && printf 'default 100\n' > "$scope/io.bfq.weight" 2>/dev/null || true
+      log "$label ($cid): cleared MDT-owned transient IO caps"
+    else
+      log "WARN: $label ($cid): failed to clear MDT-owned transient IO caps"
+    fi
+  done
 }
 
 # _mdt_classify_and_apply <container-id> — inspects the container's image and

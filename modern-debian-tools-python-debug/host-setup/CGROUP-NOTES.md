@@ -95,8 +95,10 @@ or no-device sweep, MDT also clears only its runtime `io.max` properties on
 `dev.slice` and its runtime IOPS sub-ceilings on `dev-gates.slice` and
 `dev-buildkitd.slice`, using empty systemd assignments so stale measured values
 cannot override the unit-file statics. It does not revert or clear unrelated
-cgroup properties. Matched containers receive **no guessed per-container IO
-cap** until a valid baseline exists. A missing or invalid measurement is
+cgroup properties. On the same transition it clears MDT's previously applied
+transient IO properties from currently matched containers; otherwise an old
+cap would remain indefinitely. Matched containers then receive **no guessed
+per-container IO cap** until a valid baseline exists. A missing or invalid measurement is
 indeterminate; applying a host-independent 200/400-IOPS, 30-MiB/s fallback can
 turn normal interactive IO into D-state stalls. The Docker-events watcher
 remains connected but skips cap application, and the periodic sweep applies

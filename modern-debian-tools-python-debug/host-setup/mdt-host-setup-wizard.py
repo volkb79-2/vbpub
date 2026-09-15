@@ -440,9 +440,12 @@ def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
     wizard is opened. It is shown as context, but using it as a hard sizing
     input would make a busy host propose unusably small limits and would make
     the same hardware produce different policy every minute. The proportions
-    below are the host policy: they leave overlap between tiers.  Each child
-    control is independent; only the ordering within one slice is a hard
-    relationship, while parent/child differences are review information.
+    below are the host policy: they leave overlap between tiers.  Child
+    ``MemoryLow`` is intentionally not proposed on a fresh configuration
+    because the parent ``MemoryLow`` is unset by default; a protection value
+    that cannot reach through its ancestor is a misleading default.  Each
+    child control is independent; only the ordering within one slice is a
+    hard relationship, while parent/child differences are review information.
     """
     def frac(percent: int) -> str:
         return kib_to_size_str(max(1, total_kib * percent // 100))
@@ -450,16 +453,12 @@ def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
     proposals = {
         "DEV_MEMORY_HIGH": kib_to_size_str(max(1, total_kib * 75 // 100)),
         "DEV_MEMORY_MAX": kib_to_size_str(total_kib),
-        "DEV_INTERACTIVE_MEMORY_LOW": frac(15),
         "DEV_INTERACTIVE_MEMORY_HIGH": frac(20),
         "DEV_INTERACTIVE_MEMORY_MAX": frac(32),
-        "DEV_BACKGROUND_MEMORY_LOW": frac(15),
         "DEV_BACKGROUND_MEMORY_HIGH": frac(32),
         "DEV_BACKGROUND_MEMORY_MAX": frac(50),
-        "DEV_GATES_MEMORY_LOW": frac(5),
         "DEV_GATES_MEMORY_HIGH": frac(5),
         "DEV_GATES_MEMORY_MAX": frac(10),
-        "DEV_BUILDKITD_MEMORY_LOW": frac(10),
         "DEV_BUILDKITD_MEMORY_HIGH": frac(10),
         "DEV_BUILDKITD_MEMORY_MAX": frac(12),
     }
@@ -632,7 +631,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_SWAP_MAX": validate_size_or_auto,
         "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
         "DEV_ZSWAP_WRITEBACK": validate_yes_no,
-        "DEV_BUILDKITD_IMAGE": validate_nonempty,
+        "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
@@ -713,27 +712,26 @@ def _config_value_validators() -> dict[str, Validator]:
     return validators
 
 
-def validate_host_setup_config(
-    config_path: Path,
-    example_path: Path,
-    meminfo_path: Path,
+def validate_host_setup_values(
+    values: dict[str, str],
+    example: dict[str, str],
+    meminfo: dict[str, int],
+    *,
+    config_label: str,
+    example_label: str,
+    meminfo_label: str,
 ) -> list[str]:
-    """Apply wizard-equivalent checks to a manually supplied config.
+    """Apply the complete data-only validator to already parsed values.
 
-    This is intentionally data-only: it reads the config without sourcing it,
-    so install.sh can fail before any host mutation or shell expansion occurs.
+    Keeping this separate from file reading lets both ``--validate-config``
+    and the standalone wizard validate the exact candidate text that is about
+    to be written.  In particular, values preserved from an existing config
+    are not trusted merely because the current prompt did not show them.
     """
-    try:
-        example = parse_env_file(example_path.read_text(encoding="utf-8"), strict=True)
-        values = parse_env_file(config_path.read_text(encoding="utf-8"), strict=True)
-        meminfo = parse_meminfo(meminfo_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise TemplateError(f"cannot read host-setup validation input: {exc}") from exc
-
     missing = sorted(set(example) - set(values))
     if missing:
         raise TemplateError(
-            f"{config_path} is missing keys from {example_path}: {', '.join(missing)}"
+            f"{config_label} is missing keys from {example_label}: {', '.join(missing)}"
         )
 
     validators = _config_value_validators()
@@ -756,7 +754,7 @@ def validate_host_setup_config(
     total_kib = meminfo.get("MemTotal", 0)
     if total_kib <= 0:
         raise TemplateError(
-            f"{meminfo_path} has no positive MemTotal; cannot validate host-sized memory policy"
+            f"{meminfo_label} has no positive MemTotal; cannot validate host-sized memory policy"
         )
     relationship_errors = memory_relationship_errors(values)
     if relationship_errors:
@@ -767,6 +765,32 @@ def validate_host_setup_config(
     # Parent/child High/Max differences are review-only observations.  Return
     # them so the CLI can report them without turning them into a refusal.
     return memory_review_warnings(values)
+
+
+def validate_host_setup_config(
+    config_path: Path,
+    example_path: Path,
+    meminfo_path: Path,
+) -> list[str]:
+    """Apply wizard-equivalent checks to a manually supplied config.
+
+    This is intentionally data-only: it reads the config without sourcing it,
+    so install.sh can fail before any host mutation or shell expansion occurs.
+    """
+    try:
+        example = parse_env_file(example_path.read_text(encoding="utf-8"), strict=True)
+        values = parse_env_file(config_path.read_text(encoding="utf-8"), strict=True)
+        meminfo = parse_meminfo(meminfo_path.read_text(encoding="utf-8"))
+    except (OSError, TemplateError) as exc:
+        raise TemplateError(f"cannot read host-setup validation input: {exc}") from exc
+    return validate_host_setup_values(
+        values,
+        example,
+        meminfo,
+        config_label=str(config_path),
+        example_label=str(example_path),
+        meminfo_label=str(meminfo_path),
+    )
 
 
 def migrate_legacy_config_keys(cfg_current: dict[str, str]) -> dict[str, str]:
@@ -1127,10 +1151,19 @@ def validate_size_or_auto(value: str) -> str | None:
 
 
 def validate_nonempty(value: str) -> str | None:
-    """DEV_BUILDKITD_IMAGE. A deliberately shallow check: a real OCI
-    reference grammar here would reject perfectly workable registry/tag/digest
-    forms for no gain, and the value is handed straight to docker, which has
-    its own (authoritative) parser. Non-empty is the useful bar."""
+    """Validate a value whose consumer owns the detailed grammar.
+
+    The prompt label identifies whether this is an image, glob, or duration;
+    the shared validator must not claim that every empty value is an image
+    reference (that made preserved ``WATCHER_INTERVAL=`` failures misleading).
+    """
+    if not value:
+        return "a non-empty value is required"
+    return None
+
+
+def validate_buildkit_image(value: str) -> str | None:
+    """Require an image reference while leaving its grammar to Docker."""
     if not value:
         return "an image reference is required (e.g. 'moby/buildkit:buildx-stable-1-rootless')"
     return None
@@ -1677,10 +1710,11 @@ def step_slice_first_resources(
     out("Starting proposals (review before accepting):")
     for line in (
         "dev.slice: MemoryHigh=75% / MemoryMax=100% of physical RAM",
-        "dev-interactive.slice: MemoryLow/High/Max=15% / 20% / 32%",
-        "dev-background.slice: MemoryLow/High/Max=15% / 32% / 50%",
-        "dev-gates.slice: MemoryLow/High/Max=5% / 5% / 10%",
-        "dev-buildkitd.slice: MemoryLow/High/Max=10% / 10% / 12%",
+        "dev-interactive.slice: MemoryLow=unset / High=20% / Max=32%",
+        "dev-background.slice: MemoryLow=unset / High=32% / Max=50%",
+        "dev-gates.slice: MemoryLow=unset / High=5% / Max=10%",
+        "dev-buildkitd.slice: MemoryLow=unset / High=10% / Max=12%",
+        "MemoryLow is unset because the parent MemoryLow is unset; configure the parent first if soft protection is wanted.",
         "These are independent slice controls; the wizard does not add sibling values together.",
     ):
         out(f"- {line}", hang="  ")
@@ -1912,7 +1946,7 @@ def step_slice_first_resources(
                 out(f"- {bullet}", hang="  ")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(
                 "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
-                cfg_current, example_defaults, validate=validate_nonempty,
+                cfg_current, example_defaults, validate=validate_buildkit_image,
             )
             out("Solver parallelism:")
             for bullet in (
@@ -2012,6 +2046,7 @@ def explain_install_map() -> None:
     out("What each part does:")
     for bullet in (
         "`dev*.slice` units — static CPU, memory, swap, weights, and tight IO fallback.",
+        "`dev-gates.slice` is ready for gate consumers; run-gate, cmru tester-gate, and srdm still use `dev-background.slice` until they adopt `CGROUP_PARENT_DEV_GATES`.",
         "`mdt-host-slices.service` + timer — measured root IO caps, zswap fallback, sweep, and audit.",
         "`mdt-io-cap-watcher.service` — Docker start events -> immediate IO caps.",
         "Transient scopes and unreliable Buildx placement are why this watcher exists; the sweep is its backstop.",
@@ -2202,11 +2237,20 @@ def main(argv: list[str] | None = None) -> int:
     cfg_current: dict[str, str] = {}
     if args.output.exists():
         try:
-            cfg_current = parse_env_file(args.output.read_text())
+            cfg_current = parse_env_file(args.output.read_text(), strict=True)
             out(f"Found an existing `{args.output}` -- using its values as defaults where they are actually set.")
             cfg_current = migrate_legacy_config_keys(cfg_current)
-        except OSError as exc:
-            out(f"WARN: could not read the existing `{args.output}`: {exc}")
+        except (OSError, TemplateError) as exc:
+            print(
+                f"ERROR: could not safely read existing `{args.output}`: {exc}",
+                file=sys.stderr,
+            )
+            print(
+                "No configuration was written. Repair the existing file or use "
+                "install.sh --wizard --force after reviewing the replacement.",
+                file=sys.stderr,
+            )
+            return 1
 
     try:
         meminfo = parse_meminfo(args.meminfo_path.read_text())
@@ -2320,6 +2364,33 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.flush()
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+
+    # Do the same complete validation used by install.sh against the exact
+    # candidate text before touching the requested output.  Prompt validators
+    # cover answers shown in this run, but an existing config also contributes
+    # keys that are not prompted (watcher patterns, interval, and other future
+    # additions); those preserved values must not bypass validation in
+    # standalone mode.
+    try:
+        candidate_values = parse_env_file(text, strict=True)
+        final_warnings = validate_host_setup_values(
+            candidate_values,
+            example_defaults,
+            meminfo,
+            config_label=str(args.output),
+            example_label=str(args.example),
+            meminfo_label=str(args.meminfo_path),
+        )
+    except (TemplateError, ValueError) as exc:
+        sys.stdout.flush()
+        print(f"ERROR: candidate validation failed: {exc}", file=sys.stderr)
+        print("No configuration was written; correct the existing values or re-run with a clean candidate.", file=sys.stderr)
+        return 1
+
+    if final_warnings:
+        out("Final review warnings (does not block):")
+        for warning in final_warnings:
+            out(f"- {warning}", hang="  ")
 
     try:
         write_atomic(args.output, text)

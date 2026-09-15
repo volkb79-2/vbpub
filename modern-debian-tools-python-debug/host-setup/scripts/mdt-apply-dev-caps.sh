@@ -220,14 +220,18 @@ done
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   # Per-container ceilings: WATCHER_IO_CAP_PCT% of the current baseline.
   # Without a valid baseline _mdt_derive_watcher_caps sets WATCHER_SKIP=1, so
-  # this sweep leaves transient IO properties unset rather than inventing a
-  # host-independent cap that could stall an interactive container. Applies to
-  # every category this sweep matches below (test-runner/"bench", buildkit,
-  # devcontainer) — one percentage, three container categories.
+  # this sweep clears old MDT-owned transient IO properties rather than
+  # inventing a host-independent cap that could stall an interactive
+  # container. With a valid baseline it applies one percentage to every
+  # category below (test-runner/"bench", buildkit, devcontainer).
   _mdt_derive_watcher_caps
-  for c in $([ "${WATCHER_SKIP:-0}" = 0 ] && docker ps -q 2>/dev/null); do
-    _mdt_classify_and_apply "$c"
-  done
+  if [ "${WATCHER_SKIP:-0}" = 1 ]; then
+    _mdt_clear_container_caps
+  else
+    for c in $(docker ps -q 2>/dev/null); do
+      _mdt_classify_and_apply "$c"
+    done
+  fi
 else
   log "docker unavailable — skipped per-container sweep"
 fi

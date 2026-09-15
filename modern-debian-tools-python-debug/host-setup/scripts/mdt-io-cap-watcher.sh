@@ -66,10 +66,12 @@ _mdt_load_baseline
 _mdt_derive_watcher_caps
 
 if [ "${WATCHER_SKIP:-0}" = 1 ]; then
-  # Keep the Docker-events connection alive without imposing an invented
-  # transient cap. The periodic host-slices service will apply measured caps
-  # once a valid baseline exists; an operator who creates the baseline later
-  # can restart this service to refresh its one-time configuration load.
+  _mdt_clear_container_caps
+  # Remove caps left by an earlier measured run, then keep the Docker-events
+  # connection alive without imposing an invented transient cap. The periodic
+  # host-slices service will apply measured caps once a valid baseline exists;
+  # an operator who creates the baseline later can restart this service to
+  # refresh its one-time configuration load.
   log "no current baseline — watching Docker events, but per-container IO caps remain disabled until the baseline is installed and this service is restarted"
 fi
 

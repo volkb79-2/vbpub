@@ -358,6 +358,7 @@ esac
         with tempfile.TemporaryDirectory() as directory:
             env = os.environ.copy()
             env.update({
+                "IO_DEV_PATH": "/dev/fake",
                 "CONF": str(Path(directory) / "missing-config"),
                 "IO_BASELINE_ENV": str(Path(directory) / "missing-baseline"),
             })
@@ -436,11 +437,36 @@ exit 0
             )
             findmnt.chmod(0o755)
             docker = fake_bin / "docker"
-            docker.write_text("#!/usr/bin/env bash\nexit 1\n")
+            docker.write_text(
+                """#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  info) exit 0 ;;
+  ps) echo stale-container-id ;;
+  inspect)
+    template="${3:-}"
+    case "$template" in
+      *State.Pid*) echo 123 ;;
+      *Config.Image*) echo test-runner:fake ;;
+      *Name*) echo /dstdns-devcontainer-vb ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+"""
+            )
             docker.chmod(0o755)
+            proc = root / "proc" / "123"
+            proc.mkdir(parents=True)
+            (proc / "cgroup").write_text("0::/dev.slice/dev-interactive.slice/docker-stale.scope\n")
+            scope = root / "cgroup/dev.slice/dev-interactive.slice/docker-stale.scope"
+            scope.mkdir(parents=True)
+            (scope / "io.bfq.weight").write_text("default 1\n")
             env = os.environ.copy()
             env.update({
                 "CG": str(root / "cgroup"),
+                "MDT_PROC_ROOT": str(root / "proc"),
                 "CONF": str(config),
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
                 "STATE_PATH": str(state),
@@ -459,6 +485,12 @@ exit 0
                     "dev-gates.slice|MemoryMax|234567\n"
                     "dev-buildkitd.slice|IOReadIOPSMax|stale-buildkit-read\n"
                     "dev-buildkitd.slice|IOWriteIOPSMax|stale-buildkit-write\n"
+                    "docker-stale.scope|IOReadBandwidthMax|stale-container-read-bandwidth\n"
+                    "docker-stale.scope|IOWriteBandwidthMax|stale-container-write-bandwidth\n"
+                    "docker-stale.scope|IOReadIOPSMax|stale-container-read-iops\n"
+                    "docker-stale.scope|IOWriteIOPSMax|stale-container-write-iops\n"
+                    "docker-stale.scope|IOWeight|1\n"
+                    "docker-stale.scope|MemoryMax|123456\n"
                 )
                 config.write_text(
                     f"IO_DEV_PATH={io_device}\nIO_BASELINE_ENV={missing_baseline}\n"
@@ -494,6 +526,13 @@ exit 0
                 self.assertNotIn("IOWriteBandwidthMax", remaining)
                 self.assertNotIn("IOReadIOPSMax", remaining)
                 self.assertNotIn("IOWriteIOPSMax", remaining)
+                self.assertNotIn("docker-stale.scope|IOReadBandwidthMax", remaining)
+                self.assertNotIn("docker-stale.scope|IOWriteBandwidthMax", remaining)
+                self.assertNotIn("docker-stale.scope|IOReadIOPSMax", remaining)
+                self.assertNotIn("docker-stale.scope|IOWriteIOPSMax", remaining)
+                self.assertNotIn("docker-stale.scope|IOWeight", remaining)
+                self.assertIn("docker-stale.scope|MemoryMax|123456", remaining)
+                self.assertEqual((scope / "io.bfq.weight").read_text(), "default 100\n")
 
     def test_memory_proposals_keep_per_slice_order_at_rounding_boundaries(self) -> None:
         for avail_kib in (1 * 1024 * 1024, 25 * 1024, 7_800 * 1024):
@@ -507,14 +546,71 @@ exit 0
                 WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_MAX"]),
             )
             for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
-                self.assertLessEqual(
-                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_LOW"]),
-                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
-                )
+                self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
                 self.assertLessEqual(
                     WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
                     WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
                 )
+
+    def test_fresh_memory_proposals_do_not_offer_ineffective_child_low(self) -> None:
+        proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 8 * 1024 * 1024)
+        self.assertNotIn("DEV_MEMORY_LOW", proposals)
+        for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
+            self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
+
+    def test_standalone_candidate_validates_preserved_unprompted_values(self) -> None:
+        example = (ROOT / "host-setup.env.example").read_text()
+        values = WIZARD.parse_env_file(example)
+        values["WATCHER_INTERVAL"] = ""
+        with self.assertRaises(WIZARD.TemplateError) as raised:
+            WIZARD.validate_host_setup_values(
+                values,
+                values,
+                {"MemTotal": 16 * 1024 * 1024},
+                config_label="candidate",
+                example_label="example",
+                meminfo_label="meminfo",
+            )
+        self.assertIn("WATCHER_INTERVAL", str(raised.exception))
+
+    def test_standalone_main_does_not_write_preserved_invalid_values(self) -> None:
+        example = (ROOT / "host-setup.env.example").read_text()
+        invalid_existing = example.replace("WATCHER_INTERVAL=5min", "WATCHER_INTERVAL=")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "host-setup.env"
+            output.write_text(invalid_existing)
+            meminfo = root / "meminfo"
+            meminfo.write_text("MemTotal: 16777216 kB\nMemAvailable: 16777216 kB\n")
+            with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
+                 mock.patch.object(WIZARD, "discover_io_dev_path_from_findmnt", return_value="/dev/sda"), \
+                 mock.patch.object(WIZARD, "discover_nproc", return_value=8), \
+                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="fresh"), \
+                 mock.patch("sys.stdin", io.StringIO("\n" * 100)), \
+                 mock.patch("sys.stdout", io.StringIO()):
+                result = WIZARD.main([
+                    "--example", str(ROOT / "host-setup.env.example"),
+                    "--output", str(output), "--meminfo-path", str(meminfo),
+                    "--skip-run-offer",
+                ])
+            self.assertEqual(result, 1)
+            self.assertEqual(output.read_text(), invalid_existing)
+
+    def test_standalone_main_refuses_malformed_existing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "host-setup.env"
+            output.write_text("DEV_CPU_QUOTA=700%\nnot-an-assignment\n")
+            with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
+                 mock.patch("sys.stderr", io.StringIO()) as error:
+                result = WIZARD.main([
+                    "--example", str(ROOT / "host-setup.env.example"),
+                    "--output", str(output), "--meminfo-path", str(root / "missing"),
+                    "--skip-run-offer",
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn("No configuration was written", error.getvalue())
+            self.assertEqual(output.read_text(), "DEV_CPU_QUOTA=700%\nnot-an-assignment\n")
 
     def test_slice_flow_passes_reserve_validators_as_validators(self) -> None:
         example = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
@@ -808,9 +904,10 @@ exit 0
         proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 2500 * 1024)
         self.assertEqual(proposals["DEV_MEMORY_HIGH"], "12G")
         for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
+            self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
             self.assertLessEqual(
-                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_LOW"]),
                 WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
+                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
             )
         values = {
             "DEV_MEMORY_LOW": "2G",
