@@ -2670,3 +2670,13 @@ the second mutation slot with `nice -n 19 ionice -c 3`. P4's declared R2
 environment is bare-host, so no tester-unified container is expected for this
 run; its completion marker is `/tmp/rg55-p4-r2.log` (`P4_R2_EXIT=`). No HEAD
 movement or worktree edit is permitted while it judges.
+
+### RW-218 — 2026-09-15 00:40:21Z — P1 final non-mutation gates green
+
+On unchanged judged tree `5fd0ef13`, P1's final r0-r1 gate passed with 1195
+tests and 100% line plus branch coverage. Its r3 tester-unified canary lane
+also passed with 7/7 canaries rejected and 0 survived; the container was
+immediately verified at `NanoCpus=3000000000`. P1 now has terminal mutation
+records and green final non-mutation evidence; the seven mutation survivors
+remain the documented equivalent dispositions. No package merge, release, or
+daemon start has occurred.
