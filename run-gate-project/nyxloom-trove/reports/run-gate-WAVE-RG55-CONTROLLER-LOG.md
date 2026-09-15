@@ -2701,3 +2701,22 @@ not treated as package coverage proof. The substantive package evidence is the
 terminal R2 result and selftest. P4 is ready for the required fresh Sol xhigh
 review; no package merge, release, or daemon action is authorized by this
 ruling.
+
+### RW-220 — 2026-09-15 02:18:29Z — P6 retry terminal; asynchronous-gate development policy
+
+P6's same-tree resume re-ran the two pending candidates and killed both. The
+separately read terminal verdict now aggregates 484 candidates as 465 killed,
+14 survived, 0 crashed, 0 equivalent, and 5 `budget_exceeded`, so P6 remains
+incomplete. The five placeholders are the two `summary.py` candidates that
+exceeded the 600-second per-candidate ceiling and three candidates cut when
+the 4-hour lane deadline expired; this is not a green mutation verdict and no
+P6 merge/release follows. The P1 mutation lane remains active.
+
+Operating principle for this wave: a long-running verification gate is an
+asynchronous evidence dependency, not a development mutex. When implementation
+and targeted tests provide actionable feedback while only long gates remain,
+continue isolated test/fix cycles and preserve the work in commits. A fix that
+changes a judged tree invalidates that tree's mutation evidence; backport or
+rebase it to the final tip and rerun the affected gate before marking the item
+closed. Never convert partial, stale-tree, or budget-truncated evidence into a
+passing checkmark.
