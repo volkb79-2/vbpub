@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# Canonical cockpit -> tester-unified gate launcher.
+#
+# The cockpit only drives this process.  The requested command, including any
+# pytest process it starts, runs as uid 1003 inside tester-unified:local.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'EOF'
+usage: tester-unified/run [--workdir PATH] [--evidence-dir PATH] -- COMMAND [ARG...]
+
+CGROUP_PARENT_DEV_BACKGROUND must name the configured gate/build slice.
+EOF
+}
+
+die() {
+    printf 'tester-unified: %s\n' "$*" >&2
+    exit 2
+}
+
+workdir=$PWD
+evidence_root=
+while (($#)); do
+    case "$1" in
+        --workdir)
+            (($# >= 2)) || die "--workdir requires a path"
+            workdir=$2
+            shift 2
+            ;;
+        --evidence-dir)
+            (($# >= 2)) || die "--evidence-dir requires a path"
+            evidence_root=$2
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option '$1' (put the gate command after --)"
+            ;;
+    esac
+done
+(($#)) || die "a command is required after --"
+
+[[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]] \
+    || die "CGROUP_PARENT_DEV_BACKGROUND is required; recreate the cockpit from its declared devcontainer configuration"
+cgroup_parent=$CGROUP_PARENT_DEV_BACKGROUND
+[[ $cgroup_parent =~ ^[A-Za-z0-9_.@-]+\.slice$ ]] \
+    || die "CGROUP_PARENT_DEV_BACKGROUND is not a valid slice name: '$cgroup_parent'"
+
+for tool in docker findmnt flock git realpath stat; do
+    command -v "$tool" >/dev/null 2>&1 || die "required tool '$tool' is unavailable"
+done
+docker_bin=$(command -v docker)
+
+workdir=$(realpath -e -- "$workdir") || die "workdir does not exist: '$workdir'"
+[[ -d $workdir ]] || die "workdir is not a directory: '$workdir'"
+
+# A bind mount's TARGET is this namespace's workspace root; FSROOT is the
+# authoritative path in the Docker daemon's host namespace.  Refuse a rootfs
+# fallback: mounting '/' would turn a missing fact into dangerously broad IO.
+workspace_root=$(findmnt --target "$workdir" --noheadings --output TARGET)
+host_workspace=$(findmnt --target "$workdir" --noheadings --output FSROOT)
+[[ -n $workspace_root && -n $host_workspace ]] \
+    || die "could not derive workspace TARGET and host FSROOT from mountinfo"
+[[ $workspace_root != / && $host_workspace != / ]] \
+    || die "workdir is not inside a dedicated workspace bind mount"
+case "$workdir/" in
+    "$workspace_root"/*) ;;
+    *) die "workdir '$workdir' is outside derived workspace '$workspace_root'" ;;
+esac
+
+git_root=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) \
+    || die "workdir is not inside a git worktree: '$workdir'"
+case "$git_root/" in
+    "$workspace_root"/*) ;;
+    *) die "git worktree '$git_root' is outside derived workspace '$workspace_root'" ;;
+esac
+git -C "$git_root" check-ignore -q .assay/tester-unified-probe \
+    || die "'$git_root/.assay/' must be git-ignored before tester runtime state is written"
+
+if [[ -z $evidence_root ]]; then
+    evidence_root=$git_root/.assay/tester-unified-runs
+else
+    evidence_root=$(realpath -m -- "$evidence_root")
+fi
+mkdir -p -- "$evidence_root"
+
+docker_socket=/var/run/docker.sock
+[[ -S $docker_socket ]] \
+    || die "Docker socket '$docker_socket' is absent; nested container contract tests cannot run"
+socket_gid=$(stat -c %g "$docker_socket")
+[[ $socket_gid =~ ^[0-9]+$ ]] || die "could not read Docker socket group"
+
+pressure_file=${_TESTER_UNIFIED_PRESSURE_FILE:-/proc/pressure/memory}
+[[ -r $pressure_file ]] || die "memory pressure file is unreadable: '$pressure_file'"
+pressure_line=$(awk '/^full /{print; found=1; exit} END{if(!found) exit 1}' "$pressure_file") \
+    || die "memory pressure file has no full-pressure record: '$pressure_file'"
+pressure_avg10=$(sed -n 's/.*avg10=\([0-9.][0-9.]*\).*/\1/p' <<<"$pressure_line")
+[[ -n $pressure_avg10 ]] || die "memory full avg10 is malformed: '$pressure_line'"
+awk -v value="$pressure_avg10" 'BEGIN { exit !(value <= 5.0) }' \
+    || die "memory full avg10=${pressure_avg10} exceeds the launch ceiling 5.0"
+
+image=tester-unified:local
+"$docker_bin" image inspect "$image" >/dev/null 2>&1 \
+    || die "required image '$image' is unavailable; build it from tester-unified/Dockerfile"
+
+name=${TESTER_UNIFIED_RUN_NAME:-tester-unified-$(basename "$git_root")-$$-$(date +%s)}
+[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid container name '$name'"
+run_evidence=$evidence_root/$name
+mkdir -p -- "$run_evidence"
+printf '%s\n' "$pressure_line" > "$run_evidence/launch-memory-pressure.txt"
+
+tmp_parent=$git_root/.assay/tester-unified-tmp
+mkdir -p -- "$tmp_parent"
+tmp_dir=$(mktemp -d "$tmp_parent/run.XXXXXXXX")
+chmod 1777 "$tmp_dir"
+tmp_relative=${tmp_dir#"$workspace_root"/}
+[[ $tmp_relative != "$tmp_dir" ]] \
+    || die "temporary directory is outside the workspace mount"
+host_tmp=$host_workspace/$tmp_relative
+
+container_started=0
+container_finished=0
+container_removed=0
+
+cleanup() {
+    local prior=$?
+    if ((container_started && container_finished && !container_removed)); then
+        "$docker_bin" rm "$name" >/dev/null 2>&1 || true
+    fi
+    case "$tmp_dir" in
+        "$tmp_parent"/run.*)
+            if ((!container_started || container_finished)); then
+                rm -rf -- "$tmp_dir"
+            else
+                printf 'tester-unified: interrupted; container %s and temp %s remain for recovery\n' \
+                    "$name" "$tmp_dir" >&2
+            fi
+            ;;
+        *)
+            printf 'tester-unified: refusing unexpected temp cleanup target %s\n' "$tmp_dir" >&2
+            ;;
+    esac
+    return "$prior"
+}
+trap cleanup EXIT
+
+interrupt() {
+    local code=$1
+    trap - INT TERM
+    if ((container_started && !container_finished)); then
+        "$docker_bin" stop -t 10 "$name" >/dev/null 2>&1 || true
+        "$docker_bin" wait "$name" >/dev/null 2>&1 || true
+        container_finished=1
+    fi
+    exit "$code"
+}
+trap 'interrupt 130' INT
+trap 'interrupt 143' TERM
+
+abort_started() {
+    printf 'tester-unified: %s\n' "$1" >&2
+    "$docker_bin" inspect "$name" > "$run_evidence/container.inspect.json" 2>/dev/null || true
+    "$docker_bin" logs "$name" > "$run_evidence/container.log" 2>&1 || true
+    "$docker_bin" stop -t 10 "$name" >/dev/null 2>&1 || true
+    "$docker_bin" wait "$name" >/dev/null 2>&1 || true
+    container_finished=1
+    exit 125
+}
+
+# Serialize the count-and-launch boundary.  This conservative estate cap keeps
+# at most two tester containers live, which necessarily keeps mutation lanes
+# within their hard maximum of two as well.
+exec 9>"$git_root/.assay/tester-unified-launch.lock"
+flock 9
+active_count=$("$docker_bin" ps --filter "ancestor=$image" --format '{{.ID}}' | awk 'NF {n++} END {print n+0}')
+if ((active_count >= 2)); then
+    die "$active_count '$image' containers are already running; estate cap is 2"
+fi
+
+container_id=$("$docker_bin" run -d \
+    --name "$name" \
+    --cgroup-parent "$cgroup_parent" \
+    --cpus=3 \
+    --group-add "$socket_gid" \
+    -e "CGROUP_PARENT_DEV_BACKGROUND=$cgroup_parent" \
+    -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
+    -v "$host_workspace:$host_workspace" \
+    -v "$host_workspace:$workspace_root" \
+    -v "$host_tmp:/tmp" \
+    -v "$docker_socket:$docker_socket" \
+    -w "$workdir" \
+    "$image" \
+    bash -c 'git config --global --replace-all safe.directory "*"; setup_rc=$?; if ((setup_rc)); then printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$setup_rc"; exit "$setup_rc"; fi; "$@"; job_rc=$?; printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$job_rc"; exit "$job_rc"' \
+    tester-unified-job "$@")
+container_started=1
+flock -u 9
+
+# Keep the cap in the launch argv and apply it once more after creation: this
+# is both the packet's required live acceptance probe and protection against a
+# daemon/version silently ignoring the create-time field.
+"$docker_bin" update --cpus=3 "$name" >/dev/null \
+    || abort_started "docker rejected the post-launch 3-CPU cap"
+
+actual=$("$docker_bin" inspect "$name" --format '{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.NanoCpus}}|{{.Config.WorkingDir}}') \
+    || abort_started "could not inspect the accepted launch configuration"
+expected="1003|$cgroup_parent|3000000000|$workdir"
+if [[ $actual != "$expected" ]]; then
+    abort_started "launch verification mismatch: expected $expected, got $actual"
+fi
+
+mounts=$("$docker_bin" inspect "$name" --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}') \
+    || abort_started "could not inspect the accepted launch mounts"
+require_mount() {
+    local wanted="$1 -> $2" line
+    while IFS= read -r line; do
+        [[ $line == "$wanted" ]] && return 0
+    done <<<"$mounts"
+    printf 'tester-unified: required mount was not accepted: %s\n' "$wanted" >&2
+    return 1
+}
+if ! require_mount "$host_workspace" "$host_workspace" \
+    || ! require_mount "$host_workspace" "$workspace_root" \
+    || ! require_mount "$host_tmp" /tmp \
+    || ! require_mount "$docker_socket" "$docker_socket"; then
+    abort_started "Docker did not accept the complete mount topology"
+fi
+
+{
+    printf 'container_id=%s\n' "$container_id"
+    printf 'container_name=%s\n' "$name"
+    printf 'image=%s\n' "$image"
+    printf 'user=1003\n'
+    printf 'cgroup_parent=%s\n' "$cgroup_parent"
+    printf 'nano_cpus=3000000000\n'
+    printf 'workdir=%s\n' "$workdir"
+    printf 'git_head=%s\n' "$(git -C "$git_root" rev-parse HEAD)"
+    printf 'workspace_target=%s\n' "$workspace_root"
+    printf 'workspace_host_fsroot=%s\n' "$host_workspace"
+    printf 'temp_host_path=%s\n' "$host_tmp"
+} > "$run_evidence/launch.txt"
+"$docker_bin" inspect "$name" > "$run_evidence/container.inspect.json" \
+    || abort_started "could not preserve pre-wait inspect evidence"
+
+wait_status=$("$docker_bin" wait "$name") \
+    || abort_started "docker wait failed before it supplied a job status"
+container_finished=1
+if [[ ! $wait_status =~ ^[0-9]+$ ]]; then
+    printf 'tester-unified: docker wait returned a non-status value: %q\n' "$wait_status" >&2
+    exit 125
+fi
+printf '%s\n' "$wait_status" > "$run_evidence/docker-wait.exit"
+"$docker_bin" logs "$name" > "$run_evidence/container.log" 2>&1 \
+    || { printf 'tester-unified: could not collect container logs\n' >&2; exit 125; }
+sed -n '1,$p' "$run_evidence/container.log"
+
+marker=$(awk -F= '/^TESTER_UNIFIED_JOB_EXIT=[0-9]+$/ {value=$2} END {if (value != "") print value}' \
+    "$run_evidence/container.log")
+if [[ $marker != "$wait_status" ]]; then
+    printf 'tester-unified: job marker (%s) does not match docker wait status (%s)\n' \
+        "${marker:-missing}" "$wait_status" >&2
+    exit 125
+fi
+
+"$docker_bin" rm "$name" >/dev/null
+container_removed=1
+printf 'tester-unified: evidence: %s\n' "$run_evidence"
+exit "$wait_status"

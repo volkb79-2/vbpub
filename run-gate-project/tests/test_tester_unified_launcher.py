@@ -1,0 +1,228 @@
+"""Behavioral contract for the repository-owned tester-unified launcher."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import subprocess
+import textwrap
+
+import pytest
+
+
+REPO = Path(__file__).resolve().parents[2]
+LAUNCHER = REPO / "tester-unified" / "run"
+DOCS = (
+    REPO / "tester-unified" / "README.md",
+    REPO / "tester-unified" / "docs" / "DESIGN-GUIDE.md",
+    REPO / "tester-unified" / "docs" / "CONSUMERS.md",
+)
+
+
+def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    state = tmp_path / "docker-state"
+    bin_dir.mkdir()
+    state.mkdir()
+    log = state / "calls"
+    docker = bin_dir / "docker"
+    docker.write_text(textwrap.dedent("""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+        state=$FAKE_DOCKER_STATE
+        printf '%s\\n' "$*" >> "$state/calls"
+        command=$1
+        shift
+        case "$command" in
+          image)
+            exit 0
+            ;;
+          ps)
+            exit 0
+            ;;
+          run)
+            : > "$state/mounts"
+            while (($#)); do
+              case "$1" in
+                -v)
+                  value=$2
+                  printf '%s -> %s\\n' "${value%%:*}" "${value#*:}" >> "$state/mounts"
+                  shift 2
+                  ;;
+                --cgroup-parent)
+                  printf '%s' "$2" > "$state/cgroup"
+                  shift 2
+                  ;;
+                -w)
+                  printf '%s' "$2" > "$state/workdir"
+                  shift 2
+                  ;;
+                *) shift ;;
+              esac
+            done
+            printf '%064d\\n' 1
+            ;;
+          update)
+            if [[ ${FAKE_DOCKER_UPDATE_FAIL:-0} == 1 ]]; then
+              exit 9
+            fi
+            printf '%s\\n' "${@: -1}"
+            ;;
+          inspect)
+            if [[ $* == *'.Config.User'* ]]; then
+              printf '1003|%s|3000000000|%s\\n' "$(<"$state/cgroup")" "$(<"$state/workdir")"
+            elif [[ $* == *'.Mounts'* ]]; then
+              sed -n '1,$p' "$state/mounts"
+            else
+              printf '[{"Id":"fake"}]\\n'
+            fi
+            ;;
+          wait)
+            printf '0\\n'
+            ;;
+          logs)
+            printf 'fake gate ran\\nTESTER_UNIFIED_JOB_EXIT=0\\n'
+            ;;
+          stop|rm)
+            exit 0
+            ;;
+          *)
+            printf 'unexpected fake docker command: %s\\n' "$command" >&2
+            exit 91
+            ;;
+        esac
+    """))
+    docker.chmod(0o755)
+    return bin_dir, log
+
+
+def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
+                  cgroup: str | None = "dev-background.slice",
+                  update_fails: bool = False):
+    bin_dir, log = _fake_docker(tmp_path)
+    pressure_file = tmp_path / "pressure"
+    pressure_file.write_text(
+        f"some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        f"full avg10={pressure:.2f} avg60=0.00 avg300=0.00 total=0\n"
+    )
+    evidence = tmp_path / "evidence"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["FAKE_DOCKER_STATE"] = str(log.parent)
+    env["_TESTER_UNIFIED_PRESSURE_FILE"] = str(pressure_file)
+    env["TESTER_UNIFIED_RUN_NAME"] = "tester-unified-contract-test"
+    env["FAKE_DOCKER_UPDATE_FAIL"] = "1" if update_fails else "0"
+    if cgroup is None:
+        env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+    else:
+        env["CGROUP_PARENT_DEV_BACKGROUND"] = cgroup
+    proc = subprocess.run(
+        [str(LAUNCHER), "--workdir", str(REPO / "run-gate-project"),
+         "--evidence-dir", str(evidence), "--", *args],
+        text=True, capture_output=True, env=env, check=False,
+    )
+    return proc, log, evidence
+
+
+def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
+    proc, log, evidence = _run_launcher(tmp_path, "bash", "-c", "exit 0")
+    assert proc.returncode == 0, proc.stderr
+    assert "fake gate ran" in proc.stdout
+    assert "tester-unified: evidence:" in proc.stdout
+
+    calls = log.read_text()
+    workspace = subprocess.run(
+        ["findmnt", "--target", str(REPO), "--noheadings", "--output", "TARGET"],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    host_workspace = subprocess.run(
+        ["findmnt", "--target", str(REPO), "--noheadings", "--output", "FSROOT"],
+        text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    socket_gid = os.stat("/var/run/docker.sock").st_gid
+
+    assert "run -d" in calls
+    assert "--cgroup-parent dev-background.slice" in calls
+    assert "--cpus=3" in calls
+    assert f"--group-add {socket_gid}" in calls
+    assert f"-v {host_workspace}:{host_workspace}" in calls
+    assert f"-v {host_workspace}:{workspace}" in calls
+    assert "-v /var/run/docker.sock:/var/run/docker.sock" in calls
+    assert "-e PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin" in calls
+    assert "update --cpus=3 tester-unified-contract-test" in calls
+    assert "wait tester-unified-contract-test" in calls
+    assert "logs tester-unified-contract-test" in calls
+    assert "rm tester-unified-contract-test" in calls
+
+    mounts = (log.parent / "mounts").read_text().splitlines()
+    temp_sources = [line.removesuffix(" -> /tmp") for line in mounts
+                    if line.endswith(" -> /tmp")]
+    assert len(temp_sources) == 1
+    assert temp_sources[0].startswith(
+        f"{host_workspace}/.worktrees/rg55-followups-run-gate/"
+        ".assay/tester-unified-tmp/run."
+    )
+    run_evidence = evidence / "tester-unified-contract-test"
+    assert (run_evidence / "container.inspect.json").read_text().startswith("[")
+    assert (run_evidence / "docker-wait.exit").read_text() == "0\n"
+    assert "TESTER_UNIFIED_JOB_EXIT=0" in (
+        run_evidence / "container.log").read_text()
+
+
+@pytest.mark.parametrize(
+    ("cgroup", "pressure", "message"),
+    [
+        (None, 0.0, "CGROUP_PARENT_DEV_BACKGROUND is required"),
+        ("not-a-slice", 0.0, "not a valid slice name"),
+        ("dev-background.slice", 5.01, "exceeds the launch ceiling 5.0"),
+    ],
+)
+def test_launcher_refuses_missing_or_unsafe_launch_facts(
+        tmp_path, cgroup, pressure, message):
+    proc, log, _ = _run_launcher(
+        tmp_path, "true", pressure=pressure, cgroup=cgroup,
+    )
+    assert proc.returncode == 2
+    assert message in proc.stderr
+    assert not log.exists() or "run -d" not in log.read_text()
+
+
+def test_post_launch_verification_failure_stops_and_removes_only_its_container(
+        tmp_path):
+    proc, log, _ = _run_launcher(tmp_path, "true", update_fails=True)
+    assert proc.returncode == 125
+    assert "docker rejected the post-launch 3-CPU cap" in proc.stderr
+    calls = log.read_text()
+    assert "stop -t 10 tester-unified-contract-test" in calls
+    assert "wait tester-unified-contract-test" in calls
+    assert "rm tester-unified-contract-test" in calls
+
+
+def _heading_ids(text: str) -> set[str]:
+    result = set()
+    for line in text.splitlines():
+        if not line.startswith("#"):
+            continue
+        heading = line.lstrip("#").strip().lower()
+        slug = re.sub(r"[^a-z0-9 _-]", "", heading).replace(" ", "-")
+        result.add(re.sub(r"-+", "-", slug))
+    return result
+
+
+def test_launcher_docs_are_linked_and_document_the_complete_cli():
+    for document in DOCS:
+        text = document.read_text()
+        for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
+            path_text, _, anchor = target.partition("#")
+            target_path = (document.parent / path_text).resolve() if path_text else document
+            assert target_path.is_file(), f"broken link in {document}: {target}"
+            if anchor:
+                assert anchor in _heading_ids(target_path.read_text()), (
+                    f"broken anchor in {document}: {target}"
+                )
+    combined = "\n".join(path.read_text() for path in DOCS)
+    for token in ("--workdir", "--evidence-dir", "--help", " -- "):
+        assert token in combined
+    assert "tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest" \
+        in (DOCS[0].read_text() + DOCS[2].read_text())
