@@ -13645,6 +13645,28 @@ class TestDoctorProfilerCheck:
         assert "ciu up" not in profiler_line
         assert code == 0
 
+    def test_docker_ps_exception_is_indeterminate_not_a_doctor_crash(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        real_run = subprocess.run
+
+        def fail_ps(argv, *args, **kwargs):
+            if len(argv) > 1 and argv[1] == "ps":
+                raise OSError("planted: Docker socket vanished")
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        profiler_line = next(
+            line for line in out.splitlines() if "profiler daemon" in line)
+        assert "state could not be determined" in profiler_line
+        assert "Docker socket vanished" in profiler_line
+        assert "not running" not in profiler_line
+
     def test_daemon_running_but_ctl_version_fails_warns_by_name(
             self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
@@ -15573,6 +15595,27 @@ class TestResolveSelfContainerIdDirectBranches:
         assert container_id is None
         assert "/etc/hostname is empty" in reason
 
+    def test_mount_namespace_read_oserror_is_indeterminate(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+
+        def boom(path):
+            raise OSError("planted: namespace link unreadable")
+
+        monkeypatch.setattr(run_gate.os, "readlink", boom)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "could not verify current container identity" in reason
+        assert "namespace link unreadable" in reason
+
+    def test_malformed_current_mount_namespace_is_indeterminate(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        monkeypatch.setattr(run_gate.os, "readlink", lambda path: "not-an-inode")
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "could not verify current container identity" in reason
+        assert "not-an-inode" in reason
+
     def test_docker_inspect_oserror(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
 
@@ -15591,6 +15634,29 @@ class TestResolveSelfContainerIdDirectBranches:
         container_id, reason = run_gate.resolve_self_container_id("docker")
         assert container_id is None
         assert "abc123" in reason and "No such object" in reason
+
+    def test_docker_inspect_no_such_container_is_confirmed_absence(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(
+            ["docker"], 1, stdout="",
+            stderr="Error response from daemon: No such container: abc123\n")
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert reason.startswith("not running in a container")
+
+    def test_docker_inspect_permission_failure_is_indeterminate(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        cp = subprocess.CompletedProcess(
+            ["docker"], 1, stdout="", stderr="permission denied\n")
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "could not verify current container identity" in reason
+        assert "permission denied" in reason
+        assert "not running in a container" not in reason
 
     def test_docker_inspect_empty_stdout(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
@@ -15670,6 +15736,57 @@ class TestResolveSelfContainerIdDirectBranches:
         container_id, reason = run_gate.resolve_self_container_id("docker")
         assert container_id is None
         assert "malformed container id" in reason
+
+    def test_namespace_probe_exception_is_indeterminate(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+
+        def fake_run(argv, **kwargs):
+            if argv[1] == "inspect":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=RG55_CONTAINER_ID + "\n", stderr="")
+            raise OSError("planted: docker exec transport failed")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "mount-namespace probe failed" in reason
+        assert "transport failed" in reason
+
+    def test_namespace_probe_nonzero_is_indeterminate(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+
+        def fake_run(argv, **kwargs):
+            if argv[1] == "inspect":
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=RG55_CONTAINER_ID + "\n", stderr="")
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "mount-namespace probe failed with exit 1" in reason
+        assert "(no stderr)" in reason
+
+    def test_namespace_probe_malformed_output_is_indeterminate(
+            self, monkeypatch):
+        monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
+        monkeypatch.setattr(run_gate.os, "readlink",
+                            lambda path: "mnt:[4026534299]")
+
+        def fake_run(argv, **kwargs):
+            stdout = (RG55_CONTAINER_ID + "\n" if argv[1] == "inspect"
+                      else "not-an-inode\n")
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout,
+                                               stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        container_id, reason = run_gate.resolve_self_container_id("docker")
+        assert container_id is None
+        assert "mount-namespace probe returned 'not-an-inode'" in reason
 
 
 class TestEphemeralProfilingWiring:
