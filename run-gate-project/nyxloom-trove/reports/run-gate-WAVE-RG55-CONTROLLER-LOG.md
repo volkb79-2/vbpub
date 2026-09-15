@@ -2634,3 +2634,14 @@ candidate remains clean and unmerged. The required fresh Sol xhigh final
 review and any release mutation gate have not run; the controller is not
 claiming merge or release readiness while subagent creation is disabled by
 the operator.
+
+### RW-215 — 2026-09-15 00:24:58Z — P1 exact-tree mutation resume relaunched
+
+P1's clean judged tree `5fd0ef135dbc6ca36d3e0e51d2c0595adc41b004` was
+rechecked before launch. With P6 as the only existing mutation container and
+memory PSI `full avg10=0.06`, P1 was resumed in the second permitted mutation
+slot. Its exact container is
+`run-gate-vbpub-r2-2222080-1789431885`; Docker was immediately updated and
+verified at `NanoCpus=3000000000`. The run is detached; its explicit completion
+marker is `/tmp/rg55-p1-resume.log` (`P1_RESUME_EXIT=`), and no commit may be
+made to the judged tree until the verdict is read separately.
