@@ -2604,3 +2604,24 @@ real remote push, the same source revert operation used by the parent succeeds
 and removes the promoted file from `origin/main`. The focused promotion set
 remains green. This is still an isolated, unmerged candidate pending the
 requested Sol xhigh final review and the Docker-backed release gate.
+
+### RW-212 — 2026-09-15 00:14:26Z — RG-56 corrected successor checkpoint
+
+The RG-56 admission design sidecar has a newer corrected successor at
+`92a2c09717e5280463564d3c1c62fe32a4ac6775` in worktree
+`.worktrees/rg56-admission`. Its report addresses the four residual design
+findings from RW-205 (mode-specific D-20 placement and caps, authenticated
+owner/scope binding, checked aggregate overflow, and current-loader/wire
+integration). This is a design-only candidate; no producer implementation,
+acceptance gate, or fresh adversarial verification is recorded, so it remains
+unaccepted and unmergeable.
+
+### RW-213 — 2026-09-15 00:14:26Z — P35 corrected successor checkpoint
+
+The P35 execution-interruption design sidecar has a newer corrected successor
+at `6d34f0d7b40ad777c12460e16b60d0022b3589fc` in worktree
+`.worktrees/assay-b099-p35-repair`. Its report claims closure of the four
+residuals from RW-208 and adds the machine-discoverable P36 and cgprofile P07
+companion packets. It remains design-only and unaccepted: no implementation,
+producer gate, or fresh adversarial verification is recorded, so no dispatch,
+merge, or release follows from this checkpoint.
