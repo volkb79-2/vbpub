@@ -19,9 +19,17 @@ environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && export PYTHONPATH=. && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts -q && echo 'smoke: OK'"]
 budget = "2m"
 
+[lanes.smoke.resources]
+memory = "1g"
+memory_swap = "2g"
+
 [lanes.assay-full]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && export PYTHONPATH={worktree}/assay/src && /opt/tester-venv/bin/python -c 'from assay.cli import main; raise SystemExit(main())' run host_setup --file assay.toml --verdict-json .assay/verdict-host_setup.json --resume --progress .assay/progress-host_setup.jsonl"]
+argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && mkdir -p .assay && export PYTHONPATH={worktree}/assay/src && /opt/tester-venv/bin/python -c 'from assay.cli import main; raise SystemExit(main())' run host_setup --file assay.toml --verdict-json .assay/verdict-host_setup.json --resume --progress .assay/progress-host_setup.jsonl"]
 budget = "2h"
 artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl"]
+
+[lanes.assay-full.resources]
+memory = "4g"
+memory_swap = "16g"
