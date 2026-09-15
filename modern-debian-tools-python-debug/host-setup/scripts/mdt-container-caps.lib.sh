@@ -27,13 +27,16 @@ _mdt_load_config() {
 # work; set IO_DEV_PATH yourself for the whole-disk node.
 _mdt_discover_io_dev_path() {
   if [ -z "${IO_DEV_PATH:-}" ]; then
-    local path
+    local path _io_source
     for path in /var/lib/docker /; do
-      IO_DEV_PATH=$(findmnt -no SOURCE --target "$path" 2>/dev/null) && [ -n "$IO_DEV_PATH" ] && break
+      _io_source=$(findmnt -no SOURCE --target "$path" 2>/dev/null || true)
+      case "$_io_source" in
+        /dev/?*) IO_DEV_PATH="$_io_source"; break ;;
+      esac
     done
   fi
   [ -n "${IO_DEV_PATH:-}" ] && log "io device: $IO_DEV_PATH" \
-    || log "WARN: no block device discovered — all IO cap steps will be skipped"
+    || log "WARN: no host /dev block-device node discovered (a container namespace may report overlay) — all IO cap steps will be skipped"
 }
 
 # _mdt_load_baseline: sources $IO_BASELINE_ENV if present, setting
@@ -41,16 +44,29 @@ _mdt_discover_io_dev_path() {
 # provenance warnings mdt-apply-dev-caps.sh always has (burst-v1 reads high on
 # a VM; unrecognised/missing method means "unverified").
 _mdt_load_baseline() {
-  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
+  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD="" MEASURED_AT=""
   [ -f "$IO_BASELINE_ENV" ] || { log "no $IO_BASELINE_ENV — per-container caps use the static fallback (run mdt-io-baseline.py)"; return; }
+  local _mtime _now _age _invalid=""
+  _mtime=$(stat -c %Y "$IO_BASELINE_ENV" 2>/dev/null) || _invalid="mtime unreadable"
+  _now=$(date +%s)
+  if [ -z "$_invalid" ] && { [ $(( _now - _mtime )) -gt $((30 * 86400)) ] || [ "$_mtime" -gt "$_now" ]; }; then
+    _invalid="stale (older than 30 days or timestamp is in the future)"
+  fi
   # shellcheck disable=SC1090
   . "$IO_BASELINE_ENV" 2>/dev/null || true
-  case "${MEASURE_METHOD:-}" in
-    sustained-v3) : ;;
-    "")           log "WARN: $IO_BASELINE_ENV has no MEASURE_METHOD — provenance unknown; caps may not be the intended fraction of sustained capacity" ;;
-    burst-v1)     log "WARN: baseline method=burst-v1 (ciu iops-baseline, unramped 1G/10s) — reads high on a VM; run mdt-io-baseline.py for a sustained measurement" ;;
-    *)            log "WARN: baseline method=$MEASURE_METHOD is UNRECOGNISED — treat the derived caps as unverified" ;;
-  esac
+  [ "${MEASURE_METHOD:-}" = sustained-v3 ] || _invalid="${_invalid:-method is not sustained-v3}"
+  [ -n "${MEASURED_AT:-}" ] || _invalid="${_invalid:-MEASURED_AT is missing}"
+  for _baseline_key in RIOPS_MAX WIOPS_MAX RBW_MAX_BPS WBW_MAX_BPS; do
+    _baseline_value="${!_baseline_key:-}"
+    case "$_baseline_value" in
+      ''|*[!0-9]*) _invalid="${_invalid:-$_baseline_key is not a positive integer}" ;;
+      0) _invalid="${_invalid:-$_baseline_key is zero}" ;;
+    esac
+  done
+  if [ -n "$_invalid" ]; then
+    log "WARN: ignoring $IO_BASELINE_ENV — $_invalid; per-container and runtime estate caps use static fallbacks"
+    RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
+  fi
 }
 
 # _mdt_derive_sweep_caps: sets SWEEP_RBPS/WBPS/RIOPS/WIOPS/SWEEP_SRC (and

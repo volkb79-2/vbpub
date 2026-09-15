@@ -42,13 +42,26 @@ The policy vocabulary is `terminate` (default: remove an unapproved worker) or
 inspect failure is indeterminate and stops the watcher for systemd to restart.
 
 The host wizard follows the same fail-closed resource model. It is slice-first,
-asks all four memory controls for every governed slice, permits an explicit
-empty value only where the operator chooses no directive, and compares parsed
-binary units in KiB. It rejects and re-prompts until configured values satisfy
-`MemoryMin <= MemoryLow <= MemoryHigh <= MemoryMax`, and checks child
-MemoryHigh/Max/Min totals against live `MemAvailable`. `MemoryMin` is hard
-hierarchical protection; `MemoryLow` is soft best-effort protection;
-`MemoryHigh` is soft reclaim throttling; `MemoryMax` is the hard RAM ceiling.
+asks all four memory controls for every governed slice, distinguishes optional
+`none` from blank CPU/swap auto-detection, and compares parsed binary units in
+KiB. It rejects and re-prompts until configured values satisfy `MemoryMin <=
+MemoryLow <= MemoryHigh <= MemoryMax`, and checks child MemoryHigh/Max/Min
+totals against live `MemAvailable`. `MemoryMin` is hard hierarchical
+protection; `MemoryLow` is soft best-effort protection; `MemoryHigh` is soft
+reclaim throttling; `MemoryMax` is the hard RAM ceiling and does not include
+swap, which is governed separately by `MemorySwapMax`.
+
+Host setup is host-only. The installer and wizard refuse a devcontainer before
+reading or writing host policy: UID 0 there is container root, not root of the
+host's `/etc`, systemd, or cgroup tree. This also explains the `IO_DEV_PATH`
+defense in depth: if a diagnostic run inside a devcontainer reports `overlay`,
+the command is looking at a container mount namespace and must be stopped and
+rerun from the Docker host. On the host, `IO_DEV_PATH` is a block-device node
+(`/dev/...`), not a mountpoint, filesystem label, `UUID=...`, or `MAJ:MIN`. The value is validated
+by shape only and is never `stat`ed in the wizard's namespace; if host
+discovery cannot expose a `/dev/...` node, the operator provides the host path
+explicitly or accepts that static IO caps will be omitted until runtime
+discovery succeeds.
 The existing `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the sole root `dev.slice`
 MemoryMin key and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`
 are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are

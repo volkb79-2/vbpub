@@ -15,19 +15,35 @@ sudo mdt-host-check.sh
 
 On a fresh host, use the wizard: a plain first run refuses the incomplete
 example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a
-complete, host-specific config already present. `--force` is accepted only
-with `--wizard`, and replacement/backup happens only after the generated
-candidate passes strict validation.
+complete, host-specific config already present. With an existing config,
+`--wizard` preserves its values as defaults; add `--force` only to discard
+those values as defaults and start from the current repository example. In
+both cases replacement/backup happens only after the generated candidate
+passes strict validation. Deleting the old file first loses those defaults and
+does not create the automatic backup.
 
-The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, and I/O
-baseline facts. It walks `dev.slice`, the guaranteed sibling,
+The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
+configured `IO_BASELINE_ENV` cache, and Docker mount facts. It walks `dev.slice`, the guaranteed sibling,
 `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and
 `dev-buildkitd.slice` in that order. For each it asks `MemoryMin`, `MemoryLow`,
 `MemoryHigh`, and `MemoryMax`, plus the applicable CPU, `IOWeight`, swap, and
 zswap controls. Empty means the operator explicitly chose no directive; it is
 not an invented fallback. The wizard compares binary sizes after converting
 them to KiB and re-prompts on `MemoryMin <= MemoryLow <= MemoryHigh <=
-MemoryMax` or aggregate violations.
+MemoryMax` or aggregate violations. A cache benchmark is offered only when
+`fio` is already installed; otherwise the installer installs it after
+validation and you run the benchmark later in a quiet window.
+
+Host setup is host-only: run the installer and wizard from a shell on the
+Docker host, never from the consumer devcontainer. UID 0 in a devcontainer is
+not host root and cannot apply the host's `/etc`, systemd, or cgroup policy;
+the preflight refuses before reading or writing host setup. If `findmnt`
+reports `overlay`, stop and leave the container—that is the container's mount
+namespace, not a usable host block-device source. From the host shell, use a
+device such as `/dev/nvme0n1` or `/dev/mapper/vg-root` if discovery cannot
+expose it. Do not enter `/`, `UUID=...`, or `MAJ:MIN`. The `/dev/...` check is
+shape-only because the path is for the host being configured; it is not a
+local `stat` of a path in the wizard's namespace.
 
 `MemoryMin` is hard hierarchical protection, `MemoryLow` is soft best-effort
 protection, `MemoryHigh` is soft reclaim throttling, and `MemoryMax` is a hard

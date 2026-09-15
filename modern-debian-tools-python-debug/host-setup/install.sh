@@ -6,6 +6,11 @@
 # which this owns fully).
 #
 #   sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
+#   sudo ./install.sh --wizard              # first install or preserve old values
+#   sudo ./install.sh --wizard --force      # re-seed answers from this example
+#   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
+# Run these commands from the Docker host shell, never from a devcontainer;
+# container root cannot apply the host's systemd, cgroup, or /etc policy.
 #
 # Idempotent. First run requires --wizard: it produces a host-sized candidate
 # in a temporary directory, validates that candidate, and only then installs it
@@ -15,8 +20,10 @@
 # THIS host's own /proc/meminfo rather than the example's fixed numbers, then
 # falls through into the same render/apply logic below. --with-baseline
 # additionally runs the fio benchmark (~4 min of saturated disk — quiet
-# window!). --force is accepted only with --wizard; after successful candidate
-# validation it backs up and replaces an existing /etc/mdt/host-setup.env.
+# window!). --force is accepted only with --wizard; it deliberately starts the
+# wizard from the current example instead of using the installed config as
+# defaults. After successful candidate validation the old config is backed up
+# and replaced. Without --force, --wizard preserves existing values as defaults.
 # --restart-docker will
 # automatically restart docker.socket and docker.service at the end (warning:
 # disrupts all running containers). See README.md.
@@ -37,8 +44,24 @@ for arg in "$@"; do
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
 done
-# After arg parsing so --help works unprivileged.
+# Host setup changes the host's systemd units, Docker daemon configuration, and
+# cgroup tree. A devcontainer can be UID 0 and can even have the Docker socket,
+# but it still has its own /etc, PID 1, and mount namespace; mutating those would
+# not configure the host and could leave a misleading partial setup behind.
+if [ -e /.dockerenv ] || [ -e /run/.containerenv ] || [ -n "${container:-}" ]; then
+  echo "ERROR: host-setup/install.sh must run from a host shell, not inside a devcontainer or other container" >&2
+  echo "UID 0 in a container is not host root; leave the devcontainer and run: sudo ./host-setup/install.sh --wizard" >&2
+  exit 2
+fi
+# After the container check so a devcontainer gets the actionable host-context
+# error even when the invoking user is not root. --help already exited above.
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
+
+_pid1_comm=$(cat /proc/1/comm 2>/dev/null || true)
+if [ "$_pid1_comm" != systemd ] || [ ! -d /run/systemd/system ]; then
+  echo "ERROR: host-setup/install.sh requires systemd as PID 1 and /run/systemd/system; run it on the Docker host" >&2
+  exit 2
+fi
 
 if [ "$FORCE" = 1 ] && [ "$WIZARD" != 1 ]; then
   echo "ERROR: --force requires --wizard; refusing to re-seed an unvalidated example" >&2
@@ -96,7 +119,7 @@ CANDIDATE_PATH="$CANDIDATE_DIR/host-setup.env"
 if [ "$WIZARD" = 1 ]; then
   # Copy only to the safe candidate path so the wizard can use existing values
   # as defaults without being able to damage the installed config on failure.
-  if [ "$HAD_CONFIG" = 1 ]; then
+  if [ "$HAD_CONFIG" = 1 ] && [ "$FORCE" = 0 ]; then
     cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
   fi
   python3 "$HERE/mdt-host-setup-wizard.py" \
@@ -184,10 +207,17 @@ done
 # re-discovers independently, so an install-time miss only drops the statics).
 if [ -z "${IO_DEV_PATH:-}" ]; then
   for path in /var/lib/docker /; do
-    IO_DEV_PATH=$(findmnt -no SOURCE --target "$path" 2>/dev/null) && [ -n "$IO_DEV_PATH" ] && break
+    _io_source=$(findmnt -no SOURCE --target "$path" 2>/dev/null || true)
+    case "$_io_source" in
+      /dev/?*) IO_DEV_PATH="$_io_source"; break ;;
+    esac
   done
 fi
-echo "io device for static caps: ${IO_DEV_PATH:-<none discovered — static IO caps omitted>}"
+if [ -n "${IO_DEV_PATH:-}" ]; then
+  echo "io device for static caps: $IO_DEV_PATH"
+else
+  echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
+fi
 
 # CPUQuota, absolute ceilings mirroring the IO one: auto-
 # detected from nproc when left unset in host-setup.env, floored at 1 core —
@@ -199,7 +229,13 @@ echo "io device for static caps: ${IO_DEV_PATH:-<none discovered — static IO c
 # (DEV_SUBSLICE_CPU_RESERVE_CORES=3 default: nproc-3) so no single tier can
 # alone claim the parent's whole budget — multiple tiers combined are still
 # bounded by dev.slice's own quota either way.
-_nproc=$(nproc 2>/dev/null || echo 2)
+_nproc=$(nproc 2>/dev/null) || {
+  echo "ERROR: could not determine host CPU count with nproc; refusing to invent a CPU quota" >&2
+  exit 2
+}
+case "$_nproc" in
+  ''|*[!0-9]*) echo "ERROR: nproc returned an invalid CPU count: $_nproc" >&2; exit 2 ;;
+esac
 DEV_CPU_RESERVE_CORES="${DEV_CPU_RESERVE_CORES:-1}"
 DEV_SUBSLICE_CPU_RESERVE_CORES="${DEV_SUBSLICE_CPU_RESERVE_CORES:-3}"
 if [ -z "${DEV_CPU_QUOTA:-}" ] && [ "$_nproc" -le "$DEV_CPU_RESERVE_CORES" ] 2>/dev/null; then
@@ -244,6 +280,47 @@ if grep -q '^SwapTotal:' /proc/meminfo 2>/dev/null; then
   fi
 fi
 _pct_of() { echo $(( $1 * $2 / 100 )); } # _pct_of <bytes> <pct> -> bytes
+
+# systemd accepts K/M/G suffixes in MemorySwapMax, but the cascade arithmetic
+# below needs bytes. Normalize an explicit root value before deriving child
+# values; otherwise a perfectly valid answer such as 4G reaches Bash's
+# arithmetic evaluator and aborts the installer.
+_size_to_bytes() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from decimal import Decimal, InvalidOperation
+
+raw = sys.argv[1].strip()
+match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGTPE]?)i?[Bb]?", raw, re.IGNORECASE)
+if not match:
+    raise SystemExit(1)
+try:
+    number = Decimal(match.group(1))
+except InvalidOperation:
+    raise SystemExit(1)
+multiplier = {
+    "": Decimal(1),
+    "K": Decimal(1024),
+    "M": Decimal(1024**2),
+    "G": Decimal(1024**3),
+    "T": Decimal(1024**4),
+    "P": Decimal(1024**5),
+    "E": Decimal(1024**6),
+}[match.group(2).upper()]
+value = int(number * multiplier)
+if value < 0:
+    raise SystemExit(1)
+print(value)
+PY
+}
+if [ -n "${DEV_SWAP_MAX:-}" ]; then
+  if ! _swap_max_bytes=$(_size_to_bytes "$DEV_SWAP_MAX"); then
+    echo "ERROR: DEV_SWAP_MAX is not a systemd size that can be converted to bytes: $DEV_SWAP_MAX" >&2
+    exit 2
+  fi
+  DEV_SWAP_MAX="$_swap_max_bytes"
+fi
 if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
   if [ -z "${DEV_SWAP_MAX:-}" ]; then
     DEV_SWAP_MAX=$(_pct_of "$_host_swap_bytes" "$DEV_SWAP_CASCADE_PCT")
@@ -452,6 +529,13 @@ for _slice in dev.slice dev-interactive.slice dev-background.slice dev-memory_mi
     exit 2
   fi
 done
+_parent_load_state=$(systemctl show "$DOCKER_DAEMON_CGROUP_PARENT" --property=LoadState --value)
+_parent_fragment=$(systemctl show "$DOCKER_DAEMON_CGROUP_PARENT" --property=FragmentPath --value)
+if [ "$_parent_load_state" != loaded ] || [ -z "$_parent_fragment" ]; then
+  echo "ERROR: DOCKER_DAEMON_CGROUP_PARENT=$DOCKER_DAEMON_CGROUP_PARENT is not a loaded systemd slice (LoadState=$_parent_load_state FragmentPath=$_parent_fragment); refusing to start governed services" >&2
+  exit 2
+fi
+echo "verified Docker default cgroup parent: $DOCKER_DAEMON_CGROUP_PARENT (loaded, fragment=$_parent_fragment)"
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
   dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-host-slices.service          # boot-time apply

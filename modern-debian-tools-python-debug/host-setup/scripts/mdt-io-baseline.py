@@ -43,6 +43,7 @@ DEFAULT_SIZE = "4G"
 DEFAULT_RUNTIME = 40
 DEFAULT_RAMP = 10
 FRESHNESS_SECONDS = 30 * 86400
+REQUIRED_CACHE_FIELDS = ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS")
 
 
 def positive_int(value: object, label: str) -> int:
@@ -73,7 +74,13 @@ def env_string(name: str, fallback: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="mdt-io-baseline.py")
+    parser = argparse.ArgumentParser(
+        prog="mdt-io-baseline.py",
+        description=(
+            "Measure sustained host-disk ceilings for MDT. Run from the Docker "
+            "host shell; container execution is refused."
+        ),
+    )
     parser.add_argument("--force", action="store_true", help="ignore a fresh cache")
     parser.add_argument(
         "--runtime",
@@ -98,6 +105,57 @@ def parse_args() -> argparse.Namespace:
 def cache_is_fresh(path: Path) -> bool:
     age_seconds = time.time() - path.stat().st_mtime
     return age_seconds < FRESHNESS_SECONDS
+
+
+def cache_is_valid(path: Path) -> bool:
+    """Return whether ``path`` contains a complete mdt sustained baseline.
+
+    Freshness is deliberately separate: a recent truncated or hand-written
+    file is not evidence that the four values are usable. Keep this parser
+    data-only so callers do not have to source an operator-controlled file.
+    """
+    try:
+        values: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                values[key] = value
+        if values.get("MEASURE_METHOD") != "sustained-v3":
+            return False
+        if not values.get("MEASURED_AT"):
+            return False
+        return all(int(values[key]) > 0 for key in REQUIRED_CACHE_FIELDS)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def host_context_error(root: Path | None = None) -> str | None:
+    """Refuse a benchmark that would write container-local "host" state.
+
+    This script is part of host-setup and writes the host baseline consumed by
+    the host's cgroup services. Container root, even with a Docker socket, is
+    not host root and does not share the host's filesystem or PID 1.
+    """
+    root = Path("/") if root is None else root
+    if (
+        (root / ".dockerenv").exists()
+        or (root / "run/.containerenv").exists()
+        or (root == Path("/") and os.environ.get("container"))
+    ):
+        return (
+            "the IO baseline must run from a host shell, not inside a devcontainer "
+            "or other container; UID 0 in a container is not host root"
+        )
+    try:
+        pid1 = (root / "proc/1/comm").read_text(encoding="utf-8").strip()
+    except OSError:
+        pid1 = ""
+    if pid1 != "systemd" or not (root / "run/systemd/system").is_dir():
+        return (
+            "the IO baseline requires systemd as PID 1 and /run/systemd/system; "
+            "run it on the Docker host"
+        )
+    return None
 
 
 def print_cached_cache(path: Path) -> None:
@@ -273,6 +331,15 @@ def pct(value: int, percent: int) -> int:
 def main() -> int:
     args = parse_args()
 
+    context_error = host_context_error()
+    if context_error:
+        print(f"ERROR: {context_error}", file=sys.stderr)
+        print(
+            "Leave the devcontainer and rerun this command from the host checkout.",
+            file=sys.stderr,
+        )
+        return 2
+
     if os.geteuid() != 0:
         print("run as root", file=sys.stderr)
         return 1
@@ -282,7 +349,7 @@ def main() -> int:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
 
-    if OUT.exists() and not args.force and cache_is_fresh(OUT):
+    if OUT.exists() and not args.force and cache_is_fresh(OUT) and cache_is_valid(OUT):
         print_cached_cache(OUT)
         return 0
 

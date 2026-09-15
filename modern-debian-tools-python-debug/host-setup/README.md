@@ -357,32 +357,59 @@ sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
 ```
 Then rebuild/recreate your devcontainer (above).
 
-`--force` is accepted only together with `--wizard`; after the candidate
-passes validation it permits the normal backup-and-replace operation. This
-keeps the explicit re-seed intent without ever activating example values
-blindly. The wizard walks every section it knows with existing values
-pre-filled as defaults, and rejects hierarchy or live-host aggregate
-violations before rendering.
+`--wizard` with an existing config preserves its values as defaults and, after
+the candidate passes validation, backs up and replaces that config. Add
+`--force` only when you deliberately want to start the answers from the
+current repository example instead, for example to review every new default
+after a schema change. The old file is still backed up; validation happens
+before either backup or replacement. Deleting the old file first is different:
+it loses the source of the old defaults and has no automatic backup if the
+wizard is interrupted. The wizard walks every section it knows, preserves
+non-prompted values represented by the template, and rejects hierarchy or
+live-host aggregate violations before rendering.
 
 ## Quick start
 
+Run the commands below from a shell on the Docker host. Do not run host-setup
+from the MDT devcontainer: container root cannot modify the host's systemd,
+cgroup, or `/etc` state, and the installer refuses that context.
+
 ```bash
-sudo ./install.sh --wizard         # preferred: derive live host values and write the config
+sudo ./install.sh --wizard         # preserve current values; derive missing host values
+sudo ./install.sh --wizard --force # deliberately re-seed defaults from this example
 # or: edit a complete, host-specific /etc/mdt/host-setup.env, then run install.sh
 sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~4 min saturated IO — quiet window!)
 sudo mdt-host-check.sh             # verify
 ```
 
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
-`host-setup.env.example`'s own sections interactively (IO device, IO cap
-percentages, every governed slice's four memory controls, CPU/IO weights,
-the memory-min-guaranteed ceiling, buildkitd, Docker daemon.json keys) and
+`host-setup.env.example`'s own sections interactively (IO device, baseline
+cache path and freshness, IO cap percentages, every governed slice's four
+memory controls, CPU/IO weights, swap/zswap controls, the memory-min-
+guaranteed ceiling, BuildKit, Docker daemon.json keys, and reactive watcher
+limits) and
 proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
 instead of the shipped example's fixed figures — Enter accepts the shown
 default at every step, and it falls through into the same render/apply logic
-after candidate validation. The manual path requires a complete valid config;
-the wizard writes its candidate only after validation and backs up any existing
-config only after that point.
+after candidate validation. Existing values are shown as `existing:` defaults,
+host-derived values as `derived:`, and template values as `example:`. Type
+`none` only where a prompt says it clears an optional directive; blank
+CPUQuota and MemorySwapMax mean auto-detect at install time. Required
+MemoryHigh and MemoryMax values must be positive. The manual path requires a
+complete valid config; the wizard writes its candidate only after the prompts
+complete and the installer backs up any existing config only after validation.
+
+Host setup is host-only. Run `install.sh` and the wizard from a shell on the
+Docker host being configured, not from the MDT devcontainer. UID 0 in a
+devcontainer is container root, not host root, and cannot safely apply the
+host's `/etc`, systemd, or cgroup policy. The installer and wizard refuse that
+context before reading or writing host-setup state. If a diagnostic run inside
+a devcontainer reports `overlay`, stop and leave the container: that is
+evidence that the command is looking at the container's mount namespace. From
+the host shell, enter a `/dev/...` block-device node if discovery still cannot
+expose the Docker-data device. The `/dev/...` validation remains shape-only as
+defense in depth; it does not pretend that a path from another namespace can be
+`stat`ed locally.
 
 Then recreate the containers that should be governed (placement is
 create-time): rebuild the devcontainer, `docker compose up -d --force-recreate`
@@ -539,9 +566,21 @@ Full reasoning for each gap, and why raw cgroupfs writes lose to
 
 `mdt-io-baseline.py` measures 4 sustained ceilings (r/w IOPS at 4k QD32, r/w
 bandwidth at 128k QD8, libaio, incompressible buffers, ramp+runtime defaults
-10+40s) and caches them as `KEY=VALUE` in `/var/lib/mdt/io-baseline.env`
-(atomic write, 30-day freshness, `--force` to remeasure). **It saturates the
-disk for ~4 minutes** — run it in a quiet window.
+10+40s) and caches them as `KEY=VALUE` in the path configured by
+`IO_BASELINE_ENV` (the default is `/var/lib/mdt/io-baseline.env`; atomic write,
+30-day freshness, `--force` to remeasure). Its temporary fio test file is
+`/var/lib/mdt/io-baseline.testfile` unless `IO_BASELINE_TESTFILE` is set. That
+file must be on the same block device as `IO_DEV_PATH`, or the measurement is
+for a different device. **It saturates the test-file device for ~4 minutes** —
+run it in a quiet window.
+
+The baseline must also be run from the Docker host shell. `/var/lib/mdt` and
+`IO_BASELINE_TESTFILE` are host paths, and the test file must be on the same
+host block device as `IO_DEV_PATH`; otherwise the cached numbers describe the
+wrong device. If the launcher sees a devcontainer, it refuses before the
+benchmark can write a misleading container-local cache. A host-side IO probe
+that cannot expose a `/dev/...` source simply leaves static IO caps omitted and
+must be reviewed by the operator.
 
 The caps derived from it sit in a **60–80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds 10–15+
@@ -557,7 +596,7 @@ complementary layers answering different questions, not a redundant pair to
 collapse into one number.
 
 **Bootstrapping from gstammtisch.** `install.sh` copies
-`/var/lib/gstammtisch/io-baseline.env` to `/var/lib/mdt/io-baseline.env` on
+`/var/lib/gstammtisch/io-baseline.env` to the configured `IO_BASELINE_ENV` on
 first run if the latter doesn't exist yet and the former does, rather than
 re-running the ~4min benchmark — mdt owns its own copy at its own canonical
 path from then on (no runtime cross-reference between the two companions).
