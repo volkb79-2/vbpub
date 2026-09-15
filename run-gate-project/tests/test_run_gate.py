@@ -14787,15 +14787,15 @@ class TestBareHostProfilingWiring:
             clean_tree = false
         """
 
-    def test_daemon_absent_falls_back_to_rusage_and_discloses_why(
+    def test_empty_inspect_falls_back_to_rusage_as_indeterminate(
             self, tmp_path, monkeypatch, capsys):
         # No `resolve_self_container_id` monkeypatch here on purpose:
         # `fake_docker`'s shim has no `inspect)` case at all, so the REAL
         # `resolve_self_container_id` runs against it and reads empty
         # stdout back -- deterministic regardless of this test process's
-        # own /etc/hostname, and exactly the "docker is present, but this
-        # process is not one of ITS containers" case every plain host
-        # invocation hits.
+        # own /etc/hostname. A successful empty response is indeterminate,
+        # not proof that this process is outside Docker; either way the lane
+        # must retain the safe rusage fallback.
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
@@ -14805,7 +14805,8 @@ class TestBareHostProfilingWiring:
         assert run_gate.main(["suite"]) == 0
         captured = capsys.readouterr()
         assert "host memory PSI full avg10=" in captured.out
-        assert "not running in a container" in captured.err
+        assert "could not verify current container identity" in captured.err
+        assert "not running in a container" not in captured.err
         assert "coarse rusage sampling only" in captured.err
         latest = lane_slot(proj)["latest"]
         res = latest["resources"]
@@ -14857,7 +14858,7 @@ class TestBareHostProfilingWiring:
         deriving duration by subtracting them would record zero."""
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         repo, proj = make_history_repo(tmp_path, self._config())
-        fake_docker(tmp_path, monkeypatch)  # inspect miss -> rusage path
+        fake_docker(tmp_path, monkeypatch)  # empty inspect -> rusage path
         real_time = run_gate.time
         monotonic_values = iter((100.0, 100.375))
 
@@ -15115,7 +15116,7 @@ class TestBareHostProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config().replace(
             'argv = ["true"]', 'argv = ["sh", "-c", "exit 3"]'))
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
-        fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
+        fake_docker(tmp_path, monkeypatch)  # empty inspect -> rusage mode
 
         def _boom(pid, options):
             raise OSError("planted: wait4 exploded")
@@ -15124,7 +15125,9 @@ class TestBareHostProfilingWiring:
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None
         assert latest["profile_error"] is not None
-        assert "not running in a container" in latest["profile_error"]
+        assert "could not verify current container identity" in \
+            latest["profile_error"]
+        assert "not running in a container" not in latest["profile_error"]
         assert "wait4 exploded" in latest["profile_error"]
         err = capsys.readouterr().err
         assert "wait4 exploded" in err
@@ -15573,8 +15576,8 @@ class TestSelfRssBytes:
 
 class TestResolveSelfContainerIdDirectBranches:
     """RG-57's `resolve_self_container_id` -- the bare-host daemon path's
-    own target resolution -- exercised directly against each of its five
-    own early-return branches. Testing these through `main()` would
+    own target resolution -- exercised directly against each of its own
+    early-return branches. Testing these through `main()` would
     require controlling this test process's own real `/etc/hostname`;
     calling the function directly with a narrowly-scoped `Path.read_text`
     monkeypatch (the same pattern `TestOwnerLivenessAndFollowEdges` already
