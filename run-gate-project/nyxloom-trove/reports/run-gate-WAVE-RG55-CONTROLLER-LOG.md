@@ -2645,3 +2645,28 @@ slot. Its exact container is
 verified at `NanoCpus=3000000000`. The run is detached; its explicit completion
 marker is `/tmp/rg55-p1-resume.log` (`P1_RESUME_EXIT=`), and no commit may be
 made to the judged tree until the verdict is read separately.
+
+### RW-216 — 2026-09-15 00:37:47Z — P1 budget placeholders rejudged explicitly
+
+The plain P1 `run-gate.py r2` resume completed with exit 4 but merely merged
+the prior 252 records (`resumed_total=252`), leaving the two
+`budget_exceeded` placeholders untouched. This is because P1's embedded assay
+source predates `--rejudge-outcome`; the attempted flag was refused before
+execution. A properly mounted tester-unified run then used a temporary copy of
+the exact resume state with only those two records omitted. It rejudged the
+same tree `5fd0ef13` from `00:31:13Z` to `00:34:19Z`, producing 252 total,
+245 killed, 7 survived, 0 budget-exceeded, 0 crashed, exit 1. The seven
+survivors are the already documented behavioral equivalents; the state copy's
+new records were copied back to the worktree's resume store. The missing
+consumer forwarding of `--rejudge-outcome budget_exceeded` is a tooling
+follow-up, not silently treated as a green P1 mutation verdict.
+
+### RW-217 — 2026-09-15 00:37:25Z — P4 post-repair mutation gate launched
+
+P4's clean post-repair tip `c8f1654cc371c09e78faa6bf66feaf2aaf2e1a22`
+passed selftest, assay-r1, and assay-r3. With P6 as the only other active
+mutation run, P4's required fresh `assay-r2 --base main` was launched under
+the second mutation slot with `nice -n 19 ionice -c 3`. P4's declared R2
+environment is bare-host, so no tester-unified container is expected for this
+run; its completion marker is `/tmp/rg55-p4-r2.log` (`P4_R2_EXIT=`). No HEAD
+movement or worktree edit is permitted while it judges.
