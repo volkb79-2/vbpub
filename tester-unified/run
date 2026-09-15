@@ -83,6 +83,12 @@ case "$git_root/" in
 esac
 git -C "$git_root" check-ignore -q .assay/tester-unified-probe \
     || die "'$git_root/.assay/' must be git-ignored before tester runtime state is written"
+workspace_git_root=$(git -C "$workspace_root" rev-parse --show-toplevel 2>/dev/null) \
+    || die "derived workspace '$workspace_root' is not a git checkout"
+[[ $workspace_git_root == "$workspace_root" ]] \
+    || die "derived mount target '$workspace_root' is not the repository root '$workspace_git_root'"
+git -C "$workspace_root" check-ignore -q .assay/tester-unified-probe \
+    || die "'$workspace_root/.assay/' must be git-ignored before the estate launch lock is written"
 
 if [[ -z $evidence_root ]]; then
     evidence_root=$git_root/.assay/tester-unified-runs
@@ -177,7 +183,9 @@ abort_started() {
 # Serialize the count-and-launch boundary.  This conservative estate cap keeps
 # at most two tester containers live, which necessarily keeps mutation lanes
 # within their hard maximum of two as well.
-exec 9>"$git_root/.assay/tester-unified-launch.lock"
+launch_lock=$workspace_root/.assay/tester-unified-launch.lock
+mkdir -p -- "$workspace_root/.assay"
+exec 9>"$launch_lock"
 flock 9
 active_count=$("$docker_bin" ps --filter "ancestor=$image" --format '{{.ID}}' | awk 'NF {n++} END {print n+0}')
 if ((active_count >= 2)); then
@@ -260,6 +268,7 @@ done
     printf 'workspace_host_fsroot=%s\n' "$host_workspace"
     printf 'temp_container_path=%s\n' "$tmp_dir"
     printf 'temp_host_path=%s\n' "$host_tmp"
+    printf 'launch_lock=%s\n' "$launch_lock"
 } > "$run_evidence/launch.txt"
 "$docker_bin" inspect "$name" > "$run_evidence/container.inspect.json" \
     || abort_started "could not preserve pre-wait inspect evidence"

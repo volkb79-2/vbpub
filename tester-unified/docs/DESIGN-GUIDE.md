@@ -25,8 +25,9 @@ HOME, and XDG identity.
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more
 than two concurrent tester containers, and any mismatch in Docker's accepted
-user/cgroup/CPU/workdir/mount state. These are infrastructure outcomes, not
-functional test verdicts.
+user/cgroup/CPU/workdir/mount state. Count and launch are serialized by one
+lock beneath the enclosing workspace's ignored `.assay/`, not by a per-worktree
+lock. These are infrastructure outcomes, not functional test verdicts.
 
 See [the user-facing overview](../README.md) and
 [consumer commands](CONSUMERS.md#running-a-project-gate).
