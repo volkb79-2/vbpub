@@ -910,7 +910,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   infrastructure (`R-43e`'s own degradation ladder), so `doctor` never
   blocks a project on it being unavailable. When enabled: `[WARN]` naming
   the SAME `daemon_not_running_reason()` a live run's own warning uses
-  (`R-43e`) when the named daemon container is absent or unreachable;
+  (`R-43e`) only when Docker positively reports the named daemon container
+  absent/stopped; a failed `docker ps` is a distinct `[WARN]` saying its
+  state could not be determined, never absence with a start-it remedy;
   `[OK]` naming `cgprofile`/contract/DAMON versions when it answers. A
   reachable daemon additionally answers `ctl host` for host- and
   slice-level pressure (`[WARN]` if unreachable, one `[OK]` line per slice
@@ -1491,7 +1493,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     owner-liveness questions: a record whose `runner` is present and not
     `"container"` is a FOREIGN record, disclosed by name (both in `--dry-
     run` and live), and touched NOT AT ALL — no attach, no follow, no
-    collect, no removal, `--fresh` included. A record with no `runner` key
+    collect, no removal, no replacement launch or record overwrite,
+    `--fresh` included. Live is a terminal refusal (exit 2); dry-run names
+    that exact outcome and returns without constructing a fresh run. A
+    record with no `runner` key
     predates this field and is read as `"container"` (the only writer that
     existed before RG-60), so old records keep their old behavior
     unchanged.
@@ -1753,12 +1758,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
     profiled once `[profile]` is enabled — it is NOT categorically
     unprofiled (superseded RG-55 v1 text). Daemon path: the target is
-    resolved via `resolve_self_container_id()` — `/etc/hostname`, then a
-    DIRECT `docker inspect` (never `container_state()`, which raises on an
-    ambiguous docker failure and must never be allowed to abort a
-    bare-host lane's own run); a read failure or an inspect miss is the
-    ORDINARY "not running in a container" case, not an error, and degrades
-    to the rusage path with a disclosed reason. On success, scope is
+    resolved via `resolve_self_container_id()` — `/etc/hostname` locates a
+    candidate, a DIRECT `docker inspect` supplies its full id, and a bounded
+    `docker exec <id> /usr/bin/readlink /proc/self/ns/mnt` must equal this
+    process's own mount-namespace inode (never `container_state()`, which
+    raises on an ambiguous docker failure and must never be allowed to abort
+    a bare-host lane's own run). Name existence alone is not object identity.
+    A positive Docker “no such object/container” answer is the ordinary
+    "not running in a container" case; inaccessible Docker, malformed ids,
+    and namespace mismatch are explicitly indeterminate. Every failure
+    degrades to the rusage path with its precise reason. On success, scope is
     ALWAYS `container-shared` (`R-43b`) and the profile session is
     disclosed as an EXTRA, bare-host-only line: `profile session <id> is
     DEVCONTAINER-WIDE ... cgroup numbers reflect the whole devcontainer,
@@ -1781,7 +1790,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `footprint`/`doctor`/`history` (`R-44a`) next to any median it
     produces — `cpu.seconds = ru.ru_utime + ru.ru_stime` (that child's
     total, not a delta — `wait4` hands back the whole child's accounting
-    directly), `cpu.cores_avg` derived; every OTHER field
+    directly), `duration_seconds` from a monotonic interval around the child
+    (the whole-second UTC display stamps are never subtracted),
+    `cpu.cores_avg` derived; every OTHER field
     (`pressure`, `faults`, `pids`, `damon`, `host`, `events`, `session`,
     `daemon`, `target.*`, `samples`, `interval_seconds`) `null` (contract
     Sec 1.7: absent means unknown, never fabricated).
@@ -1821,7 +1832,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     every OTHER bare-host lane running concurrently in this devcontainer.
     `R-36h` containment applies exactly as elsewhere: self-id resolution,
     `ctl start`, AND the `wait4()` bracket are each individually guarded
-    (an ordinary `Exception` there degrades to a null/partial record, the
+    (an ordinary `Exception` there preserves any earlier degradation reason,
+    appends the wait failure, and degrades to a null record, the
     child still reaped via a plain `wait()` so it is never launched twice
     and the lane's own exit code is unaffected; a `KeyboardInterrupt` or
     similar instead kills the child and re-raises, mirroring

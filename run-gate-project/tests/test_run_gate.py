@@ -10106,8 +10106,8 @@ class TestInflightRecordDecisions:
             runner="exec")
         before = record.read_bytes()
         assert run_gate.main(["suite"]) == 2
-        out = capsys.readouterr().out
-        assert "foreign record — refusing" in out
+        captured = capsys.readouterr()
+        assert "foreign record — refusing" in captured.err
         assert [c for c in _docker_calls(log)
                if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
         assert [c for c in _docker_calls(log)
@@ -10139,15 +10139,15 @@ class TestInflightRecordDecisions:
             runner="exec")
         before = record.read_bytes()
         assert run_gate.main(["suite", "--fresh"]) == 2
-        out = capsys.readouterr().out
-        assert "foreign record — refusing" in out
+        captured = capsys.readouterr()
+        assert "foreign record — refusing" in captured.err
         assert [c for c in _docker_calls(log)
                if c[0] == "rm" and "dstdns-98535c-test-runner" in c] == []
         assert lane_runs(log) == []
         assert record.read_bytes() == before
         assert (state / "dstdns-98535c-test-runner").exists()
         assert len(calls) == 1
-        assert calls[0]["flush"] is True
+        assert calls[0]["file"] is sys.stderr
 
     def test_a_record_with_no_runner_key_is_treated_as_the_container_path(
             self, tmp_path, monkeypatch, capsys):
@@ -15398,7 +15398,7 @@ class TestBareHostRusageArithmetic:
             0.375)
         resources = result["resources"]
         assert resources["duration_seconds"] == 0.375
-        assert resources["cpu"]["cores_avg"] == pytest.approx(0.2 / 0.375)
+        assert resources["cpu"]["cores_avg"] == 0.533
 
     # -- RW-46b: memory.floor_bytes / memory.peak_at_floor -----------------
 
@@ -15855,6 +15855,34 @@ class TestProfilerClientDegradesOnMalformedResponses:
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
         assert reason is not None and "summary" in reason
+
+    @pytest.mark.parametrize("error", ["denied", ["denied"], 7])
+    def test_refusal_with_non_object_error_degrades_without_raising(
+            self, tmp_path, monkeypatch, error):
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        body = json.dumps({"ok": False, "contract": 1, "error": error})
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           version=(body, 3, None))
+        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert reason is not None and "non-object 'error'" in reason
+
+    def test_json_parser_exception_degrades_without_raising(self, monkeypatch):
+        completed = subprocess.CompletedProcess(
+            ["docker"], 0, stdout="{}", stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *a, **k: completed)
+
+        def boom(text):
+            raise RecursionError("planted: JSON nesting too deep")
+
+        monkeypatch.setattr(run_gate.json, "loads", boom)
+        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        doc, reason = client.version()
+        assert doc is None
+        assert reason is not None and "JSON parser failed" in reason
 
     def test_version_without_a_required_key_still_succeeds(self, tmp_path, monkeypatch):
         # `version`/`host`/`status` have NO entry in `_REQUIRED_KEY` -- the

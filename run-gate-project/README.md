@@ -248,6 +248,11 @@ the tool's reason to exist and MUST be implemented + tested:
   of the read-scope hazard RG-27 closed for `history`).
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
+- **Recovery records are ownership boundaries:** if a container lane finds
+  an inflight record written by the exec runner, the live invocation refuses
+  with exit 2 and starts nothing. It never treats “foreign” as “absent,” even
+  with `--fresh`, because starting a replacement would overwrite the only
+  recovery pointer to the still-owned runner (SPEC `R-39f`).
   Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
   (infrastructure) so scripts never parse prose to tell them apart.
 - **Gate-safe paths:** `{worktree}` is substituted textually into consumer
@@ -270,8 +275,12 @@ the tool's reason to exist and MUST be implemented + tested:
   (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
   memory-full stall join `history`'s own duration series (schema 2, SPEC
   `R-36j`) — precisely from the daemon (`cgprofile-host-daemon`, `docker
-  exec ... cgprofile ctl ...`), or a coarser in-lane cgroup sample when it
-  is absent; never nothing, unless profiling is disabled outright
+  exec ... cgprofile ctl ...`), or a coarser in-lane profile when it is
+  absent: cgroup sampling for container/exec lanes and child-specific
+  `wait4()` accounting for bare-host lanes. Bare-host daemon targeting uses
+  a Docker object only after its mount namespace proves it is this process's
+  container; a hostname match alone is never identity. Never nothing, unless
+  profiling is disabled outright
   (`RUN_GATE_PROFILE=off`, `[profile] enabled = false`, or a lane's own
   `profile = false`). `./run-gate.py footprint [LANE] [--json] [--write]`
   distills that history into a COMMITTED `run-gate.footprint.json` —

@@ -12,6 +12,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - fix(run-gate): make `gate-full` propagate an explicit comparison base to
   its delegating `assay-r1` sub-lane, so linked worktrees can run the complete
   gate with `--base REF`.
+- **P4 final-review hardening (2026-09-15).** A foreign-runner inflight
+  record is now a terminal exit-2 refusal (including `--fresh`), so the
+  container runner cannot start a replacement and overwrite the protected
+  record. Bare-host self targeting now treats `/etc/hostname` as candidate
+  discovery only and proves the full Docker object by mount-namespace
+  equality before starting a session. Daemon absence now requires specific
+  Docker-owned absent/stopped text: exit 125, permission failures, and a
+  failed `docker ps` remain explicitly indeterminate. Rusage duration comes
+  from a monotonic interval rather than whole-second display stamps, and a
+  `wait4()` failure appends to (rather than masks) an earlier degradation
+  reason before reporting no profile. Finally, successful daemon responses
+  validate usable `session`/object `summary` values, while an optional
+  non-object `target` is accepted without leaking the valid session; parser
+  failures and non-object refusal `error` values also honor the client's
+  never-raises degradation contract.
 
 ### Added
 - **RG-57 — bare-host lanes are profiled (RW-27b).** Bare-host lanes used
@@ -19,7 +34,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   to sample); now every lane kind is profiled once `[profile]` is
   enabled. Daemon path: the target is run-gate's OWN process (self
   container id resolved from `/etc/hostname` + a direct `docker
-  inspect`), scope ALWAYS `container-shared` (a bare-host invocation
+  inspect` and proved against this process's mount namespace), scope ALWAYS
+  `container-shared` (a bare-host invocation
   shares its devcontainer's cgroup with everything else in it),
   disclosed as DEVCONTAINER-WIDE. Daemon-absent path: `os.wait4(pid, 0)`
   on the LANE'S OWN child (`Popen` + `wait4`) — `method: "rusage"`,
@@ -82,7 +98,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   record" caveat). **Round-1 review (RW-43/B3):** both writers now stamp
   `runner` (`"container"`/`"exec"`) into the record, and the container
   path's `resolve_inflight` refuses to attach, follow, collect, or
-  `docker rm -f` a record some OTHER runner wrote (SPEC `R-39f`) — the
+  `docker rm -f` a record some OTHER runner wrote, and refuses to start a
+  replacement that would overwrite it (SPEC `R-39f`) — the
   gap RG-60 opened: an exec-written record sitting at the SAME path a
   container lane reads, indistinguishable from one of its own, so a
   lane's `environment` flipping from exec to an ephemeral-container one
@@ -180,20 +197,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   exception mentioning those same words
   (`cgprofile.errors.TargetError: ... is not running`), misreporting a
   crashing daemon as "not deployed at all". Narrowed to docker's own exec
-  failure signature specifically: one of docker's reserved exit codes
-  (125/126/127) OR a stderr line PREFIXED (not merely containing) with
-  `docker:`/`Error response from daemon:` — never a bare substring match
-  against text a daemon's own application code might have produced.
+  failure signature specifically: a stderr line PREFIXED (not merely
+  containing) with `docker:`/`Error response from daemon:` that also names
+  a missing/stopped container — never a bare substring match against text a
+  daemon's own application code might have produced, and never an exit code
+  alone.
   **Round-2 review (S11):** those three exit codes are not one condition.
-  125 (the docker CLI/daemon could not even start the command) is the
-  only one consistent with "container absent/stopped"; 126 (command not
+  125 says only that Docker itself could not complete the request; permission,
+  transport, and argument failures collapse into it too, so it is explicitly
+  indeterminate unless stderr positively names absence. 126 (command not
   executable) and 127 (not found) mean `docker exec` REACHED a live
   container and `cgprofile` itself could not be started inside it — a
   broken image or PATH, reproduced live on this host. Folding all three
   into "not running ... ciu up" told the operator to start a container
   that was already up. 126/127 now get their own `daemon_broken_reason()`
-  wording naming the real condition; 125 keeps `daemon_not_running_
-  reason()`.
+  wording naming the real condition.
 - **RG-58 — bare-host `stall_timeout` gets a load-time WARNING + a
   matching `doctor` WARN, never a refusal (RW-27a).** A `stall_timeout`
   declared on a `bare-host` lane was silently inert (`run_bare_host_lane`

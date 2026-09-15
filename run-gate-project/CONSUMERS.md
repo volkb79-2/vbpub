@@ -69,7 +69,12 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    without `docker exec` rights to that daemon (a locked-down CI box, a
    sandboxed agent) should set `RUN_GATE_PROFILE=off` rather than eat one
    `docker exec`-per-tick failure per profiled lane; `doctor`'s "profiler"
-   check reports the daemon's reachability either way. `run-gate.footprint.json`
+   check reports the daemon's reachability either way. A Docker permission,
+   transport, or `docker ps` failure is reported as **state unknown**, never
+   as “daemon absent” with a start-it remedy. On the bare-host daemon path,
+   run-gate resolves `/etc/hostname` only as a candidate and compares that
+   Docker object's mount namespace with its own; a mismatch or unverifiable
+   identity safely takes the `wait4()` fallback. `run-gate.footprint.json`
    (written by `./run-gate.py footprint --write`, once a lane's history has
    at least one profiled PASS run) is **TRACKED — commit it**, unlike
    `.run-gate/` itself (still gitignored, per-instance telemetry): the
@@ -677,6 +682,13 @@ sub-lane directly: `./run-gate.py sub --fresh`. A consumer that wants one
 sub-lane always fresh writes `--fresh` into that sub-invocation's own static
 argv inside the conjunction — and thereby forfeits re-attach for it, which
 is a deliberate trade, not a default.
+
+If a lane changed from an exec environment to an ephemeral-container
+environment while an exec-written inflight record remains, the new runner
+refuses with exit 2 and starts nothing — `--fresh` does not override ownership.
+Confirm the recorded exec run is over, then remove the record path named by
+the refusal and retry. This is intentionally different from an ordinary
+same-runner stale container, where `--fresh` owns the cleanup.
 
 ### Consumer examples
 

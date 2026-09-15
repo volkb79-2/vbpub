@@ -275,6 +275,9 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+# Self-target discovery is optional profiling preflight, so neither Docker
+# identity probe may hold a lane longer than the ctl status/version probes.
+PROFILE_IDENTITY_TIMEOUT_SECONDS = 5
 PROFILE_CONTRACT = 1                # contract Sec 1.4
 PROFILE_TOKEN_ENV = "RUN_GATE_PROFILE_SESSION"     # contract Sec 4.1
 PROFILE_ENABLED_DEFAULT = True
@@ -1121,32 +1124,35 @@ def _last_successful(values) -> object:
 # demonstrably running is the opposite of RG-59's own goal. Narrowed to
 # docker's own exec failure signature specifically: `docker exec` itself
 # never reaching `cgprofile` returns one of docker's own reserved exit
-# codes OR prints a line prefixed with docker's own "docker:"/"Error
-# response from daemon:" wording -- never a bare substring match against
-# arbitrary stderr content a daemon's OWN application code might have
-# produced.
+# wording that both belongs to Docker and specifically names absence or a
+# stopped container -- never an exit code alone, and never a bare substring
+# match against arbitrary stderr content a daemon's OWN application code
+# might have produced.
 #
 # S11 (round-2 review, RW-51): those reserved exit codes are NOT all the
-# same condition. 125 = the docker CLI/daemon could not even start the
-# command -- consistent with "the target container is absent/stopped",
-# the ONLY case `daemon_not_running_reason`'s "not running ... ciu up"
-# wording is honest for. 126/127 (container command not executable / not
+# same condition. 125 says only that the Docker CLI itself failed; permission,
+# transport, argument, and daemon failures all collapse into it, so it cannot
+# certify that a particular container is absent. 126/127 (container command not
 # found) mean `docker exec` DID reach a live container -- the container is
 # running, `cgprofile` itself could not be started inside it (a broken
 # image or PATH), and telling the operator to `ciu up` a container that is
 # already up is the wrong remedy for the wrong cause, reproduced live on
 # this host (an OCI runtime exec failure, exit 126). Split into two exit-
-# code sets with two distinct reasons instead of one.
-_DAEMON_ABSENT_EXIT_CODES = (125,)
+# code set and a distinct reason instead of folding them into absence.
 _DAEMON_BROKEN_EXIT_CODES = (126, 127)
 _DOCKER_EXEC_FAILURE_STDERR_PREFIXES = ("docker:", "Error response from daemon:")
+_DOCKER_CONTAINER_ABSENCE_MARKERS = (
+    "no such container", "no such object", "is not running")
 
 
 def _stderr_names_daemon_not_running(stderr_tail: str,
                                      returncode: int | None = None) -> bool:
-    if returncode in _DAEMON_ABSENT_EXIT_CODES:
-        return True
-    return stderr_tail.strip().startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES)
+    del returncode  # absence is a statement about stderr content, not a code
+    text = stderr_tail.strip()
+    if not text.startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES):
+        return False
+    folded = text.casefold()
+    return any(marker in folded for marker in _DOCKER_CONTAINER_ABSENCE_MARKERS)
 
 
 def daemon_not_running_reason(daemon_name: str) -> str:
@@ -1248,8 +1254,16 @@ class ProfilerClient:
             # wording still wins even on one of these exit codes.
             if proc.returncode in _DAEMON_BROKEN_EXIT_CODES:
                 return None, daemon_broken_reason(self.daemon)
+            if proc.returncode != 0 and not proc.stdout.strip():
+                return None, (f"`docker exec` for `cgprofile ctl {verb}` "
+                              f"failed before a valid cgprofile response "
+                              f"(exit {proc.returncode}); stderr: "
+                              f"{stderr_tail}")
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
                           f"(exit {proc.returncode}); stderr: {stderr_tail}")
+        except Exception as exc:
+            return None, (f"`cgprofile ctl {verb}` JSON parser failed "
+                          f"unexpectedly: {exc}")
         if not isinstance(doc, dict):
             return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
                           f"(exit {proc.returncode})")
@@ -1258,7 +1272,11 @@ class ProfilerClient:
                           f"{doc.get('contract')!r}, this client accepts "
                           f"{PROFILE_CONTRACT} only")
         if not doc.get("ok", False):
-            err = doc.get("error") or {}
+            err = doc.get("error")
+            if err is not None and not isinstance(err, dict):
+                return None, (f"`cgprofile ctl {verb}` response has a "
+                              "non-object 'error' value")
+            err = err or {}
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
@@ -1272,6 +1290,14 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` response is missing the "
                           f"required {required!r} key (contract Sec 1.4 "
                           f"minor-version skew?)")
+        if verb == "start" and (
+                not isinstance(doc["session"], str)
+                or not doc["session"].strip()):
+            return None, ("`cgprofile ctl start` response has an unusable "
+                          "'session' value (expected a non-empty string)")
+        if verb == "stop" and not isinstance(doc["summary"], dict):
+            return None, ("`cgprofile ctl stop` response has an unusable "
+                          "'summary' value (expected an object)")
         return doc, None
 
     def version(self) -> tuple[dict | None, str | None]:
@@ -1810,18 +1836,23 @@ def print_host_pressure_line(profiler_status: str | None = None) -> None:
 def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
     """RG-57/RW-27b — the bare-host daemon path's own target resolution: is
     THIS run-gate process itself running inside a container? Read
-    `/etc/hostname` (docker's own convention: a container's hostname IS its
-    short id, or the full id when `--hostname` was never overridden), then
-    confirm via a DIRECT `docker inspect`, never `container_state()` — that
+    `/etc/hostname` only to locate a CANDIDATE Docker object, resolve its full
+    id with direct `docker inspect`, then require the candidate's mount-
+    namespace inode (read by `docker exec`) to equal this process's own. A
+    hostname/name match alone proves only that some object has that name; it
+    is never accepted as proof that the object contains this process. Never
+    call `container_state()` — that
     one calls `fail_infra()` and raises on an AMBIGUOUS docker failure
     (contract: leave the inflight record untouched, let a human fix
     docker), which must never be allowed to abort a bare-host lane's own
     run just because profiling could not resolve a target. Written in
     `ProfilerClient._ctl`'s own never-raises style instead: neither a read
-    failure nor an inspect miss is an ERROR here — "not running in a
-    container" is the ORDINARY case for a plain host invocation (a laptop,
-    a CI runner with no docker rights at all), and the caller degrades to
-    the rusage path with the reason disclosed, never a fatal one.
+    failure nor an inspect miss is fatal to the lane. A positive Docker
+    "no such object/container" answer is the ordinary "not running in a
+    container" case; inaccessible Docker, malformed output, and a namespace
+    mismatch are reported as indeterminate identity instead of being folded
+    into absence. The caller degrades to the rusage path with the precise
+    reason disclosed.
 
     Returns `(container_id, skip_reason)` — exactly one is not `None`."""
     try:
@@ -1831,18 +1862,61 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
     if not hostname:
         return None, "not running in a container (/etc/hostname is empty)"
     try:
-        probe = subprocess.run([docker, "inspect", "-f", "{{.Id}}", hostname],
-                               capture_output=True, text=True)
+        self_mount_ns = os.readlink("/proc/self/ns/mnt")
     except OSError as exc:
-        return None, f"not running in a container (docker inspect failed: {exc})"
+        return None, ("could not verify current container identity "
+                      f"(could not read /proc/self/ns/mnt: {exc})")
+    if re.fullmatch(r"mnt:\[\d+\]", self_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(/proc/self/ns/mnt returned {self_mount_ns!r})")
+    try:
+        probe = subprocess.run([docker, "inspect", "-f", "{{.Id}}", hostname],
+                               capture_output=True, text=True,
+                               errors="replace",
+                               timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect failed: {exc})")
     if probe.returncode != 0:
         tail = (probe.stderr.strip().splitlines() or ["(no stderr)"])[-1]
-        return None, (f"not running in a container (docker inspect "
-                      f"{hostname!r}: {tail})")
+        if any(marker in tail.casefold()
+               for marker in ("no such object", "no such container")):
+            return None, (f"not running in a container (docker inspect "
+                          f"{hostname!r}: {tail})")
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} failed with exit "
+                      f"{probe.returncode}: {tail})")
     container_id = probe.stdout.strip()
     if not container_id:
         return None, (f"not running in a container (docker inspect "
                       f"{hostname!r} returned no id)")
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect returned malformed container id "
+                      f"{container_id!r})")
+    try:
+        namespace_probe = subprocess.run(
+            [docker, "exec", container_id, "/usr/bin/readlink",
+             "/proc/self/ns/mnt"], capture_output=True, text=True,
+            errors="replace", timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed: {exc})")
+    if namespace_probe.returncode != 0:
+        tail = (namespace_probe.stderr.strip().splitlines()
+                or ["(no stderr)"])[-1]
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed with exit "
+                      f"{namespace_probe.returncode}: {tail})")
+    candidate_mount_ns = namespace_probe.stdout.strip()
+    if re.fullmatch(r"mnt:\[\d+\]", candidate_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe returned "
+                      f"{candidate_mount_ns!r})")
+    if candidate_mount_ns != self_mount_ns:
+        return None, (f"hostname {hostname!r} resolves to container "
+                      f"{container_id}, but that object does not identify "
+                      f"this process's container (mount namespaces differ)")
     return container_id, None
 
 
@@ -1897,7 +1971,9 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             # the prescription that every remaining daemon-data access
             # becomes `.get()`.
             state["session"] = start_doc.get("session")
-            baseline = start_doc.get("target", {}).get("baseline_memory_bytes")
+            target = start_doc.get("target")
+            baseline = (target.get("baseline_memory_bytes")
+                        if isinstance(target, dict) else None)
             baseline_mib = (round(baseline / (1024 * 1024))
                             if isinstance(baseline, (int, float))
                             and not isinstance(baseline, bool) else "?")
@@ -2020,7 +2096,9 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     # B1c (round-1 review precedent, same defense in depth as
     # `start_lane_profiling`): `.get()`, never a bare subscript.
     state["session"] = start_doc.get("session")
-    baseline = start_doc.get("target", {}).get("baseline_memory_bytes")
+    target = start_doc.get("target")
+    baseline = (target.get("baseline_memory_bytes")
+                if isinstance(target, dict) else None)
     baseline_mib = (round(baseline / (1024 * 1024))
                     if isinstance(baseline, (int, float))
                     and not isinstance(baseline, bool) else "?")
@@ -2090,6 +2168,7 @@ _RUSAGE_NULL_SECTIONS = {
 
 def finish_bare_host_profiling(state: dict, ru,
                                started_at: str, ended_at: str,
+                               measured_duration_seconds: float,
                                floor_bytes: int | None = None) -> dict:
     """RG-57/RW-27b's counterpart to `finish_lane_profiling` — same
     three-field return shape (`{'resources', 'profile_error',
@@ -2133,7 +2212,9 @@ def finish_bare_host_profiling(state: dict, ru,
     high-water mark higher, a real measurement), and `None` only when
     `floor_bytes` itself is `None` (unreadable `/proc/self/statm` —
     contract Sec 1.7: absent is never fabricated as either True or
-    False)."""
+    False). `measured_duration_seconds` is a monotonic-clock interval supplied
+    by the caller; the whole-second UTC stamps remain display metadata and are
+    never subtracted to derive a subsecond duration."""
     if state["mode"] == "daemon":
         return finish_lane_profiling(state)
     if state["mode"] == "disabled":
@@ -2149,7 +2230,7 @@ def finish_bare_host_profiling(state: dict, ru,
         return {"resources": None,
                "profile_error": state.get("warning") or "no profile recorded",
                "profile_ref": None}
-    duration_seconds = round(_parse_iso_utc(ended_at) - _parse_iso_utc(started_at), 3)
+    duration_seconds = round(max(0.0, measured_duration_seconds), 3)
     cpu_seconds = round(ru.ru_utime + ru.ru_stime, 3)
     cores_avg = (round(cpu_seconds / duration_seconds, 3)
                 if duration_seconds else None)
@@ -5772,10 +5853,21 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                "docker not found on PATH — cannot check")
     else:
         daemon_name = profile_settings["daemon"]
-        ps = subprocess.run([docker, "ps", "--filter",
-                             f"name=^{daemon_name}$", "--format", "{{.Names}}"],
-                            capture_output=True, text=True)
-        if ps.returncode != 0 or daemon_name not in ps.stdout.split():
+        try:
+            ps = subprocess.run(
+                [docker, "ps", "--filter", f"name=^{daemon_name}$",
+                 "--format", "{{.Names}}"], capture_output=True, text=True,
+                errors="replace")
+        except Exception as exc:
+            ps = None
+            record("WARN", "profiler daemon",
+                   f"state could not be determined: docker ps failed: {exc}")
+        if ps is not None and ps.returncode != 0:
+            tail = (ps.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+            record("WARN", "profiler daemon",
+                   f"state could not be determined: docker ps failed "
+                   f"(exit {ps.returncode}): {tail}")
+        elif ps is not None and daemon_name not in ps.stdout.split():
             # RG-59: the SAME wording ProfilerClient._ctl's live-run warning
             # now uses (daemon_not_running_reason) -- one function, so this
             # site and that one can never drift apart again. B4 (round-1
@@ -5789,7 +5881,7 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                    f"{daemon_not_running_reason(daemon_name)} — container/"
                    f"exec lanes fall back to basic (in-lane) sampling, "
                    f"bare-host lanes to coarse rusage accounting (R-43i)")
-        else:
+        elif ps is not None:
             client = ProfilerClient(docker, daemon_name)
             version_doc, reason = client.version()
             if version_doc is None:
@@ -6995,14 +7087,19 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # container path is the only writer that existed before RG-60.
     runner = pending.get("runner")
     if runner is not None and runner != "container":
-        print(f"run-gate: the inflight record for lane {lane_name!r} "
-              f"names container {name!r}, written by runner {runner!r} — "
-              f"foreign record — refusing to attach, follow, collect, or "
-              f"remove it. If this lane's environment changed since that "
-              f"record was written, delete "
-              f"{inflight_path(project_dir, lane_name)} once you know the "
-              f"run it describes is over", flush=True)
-        return None
+        message = (f"the inflight record for lane {lane_name!r} names "
+                   f"container {name!r}, written by runner {runner!r} — "
+                   f"foreign record — refusing to attach, follow, collect, "
+                   f"or remove it; refusing to overwrite it or start a "
+                   f"replacement. If this "
+                   f"lane's environment changed since that record was "
+                   f"written, delete {inflight_path(project_dir, lane_name)} "
+                   f"once you know the run it describes is over")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  f"(exit 2)", flush=True)
+            return 0
+        fail(message)
     # RW-14: the FIRST question, before any of RW-1's five, is whether the
     # client that started this container is still alive. If it is, this
     # invocation is a second terminal on someone else's run and may only
@@ -7850,7 +7947,6 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # Gated on `profiling` (matching run_container_lane/run_exec_lane:
         # a DISABLED lane prints none of this) -- only reached inside this
         # `else:` branch.
-        print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
         if profiler_state["mode"] == "daemon":
@@ -7894,6 +7990,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # ordinary `Exception`) instead mirrors `subprocess.run`'s own Ctrl-C
     # handling -- kill the child, reap it, re-raise -- so an interrupt
     # never leaves the lane's child running detached.
+    started_monotonic = time.monotonic()
     started_at = _iso_utc(time.time())
     ru = None
     # RW-46b: run-gate's own resident memory, read as close to the fork as
@@ -7909,9 +8006,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             try:
                 _, status, ru = os.wait4(proc.pid, 0)
             except Exception as exc:
-                profiler_state["warning"] = profiler_state.get("warning") or \
-                    (f"wait4 on the lane's own child failed unexpectedly: "
-                     f"{exc}")
+                wait_reason = ("wait4 on the lane's own child failed "
+                               f"unexpectedly: {exc}")
+                prior_reason = profiler_state.get("warning")
+                profiler_state["warning"] = (
+                    f"{prior_reason}; {wait_reason}"
+                    if prior_reason else wait_reason)
+                profiler_state["mode"] = None
                 code = proc.wait()
                 ru = None
             except BaseException:
@@ -7938,10 +8039,12 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             code = subprocess.run(argv, cwd=str(project_dir),
                                   env=run_env).returncode
     finally:
+        measured_duration_seconds = time.monotonic() - started_monotonic
         ended_at = _iso_utc(time.time())
         try:
             profile_result = finish_bare_host_profiling(
-                profiler_state, ru, started_at, ended_at, floor_bytes)
+                profiler_state, ru, started_at, ended_at,
+                measured_duration_seconds, floor_bytes)
             print_profile_warning(profiler_state)
             print_footprint_line(lane_name, project_dir, profile_result["resources"])
             if run_record is not None:

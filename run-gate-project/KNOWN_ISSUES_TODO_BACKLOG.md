@@ -4430,6 +4430,15 @@ tip: 17 — B1/RW-43's rusage rewrite and RW-46b's floor_bytes wiring each
 added more since RG-61's own "actually 7" correction) +
 `TestFootprintVerbCLI.test_bare_host_rusage_run_makes_write_stop_refusing`.
 
+**P4 final review repair (2026-09-15):** self-container discovery no longer
+certifies a Docker object merely because `/etc/hostname` resolves as its
+name. It requires a full 64-hex id and equality between this process's mount
+namespace and the candidate's namespace read through bounded `docker exec`;
+failure is disclosed as indeterminate and takes the rusage path. Rusage
+duration now uses a monotonic interval instead of subtracting whole-second UTC
+display stamps, and a `wait4()` failure preserves the earlier fallback reason,
+adds its own reason, and truthfully reports that no profile was recorded.
+
 ## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
 
 **Provenance:** RG-55 wave P2 review round 1 S1/D5
@@ -4534,16 +4543,17 @@ for an ACTUALLY malformed daemon response from a daemon that IS running.
 
 ### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `b5e4a9c6`)
 
-`ProfilerClient._ctl`'s `json.JSONDecodeError` branch now matches docker's
-own `stderr_tail` against "no such container"/"is not running"
-(case-folded) to tell a daemon-absent `docker exec` failure apart from a
-running daemon's genuinely malformed response — the daemon-absent case
-gets a new shared `daemon_not_running_reason()`, the ONE place both
-`doctor`'s "profiler daemon" WARN and this live-run reason get their text
-from, so the two surfaces cannot drift apart again; "produced unparsable
-stdout" stays reserved for the genuinely-malformed case. Tests:
-`tests/test_run_gate.py` `TestProfilerClient` +3 (both docker wordings,
-plus a running-daemon's malformed stdout keeping the old text).
+`ProfilerClient._ctl`'s `json.JSONDecodeError` branch initially matched
+docker-owned stderr to tell a daemon-absent `docker exec` failure apart from
+a running daemon's genuinely malformed response. **P4 final review repair
+(2026-09-15):** the FIXED implementation now requires both a Docker-owned
+prefix and specific missing/stopped-container wording. Exit 125 alone and a
+prefixed permission/transport failure are indeterminate and never receive the
+"not running ... ciu up" remedy; 126/127 retain their distinct broken-image/
+PATH reason. `doctor` likewise distinguishes a failed `docker ps` from an
+empty successful result. `daemon_not_running_reason()` remains the shared
+wording only for positively established absence; "produced unparsable
+stdout" remains the running-daemon malformed-output case.
 
 ## RG-60 — an exec lane's profiling session has no inflight/recovery record if the client dies mid-run
 
@@ -4606,6 +4616,13 @@ reverted. Rewritten to mirror the container lane's own precedent
 real (shimmed) exec-mode project, killed mid-`docker exec`, the record
 read back from OUTSIDE that process — proven to fail when the write is
 reverted.
+
+**P4 final review repair (2026-09-15):** the container runner's foreign-record
+branch originally printed “refusing” but returned the same `None` sentinel as
+“no record,” so the caller immediately started a fresh container and overwrote
+the record. It is now a terminal exit-2 refusal for live and `--fresh`
+invocations; dry-run names that exact outcome and also stops there. Regression
+tests assert no lane launch and byte-identical preservation of the record.
 
 ## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
 
