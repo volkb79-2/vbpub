@@ -343,7 +343,7 @@ class TestEarlyMutationSentinels:
                                "profile_error": "planted unsupported",
                                "profile_ref": None}
 
-    def test_doctor_captures_docker_ps_diagnostics(
+    def test_doctor_captures_docker_ps_diagnostics_as_text(
             self, tmp_path, monkeypatch, capsys):
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
         monkeypatch.setattr(run_gate, "physical_path",
@@ -356,15 +356,20 @@ class TestEarlyMutationSentinels:
         def fail_ps(argv, *args, **kwargs):
             if len(argv) > 1 and argv[1] == "ps":
                 captured = kwargs.get("capture_output") is True
+                as_text = kwargs.get("text") is True
                 return subprocess.CompletedProcess(
-                    argv, 1, stdout="" if captured else None,
-                    stderr=("planted Docker denial\n" if captured else None))
+                    argv, 1,
+                    stdout=("" if as_text else b"") if captured else None,
+                    stderr=(("planted Docker denial\n" if as_text else
+                             b"planted Docker denial\n")
+                            if captured else None))
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
         monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
         assert run_gate.main(["doctor"]) == 0
-        assert "planted Docker denial" in capsys.readouterr().out
+        assert ("state could not be determined: docker ps failed (exit 1): "
+                "planted Docker denial") in capsys.readouterr().out
 
     def test_one_stale_lock_is_reported_with_the_singular_noun(
             self, tmp_path, monkeypatch, capsys):
