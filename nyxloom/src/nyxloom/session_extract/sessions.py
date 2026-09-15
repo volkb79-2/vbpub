@@ -9,10 +9,12 @@ targeting (docs/design-context-lifecycle-experiments.md E-015): all three
 CLIs support some form of parent/child session structure, but nothing
 listed it without already knowing a child id.
 
-Each adapter's own `list_agents(path)` returns the real, format-specific
-answer (see adapters/claude_code.py, adapters/codex.py, adapters/opencode.py
-for how each CLI actually stores this -- verified against real local data,
-not guessed); this module only defines the shared SessionNode shape and
+Each discovery-capable adapter's own `list_agents(path)` returns the real,
+format-specific answer (see adapters/claude_code.py, adapters/codex.py,
+adapters/opencode.py for how each CLI actually stores this -- verified against
+real local data, not guessed); Reasonix is intentionally extraction-only here
+because its supplied chat-file shape does not establish parent/child lineage.
+This module only defines the shared SessionNode shape and
 renders it. `path` for Claude Code or Codex may be a top-level session
 file, a specific sub-agent's own file (either way, the whole family it
 belongs to is shown, rooted at the top-level session), OR a DIRECTORY

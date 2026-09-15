@@ -64,6 +64,7 @@ def sniff(path: Path) -> bool:
     """
     if is_events_path(path):
         return False
+    found_chat_record = False
     try:
         with Path(path).open("r", errors="ignore") as handle:
             for i, line in enumerate(handle):
@@ -79,10 +80,10 @@ def sniff(path: Path) -> bool:
                 if _is_event_snapshot(rec):
                     return False
                 if isinstance(rec, dict) and is_chat_record(rec):
-                    return True
+                    found_chat_record = True
     except OSError:
         return False
-    return False
+    return found_chat_record
 
 
 def list_sessions(path: Path) -> list[str]:

@@ -825,6 +825,9 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   tool records are ignored, and the `*.events.jsonl` replace-snapshot
   companions are not session inputs. Reasonix chat records have no timestamp,
   so normalized events intentionally carry the empty timestamp representation.
+  `extract-report` and `extract-sessions` remain unsupported for Reasonix:
+  the chat records do not establish a usage/timeline ledger or parent/child
+  lineage, and inventing either would make those commands report false facts.
 - `extract-lossless` supports Claude Code, Codex, Reasonix, and opencode;
   `extract-report` supports Claude Code, Codex, and opencode (2026-09-10) -- see
   `stats.py`/`lossless.py`'s own module

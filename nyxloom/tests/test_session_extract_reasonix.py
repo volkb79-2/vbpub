@@ -90,6 +90,35 @@ def test_sniff_rejects_reasonix_event_snapshot_even_with_chat_messages(tmp_path)
         reasonix.parse(path, str(path), ExtractConfig())
 
 
+def test_sniff_does_not_accept_a_file_with_a_late_event_snapshot(tmp_path):
+    path = tmp_path / "session-with-events.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {"role": "user", "content": "not enough to claim this file"}
+                ),
+                json.dumps({"type": "replace", "revision": 2, "messages": []}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert reasonix.sniff(path) is False
+
+
+def test_report_and_discovery_do_not_claim_unsupported_reasonix_surfaces(
+    tmp_path, capsys
+):
+    path = _write_reasonix_fixture(tmp_path)
+
+    assert cli.main(["extract-report", str(path)]) == 1
+    assert "does not support 'reasonix'" in capsys.readouterr().err
+
+    assert cli.main(["extract-sessions", str(path)]) == 1
+    assert "does not support 'reasonix'" in capsys.readouterr().err
+
+
 def test_sniff_is_content_based_and_does_not_claim_other_jsonl_shapes(tmp_path):
     claude = tmp_path / "claude.jsonl"
     claude.write_text(

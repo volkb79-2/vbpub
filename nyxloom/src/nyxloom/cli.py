@@ -2664,9 +2664,10 @@ _SESSION_LOG_HELP = (
     "store) holding it is located automatically, erroring rather than "
     "guessing if the id matches nothing or more than one session (see "
     "session_extract/locate.py). NOT a nyxloom registered project id "
-    "(`nyxloom project list` shows those, an unrelated registry) -- if you "
-    "don't already know which file or id to point at, `nyxloom "
-    "extract-sessions <project-directory>` lists them."
+    "(`nyxloom project list` shows those, an unrelated registry). "
+    "`extract-sessions` lists Claude Code/Codex/opencode families; Reasonix "
+    "path/ID extraction is supported, but its discovery is not yet exposed "
+    "because its source-backed lineage metadata is not established."
 )
 
 # Shared verbatim across every plain "Registered project id" positional/
@@ -3273,7 +3274,9 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
              "(~/.claude/projects/<project>/), a Codex sessions root "
              "(~/.codex/sessions/), or an opencode SQLite store's directory -- every "
              "session found is shown, combined into one forest. This is the discovery "
-             "command; when in doubt, point it at a DIRECTORY first")
+             "command; when in doubt, point it at a DIRECTORY first. Reasonix "
+             "directories/files are intentionally not accepted here because the supplied "
+             "records do not establish parent/child lineage")
     extract_sessions_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
                                           help="Force the adapter instead of auto-detecting from the path")
     extract_sessions_parser.add_argument("--json", action="store_true",
