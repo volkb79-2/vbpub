@@ -69,11 +69,17 @@ Devcontainer-persisted state is grouped under a single host parent so a rebuild 
 | Source (host) | Target (container) | Notes |
 |---|---|---|
 | `~/mdt--mounted-folders/.ssh` | `/home/vscode/.ssh` (ro) | container-persisted ssh state |
-| `~/mdt--mounted-folders/.claude` `.codex` `.reasonix` `.openclaw` `.config` `.minisign` `.gnupg` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700` |
+| `~/mdt--mounted-folders/.claude` `.claudelink` `.codex` `.config` `.gnupg` `.minisign` `.openclaw` `.pi` `.reasonix` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700`; ClaudeLink and Pi are whole-directory mounts; Pi sessions are under `~/.pi/agent/sessions/` |
+| `~/mdt--mounted-folders/.local` | `/home/vscode/.local` | user-local CLI installs and state; the nested OpenCode path has its own mount |
+| `~/mdt--mounted-folders/opencode-data` | `/home/vscode/.local/share/opencode` | OpenCode auth, sessions, logs, and runtime state |
 | `~/mdt--mounted-folders/.claude.json` | `/home/vscode/.claude.json` | Claude Code auth/page-state (file-level mount) |
 | `~/mdt--mounted-folders/.reasonix.toml` | `/home/vscode/.reasonix.toml` | Reasonix global config (file-level mount) |
 | `~/mdt--mounted-folders/tmp` | `/tmp` | **persisted, host-backed `/tmp`** (`1777`) |
 | `~/.ssh` (host, native) | `/home/vscode/.ssh-host` (ro) | **dual-use exception**: the host's NATIVE keys, so the same keys work natively AND in the devcontainer |
+
+The new whole-directory mounts target `/home/vscode/.pi` and `/home/vscode/.claudelink`.
+Pi sessions are under `~/.pi/agent/sessions/`; ClaudeLink keeps `nexus.db`, scheduler
+state/logs, and related runtime files under `~/.claudelink`.
 
 The user-editable central API key file is `~/.config/modern-debian-tools-python-debug/ai.env`.
 Shell startup sources it once; Reasonix/OpenClaw/Codex also get tool-local `.env` symlinks back to
@@ -180,20 +186,68 @@ The above covers the devcontainer *itself*. Release builds run through `docker b
 cgroup normally appears as a separate scope in `system.slice`, and how the local repack workers
 inherit the caller's slice.
 
+## Migrating a running devcontainer before adopting the mounts
+
+The host-side `cp` recipe below is correct only when the source state already exists on the host.
+If Pi or ClaudeLink has state in the current container's writable layer, copy it out before
+rebuilding; a rebuild can remove that container and its unmounted state.
+
+First use ClaudeLink's own documented graceful shutdown or service-control command if it has one.
+Then stop the whole devcontainer and wait for Docker to report it stopped. Stopping the whole
+container is the fallback that quiesces ClaudeLink and every other writer before the copy:
+
+```sh
+set -eu
+container_name="myrepo-devcontainer-alice"  # replace with the current template-generated name
+host_state="$HOME/mdt--mounted-folders"
+docker inspect "$container_name" >/dev/null
+test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "true"
+pi_present=false
+claudelink_present=false
+if docker exec "$container_name" test -d /home/vscode/.pi; then pi_present=true; fi
+if docker exec "$container_name" test -d /home/vscode/.claudelink; then claudelink_present=true; fi
+mkdir -p "$host_state/.pi" "$host_state/.claudelink"
+docker stop --timeout 30 "$container_name"
+test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "false"
+if [ "$pi_present" = true ]; then
+  docker cp "$container_name:/home/vscode/.pi/." "$host_state/.pi/"
+fi
+if [ "$claudelink_present" = true ]; then
+  docker cp "$container_name:/home/vscode/.claudelink/." "$host_state/.claudelink/"
+fi
+```
+
+Replace the example name with the existing container name (the template derives it from the
+workspace basename and host user). Do not use `docker cp` while ClaudeLink is running. ClaudeLink
+stores durable state in SQLite's `nexus.db`; copy the complete `.claudelink` directory after the
+container is stopped, including any `nexus.db-wal` and `nexus.db-shm` sidecars. Never copy only
+`nexus.db`, delete its WAL/SHM files, or mix files from different snapshots. A graceful shutdown
+may checkpoint the WAL, but copying the complete quiesced directory remains the safe rule.
+
+The two `docker exec test -d` checks make absent roots a clean no-op; the host bootstrap will
+create their empty sources before the rebuild. Any failure from `docker stop`, the stopped-state
+check, or `docker cp` is an error to investigate before rebuilding.
+
 ## Adopting the consolidation in a consuming repo
 
 1. Point the `mounts` in `devcontainer.json` at `${localEnv:HOME}/mdt--mounted-folders/<name>` (+ keep
    the native `~/.ssh → .ssh-host` readonly mount), and add `~/mdt--mounted-folders/tmp → /tmp`.
 2. **Migrate once on the host** (the bootstrap only creates EMPTY dirs — existing state isn't copied):
+   Create the grouped parent, then copy the whole Pi and ClaudeLink roots plus the other
+   directory state. OpenCode's data is copied separately because its nested mount overlays
+   the broader `.local` mount:
    ```
-   for d in .claude .codex .reasonix .openclaw .config .minisign .gnupg; do
-     [ -d ~/"$d" ] && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/ 2>/dev/null || true
+   mkdir -p ~/mdt--mounted-folders
+   for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+     [ -d ~/"$d" ] && mkdir -p ~/mdt--mounted-folders/"$d" && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/
    done
+   [ -d ~/.local/share/opencode ] && mkdir -p ~/mdt--mounted-folders/opencode-data && cp -a ~/.local/share/opencode/. ~/mdt--mounted-folders/opencode-data/
    ```
-   ⚠️ The `.minisign` key (cmru release signing), gpg keys, and gh auth live here — migrate or you lose them.
+   The `.minisign` key (cmru release signing), gpg keys, gh auth, Pi state, and ClaudeLink
+   state live here — migrate the directories you use before rebuilding.
 3. Rebuild the container (the host bootstrap creates the structure first).
 4. Recreate sibling containers (e.g. `ciu render` + restart the test-runner) so they pick up the new `/tmp`.
-5. **Verify:** `ls ~/.claude`, `ls ~/.minisign`, `gpg --list-keys`, `ls /home/vscode/.ssh-host` non-empty;
+5. **Verify:** `ls ~/.claude`, `ls ~/.pi/agent`, `ls ~/.claudelink`, `ls ~/.minisign`, `gpg --list-keys`, `ls /home/vscode/.ssh-host` non-empty;
    `touch /tmp/__probe` then on the host `ls ~/mdt--mounted-folders/tmp/__probe`.
 6. **Rollback:** revert `devcontainer.json` + `initialize_container_environment.py` and rebuild; the host
    `~/mdt--mounted-folders/` is harmless leftover (canonical `~/.ssh` etc. are untouched).

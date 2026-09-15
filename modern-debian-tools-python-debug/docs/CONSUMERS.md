@@ -84,6 +84,49 @@ docker buildx inspect mdt-managed
 Do not rely on a user's Buildx “current builder” state. The environment is the
 consumer contract and is re-applied by the template/finalizer.
 
+### Persistent AI CLI state
+
+The vendored template uses source-backed bind mounts under
+`${localEnv:HOME}/mdt--mounted-folders/`. In particular, keep these complete roots. The
+OpenCode source is `${localEnv:HOME}/mdt--mounted-folders/opencode-data`.
+
+| Tool | Host source suffix | Container target | Durable state |
+|---|---|---|---|
+| Pi | `.pi` | `/home/vscode/.pi` | config and `~/.pi/agent/sessions/` |
+| ClaudeLink | `.claudelink` | `/home/vscode/.claudelink` | `nexus.db`, scheduler state/logs, and related runtime files |
+| OpenCode | `opencode-data` | `/home/vscode/.local/share/opencode` | auth, sessions, logs, and runtime state |
+
+Copy the current template's mount entries unchanged so the host sources and container
+targets stay aligned. The bootstrap creates empty sources but does not migrate existing
+data. Before the first rebuild, run this on the host; it contains no credentials or
+secret literals:
+
+```sh
+mdt_state="$HOME/mdt--mounted-folders"
+mkdir -p "$mdt_state"
+for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do
+  if [ -d "$HOME/$d" ]; then
+    mkdir -p "$mdt_state/$d"
+    cp -a "$HOME/$d/." "$mdt_state/$d/"
+  fi
+done
+if [ -d "$HOME/.local/share/opencode" ]; then
+  mkdir -p "$mdt_state/opencode-data"
+  cp -a "$HOME/.local/share/opencode/." "$mdt_state/opencode-data/"
+fi
+```
+
+The separate `opencode-data` mount overlays the same path inside `.local`, so OpenCode
+must be copied to that dedicated source. For the complete mount list, bootstrap behavior,
+and rollback, see [the template guide](../templates/README.md) and the
+[devcontainer lifecycle reference](../DEVCONTAINER-LIFECYCLE.md).
+
+If Pi or ClaudeLink state currently exists only in a running devcontainer, use the
+[running-container migration runbook](../DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
+before rebuilding. It stops and verifies the container, then uses `docker cp` only after
+ClaudeLink is quiesced; the complete `.claudelink` directory is copied so `nexus.db` stays
+paired with any SQLite WAL/SHM sidecars.
+
 ## Release consumer
 
 The MDT release configuration (schema version 1) contains these values:

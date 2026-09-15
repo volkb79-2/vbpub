@@ -250,13 +250,28 @@ between this human inventory and registry OCI manifests/digests, see
 
 ## Persisting Agent State
 
-To keep tool state across rebuilds, persist the workspace mount plus these home directories:
+To keep tool state across rebuilds, persist the workspace mount plus these home directories.
+The vendored template uses grouped host sources under
+`${localEnv:HOME}/mdt--mounted-folders/`:
 
+- `/home/vscode/.claude` for Claude Code state
+- `/home/vscode/.claudelink` for ClaudeLink's complete durable hub state (`nexus.db`, scheduler state/logs, and related runtime files)
+- `/home/vscode/.codex` for Codex state
 - `/home/vscode/.reasonix` for Reasonix user config and session state
 - `/home/vscode/.openclaw` for OpenClaw config and gateway state
-- `/home/vscode/.local/share/opencode` for OpenCode auth, sessions, logs, and runtime state
+- `/home/vscode/.pi` for Pi config and session state under `~/.pi/agent/sessions/`
+- `/home/vscode/.local/share/opencode` for OpenCode auth, sessions, logs, and runtime state; its grouped source is `${localEnv:HOME}/mdt--mounted-folders/opencode-data`
 - `/home/vscode/.config/opencode` for OpenCode user configuration (covered by the persisted `.config` mount)
 - `/home/vscode/.config/modern-debian-tools-python-debug` for the central `ai.env`, `aliases.sh`, and their examples
+
+The bootstrap creates empty host sources; it never copies existing state. If state currently
+lives in the running devcontainer, do not rebuild first. Follow the [stopped-container
+migration runbook](DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts):
+gracefully stop ClaudeLink when possible, stop and verify the whole container, then use
+`docker cp` for the complete `/home/vscode/.pi` and `/home/vscode/.claudelink` directories.
+Copy ClaudeLink's `nexus.db`, `nexus.db-wal`, and `nexus.db-shm` together after all writers
+are quiesced; these are the SQLite WAL/SHM sidecars, so never copy only the database or delete
+them. For state already on the host, use the [template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once).
 
 Relevant workspace files that should stay on the host mount:
 

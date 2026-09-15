@@ -10,8 +10,8 @@ container or silently create the path as **root** — after which the in-contain
 Layout (grouped persistence):
 - Devcontainer-persisted state is grouped under `~/mdt--mounted-folders/` so a rebuild never
   wipes it and one `ls -la ~/mdt--mounted-folders/` shows the whole set. These are REAL dirs
-  (NOT symlinks): `.ssh .claude .codex .reasonix .openclaw .config .minisign .gnupg`
-  plus `opencode-data` and `tmp`.
+  (NOT symlinks): `.claude .claudelink .codex .config .gnupg .local .minisign .openclaw`
+  `.pi .reasonix .ssh` plus `opencode-data` and `tmp`.
 - `tmp` is the host-backed persisted `/tmp`: a REAL dir at mode 1777, so `/tmp` worktrees survive
   rebuilds and are visible to the sibling test-runner container (which bind-mounts the same host path).
 - EXCEPTION: the host's NATIVE `~/.ssh` is also bind-mounted (readonly) at `/home/vscode/.ssh-host`,
@@ -24,9 +24,10 @@ sibling `devcontainer.json`, finds every `type=bind` mount whose source is under
 (`.ssh`/`.gnupg`/`.minisign`) get 0700; `tmp` gets 1777; everything else 0755.
 
 NOTE on data migration: this script only ENSURES the source dirs EXIST — it does NOT copy your
-existing `~/.claude` / `~/.gnupg` / `~/.minisign` / `~/.codex` / `~/.reasonix` / `~/.openclaw`
-/ `~/.config` / `~/.local/share/opencode` state into the grouped parent. If you want that state to carry over, migrate it ONCE
-on the host before the first rebuild, e.g.:  for d in .claude .codex .reasonix .openclaw .config .minisign .gnupg; do cp -a ~/$d/. ~/mdt--mounted-folders/$d/; done
+existing `~/.claude`, `~/.gnupg`, `~/.minisign`, `~/.codex`, `~/.reasonix`, `~/.openclaw`,
+`~/.pi`, `~/.claudelink`, `~/.config`, or `~/.local/share/opencode` state into the grouped
+parent. If you want that state to carry over, migrate it ONCE on the host before the first
+rebuild, e.g.:  for d in .claude .claudelink .codex .config .gnupg .local .minisign .openclaw .pi .reasonix; do cp -a ~/$d/. ~/mdt--mounted-folders/$d/; done
 (and copy `~/.local/share/opencode/.` to `~/mdt--mounted-folders/opencode-data/`)
 (the grouped `.ssh` is independent of the readonly native `.ssh-host` mount).
 """
@@ -46,7 +47,7 @@ TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a
 PARENT_NAME = "mdt--mounted-folders"
 
 # Canonical set under the parent — used only if devcontainer.json can't be read.
-FALLBACK = [".ssh", ".claude", ".codex", ".reasonix", ".openclaw", ".config", ".minisign", ".gnupg", "opencode-data"]
+FALLBACK = [".claude", ".claudelink", ".codex", ".config", ".gnupg", ".local", ".minisign", ".openclaw", ".pi", ".reasonix", ".ssh", "opencode-data"]
 # File-level state mounts (not inside a subdirectory) — parent dir auto-created.
 FALLBACK_FILES = [".claude.json", ".reasonix.toml"]
 
@@ -131,13 +132,23 @@ def ensure(p: Path) -> None:
         print(f"[mdt-bootstrap] WARN could not create {target}: {exc}", file=sys.stderr)
 
 
+def fallback_bind_paths() -> list[Path]:
+    """Return the canonical host paths when the sibling template is unavailable."""
+    parent = HOME / PARENT_NAME
+    return (
+        [HOME / ".ssh"]
+        + [parent / name for name in FALLBACK]
+        + [parent / "tmp"]
+        + [parent / name for name in FALLBACK_FILES]
+    )
+
+
 def main() -> int:
     dc = Path(__file__).resolve().parent / "devcontainer.json"
     dirs = [d for d in (to_home_dir(s) for s in host_bind_sources(dc)) if d is not None]
     if not dirs:
         print("[mdt-bootstrap] no parseable $HOME bind mounts; using fallback set", file=sys.stderr)
-        parent = HOME / PARENT_NAME
-        dirs = [HOME / ".ssh"] + [parent / name for name in FALLBACK] + [parent / "tmp"] + [parent / name for name in FALLBACK_FILES]
+        dirs = fallback_bind_paths()
     seen = set()
     for p in dirs:
         if p in seen:
