@@ -162,18 +162,21 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     assert "logs tester-unified-contract-test" in calls
     assert "rm tester-unified-contract-test" in calls
 
-    environment = (log.parent / "environment").read_text().splitlines()
-    temp_values = [line.removeprefix("TMPDIR=") for line in environment
-                   if line.startswith("TMPDIR=")]
-    assert len(temp_values) == 1
+    mounts = (log.parent / "mounts").read_text().splitlines()
+    temp_mounts = [line.removesuffix(" -> /var/tmp/tester-unified")
+                   for line in mounts
+                   if line.endswith(" -> /var/tmp/tester-unified")]
+    assert len(temp_mounts) == 1
     worktree_relative = REPO.relative_to(Path(workspace))
     expected_temp_parent = (
-        Path(workspace) / worktree_relative
+        Path(host_workspace) / worktree_relative
         / ".assay" / "tester-unified-tmp"
     )
-    assert temp_values[0].startswith(f"{expected_temp_parent}/run.")
-    assert f"TMP={temp_values[0]}" in environment
-    assert f"TEMP={temp_values[0]}" in environment
+    assert temp_mounts[0].startswith(f"{expected_temp_parent}/run.")
+    environment = (log.parent / "environment").read_text().splitlines()
+    assert "TMPDIR=/var/tmp/tester-unified" in environment
+    assert "TMP=/var/tmp/tester-unified" in environment
+    assert "TEMP=/var/tmp/tester-unified" in environment
     run_evidence = evidence / "tester-unified-contract-test"
     assert (run_evidence / "container.inspect.json").read_text().startswith("[")
     assert (run_evidence / "docker-wait.exit").read_text() == "0\n"

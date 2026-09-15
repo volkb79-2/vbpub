@@ -9,12 +9,12 @@ background slice and waits for Docker's job status before reading logs.
 
 The workspace is mounted twice because linked-worktree gitfiles can name the
 cockpit path while Docker resolves bind sources in the host namespace. A
-temporary directory beneath the worktree's ignored `.assay/` is exported as
-`TMPDIR`, `TMP`, and `TEMP`. It is already within the workspace bind, so tests
-that create throwaway repositories can derive a real host path instead of
-treating container-local overlay storage as bind-mountable. Not mounting that
-directory over `/tmp` also avoids a destination collision when an Assay
-snapshot's workspace mount is itself rooted at `/tmp`.
+temporary source directory beneath the worktree's ignored `.assay/` is mounted
+at `/var/tmp/tester-unified`, then exported as `TMPDIR`, `TMP`, and `TEMP`.
+Tests that create throwaway repositories can derive a real host path without
+remaining below the judged worktree's `.git` ancestor. The distinct target
+also avoids a destination collision when an Assay snapshot's workspace mount
+is itself rooted at `/tmp`.
 
 The Docker socket is deliberate. Several product tests exercise real nested
 container boundaries, including host-lane exit propagation. The socket's

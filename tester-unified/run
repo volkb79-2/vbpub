@@ -130,6 +130,7 @@ tmp_relative=${tmp_dir#"$workspace_root"/}
 [[ $tmp_relative != "$tmp_dir" ]] \
     || die "temporary directory is outside the workspace mount"
 host_tmp=$host_workspace/$tmp_relative
+container_tmp=/var/tmp/tester-unified
 
 container_started=0
 container_finished=0
@@ -199,11 +200,12 @@ container_id=$("$docker_bin" run -d \
     --group-add "$socket_gid" \
     -e "CGROUP_PARENT_DEV_BACKGROUND=$cgroup_parent" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
-    -e "TMPDIR=$tmp_dir" \
-    -e "TMP=$tmp_dir" \
-    -e "TEMP=$tmp_dir" \
+    -e "TMPDIR=$container_tmp" \
+    -e "TMP=$container_tmp" \
+    -e "TEMP=$container_tmp" \
     -v "$host_workspace:$host_workspace" \
     -v "$host_workspace:$workspace_root" \
+    -v "$host_tmp:$container_tmp" \
     -v "$docker_socket:$docker_socket" \
     -w "$workdir" \
     "$image" \
@@ -239,6 +241,7 @@ require_mount() {
 }
 if ! require_mount "$host_workspace" "$host_workspace" \
     || ! require_mount "$host_workspace" "$workspace_root" \
+    || ! require_mount "$host_tmp" "$container_tmp" \
     || ! require_mount "$docker_socket" "$docker_socket"; then
     abort_started "Docker did not accept the complete mount topology"
 fi
@@ -249,7 +252,7 @@ require_environment() {
     done <<<"$accepted_env"
     return 1
 }
-for expected_env in "TMPDIR=$tmp_dir" "TMP=$tmp_dir" "TEMP=$tmp_dir"; do
+for expected_env in "TMPDIR=$container_tmp" "TMP=$container_tmp" "TEMP=$container_tmp"; do
     if ! require_environment "$expected_env"; then
         abort_started "Docker did not accept required environment '$expected_env'"
     fi
@@ -266,7 +269,7 @@ done
     printf 'git_head=%s\n' "$(git -C "$git_root" rev-parse HEAD)"
     printf 'workspace_target=%s\n' "$workspace_root"
     printf 'workspace_host_fsroot=%s\n' "$host_workspace"
-    printf 'temp_container_path=%s\n' "$tmp_dir"
+    printf 'temp_container_path=%s\n' "$container_tmp"
     printf 'temp_host_path=%s\n' "$host_tmp"
     printf 'launch_lock=%s\n' "$launch_lock"
 } > "$run_evidence/launch.txt"
