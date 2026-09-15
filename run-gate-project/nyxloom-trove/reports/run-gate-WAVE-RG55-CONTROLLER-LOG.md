@@ -2751,6 +2751,15 @@ estate-pairing test fix at `84341e75`; its full local run-gate suite then passed
 P1 and P6 R2 mutation processes remain active; no package merge or release is
 authorized until their evidence and a genuine Sol xhigh review are present.
 
+### RW-224 — 2026-09-15 02:50:26Z — restore passive P6 terminal watcher
+
+The P1 and P6 mutation processes and exact containers were rechecked alive.
+The previously created P6 marker watcher had exited without a terminal marker,
+so it was relaunched as a detached `setsid` shell watcher PID `3457446`.
+It only waits for `/tmp/rg55-p6-r2-fresh.log` to contain
+`P6_R2_FRESH_EXIT=` and writes a UTC marker; it does not poll candidate
+progress, restart the gate, or alter the judged worktree.
+
 ### RW-223 — 2026-09-15 02:47:19Z — correct P5 backlog identity before dispatch
 
 The future P5 handoff incorrectly reused RG-62, which belongs to P4's flaky
