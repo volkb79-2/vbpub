@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom.session_extract import lossless
+from nyxloom.session_extract import lossless, read_since_marker
 
 
 def _rec(**kw):
@@ -95,6 +95,27 @@ def test_since_and_until_together_bound_a_span(tmp_path):
     assert "final prose" not in out
 
 
+def test_claude_dump_emits_a_resumable_marker_for_uuidless_records(tmp_path):
+    records = [
+        _rec(type="user", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "first"}),
+        _rec(type="assistant", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": "second"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    first = lossless.dump_claude_code(fp, until_marker="line0")
+    prior = tmp_path / "prior.txt"
+    prior.write_text(first, encoding="utf-8")
+
+    assert read_since_marker(prior) == ("claude-code", "line0")
+    resumed = lossless.dump_claude_code(fp, since_marker="line0")
+    assert "first" not in resumed
+    assert "second" in resumed
+    assert "marker=line1" in resumed
+
+
 def test_unknown_since_marker_raises(tmp_path):
     fp = _write_fixture(tmp_path)
     with pytest.raises(ValueError, match="--since"):
@@ -118,3 +139,82 @@ def test_skips_blank_and_malformed_lines(tmp_path):
     )
     out = lossless.dump_claude_code(fp)
     assert "survives" in out
+
+
+def test_claude_code_blocks_is_the_dumps_own_per_record_rule():
+    # The seam `extract-lossless --follow` streams through: header and prose
+    # kept apart (follow.py's attention detection scores the PROSE, never
+    # nyxloom's own header framing).
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "assistant", "uuid": "a1", "timestamp": "2026-01-01T00:00:00Z",
+           "message": {"role": "assistant", "content": [
+               {"type": "text", "text": "Done."},
+               {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}},
+               {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+           ]}}
+    blocks = claude_code_blocks(rec, "L7")
+    assert [b.text for b in blocks] == ["Done.", "hmm"]
+    assert blocks[0].header == "===[a1 | 2026-01-01T00:00:00Z | ASSISTANT text]==="
+    assert blocks[0].render() == blocks[0].header + "\nDone."
+    # bookkeeping records contribute nothing
+    assert claude_code_blocks({"type": "mode", "mode": "normal"}, "L8") == []
+    # a uuid-less record falls back to the caller's marker
+    assert claude_code_blocks(
+        {"type": "user", "timestamp": "t", "message": {"role": "user", "content": "hi"}}, "L9"
+    )[0].header.startswith("===[L9 |")
+
+
+def test_claude_code_blocks_surfaces_every_drop_reason_flag():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "user", "uuid": "u1", "timestamp": "t", "isMeta": True, "isSidechain": True,
+           "message": {"role": "user", "content": "framing"}}
+    header = claude_code_blocks(rec, "L0")[0].header
+    assert "isMeta" in header and "isSidechain" in header
+
+
+def test_claude_code_blocks_drops_blank_string_content():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "user", "uuid": "u1", "timestamp": "t",
+           "message": {"role": "user", "content": "   "}}
+    assert claude_code_blocks(rec, "L0") == []
+
+
+def test_claude_code_blocks_drops_records_without_content():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    assert claude_code_blocks({"type": "user", "uuid": "u1", "timestamp": "t"}, "L0") == []
+
+
+def test_claude_code_blocks_drops_blank_list_blocks():
+    from nyxloom.session_extract.lossless import claude_code_blocks
+
+    rec = {"type": "assistant", "uuid": "a1", "timestamp": "t",
+           "message": {"role": "assistant", "content": [
+               {"type": "text", "text": "   "},
+               {"type": "thinking", "thinking": ""},
+           ]}}
+    assert claude_code_blocks(rec, "L0") == []
+
+
+def test_thinking_blocks_are_dumped_from_their_own_field(tmp_path):
+    # Regression for a real bug (2026-09-12): this dumper read
+    # `block["text"]` for `thinking` blocks too, so every one dumped empty
+    # and vanished -- contradicting this module's own "lossless means
+    # lossless, include_thinking plays no part here" claim. Real thinking
+    # blocks (5469 checked across 40 real sessions, zero exceptions) carry
+    # {type, thinking, signature} and NO `text` key.
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps({
+        "type": "assistant", "uuid": "a1", "sessionId": "s1", "parentUuid": None,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "the real reasoning text", "signature": "sig"},
+            {"type": "text", "text": "Done."},
+        ]},
+    }) + "\n", encoding="utf-8")
+    out = lossless.dump_claude_code(fp)
+    assert "the real reasoning text" in out
+    assert "ASSISTANT thinking]===" in out

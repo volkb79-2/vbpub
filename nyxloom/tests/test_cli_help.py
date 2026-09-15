@@ -223,11 +223,11 @@ def test_classify_leaves_subcommand_help_to_argparse():
 # ---------------------------------------------------------------------------
 
 def test_subcommand_help_exits_0_shows_only_its_own_usage_and_carries_a_banner(capsys):
-    exit_code = cli.main(["session-stats", "--help"])
+    exit_code = cli.main(["extract-report", "--help"])
     assert exit_code == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert "usage: nyxloom session-stats" in captured.out
+    assert "usage: nyxloom extract-report" in captured.out
     assert f"nyxloom {__version__}" in captured.out
     assert "--detailed" in captured.out
     # The wrong top-level verb list must not appear alongside the correct,
@@ -236,12 +236,12 @@ def test_subcommand_help_exits_0_shows_only_its_own_usage_and_carries_a_banner(c
 
 
 def test_subcommand_missing_required_arg_shows_only_its_own_error(capsys):
-    exit_code = cli.main(["session-stats"])
+    exit_code = cli.main(["extract-report"])
     assert exit_code == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "usage: nyxloom session-stats" in captured.err
-    assert "the following arguments are required: path" in captured.err
+    assert "usage: nyxloom extract-report" in captured.err
+    assert "the following arguments are required: SESSION_LOG" in captured.err
     # No redundant top-level dump appended after the real, targeted error.
     assert "Commands (grouped by purpose" not in captured.err
 
@@ -250,3 +250,15 @@ def test_every_subcommand_help_carries_the_version_banner():
     _, subparsers = _build_parser()
     for verb, sub in subparsers.choices.items():
         assert sub.description == f"nyxloom {__version__}", verb
+
+
+def test_reasonix_is_a_public_format_for_extract_surfaces():
+    _, subparsers = _build_parser()
+    for verb in ("extract", "extract-lossless", "extract-debug"):
+        action = subparsers.choices[verb]._option_string_actions["--format"]
+        assert "reasonix" in action.choices
+    # Report and session-family discovery have no Reasonix contract yet:
+    # neither source-backed usage records nor lineage metadata were supplied.
+    for verb in ("extract-report", "extract-sessions"):
+        action = subparsers.choices[verb]._option_string_actions["--format"]
+        assert "reasonix" not in action.choices

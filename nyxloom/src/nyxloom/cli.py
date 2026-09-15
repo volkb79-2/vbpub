@@ -12,10 +12,10 @@ INTERFACE CONTRACT (frozen) — subcommands:
   lint [path ...]             no args -> lint_project for every registered
                               project; exit 1 if any has_blocking. Prints
                               'PATH:LINE RULE SEVERITY MESSAGE' lines.
-  doctor [--project X] [--rebuild [--write]]
+  doctor [--project-id PROJECT_ID] [--rebuild [--write]]
                               findings table; exit 1 on any severity in
                               {critical, error}. --rebuild prints diffs.
-  status [--project X]        per task: id, state, since, attempt route,
+  status [--project-id PROJECT_ID] per task: id, state, since, attempt route,
                               cost, notes. Reads statefiles only.
   resync <project> [--apply] [--apply-content-merges]
                               PACKAGE RP01 2026-07-21 + RP02 (docs/plan-
@@ -77,7 +77,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               its mutating verbs are refused unless the
                               deployment sets NYXLOOM_CHANNEL_OPERATOR_ID --
                               see control_auth.channel_operator.
-  tick [--project X]          daemon.run_once — one pass, prints action
+  tick [--project-id PROJECT_ID] daemon.run_once — one pass, prints action
                               count. THE debug/fallback mode.
   decide <project> <D-id> --choose TEXT [--note TEXT]
                               decisions.decide(authority=$USER) +
@@ -422,13 +422,13 @@ def cmd_lint(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    """doctor [--project X] [--rebuild [--write]] [--liveness]"""
+    """doctor [--project-id PROJECT_ID] [--rebuild [--write]] [--liveness]"""
     from . import config, doctor, storage
 
     registry = config.load_registry()
 
-    if args.project:
-        projects = [args.project] if args.project in registry else []
+    if args.project_id:
+        projects = [args.project_id] if args.project_id in registry else []
     else:
         projects = list(registry.keys())
 
@@ -469,7 +469,7 @@ def cmd_doctor(args) -> int:
         all_findings.extend(findings)
 
     # Host-scoped checks (docker-transport lying, missing cgroup slices) --
-    # not owned by any single project, so run once regardless of --project
+    # not owned by any single project, so run once regardless of --project-id
     # and folded into the SAME findings table + exit-code decision below.
     all_findings.extend(doctor.doctor_host())
 
@@ -522,15 +522,15 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_status(args) -> int:
-    """status [--project X]"""
+    """status [--project-id PROJECT_ID]"""
     from . import config, storage
 
     registry = config.load_registry()
 
     projects = []
-    if args.project:
-        if args.project in registry:
-            projects = [args.project]
+    if args.project_id:
+        if args.project_id in registry:
+            projects = [args.project_id]
     else:
         projects = list(registry.keys())
 
@@ -605,8 +605,8 @@ def cmd_resync(args) -> int:
         resync_plan,
     )
 
-    cfg = _cfg(args.project)
-    states = storage.list_states(args.project)
+    cfg = _cfg(args.project_id)
+    states = storage.list_states(args.project_id)
     frontmatters = gather_handoff_presence(cfg, states)
     git_facts = gather_git_facts(str(cfg.root), cfg.default_branch, states)
     plan = resync_plan(states, frontmatters, git_facts)
@@ -634,7 +634,7 @@ def cmd_resync(args) -> int:
 
     allow_content_merge = getattr(args, "apply_content_merges", False)
     results = resync_apply(
-        args.project, states, plan, allow_content_merge=allow_content_merge,
+        args.project_id, states, plan, allow_content_merge=allow_content_merge,
     )
 
     applied = [r for r in results if r.applied]
@@ -660,13 +660,17 @@ def cmd_render(args) -> int:
     return 0
 
 
-def _resolve_since_marker(args) -> tuple[str | None, int | None]:
+def _resolve_since_marker(
+    args, detected_format: str | None = None
+) -> tuple[str | None, int | None]:
     """Resolve --since/--since-file (shared by `extract` and
     `extract-lossless`) into an opaque marker. Returns (marker, None) on
     success, or (None, exit_code) after printing an error -- --since-file's
     embedded (format, marker) is cross-checked against --format/the
     auto-detected one, since a marker minted by one adapter is meaningless
-    fed into another.
+    fed into another. ``detected_format`` is supplied by the caller after it
+    has resolved the session path; keeping that fact explicit prevents the
+    auto-detected branch from accidentally checking only explicit formats.
     """
     from pathlib import Path
 
@@ -675,25 +679,235 @@ def _resolve_since_marker(args) -> tuple[str | None, int | None]:
     since_marker = args.since
     if args.since_file:
         since_format, since_marker = read_since_marker(Path(args.since_file))
-        if args.format and args.format != since_format:
+        expected_format = args.format or detected_format
+        if expected_format and expected_format != since_format:
+            if args.format:
+                detail = f"--format={args.format!r} was requested"
+            else:
+                detail = f"the session log was auto-detected as {expected_format!r}"
             print(f"error: --since-file was produced by the {since_format!r} adapter, "
-                  f"but --format={args.format!r} was requested", file=sys.stderr)
+                  f"but {detail}", file=sys.stderr)
             return None, 1
     return since_marker, None
 
 
+def _resolve_session_log(args) -> tuple[Path, str | None] | None:
+    """The shared SESSION_LOG positional resolution every extract-* verb
+    runs first: a path is taken as-is, a bare session id is located on disk
+    (session_extract/locate.py). Returns (path, session_id) -- session_id
+    being the opencode session the ref itself named, else whatever
+    --opencode-session passed -- or None after printing the error, which the
+    caller turns into exit 1.
+    """
+    from .session_extract.locate import LocateError, resolve_session_ref
+
+    try:
+        ref = resolve_session_ref(args.path, Path.cwd())
+    except LocateError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
+    return ref.path, ref.session_id or getattr(args, "opencode_session", None)
+
+
+def _block_render_for(args):
+    """The per-block prose render hook --render-markdown/--highlight ask for
+    (render.py's `block_render`), or None for today's plain text. Neither
+    library is imported unless its flag was actually passed."""
+    use_color = sys.stdout.isatty() if args.color is None else args.color
+    if getattr(args, "render_markdown", False):
+        from .session_extract.render_markdown import render_markdown
+
+        return lambda text: render_markdown(text, color=use_color)
+    if args.highlight:
+        from .session_extract.highlight import highlight_markdown
+
+        return lambda text: highlight_markdown(text, color=use_color)
+    return None
+
+
+#: --follow-only flags, by the attribute argparse stores them under, with the
+#: value that means "not passed". Each errors without --follow rather than
+#: silently doing nothing -- the trap this package keeps choosing to error on.
+_FOLLOW_ONLY_FLAGS = (
+    ("interval", None, "--interval"),
+    ("bell", False, "--bell"),
+    ("on_attention", None, "--on-attention"),
+    ("notify_project", None, "--notify-project"),
+    ("attention_min_chars", None, "--attention-min-chars"),
+)
+
+
+def _validate_render_and_follow_flags(args) -> str | None:
+    """Every cross-flag rule shared by extract and extract-lossless; returns
+    the error message, or None when the combination is coherent."""
+    if getattr(args, "render_markdown", False) and args.highlight:
+        return ("--render-markdown and --highlight are opposite goals (render markdown vs. "
+                "colorize it while keeping every markup character) -- pick one")
+    if args.color is not None and not (getattr(args, "render_markdown", False) or args.highlight):
+        modes = "--render-markdown/--highlight" if hasattr(args, "render_markdown") else "--highlight"
+        return f"--color/--no-color only apply to {modes}"
+
+    if not args.follow:
+        for attr, unset, flag in _FOLLOW_ONLY_FLAGS:
+            if getattr(args, attr, unset) != unset:
+                return f"{flag} only has an effect with --follow"
+        return None
+
+    if args.interval is not None and args.interval <= 0:
+        # A zero/negative interval is a busy loop, which on a shared host is a
+        # real cost, not just a pointless setting.
+        return "--interval must be greater than 0 (a zero interval is a busy loop)"
+    if getattr(args, "json", False):
+        return "--follow streams text as the session grows -- it has no JSON document to emit"
+    if args.until:
+        return ("--until pins the far end of a FIXED span; --follow has no end to pin -- "
+                "they are contradictory")
+    if getattr(args, "task", None) is not None or getattr(args, "task_file", None) is not None:
+        return ("--task/--task-file append a banner AFTER the finished brief, which --follow "
+                "never reaches -- they are contradictory")
+    return None
+
+
+def _follow_anchor(path: Path, fmt: str, session_id: str | None):
+    """Where phase 2 picks up, captured BEFORE phase 1 parses anything: the
+    start of the file's current final (possibly partial) line, or opencode's
+    newest (time_created, id) row plus a bounded recent-row part-fingerprint
+    view.
+
+    Deliberately measured BEFORE rather than after. A record appended while
+    phase 1 is parsing then appears twice (once in the one-shot brief, once
+    live); measured after, such a record would be skipped by BOTH and lost
+    from the stream for good. A duplicate is visible and harmless; silent
+    loss is neither. The window is one parse long either way. For JSONL,
+    backing up to the current line's start closes the race where the raw
+    file-size anchor lands in the middle of a record and the remaining suffix
+    cannot be parsed.
+    """
+    if fmt != "opencode":
+        try:
+            size = path.stat().st_size
+            if size == 0:
+                return 0
+            with path.open("rb") as handle:
+                position = size
+                while position:
+                    start = max(0, position - 8192)
+                    handle.seek(start)
+                    chunk = handle.read(position - start)
+                    newline = chunk.rfind(b"\n")
+                    if newline >= 0:
+                        return start + newline + 1
+                    position = start
+            return 0
+        except OSError:
+            return 0
+
+    import sqlite3
+
+    from .session_extract.adapters import opencode as opencode_adapter
+
+    db = opencode_adapter._db_path(path)
+    if db is None:
+        return None
+    from .session_extract.follow import OPENCODE_TRACKED_ROWS, OpencodeAnchor
+
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT time_created, id, data FROM message WHERE session_id = ? "
+            "ORDER BY time_created DESC, id DESC LIMIT ?",
+            (session_id, OPENCODE_TRACKED_ROWS),
+        ).fetchall()
+        if not rows:
+            return OpencodeAnchor((-1, ""))
+        tracked = []
+        for row in reversed(rows):
+            parts = conn.execute(
+                "SELECT id, time_updated, data FROM part "
+                "WHERE message_id = ? ORDER BY id ASC",
+                (row[1],),
+            ).fetchall()
+            fingerprint = (row[2], tuple(parts))
+            tracked.append(((row[0], row[1]), fingerprint))
+        newest = rows[0]
+        return OpencodeAnchor(
+            (newest[0], newest[1]),
+            tracked[-1][1],
+            tuple(tracked),
+        )
+    finally:
+        conn.close()
+
+
+def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anchor,
+                 block_render, lossless_mode: bool) -> int:
+    """Phase 2: hand off to session_extract/follow.py and tail until Ctrl-C."""
+    from .session_extract import follow as follow_mod
+    from .session_extract.adapters import claude_code as claude_code_adapter
+
+    notify_config = None
+    if args.notify_project:
+        try:
+            notify_config = _cfg(args.notify_project).notify
+        except RuntimeError as e:
+            print(f"error: --notify-project: {e}", file=sys.stderr)
+            return 1
+
+    follow_config = follow_mod.FollowConfig(
+        interval=args.interval if args.interval is not None else follow_mod.DEFAULT_INTERVAL_S,
+        bell=args.bell,
+        on_attention=args.on_attention,
+        notify=notify_config,
+        attention_min_chars=args.attention_min_chars,
+    )
+
+    if fmt == "opencode":
+        from .session_extract.adapters import opencode as opencode_adapter
+
+        db = opencode_adapter._db_path(path)
+        if isinstance(anchor, follow_mod.OpencodeAnchor):
+            cursor = anchor.cursor
+            anchor_fingerprint = anchor.fingerprint
+            tracked_fingerprints = anchor.tracked
+        else:
+            cursor = anchor
+            anchor_fingerprint = None
+            tracked_fingerprints = ()
+        source = follow_mod.OpencodeSource(
+            db, session_id, config, lossless_mode, cursor=cursor,
+            anchor_fingerprint=anchor_fingerprint,
+            tracked_fingerprints=tracked_fingerprints,
+        )
+    else:
+        source = follow_mod.JsonlSource(
+            path, fmt, anchor, config, lossless_mode,
+            has_primary_thread=(
+                claude_code_adapter.has_primary_thread(path) if fmt == "claude-code" else True
+            ),
+        )
+
+    follower = follow_mod.Follower(
+        source, harness=fmt, session_path=str(path), config=config,
+        follow_config=follow_config, out=sys.stdout, lossless_mode=lossless_mode,
+        block_render=block_render,
+        insert_blank_lines=config.insert_blank_lines,
+    )
+    return follower.run_forever()
+
+
 def cmd_extract(args) -> int:
-    """extract <path> [--session ID] [--format FMT] [--json] [--profile NAME]
+    """extract <path> [--opencode-session ID] [--format FMT] [--json] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
-    [--include-sidechain] [--max-lifecycle-markers N]
+    [--max-lifecycle-markers N]
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
-    [--show-api-errors] [--insert-blank-lines N] [--gap-marker MODE]
-    [--min-gap-records N] [--show-gap-source]
+    [--show-api-errors] [--show-compaction-content] [--insert-blank-lines N] [--gap-marker MODE]
+    [--min-gap-records N] [--show-gap-source] [--render-markdown] [--color | --no-color]
+    [--strip-stale-wakeups] [--redact-pattern REGEX] [--task TEXT | --task-file PATH]
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
-    Auto-detects the source CLI's format from the path (a Claude Code or
-    Codex CLI JSONL file, or an opencode SQLite store); --format overrides
+    Auto-detects the source CLI's format from the path (a Claude Code, Codex,
+    or Reasonix JSONL file, or an opencode SQLite store); --format overrides
     when detection is ambiguous or wrong. Prints the resumable brief to
     stdout: delimited text by default, or --json for a second-stage tool.
     For a raw, unclassified verbatim dump instead of this command's
@@ -709,13 +923,16 @@ def cmd_extract(args) -> int:
     flag, if also passed, likewise overrides just that one knob from the
     chosen profile.
 
-    --include-sidechain (Claude Code only, 2026-09-11 operator-discovered
-    fix): a dispatched Agent-tool subagent's OWN transcript file
-    (.../subagents/agent-<id>.jsonl) carries isSidechain=true on EVERY
-    record, even though it IS that file's main thread -- the default (off,
-    correct for a normal interactive session where every real sidechain was
-    parallel tool-fan-out noise) silently returns zero events against one,
-    exit 0, no warning. Set this when path is a subagent's own transcript.
+    Targeting a specific agent's own conversation (e.g. a dispatched Claude
+    Code Agent-tool subagent, or an opencode session forked from a parent)
+    needs no special flag -- point path (and --opencode-session, for a
+    store that holds more than one) directly at THAT agent's own
+    file/session. Each
+    adapter handles its own format's targeting quirks internally (e.g.
+    claude_code.py auto-detects a subagent's dedicated transcript file and
+    treats its content as primary rather than filtering it out as noise --
+    see that adapter's module docstring); this command's own surface never
+    needs adapter-specific vocabulary for it.
 
     --since-file is the delta-extraction UX: point it at a PRIOR run's saved
     output (text or json) and this run picks up exactly where that one left
@@ -746,6 +963,30 @@ def cmd_extract(args) -> int:
     reproduce this package's long-standing output byte-for-byte; see each
     flag's own --help text for the full value space (config.py's
     insert_blank_lines/gap_marker_mode comments have the complete picture).
+
+    --render-markdown (2026-09-12) is for READING the brief rather than
+    piping it: each kept block's prose goes through `rich`'s markdown
+    renderer, so headers/bold/code fences render the way the CLI that wrote
+    them showed you live. Rendering CONSUMES the markup characters, which is
+    exactly wrong when the point is to copy real markdown back out of the
+    terminal -- `--highlight` covers that case instead (pygments, every
+    character left in place). The two are mutually exclusive. Only kept
+    blocks' own prose is affected: the `---` separators, the bracketed gap/
+    stop-reason notes, the ledger line and the trailing `<!-- nyxloom-extract:
+    ... -->` footer are never passed through a renderer (the footer is
+    machine-read by --since-file and must stay byte-exact).
+    --color/--no-color override the isatty() default, exactly as on
+    extract-debug, and error if no render mode is active.
+
+    --strip-stale-wakeups/--redact-pattern/--task/--task-file (2026-09-11,
+    operator direction, "handoff to a fresh agent" -- see
+    session_extract/mangle.py) exist for `nyxloom extract ... | claude`:
+    handing the rendered brief straight to a new agent as its whole prompt.
+    The first two are heuristic, opt-in event-level transforms (work in
+    both --json and text mode); --task/--task-file append a clearly
+    delimited new-instruction banner AFTER the rendered brief and are
+    text-mode only (error combined with --json). See each flag's own
+    --help text.
     """
     from pathlib import Path
 
@@ -753,7 +994,27 @@ def cmd_extract(args) -> int:
     from .session_extract.config import PROFILES
     from .session_extract.events import EventKind
 
-    since_marker, err = _resolve_since_marker(args)
+    if args.follow and args.strip_stale_wakeups:
+        print(
+            "error: extract --follow cannot be combined with --strip-stale-wakeups: "
+            "the trailing-run transform requires a fixed, complete span and cannot be "
+            "applied to live output without silently diverging",
+            file=sys.stderr,
+        )
+        return 1
+
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
+    detected_format = None
+    if args.format is None and (args.since_file or args.follow):
+        from .session_extract.adapters import detect
+
+        detected_format = detect(path).name
+
+    since_marker, err = _resolve_since_marker(args, detected_format)
     if err is not None:
         return err
 
@@ -767,10 +1028,32 @@ def cmd_extract(args) -> int:
             text_only.append("--min-gap-records")
         if args.show_gap_source:
             text_only.append("--show-gap-source")
+        if args.task is not None:
+            text_only.append("--task")
+        if args.task_file is not None:
+            text_only.append("--task-file")
+        if args.render_markdown:
+            text_only.append("--render-markdown")
+        if args.highlight:
+            text_only.append("--highlight")
         if text_only:
             print(f"error: {', '.join(text_only)} only affect(s) text-mode rendering -- has no "
                   f"effect combined with --json", file=sys.stderr)
             return 1
+
+    flag_error = _validate_render_and_follow_flags(args)
+    if flag_error is not None:
+        print(f"error: {flag_error}", file=sys.stderr)
+        return 1
+
+    if args.redact_pattern:
+        import re as re_mod
+        for pattern in args.redact_pattern:
+            try:
+                re_mod.compile(pattern)
+            except re_mod.error as e:
+                print(f"error: --redact-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
+                return 1
 
     # --profile supplies defaults for the selection-aggressiveness knobs
     # (and its own default target length); any of --checkpoints/
@@ -783,7 +1066,6 @@ def cmd_extract(args) -> int:
         long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
         max_words=args.max_words if args.max_words is not None else base.max_words,
         include_thinking=args.include_thinking,
-        include_sidechain=args.include_sidechain,
         since_marker=since_marker,
         until_marker=args.until,
         max_lifecycle_markers=(
@@ -798,8 +1080,25 @@ def cmd_extract(args) -> int:
             args.insert_blank_lines if args.insert_blank_lines is not None else base.insert_blank_lines
         ),
         gap_marker_mode=args.gap_marker if args.gap_marker is not None else base.gap_marker_mode,
+        strip_stale_wakeups=args.strip_stale_wakeups,
+        redact_patterns=tuple(args.redact_pattern) if args.redact_pattern else (),
+        hide_compaction_content=not args.show_compaction_content,
     )
-    result = extract(Path(args.path), config, fmt=args.format, session_id=args.session)
+    follow_fmt = None
+    anchor = None
+    if args.follow:
+        follow_fmt = args.format or detected_format
+        follow_session = session_id
+        if follow_fmt == "opencode" and follow_session is None:
+            from .session_extract.adapters import opencode as opencode_adapter
+
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                follow_session = sessions[0]
+        # Before phase 1 parses anything -- see _follow_anchor on why.
+        anchor = _follow_anchor(path, follow_fmt, follow_session)
+
+    result = extract(path, config, fmt=args.format, session_id=session_id)
 
     if args.ledger:
         if args.json:
@@ -815,14 +1114,46 @@ def cmd_extract(args) -> int:
             ev.marker for ev in result.events
             if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.LIFECYCLE_MARKER)
         }
-        result._ledger = ledger_mod.build_ledger(Path(args.path), result.format, boundary_markers)
+        result._ledger = ledger_mod.build_ledger(path, result.format, boundary_markers)
 
-    print(result.render())
+    block_render = _block_render_for(args)
+    result._block_render = block_render
+
+    if result.stale_wakeups_stripped:
+        print(f"nyxloom extract: stripped {result.stale_wakeups_stripped} stale-wakeup "
+              f"checkpoint(s) from the tail (--strip-stale-wakeups)", file=sys.stderr)
+    if result.redacted_paragraphs:
+        print(f"nyxloom extract: redacted {result.redacted_paragraphs} paragraph(s) matching "
+              f"--redact-pattern", file=sys.stderr)
+
+    rendered = result.render()
+    task_text = None
+    if args.task is not None:
+        task_text = args.task
+    elif args.task_file is not None:
+        task_text = Path(args.task_file).read_text(encoding="utf-8")
+    if task_text is not None:
+        rendered += (
+            "\n════ TASK FOR THIS SESSION (authored by the operator, not part of the session "
+            "above) ════\n"
+            f"{task_text.strip()}\n"
+            "════════════════════════════════════════════════════════════════════════════════"
+            "════\n"
+        )
+    # end="" only when following: the brief already ends in a newline, and
+    # print's own would put three blank lines between it and the first live
+    # block. Left exactly as it was for every non-follow run.
+    print(rendered, end="" if args.follow else "\n")
+    if args.follow:
+        return _run_follow(
+            args, path, follow_fmt, config, result.session_id, anchor, block_render,
+            lossless_mode=False,
+        )
     return 0
 
 
 def cmd_extract_lossless(args) -> int:
-    """extract-lossless <path> [--session ID] [--format FMT]
+    """extract-lossless <path> [--opencode-session ID] [--format FMT]
     [--since MARKER | --since-file PATH] [--until MARKER]
 
     A "dumb", independent lossless-prose dump -- deliberately NOT `extract`'s
@@ -831,9 +1162,9 @@ def cmd_extract_lossless(args) -> int:
     bookkeeping records -- see session_extract/lossless.py's module
     docstring for the two use cases this exists for (a ground-truth
     superset for judging what `extract` selects, and raw material for a
-    future hybrid condensation design). Supports Claude Code, Codex, and
-    opencode (an opencode store holding more than one session needs
-    --session). --since/--since-file/--until work exactly as they do for
+    future hybrid condensation design). Supports Claude Code, Codex, Reasonix,
+    and opencode (an opencode store holding more than one session needs
+    --opencode-session). --since/--since-file/--until work exactly as they do for
     `extract` (same opaque per-adapter marker, same cross-check against
     --format).
 
@@ -845,25 +1176,66 @@ def cmd_extract_lossless(args) -> int:
     made every one of them a silently-ignored trap. See `extract-debug` to
     compare this dump against what `extract` would actually keep from it.
     """
-    from pathlib import Path
-
     from .session_extract import lossless
     from .session_extract.adapters import detect
 
-    since_marker, err = _resolve_since_marker(args)
+    if getattr(args, "redact_pattern", None):
+        print("error: extract-lossless is a verbatim dump and does not support "
+              "--redact-pattern; use extract for redacted output", file=sys.stderr)
+        return 1
+
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
+    flag_error = _validate_render_and_follow_flags(args)
+    if flag_error is not None:
+        print(f"error: {flag_error}", file=sys.stderr)
+        return 1
+
+    fmt = args.format or detect(path).name
+    since_marker, err = _resolve_since_marker(args, fmt)
     if err is not None:
         return err
+    block_render = _block_render_for(args)
 
-    path = Path(args.path)
-    fmt = args.format or detect(path).name
+    def _emit(text: str) -> None:
+        # The lossless dumpers render each prose block themselves, leaving
+        # the machine-readable marker footer byte-exact for --since-file.
+        print(text)
+
+    anchor = None
+    follow_session = session_id
+    if args.follow:
+        if fmt == "opencode" and follow_session is None:
+            from .session_extract.adapters import opencode as opencode_adapter
+
+            sessions = opencode_adapter.list_sessions(path)
+            if len(sessions) == 1:
+                follow_session = sessions[0]
+        # Before phase 1 reads anything -- see _follow_anchor on why.
+        anchor = _follow_anchor(path, fmt, follow_session)
+
     if fmt == "claude-code":
-        print(lossless.dump_claude_code(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_claude_code(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
     elif fmt == "codex":
-        print(lossless.dump_codex(path, since_marker=since_marker, until_marker=args.until))
+        _emit(lossless.dump_codex(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
+    elif fmt == "reasonix":
+        _emit(lossless.dump_reasonix(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
-        resolved_session = args.session
+        resolved_session = session_id
         if resolved_session is None:
             sessions = opencode_adapter.list_sessions(path)
             if len(sessions) == 1:
@@ -872,22 +1244,31 @@ def cmd_extract_lossless(args) -> int:
                 raise ValueError(f"{path}: no opencode sessions found")
             else:
                 raise ValueError(
-                    f"{path} holds {len(sessions)} opencode sessions; pass --session "
-                    f"(e.g. {sessions[0]!r})"
+                    f"{path} holds {len(sessions)} opencode sessions; pass "
+                    f"--opencode-session (e.g. {sessions[0]!r})"
                 )
-        print(lossless.dump_opencode(
-            path, resolved_session, since_marker=since_marker, until_marker=args.until
+        _emit(lossless.dump_opencode(
+            path, resolved_session, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
         ))
+        follow_session = resolved_session
     else:
         print(f"error: extract-lossless does not support {fmt!r} -- see "
               f"session_extract/lossless.py's module docstring for what's implemented",
               file=sys.stderr)
         return 1
+    if args.follow:
+        from .session_extract import ExtractConfig
+
+        return _run_follow(
+            args, path, fmt, ExtractConfig(), follow_session, anchor, block_render,
+            lossless_mode=True,
+        )
     return 0
 
 
 def cmd_extract_debug(args) -> int:
-    """extract-debug <path> [--session ID] [--format FMT] [--profile NAME]
+    """extract-debug <path> [--opencode-session ID] [--format FMT] [--profile NAME]
     [--checkpoints N] [--long-threshold N] [--max-words N] [--include-thinking]
     [--max-lifecycle-markers N] [--show-api-errors] [--color | --no-color]
 
@@ -902,24 +1283,27 @@ def cmd_extract_debug(args) -> int:
     complete lossless base). --color/--no-color override the isatty()
     auto-detection (color off when piped to a file by default).
     """
-    from pathlib import Path
-
     from .session_extract import ExtractConfig, extract, lossless
     from .session_extract.adapters import detect
     from .session_extract.config import PROFILES
     from .session_extract.debug_diff import render_debug
 
-    path = Path(args.path)
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
     fmt = args.format or detect(path).name
 
     if fmt == "claude-code":
         lossless_text = lossless.dump_claude_code(path)
     elif fmt == "codex":
         lossless_text = lossless.dump_codex(path)
+    elif fmt == "reasonix":
+        lossless_text = lossless.dump_reasonix(path)
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
-        resolved_session = args.session
+        resolved_session = session_id
         if resolved_session is None:
             sessions = opencode_adapter.list_sessions(path)
             if len(sessions) == 1:
@@ -928,8 +1312,8 @@ def cmd_extract_debug(args) -> int:
                 print(f"error: {path}: no opencode sessions found", file=sys.stderr)
                 return 1
             else:
-                print(f"error: {path} holds {len(sessions)} opencode sessions; pass --session "
-                      f"(e.g. {sessions[0]!r})", file=sys.stderr)
+                print(f"error: {path} holds {len(sessions)} opencode sessions; pass "
+                      f"--opencode-session (e.g. {sessions[0]!r})", file=sys.stderr)
                 return 1
         lossless_text = lossless.dump_opencode(path, resolved_session)
     else:
@@ -943,36 +1327,48 @@ def cmd_extract_debug(args) -> int:
         long_comment_chars=args.long_threshold if args.long_threshold is not None else base.long_comment_chars,
         max_words=args.max_words if args.max_words is not None else base.max_words,
         include_thinking=args.include_thinking,
-        include_sidechain=args.include_sidechain,
         max_lifecycle_markers=(
             args.max_lifecycle_markers if args.max_lifecycle_markers is not None
             else base.max_lifecycle_markers
         ),
         hide_api_errors=not args.show_api_errors,
+        hide_compaction_content=not args.show_compaction_content,
     )
-    result = extract(path, config, fmt=fmt, session_id=args.session)
+    result = extract(path, config, fmt=fmt, session_id=session_id)
     use_color = sys.stdout.isatty() if args.color is None else args.color
-    print(render_debug(lossless_text, result.render(), use_color))
+    print(render_debug(
+        lossless_text, result.render(), use_color, config=config, fmt=fmt, all_events=result.all_events,
+    ))
     return 0
 
 
-def cmd_session_stats(args) -> int:
-    """session-stats <path> [--format FMT] [--session ID] [--detailed] [--json]
+def cmd_extract_report(args) -> int:
+    """extract-report <path> [--format FMT] [--opencode-session ID] [--detailed] [--json]
 
     Cost/timeline analysis on top of session_extract -- V9 in
-    nyxloom/docs/design-context-lifecycle-experiments.md. Supports Claude
-    Code, Codex, and opencode today (see session_extract/stats.py's module
-    docstring for the real per-format usage-ledger shape each reads, and
-    its honest gaps). --session disambiguates an opencode store holding
-    more than one session (Claude Code/Codex are one-file-one-session, so
-    it's unused there). Default output is the condensed, one-page-per-
-    session block view; --detailed switches to one row per real API call
-    (CSV); --json dumps the detailed rows as JSON instead of CSV.
+    nyxloom/docs/design-context-lifecycle-experiments.md. Renamed from
+    `session-stats` 2026-09-11 (operator direction -- consistent extract-*
+    verb family); behavior is unchanged. Supports Claude Code, Codex, and
+    opencode today (see session_extract/stats.py's module docstring for the
+    real per-format usage-ledger shape each reads, and its honest gaps).
+    --opencode-session disambiguates an opencode store holding more than one
+    session (Claude Code/Codex are one-file-one-session, so it's unused there). To
+    find out WHICH sessions/sub-agents exist before targeting one, see
+    `extract-sessions` -- a different question (discovery vs. reporting on
+    a session you've already identified). Default output is the condensed,
+    one-page-per-session block view; --detailed switches to one row per
+    real API call (CSV); --json dumps the detailed rows as JSON instead of
+    CSV.
     """
     from .session_extract import stats
 
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, session_id = resolved
+
     try:
-        rows = stats.build_call_rows(Path(args.path), fmt=args.format, session_id=args.session)
+        rows = stats.build_call_rows(path, fmt=args.format, session_id=session_id)
     except (NotImplementedError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -998,6 +1394,46 @@ def cmd_session_stats(args) -> int:
     return 0
 
 
+def cmd_extract_sessions(args) -> int:
+    """extract-sessions <path> [--format FMT] [--json]
+
+    Discovery, not reporting: lists which sessions/sub-agents EXIST and how
+    they relate (parent, depth, a human label), for when you don't yet know
+    what to point `extract`/`extract-lossless`/`extract-report` at -- see
+    session_extract/sessions.py's module docstring. The gap this closes was
+    found while redesigning Claude Code sub-agent targeting (E-015 in
+    nyxloom/docs/design-context-lifecycle-experiments.md); it turned out
+    identical in shape across all three adapters once checked against real
+    data. path may be a top-level session file OR one specific sub-agent's
+    own file for Claude Code/Codex (the whole family is shown either way,
+    rooted at the top-level session); for opencode it's the whole SQLite
+    store (every root session and its descendants -- there's no single-
+    file scoping concept there). --json dumps the flat node list instead
+    of the indented tree.
+    """
+    from .session_extract import sessions
+
+    resolved = _resolve_session_log(args)
+    if resolved is None:
+        return 1
+    path, _session_id = resolved
+
+    try:
+        nodes = sessions.list_agents(path, fmt=args.format)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        import dataclasses
+        import json as jsonlib
+
+        print(jsonlib.dumps([dataclasses.asdict(n) for n in nodes], indent=2))
+    else:
+        print(sessions.render_tree(nodes), end="")
+    return 0
+
+
 def cmd_migrate_store(args) -> int:
     """migrate-store <project>
 
@@ -1011,7 +1447,7 @@ def cmd_migrate_store(args) -> int:
     from .migrate_store import MigrationError, migrate
 
     try:
-        result = migrate(args.project)
+        result = migrate(args.project_id)
     except MigrationError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -1039,10 +1475,10 @@ def cmd_daemon(args) -> int:
 
 
 def cmd_tick(args) -> int:
-    """tick [--project X]"""
+    """tick [--project-id PROJECT_ID]"""
     from . import daemon as daemon_mod
 
-    action_count = daemon_mod.run_once(args.project if hasattr(args, 'project') else None)
+    action_count = daemon_mod.run_once(args.project_id)
     print(action_count)
     return 0
 
@@ -1052,7 +1488,7 @@ def cmd_decide(args) -> int:
     from . import config, decisions, storage
     from .types import Actor, ActorKind, EventType
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
 
     try:
         note = getattr(args, 'note', '') or ''
@@ -1062,7 +1498,7 @@ def cmd_decide(args) -> int:
         # Append DECISION_RESOLVED event
         actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
         storage.append_event(
-            args.project,
+            args.project_id,
             actor=actor,
             type=EventType.DECISION_RESOLVED,
             decision_id=args.decision_id,
@@ -1080,7 +1516,7 @@ def cmd_discuss(args) -> int:
     """discuss <project> <D-id>"""
     from . import decisions
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
 
     try:
         cmd_str = decisions.discuss(cfg, args.decision_id)
@@ -1097,8 +1533,8 @@ def cmd_intake(args) -> int:
     """intake <project> <intake_id> <message>"""
     from . import intake_chat
 
-    cfg = _cfg(args.project)
-    reply = intake_chat.advance_intake(cfg, args.project, args.intake_id, args.message)
+    cfg = _cfg(args.project_id)
+    reply = intake_chat.advance_intake(cfg, args.project_id, args.intake_id, args.message)
     print(reply)
     return 0
 
@@ -1114,7 +1550,7 @@ def cmd_intake_bridge_poll(args) -> int:
     """
     from . import intake_bridge
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
     if args.transport:
         # An explicit override still goes through resolve_reader's
         # is_configured check -- naming a transport whose config is absent
@@ -1122,7 +1558,7 @@ def cmd_intake_bridge_poll(args) -> int:
         from dataclasses import replace as _replace
         cfg = _replace(cfg, intake_bridge=_replace(cfg.intake_bridge,
                                                    transport=args.transport))
-    result = intake_bridge.poll_once(cfg, args.project)
+    result = intake_bridge.poll_once(cfg, args.project_id)
     print(f"transport={result.transport or '-'} status={result.status} "
           f"fetched={result.fetched} ingested={result.ingested} "
           f"intake={result.intake_id or '-'} reply_posted={result.reply_posted} "
@@ -1140,9 +1576,9 @@ def cmd_reject(args) -> int:
         check_task_transition,
     )
 
-    _cfg(args.project)  # raises if the project isn't registered
+    _cfg(args.project_id)  # raises if the project isn't registered
 
-    states = storage.list_states(args.project)
+    states = storage.list_states(args.project_id)
     tsf = states.get(args.task)
     if tsf is None:
         print(f"error: unknown task: {args.task}", file=sys.stderr)
@@ -1158,7 +1594,7 @@ def cmd_reject(args) -> int:
     note = getattr(args, "note", None) or "merge-gate rejection"
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
     storage.append_and_apply(
-        args.project,
+        args.project_id,
         states,
         actor=actor,
         type=EventType.TASK_TRANSITIONED,
@@ -1178,9 +1614,9 @@ def cmd_merge(args) -> int:
         check_task_transition,
     )
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
 
-    states = storage.list_states(args.project)
+    states = storage.list_states(args.project_id)
     tsf = states.get(args.task)
     if tsf is None:
         print(f"error: unknown task: {args.task}", file=sys.stderr)
@@ -1224,7 +1660,7 @@ def cmd_merge(args) -> int:
 
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
     storage.append_and_apply(
-        args.project,
+        args.project_id,
         states,
         actor=actor,
         type=EventType.TASK_TRANSITIONED,
@@ -1263,7 +1699,7 @@ def cmd_merge(args) -> int:
     if _carver_digest is not None:
         payload["carver_digest"] = _carver_digest
     storage.append_and_apply(
-        args.project,
+        args.project_id,
         states,
         actor=actor,
         type=EventType.MERGE_RECORDED,
@@ -1289,21 +1725,21 @@ def cmd_pause(args) -> int:
     from . import paths, storage
     from .types import Actor, ActorKind, EventType
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
 
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
 
     if hasattr(args, 'task') and args.task:
         # Task-level pause
-        flag_path = paths.pause_flag(args.project, args.task)
+        flag_path = paths.pause_flag(args.project_id, args.task)
         flag_path.parent.mkdir(parents=True, exist_ok=True)
         flag_path.touch()
 
         # Load statefile to set paused=True
-        states = storage.list_states(args.project)
+        states = storage.list_states(args.project_id)
 
         storage.append_and_apply(
-            args.project,
+            args.project_id,
             states,
             actor=actor,
             type=EventType.PAUSE_SET,
@@ -1312,14 +1748,14 @@ def cmd_pause(args) -> int:
         )
     else:
         # Project-level pause
-        flag_path = paths.pause_flag(args.project)
+        flag_path = paths.pause_flag(args.project_id)
         flag_path.parent.mkdir(parents=True, exist_ok=True)
         flag_path.touch()
 
-        states = storage.list_states(args.project)
+        states = storage.list_states(args.project_id)
 
         storage.append_event(
-            args.project,
+            args.project_id,
             actor=actor,
             type=EventType.PAUSE_SET,
             payload={},
@@ -1408,19 +1844,19 @@ def cmd_resume(args) -> int:
     from . import paths, storage
     from .types import Actor, ActorKind, EventType
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
 
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
 
     if hasattr(args, 'task') and args.task:
         # Task-level resume -- deliberately unguarded, see docstring above.
-        flag_path = paths.pause_flag(args.project, args.task)
+        flag_path = paths.pause_flag(args.project_id, args.task)
         flag_path.unlink(missing_ok=True)
 
-        states = storage.list_states(args.project)
+        states = storage.list_states(args.project_id)
 
         storage.append_and_apply(
-            args.project,
+            args.project_id,
             states,
             actor=actor,
             type=EventType.PAUSE_CLEARED,
@@ -1431,23 +1867,23 @@ def cmd_resume(args) -> int:
 
     # Project-level resume: RP03 pre-resume drift guard.
     force = getattr(args, "force", False)
-    drift = _pre_resume_drift_scan(args.project, cfg)
+    drift = _pre_resume_drift_scan(args.project_id, cfg)
 
     payload: dict = {}
     if drift is None:
         # The scan itself could not complete -- NEVER read as "no drift".
         if not force:
             print(
-                f"error: refusing to resume '{args.project}' -- could not "
+                f"error: refusing to resume '{args.project_id}' -- could not "
                 f"verify its state first (the pre-resume drift scan "
                 f"itself failed). Inspect manually: nyxloom resync "
-                f"{args.project}; pass --force to resume without a "
+                f"{args.project_id}; pass --force to resume without a "
                 f"completed scan once you've confirmed it's safe.",
                 file=sys.stderr,
             )
             return 1
         print(
-            f"--force: resuming '{args.project}' WITHOUT a completed "
+            f"--force: resuming '{args.project_id}' WITHOUT a completed "
             f"pre-resume drift scan (the scan itself failed) -- operator "
             f"override recorded.",
             file=sys.stderr,
@@ -1459,18 +1895,18 @@ def cmd_resume(args) -> int:
         )
         if not force:
             print(
-                f"error: refusing to resume '{args.project}' -- drift "
+                f"error: refusing to resume '{args.project_id}' -- drift "
                 f"detected in {len(drift)} task(s): {summary}",
                 file=sys.stderr,
             )
             print(
-                f"inspect: nyxloom resync {args.project}   "
-                f"repair: nyxloom resync {args.project} --apply",
+                f"inspect: nyxloom resync {args.project_id}   "
+                f"repair: nyxloom resync {args.project_id} --apply",
                 file=sys.stderr,
             )
             return 1
         print(
-            f"--force: resuming '{args.project}' despite detected drift "
+            f"--force: resuming '{args.project_id}' despite detected drift "
             f"in {len(drift)} task(s): {summary}",
             file=sys.stderr,
         )
@@ -1478,13 +1914,13 @@ def cmd_resume(args) -> int:
     # else: drift == [] -- verified clean, resume proceeds silently exactly
     # as before RP03 (payload stays {}, nothing printed).
 
-    flag_path = paths.pause_flag(args.project)
+    flag_path = paths.pause_flag(args.project_id)
     flag_path.unlink(missing_ok=True)
 
-    states = storage.list_states(args.project)
+    states = storage.list_states(args.project_id)
 
     storage.append_event(
-        args.project,
+        args.project_id,
         actor=actor,
         type=EventType.PAUSE_CLEARED,
         payload=payload,
@@ -1532,10 +1968,10 @@ def cmd_digest(args) -> int:
     """digest <project> [--since SEQ]"""
     from . import notify
 
-    cfg = _cfg(args.project)
+    cfg = _cfg(args.project_id)
     since_seq = int(args.since) if hasattr(args, 'since') and args.since else 0
 
-    digest_text = notify.digest(cfg, args.project, since_seq)
+    digest_text = notify.digest(cfg, args.project_id, since_seq)
     print(digest_text)
     return 0
 
@@ -1583,7 +2019,7 @@ def cmd_events(args) -> int:
     filter_type = args.type if hasattr(args, 'type') and args.type else None
 
     def _dump_since(last_seq: int) -> int:
-        for ev in storage.iter_events(args.project, last_seq):
+        for ev in storage.iter_events(args.project_id, last_seq):
             if filter_type is None or ev.type.value == filter_type:
                 print(json_lib.dumps(ev.to_dict()))
             last_seq = ev.sequence
@@ -1827,7 +2263,7 @@ def cmd_free_models_refresh(args) -> int:
 
 
 def cmd_finding_record(args) -> int:
-    """finding record --project P --kind K --title T [--body B]
+    """finding record --project-id PROJECT_ID --kind KIND --title TITLE [--body BODY]
     [--field KEY=VALUE ...] [--task-id ID] [--severity S]"""
     from . import findings
     fields = {}
@@ -1838,18 +2274,18 @@ def cmd_finding_record(args) -> int:
         key, value = item.split("=", 1)
         fields[key] = value
     ev = findings.record_finding(
-        args.project, args.kind, title=args.title, body=args.body,
+        args.project_id, args.kind, title=args.title, body=args.body,
         fields=fields, task_id=args.task_id, severity=args.severity)
-    print(f"recorded F-{args.project}-{ev.sequence} ({args.kind})")
+    print(f"recorded F-{args.project_id}-{ev.sequence} ({args.kind})")
     return 0
 
 
 def cmd_finding_list(args) -> int:
-    """finding list [--project P] [--kind K]"""
+    """finding list [--project-id PROJECT_ID] [--kind KIND]"""
     from . import findings
     from .config import load_registry
-    if args.project:
-        projects = [args.project]
+    if args.project_id:
+        projects = [args.project_id]
     else:
         projects = sorted(load_registry().keys())
     rows = []
@@ -1870,15 +2306,15 @@ def cmd_finding_list(args) -> int:
 
 
 def _resolve_backlog_project(args):
-    """--project via the registry, else walk up from cwd to the nearest
+    """--project-id via the registry, else walk up from cwd to the nearest
     nyxloom-trove/nyxloom.toml or .nyxloom/project.toml. Returns
     ProjectConfig or (None, message)."""
     from .config import ProjectConfig, load_registry
-    if getattr(args, "project", None):
+    if getattr(args, "project_id", None):
         registry = load_registry()
-        if args.project not in registry:
-            return None, f"unknown project {args.project!r} (not registered)"
-        return ProjectConfig.load(registry[args.project]), ""
+        if args.project_id not in registry:
+            return None, f"unknown project {args.project_id!r} (not registered)"
+        return ProjectConfig.load(registry[args.project_id]), ""
     root = Path.cwd().resolve()
     while root != root.parent:
         if ((root / "nyxloom-trove" / "nyxloom.toml").exists()
@@ -1886,7 +2322,7 @@ def _resolve_backlog_project(args):
             return ProjectConfig.load(root), ""
         root = root.parent
     return None, ("no project config found between cwd and / "
-                  "(pass --project or run inside the project checkout)")
+                  "(pass --project-id or run inside the project checkout)")
 
 
 def cmd_backlog_new(args) -> int:
@@ -2204,14 +2640,137 @@ def cmd_auth(args) -> int:
 # versa) rather than letting the help screen silently drift out of sync
 # with what's actually wired up.
 # --------------------------------------------------------------------------
+
+# Shared verbatim across every extract/extract-lossless/extract-debug/
+# extract-report/extract-sessions SESSION_LOG positional (2026-09-11,
+# operator-reported confusion: this is a raw on-disk file from a CODING
+# AGENT CLI, unrelated to nyxloom's OWN registered "project id" concept
+# used everywhere in the "project & workflow lifecycle"/"knowledge &
+# backlog" verb groups -- the two easily look alike ("a thing you point a
+# command at") but come from entirely different registries). One shared
+# constant so the wording can't drift between the five verbs that repeat it.
+_SESSION_LOG_HELP = (
+    "A session-log FILE on disk from the coding-agent CLI itself -- a "
+    "Claude Code transcript (~/.claude/projects/<project>/<session-id>"
+    ".jsonl, or one of its own subagents/agent-<id>.jsonl sub-agent "
+    "files), a Codex rollout file (~/.codex/sessions/YYYY/MM/DD/"
+    "rollout-*.jsonl), a Reasonix primary file (~/.reasonix/projects/"
+    "<escaped-cwd>/sessions/<timestamp-model>.jsonl, including "
+    "sessions/subagents/*.jsonl), or an opencode SQLite store (a file, or "
+    "its containing directory). OR just the session's own ID, with no path at "
+    "all -- a Claude Code/Codex session uuid, a Reasonix timestamp/model or "
+    "`sa_...` sub-agent id, a 17-hex-char Claude Code sub-agent agentId, or an "
+    "opencode `ses_...` id -- and the file (or "
+    "store) holding it is located automatically, erroring rather than "
+    "guessing if the id matches nothing or more than one session (see "
+    "session_extract/locate.py). NOT a nyxloom registered project id "
+    "(`nyxloom project list` shows those, an unrelated registry). "
+    "`extract-sessions` lists Claude Code/Codex/opencode families; Reasonix "
+    "path/ID extraction is supported, but its discovery is not yet exposed "
+    "because its source-backed lineage metadata is not established."
+)
+
+# Shared verbatim across every plain "Registered project id" positional/
+# flag in the "project & workflow lifecycle"/"knowledge & backlog" verb
+# groups -- one constant so ~15 call sites can't drift into slightly
+# different wording for the exact same concept.
+_PROJECT_ID_HELP = "Registered project id (see `nyxloom project list`)"
+
+# --opencode-session on the four extract-* verbs that take a SESSION_LOG
+# positional. Verified against real adapter behavior: for Claude Code and
+# Codex, list_sessions(path) is a hard no-op -- this flag has ZERO effect
+# for those formats, since the path alone always identifies the session.
+# It only matters for opencode, whose SQLite store can hold more than one
+# session row. Named --opencode-session (not the more generic --session it
+# used to be) so its scope is obvious from the flag itself, after an
+# operator-reported repro of trying `--session <id>` in place of the
+# required SESSION_LOG positional -- the generic old name invited exactly
+# that misreading.
+_OPENCODE_SESSION_HELP = (
+    "opencode only: which session id within the store to extract "
+    "(required when the store holds more than one). No effect for Claude "
+    "Code or Codex logs -- there, the SESSION_LOG path alone always "
+    "identifies the session. See `nyxloom extract-sessions` if you don't "
+    "know the id."
+)
+
+# Shared verbatim by extract and extract-lossless -- the flag means the same
+# thing on both, and the rich-vs-pygments distinction is the whole reason it
+# is a second flag rather than a mode of --render-markdown.
+_HIGHLIGHT_HELP = (
+    "Syntax-color markdown SOURCE, leaving every markup character in place "
+    "(via pygments) -- for when you want to COPY real markdown back out of "
+    "the terminal, which a running agent CLI's own rendered output can never "
+    "give you. The opposite goal from --render-markdown, which renders the "
+    "markup and consumes it; the two error if combined. Works with or "
+    "without --follow"
+)
+
+# Shared verbatim by extract and extract-lossless: --follow and its
+# attention/delivery flags mean exactly the same thing on both verbs, each
+# keeping its own selection semantics live.
+_FOLLOW_HELP = (
+    "After printing the one-shot result above, keep printing new content as "
+    "the session grows (tail -f, but applying THIS verb's own selection "
+    "rules to each new record). Genuinely incremental: the file's size is "
+    "polled; growth reads the appended payload plus only bounded prefix/tail "
+    "fingerprints as needed for rewrite detection -- never a whole-file "
+    "rescan. Ctrl-C to stop"
+)
+
+
+def _add_follow_flags(parser) -> None:
+    """--follow and its attention/delivery flags, identical on extract and
+    extract-lossless (session_extract/follow.py). Every one of the
+    non---follow flags here errors if passed WITHOUT --follow rather than
+    silently doing nothing."""
+    group = parser.add_argument_group(
+        "follow mode (live tailing)",
+        "Streaming continuation of the one-shot output, plus an optional attention hook for "
+        "when a session needs you. See session_extract/follow.py for the tailing mechanism, "
+        "the checkpoint-scoring lookahead delay, and each attention signal's real basis.")
+    group.add_argument("--follow", "-f", action="store_true", help=_FOLLOW_HELP)
+    group.add_argument("--interval", type=float, default=None, metavar="SECONDS",
+                        help="Poll interval while following (default 1.0). A session log grows "
+                             "in per-turn bursts, so sub-second polling buys nothing")
+    group.add_argument("--bell", action="store_true",
+                        help="Ring a terminal bell (\\a on STDERR, so a piped stream stays clean) "
+                             "whenever an attention signal fires: an "
+                             "unanswered AskUserQuestion (Claude Code only -- no equivalent is "
+                             "known in the Codex/opencode/Reasonix schemas), a detected checkpoint, or "
+                             "--attention-min-chars below. Independent of --on-attention")
+    group.add_argument("--on-attention", metavar="COMMAND",
+                        help="Shell command to run on each attention signal, with "
+                             "NYXLOOM_ATTENTION_REASON (interview_pending|checkpoint_detected|"
+                             "long_block), NYXLOOM_ATTENTION_HARNESS, "
+                             "NYXLOOM_ATTENTION_SESSION_PATH and NYXLOOM_ATTENTION_EXCERPT (the "
+                             "flagged text's first ~100 chars) in its environment. YOUR script "
+                             "decides whether that reaches Telegram/Mattermost/anything -- "
+                             "nyxloom holds no credentials for this")
+    group.add_argument("--notify-project", metavar="PROJECT_ID",
+                        help="Additionally push each attention signal through this registered "
+                             "project's already-configured [notify] channel (`nyxloom project "
+                             "list`). Note: unlike every other nyxloom notification, this body "
+                             "includes the flagged text's excerpt -- a deliberate, documented "
+                             "exception to SPEC 13's template-only rule, see "
+                             "session_extract/follow.py")
+    group.add_argument("--attention-min-chars", type=int, default=None, metavar="N",
+                        help="Additionally fire an attention signal for any new block longer "
+                             "than N characters (off by default). Independent of checkpoint "
+                             "detection")
+
+
 _VERB_GROUPS: dict[str, list[str]] = {
     "project & workflow lifecycle": [
         "decide", "discuss", "gate", "leases", "merge", "pause", "project",
         "reject", "resume", "resync", "status", "tick",
     ],
-    "content & extraction tooling": [
-        "digest", "events", "extract", "extract-debug", "extract-lossless", "render",
-        "session-stats",
+    "session-log extraction (Claude Code / Codex / opencode / Reasonix)": [
+        "extract", "extract-debug", "extract-lossless", "extract-report",
+        "extract-sessions",
+    ],
+    "project data & dashboard": [
+        "digest", "events", "render",
     ],
     "intake & onboarding": [
         "init", "intake", "intake-bridge", "onboard",
@@ -2331,26 +2890,49 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
 
     subparsers = parser.add_subparsers(dest="cmd", help="Command")
 
-    # project
+    # project -- the registry every other "Registered project id" argument
+    # in this CLI refers back to (NOT a filesystem path -- see `root`
+    # below, a separate concept). Registering is the prerequisite step a
+    # first-time user of any project-scoped verb (decide/discuss/digest/
+    # events/gate/leases/merge/pause/reject/resume/resync/tick/backlog/
+    # finding/doctor/status/migrate-store) needs and nothing else in this
+    # tree says explicitly -- this verb's own --help is the one place that
+    # spells it out; every other verb's help text just cross-references it.
     project_parser = subparsers.add_parser(
-        "project", help="Manage the project registry (add, list)")
+        "project",
+        help="Manage the registered-project registry every other project-scoped "
+             "verb refers to")
     project_subs = project_parser.add_subparsers(dest="project_cmd")
 
-    add_parser = project_subs.add_parser("add", help="register a project")
-    add_parser.add_argument("id", help="Project ID")
-    add_parser.add_argument("root", help="Project root path")
+    add_parser = project_subs.add_parser(
+        "add", help="register a project (prerequisite for every project-scoped verb)")
+    add_parser.add_argument("id", metavar="PROJECT_ID",
+                             help="A short id you choose to refer to this project by in "
+                                  "every other nyxloom command (e.g. 'dstdns') -- your own "
+                                  "label, not derived from the path below")
+    add_parser.add_argument("root", metavar="PROJECT_ROOT",
+                             help="Filesystem path to the project's own repo root (where "
+                                  "its nyxloom-trove/ config lives)")
 
-    list_parser = project_subs.add_parser("list", help="list registered projects")
+    list_parser = project_subs.add_parser(
+        "list", help="list every registered project id and its root path")
 
     # lint
     lint_parser = subparsers.add_parser(
         "lint", help="Lint handoff files; exit 1 on any blocking finding")
-    lint_parser.add_argument("path", nargs="*", help="Handoff file paths (optional)")
+    lint_parser.add_argument("path", nargs="*", metavar="HANDOFF_FILE",
+                              help="One or more handoff markdown files to lint. Omit "
+                                   "entirely to lint every REGISTERED project's handoff "
+                                   "files instead (see `nyxloom project list`) -- not the "
+                                   "same as 'no files to check', this is the normal "
+                                   "no-argument invocation")
 
     # doctor
     doctor_parser = subparsers.add_parser(
         "doctor", help="Health-check findings for registered projects")
-    doctor_parser.add_argument("--project", help="Project ID (optional)")
+    doctor_parser.add_argument("--project-id", metavar="PROJECT_ID",
+                                help="Registered project id (see `nyxloom project list`); "
+                                     "omit to check every registered project")
     doctor_parser.add_argument("--rebuild", action="store_true", help="Rebuild mode")
     doctor_parser.add_argument("--write", action="store_true", help="Write changes")
     # CR-16 (RISK-007): the fast, narrowly-scoped path -- deadman,
@@ -2364,12 +2946,15 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # status
     status_parser = subparsers.add_parser(
         "status", help="Per-task status table from statefiles")
-    status_parser.add_argument("--project", help="Project ID (optional)")
+    status_parser.add_argument("--project-id", metavar="PROJECT_ID",
+                                help="Registered project id (see `nyxloom project list`); "
+                                     "omit to show every registered project")
 
     # resync
     resync_parser = subparsers.add_parser(
         "resync", help="Re-baseline project state (dry-run unless --apply)")
-    resync_parser.add_argument("project", help="Project ID")
+    resync_parser.add_argument("project_id", metavar="PROJECT_ID",
+                                help="Registered project id (see `nyxloom project list`)")
     resync_parser.add_argument("--apply", action="store_true",
                                 help="PACKAGE RP02: emit the audited re-baseline "
                                      "transitions (default: dry-run plan only)")
@@ -2388,12 +2973,10 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
 
     extract_parser = subparsers.add_parser(
         "extract", help="Extract a condensed transcript from a session log")
-    extract_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
-                                              "a file or directory for opencode's SQLite store)")
-    extract_parser.add_argument("--session",
-                                 help="Session id, required when the store holds more than one "
-                                      "(e.g. opencode)")
-    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
+    extract_parser.add_argument("--opencode-session", metavar="SESSION_ID",
+                                 help=_OPENCODE_SESSION_HELP)
+    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                  help="Force the adapter instead of auto-detecting from the path")
     extract_parser.add_argument("--json", action="store_true",
                                  help="JSON output instead of delimited text")
@@ -2424,22 +3007,22 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     selection_group.add_argument("--include-thinking", action="store_true",
                                   help="Also emit assistant thinking/reasoning content where "
                                        "the adapter can recover it")
-    selection_group.add_argument("--include-sidechain", action="store_true",
-                                  help="Claude Code only. Also consider isSidechain records "
-                                       "(off by default -- correct for a normal interactive "
-                                       "session, where every sidechain branch found in real "
-                                       "data was parallel tool-fan-out noise). Set this when "
-                                       "path is a dispatched Agent-tool subagent's OWN "
-                                       "dedicated transcript file (.../subagents/agent-"
-                                       "<id>.jsonl) -- there, EVERY record carries "
-                                       "isSidechain=true even though it IS that file's main "
-                                       "thread, and the default silently returns zero events")
     selection_group.add_argument("--show-api-errors", action="store_true",
                                   help="Include upstream API-transport noise (429/rate-limit/"
                                        "overloaded_error) in the output. Off by default -- "
                                        "these are dropped from selection entirely, not just "
                                        "length-filtered, since they're a fact about the "
                                        "harness's API connection, not about session content.")
+    selection_group.add_argument("--show-compaction-content", action="store_true",
+                                  help="Keep an operator-issued /compact <prompt> dispatch's "
+                                       "own argument text in full. Off by default -- it's "
+                                       "hinted as '[compaction: steered dispatched]' instead, "
+                                       "since the prompt almost always just re-quotes a "
+                                       "compaction prompt the model already produced as "
+                                       "ordinary (kept-in-full) assistant prose moments "
+                                       "earlier. Does not affect the resulting compact_boundary "
+                                       "marker, which always shows the enriched "
+                                       "steered/automatic + token-count hint.")
 
     stop_group = extract_parser.add_argument_group(
         "stop conditions (whichever hits first)",
@@ -2464,7 +3047,8 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                               help="Resume marker from a prior run's last_marker -- only "
                                    "events after it are considered. The marker is an opaque, "
                                    "adapter-specific token (a Claude Code record uuid, a Codex "
-                                   "ordinal, an opencode message-table row id) -- not a "
+                                   "ordinal, a Reasonix line<N> marker, or an opencode "
+                                   "message-table row id) -- not a "
                                    "timestamp. Copy it from the trailing HTML comment a prior "
                                    "run's own output ends with: `<!-- nyxloom-extract: "
                                    "format=... marker=... -->`. In practice --since-file below "
@@ -2528,18 +3112,76 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                     "exact same token --since/--until resolve, a 'go look it up "
                                     "yourself' pointer into the raw log. Off by default. No "
                                     "effect under --gap-marker=none")
+    render_group.add_argument("--render-markdown", action="store_true",
+                               help="Render each kept block's markdown for READING (via rich): "
+                                    "bold/headers/code fences actually rendered, the way the CLI "
+                                    "that wrote them showed you live. The markup characters are "
+                                    "consumed in the process, so this is the wrong mode for "
+                                    "copying prose back out -- see --highlight, which colors "
+                                    "markdown while leaving every character in place. Applies to "
+                                    "kept blocks' prose only; separators, gap/stop-reason notes "
+                                    "and the trailing marker comment are untouched")
+    render_group.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
+    color_group = extract_parser.add_mutually_exclusive_group()
+    color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
+                              help="Force ANSI color for --render-markdown/--highlight even when "
+                                   "stdout isn't a terminal (default: color iff stdout is a tty)")
+    color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
+                              help="Disable ANSI color for --render-markdown/--highlight even "
+                                   "when stdout is a terminal")
+    _add_follow_flags(extract_parser)
+
+    handoff_group = extract_parser.add_argument_group(
+        "handoff to a fresh agent",
+        "Opt-in, best-effort transforms for ONE use case: `nyxloom extract ... | claude` handing "
+        "the rendered brief straight to a new agent as its entire prompt. Applied to the "
+        "post-selection event list before rendering, so --strip-stale-wakeups/--redact-pattern "
+        "work in both --json and text mode; --task/--task-file are text-mode only (errors "
+        "combined with --json). Each is heuristic -- verified against one real session, not a "
+        "labeled corpus -- see session_extract/mangle.py.")
+    handoff_group.add_argument(
+        "--strip-stale-wakeups", action="store_true",
+        help="Collapse a trailing run of 2+ near-duplicate \"stale wakeup, nothing new to do\" "
+             "assistant checkpoints down to just the first of the run. Targets a real, verified "
+             "failure: a ScheduleWakeup/Stop-hook fallback firing again after the task that "
+             "armed it already finished, whose repeated confirmations otherwise sit at the very "
+             "END of the brief -- exactly what a fresh agent reading it anchors its first move "
+             "on (recency bias), even though they're pure repetition. Never touches a lone "
+             "trailing match or one occurring earlier in the span (e.g. genuine "
+             "progress-monitoring prose like 'Confirmed alive, continuing to wait') -- see "
+             "session_extract/mangle.py for the exact rule.")
+    handoff_group.add_argument(
+        "--redact-pattern", action="append", default=None, metavar="REGEX",
+        help="Replace any blank-line-delimited paragraph matching REGEX (case-insensitive, "
+             "repeatable) with a one-line placeholder, in ANY kept event. Built for stripping a "
+             "standing controller directive back out of a brief before handing it to a new "
+             "agent, e.g. --redact-pattern '/goal': a LIFECYCLE_MARKER's own text is always kept "
+             "in full by selection, and a real compaction's own KEEP block restating 'continue "
+             "autonomous...' verbatim is exactly the kind of role-level framing that leads a "
+             "fresh (or forked) agent to assume the controller's own role instead of a narrower "
+             "delegated task. Only the matching paragraph is replaced -- other state packed into "
+             "the same event's text survives untouched")
+    task_group = extract_parser.add_mutually_exclusive_group()
+    task_group.add_argument(
+        "--task",
+        help="Append a clearly-delimited banner AFTER the rendered brief, naming its contents as "
+             "a NEW instruction rather than more transcript. Exists because an LLM handed a raw "
+             "transcript with no explicit task resolves 'what should I do' by pattern-matching "
+             "whatever's most salient in it -- the recency-biased tail, or a standing directive "
+             "-- rather than waiting to be asked. Text-mode only (errors combined with --json)")
+    task_group.add_argument(
+        "--task-file",
+        help="Same as --task, read from a file -- for a task description too long or "
+             "quote-heavy for a shell argument. Mutually exclusive with --task")
 
     # extract-lossless
     extract_lossless_parser = subparsers.add_parser(
         "extract-lossless",
         help="Raw verbatim text/thinking dump -- no classification or windowing")
-    extract_lossless_parser.add_argument(
-        "path", help="Session log path (a file for Claude Code/Codex; a file or directory for "
-                      "opencode's SQLite store)")
-    extract_lossless_parser.add_argument("--session",
-                                          help="Session id, required when the store holds more "
-                                               "than one (e.g. opencode)")
-    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_lossless_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
+    extract_lossless_parser.add_argument("--opencode-session", metavar="SESSION_ID",
+                                          help=_OPENCODE_SESSION_HELP)
+    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                           help="Force the adapter instead of auto-detecting from "
                                                "the path")
     lossless_since_group = extract_lossless_parser.add_mutually_exclusive_group()
@@ -2555,16 +3197,29 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_lossless_parser.add_argument("--until",
                                           help="Same meaning as extract's --until -- stop at this "
                                                "marker (inclusive), symmetric with --since")
+    extract_lossless_parser.add_argument(
+        "--redact-pattern", action="append", default=None, metavar="REGEX",
+        help="Rejected: extract-lossless is a verbatim dump; use extract when redaction is "
+             "required",
+    )
+    extract_lossless_parser.add_argument("--highlight", action="store_true", help=_HIGHLIGHT_HELP)
+    lossless_color_group = extract_lossless_parser.add_mutually_exclusive_group()
+    lossless_color_group.add_argument("--color", dest="color", action="store_const", const=True,
+                                       default=None,
+                                       help="Force ANSI color for --highlight even when stdout "
+                                            "isn't a terminal (default: color iff stdout is a tty)")
+    lossless_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
+                                       help="Disable ANSI color for --highlight even when stdout "
+                                            "is a terminal")
+    _add_follow_flags(extract_lossless_parser)
 
     # extract-debug
     extract_debug_parser = subparsers.add_parser(
         "extract-debug", help="Colored diff: extract-lossless output vs what extract would keep")
-    extract_debug_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
-                                                     "a file or directory for opencode's SQLite store)")
-    extract_debug_parser.add_argument("--session",
-                                       help="Session id, required when the store holds more than "
-                                            "one (e.g. opencode)")
-    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_debug_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
+    extract_debug_parser.add_argument("--opencode-session", metavar="SESSION_ID",
+                                       help=_OPENCODE_SESSION_HELP)
+    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                        help="Force the adapter instead of auto-detecting from the path")
     extract_debug_parser.add_argument("--profile", choices=sorted(PROFILES),
                                        help="Same meaning as extract's --profile -- run this "
@@ -2577,38 +3232,61 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                                        help="Same as extract's --max-words")
     extract_debug_parser.add_argument("--include-thinking", action="store_true",
                                        help="Same as extract's --include-thinking")
-    extract_debug_parser.add_argument("--include-sidechain", action="store_true",
-                                       help="Same as extract's --include-sidechain")
     extract_debug_parser.add_argument("--max-lifecycle-markers", type=int, default=None,
                                        help="Same as extract's --max-lifecycle-markers")
     extract_debug_parser.add_argument("--show-api-errors", action="store_true",
                                        help="Same as extract's --show-api-errors")
+    extract_debug_parser.add_argument("--show-compaction-content", action="store_true",
+                                       help="Same as extract's --show-compaction-content")
     debug_color_group = extract_debug_parser.add_mutually_exclusive_group()
     debug_color_group.add_argument("--color", dest="color", action="store_const", const=True, default=None,
                                     help="Force ANSI color even when stdout isn't a terminal")
     debug_color_group.add_argument("--no-color", dest="color", action="store_const", const=False,
                                     help="Disable ANSI color even when stdout is a terminal")
 
-    # session-stats
-    session_stats_parser = subparsers.add_parser(
-        "session-stats", help="Cost/timeline stats for a session log")
-    session_stats_parser.add_argument("path", help="Session log path (a file for Claude Code/Codex; "
-                                                     "a file or directory for opencode's SQLite store)")
-    session_stats_parser.add_argument("--session",
-                                       help="Session id, required when the store holds more than "
-                                            "one (e.g. opencode)")
-    session_stats_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
-                                       help="Force the adapter instead of auto-detecting from the path")
-    session_stats_parser.add_argument("--detailed", action="store_true",
-                                       help="One row per real API call instead of the condensed "
-                                            "one-page block view")
-    session_stats_parser.add_argument("--json", action="store_true",
-                                       help="JSON instead of CSV/text")
+    # extract-report (renamed from session-stats 2026-09-11, operator direction --
+    # consistent extract-* verb family)
+    extract_report_parser = subparsers.add_parser(
+        "extract-report", help="Cost/timeline stats for a session log")
+    extract_report_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
+    extract_report_parser.add_argument("--opencode-session", metavar="SESSION_ID",
+                                        help=_OPENCODE_SESSION_HELP)
+    extract_report_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                        help="Force the adapter instead of auto-detecting from the path")
+    extract_report_parser.add_argument("--detailed", action="store_true",
+                                        help="One row per real API call instead of the condensed "
+                                             "one-page block view")
+    extract_report_parser.add_argument("--json", action="store_true",
+                                        help="JSON instead of CSV/text")
+
+    # extract-sessions (new 2026-09-11 -- discovery gap identified while
+    # redesigning subagent targeting: E-015 in
+    # docs/design-context-lifecycle-experiments.md)
+    extract_sessions_parser = subparsers.add_parser(
+        "extract-sessions",
+        help="List a project/store's sessions and sub-agents, with lineage")
+    extract_sessions_parser.add_argument(
+        "path", metavar="SESSION_LOG_OR_DIR",
+        help="Either a single SESSION_LOG (see extract's --help for that meaning; its "
+             "whole family -- sub-agents included -- is shown either way, whether you "
+             "point at the top-level session or one specific sub-agent's own file) OR "
+             "a DIRECTORY holding MANY sessions: a Claude Code project directory "
+             "(~/.claude/projects/<project>/), a Codex sessions root "
+             "(~/.codex/sessions/), or an opencode SQLite store's directory -- every "
+             "session found is shown, combined into one forest. This is the discovery "
+             "command; when in doubt, point it at a DIRECTORY first. Reasonix "
+             "directories/files are intentionally not accepted here because the supplied "
+             "records do not establish parent/child lineage")
+    extract_sessions_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+                                          help="Force the adapter instead of auto-detecting from the path")
+    extract_sessions_parser.add_argument("--json", action="store_true",
+                                          help="JSON list instead of an indented tree")
 
     # migrate-store
     migrate_store_parser = subparsers.add_parser(
         "migrate-store", help="Migrate a project's events to the SQLite backend")
-    migrate_store_parser.add_argument("project", help="Project ID")
+    migrate_store_parser.add_argument("project_id", metavar="PROJECT_ID",
+                                       help="Registered project id (see `nyxloom project list`)")
 
     # daemon
     daemon_parser = subparsers.add_parser(
@@ -2632,28 +3310,36 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # tick
     tick_parser = subparsers.add_parser(
         "tick", help="Run one daemon dispatch pass (debug/fallback mode)")
-    tick_parser.add_argument("--project", help="Project ID (optional)")
+    tick_parser.add_argument("--project-id", metavar="PROJECT_ID",
+                              help=_PROJECT_ID_HELP + "; omit to tick every registered project")
 
     # decide
     decide_parser = subparsers.add_parser(
         "decide", help="Resolve a decision with a chosen option")
-    decide_parser.add_argument("project", help="Project ID")
-    decide_parser.add_argument("decision_id", help="Decision ID")
+    decide_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    decide_parser.add_argument("decision_id", metavar="DECISION_ID",
+                                help="Decision id from a 'Decision needed: <id>' notification "
+                                     "(see `nyxloom digest`)")
     decide_parser.add_argument("--choose", required=True, help="Choice")
     decide_parser.add_argument("--note", help="Note (optional)")
 
     # discuss
     discuss_parser = subparsers.add_parser(
         "discuss", help="Print the CLI command to resume-discuss a decision")
-    discuss_parser.add_argument("project", help="Project ID")
-    discuss_parser.add_argument("decision_id", help="Decision ID")
+    discuss_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    discuss_parser.add_argument("decision_id", metavar="DECISION_ID",
+                                 help="Decision id from a 'Decision needed: <id>' notification "
+                                      "(see `nyxloom digest`)")
 
     # intake
     intake_parser = subparsers.add_parser(
         "intake", help="Advance one feature-intake chat turn")
-    intake_parser.add_argument("project", help="Project ID")
-    intake_parser.add_argument("intake_id", help="Intake ID")
-    intake_parser.add_argument("message", help="Message to the intake agent")
+    intake_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    intake_parser.add_argument("intake_id", metavar="INTAKE_ID",
+                                help="An id you choose to identify this intake conversation -- "
+                                     "first use with a new id starts it, reusing the same id "
+                                     "continues that same conversation")
+    intake_parser.add_argument("message", help="Message to send to the intake agent")
 
     # intake-bridge (B9 / nyxloom-P109): the Mattermost transport for the
     # SAME intake_chat engine `intake` above drives by hand.
@@ -2662,7 +3348,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     intake_bridge_subs = intake_bridge_parser.add_subparsers(dest="intake_bridge_cmd")
     ibp = intake_bridge_subs.add_parser(
         "poll", help="poll the intake channel once, advance one turn, exit")
-    ibp.add_argument("project", help="Project ID")
+    ibp.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
     # The choices come from the schema-side tuple rather than a literal here,
     # so a transport added to the registry cannot be missing from the CLI.
     from .config import INTAKE_TRANSPORTS
@@ -2672,15 +3358,17 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # reject
     reject_parser = subparsers.add_parser(
         "reject", help="Send a MERGE_READY task back to rework")
-    reject_parser.add_argument("project", help="Project ID")
-    reject_parser.add_argument("task", help="Task ID")
+    reject_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    reject_parser.add_argument("task", metavar="TASK_ID",
+                                help="Task id (see `nyxloom status`)")
     reject_parser.add_argument("--note", help="Rejection reason (optional)")
 
     # merge
     merge_parser = subparsers.add_parser(
         "merge", help="Record a manual merge for a task")
-    merge_parser.add_argument("project", help="Project ID")
-    merge_parser.add_argument("task", help="Task ID")
+    merge_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    merge_parser.add_argument("task", metavar="TASK_ID",
+                               help="Task id (see `nyxloom status`)")
     merge_parser.add_argument("--commit", help="Merge commit SHA (optional; default: git rev-parse HEAD)")
     merge_parser.add_argument("--force", action="store_true",
                               help="Record the merge even if the pre-merge gate fails (operator override; F).")
@@ -2696,14 +3384,18 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # pause
     pause_parser = subparsers.add_parser(
         "pause", help="Pause a project or a single task")
-    pause_parser.add_argument("project", help="Project ID")
-    pause_parser.add_argument("task", nargs="?", help="Task ID (optional)")
+    pause_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    pause_parser.add_argument("task", nargs="?", metavar="TASK_ID",
+                               help="Task id (see `nyxloom status`) -- omit to pause the "
+                                    "whole PROJECT instead of one task")
 
     # resume
     resume_parser = subparsers.add_parser(
         "resume", help="Resume a paused project or task (drift-guarded)")
-    resume_parser.add_argument("project", help="Project ID")
-    resume_parser.add_argument("task", nargs="?", help="Task ID (optional)")
+    resume_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    resume_parser.add_argument("task", nargs="?", metavar="TASK_ID",
+                                help="Task id (see `nyxloom status`) -- omit to resume the "
+                                     "whole PROJECT instead of one task")
     resume_parser.add_argument("--force", action="store_true",
                                 help="PACKAGE RP03: resume a project-level pause "
                                      "even when the pre-resume drift scan finds "
@@ -2719,15 +3411,21 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # digest
     digest_parser = subparsers.add_parser(
         "digest", help="Print the notification digest for a project")
-    digest_parser.add_argument("project", help="Project ID")
-    digest_parser.add_argument("--since", help="Since sequence (optional)")
+    digest_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    digest_parser.add_argument("--since", metavar="SEQ",
+                                help="Only notifications after this event sequence number "
+                                     "(optional; omit for the full digest)")
 
     # events
     events_parser = subparsers.add_parser(
-        "events", help="Dump/tail a project's event log as JSONL")
-    events_parser.add_argument("project", help="Project ID")
-    events_parser.add_argument("--since", help="Since sequence (optional)")
-    events_parser.add_argument("--type", help="Event type (optional)")
+        "events", help="Dump/tail a registered project's event log as JSONL")
+    events_parser.add_argument("project_id", metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    events_parser.add_argument("--since", metavar="SEQ",
+                                help="Only events with sequence number > SEQ (optional; omit "
+                                     "for the full log)")
+    events_parser.add_argument("--type", metavar="EVENT_TYPE",
+                                help="Filter to one event type (optional; see types.EventType "
+                                     "for the full set, e.g. TASK_MERGE_READY)")
     events_parser.add_argument("--tail", action="store_true",
                                 help="Follow new events as they are appended (Ctrl-C to stop)")
     events_parser.add_argument("--json", action="store_true",
@@ -2740,7 +3438,10 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # init
     init_parser = subparsers.add_parser(
         "init", help="Scaffold a nyxloom-trove into a project folder")
-    init_parser.add_argument("project_folder", help="Target project folder to scaffold a trove into")
+    init_parser.add_argument("project_folder", metavar="PROJECT_FOLDER",
+                              help="Filesystem path to scaffold a nyxloom-trove/ config into -- "
+                                   "does NOT register the project (see `nyxloom project add`, "
+                                   "a separate step, once this folder has a working config)")
 
     # onboard (PACKAGE F2). Choices are hardcoded literals here (not
     # imported from onboarding.py) so parser construction -- which runs for
@@ -2750,15 +3451,21 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     # choice sets at construction time regardless.
     onboard_parser = subparsers.add_parser(
         "onboard", help="Run the onboarding wizard (spine + optional AI scan)")
-    onboard_parser.add_argument("project_folder", help="Target project folder (trove scaffolded here if absent)")
+    onboard_parser.add_argument("project_folder", metavar="PROJECT_FOLDER",
+                                 help="Filesystem path to onboard -- a nyxloom-trove/ is "
+                                      "scaffolded here if absent. Does NOT register the "
+                                      "project (see `nyxloom project add`, a separate step)")
     onboard_parser.add_argument("--maturity", choices=["empty", "partial", "mature"],
                                  default="empty", help="Project maturity (default: empty)")
     onboard_parser.add_argument("--docs", choices=["present", "absent"],
                                  default="absent", help="Whether the project already has real docs (default: absent)")
     onboard_parser.add_argument("--mode", choices=["derive-from-code", "code-good-docs-absent", "greenfield-define-it"],
                                  default="greenfield-define-it", help="Onboarding mode (default: greenfield-define-it)")
-    onboard_parser.add_argument("--scan-path", action="append", dest="scan_paths", metavar="PATH",
-                                 help="Path (repeatable) for the later AI scan (F3) to read; default: ['.']")
+    onboard_parser.add_argument("--scan-path", action="append", dest="scan_paths", metavar="SCAN_PATH",
+                                 help="Path (repeatable) for the later AI scan (F3) to read; "
+                                      "default: ['.'] (the CURRENT WORKING DIRECTORY at "
+                                      "invocation time, NOT necessarily PROJECT_FOLDER -- "
+                                      "pass explicitly if they differ)")
     onboard_parser.add_argument("--scan", action="store_true",
                                  help="PACKAGE F3: after the non-AI wizard, dispatch the read-only "
                                       "assessment scan agent (skipped automatically for --maturity empty)")
@@ -2804,8 +3511,9 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     cm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                                     help="Compute the catalog without writing routes.toml")
     cm_refresh_parser.add_argument("--emit-findings", dest="emit_findings",
-                                   metavar="PROJECT", default=None,
-                                   help="record cost_crossover findings under this registered project")
+                                   metavar="PROJECT_ID", default=None,
+                                   help="Record cost_crossover findings under this registered "
+                                        "project id (see `nyxloom project list`)")
 
     # route (B1: route doctor -- validate routes.toml + live-probe each route)
     route_parser = subparsers.add_parser(
@@ -2824,18 +3532,27 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     finding_subs = finding_parser.add_subparsers(dest="finding_cmd")
 
     fr = finding_subs.add_parser("record", help="record a finding")
-    fr.add_argument("--project", required=True)
-    fr.add_argument("--kind", required=True)
-    fr.add_argument("--title", required=True)
-    fr.add_argument("--body", default="")
+    fr.add_argument("--project-id", required=True, metavar="PROJECT_ID", help=_PROJECT_ID_HELP)
+    fr.add_argument("--kind", required=True, metavar="KIND",
+                     help="Finding kind -- not argparse-constrained, but "
+                          "findings.FINDING_KINDS registers 'generic' (free-text, "
+                          "dashboard-only) and two typed/pushable kinds, "
+                          "'model_near_equivalent' and 'cost_crossover' (each needs "
+                          "its own required --field keys -- see findings.py)")
+    fr.add_argument("--title", required=True, help="One-line finding title")
+    fr.add_argument("--body", default="", help="Free-text finding body (optional)")
     fr.add_argument("--field", action="append", default=[],
-                    metavar="KEY=VALUE", help="typed field for a pushable kind (repeatable)")
-    fr.add_argument("--task-id", dest="task_id", default=None)
-    fr.add_argument("--severity", default="info")
+                    metavar="KEY=VALUE", help="Typed field for a pushable kind (repeatable) "
+                                               "-- required_fields vary per --kind, see above")
+    fr.add_argument("--task-id", dest="task_id", metavar="TASK_ID", default=None,
+                     help="Associate with a task id (see `nyxloom status`); optional")
+    fr.add_argument("--severity", default="info", metavar="SEVERITY",
+                     help="Free-text severity label (default: info)")
 
     fl = finding_subs.add_parser("list", help="list findings")
-    fl.add_argument("--project", default=None, help="default: all registered projects")
-    fl.add_argument("--kind", default=None, help="filter by kind")
+    fl.add_argument("--project-id", default=None, metavar="PROJECT_ID",
+                     help=_PROJECT_ID_HELP + "; default: all registered projects")
+    fl.add_argument("--kind", default=None, metavar="KIND", help="Filter by kind (optional)")
 
     # backlog (docs/backlog-entries-spec.md: managed per-entry backlog)
     backlog_parser = subparsers.add_parser(
@@ -2843,62 +3560,92 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     backlog_subs = backlog_parser.add_subparsers(dest="backlog_cmd")
 
     def _add_project_arg(p):
-        p.add_argument("--project", default=None,
-                       help="registered project id (default: discover from cwd)")
+        p.add_argument("--project-id", default=None, metavar="PROJECT_ID",
+                       help=_PROJECT_ID_HELP + " (default: walk up from the current "
+                            "working directory to the nearest nyxloom-trove/nyxloom.toml "
+                            "or .nyxloom/project.toml -- works even if that project was "
+                            "never `nyxloom project add`-ed, unlike every other verb here)")
 
     bn = backlog_subs.add_parser("new", help="file a new entry")
     _add_project_arg(bn)
-    bn.add_argument("title")
-    bn.add_argument("--type", choices=["feature", "bugfix"], default=None)
-    bn.add_argument("--severity", choices=["low", "medium", "high"], default=None)
-    bn.add_argument("--priority", type=int, default=None)
-    bn.add_argument("--component", default=None)
-    bn.add_argument("--provenance", default=None)
-    bn.add_argument("--filed-by", dest="filed_by", default=None)
-    bn.add_argument("--spec-owner", dest="spec_owner", default=None)
-    bn.add_argument("--body-from", dest="body_from", default=None,
-                    help="read the entry body from this file instead of the template")
+    bn.add_argument("title", help="One-line entry title")
+    bn.add_argument("--type", choices=["feature", "bugfix"], default=None,
+                     help="Entry type (optional)")
+    bn.add_argument("--severity", choices=["low", "medium", "high"], default=None,
+                     help="Entry severity (optional)")
+    bn.add_argument("--priority", type=int, default=None, help="Entry priority (optional)")
+    bn.add_argument("--component", default=None, help="Owning component (optional)")
+    bn.add_argument("--provenance", default=None,
+                     help="Where this entry came from, e.g. an issue/PR link (optional)")
+    bn.add_argument("--filed-by", dest="filed_by", default=None, help="Filer's name (optional)")
+    bn.add_argument("--spec-owner", dest="spec_owner", default=None,
+                     help="Owning spec's name (optional)")
+    bn.add_argument("--body-from", dest="body_from", default=None, metavar="FILE",
+                    help="Read the entry body from this file instead of the template")
 
     bp = backlog_subs.add_parser("promote", help="inbox item -> managed entry")
     _add_project_arg(bp)
-    bp.add_argument("inbox_id", metavar="inbox-id")
+    bp.add_argument("inbox_id", metavar="INBOX_ID", help="Inbox item id to promote")
 
     bnote = backlog_subs.add_parser("note", help="append a dated update to an entry")
     _add_project_arg(bnote)
-    bnote.add_argument("entry_id", metavar="id")
-    bnote.add_argument("text")
+    bnote.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
+    bnote.add_argument("text", help="Note text to append")
 
     bs = backlog_subs.add_parser("set-status", help="typed status transition")
     _add_project_arg(bs)
-    bs.add_argument("entry_id", metavar="id")
+    bs.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
     bs.add_argument("status",
-                    choices=["open", "carved", "fixed", "withdrawn", "obsolete"])
+                    choices=["open", "carved", "fixed", "withdrawn", "obsolete"],
+                    help="New status")
     bs.add_argument("--reason", default=None,
-                    help="required for fixed|withdrawn|obsolete")
+                    help="Required when status is fixed|withdrawn|obsolete")
 
     bl = backlog_subs.add_parser("list", help="print the generated INDEX.md")
     _add_project_arg(bl)
-    bl.add_argument("--status", default=None, help="filter rows by status")
+    bl.add_argument("--status", default=None, metavar="STATUS", help="Filter rows by status (optional)")
 
     bsh = backlog_subs.add_parser("show", help="print one entry file")
     _add_project_arg(bsh)
-    bsh.add_argument("entry_id", metavar="id")
+    bsh.add_argument("entry_id", metavar="ENTRY_ID", help="Backlog entry id (see `nyxloom backlog list`)")
 
     bix = backlog_subs.add_parser("index", help="regenerate INDEX.md")
     _add_project_arg(bix)
 
-    # Every top-level subcommand's OWN --help (e.g. `nyxloom session-stats
-    # --help`) is otherwise plain argparse output with no version/name
-    # banner -- _print_top_level_help's banner only fires for a bare
-    # invocation, top-level -h/--help, or an unrecognized command
-    # (operator-reported gap, 2026-09-10). `description` is argparse's own
-    # mechanism for a line shown right after the usage block in --help
-    # output; it does not appear in the terse `.error()` usage-only path
-    # (missing/bad argument), which stays a standard one-line message like
-    # every other CLI's argument error.
+    # Every subcommand's OWN --help (e.g. `nyxloom extract-report --help`)
+    # is otherwise plain argparse output with no version/name banner --
+    # _print_top_level_help's banner only fires for a bare invocation,
+    # top-level -h/--help, or an unrecognized command (operator-reported
+    # gap, 2026-09-10). `description` is argparse's own mechanism for a
+    # line shown right after the usage block in --help output; it does not
+    # appear in the terse `.error()` usage-only path (missing/bad
+    # argument), which stays a standard one-line message like every other
+    # CLI's argument error.
+    #
+    # Applied recursively (2026-09-11 fix -- the original loop only walked
+    # TOP-level verbs, so `nyxloom project add --help` / `nyxloom backlog
+    # new --help` and every other nested sub-subcommand silently didn't
+    # get the same banner their top-level siblings did; a real, if minor,
+    # 3rd-party-visible inconsistency caught during a full-CLI text
+    # audit). `_SubParsersAction.choices.values()` yields every registered
+    # sub-parser at one level; a parser that itself called
+    # `.add_subparsers()` again exposes that action back via its own
+    # private `_subparsers` attribute (the same kind of long-stable
+    # argparse internal `_print_top_level_help` already relies on for
+    # `_choices_actions`), which is how this walks arbitrarily deep
+    # without hand-listing every nested `_subs` variable above by name.
     from . import __version__ as _cli_version
-    for _sub in subparsers.choices.values():
-        _sub.description = f"nyxloom {_cli_version}"
+
+    def _set_description_recursively(subparsers_action) -> None:
+        for _sub in subparsers_action.choices.values():
+            _sub.description = f"nyxloom {_cli_version}"
+            nested = getattr(_sub, "_subparsers", None)
+            if nested is not None:
+                for action in nested._group_actions:
+                    if isinstance(action, argparse._SubParsersAction):
+                        _set_description_recursively(action)
+
+    _set_description_recursively(subparsers)
 
     return parser, subparsers
 
@@ -2974,8 +3721,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_extract_lossless(args)
         elif args.cmd == "extract-debug":
             return cmd_extract_debug(args)
-        elif args.cmd == "session-stats":
-            return cmd_session_stats(args)
+        elif args.cmd == "extract-report":
+            return cmd_extract_report(args)
+        elif args.cmd == "extract-sessions":
+            return cmd_extract_sessions(args)
         elif args.cmd == "migrate-store":
             return cmd_migrate_store(args)
         elif args.cmd == "daemon":

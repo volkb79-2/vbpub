@@ -24,11 +24,12 @@ these; the explanation belongs once, here, not N times in the rendered
 text. `show_gap_marker=True` opts into a longer form that names the
 adapter's own opaque marker token bounding the gap ("...raw log continues
 after marker <marker>") -- the SAME token --since/--until already resolve
-against, so it generalizes across all three adapters for free: a Claude
+against, so it generalizes across all four adapters for free: a Claude
 Code marker is a uuid (or a `lineN` fallback) grep-able in the JSONL, a
-Codex marker is an ordinal (or an index fallback) likewise grep-able, an
-opencode marker is a message-table row id queryable against its SQLite
-store. Nothing new to build per-adapter -- this reuses the exact identifier
+Codex marker is an ordinal (or an index fallback) likewise grep-able, a
+Reasonix marker is a `lineN` position in its JSONL, and an opencode marker
+is a message-table row id queryable against its SQLite store. Nothing new
+to build per-adapter -- this reuses the exact identifier
 each adapter already mints for delta extraction, just surfaced to the
 reader as a "go look here" pointer instead of consumed internally by
 --since. Off by default because most readers most of the time don't need
@@ -64,6 +65,19 @@ prefixing the kind duplicated it onto the QUESTION line instead ("OPERATOR:
 <question>\n- opt\n...\n\nOPERATOR: <answer>") and couldn't express more
 than one label for a multi-question batch either way.
 
+Optional `block_render` param (2026-09-12): a per-block text->text hook
+applied to each kept event's OWN PROSE only, before blocks are joined. This
+is where `extract --render-markdown` (render_markdown.py, via `rich`) and
+`extract --highlight` (highlight.py, via `pygments`) plug in, and it is
+deliberately narrow: the `---` separators, the bracketed gap/stop-reason
+notes this module authors itself, the ledger line, and the trailing
+`<!-- nyxloom-extract: ... -->` footer are NOT passed through it. Running
+the whole rendered output through a markdown renderer instead would mangle
+exactly that scaffolding -- a `---` line is a horizontal rule, an HTML
+comment vanishes -- and the footer is machine-read by read_since_marker(),
+so it must survive byte-exact. Neither dependency is imported here; the
+caller passes a callable.
+
 Optional `ledger` param (E-012, `ledger.py`): a dict keyed by boundary
 marker -- when given, `render_text` inserts that boundary's rendered
 `[files read: ...] [files edited: ...] [commits created: ...] [branches
@@ -77,6 +91,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 
 from .events import EventKind, NormalizedEvent
 from .ledger import Ledger
@@ -139,9 +154,10 @@ def _gap_inline_text(ev: NormalizedEvent, min_gap_to_annotate: int, gap_marker_m
     return text
 
 
-def _separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
+def separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
     """The block-join separator -- see config.py's insert_blank_lines
-    comment for the -1/0/N>=1 semantics. inline_text, when given, is
+    comment for the -1/0/N>=1 semantics. Public (2026-09-12) because
+    follow.py separates live-streamed blocks with the identical marker. inline_text, when given, is
     embedded between the marker's two dash groups ("--- <text> ---")
     instead of a bare "---" -- gap_marker_mode's inline/inline2/inline-short
     modes (see _gap_inline_text above)."""
@@ -150,6 +166,17 @@ def _separator(insert_blank_lines: int, inline_text: str | None = None) -> str:
         return f" {marker}\n"
     pad = "\n" * (insert_blank_lines + 1)
     return f"{pad}{marker}{pad}"
+
+
+def render_event_block(ev: NormalizedEvent, block_render: Callable[[str], str] | None = None) -> str:
+    """One kept event's own rendered text block -- the `OPERATOR: ` prefix
+    rule (see the module docstring for why that one label, and why QA_PAIR is
+    excluded from it) plus the optional per-block render hook, applied to the
+    event's prose only, never to the prefix. Shared with follow.py so a live
+    stream and a one-shot render can't drift on either decision."""
+    text = block_render(ev.text) if block_render is not None else ev.text
+    prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
+    return f"{prefix}{text}"
 
 
 def render_text(
@@ -161,8 +188,9 @@ def render_text(
     ledger: dict[str, Ledger] | None = None,
     insert_blank_lines: int = 1,
     gap_marker_mode: str = "full",
+    block_render: Callable[[str], str] | None = None,
 ) -> str:
-    plain_sep = _separator(insert_blank_lines)
+    plain_sep = separator(insert_blank_lines)
     parts: list[str] = []
     seps: list[str] = []
     pending_sep: str | None = None  # a gap-embedding separator queued by the
@@ -185,8 +213,7 @@ def render_text(
                 note = note[:-1] + f"; raw log continues before marker {events[0].marker}]"
             _add(note)
     for ev in events:
-        prefix = "OPERATOR: " if ev.kind in _USER_AUTHORED else ""
-        _add(f"{prefix}{ev.text}")
+        _add(render_event_block(ev, block_render))
         if ledger is not None and ev.kind in _LEDGER_BOUNDARY_KINDS:
             entry = ledger.get(ev.marker)
             if entry and not entry.is_empty():
@@ -198,7 +225,7 @@ def render_text(
         elif gap_marker_mode != "none":
             inline_text = _gap_inline_text(ev, min_gap_to_annotate, gap_marker_mode, show_gap_marker)
             if inline_text:
-                pending_sep = _separator(insert_blank_lines, inline_text)
+                pending_sep = separator(insert_blank_lines, inline_text)
 
     body = parts[0] if parts else ""
     for text, sep in zip(parts[1:], seps):

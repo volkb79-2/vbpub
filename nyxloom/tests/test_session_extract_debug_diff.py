@@ -6,12 +6,22 @@ matches the style of test_session_extract_render.py's hand-built events.
 
 from __future__ import annotations
 
-from nyxloom.session_extract.debug_diff import _note_color, render_debug
+from nyxloom.session_extract.config import ExtractConfig
+from nyxloom.session_extract.debug_diff import (
+    _drop_reason,
+    _expected_kinds,
+    _marker_lookup,
+    _note_color,
+    _parse_header,
+    render_debug,
+)
+from nyxloom.session_extract.events import EventKind, NormalizedEvent
 
 _RESET = "\x1b[0m"
 _GREY = "\x1b[90m"
 _CYAN = "\x1b[36m"
 _GREEN = "\x1b[32m"
+_YELLOW = "\x1b[33m"
 
 
 def _lossless(*blocks):
@@ -117,6 +127,200 @@ def test_render_ledger_line_plain_when_color_off():
     assert _GREEN not in text
 
 
+# --- per-block yellow "why was this dropped" reasons (2026-09-11, operator
+# direction: "which part of the algorithm made the decision") -- only
+# emitted when `config` is passed; every test above (config defaults to
+# None) proves that omitting it reproduces this module's pre-2026-09-11
+# output byte-for-byte.
+
+def test_no_config_means_no_reason_lines_at_all():
+    lossless_text = _lossless("kept text", "short drop")
+    extract_text = "OPERATOR: kept text\n"
+    text = render_debug(lossless_text, extract_text, use_color=False)
+    assert "reason:" not in text
+
+
+def test_short_drop_with_no_all_events_gets_an_honest_approximate_reason():
+    # Not at the leading (i1==0) position -- "kept text" occupies index 0 --
+    # so this is a genuine per-content rejection, not a walk-stop. Without
+    # `all_events`, marker lookup can't happen at all -- this is the ONE
+    # remaining honestly-approximate branch (2026-09-11: no more bare
+    # "unclear" -- it names WHERE the loss happened, adapter-vs-selector,
+    # even when it can't pin the exact clause, and labels the shape-score
+    # re-derivation explicitly as a secondary cross-check).
+    lossless_text = _lossless("kept text", "short drop, no signal here")
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig(long_comment_chars=180, checkpoint_score_threshold=3.0)
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config)
+    assert "unclear" not in text
+    assert "no scored event exists for this exact record" in text
+    assert "APPROXIMATE cross-check only" in text
+
+
+def test_short_drop_resolved_via_marker_lookup_gets_a_certain_reason():
+    # Same shape as above, but with `all_events` supplied (cmd_extract_debug
+    # always does this) -- marker "1" resolves to the real ASSISTANT_TEXT
+    # event, so the length verdict is now CERTAIN (computed against the
+    # real event's own text/score, not re-derived from lossless's text).
+    lossless_text = (
+        "===[0 | 2026-01-01T00:00:00Z | USER]===\nkept text\n\n"
+        "===[1 | 2026-01-01T00:00:01Z | ASSISTANT]===\nshort drop, no signal here\n"
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig(long_comment_chars=180, checkpoint_score_threshold=3.0)
+    all_events = [
+        NormalizedEvent(0, "0", "2026-01-01T00:00:00Z", EventKind.OPERATOR_TEXT, "kept text"),
+        NormalizedEvent(
+            1, "1", "2026-01-01T00:00:01Z", EventKind.ASSISTANT_TEXT, "short drop, no signal here",
+            checkpoint_score=0.0,
+        ),
+    ]
+    text = render_debug(
+        lossless_text, extract_text, use_color=False, config=config, fmt="claude-code", all_events=all_events,
+    )
+    assert "reason: the real event for this exact record is 26 chars" in text
+    assert "select() correctly dropped it for length" in text
+    assert "unclear" not in text
+
+
+def test_ismeta_header_flag_gets_a_certain_adapter_level_reason():
+    lossless_text = (
+        "===[0 | 2026-01-01T00:00:00Z | USER]===\nkept text\n\n"
+        "===[1 | 2026-01-01T00:00:01Z | USER isMeta]===\nStop hook feedback: [Resume]\n"
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig()
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config, fmt="claude-code")
+    assert "reason: adapters/claude_code.py's parse() drops this record unconditionally" in text
+    assert "isMeta=true" in text
+
+
+def test_thinking_block_without_include_thinking_gets_a_certain_reason():
+    lossless_text = (
+        "===[0 | 2026-01-01T00:00:00Z | USER]===\nkept text\n\n"
+        "===[1 | 2026-01-01T00:00:01Z | ASSISTANT thinking]===\npondering...\n"
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig(include_thinking=False)
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config, fmt="claude-code")
+    assert "reason: THINKING content" in text
+    assert "--include-thinking" in text
+
+
+def test_marker_present_in_kept_set_is_a_formatting_mismatch_not_a_drop():
+    # The real event for marker "1" DID survive select() (it's an
+    # OPERATOR_TEXT event, always kept) but lossless's raw rendering
+    # doesn't textually match extract's rendering closely enough for
+    # SequenceMatcher to call it "equal" -- this must be reported as a
+    # rendering artifact, never as a selection decision.
+    lossless_text = (
+        "===[0 | 2026-01-01T00:00:00Z | USER]===\nkept text\n\n"
+        "===[1 | 2026-01-01T00:00:01Z | USER]===\nsomewhat different rendering of the same turn\n"
+    )
+    extract_text = "OPERATOR: kept text\n\n---\n\nOPERATOR: totally reformatted turn text\n"
+    config = ExtractConfig()
+    all_events = [
+        NormalizedEvent(0, "0", "2026-01-01T00:00:00Z", EventKind.OPERATOR_TEXT, "kept text"),
+        NormalizedEvent(1, "1", "2026-01-01T00:00:01Z", EventKind.OPERATOR_TEXT, "totally reformatted turn text"),
+    ]
+    text = render_debug(
+        lossless_text, extract_text, use_color=False, config=config, fmt="claude-code", all_events=all_events,
+    )
+    assert "reason: NOT actually a selection drop" in text
+    assert "formatting mismatch, not a content decision" in text
+
+
+def test_detected_checkpoint_gets_a_blue_tag_on_a_kept_block():
+    lossless_text = "===[1 | 2026-01-01T00:00:01Z | ASSISTANT]===\n## Where things stand\nDone.\n"
+    extract_text = "## Where things stand\nDone.\n"
+    config = ExtractConfig(checkpoint_score_threshold=3.0)
+    all_events = [
+        NormalizedEvent(
+            1, "1", "2026-01-01T00:00:01Z", EventKind.ASSISTANT_TEXT, "## Where things stand\nDone.",
+            checkpoint_score=5.0,
+        ),
+    ]
+    text = render_debug(
+        lossless_text, extract_text, use_color=False, config=config, fmt="claude-code", all_events=all_events,
+    )
+    assert "[checkpoint detected: score 5.0 >= threshold 3.0]" in text
+
+
+def test_detected_checkpoint_never_reached_still_gets_a_blue_tag_on_a_grey_block():
+    lossless_text = (
+        "===[1 | 2026-01-01T00:00:01Z | ASSISTANT]===\n## Old checkpoint\nDone.\n\n"
+        "===[2 | 2026-01-01T00:00:02Z | USER]===\nkept text\n"
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig(checkpoint_score_threshold=3.0)
+    all_events = [
+        NormalizedEvent(
+            1, "1", "2026-01-01T00:00:01Z", EventKind.ASSISTANT_TEXT, "## Old checkpoint\nDone.",
+            checkpoint_score=5.0,
+        ),
+        NormalizedEvent(2, "2", "2026-01-01T00:00:02Z", EventKind.OPERATOR_TEXT, "kept text"),
+    ]
+    text = render_debug(
+        lossless_text, extract_text, use_color=False, config=config, fmt="claude-code", all_events=all_events,
+    )
+    assert "reason: never reached by the walk" in text
+    assert "[checkpoint detected: score 5.0 >= threshold 3.0]" in text
+
+
+def test_reason_line_colored_yellow_when_color_is_on():
+    lossless_text = _lossless("kept text", "short drop")
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig()
+    text = render_debug(lossless_text, extract_text, use_color=True, config=config)
+    assert f"{_YELLOW}reason:" in text
+    assert f"{_RESET}" in text
+
+
+def test_api_error_drop_gets_its_own_reason():
+    lossless_text = _lossless("kept text", "[API ERROR: rate_limit] You've hit your session limit")
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig(hide_api_errors=True)
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config)
+    assert "reason: matched adapters/claude_code.py's own [API ERROR: ...] tag" in text
+
+
+def test_leading_gap_gets_one_reason_line_not_one_per_block():
+    # Nothing kept before this run -- extract_text has no equal content at
+    # all before the dropped span, so i1==0 on the very first opcode.
+    lossless_text = _lossless("old drop 1", "old drop 2", "old drop 3")
+    extract_text = "OPERATOR: something else entirely, unrelated to the drops above\n"
+    config = ExtractConfig()
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config)
+    assert text.count("reason: never reached by the walk") == 1
+    assert "old drop 1" in text and "old drop 2" in text and "old drop 3" in text
+
+
+def test_claude_code_harness_tag_only_block_gets_the_precise_reason(tmp_path):
+    lossless_text = _lossless(
+        "kept text",
+        "<task-notification><task-id>x</task-id><summary>bg event</summary></task-notification>",
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig()
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config, fmt="claude-code")
+    assert "reason: pure harness-tag framing" in text
+    assert "unclear" not in text.split("reason: pure harness-tag framing")[0].split("\n")[-1]
+
+
+def test_harness_tag_check_is_skipped_for_a_non_claude_code_format():
+    # Same content as above, but fmt="codex" -- the claude-code-specific
+    # harness-tag check must not fire for a format it doesn't apply to.
+    lossless_text = _lossless(
+        "kept text",
+        "<task-notification><task-id>x</task-id></task-notification>",
+    )
+    extract_text = "OPERATOR: kept text\n"
+    config = ExtractConfig()
+    text = render_debug(lossless_text, extract_text, use_color=False, config=config, fmt="codex")
+    assert "pure harness-tag framing" not in text
+    assert "reason:" in text  # still gets SOME reason, just not the claude-code-specific one
+
+
 def test_note_color_returns_none_not_a_falsy_placeholder_for_plain_text():
     # render_debug's own call site only ever checks truthiness (`if
     # color:`), but _note_color's documented return type is `str | None` --
@@ -124,3 +328,49 @@ def test_note_color_returns_none_not_a_falsy_placeholder_for_plain_text():
     assert _note_color("ordinary kept text, no bracket prefix at all") is None
     assert _note_color("[gap: 3 lossless blocks dropped]") == _CYAN
     assert _note_color("[files read: a.py]") == _GREEN
+
+
+def test_debug_helpers_report_malformed_headers_and_unmatched_event_kinds():
+    assert _parse_header("not a lossless header") is None
+    assert _expected_kinds("ASSISTANT thinking") == (EventKind.THINKING,)
+    assert _expected_kinds("unrecognized-tag") == ()
+
+    event = NormalizedEvent(1, "m1", "t", EventKind.OPERATOR_TEXT, "operator")
+    assert _marker_lookup(None, "USER", {}) is None
+    assert _marker_lookup("missing", "USER", {}) is None
+    assert _marker_lookup("m1", "ASSISTANT", {"m1": [event]}) is None
+
+
+def test_debug_drop_reason_uses_the_resolved_api_error_event():
+    event = NormalizedEvent(
+        1, "m1", "t", EventKind.ASSISTANT_TEXT,
+        "[API ERROR: rate_limit] limit reached",
+        checkpoint_score=0.0,
+    )
+    reason = _drop_reason(
+        "m1", "ASSISTANT", "ordinary block", ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"m1": [event]}, kept_markers=set(),
+    )
+    assert "real event for this exact record matched" in reason
+
+
+def test_debug_drop_reason_explains_resolved_checkpoint_and_finding_events():
+    checkpoint = NormalizedEvent(
+        1, "checkpoint", "t", EventKind.ASSISTANT_TEXT, "status",
+        checkpoint_score=5.0,
+    )
+    reason = _drop_reason(
+        "checkpoint", "ASSISTANT", "status", ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"checkpoint": [checkpoint]}, kept_markers=set(),
+    )
+    assert "scored 5.0 as a checkpoint" in reason
+
+    finding = NormalizedEvent(
+        2, "finding", "t", EventKind.ASSISTANT_TEXT, "Found the bug",
+        checkpoint_score=0.0,
+    )
+    reason = _drop_reason(
+        "finding", "ASSISTANT", finding.text, ExtractConfig(), fmt="codex",
+        is_leading_gap=False, events_by_marker={"finding": [finding]}, kept_markers=set(),
+    )
+    assert "reports a concrete finding" in reason

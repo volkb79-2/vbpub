@@ -62,12 +62,20 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     layouts                     list declared deploy layouts
 
   WORKTREE INSTANCES (S16)
-    worktree create LOGICAL [--prefix P --feature F] [--json]
-                                allocate a new managed instance
+    worktree create LOGICAL [--base REF] [--name DISPLAY | --prefix P --feature F]
+         [--branch BRANCH] [--path PATH] [--profile P1,P2] [--json]
+                                canonical managed checkout + CIU identity;
+                                --base may be a branch, tag, or exact commit
+                                SHA (default: main); creation does NOT deploy
+                                or start containers
+    worktree ensure LOGICAL [create options] [--json]
+                                idempotently reuse a ready instance, or
+                                create/resume a CIU-owned partial allocation
     worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
-    worktree ensure LOGICAL     reuse/create/resume an exact managed instance
-    worktree add NAME           human shorthand for create
-    worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
+                                adopt an existing unmanaged linked checkout
+    worktree add NAME [--base REF] [--profile P1,P2] [--json]
+                                compatibility shorthand for create NAME
+    worktree rm LOGICAL [-y] [--json]   clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
@@ -78,10 +86,22 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 survey Docker resource groups; -y DESTROYS
                                 exactly the record/lease/label-provable ones
                                 (S16.10)
-    worktree up LOGICAL         start the selected ready instance, exactly
+    worktree up LOGICAL         explicitly start the selected ready instance
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
-                                run exact argv (no shell) in the selected root
-                                or inside its declared container target
+                                run exact argv (no shell); never starts
+                                implicitly; local root or declared container
+                                target
+
+  MANAGED WORKTREE EXAMPLES
+    ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
+                                pin creation to the exact commit under test;
+                                creation does NOT deploy
+    ciu worktree ensure pkg-under-test --json
+                                safely reuse/resume the same logical instance
+    ciu worktree inspect pkg-under-test
+    ciu worktree up pkg-under-test
+    ciu worktree exec pkg-under-test -- pytest -q
+    ciu worktree rm pkg-under-test -y
 
   MACHINE INTERFACES (D-009)
     capabilities [--json]       versioned, closed capability allowlist
@@ -149,11 +169,16 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
 
 _VERB_HELP: dict[str, str] = {
     "worktree": """\
-ciu worktree create LOGICAL [--name DISPLAY | --prefix P --feature F]
-                             [--branch BRANCH] [--path PATH] [--json]
+ciu worktree create LOGICAL [--base REF] [--profile P1,P2]
+                             [--name DISPLAY | --prefix P --feature F]
+                             [--branch BRANCH] [--path PATH]
+                             [--worktree-dir DIR] [--json]
 ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
-ciu worktree ensure LOGICAL [create options] [--json]
-ciu worktree add NAME [--base REF] [--profile P1,P2]
+ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
+                             [--name DISPLAY | --prefix P --feature F]
+                             [--branch BRANCH] [--path PATH]
+                             [--worktree-dir DIR] [--json]
+ciu worktree add NAME [--base REF] [--profile P1,P2] [--json]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
@@ -162,9 +187,31 @@ ciu worktree branches [--base REF] [-y] [--json]
 ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
-  Manage durable, family-scoped worktree identities. Creation and ensure do
-  not start the instance. Generated UTC branch/directory names are identical;
-  adopt is the only operation that owns an unmanaged existing checkout.
+  Manage durable, family-scoped worktree identities. `create` is the canonical
+  operation: it creates a managed linked checkout and its CIU identity; it does
+  NOT deploy or start containers. Pass `--base REF` to choose the branch, tag,
+  or exact commit SHA under test (default: `main`). Generated UTC
+  branch/directory names are identical.
+
+  `ensure` is the idempotent spelling for automation: it reuses an exact ready
+  instance, creates one when absent, or resumes a mechanically recognized
+  CIU-owned partial allocation. It does not rewrite a conflicting instance.
+  `adopt` is the only operation that takes ownership of an existing unmanaged
+  linked checkout. `add NAME` is the compatibility shorthand for `create NAME`.
+
+  Creation, ensure, adopt, and add prepare an instance; use `up` as the
+  explicit start/deployment step. `exec` runs exact argv (no shell) in the
+  selected root or its declared container target and never starts anything
+  implicitly. `rm` runs `ciu clean` and then removes the checkout.
+
+  Examples (all commands are pasteable):
+    ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
+    ciu worktree ensure pkg-under-test --json
+    ciu worktree inspect pkg-under-test
+    ciu worktree up pkg-under-test
+    ciu worktree exec pkg-under-test -- pytest -q
+    ciu worktree rm pkg-under-test -y
+
   `inspect` reports the persisted record plus freshly read Git facts; `list
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
   stdout (S16.4). `branches` surveys local branches against a base and `-y`

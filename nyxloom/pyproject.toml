@@ -3,7 +3,26 @@ name = "nyxloom"
 dynamic = ["version"]
 description = "Files-first, daemon-supervised control plane for role-separated AI-assisted development"
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6", "jsonschema>=4", "structlog>=24,<27"]  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
+dependencies = [
+  "PyYAML>=6",
+  "jsonschema>=4",
+  "structlog>=24,<27",  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
+  # `extract --render-markdown` (session_extract/render_markdown.py). Floor =
+  # the latest release as of 2026-09-12 (15.0.0, published 2026-04-12 — five
+  # months past, so well clear of the estate's ">= 14 days after its own
+  # release" freshness rule). Only Console(record=)/Markdown are used, stable
+  # across 14.x and 15.x; the floor is the latest rather than the oldest
+  # workable version per the same rule.
+  "rich>=15.0.0",
+  # `extract --highlight` / `--follow --highlight`
+  # (session_extract/highlight.py). Floor = the latest release as of
+  # 2026-09-12 (2.21.0, published 2026-08-17 — 26 days, past the 14-day
+  # rule). Deliberately a SECOND rendering dependency, not a duplicate of
+  # rich: pygments colors markdown SOURCE (every control character left in
+  # place, so what you copy out is still markdown) where rich renders it
+  # (characters consumed) — see render_markdown.py's docstring.
+  "pygments>=2.21.0",
+]
 
 [project.optional-dependencies]
 # tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in

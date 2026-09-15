@@ -392,3 +392,116 @@ def test_render_text_ledger_ignores_non_boundary_kinds():
     # OPERATOR_TEXT/QA_PAIR/LIFECYCLE_MARKER kinds are boundary rows.
     text = render_text(events, fmt="claude-code", last_marker=None, ledger={"as1": Ledger(files_read=["a.py"])})
     assert "files read" not in text
+
+
+def _shout(text: str) -> str:
+    return f"<<{text}>>"
+
+
+def test_block_render_hook_touches_event_prose_only():
+    # The hook exists for --render-markdown/--highlight. Everything render.py
+    # authors ITSELF -- the '---' separators, the bracketed gap note, the
+    # leading stop-reason note, the trailing marker footer -- must stay
+    # untouched: a markdown renderer turns '---' into a horizontal rule and
+    # deletes an HTML comment outright, and read_since_marker() parses that
+    # footer back byte-for-byte.
+    older = _ev(EventKind.ASSISTANT_TEXT, "older prose", seq=0, marker="a0", score=5.0)
+    older.meta["walk_stopped_because"] = "max_words"
+    older.meta["gap_after"] = "7"
+    newer = _ev(EventKind.OPERATOR_TEXT, "do the thing", seq=9, marker="op9")
+    text = render_text([older, newer], fmt="claude-code", last_marker="op9", block_render=_shout)
+
+    assert "<<older prose>>" in text
+    # the OPERATOR: prefix is render.py's own label, not part of the prose
+    assert "OPERATOR: <<do the thing>>" in text
+    assert "<<OPERATOR" not in text
+    assert "\n---\n" in text and "<<---" not in text
+    assert "[gap: 7 records omitted]" in text
+    assert "[older session content exists but was not included" in text
+    assert "<<[gap" not in text and "<<[older session" not in text
+    assert MARKER_FOOTER_RE.search(text) is not None
+
+
+def test_no_block_render_hook_leaves_output_byte_identical():
+    events = [_ev(EventKind.ASSISTANT_TEXT, "prose", marker="a1", score=5.0)]
+    assert render_text(events, fmt="claude-code", last_marker="a1") == render_text(
+        events, fmt="claude-code", last_marker="a1", block_render=None
+    )
+
+
+def test_render_markdown_renders_markup_and_drops_its_characters():
+    from nyxloom.session_extract.render_markdown import render_markdown
+
+    out = render_markdown("## Where things stand\n\nDone -- **everything** landed.", color=False, width=70)
+    # rendered, not highlighted: the markup characters are consumed
+    assert "Where things stand" in out
+    assert "##" not in out
+    assert "everything" in out and "**" not in out
+
+
+def test_render_markdown_emits_ansi_only_when_color_is_on():
+    from nyxloom.session_extract.render_markdown import render_markdown
+
+    assert "\x1b[" in render_markdown("**bold**", color=True, width=40)
+    assert "\x1b[" not in render_markdown("**bold**", color=False, width=40)
+
+
+def test_render_markdown_leaves_no_width_padding_behind():
+    from nyxloom.session_extract.render_markdown import render_markdown
+
+    out = render_markdown("short line", color=False, width=70)
+    assert out == "short line"
+
+
+def test_highlight_as_a_block_hook_leaves_the_scaffolding_alone():
+    # Same narrow scope as --render-markdown's hook, checked for the other
+    # render mode: only the event's prose is colored, and stripping the ANSI
+    # back out returns the prose byte-for-byte (the copy-paste property that
+    # is this mode's entire reason to exist).
+    import re
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    prose = "## Status\n\nDone -- **bold** and `code/path.py`."
+    events = [_ev(EventKind.ASSISTANT_TEXT, prose, marker="a1", score=5.0)]
+    text = render_text(events, fmt="claude-code", last_marker="a1",
+                        block_render=lambda t: highlight_markdown(t, color=True))
+
+    assert "\x1b[" in text
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    assert prose in plain
+    assert MARKER_FOOTER_RE.search(plain) is not None
+    # the footer is machine-read by read_since_marker(): it must not be colored
+    footer_line = [ln for ln in text.splitlines() if "nyxloom-extract:" in ln][0]
+    assert "\x1b[" not in footer_line
+
+
+def test_highlight_colorless_mode_returns_source_unchanged():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    source = "## Status\n\n**done**\n"
+    assert highlight_markdown(source, color=False) == source
+
+
+def test_highlight_handles_empty_source_in_color_mode():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    assert highlight_markdown("", color=True) == ""
+
+
+def test_highlight_keeps_formatter_output_without_a_generated_terminator(monkeypatch):
+    import pygments
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    monkeypatch.setattr(pygments, "highlight", lambda *_args, **_kwargs: "colored")
+    assert highlight_markdown("source", color=True) == "colored"
+
+
+def test_highlight_preserves_unexpected_formatter_layout(monkeypatch):
+    import pygments
+
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    monkeypatch.setattr(pygments, "highlight", lambda *_args, **_kwargs: "colored\nextra\n")
+    assert highlight_markdown("source", color=True) == "colored\nextra"

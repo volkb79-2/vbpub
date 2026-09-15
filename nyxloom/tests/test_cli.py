@@ -175,6 +175,21 @@ def test_doctor_error(sample_project, tmp_state, capsys, monkeypatch):
     assert "critical" in out
 
 
+def test_doctor_project_id_filters_the_project_checks(sample_project, tmp_state, capsys, monkeypatch):
+    checked = []
+
+    def mock_doctor_project(cfg):
+        checked.append(cfg.project_id)
+        return []
+
+    monkeypatch.setattr("nyxloom.doctor.doctor_project", mock_doctor_project)
+
+    exit_code = cli.main(["doctor", "--project-id", "demo"])
+
+    assert exit_code == 0
+    assert checked == ["demo"]
+
+
 def test_doctor_rebuild(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 3: doctor --rebuild prints diffs."""
     def mock_doctor_project(cfg):
@@ -266,7 +281,7 @@ def test_status_project_filter(sample_project, tmp_state, capsys, make_statefile
     tsf = make_statefile(attempts=[attempt])
     storage.save_state(tsf)
 
-    exit_code = cli.main(["status", "--project", "demo"])
+    exit_code = cli.main(["status", "--project-id", "demo"])
     assert exit_code == 0
 
 
@@ -289,7 +304,10 @@ def test_render(sample_project, tmp_state, capsys, monkeypatch):
 
 def test_tick(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 6: tick calls daemon.run_once and prints result."""
+    calls = []
+
     def mock_run_once(project):
+        calls.append(project)
         return 7
 
     monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
@@ -298,6 +316,24 @@ def test_tick(sample_project, tmp_state, capsys, monkeypatch):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "7" in out
+    assert calls == [None]
+
+
+def test_tick_project_id_passes_the_selector_to_daemon(sample_project, tmp_state, capsys, monkeypatch):
+    """tick --project-id selects exactly the requested registered project."""
+    calls = []
+
+    def mock_run_once(project):
+        calls.append(project)
+        return 11
+
+    monkeypatch.setattr("nyxloom.daemon.run_once", mock_run_once)
+
+    exit_code = cli.main(["tick", "--project-id", "selected"])
+
+    assert exit_code == 0
+    assert calls == ["selected"]
+    assert capsys.readouterr().out == "11\n"
 
 
 def test_decide_success(sample_project, tmp_state, capsys, monkeypatch):
@@ -849,7 +885,7 @@ def test_init_missing_project_folder_exits_2(capsys):
 
     err = capsys.readouterr().err
     assert "usage:" in err
-    assert "project_folder" in err
+    assert "PROJECT_FOLDER" in err
 
 
 # ---------------------------------------------------------------------------
@@ -1263,13 +1299,13 @@ def test_capability_map_refresh_dry_run(sample_project, tmp_state, capsys, monke
 
 def test_finding_record_generic_and_list(sample_project, tmp_state, capsys):
     """Record a generic finding, then list it."""
-    exit_code = cli.main(["finding", "record", "--project", "demo",
+    exit_code = cli.main(["finding", "record", "--project-id", "demo",
                           "--kind", "generic", "--title", "hi"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "recorded F-demo-" in out
 
-    exit_code = cli.main(["finding", "list", "--project", "demo"])
+    exit_code = cli.main(["finding", "list", "--project-id", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "hi" in out
@@ -1279,7 +1315,7 @@ def test_finding_record_pushable_with_fields_and_task_id(sample_project, tmp_sta
     """Record a pushable finding (cost_crossover) with fields and task-id."""
     from nyxloom import findings
 
-    exit_code = cli.main(["finding", "record", "--project", "demo",
+    exit_code = cli.main(["finding", "record", "--project-id", "demo",
                           "--kind", "cost_crossover", "--title", "x",
                           "--field", "cheap_model=deepseek-flash",
                           "--field", "ref_model=gpt-pro",
@@ -1303,7 +1339,7 @@ def test_finding_record_pushable_with_fields_and_task_id(sample_project, tmp_sta
 
 def test_finding_malformed_field_exits_2(sample_project, tmp_state, capsys):
     """--field without = returns exit code 2 and prints KEY=VALUE error."""
-    exit_code = cli.main(["finding", "record", "--project", "demo",
+    exit_code = cli.main(["finding", "record", "--project-id", "demo",
                           "--kind", "generic", "--title", "x",
                           "--field", "noequals"])
     assert exit_code == 2
@@ -1313,7 +1349,7 @@ def test_finding_malformed_field_exits_2(sample_project, tmp_state, capsys):
 
 def test_finding_unknown_kind_exits_1(sample_project, tmp_state, capsys):
     """Unknown kind exits 1 via the outer try/except, prints error: ..."""
-    exit_code = cli.main(["finding", "record", "--project", "demo",
+    exit_code = cli.main(["finding", "record", "--project-id", "demo",
                           "--kind", "bogus", "--title", "x"])
     assert exit_code == 1
     err = capsys.readouterr().err
@@ -1323,18 +1359,18 @@ def test_finding_unknown_kind_exits_1(sample_project, tmp_state, capsys):
 def test_finding_list_kind_filter(sample_project, tmp_state, capsys):
     """List with --kind filter shows only matching findings."""
     # Record a generic finding
-    cli.main(["finding", "record", "--project", "demo",
+    cli.main(["finding", "record", "--project-id", "demo",
               "--kind", "generic", "--title", "generic-title"])
     capsys.readouterr()  # discard output
 
     # Record a cost_crossover (pushable)
-    cli.main(["finding", "record", "--project", "demo",
+    cli.main(["finding", "record", "--project-id", "demo",
               "--kind", "cost_crossover", "--title", "cost-title",
               "--field", "cheap_model=m1", "--field", "ref_model=m2",
               "--field", "metric=acc", "--field", "ratio=0.5"])
     capsys.readouterr()  # discard output
 
-    exit_code = cli.main(["finding", "list", "--project", "demo",
+    exit_code = cli.main(["finding", "list", "--project-id", "demo",
                           "--kind", "cost_crossover"])
     assert exit_code == 0
     out = capsys.readouterr().out
@@ -1344,7 +1380,7 @@ def test_finding_list_kind_filter(sample_project, tmp_state, capsys):
 
 def test_finding_list_empty(sample_project, tmp_state, capsys):
     """List on a project with no findings prints 'no findings'."""
-    exit_code = cli.main(["finding", "list", "--project", "demo"])
+    exit_code = cli.main(["finding", "list", "--project-id", "demo"])
     assert exit_code == 0
     out = capsys.readouterr().out
     assert "no findings" in out
@@ -1355,7 +1391,7 @@ def test_finding_list_no_project_enumerates_registry(sample_project, tmp_state, 
     from nyxloom import findings
 
     # Record a finding under "demo"
-    cli.main(["finding", "record", "--project", "demo",
+    cli.main(["finding", "record", "--project-id", "demo",
               "--kind", "generic", "--title", "registry-title"])
     capsys.readouterr()  # discard output
 
@@ -1555,4 +1591,3 @@ def test_gatedef_asserts_defaults_to_empty_list():
     gate = GateDef(gate_id="g", argv=["true"], phase="implementation", timeout_seconds=1)
 
     assert gate.asserts == []
-

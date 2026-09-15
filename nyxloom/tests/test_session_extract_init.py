@@ -101,7 +101,7 @@ def test_extract_multiple_sessions_without_session_id_raises(tmp_path):
     conn.execute("INSERT INTO session VALUES ('s2', 200)")
     conn.commit()
     conn.close()
-    with pytest.raises(DetectionError, match="pass --session"):
+    with pytest.raises(DetectionError, match="pass session_id"):
         extract(db, fmt="opencode")
 
 

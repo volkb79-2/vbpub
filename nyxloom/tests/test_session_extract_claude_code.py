@@ -168,7 +168,11 @@ def test_end_to_end_extract_stops_at_lifecycle_boundary(tmp_path):
     assert result.format == "claude-code"
     text = result.render()
     assert "postdates the compact boundary" in text
-    assert "compact boundary" in text
+    # The boundary's own marker text is now a terse trigger/token hint
+    # (2026-09-11, operator direction), not the old bare "[compact
+    # boundary]" label -- this fixture's compact_boundary record has no
+    # compactMetadata at all, so trigger falls back to "unknown".
+    assert "[compaction: unknown happened]" in text
     assert "telegram alternative" not in text
     assert "Which host?" not in text
     # last_marker reflects the true end of the FULL parse, not just what survived selection
@@ -235,6 +239,31 @@ def test_sniff_skips_blank_lines(tmp_path):
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n   \n" + json.dumps(_rec(type="user", uuid="u1")) + "\n", encoding="utf-8")
     assert claude_code.sniff(fp)
+
+
+def test_list_agents_keeps_malformed_metadata_and_resolves_an_unowned_depth_one_agent(tmp_path):
+    root = tmp_path / "root.jsonl"
+    root.write_text("{}\n", encoding="utf-8")
+    subagents = tmp_path / "root" / "subagents"
+    subagents.mkdir(parents=True)
+
+    (subagents / "agent-bad.meta.json").write_text("not json", encoding="utf-8")
+    (subagents / "agent-bad.jsonl").write_text("{}\n", encoding="utf-8")
+    (subagents / "agent-orphan.meta.json").write_text(json.dumps({
+        "description": "orphan",
+        "toolUseId": "not-dispatched",
+        "spawnDepth": 1,
+    }), encoding="utf-8")
+    (subagents / "agent-orphan.jsonl").write_text("{}\n", encoding="utf-8")
+
+    nodes = claude_code.list_agents(root)
+
+    bad = next(node for node in nodes if node.id.endswith("agent-bad.jsonl"))
+    orphan = next(node for node in nodes if node.id.endswith("agent-orphan.jsonl"))
+    assert bad.label == "(sub-agent)"
+    assert bad.parent_id is None
+    assert orphan.parent_id == str(root)
+    assert "orphan (spawnDepth 1)" == orphan.label
 
 
 def test_sniff_gives_up_past_the_scan_window(tmp_path):
@@ -316,13 +345,13 @@ def test_thinking_block_included_only_when_configured(tmp_path):
     assert thinking_ev.text == "reasoning about the bug"
 
 
-def test_sidechain_records_included_only_when_configured(tmp_path):
-    # 2026-09-11 fix: a dispatched Agent-tool subagent's OWN transcript
-    # file carries isSidechain=true on every record (real, operator-
-    # verified against a live subagent transcript). The default (correct
-    # for a normal interactive session, where every real sidechain found
-    # was parallel tool-fan-out noise) must not silently return zero
-    # events for a WHOLLY-sidechain file without --include-sidechain.
+def test_wholly_sidechain_file_is_auto_detected_as_its_own_primary_thread(tmp_path):
+    # 2026-09-11: a dispatched Agent-tool subagent's OWN transcript file
+    # carries isSidechain=true on every record (real, operator-verified
+    # against live subagent transcripts). No flag is needed for this --
+    # parse() auto-detects that the file has no non-sidechain "primary"
+    # record at all and treats the sidechain content as primary instead of
+    # silently dropping the entire file to zero events.
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z", isSidechain=True,
              message={"role": "user", "content": "dispatch prompt"}),
@@ -334,12 +363,28 @@ def test_sidechain_records_included_only_when_configured(tmp_path):
     fp = tmp_path / "session.jsonl"
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
-    default_events = claude_code.parse(fp, str(fp), ExtractConfig())
-    assert default_events == []
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert any("dispatch prompt" in e.text for e in events if e.kind is EventKind.OPERATOR_TEXT)
+    assert any("Status" in e.text for e in events if e.kind is EventKind.ASSISTANT_TEXT)
 
-    with_sidechain = claude_code.parse(fp, str(fp), ExtractConfig(include_sidechain=True))
-    assert any("dispatch prompt" in e.text for e in with_sidechain if e.kind is EventKind.OPERATOR_TEXT)
-    assert any("Status" in e.text for e in with_sidechain if e.kind is EventKind.ASSISTANT_TEXT)
+
+def test_sidechain_records_still_dropped_as_noise_alongside_a_primary_thread(tmp_path):
+    # The original (still-correct) case this filter exists for: a genuine
+    # primary thread present in the same file, with a sidechain branch
+    # (e.g. parallel tool-call fan-out) interleaved -- the sidechain
+    # content is dropped, the primary thread is kept.
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "real operator prompt"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z", isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": "fan-out noise"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert any("real operator prompt" in e.text for e in events if e.kind is EventKind.OPERATOR_TEXT)
+    assert not any("fan-out noise" in e.text for e in events)
 
 
 def test_is_compact_summary_flag_is_a_lifecycle_marker(tmp_path):
@@ -428,10 +473,19 @@ def test_custom_command_args_survive_as_operator_text(tmp_path):
     assert "please review the auth module for security holes" in events[0].text
 
 
-def test_compact_command_guidance_text_survives_in_the_lifecycle_label(tmp_path):
-    # Milder version of the same bug: /compact's own guidance text ("focus
-    # on X, drop Y") must not be thrown away just because /compact is a
-    # lifecycle command.
+def test_compact_dispatch_is_hinted_by_default_not_repeated_verbatim(tmp_path):
+    # 2026-09-11, operator direction: an operator-issued /compact <prompt>
+    # dispatch is hint-only by default -- the guidance text ("focus on X,
+    # drop Y") is genuinely redundant here (it almost always just re-quotes
+    # a compaction prompt the model already produced as ordinary,
+    # kept-in-full ASSISTANT_TEXT moments earlier, and extract's own
+    # concatenated prose already IS the context that would otherwise be
+    # repeated). This SUPERSEDES an earlier regression test with the
+    # opposite assertion (this same fixture, pre-2026-09-11 default) --
+    # that older bug was TOTAL silent loss with zero trace at all; this is
+    # a deliberate, explicit hint, not a regression of that bug, and
+    # --show-compaction-content (below) is the escape hatch that recovers
+    # the exact old behavior when the verbatim text is genuinely needed.
     records = [
         _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
              message={"role": "user", "content": (
@@ -443,7 +497,49 @@ def test_compact_command_guidance_text_survives_in_the_lifecycle_label(tmp_path)
     fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
     events = claude_code.parse(fp, str(fp), ExtractConfig())
     assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert events[0].text == "[compaction: steered dispatched]"
+    assert "focus on the auth bug" not in events[0].text
+
+
+def test_show_compaction_content_restores_the_verbatim_compact_argument(tmp_path):
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": (
+                 "<command-name>compact</command-name>\n"
+                 "<command-args>focus on the auth bug, drop the docs tangent</command-args>"
+             )}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig(hide_compaction_content=False))
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
     assert "focus on the auth bug" in events[0].text
+
+
+def test_compact_boundary_label_reflects_trigger_and_token_counts(tmp_path):
+    records = [
+        _rec(type="system", uuid="sys1", subtype="compact_boundary", timestamp="2026-01-01T00:00:00Z",
+             compactMetadata={"trigger": "manual", "preTokens": 305120, "postTokens": 14154,
+                               "durationMs": 143814}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert len(events) == 1
+    assert events[0].kind is EventKind.LIFECYCLE_MARKER
+    assert events[0].text == "[compaction: steered happened, 305,120→14,154 tok, 143.8s]"
+
+
+def test_compact_boundary_label_for_an_auto_trigger(tmp_path):
+    records = [
+        _rec(type="system", uuid="sys1", subtype="compact_boundary", timestamp="2026-01-01T00:00:00Z",
+             compactMetadata={"trigger": "auto", "preTokens": 471179, "postTokens": 17919,
+                               "durationMs": 182708}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    events = claude_code.parse(fp, str(fp), ExtractConfig())
+    assert events[0].text == "[compaction: automatic happened, 471,179→17,919 tok, 182.7s]"
 
 
 def test_command_name_tag_merely_mentioned_in_prose_is_not_a_real_command(tmp_path):
@@ -488,6 +584,28 @@ def test_task_notification_embedded_mid_message_is_stripped_not_the_whole_messag
     assert events[0].kind is EventKind.OPERATOR_TEXT
     assert "should not survive" not in events[0].text
     assert "By the way" in events[0].text and "please keep going" in events[0].text
+
+
+def test_is_harness_tag_only_true_for_a_bare_task_notification():
+    # The exact condition parse() itself uses (`if not cleaned: continue`)
+    # to drop such a record without ever emitting a NormalizedEvent --
+    # exposed publicly for extract-debug's own reason-labeling
+    # (debug_diff.py), verified against a real dstdns session where this
+    # is precisely why a lossless-only block had no adapter-side
+    # counterpart at all.
+    assert claude_code.is_harness_tag_only(
+        "<task-notification><task-id>x</task-id><summary>bg event</summary></task-notification>"
+    )
+
+
+def test_is_harness_tag_only_false_when_real_text_surrounds_the_tag():
+    assert not claude_code.is_harness_tag_only(
+        "By the way, <task-notification><result>x</result></task-notification> please keep going"
+    )
+
+
+def test_is_harness_tag_only_false_for_ordinary_prose():
+    assert not claude_code.is_harness_tag_only("Just ordinary assistant prose, nothing tagged.")
 
 
 def test_real_text_alongside_an_unrelated_tool_result_is_not_dropped(tmp_path):
@@ -569,6 +687,52 @@ def test_chained_since_on_uuid_less_records_never_reindexes_from_zero(tmp_path):
     # worse) a second time.
     hop3 = claude_code.parse(fp, str(fp), ExtractConfig(since_marker=hop2[-1].marker))
     assert hop3 == []
+
+
+def test_since_preserves_qa_pair_state_from_the_unsliced_prefix(tmp_path):
+    records = [
+        _rec(type="assistant", uuid="question", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "assistant", "content": [{
+                 "type": "tool_use", "id": "aq1", "name": "AskUserQuestion",
+                 "input": {"questions": [{"question": "Deploy where?", "options": [
+                     {"label": "staging"}, {"label": "production"},
+                 ]}]},
+             }]}),
+        _rec(type="user", uuid="cut", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "continue"}),
+        _rec(type="user", uuid="answer", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "user", "content": [{
+                 "type": "tool_result", "tool_use_id": "aq1",
+                 "content": '"Deploy where?"="staging"',
+             }]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="cut"))
+
+    assert len(events) == 1
+    assert events[0].kind is EventKind.QA_PAIR
+    assert "INTERVIEW: Deploy where?" in events[0].text
+    assert "OPERATOR: staging" in events[0].text
+
+
+def test_since_preserves_primary_thread_detection_from_the_unsliced_prefix(tmp_path):
+    records = [
+        _rec(type="user", uuid="primary-before", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "primary"}),
+        _rec(type="user", uuid="cut", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "user", "content": "anchor"}),
+        _rec(type="assistant", uuid="side-after", timestamp="2026-01-01T00:00:02Z",
+             isSidechain=True,
+             message={"role": "assistant", "content": [{"type": "text", "text": "sidechain leak"}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    events = claude_code.parse(fp, str(fp), ExtractConfig(since_marker="cut"))
+
+    assert events == []
 
 
 def test_task_notification_with_attributes_and_body_is_fully_stripped(tmp_path):
@@ -807,3 +971,175 @@ def test_format_qa_pairs_skips_an_option_with_no_label():
 
 def test_format_qa_pairs_no_questions_returns_text_unchanged():
     assert claude_code._format_qa_pairs("anything", []) == "anything"
+
+
+def test_parse_record_is_the_same_per_record_rule_parse_itself_uses(tmp_path):
+    # The seam --follow tails through (follow.py) must not be a second
+    # implementation: feeding parse()'s own record list through parse_record
+    # one at a time has to reproduce parse()'s output exactly.
+    fp = _write_fixture(tmp_path)
+    config = ExtractConfig()
+    expected = claude_code.parse(fp, str(fp), config)
+
+    records = claude_code._load_records(fp)
+    state = claude_code.StreamState(has_primary_thread=claude_code.has_primary_thread(fp))
+    streamed = []
+    for seq, rec in enumerate(records):
+        streamed += claude_code.parse_record(rec, seq, f"line{seq}", config, state)
+
+    assert [(e.kind, e.text, e.marker) for e in streamed] == [
+        (e.kind, e.text, e.marker) for e in expected
+    ]
+
+
+def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
+    # Forward-only state: the tool_use always precedes its tool_result in
+    # real file order, so a stream can pair them without a whole-file
+    # pre-pass. The answer record alone (empty state) must NOT become a
+    # QA_PAIR.
+    config = ExtractConfig()
+    assert claude_code.StreamState().has_primary_thread is True
+    question = _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:00Z",
+                     message={"role": "assistant", "content": [
+                         {"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+                          "input": {"questions": [{"question": "Ship it?", "options": [{"label": "yes"}]}]}},
+                     ]})
+    answer = _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:01Z",
+                   message={"role": "user", "content": [
+                       {"type": "tool_result", "tool_use_id": "tu1", "content": '"Ship it?"="yes"'},
+                   ]})
+
+    cold = claude_code.StreamState()
+    assert claude_code.parse_record(answer, 0, "line0", config, cold) == []
+
+    state = claude_code.StreamState()
+    assert claude_code.parse_record(question, 0, "line0", config, state) == []
+    assert "tu1" in state.askuserquestion_inputs
+    events = claude_code.parse_record(answer, 1, "line1", config, state)
+    assert [e.kind for e in events] == [EventKind.QA_PAIR]
+    assert "INTERVIEW: Ship it?" in events[0].text
+    assert "OPERATOR: yes" in events[0].text
+
+
+def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():
+    config = ExtractConfig()
+    with_uuid = _rec(type="user", uuid="u9", timestamp="t",
+                      message={"role": "user", "content": "hello"})
+    without = _rec(type="user", timestamp="t", message={"role": "user", "content": "hello"})
+    assert claude_code.parse_record(with_uuid, 0, "FALLBACK", config, claude_code.StreamState())[0].marker == "u9"
+    assert claude_code.parse_record(without, 0, "FALLBACK", config, claude_code.StreamState())[0].marker == "FALLBACK"
+
+
+def test_has_primary_thread_distinguishes_a_subagent_transcript(tmp_path):
+    # The signal parse() auto-detects and follow.py must know up front: an
+    # all-sidechain file IS someone's subagent conversation, not noise.
+    normal = _write_fixture(tmp_path)
+    assert claude_code.has_primary_thread(normal) is True
+
+    sub = tmp_path / "agent-a36c6ff1d3cc69767.jsonl"
+    sub.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="s1", isSidechain=True, timestamp="t",
+             message={"role": "user", "content": "do the delegated thing"}),
+        _rec(type="assistant", uuid="s2", isSidechain=True, timestamp="t",
+             message={"role": "assistant", "content": [{"type": "text", "text": "Done."}]}),
+    ]) + "\n", encoding="utf-8")
+    assert claude_code.has_primary_thread(sub) is False
+
+
+def test_prime_stream_state_handles_empty_missing_partial_and_malformed_prefixes(tmp_path):
+    config = ExtractConfig()
+    state = claude_code.StreamState()
+    claude_code.prime_stream_state(tmp_path / "missing.jsonl", state, 1)
+    claude_code.prime_stream_state(tmp_path / "missing.jsonl", state, 0)
+
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(
+        "not json\n" + json.dumps(_rec(type="mode")) + "\n" +
+        json.dumps(_rec(type="assistant", isSidechain=True, message={
+            "content": [{"type": "tool_use", "id": "side", "name": "AskUserQuestion",
+                         "input": {"questions": [{"question": "side?"}]}}]})) + "\n" +
+        json.dumps(_rec(type="assistant", message={
+            "content": [{"type": "tool_use", "id": "tu1", "name": "AskUserQuestion",
+                         "input": {"questions": [{"question": "real?"}]}}]})) + "\n",
+        encoding="utf-8",
+    )
+    # Stop before the final complete line once, exercising the bounded-prefix
+    # guard; then prime the complete prefix and confirm sidechain metadata is
+    # ignored for a primary transcript.
+    state = claude_code.StreamState(has_primary_thread=True)
+    claude_code.prime_stream_state(fp, state, fp.stat().st_size - 1)
+    assert "tu1" not in state.askuserquestion_inputs
+    claude_code.prime_stream_state(fp, state, fp.stat().st_size)
+    assert state.askuserquestion_inputs == {"tu1": [{"question": "real?"}]}
+
+
+def test_prime_stream_state_zero_bound_does_not_open_the_existing_file(tmp_path, monkeypatch):
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(json.dumps(_rec(type="assistant")) + "\n", encoding="utf-8")
+
+    def _unexpected_open(*args, **kwargs):
+        raise AssertionError("zero-byte prefix must not open the file")
+
+    monkeypatch.setattr(Path, "open", _unexpected_open)
+    claude_code.prime_stream_state(fp, claude_code.StreamState(), 0)
+
+
+def test_prime_stream_state_skips_a_non_conversation_dict_before_remembering(
+    tmp_path, monkeypatch
+):
+    fp = tmp_path / "prefix.jsonl"
+    fp.write_text(json.dumps(_rec(type="mode")) + "\n", encoding="utf-8")
+    remembered = []
+    monkeypatch.setattr(
+        claude_code, "_remember_askuserquestion",
+        lambda rec, state: remembered.append(rec),
+    )
+
+    claude_code.prime_stream_state(fp, claude_code.StreamState(), fp.stat().st_size)
+    assert remembered == []
+
+
+def test_parse_record_covers_empty_and_non_conversation_shapes():
+    config = ExtractConfig(include_thinking=True)
+    state = claude_code.StreamState()
+    assert claude_code.parse_record({"type": "system", "subtype": "other"}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "assistant", "message": {"content": [
+        {}, {"type": "text", "text": ""}, {"type": "thinking", "thinking": ""}
+    ]}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": [
+        {}, {"type": "tool_result", "tool_use_id": "other", "content": "noise"}
+    ]}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": 42}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "user", "message": {"content": "<local-command-caveat>x</local-command-caveat>"}}, 0, "m", config, state) == []
+    assert claude_code.parse_record({"type": "attachment"}, 0, "m", config, state) == []
+
+
+def test_update_interview_pending_ignores_non_tool_user_blocks_and_other_records():
+    pending = {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "user", "message": {"content": [{}, {"type": "text", "text": "answer"}]}},
+        pending,
+    ) is None
+    assert pending == {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": "not a list"}}, pending
+    ) is None
+    assert claude_code.update_interview_pending({"type": "system"}, pending) is None
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "empty", "name": "AskUserQuestion",
+             "input": {"questions": []}},
+        ]}},
+        pending,
+    ) == "(question)"
+
+
+def test_update_interview_pending_requires_user_type_for_tool_results():
+    pending = {"old": "old question"}
+    assert claude_code.update_interview_pending(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "old", "content": "answer"},
+        ]}},
+        pending,
+    ) is None
+    assert pending == {"old": "old question"}

@@ -95,18 +95,23 @@ artifact = "coverage.json"
 # session-extract: narrow package lane (2026-09-10), added alongside
 # tester-unified rather than modifying it. Scope: src/nyxloom/session_extract
 # and the extract-related slice of src/nyxloom/cli.py (--ledger/extract-debug
-# wiring), argv restricted to that package's own test files so an unrelated,
-# pre-existing failure elsewhere in the tree (e.g. mattermost provisioning
-# tests, dstdns snapshot-fault tests) cannot block this lane.
+# wiring), plus the exact CLI selector regression tests named below. The argv
+# stays restricted to this package's tests and those two CLI nodes so an
+# unrelated, pre-existing failure elsewhere in the tree (e.g. mattermost
+# provisioning tests, dstdns snapshot-fault tests) cannot block this lane.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
 # session_extract code, so there is no reason to leave branch coverage
 # unmeasured here the way tester-unified's D-064-L2 migration had to.
 #
-# base = "edc55648": the commit immediately before this session's two
-# session_extract commits (43f8da48, de61854f), NOT origin/main -- see the
-# run-gate.toml comment beside this lane for why.
+# base = "3d27c67e": the reviewed boundary for this narrow follow-up lane.
+# The full branch fork point at this HEAD is main's merge-base
+# 364945ddaaa528e4ca105bbe3af371d4d0360b04, which the tester-unified lane
+# already owns through base = "main". Do not move this narrow lane back to
+# that fork point: it would make changed-line R1/R2 judge the entire earlier
+# CLI-wide project-id/help wave as well as this feature, defeating the lane's
+# reviewed package scope. The earlier edc55648 pin had the same overreach.
 #
 # rigor: R0+R1 land first (assay's own "add rigor in order" guidance);
 # R2 (native python mutation) is added in a follow-up edit once R1 is
@@ -118,12 +123,14 @@ rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_adapters_registry.py",
+  "tests/test_session_extract_reasonix.py",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
   "tests/test_session_extract_codex.py",
   "tests/test_session_extract_debug_diff.py",
   "tests/test_session_extract_init.py",
   "tests/test_session_extract_ledger.py",
+  "tests/test_session_extract_mangle.py",
   "tests/test_session_extract_lossless_codex.py",
   "tests/test_session_extract_lossless_opencode.py",
   "tests/test_session_extract_lossless.py",
@@ -134,7 +141,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_stats_opencode.py",
   "tests/test_session_extract_stats.py",
   "tests/test_cli_extract.py",
+  "tests/test_session_extract_follow.py",
+  "tests/test_session_extract_locate.py",
   "tests/test_cli_help.py",
+  "tests/test_cli.py::test_tick",
+  "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
@@ -155,10 +166,10 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "edc55648"
+base = "3d27c67e"
 
 # R2: native python mutation, changed-lines-only -- resolve_mutation_targets
-# reuses R1's SAME base=edc55648 diff, so this mutates exactly the lines
+# reuses R1's SAME base=3d27c67e diff, so this mutates exactly the lines
 # this session touched, not the whole package. jobs=1 (serial), NOT higher:
 # the argv already runs pytest -n auto (up to 8 xdist workers on this
 # host), so N concurrent mutation jobs would mean up to N*8 worker
@@ -166,12 +177,13 @@ base = "edc55648"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# max_mutants=200/budget_per_candidate=120s are generous for this diff's
-# real size (a few hundred changed lines across 6 files); raised if
-# BUDGET_EXCEEDED fires.
+# The authoritative assay 6.1.1 discovery with a temporary cap above the
+# max+1 sentinel found 358 candidates after the final source shape; 358 is the
+# exact finite cap without turning this into an open-ended campaign.
+# budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 200
+max_mutants = 358
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

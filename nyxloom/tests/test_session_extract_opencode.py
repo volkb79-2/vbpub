@@ -121,6 +121,33 @@ def test_parse_on_non_db_path_raises(tmp_path):
         opencode.parse(tmp_path / "nope", "s1", ExtractConfig())
 
 
+def test_list_agents_rejects_a_non_store_path(tmp_path):
+    with pytest.raises(ValueError, match="not an opencode SQLite store"):
+        opencode.list_agents(tmp_path / "nope")
+
+
+def test_list_agents_cycle_guard_prevents_recursive_parent_walk(tmp_path):
+    db = tmp_path / "opencode.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, agent TEXT, "
+        "time_created INTEGER, time_updated INTEGER);"
+        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, "
+        "time_updated INTEGER, data TEXT);"
+        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, "
+        "time_created INTEGER, time_updated INTEGER, data TEXT);"
+    )
+    conn.execute("INSERT INTO session VALUES ('loop', 'loop', 'Loop', 'build', 1000, 2000)")
+    conn.commit()
+    conn.close()
+
+    nodes = opencode.list_agents(db)
+
+    assert len(nodes) == 1
+    assert nodes[0].id == "loop"
+    assert nodes[0].depth == 1
+
+
 def test_parse_skips_non_user_assistant_roles_and_malformed_rows(tmp_path):
     db = tmp_path / "opencode.db"
     conn = sqlite3.connect(db)

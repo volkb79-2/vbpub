@@ -94,6 +94,7 @@ not a current claim.
 | --- | --- | --- |
 | `nyxloom lint` | Frontmatter schema + carve-quality rules (SPEC §6); gates the carve commit. Also validates the managed per-entry backlog: entry frontmatter (BLG2) and the generated `backlog/INDEX.md` freshness (BLG3), when a project adopts `[backlog_entries]` | No |
 | `nyxloom backlog` | Managed per-entry issue tracker (`nyxloom-trove/backlog/`, one file per entry): `new`/`promote`/`note`/`set-status`/`list`/`show`/`index`; merge auto-ticks linked entries to `merged`. Design authority: [docs/backlog-entries-spec.md](docs/backlog-entries-spec.md); adoption: [docs/CONSUMERS.md](docs/CONSUMERS.md) | No |
+| `nyxloom extract` family | Mechanical extraction from Claude Code, Codex, and opencode session logs: resumable briefs, lossless dumps, session discovery/reporting, bare session-ID lookup, rendered or syntax-highlighted markdown, and incremental `--follow` streams with optional attention delivery. User guide: [`session_extract/README.md`](src/nyxloom/session_extract/README.md) | No |
 | `nyxloom tick` | Reconciler: scan → dispatch/detect/collect → events → render → notify → exit | No |
 | Attempt wrapper | Runs one CLI leg detached; tees log; writes typed receipt with exit code; holds/releases flock leases | Only the launched agent |
 | Route adapters | Per-CLI dispatch/resume/probe/usage-extraction templates, table-driven from `routes.toml` | No |
@@ -106,6 +107,42 @@ milestone M2: every duty in v2 §10 — header parsing, dependency/slot checks,
 preflight, dispatch, stall detection, packet assembly, status reporting — is
 deterministic and moves into the tick. Frontier tokens keep flowing to exactly
 the two places they buy quality: carve and review.
+
+### Session-log extraction
+
+The `extract` family reads raw Claude Code, Codex, and opencode session logs
+without an LLM call. `extract` produces a compact resumable brief;
+`extract-lossless` preserves all prose and thinking blocks;
+`extract-sessions` discovers related sessions; and `extract-report` reports
+cost/timeline data. The `SESSION_LOG` argument accepts either a full path or a
+session ID when nyxloom can resolve exactly one matching file/store.
+
+For humans, `extract --render-markdown` renders the selected brief. For
+copy-pasteable markdown, `extract` and `extract-lossless` support
+`--highlight`, which preserves the source characters. Both extraction modes
+also support `--follow`/`-f` for incremental live output, with optional
+attention reasons `interview_pending`, `checkpoint_detected`, and `long_block`
+delivered through a terminal bell, an operator hook, or a registered project’s
+notify channel. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
+and the [session extraction guide](src/nyxloom/session_extract/README.md) for
+the complete flag behavior and adoption examples.
+
+For file-backed sessions, `--follow` reads the appended payload plus only
+bounded prefix/tail fingerprints as needed for rewrite detection; it never
+rescans the whole file. Unchanged polls read no content.
+
+At the incremental tailer boundary, a followed file that does not exist before
+the first open is a startup wait and a later poll can open it. After the stream
+has been opened, disappearance or any metadata (`stat()`) I/O failure is
+terminal: the CLI prints an `error:` message and exits nonzero instead of
+reporting the condition as an idle poll.
+
+`--strip-stale-wakeups` is a fixed-span trailing-run transform, so the exact
+combination `extract --follow --strip-stale-wakeups` is rejected before the
+initial phase-one extraction rather than silently diverging as live output
+grows. In contrast, `extract --follow` applies `--redact-pattern` to live
+phase-two output as well as the initial brief; `extract-lossless` remains
+verbatim and rejects `--redact-pattern`.
 
 ## Documents
 

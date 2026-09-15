@@ -152,7 +152,7 @@ def test_tail_follows_new_append_then_interrupts_cleanly(sqlite_backend, capsys,
 
     monkeypatch.setattr("time.sleep", fake_sleep)
 
-    args = argparse.Namespace(project=project, since=None, type=None, tail=True, json=False)
+    args = argparse.Namespace(project_id=project, since=None, type=None, tail=True, json=False)
     exit_code = cli.cmd_events(args)
 
     assert exit_code == 0
@@ -173,7 +173,7 @@ def test_tail_with_no_new_events_still_interrupts_cleanly(sqlite_backend, capsys
 
     monkeypatch.setattr("time.sleep", fake_sleep)
 
-    args = argparse.Namespace(project=project, since=None, type=None, tail=True, json=True)
+    args = argparse.Namespace(project_id=project, since=None, type=None, tail=True, json=True)
     exit_code = cli.cmd_events(args)
 
     assert exit_code == 0

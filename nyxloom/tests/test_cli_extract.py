@@ -8,11 +8,15 @@ these two commands own.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from nyxloom import cli
+from nyxloom.session_extract import read_since_marker
+from nyxloom.session_extract import follow as follow_mod
+from nyxloom.session_extract.locate import escape_cwd
 
 
 def _rec(**kw):
@@ -123,6 +127,21 @@ def test_extract_lossless_works_for_codex_too(tmp_path, capsys):
     assert "hi" in out
 
 
+def test_extract_lossless_since_file_resumes_from_its_marker(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.txt"
+
+    assert cli.main(["extract-lossless", str(fp), "--until", "a1"]) == 0
+    prior.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a1")
+
+    assert cli.main(["extract-lossless", str(fp), "--since-file", str(prior)]) == 0
+    out = capsys.readouterr().out
+    assert "Let me check." not in out
+    assert "Done -- everything landed" in out
+    assert "marker=a2" in out
+
+
 def test_extract_lossless_format_flag_rejects_an_unregistered_adapter_name(tmp_path, capsys):
     # --format's argparse choices are exactly the three registered
     # adapters -- an unregistered name is rejected before cmd_extract_lossless
@@ -173,17 +192,14 @@ def _write_subagent_fixture(tmp_path: Path) -> Path:
     return fp
 
 
-def test_extract_on_a_subagent_transcript_is_empty_without_include_sidechain(tmp_path, capsys):
+def test_extract_on_a_subagent_transcript_needs_no_flag(tmp_path, capsys):
+    # 2026-09-11 redesign: no --include-sidechain flag exists on this shared
+    # CLI surface (operator critique: adapter-specific vocabulary doesn't
+    # belong there). Targeting a subagent's own transcript is just pointing
+    # path at that file -- claude_code.py auto-detects it has no primary
+    # thread of its own and extracts its (wholly-sidechain) content anyway.
     fp = _write_subagent_fixture(tmp_path)
     exit_code = cli.main(["extract", str(fp)])
-    out = capsys.readouterr().out
-    assert exit_code == 0
-    assert out.strip() == ""
-
-
-def test_extract_include_sidechain_recovers_a_subagent_transcript(tmp_path, capsys):
-    fp = _write_subagent_fixture(tmp_path)
-    exit_code = cli.main(["extract", str(fp), "--include-sidechain"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "research question dispatched by the controller" in out
@@ -326,6 +342,8 @@ def test_extract_show_gap_source_names_the_marker(tmp_path, capsys):
     ("--insert-blank-lines", "0"),
     ("--gap-marker", "inline"),
     ("--min-gap-records", "1"),
+    ("--task", "do the next thing"),
+    ("--task-file", "/nonexistent/path/does/not/matter"),
 ])
 def test_extract_render_only_flags_reject_json(tmp_path, capsys, flag, value):
     fp = _write_claude_code_fixture(tmp_path)
@@ -357,6 +375,14 @@ def test_extract_debug_shows_dropped_content_as_a_gap_note(tmp_path, capsys):
     assert ">>> [gap:" in out
     assert "lossless block" in out
     assert "\x1b[" not in out  # --no-color: no ANSI codes at all
+
+
+def test_extract_debug_annotates_each_dropped_block_with_a_yellow_reason(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-debug", str(fp), "--max-words", "1", "--no-color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "reason:" in out
 
 
 def test_extract_debug_color_forces_ansi_codes_even_when_piped(tmp_path, capsys):
@@ -397,7 +423,7 @@ def test_extract_debug_opencode_multi_session_requires_session_flag(tmp_path, ca
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["extract-debug", str(db), "--session", "s0"])
+    exit_code = cli.main(["extract-debug", str(db), "--opencode-session", "s0"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
@@ -437,18 +463,18 @@ def test_extract_since_and_since_file_are_mutually_exclusive(tmp_path, capsys):
     assert "not allowed with argument --since" in capsys.readouterr().err
 
 
-def test_session_stats_condensed_view_by_default(tmp_path, capsys):
+def test_extract_report_condensed_view_by_default(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp)])
+    exit_code = cli.main(["extract-report", str(fp)])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "trigger text" in out  # condensed view's header row
     assert "blocks total)" in out
 
 
-def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
+def test_extract_report_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp), "--detailed"])
+    exit_code = cli.main(["extract-report", str(fp), "--detailed"])
     out = capsys.readouterr().out
     assert exit_code == 0
     lines = out.strip().splitlines()
@@ -456,9 +482,9 @@ def test_session_stats_detailed_is_csv_with_one_row_per_call(tmp_path, capsys):
     assert "please look into this" in out
 
 
-def test_session_stats_json_output(tmp_path, capsys):
+def test_extract_report_json_output(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp), "--json"])
+    exit_code = cli.main(["extract-report", str(fp), "--json"])
     out = capsys.readouterr().out
     assert exit_code == 0
     parsed = json.loads(out)
@@ -466,10 +492,10 @@ def test_session_stats_json_output(tmp_path, capsys):
     assert parsed  # at least one block
 
 
-def test_session_stats_works_for_codex_too(tmp_path, capsys):
-    # codex is now a supported session-stats format (was errored-out once).
+def test_extract_report_works_for_codex_too(tmp_path, capsys):
+    # codex is now a supported extract-report format (was errored-out once).
     fp = _write_codex_fixture(tmp_path)
-    exit_code = cli.main(["session-stats", str(fp)])
+    exit_code = cli.main(["extract-report", str(fp)])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "blocks total)" in out
@@ -578,9 +604,15 @@ def test_extract_max_words_independently_overrides_a_profiles_own_default(tmp_pa
     assert exit_code == 0
     assert "Found it" in out
 
-    # Overridden down to a 5-word budget: still walks past the marker
-    # (manual_fresh's max_lifecycle_markers=-1 is untouched)...
-    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "5"])
+    # Overridden down to an 8-word budget: still walks past the marker
+    # (manual_fresh's max_lifecycle_markers=-1 is untouched). 8, not a
+    # smaller number, deliberately: the marker's own rendered text now
+    # counts toward the budget too (select.py's 2026-09-11 fix -- see its
+    # module docstring), and "after the boundary" (3 words) + the marker
+    # ("[compaction: unknown happened]", 3 words) already total 6 before
+    # "before the boundary" (3 more words) is even considered -- a 5-word
+    # budget would stop the walk right at the marker and never reach it.
+    exit_code = cli.main(["extract", str(fp), "--profile", "manual_fresh", "--max-words", "8"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "before the boundary" in out
@@ -601,6 +633,62 @@ def test_extract_since_file_format_mismatch_errors_cleanly(tmp_path, capsys):
     assert "claude-code" in captured.err
 
 
+def test_extract_since_file_auto_detected_valid_marker_resumes(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.txt"
+
+    assert cli.main(["extract", str(fp), "--until", "a1"]) == 0
+    prior.write_text(capsys.readouterr().out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a1")
+
+    assert cli.main(["extract", str(fp), "--since-file", str(prior)]) == 0
+    out = capsys.readouterr().out
+    assert "Done -- everything landed" in out
+
+
+@pytest.mark.parametrize("command", ["extract", "extract-lossless"])
+def test_extract_since_file_auto_detected_format_mismatch_errors_cleanly(
+    tmp_path, capsys, command,
+):
+    fp = _write_claude_code_fixture(tmp_path)
+    prior = tmp_path / "prior.json"
+    prior.write_text(
+        json.dumps({"format": "codex", "events": [], "last_marker": "5"}),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main([command, str(fp), "--since-file", str(prior)])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.err == (
+        "error: --since-file was produced by the 'codex' adapter, but the "
+        "session log was auto-detected as 'claude-code'\n"
+    )
+
+
+def test_extract_lossless_follow_reports_active_source_disappearance(
+    tmp_path, capsys, monkeypatch,
+):
+    fp = _write_claude_code_fixture(tmp_path)
+
+    def fail_after_disappearance(self):
+        assert self._source.tailer.poll() == []  # establishes the active handle
+        fp.unlink()
+        try:
+            self._source.tailer.poll()
+        finally:
+            self.close()
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", fail_after_disappearance)
+
+    assert cli.main(["extract-lossless", str(fp), "--follow"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == (
+        f"error: followed session file disappeared while following: {fp}\n"
+    )
+
+
 def test_extract_lossless_opencode_single_session_needs_no_session_flag(tmp_path, capsys):
     db = _write_opencode_fixture(tmp_path, n_sessions=1)
     exit_code = cli.main(["extract-lossless", str(db)])
@@ -616,20 +704,986 @@ def test_extract_lossless_opencode_multi_session_requires_session_flag(tmp_path,
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["extract-lossless", str(db), "--session", "s0"])
+    exit_code = cli.main(["extract-lossless", str(db), "--opencode-session", "s0"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "please look into this" in out
 
 
-def test_session_stats_opencode_needs_session_flag_when_ambiguous(tmp_path, capsys):
+def test_extract_report_opencode_needs_session_flag_when_ambiguous(tmp_path, capsys):
     db = _write_opencode_fixture(tmp_path, n_sessions=2)
-    exit_code = cli.main(["session-stats", str(db)])
+    exit_code = cli.main(["extract-report", str(db)])
     assert exit_code == 1
     assert "2 opencode sessions" in capsys.readouterr().err
 
-    exit_code = cli.main(["session-stats", str(db), "--session", "s0", "--detailed"])
+    exit_code = cli.main(["extract-report", str(db), "--opencode-session", "s0", "--detailed"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "cost_usd" in out.splitlines()[0]
     assert "0.001234" in out
+
+
+# -- extract-sessions (discovery: what sessions/sub-agents exist) --------
+
+
+def _write_claude_code_family_fixture(tmp_path: Path) -> Path:
+    """root.jsonl dispatches child1 (spawnDepth 1); child1 dispatches
+    child2 (spawnDepth 2) -- the real on-disk shape confirmed this session
+    against production data (E-015): a flat subagents/ dir, lineage
+    resolved via toolUseId cross-reference, not isSidechain."""
+    root = tmp_path / "root.jsonl"
+    root.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "please look into this"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "tu-child1", "name": "Agent", "input": {}},
+             ]}),
+    ]) + "\n", encoding="utf-8")
+
+    subagents_dir = tmp_path / "root" / "subagents"
+    subagents_dir.mkdir(parents=True)
+
+    (subagents_dir / "agent-child1.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="cu1", timestamp="2026-01-01T00:00:02Z", isSidechain=True,
+             message={"role": "user", "content": "dispatched task"}),
+        _rec(type="assistant", uuid="ca1", timestamp="2026-01-01T00:00:03Z", isSidechain=True,
+             message={"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "tu-child2", "name": "Agent", "input": {}},
+             ]}),
+    ]) + "\n", encoding="utf-8")
+    (subagents_dir / "agent-child1.meta.json").write_text(json.dumps({
+        "agentType": "fork", "isFork": True, "description": "Child one task",
+        "toolUseId": "tu-child1", "spawnDepth": 1,
+    }), encoding="utf-8")
+
+    (subagents_dir / "agent-child2.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="gu1", timestamp="2026-01-01T00:00:04Z", isSidechain=True,
+             message={"role": "user", "content": "nested dispatched task"}),
+    ]) + "\n", encoding="utf-8")
+    (subagents_dir / "agent-child2.meta.json").write_text(json.dumps({
+        "agentType": "fork", "isFork": True, "description": "Grandchild task",
+        "toolUseId": "tu-child2", "spawnDepth": 2,
+    }), encoding="utf-8")
+
+    return root
+
+
+def test_extract_sessions_claude_code_resolves_nested_lineage(tmp_path, capsys):
+    root = _write_claude_code_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(root)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+
+    lines = out.splitlines()
+    root_idx = next(i for i, l in enumerate(lines) if "(interactive session)" in l)
+    child1_idx = next(i for i, l in enumerate(lines) if "Child one task" in l)
+    child2_idx = next(i for i, l in enumerate(lines) if "Grandchild task" in l)
+    assert root_idx < child1_idx < child2_idx
+    # child2 is nested under child1 (4-space indent = 2 levels), not under root.
+    assert lines[child2_idx].startswith("    -")
+    assert lines[child1_idx].startswith("  -")
+    assert "spawnDepth 1" in lines[child1_idx]
+    assert "spawnDepth 2" in lines[child2_idx]
+
+
+def test_extract_sessions_claude_code_same_family_from_a_child_file(tmp_path, capsys):
+    root = _write_claude_code_family_fixture(tmp_path)
+    child2 = root.parent / "root" / "subagents" / "agent-child2.jsonl"
+    exit_code = cli.main(["extract-sessions", str(child2)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "(interactive session)" in out
+    assert "Child one task" in out
+    assert "Grandchild task" in out
+
+
+def _write_codex_family_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    parent = tmp_path / "rollout-parent.jsonl"
+    parent.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "session_meta", "payload": {
+            "session_id": "root-thread", "id": "root-thread",
+            "thread_source": "user", "source": "exec", "cli_version": "0.154.0",
+        }},
+        {"type": "event_msg", "timestamp": "2026-01-01T00:00:00Z", "ordinal": 1, "payload": {
+            "type": "user_message", "message": "hi",
+        }},
+    ]) + "\n", encoding="utf-8")
+
+    child = tmp_path / "rollout-child.jsonl"
+    child.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "session_meta", "payload": {
+            "session_id": "root-thread", "id": "child-thread", "cli_version": "0.154.0",
+            "forked_from_id": "root-thread", "thread_source": "subagent",
+            "source": {"subagent": {"thread_spawn": {
+                "parent_thread_id": "root-thread", "depth": 1, "agent_nickname": "Ada",
+            }}},
+        }},
+        {"type": "event_msg", "timestamp": "2026-01-01T00:00:01Z", "ordinal": 1, "payload": {
+            "type": "user_message", "message": "delegated task",
+        }},
+    ]) + "\n", encoding="utf-8")
+    return parent, child
+
+
+def test_extract_sessions_codex_finds_spawned_subagent(tmp_path, capsys):
+    parent, _child = _write_codex_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(parent)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "(interactive session)" in out
+    assert "Ada (depth 1)" in out
+    assert "  -" in out  # child is indented under the root
+
+
+def _write_opencode_family_fixture(tmp_path: Path) -> Path:
+    import sqlite3
+
+    db = tmp_path / "opencode.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, "
+        "agent TEXT, time_created INTEGER, time_updated INTEGER);"
+        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, "
+        "time_updated INTEGER, data TEXT);"
+        "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, "
+        "time_created INTEGER, time_updated INTEGER, data TEXT);"
+    )
+    conn.execute("INSERT INTO session VALUES ('parent', NULL, 'Parent session', 'build', 1000, 2000)")
+    conn.execute("INSERT INTO session VALUES ('kid', 'parent', 'Explore subtask', 'explore', 1100, 1200)")
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_extract_sessions_opencode_shows_forked_session(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    lines = out.splitlines()
+    parent_idx = next(i for i, l in enumerate(lines) if "Parent session" in l)
+    kid_idx = next(i for i, l in enumerate(lines) if "Explore subtask" in l)
+    assert parent_idx < kid_idx
+    assert lines[kid_idx].startswith("  -")  # nested under the parent
+
+
+def test_extract_sessions_opencode_accepts_the_store_directory(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db.parent)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Parent session" in out and "Explore subtask" in out
+
+
+def test_extract_sessions_codex_directory_scans_each_family_once(tmp_path, capsys):
+    parent, _child = _write_codex_family_fixture(tmp_path)
+    (tmp_path / "rollout-invalid.jsonl").write_text("not a rollout\n", encoding="utf-8")
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path), "--format", "codex"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert out.count("[root-thread]") == 1
+    assert "Ada (depth 1)" in out
+    assert "[child-thread]" in out
+
+
+def test_extract_sessions_json_output(tmp_path, capsys):
+    db = _write_opencode_family_fixture(tmp_path)
+    exit_code = cli.main(["extract-sessions", str(db), "--json"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    parsed = json.loads(out)
+    assert isinstance(parsed, list)
+    ids = {n["id"] for n in parsed}
+    assert ids == {"parent", "kid"}
+    kid = next(n for n in parsed if n["id"] == "kid")
+    assert kid["parent_id"] == "parent"
+
+
+# -- extract-sessions on a DIRECTORY of many sessions (2026-09-11, real ---
+# operator repro: pointing it at a Claude Code project directory failed) --
+
+
+def test_extract_sessions_directory_lists_every_top_level_session(tmp_path, capsys):
+    # Two independent top-level sessions, directly in the same directory --
+    # the real ~/.claude/projects/<project>/ layout (one *.jsonl per
+    # session, no shared family between them).
+    for name, text in [("sessionA", "first session prompt"), ("sessionB", "second session prompt")]:
+        fp = tmp_path / f"{name}.jsonl"
+        fp.write_text("\n".join(json.dumps(r) for r in [
+            _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+                 message={"role": "user", "content": text}),
+        ]) + "\n", encoding="utf-8")
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert str(tmp_path / "sessionA.jsonl") in out
+    assert str(tmp_path / "sessionB.jsonl") in out
+    # Both are independent roots -- neither indented under the other.
+    for line in out.splitlines():
+        if "sessionA.jsonl" in line or "sessionB.jsonl" in line:
+            assert line.startswith("- ")
+
+
+def test_extract_sessions_directory_hints_at_subdirectory_one_level_down(tmp_path, capsys):
+    subproj = tmp_path / "-workspaces-dstdns"
+    subproj.mkdir()
+    fp = subproj / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "hi"}),
+    ]) + "\n", encoding="utf-8")
+
+    # Pointed at the PARENT (like the real ~/.claude/projects itself) --
+    # nothing directly in it, but a real project one level down.
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "did you mean" in err
+    assert str(subproj) in err
+
+
+def test_extract_sessions_empty_directory_without_a_hint_is_explicit(tmp_path, capsys):
+    (tmp_path / "not-a-session-directory").mkdir()
+
+    exit_code = cli.main(["extract-sessions", str(tmp_path)])
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "no Claude Code" in err
+    assert "pass a specific session-log file instead" in err
+
+
+def test_session_discovery_rejects_an_unsupported_directory_format(tmp_path):
+    from nyxloom.session_extract import sessions
+
+    with pytest.raises(ValueError, match="does not support 'unknown'"):
+        sessions.list_agents(tmp_path, fmt="unknown")
+
+
+def test_session_discovery_rejects_an_adapter_without_list_agents(tmp_path, monkeypatch):
+    from nyxloom.session_extract import sessions
+    from nyxloom.session_extract import adapters
+
+    class Adapter:
+        name = "fixture"
+
+    monkeypatch.setattr(adapters, "get_adapter", lambda _fmt: Adapter())
+    with pytest.raises(ValueError, match="does not support 'fixture'"):
+        sessions.list_agents(tmp_path / "session.log", fmt="fixture")
+
+
+def test_session_discovery_hint_is_indeterminate_when_directory_scan_fails(tmp_path, monkeypatch):
+    from nyxloom.session_extract import sessions
+
+    def fail_iterdir(_path):
+        raise PermissionError("directory denied")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+    assert sessions._one_level_down_hint(tmp_path) is None
+
+
+def test_render_tree_empty_is_explicit():
+    from nyxloom.session_extract.sessions import render_tree
+
+    assert render_tree([]) == "(no sessions found)\n"
+
+# --- handoff-to-a-fresh-agent flags (--task/--task-file/--strip-stale-wakeups/
+# --redact-pattern) -- session_extract/mangle.py, verified against a real
+# dstdns session (design-context-lifecycle-experiments.md's E-015 follow-up).
+
+def test_extract_task_appends_a_labeled_banner_after_the_render(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--task", "Carve the next candidate."])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "please look into this" in out
+    assert out.index("nyxloom-extract: format=claude-code") < out.index("TASK FOR THIS SESSION")
+    assert "Carve the next candidate." in out
+
+
+def test_extract_task_file_reads_the_task_from_a_file(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    task_fp = tmp_path / "task.txt"
+    task_fp.write_text("Do the thing described in this file.\n", encoding="utf-8")
+    exit_code = cli.main(["extract", str(fp), "--task-file", str(task_fp)])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Do the thing described in this file." in out
+
+
+def test_extract_task_and_task_file_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--task", "x", "--task-file", str(fp)])
+    assert exit_code == 2
+    assert "not allowed with argument --task" in capsys.readouterr().err
+
+
+def _write_stale_wakeup_tail_fixture(tmp_path: Path) -> Path:
+    # A trailing run of 2 near-duplicate "stale wakeup, nothing new"
+    # checkpoints after a real, informative one -- mirrors the real pattern
+    # found in the dstdns session this feature was built against. Each
+    # block is long enough to clear the default long_comment_chars filter
+    # on its own (independent of checkpoint scoring).
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             message={"role": "user", "content": "please look into this"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "The package is fully closed: merged, gate green across every lane, "
+                 "worktree and all containers torn down and independently verified clean, "
+                 "docs archived, memory updated with the new operational lessons learned."
+             )}]}),
+        _rec(type="assistant", uuid="a2", timestamp="2026-01-01T00:00:02Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "This is the stale fallback wakeup I armed earlier -- everything it asks "
+                 "for already completed in the meantime. Quick confirmation, then done."
+             )}]}),
+        _rec(type="assistant", uuid="a3", timestamp="2026-01-01T00:00:03Z",
+             message={"role": "assistant", "content": [{"type": "text", "text": (
+                 "This is the same stale fallback message repeating -- already confirmed "
+                 "in the previous turn that everything is done and consistent. No new "
+                 "action needed."
+             )}]}),
+    ]
+    fp = tmp_path / "session.jsonl"
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_extract_strip_stale_wakeups_collapses_the_trailing_repeat(tmp_path, capsys):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+    # --long-threshold 0 isolates this test from select()'s independent
+    # length filter -- every ASSISTANT_TEXT survives selection regardless
+    # of length, so only --strip-stale-wakeups's own behavior is exercised.
+    exit_code = cli.main(["extract", str(fp), "--long-threshold", "0", "--strip-stale-wakeups"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "stripped 1 stale-wakeup checkpoint(s) from the tail" in captured.err
+    assert "This is the stale fallback wakeup I armed earlier" in captured.out
+    assert "This is the same stale fallback message repeating" not in captured.out
+
+
+def test_extract_without_the_flag_keeps_every_stale_wakeup_repeat(tmp_path, capsys):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--long-threshold", "0"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "This is the same stale fallback message repeating" in out
+
+
+def test_extract_redact_pattern_replaces_matching_paragraphs(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--redact-pattern", "please look"])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "redacted 1 paragraph(s) matching --redact-pattern" in captured.err
+    assert "please look into this" not in captured.out
+    assert "redacted paragraph -- matched --redact-pattern" in captured.out
+
+
+def test_extract_redact_pattern_rejects_an_invalid_regex(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--redact-pattern", "(unclosed"])
+    assert exit_code == 1
+    assert "invalid regex" in capsys.readouterr().err
+
+
+def test_extract_follow_redacts_live_phase_two_output_like_phase_one(
+    tmp_path, capsys, monkeypatch,
+):
+    # The phase-one extract already applies mangle.redact_paragraphs. The
+    # live phase must apply the same post-selection transform before writing
+    # its newly-arrived event, or follow would leak the protected paragraph.
+    fp = _write_claude_code_fixture(tmp_path)
+
+    def _run_one_live_tick(self):
+        with self._source.tailer.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_rec(
+                type="assistant", uuid="a-live", timestamp="2026-01-01T00:00:04Z",
+                message={"role": "assistant", "content": [{"type": "text", "text": (
+                    "## Live status\n\nplease look at the phase-two secret\n\n"
+                    "safe phase-two detail"
+                )}]},
+            )) + "\n")
+        self.tick()
+        self.close()
+        return 0
+
+    monkeypatch.setattr(
+        "nyxloom.session_extract.follow.Follower.run_forever", _run_one_live_tick,
+    )
+    assert cli.main([
+        "extract", str(fp), "--follow", "--redact-pattern", "please look",
+    ]) == 0
+
+    out = capsys.readouterr().out
+    assert "please look into this" not in out
+    assert "please look at the phase-two secret" not in out
+    assert "safe phase-two detail" in out
+    assert out.count("redacted paragraph -- matched --redact-pattern") == 2
+
+
+def test_extract_lossless_rejects_redaction_instead_of_claiming_verbatim_output(
+    tmp_path, capsys,
+):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main([
+        "extract-lossless", str(fp), "--follow", "--redact-pattern", "please look",
+    ]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "extract-lossless is a verbatim dump" in captured.err
+
+
+def test_extract_accepts_a_bare_claude_code_session_uuid(tmp_path, capsys, monkeypatch):
+    # Feature A wiring: every extract-* verb routes its SESSION_LOG
+    # positional through locate.resolve_session_ref, so a pasted session id
+    # with no path at all resolves to the file holding it (locate.py's own
+    # tests cover the search/priority/ambiguity rules).
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / escape_cwd(tmp_path)
+    project.mkdir(parents=True)
+    fixture = _write_claude_code_fixture(tmp_path)
+    (project / f"{uuid}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract", uuid])
+    assert exit_code == 0
+    assert "please look into this" in capsys.readouterr().out
+
+
+def test_extract_reports_an_unresolvable_session_ref(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    exit_code = cli.main(["extract", "03b58ae4-5a21-4667-bf22-7eb364115ba3"])
+    assert exit_code == 1
+    assert "not found under" in capsys.readouterr().err
+
+
+def test_extract_sessions_accepts_a_bare_session_uuid_too(tmp_path, capsys, monkeypatch):
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / escape_cwd(tmp_path)
+    project.mkdir(parents=True)
+    fixture = _write_claude_code_fixture(tmp_path)
+    (project / f"{uuid}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract-sessions", uuid])
+    assert exit_code == 0
+    assert "(interactive session)" in capsys.readouterr().out
+
+
+def test_extract_render_markdown_renders_blocks_but_not_the_scaffolding(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--no-color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    # the '## Status' header rendered (its own '##' consumed)...
+    assert "Status" in out and "## Status" not in out
+    # ...while render.py's own separator and marker footer survive verbatim
+    assert "\n---\n" in out
+    assert "<!-- nyxloom-extract: format=claude-code marker=" in out
+    assert "\x1b[" not in out
+
+
+def test_extract_render_markdown_errors_with_json(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--json", "--render-markdown"])
+    assert exit_code == 1
+    assert "--render-markdown" in capsys.readouterr().err
+
+
+def test_extract_color_without_a_render_mode_errors(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--no-color"])
+    assert exit_code == 1
+    assert "--color/--no-color only apply to" in capsys.readouterr().err
+
+
+def test_extract_color_and_no_color_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--color", "--no-color"])
+    assert exit_code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_extract_highlight_keeps_every_markdown_character(tmp_path, capsys):
+    import re
+
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--highlight", "--color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" in out  # colored
+    # ...and unlike --render-markdown, the markup itself survives, which is
+    # the whole reason this is a separate flag.
+    assert "## Status" in re.sub(r"\x1b\[[0-9;]*m", "", out)
+
+
+def test_extract_lossless_highlight_colors_the_dump(tmp_path, capsys):
+    import re
+
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--highlight", "--color"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "\x1b[" in out
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    assert "===[a2 |" in plain and "## Status" in plain
+    prior = tmp_path / "highlighted.txt"
+    prior.write_text(out, encoding="utf-8")
+    assert read_since_marker(prior) == ("claude-code", "a2")
+
+
+def test_extract_lossless_no_color_disables_highlight_ansi(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main(["extract-lossless", str(fp), "--highlight", "--no-color"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
+
+
+def test_extract_render_markdown_and_highlight_are_mutually_exclusive(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--render-markdown", "--highlight"])
+    assert exit_code == 1
+    assert "opposite goals" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("verb", ["extract", "extract-lossless"])
+def test_follow_help_describes_payload_and_bounded_fingerprint_reads(verb, capsys):
+    assert cli.main([verb, "--help"]) == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    help_text = help_text.replace("whole- file", "whole-file")
+    assert "appended payload" in help_text
+    assert "bounded prefix/tail fingerprints" in help_text
+    assert "whole-file rescan" in help_text
+    assert "only newly-appended bytes are ever read" not in help_text
+
+
+def test_extract_follow_rejects_json(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--json"])
+    assert exit_code == 1
+    assert "no JSON document to emit" in capsys.readouterr().err
+
+
+def test_extract_follow_rejects_strip_stale_wakeups_before_phase_one(
+    tmp_path, capsys, monkeypatch,
+):
+    fp = _write_stale_wakeup_tail_fixture(tmp_path)
+
+    def _phase_one_must_not_run(*_args, **_kwargs):
+        raise AssertionError("phase one must not run for the rejected combination")
+
+    monkeypatch.setattr("nyxloom.session_extract.extract", _phase_one_must_not_run)
+
+    assert cli.main([
+        "extract", str(fp), "--follow", "--strip-stale-wakeups",
+    ]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert (
+        "extract --follow cannot be combined with --strip-stale-wakeups"
+        in captured.err
+    )
+    assert "fixed, complete span" in captured.err
+
+
+def test_extract_follow_rejects_until(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--until", "a2"])
+    assert exit_code == 1
+    assert "contradictory" in capsys.readouterr().err
+
+
+def test_extract_follow_rejects_a_task_banner(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--task", "do the next thing"])
+    assert exit_code == 1
+    assert "contradictory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--interval", "0.5"),
+    ("--bell", None),
+    ("--on-attention", "true"),
+    ("--notify-project", "someproject"),
+    ("--attention-min-chars", "100"),
+])
+def test_follow_only_flags_error_without_follow(tmp_path, capsys, flag, value):
+    # Every one of these would silently do nothing otherwise -- the trap this
+    # package consistently errors on instead.
+    fp = _write_claude_code_fixture(tmp_path)
+    argv = ["extract", str(fp), flag] + ([value] if value else [])
+    exit_code = cli.main(argv)
+    assert exit_code == 1
+    assert f"{flag} only has an effect with --follow" in capsys.readouterr().err
+
+
+def test_extract_lossless_follow_only_flags_error_without_follow(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--bell"])
+    assert exit_code == 1
+    assert "--bell only has an effect with --follow" in capsys.readouterr().err
+
+
+def test_extract_lossless_color_without_highlight_errors(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract-lossless", str(fp), "--no-color"])
+    assert exit_code == 1
+    assert "--color/--no-color only apply to --highlight" in capsys.readouterr().err
+
+
+def test_follow_anchor_is_taken_before_phase_one_parses(tmp_path, capsys, monkeypatch):
+    # The two-phase handoff: phase 1 prints the one-shot brief, then phase 2
+    # starts from the byte offset captured BEFORE that parse (so a record
+    # appended mid-parse is duplicated rather than lost -- see cli.py's
+    # _follow_anchor).
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_claude_code_fixture(tmp_path)
+    size_before = fp.stat().st_size
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["offset"] = self._source.tailer.offset
+        seen["lossless"] = self._lossless
+        seen["interval"] = self._follow.interval
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    exit_code = cli.main(["extract", str(fp), "--follow"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "please look into this" in out  # phase 1 still printed in full
+    assert seen == {"offset": size_before, "lossless": False, "interval": 1.0}
+
+
+def test_follow_preserves_sidechain_only_primary_detection(tmp_path, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = tmp_path / "sidechain.jsonl"
+    records = [
+        _rec(type="user", uuid="u1", timestamp="2026-01-01T00:00:00Z",
+             isSidechain=True, message={"role": "user", "content": "subtask"}),
+        _rec(type="assistant", uuid="a1", timestamp="2026-01-01T00:00:01Z",
+             isSidechain=True, message={"role": "assistant", "content": [
+                 {"type": "text", "text": "subtask answer"},
+             ]}),
+    ]
+    fp.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["has_primary_thread"] = self._source._state.has_primary_thread
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract", str(fp), "--follow"]) == 0
+    assert seen == {"has_primary_thread": False}
+
+
+def test_follow_keeps_primary_thread_true_for_codex_jsonl(tmp_path, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_codex_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["has_primary_thread"] = self._source._state.has_primary_thread
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract", str(fp), "--follow"]) == 0
+    assert seen == {"has_primary_thread": True}
+
+
+def test_follow_anchor_rewinds_to_the_start_of_a_partial_jsonl_record(tmp_path):
+    prefix = b'{"type":"user"}\n'
+    partial = b'{"type":"assistant","message":{"content":['
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(prefix + partial)
+
+    assert cli._follow_anchor(fp, "claude-code", None) == len(prefix)
+
+
+def test_follow_anchor_accepts_a_newline_at_the_start_of_the_file(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_bytes(b"\n")
+    assert cli._follow_anchor(fp, "claude-code", None) == 1
+
+
+def test_extract_lossless_follow_uses_lossless_semantics_for_phase_two(tmp_path, capsys, monkeypatch):
+    from nyxloom.session_extract import follow as follow_mod
+
+    fp = _write_claude_code_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["lossless"] = self._lossless
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    exit_code = cli.main(["extract-lossless", str(fp), "--follow"])
+    assert exit_code == 0
+    assert "Let me check." in capsys.readouterr().out
+    assert seen == {"lossless": True}
+
+
+def test_extract_follow_rejects_a_busy_loop_interval(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--interval", "0"])
+    assert exit_code == 1
+    assert "busy loop" in capsys.readouterr().err
+
+
+def test_follow_reports_an_unknown_notify_project_instead_of_crashing(tmp_path, capsys, monkeypatch):
+    # --notify-project resolves through the ordinary project registry, so an
+    # id that isn't registered has to be a clean error, not a traceback out of
+    # the middle of a tail.
+    from nyxloom import config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_registry", lambda: {})
+    fp = _write_claude_code_fixture(tmp_path)
+    exit_code = cli.main(["extract", str(fp), "--follow", "--notify-project", "nope"])
+    assert exit_code == 1
+    assert "--notify-project" in capsys.readouterr().err
+
+
+def test_follow_anchor_handles_empty_unterminated_and_missing_jsonl_files(tmp_path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    assert cli._follow_anchor(empty, "claude-code", None) == 0
+
+    unterminated = tmp_path / "unterminated.jsonl"
+    unterminated.write_bytes(b"x" * 9000)
+    assert cli._follow_anchor(unterminated, "claude-code", None) == 0
+
+    assert cli._follow_anchor(tmp_path / "missing.jsonl", "claude-code", None) == 0
+
+
+def test_follow_anchor_handles_an_opencode_store_without_a_matching_message(tmp_path):
+    db = _write_opencode_fixture(tmp_path)
+    anchor = cli._follow_anchor(db, "opencode", "does-not-exist")
+    assert anchor.cursor == (-1, "")
+
+
+def test_follow_anchor_returns_the_opencode_message_and_part_fingerprint(tmp_path):
+    db = _write_opencode_fixture(tmp_path)
+    anchor = cli._follow_anchor(db, "opencode", "s0")
+    assert anchor.cursor == (2, "m0b")
+    assert anchor.fingerprint[0]  # message data JSON
+    assert anchor.fingerprint[1][0][0] == "p0b"
+    assert [key for key, _fingerprint in anchor.tracked] == [
+        (1, "m0a"), (2, "m0b"),
+    ]
+    assert anchor.tracked[-1][1] == anchor.fingerprint
+
+
+def test_follow_anchor_bounds_the_opencode_recent_row_fingerprint_view(tmp_path):
+    from nyxloom.session_extract.follow import OPENCODE_TRACKED_ROWS
+
+    db = _write_opencode_fixture(tmp_path)
+    sid = "s0"
+    conn = sqlite3.connect(db)
+    for timestamp in range(3, OPENCODE_TRACKED_ROWS + 8):
+        msg_id = f"late-{timestamp}"
+        conn.execute(
+            "INSERT INTO message VALUES (?, ?, ?, ?, ?)",
+            (msg_id, sid, timestamp, timestamp, json.dumps({"role": "assistant"})),
+        )
+        conn.execute(
+            "INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)",
+            (f"part-{timestamp}", msg_id, sid, timestamp, timestamp,
+             json.dumps({"type": "text", "text": msg_id})),
+        )
+    conn.commit()
+    conn.close()
+
+    anchor = cli._follow_anchor(db, "opencode", sid)
+    assert len(anchor.tracked) == OPENCODE_TRACKED_ROWS
+    keys = [key for key, _fingerprint in anchor.tracked]
+    assert keys == sorted(keys)
+    assert keys[0] == (anchor.cursor[0] - OPENCODE_TRACKED_ROWS + 1, f"late-{keys[0][0]}")
+    assert keys[-1] == anchor.cursor
+    assert anchor.tracked[-1][1] == anchor.fingerprint
+
+
+def test_follow_anchor_opencode_uses_a_read_only_sqlite_uri(tmp_path, monkeypatch):
+    import sqlite3
+
+    db = _write_opencode_fixture(tmp_path)
+    real_connect = sqlite3.connect
+    calls = []
+
+    def _connect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", _connect)
+    cli._follow_anchor(db, "opencode", "s0")
+    assert calls and calls[-1][1].get("uri") is True
+
+
+def test_follow_anchor_returns_none_for_a_non_opencode_path(tmp_path):
+    assert cli._follow_anchor(tmp_path, "opencode", "s0") is None
+
+
+def test_extract_follow_opencode_resolves_the_single_session_and_wires_the_source(
+    tmp_path, capsys, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+    real_anchor = cli._follow_anchor
+
+    def _anchor(path, fmt, session):
+        seen["anchor_session"] = session
+        return real_anchor(path, fmt, session)
+
+    def _fake_run_forever(self):
+        seen["source"] = type(self._source).__name__
+        seen["session"] = self._source._session_id
+        seen["anchor"] = self._source._anchor_cursor
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    monkeypatch.setattr(cli, "_follow_anchor", _anchor)
+    exit_code = cli.main(["extract", str(db), "--follow"])
+    assert exit_code == 0
+    assert seen == {
+        "source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b"),
+        "anchor_session": "s0",
+    }
+    assert "please look into this" in capsys.readouterr().out
+
+
+def test_extract_follow_opencode_accepts_the_legacy_tuple_anchor_shape(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["cursor"] = self._source._cursor
+        seen["fingerprint"] = self._source._anchor_fingerprint
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    monkeypatch.setattr(cli, "_follow_anchor", lambda *_args: (-1, ""))
+    assert cli.main(["extract", str(db), "--follow", "--opencode-session", "s0"]) == 0
+    assert seen == {"cursor": (-1, ""), "fingerprint": None}
+
+
+def test_extract_follow_opencode_does_not_discover_twice_when_session_is_explicit(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+    from nyxloom.session_extract.adapters import opencode as opencode_adapter
+
+    db = _write_opencode_fixture(tmp_path)
+
+    calls = []
+    real_list_sessions = opencode_adapter.list_sessions
+
+    def _list_sessions(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_list_sessions(*args, **kwargs)
+
+    monkeypatch.setattr(opencode_adapter, "list_sessions", _list_sessions)
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", lambda self: 0)
+    assert cli.main([
+        "extract", str(db), "--follow", "--opencode-session", "s0",
+    ]) == 0
+    # One call belongs to extract()'s ordinary validation. A second call would
+    # mean the pre-phase follow resolver ignored the explicit id.
+    assert len(calls) == 1
+
+
+def test_extract_lossless_follow_opencode_resolves_a_single_session(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+
+    db = _write_opencode_fixture(tmp_path)
+    seen = {}
+
+    def _fake_run_forever(self):
+        seen["source"] = type(self._source).__name__
+        seen["session"] = self._source._session_id
+        seen["anchor"] = self._source._anchor_cursor
+        return 0
+
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", _fake_run_forever)
+    assert cli.main(["extract-lossless", str(db), "--follow"]) == 0
+    assert seen == {"source": "OpencodeSource", "session": "s0", "anchor": (2, "m0b")}
+
+
+def test_extract_lossless_follow_opencode_does_not_discover_twice_when_session_is_explicit(
+    tmp_path, monkeypatch
+):
+    from nyxloom.session_extract import follow as follow_mod
+    from nyxloom.session_extract.adapters import opencode as opencode_adapter
+
+    db = _write_opencode_fixture(tmp_path)
+    calls = []
+    real_list_sessions = opencode_adapter.list_sessions
+
+    def _list_sessions(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_list_sessions(*args, **kwargs)
+
+    monkeypatch.setattr(opencode_adapter, "list_sessions", _list_sessions)
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", lambda self: 0)
+    assert cli.main([
+        "extract-lossless", str(db), "--follow", "--opencode-session", "s0",
+    ]) == 0
+    assert calls == []
+
+
+def test_extract_follow_opencode_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    monkeypatch.setattr(
+        "nyxloom.session_extract.follow.Follower.run_forever", lambda self: 0
+    )
+    assert cli.main(["extract", str(db), "--follow"]) == 1
+    assert "holds 2 sessions" in capsys.readouterr().err
+
+
+def test_extract_lossless_follow_leaves_an_ambiguous_session_unselected(tmp_path, capsys, monkeypatch):
+    db = _write_opencode_fixture(tmp_path, n_sessions=2)
+    monkeypatch.setattr(
+        "nyxloom.session_extract.follow.Follower.run_forever", lambda self: 0
+    )
+    assert cli.main(["extract-lossless", str(db), "--follow"]) == 1
+    assert "holds 2 opencode sessions" in capsys.readouterr().err
+
+
+def test_extract_json_rejects_highlight_as_text_only(tmp_path, capsys):
+    fp = _write_claude_code_fixture(tmp_path)
+    assert cli.main(["extract", str(fp), "--json", "--highlight", "--color"]) == 1
+    err = capsys.readouterr().err
+    assert "--highlight" in err and "only affect" in err
+
+
+@pytest.mark.parametrize("verb", ["extract-lossless", "extract-debug", "extract-report", "extract-sessions"])
+def test_extract_family_reports_an_unresolvable_path_before_dispatch(tmp_path, capsys, verb):
+    assert cli.main([verb, str(tmp_path / "missing-session.jsonl")]) == 1
+    assert "neither an existing path" in capsys.readouterr().err
+
+
+def test_session_log_resolution_failure_returns_no_resolution(tmp_path, capsys):
+    args = type("Args", (), {"path": str(tmp_path / "missing-session.jsonl")})()
+    assert cli._resolve_session_log(args) is None
+    assert "neither an existing path" in capsys.readouterr().err

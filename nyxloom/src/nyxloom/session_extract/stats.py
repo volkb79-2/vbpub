@@ -1,4 +1,5 @@
-"""Session cost/timeline analysis -- `nyxloom session-stats`. V9 in
+"""Session cost/timeline analysis -- `nyxloom extract-report` (renamed from
+`session-stats` 2026-09-11, operator direction; behavior unchanged). V9 in
 `nyxloom/docs/design-context-lifecycle-experiments.md` (E-009): every source
 format already carries a full per-call token/cost ledger the extractor
 itself never reads (it only needs event text, not usage). This module reads
@@ -350,7 +351,7 @@ def build_call_rows(path: Path, fmt: str | None = None, session_id: str | None =
     if resolved_fmt == "opencode":
         return _build_call_rows_opencode(path, session_id)
     raise NotImplementedError(
-        f"session-stats does not support {resolved_fmt!r} -- see stats.py's module docstring"
+        f"extract-report does not support {resolved_fmt!r} -- see stats.py's module docstring"
     )
 
 
@@ -726,7 +727,7 @@ def _build_call_rows_opencode(path: Path, session_id: str | None) -> list[CallRo
         else:
             raise ValueError(
                 f"{path} holds {len(sessions)} opencode sessions; pass session_id "
-                f"(e.g. {sessions[0]!r}) -- session-stats' --session flag selects it"
+                f"(e.g. {sessions[0]!r}) -- extract-report's --opencode-session flag selects it"
             )
 
     config = ExtractConfig()

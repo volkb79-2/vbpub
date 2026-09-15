@@ -213,6 +213,34 @@ class TestPerVerbHelp:
         assert "saturating" in out.lower()
         assert "--deploy" not in out
 
+    @pytest.mark.parametrize("argv", [["--help"], ["worktree", "--help"]])
+    def test_worktree_help_teaches_managed_lifecycle_and_exact_base(
+        self, capsys, monkeypatch, argv
+        ):
+        """Both public help surfaces must make the managed workflow usable."""
+        out = self._help_out(capsys, monkeypatch, argv)
+        help_text = " ".join(out.split())
+
+        for guidance in (
+            "worktree create LOGICAL [--base REF]",
+            "exact commit SHA",
+            "does NOT deploy",
+            "ensure",
+            "idempotent",
+            "existing unmanaged linked checkout",
+            "add NAME",
+            "compatibility shorthand",
+            "worktree up LOGICAL",
+            "worktree exec LOGICAL [--target ALIAS] -- ARGV...",
+            "worktree rm LOGICAL",
+            'ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json',
+            "ciu worktree inspect pkg-under-test",
+            "ciu worktree up pkg-under-test",
+            "ciu worktree exec pkg-under-test -- pytest -q",
+            "ciu worktree rm pkg-under-test -y",
+        ):
+            assert guidance in help_text, guidance
+
 
 class TestIopsBaselineVerb:
     """S15.9 — `ciu iops-baseline` dispatch and argument validation."""

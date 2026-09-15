@@ -31,13 +31,14 @@ version = "6.1.1"
 sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 
 # session-extract: a NARROW, package-scoped lane for src/nyxloom/session_extract
-# (+ its cli.py wiring), added 2026-09-10 to carry R1 branch coverage and R2
-# mutation for that package without touching tester-unified's existing R0+R1
-# contract or its origin/main base. judge.base is pinned to the last commit
-# before this package's session-extract work started (edc55648) rather than
-# origin/main -- local main was 61 commits ahead of origin/main at the time
-# this lane was authored, spanning many unrelated subprojects; origin/main
-# would have judged that whole accumulated diff, not this package's own.
+# (+ its cli.py wiring and exact selector regression nodes), added 2026-09-10
+# to carry R1 branch coverage and R2 mutation for that package without
+# touching tester-unified's existing R0+R1 contract. The full branch fork point
+# at this HEAD is main's merge-base 364945ddaaa528e4ca105bbe3af371d4d0360b04,
+# already owned by tester-unified's base = "main". This lane's judge.base stays
+# at the reviewed 3d27c67e boundary so its changed-line scope does not pull in
+# the earlier CLI-wide project-id/help wave; the old edc55648 pin had that
+# same overreach.
 [lanes.session-extract]
 kind = "assay"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]

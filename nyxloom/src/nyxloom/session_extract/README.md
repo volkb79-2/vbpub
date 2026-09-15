@@ -148,18 +148,36 @@ plain integer index rather than a graph position so that a future
 tree-aware walk wouldn't require reshaping the core data model.
 
 **Correction, 2026-09-11 (operator-discovered against a real dispatched
-Agent-tool subagent's own transcript):** the above holds for a normal
-*interactive* session file, but a subagent's own dedicated transcript
-(`~/.claude/projects/<proj>/<session>/subagents/agent-<id>.jsonl`) carries
-`isSidechain: true` on **every** record — sharing the parent session's own
-`sessionId`, flagged relative to it — even though it IS that file's main
-thread. Unconditionally dropping `isSidechain` records (as this adapter
-always did before this fix) silently returned zero events for such a file:
-`extract` exited 0 with empty output, no warning; `extract-lossless` was
-unaffected since `lossless.py` never filtered on `isSidechain` at all.
-`ExtractConfig.include_sidechain` (`--include-sidechain`) now makes this
-configurable instead of hardcoded — off by default (correct for a normal
-session), set it for a subagent's own transcript file.
+Agent-tool subagent's own transcript, then redesigned same day):** the
+above holds for a normal *interactive* session file, but a subagent's own
+dedicated transcript (`~/.claude/projects/<proj>/<session>/subagents/
+agent-<id>.jsonl`) carries `isSidechain: true` on **every** record —
+sharing the parent session's own `sessionId`, flagged relative to it —
+even though it IS that file's main thread. Unconditionally dropping
+`isSidechain` records (as this adapter always did before this fix)
+silently returned zero events for such a file: `extract` exited 0 with
+empty output, no warning; `extract-lossless` was unaffected since
+`lossless.py` never filtered on `isSidechain` at all.
+
+The first fix added an `--include-sidechain` flag. That was itself wrong
+— an operator design critique caught it same day: `nyxloom extract` is a
+shared, adapter-agnostic surface, and "sidechain" is Claude-Code-only
+vocabulary that has no meaning for Codex or opencode; "adapters solve the
+CLI specifics," not the shared command. The flag was removed entirely.
+`claude_code.py`'s `parse()` now **auto-detects** whether the file has any
+non-sidechain "primary" record at all — verified exhaustively against
+every real session file on the development machine (59/59 top-level
+interactive files: 100% non-sidechain; 358/358 dedicated subagent files:
+100% sidechain; zero files mixed the two). A file with no primary thread
+present has nothing to distinguish sidechain content *from*, so its
+content is kept; a file that does have a primary thread keeps the original
+noise-dropping behavior. **Targeting a specific agent's own conversation
+needs no flag at all** — it's just `nyxloom extract <that agent's own
+file>`, the same shape as targeting any other adapter's session. See
+`adapters/claude_code.py`'s module docstring for the nested-subagent case
+(a subagent that itself dispatches another subagent) and
+`adapters/codex.py` / `adapters/opencode.py` for how (or whether) the
+same kind of targeting exists for those CLIs today.
 
 ### Why is `compact_boundary` a hard stop, not ignored?
 
@@ -182,12 +200,13 @@ first principles.
 
 ## Cross-CLI adapter findings
 
-Skimmed real session logs from Claude Code, Codex, and opencode before
+Skimmed real session logs from Claude Code, Codex, Reasonix, and opencode before
 finalizing the `SessionAdapter` protocol (`adapters/base.py`), to avoid
-designing an interface that only fits Claude Code's shape. All three
+designing an interface that only fits Claude Code's shape. All four
 adapters have since been run end-to-end against real local session data
 (hundreds of Codex rollout files spanning cli_version 0.142.2-0.151.0, a
-72-session opencode.db, and multiple real Claude Code project logs), not
+real Reasonix primary and event-snapshot pair, a 72-session opencode.db, and
+multiple real Claude Code project logs), not
 just synthetic fixtures — one of those real runs is what found the
 schema-migration bug below. Findings, in descending order of how much they
 constrained the interface or turned up a real bug:
@@ -217,10 +236,12 @@ constrained the interface or turned up a real bug:
   `"Reasoning"` item carries a `raw_content` list of **plain-text**
   reasoning strings, not encrypted at all. THINKING is now emitted from
   real Codex sessions (new generation, `--include-thinking`) where it
-  previously never could be. Whether the OLD layer's `encrypted_content`
-  is genuinely unrecoverable, or just a different code path, is a
-  narrower open question left to the Codex-encryption research thread
-  (see "Known limitations" below).
+  previously never could be. **RESOLVED 2026-09-11** (see "Known
+  limitations" below for the full writeup): the OLD layer's
+  `encrypted_content` is genuinely, permanently unrecoverable by design —
+  OpenAI's Responses API "encrypted reasoning items" (stateless/ZDR mode),
+  server-sealed and server-decrypt-only — not a code-path variance from
+  the plain-text `raw_content` channel.
   Remaining honest gap: no `AskUserQuestion`-equivalent structured Q&A
   signal was found in either generation, including a
   `"CollabAgentToolCall"` item that looked promising but turned out (its
@@ -265,6 +286,17 @@ constrained the interface or turned up a real bug:
   generated from a uuid-less record must be resolved via the exact same
   `f"line{i}"` fallback used to generate it, or it can never be resolved
   again.
+- **Reasonix** (`adapters/reasonix.py`) — flat JSONL chat records stored
+  under `~/.reasonix/projects/<escaped-cwd>/sessions/`; normal session files
+  use timestamp/model-name stems and subagents live in `sessions/subagents/`.
+  User string content becomes `OPERATOR_TEXT`, assistant string content
+  becomes `ASSISTANT_TEXT`, and assistant `reasoning_content` becomes
+  `THINKING` only with `--include-thinking`. System prompts, tool output,
+  structured tool calls, empty/malformed records, and the companion
+  `*.events.jsonl` replace-snapshot logs are excluded. Reasonix chat records
+  carry no timestamp, so the adapter preserves the normalized empty
+  timestamp representation rather than manufacturing one. Markers are
+  stable `line<N>` positions in the valid chat-record stream.
 - **opencode** (`adapters/opencode.py`) — the odd one out: a relational
   SQLite store (`session`/`message`/`part` tables), not flat JSONL. This
   is why `SessionAdapter.parse()` takes a path and a `config`, not a
@@ -310,7 +342,271 @@ debug_diff.py   render_debug(): `nyxloom extract-debug`'s colored diff
                 between lossless.py's own dump and a given extract() run --
                 see its own module docstring for the full color-scheme
                 rationale (white/grey/cyan/green).
+sessions.py     list_agents()/render_tree(): `nyxloom extract-sessions`'s
+                discovery layer -- "what sessions/sub-agents exist and how
+                do they relate," answered by each adapter's OWN
+                list_agents(path) (real per-CLI schema, not this module's
+                business -- see each adapter's own docstring), rendered
+                here as a generic indented tree. A different question from
+                everything else above: not "what's in this session" but
+                "what's out there to point extract/extract-lossless/
+                extract-report AT." See E-015 in
+                nyxloom/docs/design-context-lifecycle-experiments.md for
+                why this was needed and how each adapter's answer was
+                verified against real local data.
+locate.py       resolve_session_ref(): a bare session id -> the file (or
+                SQLite store + session id) holding it, so no extract-* verb
+                needs a hand-constructed path -- see "Pointing at a session
+                by id alone" below.
+render_markdown.py / highlight.py
+                The two per-block render modes (`rich` and `pygments`
+                respectively), each isolated so render.py imports neither --
+                see "Render modes" below for why both exist.
+follow.py       JsonlTailer/JsonlSource/OpencodeSource/FollowSelector/
+                Follower: `--follow`'s incremental tailing, the
+                checkpoint-scoring lookahead buffer, attention detection and
+                delivery -- see "Follow mode" below.
 ```
+
+## Pointing at a session by id alone
+
+Every `extract-*` verb's `SESSION_LOG` positional accepts **either** a path
+**or** just the session's own id, resolved by `locate.py`. The motivating
+case: a terminal restart (or a session id pasted into a chat message) leaves
+you holding the id and nothing else, and every harness buries the actual file
+somewhere unmemorable — under an escaped-cwd project directory, under a
+`YYYY/MM/DD` tree with a timestamp in the filename, or inside a single
+machine-wide SQLite store.
+
+Three id shapes are recognized, **each pinned to real local data rather than
+to what the adapters' docstrings appear to show** — two of the three
+originally-designed patterns were wrong, and both were caught only by
+checking the real corpus:
+
+| Shape | Pattern | Where it's searched |
+| --- | --- | --- |
+| Claude Code / Codex session uuid | `8-4-4-4-12` hex, case-insensitive | `~/.claude/projects/*/` (as `<uuid>.jsonl`) and `~/.codex/sessions/**/rollout-*.jsonl` (as a filename **suffix**, which covers Codex sub-agent rollouts for free) |
+| Claude Code sub-agent `agentId` | **17 hex chars, not a uuid** | `~/.claude/projects/*/*/subagents/agent-<id>.jsonl` |
+| opencode session id | `ses_` + **mixed-case alphanumerics** | `$XDG_DATA_HOME/opencode/opencode.db` (when set) and `~/.local/share/opencode/opencode.db` |
+
+- The sub-agent shape was designed as a uuid. All **1117** real
+  `subagents/agent-*.jsonl` files on this machine carry a **17-hex-char** id
+  (`a36c6ff1d3cc69767`), zero exceptions — a uuid-only trigger would have
+  rejected every pasted sub-agent id outright.
+- The opencode shape was designed as `ses_<hex>`, read off
+  `adapters/opencode.py`'s own **truncated** example (`ses_0a6bb813bffe...`).
+  All **72** real sessions in the real local store are `ses_` + 26
+  **mixed-case** alphanumerics (`ses_04bd4e9b4ffeBJm48T6v130DS6`); **none**
+  is pure hex, so the hex-only pattern would have matched nothing at all.
+  The id is therefore matched case-**sensitively** and passed to the DB
+  lookup verbatim.
+
+Resolution is deliberately strict: exactly one match resolves silently; zero
+matches error; more than one match errors **listing every candidate** so you
+can re-run with the path (or `--opencode-session`) you meant. Silently
+picking "the newest" or "the first found" is precisely how a resume lands in
+the wrong session.
+
+Claude Code project directories are keyed by an escaped cwd
+(`/workspaces/vbpub` → `-workspaces-vbpub`, `.` and `/` both becoming `-`),
+so the directory matching the **current** cwd is searched first. That priority
+only controls candidate ordering: the global scan still runs after a hit, and
+only its final count decides whether the ref is unique or ambiguous. Scanning
+all candidates is also what covers any cwd whose escaping this module gets
+wrong. The escaping rule is
+the harness's, not ours; it was checked against all 26 real project dirs
+here, and it is free to change.
+
+Verified end to end against this machine's own history: a real top-level
+Claude Code uuid, a real sub-agent `agentId`, a real Codex rollout uuid, and
+a real `ses_...` id against the real 935 MB opencode store all resolve;
+a nonexistent uuid errors.
+
+## Render modes
+
+The default text output is unchanged and stays the paste-into-a-fresh-agent
+format. `extract --render-markdown` is the *reading* mode: each kept block's
+prose goes through `rich`'s markdown renderer, so headers, bold, tables and
+fenced code render the way the CLI that wrote them showed you live (verified
+by eye against a real session: real tables, real code-block backgrounds).
+
+Scope is deliberately narrow — kept blocks' **own prose only**. The `---`
+separators, the bracketed gap/stop-reason notes this package authors itself,
+the E-012 ledger line and the trailing
+`<!-- nyxloom-extract: format=... marker=... -->` footer never pass through a
+renderer. Piping the whole output through one would mangle exactly that
+scaffolding (a `---` line *is* a horizontal rule; an HTML comment disappears),
+and the footer is machine-read back by `--since-file`, so it has to stay
+byte-exact. `render.py` therefore takes an opaque per-block `block_render`
+callable and imports neither rendering library itself.
+
+`extract --highlight` and `extract-lossless --highlight` are the *other*
+mode, and the reason there are two rendering dependencies rather than one:
+`pygments` colors markdown **source**, leaving every `#`, `**`, backtick and
+dash in place, the way an editor colors a markdown file. That matters because
+a running agent CLI only ever *renders* its own markdown — what you select in
+that pane has already lost the markup — so highlighting is what makes
+`--follow`'s stream something you can copy real markdown out of. Rendering
+and preserving are opposite goals, so the two flags error if combined.
+Verified as a property, not by eye: stripping every ANSI sequence from
+`--highlight`'s output returns the input byte-for-byte.
+
+`--color`/`--no-color` override the `isatty()` default, exactly as on
+`extract-debug`, and error if no render mode is active. `--render-markdown`
+and `--highlight` both error combined with `--json` (rendering flags, not data
+ones — the same rule already applied to `--insert-blank-lines` and friends).
+
+## Fixed-span handoff transforms and follow
+
+`--strip-stale-wakeups` collapses a trailing run only after a complete,
+fixed-span extraction has selected its final event list. It cannot be applied
+incrementally without revising output that was already emitted, so the exact
+combination `extract --follow --strip-stale-wakeups` is rejected before phase
+one. This is a deliberate refusal rather than a silent approximation.
+
+Redaction is per-event and does not have that fixed-span dependency:
+`extract --follow` applies `--redact-pattern` to live phase-two output, just as
+it does to the initial brief. `extract-lossless` remains a verbatim dump and
+rejects `--redact-pattern`; use `extract` for a redacted stream.
+
+## Follow mode (`--follow`/`-f`)
+
+`extract --follow` and `extract-lossless --follow` keep printing new content
+as the session grows. Claude Code, Codex, and Reasonix use the same
+byte-offset JSONL source path; opencode retains its indexed SQLite source.
+It is a flag on **both** verbs rather than a fourth
+verb, so each keeps its own selection semantics live: `extract --follow`
+surfaces only what its backward walk would have kept, `extract-lossless
+--follow` keeps everything, in the same block format its own dump uses.
+
+Two phases:
+
+1. **Phase 1** is exactly today's one-shot run, printed unchanged.
+2. **Phase 2** tails forward from where phase 1 started.
+
+### It is genuinely incremental (this was a real bug)
+
+The first design would have called `lossless.dump_claude_code` once per poll
+tick. That function opens the file and iterates **from byte 0 every call**,
+using `since_marker` only to decide when to start *emitting* — so against a
+growing 50MB+ log it would rescan the whole file every second. `JsonlTailer`
+does what `tail -f` actually does: keep the handle and the byte offset,
+`stat()` for a size change (**no content read at all** when unchanged), then
+read the appended payload plus only bounded prefix/tail fingerprint samples as
+needed to detect a same-inode rewrite; these bounded fingerprints are the only
+additional content reads, and it never rescans the whole file. The offset is
+committed only past complete lines,
+leaving a partial line (a writer caught mid-flush) for the next tick.
+
+The tailer distinguishes startup absence from an active-stream failure. A
+missing path before the first successful open is an allowed startup state and
+is polled again. After an open handle exists, `stat()` failure is indeterminate:
+file disappearance raises `FollowSourceError` with `followed session file
+disappeared while following: PATH`, while permission and other metadata I/O
+failures raise the corresponding `cannot stat followed session file while
+following PATH: ...` diagnostic. The CLI surfaces these as `error:` and exits
+1; it never turns an active source failure into “no new content”.
+
+Confirmed in a real process, not just asserted in a unit test: `strace` of a
+live `extract-lossless --follow` against a 314KB session file being appended
+to showed payload reads starting at the saved anchors (`314354 → 314641 →
+314990`) and no whole-file reread; the additional rewrite checks were bounded
+fingerprint samples, not a scan from byte 0. `JsonlTailer.bytes_read` counts
+the appended payload reads as the permanent regression witness, and a test
+pins it to the appended size.
+
+Committing the offset only past complete lines also buys a checkable
+invariant — our own offset always follows a newline — which is the only way to
+catch a file truncated *and* regrown past our offset between two ticks, a
+case no size comparison can see. The CLI's *starting* anchor is backed up to
+the beginning of its current line before phase 1, so a record caught mid-write
+is replayed from a parseable boundary rather than losing its completed suffix.
+The duplicate is intentional: a visible duplicate beats silent loss.
+
+The phase-1 anchor is captured **before** phase 1 parses, so a record
+appended during that parse appears twice (once in the brief, once live)
+rather than being skipped by both and lost. A visible duplicate beats silent
+loss; the window is one parse long either way.
+
+### The lookahead problem, and what actually waits
+
+`select()`'s checkpoint rule needs `classifier.score_events`'s "followed by a
+pause" bonus (+2.0 when the next real event is an operator prompt or Q&A) —
+unknowable for the newest arrival, because the pause hasn't happened yet.
+`FollowSelector` holds an `ASSISTANT_TEXT` back until a decisive next event
+arrives, but **only when the verdict actually depends on it**:
+
+| case | waits? | why |
+| --- | --- | --- |
+| shape score already ≥ threshold | no | the bonus only ever *adds* — already a checkpoint |
+| long enough, or a concrete-finding signal | no | kept regardless of score |
+| short, no finding signal, sub-threshold shape | **yes** | keep-vs-drop hinges entirely on the bonus |
+
+This refines the design's "hold exactly one pending event": identical
+keep/drop outcomes to `select()` in every case, but a checkpoint at the end of
+a turn appears **now** instead of whenever the session next moves — which
+matters, since "it just hit a checkpoint" is half of what this feature is
+for. For an immediately-printed long block whose score only crosses the
+threshold once the bonus lands, the checkpoint *attention* fires at that
+later moment; a notification arriving a beat late costs nothing, a delayed
+line on screen does. A `THINKING` event arriving behind a still-pending one is
+held in order behind it (`score_events`' own pause scan skips THINKING, so it
+isn't decisive either) — the one-event framing didn't cover that, and
+emitting it immediately would reorder the stream. On exit a still-waiting
+case-3 event is dropped, not flushed: its verdict depended on an event we
+never saw.
+
+### Attention detection — three signals
+
+| reason | basis | adapters |
+| --- | --- | --- |
+| `interview_pending` | an `AskUserQuestion` `tool_use` with no matching `tool_result` yet — genuinely structural, reusing the adapter's own pairing | **Claude Code only** |
+| `checkpoint_detected` | under `extract`, the real scored decision above; under `extract-lossless`, `classifier.shape_score` alone | all |
+| `long_block` | any new block over `--attention-min-chars N` (off by default) | all |
+
+**Honest gaps, not guessed at:** no `AskUserQuestion` equivalent has been
+identified in Codex's, Reasonix's, or opencode's schema (the adapters' own "Known gaps"
+notes say so), so signal 1 is Claude-Code-only. Signal 2's
+`extract-lossless` form is weaker than its `extract` form — no pause bonus,
+and it also scores operator/thinking text, which the scored path never does.
+"Turn end" is not a distinct marker in any adapter's schema, so it is not a
+fourth signal; the practical proxy ("the file stopped growing") is just the
+loop's idle state.
+
+### Delivery
+
+`--bell` writes `\a` to **stderr**, not into the content stream — a bell is
+a notification, and `nyxloom extract --follow | claude` should not carry stray
+bell bytes into another agent's prompt. `--on-attention '<cmd>'` runs your command with
+`NYXLOOM_ATTENTION_REASON` / `_HARNESS` / `_SESSION_PATH` / `_EXCERPT` (first
+~100 chars) in its environment — your script decides whether that reaches
+Telegram, Mattermost or nothing; nyxloom holds no credentials for it.
+`--notify-project NAME` additionally pushes through that registered project's
+existing `[notify]` channel.
+
+That last one is a **deliberate, scoped exception** to `notify.py`'s SPEC §13
+rule that a notification body is built only from fixed templates over typed
+fields: this body carries the flagged text's excerpt, per explicit operator
+direction on what the payload may say. Recorded here as a departure rather
+than quietly done.
+
+Every follow-only flag errors if passed without `--follow`, and `--follow`
+errors with `--json`, `--until` and `--task`/`--task-file` (a JSON document, a
+pinned far end, and a trailing banner all presume an output that ends).
+
+### opencode follows differently
+
+No byte offsets: "what's new" is an indexed query on `(time_created, id)`.
+It has its own hazard instead — a `message` row is created when a turn starts
+and its `part` rows stream in afterwards, so a row read the instant it
+appears can have no text yet. A cursor advanced past it would lose that prose
+permanently, so `OpencodeSource` holds back the **newest** row each tick and
+re-reads it next time, committing the cursor only to rows a newer sibling
+proves are finished. The phase-1 boundary also records the row's part
+fingerprint, so parts added to that same row during the one-shot pass are
+noticed. If no newer sibling ever arrives, two unchanged observations emit a
+stable final row rather than holding it forever. Same shape of trade as the
+lookahead delay, for the same reason.
 
 ## Delta extraction
 
@@ -318,8 +614,9 @@ Two ways to resume from a known point instead of re-walking a whole
 session:
 
 - `--since <marker>` — an opaque `event.marker` value (adapter-specific:
-  a Claude Code `uuid`, a Codex event id, an opencode message id) from a
-  prior run. Only events strictly after it are considered.
+  a Claude Code `uuid`, a Codex event id, a Reasonix `line<N>` marker, or an
+  opencode message id) from a prior run. Only events strictly after it are
+  considered.
 - `--since-file <path>` — point at a **prior run's saved output** (text
   or JSON) instead of hunting down or hand-copying a raw marker. Every
   render embeds the true end-of-session marker from the *full* parse
@@ -333,10 +630,12 @@ session:
   and only the new delta prose comes back, ready to hand to a freshly
   forked session alongside the prior snapshot.
 
-`--since-file`'s embedded format is cross-checked against `--format` (or
-the auto-detected adapter) before running — a marker from one adapter is
+`--since-file`'s embedded format is cross-checked against `--format` (or the
+auto-detected adapter) before running — a marker from one adapter is
 meaningless fed to another, and this fails loudly instead of silently
-returning nothing or garbage.
+returning nothing or garbage. Auto-detection is resolved before this check,
+so a Codex marker against a detected Claude Code log is refused even when
+`--format` was omitted.
 
 `--until <marker>` is the symmetric bound: stop at a given marker
 (inclusive) instead of walking to the end of the log. Its main use isn't
@@ -370,7 +669,7 @@ chain two real hops and assert the second returns nothing, not a replay.
 
 ## Lossless dump
 
-`nyxloom extract-lossless` (Claude Code, Codex, and opencode today,
+`nyxloom extract-lossless` (Claude Code, Codex, Reasonix, and opencode today,
 `lossless.py`; a separate verb from `extract` since 2026-09-11 -- see `cli.py`'s
 `cmd_extract_lossless` docstring for why) bypasses classification/windowing
 entirely: it keeps every text/thinking
@@ -380,6 +679,15 @@ AskUserQuestion-pairing logic at all. It's deliberately NOT the smart
 adapter's code path — a "dumb," independent implementation, so it forms a
 trustworthy superset rather than inheriting the real extractor's own blind
 spots. Two things it's for:
+
+Text dumps append the same `format`/`marker` footer as `extract`, so a saved
+`extract-lossless` result can be supplied to `--since-file`. Claude Code uses
+the adapter-compatible `uuid` marker, or the stable `lineN` position among
+valid conversation records when a record has no uuid; this includes the
+rare UUID-less system record and keeps chained resumes consistent.
+Reasonix uses the same stable `lineN` convention over its valid chat-record
+stream, including ignored system/tool records, and leaves its timestamp field
+empty because the source records do not contain timestamps.
 
 1. **A ground-truth baseline for judging and tuning the real classifier.**
    `select()`'s job is to pick a small, curated subset of a session's
@@ -493,12 +801,19 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   it), and part-fetching is one query per message (N+1; fine at real-world
   session scale seen so far, won't scale indefinitely).
 - Codex: no `AskUserQuestion`-equivalent found in either schema generation
-  (see "Cross-CLI adapter findings" above). Whether the OLD generation's
-  `response_item.reasoning.encrypted_content` is genuinely unrecoverable,
-  or just a different code path from the NEW generation's plain-text
-  `raw_content`, is still an open question — not currently under active
-  investigation; fold findings back into `adapters/codex.py`'s documented
-  gaps if and when that thread resumes. `--since` chaining across the
+  (see "Cross-CLI adapter findings" above). **RESOLVED 2026-09-11**: the
+  OLD generation's `response_item.reasoning.encrypted_content` is
+  confirmed genuinely, permanently unrecoverable — OpenAI's Responses API
+  "encrypted reasoning items" (stateless/`store: false`/ZDR mode):
+  server-sealed, round-tripped opaquely by the client, decrypted
+  server-side in memory only and immediately discarded, no client-side
+  key ever issued. Real-world confirmation, not just docs: openai/codex
+  issue #25290 — Codex's own later runs failing to replay its own
+  locally-persisted `encrypted_content` after a backend key/format
+  change ("could not be decrypted or parsed"). The NEW generation's
+  `raw_content` is a separate, deliberately plaintext display channel,
+  not a decrypted view of the OLD blob. Full writeup in
+  `adapters/codex.py`'s module docstring. `--since` chaining across the
   0.145.0→0.147.0 schema boundary, or across the ordinal-present/absent
   boundary, is not guaranteed to resolve (the marker scheme is
   generation-internal, not a stable cross-version id) — narrower than it
@@ -506,8 +821,16 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   individually lack `ordinal`, is fixed and covered by regression tests
   (see "Delta extraction" above); only a hop that crosses the schema-version
   boundary mid-chain is the still-open gap.
-- `extract-lossless` and `session-stats` now both support Claude Code, Codex, and
-  opencode (2026-09-10) -- see `stats.py`/`lossless.py`'s own module
+- Reasonix: no structured Q&A or lifecycle semantics are claimed; system and
+  tool records are ignored, and the `*.events.jsonl` replace-snapshot
+  companions are not session inputs. Reasonix chat records have no timestamp,
+  so normalized events intentionally carry the empty timestamp representation.
+  `extract-report` and `extract-sessions` remain unsupported for Reasonix:
+  the chat records do not establish a usage/timeline ledger or parent/child
+  lineage, and inventing either would make those commands report false facts.
+- `extract-lossless` supports Claude Code, Codex, Reasonix, and opencode;
+  `extract-report` supports Claude Code, Codex, and opencode (2026-09-10) -- see
+  `stats.py`/`lossless.py`'s own module
   docstrings for the real per-format usage-ledger shape and gaps each
   found (incl. a correction to `adapters/codex.py`'s own claim about
   `compacted.payload.message` always carrying real compaction summary
@@ -534,11 +857,12 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   not a structural guarantee — it has no way to distinguish a genuine
   trailing footer from prose that coincidentally follows it and looks like
   one. Narrow enough not to have a known real trigger.
-- `lossless.py`'s `--since`/`--until` compare raw `uuid` only, with no
-  `f"line{i}"`-style fallback for a uuid-less record — unlike the real
-  adapter, it cannot resume from or bound to such a record. Acceptable for
-  its current use (a manual debugging/ground-truth tool, not part of the
-  automated chained-snapshot pipeline), but worth knowing if that changes.
+- `lossless.py`'s Claude Code `--since`/`--until` use the adapter-compatible
+  `uuid` marker or `lineN` fallback for UUID-less conversation records, and
+  text dumps append a resumable `format`/`marker` footer consumable by
+  `--since-file`. The positional fallback remains stable only while the
+  source file's valid-conversation ordering is unchanged; inserting or
+  reordering earlier records can invalidate it.
 
 ## Open design questions (raised 2026-09-10, not yet decided)
 
@@ -567,7 +891,7 @@ Parked here rather than acted on unilaterally:
   `nyxloom extract --profile <name>`, with `--max-words` staying an
   independent, always-overridable axis rather than baked into a profile's
   identity. Still open: surfacing profiles as parallel columns in
-  `session-stats`' timeline view (`_simulate_profile` already computes the
+  `extract-report`' timeline view (`_simulate_profile` already computes the
   per-profile running word count needed for this; nothing renders it as a
   table yet).
 - **CLI-version-aware schema-drift detection** — every adapter's docstring
@@ -603,12 +927,13 @@ edit or replace verbatim kept text.
 pieces: the real-data inventory of what's mechanically recoverable from
 tool_use/tool_result records nyxloom otherwise drops (`E-012`, feeding
 `ledger.py`'s `--ledger` flag), a second round of real-data-driven fixes to
-`session-stats`' condensed view (`E-013` addendum — a real compaction is
+`extract-report`' condensed view (`E-013` addendum — a real compaction is
 now its own `kind="compaction"` row with visible post-compaction recovery
 work, not a suppressed block hidden behind a divider; the elapsed-time
 column now measures each row's own call latency, not a gap to the previous
 row), and `extract-debug`'s colored lossless-vs-kept diff (`E-014`,
 `debug_diff.py` — including a real design correction: it diffs
 `lossless.py`'s own dump against `extract()`'s own render as TEXT, not by
-marker, since `lossless.py` deliberately shares no marker space with the
-adapters).
+marker. The two outputs share the same opaque marker convention for
+resumption and exact source-record lookup, while the diff remains text-based
+because its visible comparison is still about prose, not event identity.)
