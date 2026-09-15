@@ -63,10 +63,11 @@ KiB. Its validation contract is deliberately split:
 - A child `MemoryMin`/`MemoryLow` without matching parent protection remains
   valid but is reported because that protection may be ineffective at the
   ancestor boundary.
-- A child `MemoryHigh` or `MemoryMax` above its configured parent is printed as
-  a review warning. It remains valid because the ancestor is still the effective
-  bound; the wizard does not force the operator to resize an intentionally
-  overlapping policy.
+- A single child `MemoryHigh` or `MemoryMax` above its configured parent is
+  re-prompted because the child's declared ceiling would be misleading. The
+  wizard does not sum sibling thresholds: combined child `MemoryLow`/`MemoryHigh`
+  values above the parent are printed as advisory warnings and remain valid;
+  the parent still governs the combined subtree.
 
 `MemAvailable` is displayed as transient context; starting proposals use
 physical `MemTotal`, and it is not a hard budget. `MemoryMin` is hard

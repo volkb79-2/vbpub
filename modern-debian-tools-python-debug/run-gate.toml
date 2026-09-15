@@ -31,5 +31,10 @@ budget = "2h"
 artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl"]
 
 [lanes.assay-full.resources]
-memory = "4g"
+# The full wizard R0-R3 lane routinely exceeds 4 GiB while executing the
+# serial mutation campaign (the observed peak was just over 4.1 GiB). Keep a
+# 6 GiB per-container ceiling so a normal mutation candidate is not mistaken
+# for a leaked/over-budget process; the surrounding dev slice remains the
+# aggregate host boundary.
+memory = "6g"
 memory_swap = "16g"

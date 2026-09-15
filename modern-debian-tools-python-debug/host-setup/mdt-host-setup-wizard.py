@@ -544,6 +544,32 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
                         f"{slice_name}: {left_key}={values[left_key]} must be <= {right_key}={values[right_key]} (comparison is in KiB; re-enter the right-hand field)",
                     )
                 )
+    # The parent is an ancestor ceiling. Several sibling thresholds may
+    # legitimately add up to more than that ceiling because the kernel
+    # applies the parent to the combined subtree. One child declaring a
+    # larger High or Max than its parent, however, makes the child's displayed
+    # policy misleading and is almost certainly a typo. Check only those two
+    # ceiling controls here; Min/Low are advisory below because their
+    # effectiveness depends on the ancestor protection chain.
+    parent_checks = (
+        ("MemoryHigh", "DEV_MEMORY_HIGH", 2),
+        ("MemoryMax", "DEV_MEMORY_MAX", 3),
+    )
+    for slice_name, keys in MEMORY_CHILD_SPECS:
+        for field, parent_key, child_index in parent_checks:
+            parent = parse_size_to_kib(values.get(parent_key, ""))
+            child_key = keys[child_index]
+            child = parse_size_to_kib(values.get(child_key, ""))
+            if parent and child > parent:
+                errors.append(
+                    (
+                        child_key,
+                        f"{slice_name} {field}={values[child_key]} exceeds its "
+                        f"parent dev.slice {field}={values[parent_key]}; reduce "
+                        "this child or increase the parent (sibling totals are "
+                        "not summed for this check)",
+                    )
+                )
     return errors
 
 
@@ -578,14 +604,13 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
     """Return non-blocking parent/child memory observations.
 
     Sibling MemoryMin/Low/High values are independent hierarchical controls,
-    not a budget to add together.  A child High or Max above the configured
-    parent counterpart is still useful for an operator to review: the parent
-    remains an ancestor limit, so the effective child ceiling/protection may
-    be lower than the child declaration.  A child Min/Low without the matching
-    ancestor protection is also worth naming: it is valid configuration, but
-    the requested protection may be ineffective at that hierarchy boundary.
-    These observations must never turn a valid per-slice configuration into a
-    reprompt or a refused install.
+    not a budget to add together. A child Min/Low without the matching
+    ancestor protection is worth naming: it is valid configuration, but the
+    requested protection may be ineffective at that hierarchy boundary. A
+    single child High/Max above its parent is a hard error (see
+    memory_relationship_errors); sibling High/Low totals above the parent are
+    only review information because the kernel applies the parent control to
+    the combined subtree rather than treating it as a sum budget.
     """
     warnings: list[str] = []
     parent_fields = (
@@ -605,14 +630,37 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
                 warnings.append(
                     f"{slice_name} {field}={values[child_key]} has no configured "
                     f"ancestor dev.slice {field}; the requested protection may be "
-                    "ineffective (does not block)"
+                    "ineffective"
                 )
-            elif parent and child > parent:
+            elif parent and child > parent and field in ("MemoryMin", "MemoryLow"):
                 warnings.append(
                     f"{slice_name} {field}={values[child_key]} exceeds parent "
                     f"dev.slice {field}={values[parent_key]}; review the effective "
-                    "ancestor limit (does not block)"
+                    "ancestor limit"
                 )
+    aggregate_fields = (
+        ("MemoryLow", "DEV_MEMORY_LOW", 1),
+        ("MemoryHigh", "DEV_MEMORY_HIGH", 2),
+    )
+    for field, parent_key, child_index in aggregate_fields:
+        parent = parse_size_to_kib(values.get(parent_key, ""))
+        if not parent:
+            continue
+        contributing: list[str] = []
+        total = 0
+        for slice_name, keys in MEMORY_CHILD_SPECS:
+            child_key = keys[child_index]
+            child = parse_size_to_kib(values.get(child_key, ""))
+            if child:
+                total += child
+                contributing.append(f"{slice_name}={values[child_key]}")
+        if total > parent and contributing:
+            warnings.append(
+                f"configured child {field} values ({', '.join(contributing)}; "
+                f"{kib_to_size_str(total)} combined) exceed dev.slice {field}="
+                f"{values[parent_key]}; advisory only, not a summed-budget "
+                "error—the parent still caps the combined subtree"
+            )
     return warnings
 
 
@@ -643,10 +691,10 @@ def _config_value_validators() -> dict[str, Validator]:
         "CGROUP2_FLAGS": validate_cgroup2_flags,
         "DEV_IO_CAP_PCT": validate_cap_pct,
         "WATCHER_IO_CAP_PCT": validate_cap_pct,
-        "WATCHER_TESTRUNNER_IMAGE_PATTERNS": validate_nonempty,
-        "WATCHER_BUILDKIT_NAME_PATTERNS": validate_nonempty,
-        "WATCHER_DEVCONTAINER_NAME_PATTERNS": validate_nonempty,
-        "WATCHER_INTERVAL": validate_nonempty,
+        "WATCHER_TESTRUNNER_IMAGE_PATTERNS": validate_watcher_patterns,
+        "WATCHER_BUILDKIT_NAME_PATTERNS": validate_watcher_patterns,
+        "WATCHER_DEVCONTAINER_NAME_PATTERNS": validate_watcher_patterns,
+        "WATCHER_INTERVAL": validate_systemd_timespan,
         "IO_BASELINE_ENV": validate_absolute_path,
         "IO_BASELINE_TESTFILE": validate_absolute_path,
     }
@@ -1138,6 +1186,56 @@ def validate_cgroup2_flags(value: str) -> str | None:
     return None
 
 
+_SYSTEMD_TIMESPAN_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)?|\.\d+)(?:us|ms|s|min|m|h|d|w|M|y)?$",
+    re.IGNORECASE,
+)
+
+
+def validate_systemd_timespan(value: str) -> str | None:
+    """Validate the single-token duration rendered into the timer.
+
+    Systemd also accepts compound durations such as ``1h 30min``.  The env
+    file deliberately uses one token so a shell-sourced assignment remains
+    unambiguous; a bare number means seconds and a suffix makes the unit
+    obvious (``5min``, ``30s``).
+    """
+    if not value:
+        return "a positive timer duration is required (for example '5min', '30s', '1.5h', or '10' seconds)"
+    if not _SYSTEMD_TIMESPAN_RE.fullmatch(value):
+        return (
+            f"{value!r} is not a supported single-token systemd duration "
+            "(use e.g. '5min', '30s', '1.5h', or a bare number of seconds)"
+        )
+    number = re.match(r"(?:\d+(?:\.\d+)?|\.\d+)", value)
+    if number is not None and float(number.group(0)) <= 0:
+        return "the sweep interval must be greater than zero"
+    return None
+
+
+_WATCHER_PATTERN_RE = re.compile(r"^[A-Za-z0-9_.*?\[\]!/^:+,@%=-]+$")
+
+
+def validate_watcher_patterns(value: str) -> str | None:
+    """Validate the space-separated shell globs used by the IO watcher.
+
+    These values are later read from a shell-sourced env file.  Restricting
+    them to glob syntax and ordinary image/name characters prevents command
+    substitution or shell-control text from becoming executable config.
+    """
+    if not value:
+        return "at least one match pattern is required"
+    if not re.fullmatch(r"[^\s]+(?: [^\s]+)*", value):
+        return "patterns must be one or more space-separated globs with no tabs, newlines, or repeated separators"
+    for pattern in value.split(" "):
+        if not _WATCHER_PATTERN_RE.fullmatch(pattern):
+            return (
+                f"{pattern!r} contains unsafe or unsupported characters; use "
+                "letters/digits plus '*', '?', '[]', '/', ':', '.', '_', '^', '!' and '-'"
+            )
+    return None
+
+
 def validate_size_or_auto(value: str) -> str | None:
     """Per-tier MemorySwapMax and dev.slice's own DEV_SWAP_MAX: empty means
     "auto-detect DEV_SWAP_CASCADE_PCT% of the parent's own derived swap
@@ -1163,9 +1261,20 @@ def validate_nonempty(value: str) -> str | None:
 
 
 def validate_buildkit_image(value: str) -> str | None:
-    """Require an image reference while leaving its grammar to Docker."""
+    """Require a shell-safe image reference while leaving OCI grammar to Docker.
+
+    The installed config is sourced by shell helpers before this value reaches
+    ``docker``. Docker remains the authority for whether the reference exists
+    and is otherwise valid, but shell syntax must be rejected here rather than
+    becoming executable configuration.
+    """
     if not value:
         return "an image reference is required (e.g. 'moby/buildkit:buildx-stable-1-rootless')"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:+\[\]-]*", value):
+        return (
+            f"{value!r} contains shell-special characters; use a shell-safe OCI "
+            "reference such as 'moby/buildkit:buildx-stable-1-rootless'"
+        )
     return None
 
 
@@ -1180,10 +1289,11 @@ def validate_cgroup_parent(value: str) -> str | None:
     open into an unbounded transient scope."""
     if not value:
         return "a cgroup parent is required (e.g. 'dev-background.slice')"
-    if not value.endswith(".slice"):
+    if not re.fullmatch(r"[A-Za-z0-9_.@:-]+\.slice", value):
         return (
-            f"{value!r} is not a systemd slice name; it must end in '.slice' "
-            "(for example 'dev-background.slice')"
+            f"{value!r} is not a safe systemd slice name; use letters, digits, "
+            "'.', '_', '@', ':' or '-' and end in '.slice' (for example "
+            "'dev-background.slice')"
         )
     return None
 
@@ -1704,7 +1814,7 @@ def step_slice_first_resources(
         "Sibling Min/Low/High controls are independent; their values are not summed.",
         "Each slice still requires Min <= Low <= High <= Max for configured fields.",
         "A child Min/Low without matching parent protection is allowed but may be ineffective; the wizard reports it.",
-        "A child High/Max above its parent is a review warning only; it does not block.",
+        "A single child High/Max above its parent is re-prompted; sibling totals above the parent are advisory only.",
     ):
         out(f"- {bullet}", hang="  ")
     out("Starting proposals (review before accepting):")
@@ -1825,6 +1935,20 @@ def step_slice_first_resources(
         validate=validate_pct_1_100,
     )
 
+    out("Cgroup mount safety:")
+    for bullet in (
+        "The periodic host service checks `memory_recursiveprot`; without it, slice MemoryMin/Low may not protect container pages.",
+        "`fix` remounts the host cgroup filesystem when the required flag is missing.",
+        "`warn` only records the problem; protection may remain ineffective until an operator repairs the mount.",
+        "This setting is host-only and is unrelated to Docker container placement.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    values["CGROUP2_FLAGS"] = walk_key(
+        "  cgroup2 mount policy (fix missing flags / warn only)",
+        "CGROUP2_FLAGS", cfg_current, example_defaults,
+        validate=validate_cgroup2_flags,
+    )
+
     out("\n-- e. Guaranteed memory floor (opt-in; one shared ceiling) --")
     out("Guaranteed floor:")
     for bullet in (
@@ -1875,7 +1999,7 @@ def step_slice_first_resources(
             "Apply to this slice's subtree; sibling values are independent and are not summed.",
             "Optional fields: Enter keeps the default; `-` removes the directive.",
             "Hard rule: this slice's Min <= Low <= High <= Max.",
-            "Child High/Max above the parent -> review-only warning; does not block.",
+            "Child High/Max above the parent -> re-prompt that child; sibling totals above the parent do not block.",
             "`MemoryMax` is RAM; `MemorySwapMax` below is swap only.",
         ):
             out(f"- {bullet}", hang="  ")
@@ -1986,6 +2110,30 @@ def step_watcher(
         "A container's explicit docker run --memory wins; these values fill only an omitted memory limit.",
     ):
         out(f"- {bullet}", hang="  ")
+    out("Matching and cadence:")
+    for bullet in (
+        "Docker events apply IO caps immediately; the periodic timer is the restart-gap/backstop sweep.",
+        "The same interval also checks cgroup mount flags, so a shorter interval reduces that repair window at some host overhead.",
+        "Image patterns match `.Config.Image`; name patterns match the Docker container name.",
+        "Patterns are space-separated shell globs such as `*test-runner*`; at least one pattern is required in each field.",
+        "Changing these values affects future sweeps/events after the service reloads its config; re-run install.sh or restart the watcher.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    values["WATCHER_INTERVAL"] = walk_key(
+        "Periodic sweep interval (systemd duration; e.g. 5min or 30s)",
+        "WATCHER_INTERVAL", cfg_current, example_defaults,
+        validate=validate_systemd_timespan,
+    )
+    for label, key in (
+        ("test-runner image match patterns", "WATCHER_TESTRUNNER_IMAGE_PATTERNS"),
+        ("BuildKit container-name match patterns", "WATCHER_BUILDKIT_NAME_PATTERNS"),
+        ("devcontainer-name match patterns", "WATCHER_DEVCONTAINER_NAME_PATTERNS"),
+    ):
+        values[key] = walk_key(
+            f"{label} (space-separated shell globs)", key,
+            cfg_current, example_defaults,
+            validate=validate_watcher_patterns,
+        )
     values["WATCHER_PER_CONTAINER_MEMORY_MAX"] = walk_key(
         "Per-container MemoryMax (interactive/background; positive size)",
         "WATCHER_PER_CONTAINER_MEMORY_MAX",
@@ -2124,8 +2272,9 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
             What the sizing uses
               - Memory proposals use physical MemTotal; MemAvailable is context only.
               - Sibling Min/Low/High controls are independent, not a summed budget.
-              - Each slice enforces Min <= Low <= High <= Max; child High/Max above
-                a parent is a review warning and does not block.
+              - Each slice enforces Min <= Low <= High <= Max; one child High/Max
+                above its parent is re-prompted, while sibling totals above the
+                parent are advisory and do not block.
               - CPU auto-quota uses nproc minus the selected host/child reserve, floored
                 at one core.
               - IO percentages use measured io.cost ceilings: lower IOPS and sequential

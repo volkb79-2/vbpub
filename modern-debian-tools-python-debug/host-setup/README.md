@@ -140,14 +140,13 @@ empty value where that slice should omit a directive. It explains `MemoryMin`
 as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
 `MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
 It converts systemd binary units to KiB and rejects/re-prompts unless every
-configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
-values against configured parent ceilings as review-only warnings; sibling
-`MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls and are not
-summed. A child `MemoryHigh` or `MemoryMax` above its parent counterpart does
-not reprompt or refuse the configuration. A child `MemoryMin`/`MemoryLow`
-without matching parent protection is also allowed but reported because that
-protection may be ineffective at the ancestor boundary. Live `MemAvailable` is context only,
-while starting proposals use physical `MemTotal`.
+configured chain satisfies `Min <= Low <= High <= Max`. A single child
+`MemoryHigh` or `MemoryMax` above its configured parent is re-prompted; sibling
+`MemoryLow`/`MemoryHigh` totals above the parent are shown as advisory warnings
+and are not treated as a summed budget. A child `MemoryMin`/`MemoryLow` without
+matching parent protection remains allowed but is reported because it may be
+ineffective. Live `MemAvailable` is context only, while starting proposals use
+physical `MemTotal`.
 `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the single authoritative root `dev.slice`
 MemoryMin and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`
 are the other root controls.
@@ -373,8 +372,9 @@ before either backup or replacement. Deleting the old file first is different:
 it loses the source of the old defaults and has no automatic backup if the
 wizard is interrupted. The wizard walks every section it knows, preserves
 non-prompted values represented by the template, and rejects per-slice
- hierarchy violations before rendering. Parent/child MemoryHigh/MemoryMax
- differences are reported for review but do not block rendering.
+hierarchy violations before rendering. A child MemoryHigh/MemoryMax larger
+than its configured parent is re-prompted; sibling totals larger than the
+parent are reported for review but do not block rendering.
 
 ## Quick start
 
@@ -393,9 +393,9 @@ sudo mdt-host-check.sh             # verify
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, baseline
 cache path and identity, IO cap percentages, every governed slice's four
-memory controls, CPU/IO weights, swap/zswap controls, the memory-min-
-guaranteed ceiling, BuildKit, Docker daemon.json keys, and reactive watcher
-limits) and
+memory controls, CPU/IO weights, swap/zswap controls, cgroup mount policy,
+the memory-min-guaranteed ceiling, BuildKit, Docker daemon.json keys, and
+reactive watcher cadence, match patterns, and limits) and
 proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
 instead of the shipped example's fixed figures — Enter accepts the shown
 default at every step, and it falls through into the same render/apply logic

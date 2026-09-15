@@ -88,6 +88,17 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIsNotNone(WIZARD.validate_weight("0"))
         self.assertIsNone(WIZARD.validate_weight("10000"))
 
+    def test_wizard_validates_timer_duration_and_watcher_globs(self) -> None:
+        for value in ("5min", "30s", "1.5h", "10", "250ms"):
+            self.assertIsNone(WIZARD.validate_systemd_timespan(value), value)
+        for value in ("", "0", "0s", "1min 30s", "1minute", "1;touch"):
+            self.assertIsNotNone(WIZARD.validate_systemd_timespan(value), value)
+
+        for value in ("*test-runner*", "buildx_buildkit_* old-buildkit-*", "repo/name:v1"):
+            self.assertIsNone(WIZARD.validate_watcher_patterns(value), value)
+        for value in ("", "*test-runner*  *other*", "$(touch /tmp/pwned)", "foo;bar"):
+            self.assertIsNotNone(WIZARD.validate_watcher_patterns(value), value)
+
     def test_wizard_discovery_handles_missing_and_invalid_host_facts(self) -> None:
         def missing(argv, **kwargs):
             raise FileNotFoundError
@@ -156,12 +167,12 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertEqual(migrated["WATCHER_DEVCONTAINER_NAME_PATTERNS"], "*ide*")
         self.assertEqual(migrated["WATCHER_INTERVAL"], "7min")
 
-    def test_memory_sibling_sums_are_allowed_and_parent_mismatches_warn_only(self) -> None:
+    def test_memory_sibling_sums_warn_but_single_child_ceiling_mismatch_blocks(self) -> None:
         values = {
-            "DEV_MEMORY_HIGH": "4G",
+            "DEV_MEMORY_HIGH": "6G",
             "DEV_MEMORY_MAX": "8G",
             "DEV_INTERACTIVE_MEMORY_HIGH": "2G",
-            "DEV_INTERACTIVE_MEMORY_MAX": "10G",
+            "DEV_INTERACTIVE_MEMORY_MAX": "4G",
             "DEV_BACKGROUND_MEMORY_HIGH": "2G",
             "DEV_BACKGROUND_MEMORY_MAX": "2G",
             "DEV_GATES_MEMORY_HIGH": "2G",
@@ -181,12 +192,26 @@ class BuildKitGovernanceTests(unittest.TestCase):
         with mock.patch.object(WIZARD, "_prompt") as prompt, \
              mock.patch.object(WIZARD, "out") as output:
             WIZARD._reprompt_memory_constraints(0, values)
-        self.assertEqual(values["DEV_MEMORY_HIGH"], "4G")
+        self.assertEqual(values["DEV_MEMORY_HIGH"], "6G")
         self.assertEqual(prompt.call_count, 0)
         warnings = WIZARD.memory_review_warnings(values)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("dev-interactive.slice MemoryMax=10G", warnings[0])
+        self.assertTrue(any("MemoryHigh" in warning for warning in warnings))
+        self.assertTrue(any("combined" in warning for warning in warnings))
         self.assertTrue(any("does not block" in call.args[0] for call in output.call_args_list))
+
+        values["DEV_INTERACTIVE_MEMORY_MAX"] = "9G"
+        errors = WIZARD.memory_relationship_errors(values)
+        self.assertTrue(errors)
+        self.assertEqual(errors[0][0], "DEV_INTERACTIVE_MEMORY_MAX")
+        self.assertIn("exceeds its parent", errors[0][1])
+
+        values["DEV_MEMORY_HIGH"] = "4G"
+        values["DEV_INTERACTIVE_MEMORY_MAX"] = "6G"
+        values["DEV_INTERACTIVE_MEMORY_HIGH"] = "5G"
+        with mock.patch.object(WIZARD, "_prompt", return_value="4G") as correction:
+            WIZARD._reprompt_memory_constraints(0, values)
+        self.assertEqual(values["DEV_INTERACTIVE_MEMORY_HIGH"], "4G")
+        self.assertEqual(correction.call_count, 1)
 
     def test_memory_protection_without_parent_is_reported_but_allowed(self) -> None:
         values = {
@@ -199,7 +224,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("dev-interactive.slice MemoryLow=2G", warnings[0])
         self.assertIn("no configured ancestor dev.slice MemoryLow", warnings[0])
-        self.assertIn("does not block", warnings[0])
+        self.assertIn("ineffective", warnings[0])
 
     def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
         def runner(argv, **kwargs):
@@ -755,6 +780,8 @@ esac
                 "Docker is not restarted automatically",
                 "Sibling Min/Low/High controls are independent",
                 "does not block",
+                "Matching and cadence",
+                "Cgroup mount safety",
             ):
                 self.assertIn(bullet, transcript_text)
             self.assertNotIn("aggregate violations", transcript_text)
@@ -930,7 +957,13 @@ esac
         self.assertIsNone(WIZARD.validate_cgroup_parent("dev-background.slice"))
         error = WIZARD.validate_cgroup_parent("dev-background")
         self.assertIsNotNone(error)
-        self.assertIn("must end in '.slice'", error or "")
+        self.assertIn("end in '.slice'", error or "")
+        self.assertIsNotNone(WIZARD.validate_cgroup_parent("dev;touch.slice"))
+
+    def test_shell_sourced_scalar_config_is_rejected_before_install(self) -> None:
+        self.assertIsNone(WIZARD.validate_buildkit_image("moby/buildkit:buildx-stable-1-rootless"))
+        self.assertIsNone(WIZARD.validate_buildkit_image("registry:5000/team/buildkit@sha256:abc123"))
+        self.assertIsNotNone(WIZARD.validate_buildkit_image("$(touch /tmp/pwned)"))
 
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
         values = {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "1G"}
@@ -975,13 +1008,13 @@ esac
                     0,
                 )
 
-            sibling_over_budget = valid.replace("DEV_MEMORY_HIGH=32G", "DEV_MEMORY_HIGH=4G")
+            sibling_over_budget = valid.replace("DEV_MEMORY_HIGH=32G", "DEV_MEMORY_HIGH=6G")
             config_path.write_text(sibling_over_budget)
             warnings = WIZARD.validate_host_setup_config(
                 config_path, ROOT / "host-setup.env.example", meminfo_path
             )
             self.assertTrue(any("MemoryHigh" in warning for warning in warnings))
-            self.assertTrue(any("does not block" in warning for warning in warnings))
+            self.assertTrue(any("combined" in warning for warning in warnings))
             with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
                  mock.patch("sys.stdout", io.StringIO()) as transcript:
                 self.assertEqual(
