@@ -218,9 +218,14 @@ pass "every @VAR@ placeholder used in a template has a matching assignment in ho
 # assertion (5)'s systemctl-start check, the `systemd-tmpfiles --create`
 # call too -- excluding comment lines from both so a stale comment alone
 # cannot hold this assertion up.
-grep -v '^\s*#' "$INSTALL_SH" | grep -qE 'install[[:space:]].*units/mdt-cgprofile\.conf.*/etc/tmpfiles\.d/mdt-cgprofile\.conf' \
+# Materialize the comment-stripped input first. Piping grep into grep -q under
+# pipefail lets the successful downstream match close the pipe early, turning
+# the upstream grep's SIGPIPE into a false test failure.
+INSTALL_NONCOMMENTS="$TMP/install-noncomments.sh"
+grep -v '^\s*#' "$INSTALL_SH" > "$INSTALL_NONCOMMENTS"
+grep -qE 'install[[:space:]].*units/mdt-cgprofile\.conf.*/etc/tmpfiles\.d/mdt-cgprofile\.conf' "$INSTALL_NONCOMMENTS" \
   || fail "install.sh has no real 'install ... units/mdt-cgprofile.conf ... /etc/tmpfiles.d/mdt-cgprofile.conf' line (D-30/M5) -- a comment mentioning the filename is not enough"
-grep -v '^\s*#' "$INSTALL_SH" | grep -qE 'systemd-tmpfiles[[:space:]]+--create[[:space:]]+/etc/tmpfiles\.d/mdt-cgprofile\.conf' \
+grep -qE 'systemd-tmpfiles[[:space:]]+--create[[:space:]]+/etc/tmpfiles\.d/mdt-cgprofile\.conf' "$INSTALL_NONCOMMENTS" \
   || fail "install.sh never applies the cgprofile tmpfiles.d entry with 'systemd-tmpfiles --create' (D-30/M5)"
 pass "install.sh installs and applies the cgprofile tmpfiles.d entry"
 

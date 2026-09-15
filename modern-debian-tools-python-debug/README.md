@@ -326,13 +326,17 @@ image, so it lives in two places that must agree:
 - **Container side** — `templates/devcontainer.json` ships
   `"--cgroup-parent=dev-interactive.slice"` in `runArgs`, plus `containerEnv` vars
   (`CGROUP_PARENT_DEV_INTERACTIVE`/`CGROUP_PARENT_DEV_BACKGROUND`) any in-container tool
-  reads instead of hardcoding a slice name. Safe everywhere: if the host has no such unit,
-  systemd creates a transient unlimited slice and the container starts normally.
+  reads instead of hardcoding a slice name. Host setup is a prerequisite for the bounded
+  behavior: if the host has no such unit, systemd may create a transient unlimited slice
+  and the container can start without the intended protection. Verify the host with
+  `mdt-host-check.sh` before relying on placement.
 - **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
   themselves: `dev-interactive.slice` for devcontainers, `dev-background.slice` for the
   test/build/gate stacks they spawn (also the Docker daemon-wide fallback via
   `/etc/docker/daemon.json`, which this owns), one shared `dev.slice` IOPS/bandwidth
-  ceiling for both, and a health check.
+  ceiling for both, and a health check. Run this part from the Docker host shell only;
+  the installer, wizard, and baseline benchmark refuse a devcontainer because container
+  root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
 ```bash
 sudo host-setup/install.sh --with-baseline    # ~4 min of saturated disk — quiet window

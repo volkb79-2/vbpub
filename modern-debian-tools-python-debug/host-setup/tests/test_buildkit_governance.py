@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -23,11 +24,134 @@ def load_module(path: Path, name: str):
 
 
 WIZARD = load_module(ROOT / "mdt-host-setup-wizard.py", "mdt_wizard_test")
+BASELINE = load_module(ROOT / "scripts/mdt-io-baseline.py", "mdt_baseline_test")
 GUARD = load_module(ROOT / "scripts/mdt-buildkit-guard.py", "mdt_guard_test")
 BUILDER = load_module(ROOT.parent / "scripts/mdt_buildkit_builder.py", "mdt_builder_test")
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
+    def test_wizard_defaults_preserve_existing_empty_and_name_provenance(self) -> None:
+        self.assertEqual(
+            WIZARD.resolve_default("OPTIONAL", {"OPTIONAL": ""}, {"OPTIONAL": "6G"}, "8G"),
+            "",
+        )
+        with mock.patch.object(WIZARD, "_prompt", return_value="") as prompt:
+            value = WIZARD.walk_key(
+                "optional size", "OPTIONAL", {"OPTIONAL": "2G"}, {},
+                validate=WIZARD.validate_optional_positive_size,
+                allow_empty_token=True,
+            )
+        self.assertEqual(value, "2G")
+        self.assertIn("existing: 2G", prompt.call_args.args[0])
+        self.assertNotIn("<function", prompt.call_args.args[0])
+
+    def test_wizard_optional_none_and_invalid_yes_no_are_visible(self) -> None:
+        with mock.patch.object(WIZARD, "_prompt", return_value="none"):
+            self.assertEqual(
+                WIZARD.ask(
+                    "optional", "2G", WIZARD.validate_optional_positive_size,
+                    empty_token="none",
+                ),
+                "",
+            )
+        with mock.patch.object(WIZARD, "_prompt", side_effect=["maybe", "n"]):
+            self.assertFalse(WIZARD.ask_yn("policy", default=True))
+
+    def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
+        def runner(argv, **kwargs):
+            source = "overlay\n" if argv[-1] == "/var/lib/docker" else "/dev/nvme0n1\n"
+            return subprocess.CompletedProcess(argv, 0, stdout=source)
+
+        self.assertEqual(
+            WIZARD.discover_io_dev_path_from_findmnt(runner), "/dev/nvme0n1"
+        )
+        self.assertIsNotNone(WIZARD.validate_io_dev_path("overlay"))
+        self.assertIsNone(WIZARD.validate_io_dev_path("/dev/mapper/vg-root"))
+
+    def test_host_context_guard_rejects_this_container(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".dockerenv").touch()
+            self.assertIn("host shell", WIZARD.host_context_error(root) or "")
+            self.assertIn("host shell", BASELINE.host_context_error(root) or "")
+
+    def test_baseline_cache_requires_complete_sustained_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "baseline.env"
+            path.write_text(
+                "RIOPS_MAX=1\nWIOPS_MAX=1\nRBW_MAX_BPS=1\nWBW_MAX_BPS=1\n"
+                "MEASURED_AT=2026-09-15T00:00:00Z\nMEASURE_METHOD=sustained-v3\n"
+            )
+            self.assertTrue(BASELINE.cache_is_valid(path))
+            path.write_text("RIOPS_MAX=1\n")
+            self.assertFalse(BASELINE.cache_is_valid(path))
+
+    def test_memory_proposals_are_aggregate_safe_at_rounding_boundaries(self) -> None:
+        for avail_kib in (1 * 1024 * 1024, 25 * 1024, 7_800 * 1024):
+            proposals = WIZARD.propose_memory_tiers(avail_kib, avail_kib)
+            child_highs = sum(
+                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"])
+                for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD")
+            )
+            self.assertLessEqual(child_highs, WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_HIGH"]))
+            self.assertLessEqual(child_highs, avail_kib)
+
+    def test_slice_flow_passes_reserve_validators_as_validators(self) -> None:
+        example = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
+        calls = {}
+
+        def fake_walk(label, key, cfg, defaults, proposal=None, validate=None, **kwargs):
+            calls[key] = (label, validate)
+            return cfg.get(key) or proposal or defaults.get(key, "")
+
+        with mock.patch.object(WIZARD, "walk_key", side_effect=fake_walk), \
+             mock.patch.object(WIZARD, "walk_yn_key", side_effect=lambda label, key, cfg, defaults: cfg.get(key) or defaults.get(key, "yes")), \
+             mock.patch.object(WIZARD, "ask", side_effect=lambda label, default, validate=None, **kwargs: default):
+            WIZARD.step_slice_first_resources(
+                {"MemTotal": 16 * 1024 * 1024, "MemAvailable": 16 * 1024 * 1024},
+                {}, example,
+            )
+        self.assertIs(calls["DEV_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
+        self.assertIs(calls["DEV_SUBSLICE_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
+        self.assertNotIn("<function", calls["DEV_CPU_RESERVE_CORES"][0])
+
+    def test_custom_baseline_path_is_passed_to_benchmark(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "baseline.env"
+            cache.write_text("RIOPS_MAX=1\n")
+            script = ROOT / "scripts" / "mdt-io-baseline.py"
+            with mock.patch.object(WIZARD, "walk_key", return_value=str(cache)), \
+                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="stale"), \
+                 mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
+                 mock.patch.object(WIZARD, "_prompt", return_value="y"), \
+                 mock.patch.object(WIZARD.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                selected, measured = WIZARD.step_io_baseline({}, {}, script)
+            self.assertEqual(selected, str(cache))
+            self.assertTrue(measured)
+            self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
+
+    def test_interactive_main_smoke_writes_without_function_repr(self) -> None:
+        example = ROOT / "host-setup.env.example"
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            meminfo = directory_path / "meminfo"
+            meminfo.write_text("MemTotal: 16777216 kB\nMemAvailable: 16777216 kB\n")
+            output = directory_path / "host-setup.env"
+            with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
+                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="fresh"), \
+                 mock.patch("sys.stdin", io.StringIO("\n" * 100)):
+                self.assertEqual(
+                    WIZARD.main([
+                        "--example", str(example), "--output", str(output),
+                        "--meminfo-path", str(meminfo), "--skip-run-offer",
+                    ]),
+                    0,
+                )
+            rendered = output.read_text()
+            self.assertNotIn("<function", rendered)
+            self.assertIn("DEV_CPU_RESERVE_CORES=1", rendered)
+            self.assertIn("DEV_SUBSLICE_CPU_RESERVE_CORES=3", rendered)
+
     def test_guard_policy_and_missing_config_fail_closed(self) -> None:
         config = GUARD.load_config(ROOT / "host-setup.env.example")
         self.assertEqual(config.policy, "terminate")
@@ -217,19 +341,20 @@ class BuildKitGovernanceTests(unittest.TestCase):
             WIZARD.validate_host_setup_config(
                 config_path, ROOT / "host-setup.env.example", meminfo_path
             )
-            self.assertEqual(
-                WIZARD.main(
-                    [
-                        "--validate-config",
-                        str(config_path),
-                        "--example",
-                        str(ROOT / "host-setup.env.example"),
-                        "--meminfo-path",
-                        str(meminfo_path),
-                    ]
-                ),
-                0,
-            )
+            with mock.patch.object(WIZARD, "host_context_error", return_value=None):
+                self.assertEqual(
+                    WIZARD.main(
+                        [
+                            "--validate-config",
+                            str(config_path),
+                            "--example",
+                            str(ROOT / "host-setup.env.example"),
+                            "--meminfo-path",
+                            str(meminfo_path),
+                        ]
+                    ),
+                    0,
+                )
 
             sibling_over_budget = valid.replace(
                 "DEV_MEMORY_MIN_GUARANTEED_HIGH=\n",
@@ -256,6 +381,9 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertIn("memory hierarchy", str(raised.exception))
 
         install = (ROOT / "install.sh").read_text()
+        self.assertIn("must run from a host shell", install)
+        self.assertIn("/proc/1/comm", install)
+        self.assertIn("never from a devcontainer", install)
         self.assertIn('--validate-config "$CANDIDATE_PATH"', install)
         self.assertIn("--meminfo-path /proc/meminfo", install)
 
