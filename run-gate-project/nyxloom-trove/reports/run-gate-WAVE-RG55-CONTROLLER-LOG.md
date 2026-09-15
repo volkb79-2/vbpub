@@ -2732,3 +2732,21 @@ quiet tip as PID `3403254`, with the exact container
 `dev-background.slice` with `NanoCpus=3000000000`. Its completion marker is
 `/tmp/rg55-p6-r2-fresh.log` (`P6_R2_FRESH_EXIT=`). P1 remains the other active
 mutation lane. No commit may be made to the P6 worktree while this run judges.
+
+### RW-222 — 2026-09-15 02:44:42Z — manual Sol xhigh final-review packet written
+
+Because the controller session cannot create the required Sol runtime, a
+manually runnable final adversarial review/repair packet was written at
+`run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md`.
+It is parameterized for one fresh Sol xhigh session per release-blocking
+target (P1, P4, P6, and the related CMRU release-recovery candidate), and gives
+Sol explicit authority to make scoped fixes, tests, docs, and commits while
+forbidding merge/release, dstdns, and operator-owned files. It includes the
+open gate, release-order, carrier, footprint, RG-56, and backlog questions,
+the required oracle anti-patterns, and the mechanical BLOCKED rule.
+
+The isolated RG-56 implementation sidecar also received the order-independent
+estate-pairing test fix at `84341e75`; its full local run-gate suite then passed
+`1101 passed, 3 skipped`. RG-56 remains future-wave work and is not merged.
+P1 and P6 R2 mutation processes remain active; no package merge or release is
+authorized until their evidence and a genuine Sol xhigh review are present.
