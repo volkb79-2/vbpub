@@ -1669,3 +1669,12 @@ preserved above; they are not relabeled as evidence for this repaired tree.
 A new `assay-r2` is REQUIRED after this code repair, before any package-ready
 claim. No whole-package gate, release, merge, controller-log edit, or release
 claim was made in this session.
+
+## Session 12 — final-review invocation blocked on runtime identity
+
+BLOCKED: the session exposed Codex/GPT-5 identity but did not expose or verify
+the required `gpt-5.6-sol` route at `xhigh` effort. Per the final-review
+packet's mechanical precondition, no P4 diff, product code, tests, gates,
+mutation lane, or live probe was reviewed or run. The disposition and exact
+restart prescription are recorded in
+`run-gate-WAVE-RG55-P4-REVIEW-round4.md`.
