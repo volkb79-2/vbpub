@@ -2582,3 +2582,16 @@ full local CMRU suite passed 1783 tests/3 skips with 100.00% line+branch
 coverage. No Docker-backed release gate or fresh Sol xhigh final review was
 run; per operator instruction no subagent was spawned, so this candidate is
 not merged or released.
+
+### RW-210 — 2026-09-15 00:09:19Z — operator backlog addendum triaged
+
+The operator's dirty `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` addendum
+reports a real dstdns observation: `ui_unit` exceeded its fixed 600-second
+lane budget even after low pre-launch PSI readings, while a direct 20-minute
+run completed 265/265 tests in 714.67 seconds. This is useful evidence of a
+budget/measurement mismatch, but its scheduler-contention wording is not
+adopted as RG-55 policy. Host load and contention are allowed and planned;
+functional verdicts and mutation outcomes must remain deterministic and
+contention-agnostic, while incomplete/pressure-limited measurements are
+reported as infrastructure/inconclusive. The operator file remains dirty and
+uncommitted; no dstdns files were touched.
