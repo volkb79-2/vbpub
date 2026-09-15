@@ -11442,27 +11442,45 @@ class TestStallEndToEnd:
         write_progress(progress, candidate(1))
 
         (state / ".hang").write_text("")
-        stop = threading.Event()
+        poll_requested = threading.Event()
+        movement_written = threading.Event()
+        real_poll = run_gate.ProgressWatch.poll
+
+        def poll_after_real_movement(watch):
+            # The writer and liveness reader meet at the actual decision
+            # boundary. A busy scheduler can delay either thread arbitrarily
+            # without manufacturing one second of silence: the timeout is a
+            # generous suite failsafe, never the product verdict.
+            poll_requested.set()
+            assert movement_written.wait(60), \
+                "progress writer did not reach the poll synchronization point"
+            return real_poll(watch)
+
+        monkeypatch.setattr(run_gate.ProgressWatch, "poll",
+                            poll_after_real_movement)
 
         def advance():
-            i = 2
-            while not stop.wait(0.1):
-                write_progress(progress, candidate(i))
-                i += 1
-                if i > 12:
-                    (state / ".hang").unlink(missing_ok=True)
-                    return
+            if not poll_requested.wait(60):
+                return
+            write_progress(progress, candidate(2))
+            (state / ".hang").unlink(missing_ok=True)
+            movement_written.set()
 
         mover = threading.Thread(target=advance, daemon=True)
         mover.start()
         try:
             assert run_gate.main(["mutation"]) == 0
         finally:
-            stop.set()
-            mover.join(timeout=10)
-        out = capsys.readouterr().out
-        assert "run-gate: progress mutation: candidate " in out
-        assert "STALLED" not in out
+            # Unblock both sides after an earlier assertion/exception so a
+            # failing test never strands its helper thread or fake container.
+            poll_requested.set()
+            movement_written.set()
+            (state / ".hang").unlink(missing_ok=True)
+            mover.join(timeout=60)
+        assert not mover.is_alive(), "progress writer did not finish"
+        captured = capsys.readouterr()
+        assert "run-gate: progress mutation: candidate 2/172" in captured.out
+        assert "STALLED" not in captured.out + captured.err
 
 
 class TestStallEndToEndCommandLane:
