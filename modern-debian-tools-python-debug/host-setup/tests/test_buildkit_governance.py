@@ -27,6 +27,7 @@ def load_module(path: Path, name: str):
 WIZARD = load_module(ROOT / "mdt-host-setup-wizard.py", "mdt_wizard_test")
 BASELINE = load_module(ROOT / "scripts/mdt-io-baseline.py", "mdt_baseline_test")
 GUARD = load_module(ROOT / "scripts/mdt-buildkit-guard.py", "mdt_guard_test")
+DEV_WATCHER = load_module(ROOT / "scripts/mdt-dev-cap-watcher.py", "mdt_dev_watcher_test")
 BUILDER = load_module(ROOT.parent / "scripts/mdt_buildkit_builder.py", "mdt_builder_test")
 # finalize_container_environment.py has a source-tree fallback import from
 # ``scripts.mdt_buildkit_builder``.  The assay entrypoint runs this test by
@@ -423,6 +424,29 @@ printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
         self.assertNotIn("derived caps unusable — exiting for systemd to restart", source)
         self.assertIn("Restart=always", (ROOT / "units/mdt-io-cap-watcher.service").read_text())
 
+    def test_memory_watcher_does_not_cap_when_docker_inspect_is_indeterminate(self) -> None:
+        with mock.patch.object(
+            DEV_WATCHER.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["docker", "inspect"], 5),
+        ):
+            self.assertIsNone(DEV_WATCHER.has_explicit_memory_limit("container-id"))
+
+        with mock.patch.object(
+            DEV_WATCHER,
+            "has_explicit_memory_limit",
+            return_value=None,
+        ), mock.patch.object(DEV_WATCHER.subprocess, "run") as run, mock.patch.object(
+            DEV_WATCHER, "log"
+        ) as log:
+            DEV_WATCHER.apply_default_cap(
+                "/sys/fs/cgroup/dev.slice/dev-background.slice",
+                "dev-background.slice",
+                "docker-0123456789ab.scope",
+            )
+        run.assert_not_called()
+        self.assertIn("leaving the scope unchanged", log.call_args.args[0])
+
     def test_no_baseline_clears_only_mdt_runtime_io_properties(self) -> None:
         apply_script = ROOT / "scripts" / "mdt-apply-dev-caps.sh"
         with tempfile.TemporaryDirectory() as directory:
@@ -663,6 +687,15 @@ esac
         self.assertIs(calls["DEV_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
         self.assertIs(calls["DEV_SUBSLICE_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
         self.assertNotIn("<function", calls["DEV_CPU_RESERVE_CORES"][0])
+        auto_keys = {
+            "DEV_CPU_QUOTA", "DEV_SWAP_MAX",
+            "DEV_INTERACTIVE_CPU_QUOTA", "DEV_BACKGROUND_CPU_QUOTA",
+            "DEV_GATES_CPU_QUOTA", "DEV_BUILDKITD_CPU_QUOTA",
+            "DEV_INTERACTIVE_MEMORY_SWAP_MAX", "DEV_BACKGROUND_MEMORY_SWAP_MAX",
+            "DEV_GATES_MEMORY_SWAP_MAX", "DEV_BUILDKITD_MEMORY_SWAP_MAX",
+        }
+        for key in auto_keys:
+            self.assertTrue(calls[key][2].get("allow_empty_token"), key)
         memory_keys = {
             "DEV_MEMORY_LOW", "DEV_MEMORY_HIGH", "DEV_MEMORY_MAX",
             "DEV_MEMORY_MIN_GUARANTEED_CEILING",
@@ -723,11 +756,11 @@ esac
             cache.write_text("RIOPS_MAX=1\n")
             script = ROOT / "scripts" / "mdt-io-baseline.py"
             with mock.patch.object(WIZARD, "walk_key", side_effect=[str(cache), str(target_path)]), \
-                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="stale"), \
+                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="stale") as freshness, \
                  mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
                  mock.patch.object(WIZARD, "_prompt", return_value="y"), \
                  mock.patch.object(WIZARD.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-                selected, selected_target, measured = WIZARD.step_io_baseline({}, {}, script)
+                selected, selected_target, measured = WIZARD.step_io_baseline({}, {}, script, "/dev/sda")
             self.assertEqual(selected, str(cache))
             self.assertEqual(selected_target, str(target_path))
             self.assertTrue(measured)
@@ -738,6 +771,25 @@ esac
             )
             self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
             self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_TESTFILE"], str(target_path))
+            self.assertEqual(run.call_args.kwargs["env"]["IO_DEV_PATH"], "/dev/sda")
+            self.assertEqual(
+                freshness.call_args.args,
+                (cache, target_path, script, "/dev/sda"),
+            )
+
+    def test_auto_fields_can_clear_an_existing_explicit_value(self) -> None:
+        with mock.patch.object(WIZARD, "_prompt", return_value="-"):
+            for key, validator, old_value in (
+                ("DEV_CPU_QUOTA", WIZARD.validate_cpu_quota, "400%"),
+                ("DEV_SWAP_MAX", WIZARD.validate_size_or_auto, "8G"),
+            ):
+                self.assertEqual(
+                    WIZARD.walk_key(
+                        key, key, {key: old_value}, {},
+                        validate=validator, allow_empty_token=True,
+                    ),
+                    "",
+                )
 
     def test_iocost_generator_identifies_the_file_target_device(self) -> None:
         generator = ROOT.parent.parent / "scripts/debian-install-v2/tools/iocost_coef_gen.py"

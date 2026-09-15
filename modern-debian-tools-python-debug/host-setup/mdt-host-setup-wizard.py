@@ -1462,19 +1462,34 @@ def _load_io_baseline_module(script_path: Path) -> ModuleType | None:
 
 
 def check_baseline_freshness(
-    baseline_env_path: Path, testfile_path: Path, io_baseline_script: Path
+    baseline_env_path: Path,
+    testfile_path: Path,
+    io_baseline_script: Path,
+    io_dev_path: str = "",
 ) -> str:
-    """Return fresh, stale or missing without running fio."""
+    """Return fresh, stale or missing without running fio.
+
+    The baseline adapter takes ``IO_DEV_PATH`` from its environment. Set it
+    explicitly for this check rather than inheriting whatever happened to be
+    exported by the shell that launched the wizard.
+    """
     if not baseline_env_path.exists():
         return "missing"
     module = _load_io_baseline_module(io_baseline_script)
     if module is not None and hasattr(module, "cache_is_fresh"):
+        previous_io_dev_path = os.environ.get("IO_DEV_PATH")
+        os.environ["IO_DEV_PATH"] = io_dev_path
         try:
             fresh = module.cache_is_fresh(baseline_env_path, testfile_path)
             valid = not hasattr(module, "cache_is_valid") or module.cache_is_valid(baseline_env_path)
             return "fresh" if fresh and valid else "stale"
         except OSError:
             return "stale"
+        finally:
+            if previous_io_dev_path is None:
+                os.environ.pop("IO_DEV_PATH", None)
+            else:
+                os.environ["IO_DEV_PATH"] = previous_io_dev_path
     return "stale"
 
 
@@ -1531,6 +1546,7 @@ def step_io_baseline(
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
     io_baseline_script: Path,
+    io_dev_path: str = "",
 ) -> tuple[str, str, bool]:
     """Offer to measure this disk's real IO ceilings.
 
@@ -1572,7 +1588,9 @@ def step_io_baseline(
     testfile = Path(testfile_text)
     out(f"The cache will be read/written at `{baseline_env_path}`.")
     out(f"The benchmark target remains at `{testfile}` so identity can be checked later.")
-    status = check_baseline_freshness(baseline_env_path, testfile, io_baseline_script)
+    status = check_baseline_freshness(
+        baseline_env_path, testfile, io_baseline_script, io_dev_path
+    )
     if status == "fresh":
         out("This cache is current: its recorded device and persistent target still match this host. Leaving it as-is.")
         return baseline_env, testfile_text, False
@@ -1605,6 +1623,9 @@ def step_io_baseline(
     child_env = os.environ.copy()
     child_env["IO_BASELINE_ENV"] = baseline_env
     child_env["IO_BASELINE_TESTFILE"] = testfile_text
+    # The adapter's identity check must use the device the operator selected,
+    # not an unrelated ambient value inherited from the launching shell.
+    child_env["IO_DEV_PATH"] = io_dev_path
     result = subprocess.run(
         [sys.executable, str(io_baseline_script), "--output", baseline_env, "--testfile", testfile_text],
         env=child_env, check=False
@@ -1897,8 +1918,9 @@ def step_slice_first_resources(
         validate=validate_nonneg_int,
     )
     values["DEV_CPU_QUOTA"] = walk_key(
-        "  dev.slice CPUQuota (blank = derived from host reserve; N% = hard cap)",
+        "  dev.slice CPUQuota ('-' = derived from host reserve; N% = hard cap)",
         "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
+        allow_empty_token=True,
     )
     values["DEV_ZSWAP_WRITEBACK"] = walk_yn_key(
         "  dev.slice MemoryZSwapWriteback", "DEV_ZSWAP_WRITEBACK",
@@ -1919,9 +1941,10 @@ def step_slice_first_resources(
         validate=validate_pct_1_100,
     )
     values["DEV_SWAP_MAX"] = walk_key(
-        "  dev.slice MemorySwapMax (blank = derive swap-only ceiling)",
+        "  dev.slice MemorySwapMax ('-' = derive swap-only ceiling)",
         "DEV_SWAP_MAX", cfg_current, example_defaults,
         validate=validate_size_or_auto,
+        allow_empty_token=True,
     )
     out("IOPS sub-ceiling:")
     for bullet in (
@@ -2025,9 +2048,10 @@ def step_slice_first_resources(
             validate=validate_weight,
         )
         values[f"{prefix}_CPU_QUOTA"] = walk_key(
-            "  CPUQuota (blank = derived child ceiling; N% = hard cap)",
+            "  CPUQuota ('-' = derived child ceiling; N% = hard cap)",
             f"{prefix}_CPU_QUOTA", cfg_current, example_defaults,
             validate=validate_cpu_quota,
+            allow_empty_token=True,
         )
         values[f"{prefix}_IO_WEIGHT"] = walk_key(
             "  IOWeight (1-10000; relative share, not an IO cap)",
@@ -2041,9 +2065,10 @@ def step_slice_first_resources(
         ):
             out(f"- {bullet}", hang="  ")
         values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
-            "  MemorySwapMax (blank = derived swap-only ceiling)",
+            "  MemorySwapMax ('-' = derived swap-only ceiling)",
             f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
             validate=validate_size_or_auto,
+            allow_empty_token=True,
         )
         out("Zswap control:")
         for bullet in (
@@ -2231,7 +2256,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Create a host-sized mdt host-setup.env by asking for each governed "
-            "resource in slice order. Values are validated before they are written. "
+            "resource in slice order.\n"
+            "Values are validated before they are written.\n"
             "Host shell only: a devcontainer invocation is refused."
         ),
         epilog=textwrap.dedent(
@@ -2265,7 +2291,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               - Existing output values win, including intentional empty values.
               - For a missing key, a live-host proposal wins over the example.
               - Enter accepts the shown default; `-` (or `none`) clears optional memory.
-              - Blank CPUQuota and MemorySwapMax mean derive at install time, not unlimited.
+              - Type `-` for derived CPUQuota or MemorySwapMax; Enter keeps the shown value,
+                including an existing explicit setting.
               - Sizes are binary (`2G` means 2 GiB); a bare number means bytes.
               - Percentage prompts say whether they expect a bare number or `400%`.
               - Old watcher names are migrated to their `WATCHER_*` names when an
@@ -2374,9 +2401,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, TemplateError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-        print(f"OK: strict validation passed for {args.validate_config}")
+        out(f"OK: strict validation passed for {args.validate_config}")
         for warning in review_warnings:
-            print(f"REVIEW WARNING (does not block): {warning}")
+            out(f"REVIEW WARNING (does not block): {warning}")
         return 0
 
     if not args.example.exists():
@@ -2448,7 +2475,7 @@ def main(argv: list[str] | None = None) -> int:
     out("Prompt conventions:")
     for bullet in (
         "Enter accepts the shown default; `-` clears optional memory directives.",
-        "Blank CPUQuota and MemorySwapMax mean derive at install time, not unlimited.",
+        "Type `-` for derived CPUQuota or MemorySwapMax; Enter keeps the shown value, including an existing explicit setting.",
         "A cleared memory directive is omitted from the rendered unit.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2473,10 +2500,11 @@ def main(argv: list[str] | None = None) -> int:
 
     walked: dict[str, str] = {}
     try:
-        walked["IO_DEV_PATH"] = step_io_device(cfg_current, example_defaults)
+        io_dev_path = step_io_device(cfg_current, example_defaults)
+        walked["IO_DEV_PATH"] = io_dev_path
 
         baseline_env, baseline_testfile, baseline_measured_now = step_io_baseline(
-            cfg_current, example_defaults, args.io_baseline_script
+            cfg_current, example_defaults, args.io_baseline_script, io_dev_path
         )
         walked["IO_BASELINE_ENV"] = baseline_env
         walked["IO_BASELINE_TESTFILE"] = baseline_testfile
