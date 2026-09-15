@@ -2760,6 +2760,24 @@ It only waits for `/tmp/rg55-p6-r2-fresh.log` to contain
 `P6_R2_FRESH_EXIT=` and writes a UTC marker; it does not poll candidate
 progress, restart the gate, or alter the judged worktree.
 
+### RW-225 — 2026-09-15 02:51:49Z — semantic pause checkpoint
+
+The controller reaches a coherent pause point. P8, P2, and P7 are shipped;
+P4 has complete mutation and non-mutation evidence but awaits the required
+fresh Sol xhigh review; P1 and P6 are still judging fresh exact trees in their
+two permitted mutation slots; P5 is prepared but correctly waits for P4/P6;
+CMRU and RG-56 remain isolated candidates. The P5 handoff correction, manual
+Sol packet, RG-56 test repair, watcher, and durable memory updates are landed.
+The shared checkout still contains only the two operator-owned dirty paths
+listed in the handoff.
+
+The next continuation action is mechanical: when a P1/P6 terminal marker is
+present, read the process exit and assay verdict separately, verify tree
+identity, triage every survivor or placeholder, and rerun only the required
+gates. For P4 or CMRU, a manually launched fresh Sol xhigh session may review
+or repair the isolated candidate immediately, but it must not merge/release.
+No further controller mutation or tree edits are authorized at this pause.
+
 ### RW-223 — 2026-09-15 02:47:19Z — correct P5 backlog identity before dispatch
 
 The future P5 handoff incorrectly reused RG-62, which belongs to P4's flaky
