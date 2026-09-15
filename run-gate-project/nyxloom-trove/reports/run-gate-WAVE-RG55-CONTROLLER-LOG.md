@@ -2595,3 +2595,12 @@ functional verdicts and mutation outcomes must remain deterministic and
 contention-agnostic, while incomplete/pressure-limited measurements are
 reported as infrastructure/inconclusive. The operator file remains dirty and
 uncommitted; no dstdns files were touched.
+
+### RW-211 — 2026-09-15 00:12:12Z — CMRU crash-revert witness strengthened
+
+The CMRU candidate advanced from `cf2b62c7` to `5d4b79e0` with an additional
+behavioral assertion: after the completion-marker write fails following a
+real remote push, the same source revert operation used by the parent succeeds
+and removes the promoted file from `origin/main`. The focused promotion set
+remains green. This is still an isolated, unmerged candidate pending the
+requested Sol xhigh final review and the Docker-backed release gate.
