@@ -13565,8 +13565,13 @@ class TestDoctorProfilerCheck:
     def _real_profile_resolution(self, monkeypatch):
         """Unset the module's own `profiling_off_by_default` autouse
         fixture's RUN_GATE_PROFILE=off -- these tests need the REAL
-        resolution (`TestProfileConfigValidation`'s own pattern)."""
+        resolution (`TestProfileConfigValidation`'s own pattern). Isolate
+        doctor's unrelated host-mount translation too: these throwaway repos
+        live under container-local `/tmp` in the real tester gate, so they have
+        no physical host mapping by construction."""
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda path, **kwargs: Path("/phys"))
 
     def _doctor(self, tmp_path, monkeypatch, capsys, daemon_running=False):
         repo = make_repo(tmp_path)

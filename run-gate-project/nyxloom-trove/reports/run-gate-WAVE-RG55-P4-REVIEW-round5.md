@@ -29,7 +29,7 @@ REJECT
 
 ## Initial verdict
 
-P4 is not acceptable at the captured tree. Six shipped paths contradict the
+P4 is not acceptable at the captured tree. Seven shipped paths contradict the
 binding R-36h/R-39/R-43 contracts or the estate-wide status-comparison rule.
 They are independently reproducible and are repairable inside the authorized
 `run-gate-project/run-gate.py`, `run-gate-project/tests/`, and report scope.
@@ -162,6 +162,29 @@ They are independently reproducible and are repairable inside the authorized
   both directions: explicit Docker absence remains ordinary absence, while an
   empty successful result is indeterminate.
 
+### B7 — high — profiler doctor tests are not isolated from gate mount topology
+
+- Location: `run-gate-project/tests/test_run_gate.py:13580-13716`,
+  `TestDoctorProfilerCheck`.
+- Observable failure: six profiler-doctor tests create their throwaway git
+  repositories beneath container-local `/tmp` and expect `doctor` to exit zero,
+  but do not isolate doctor's unrelated physical-host-path check. In the
+  required `tester-unified` gate, those paths are correctly not bind mounts, so
+  doctor reports a mountinfo failure and all six tests return 2. The same tests
+  pass only in the cockpit's different mount namespace, making cockpit-green
+  evidence a false gate signal.
+- Reproduction: detached container
+  `rg55-p4-targeted-4a27-20260915-1220`, image `tester-unified:local`, user
+  1003, `CgroupParent=dev-background.slice`, `NanoCpus=3000000000`, ran the
+  146-test P4 regression slice at `4a27eb42`; `docker wait` returned 1 and the
+  in-container marker was `JOB_EXIT=1`, with 140 passed and the six cited tests
+  failing solely on `[FAIL] mountinfo`.
+- Prescription: make `TestDoctorProfilerCheck` isolate the host-path boundary in
+  its own fixture/helper (the same established `physical_path -> /phys` pattern
+  used by other doctor tests), while retaining explicit profiler status and
+  doctor-exit assertions. Re-run the targeted slice and all declared gates in
+  the real tester container.
+
 ## Initial traceability and combined attacks
 
 | Requirement | Code path | Positive observable | Negative/combined attack | Initial result |
@@ -172,6 +195,7 @@ They are independently reproducible and are repairable inside the authorized
 | R-36h / Summary accuracy | bare-host wait4 path | verdict neutral and honest profile | prior daemon miss + wait4 failure; subsecond child | **B4** |
 | R-43c / R-36h | start -> state -> finish | every successful start is stopped | valid session + optional target wrong type | **B5** |
 | R-43i / status doctrine | `resolve_self_container_id` | Docker-owned absence differs from empty success | exit 0 + empty inspect stdout | **B6** |
+| Gate-environment isolation | `TestDoctorProfilerCheck` | profiler status alone determines these tests | tester-local `/tmp` has no host bind mapping | **B7** |
 | R-44d | `footprint_manifest_lane_expected` | five keys incl. source | old manifest method/scope derivation | verified in source; gates pending |
 | RG-58 | load + doctor | WARN, never refusal | bare-host vs container/exec | verified in source; gates pending |
 | RW-46a | `_lock_dir`, test fixture | production `/tmp`, tests isolated | directory plant + concurrent suite | verified in source; gates pending |
