@@ -6,7 +6,7 @@
 # host-setup/README.md "Persistence model" layer 2. Containers matching
 # TESTRUNNER_IMAGE_PATTERNS/BUILDKIT_NAME_PATTERNS/DEVCONTAINER_NAME_PATTERNS
 # get their caps applied the moment `docker events` reports their `start`,
-# not up to SWEEP_INTERVAL later. Uses the SAME _mdt_match/
+# not up to WATCHER_INTERVAL later. Uses the SAME _mdt_match/
 # _mdt_apply_container_caps/_mdt_classify_and_apply as the sweep
 # (mdt-container-caps.lib.sh) — one definition of "what gets capped and
 # how", two triggers.
@@ -63,9 +63,9 @@ fi
 _mdt_load_config
 _mdt_discover_io_dev_path
 _mdt_load_baseline
-_mdt_derive_sweep_caps
+_mdt_derive_watcher_caps
 
-if [ "${SWEEP_SKIP:-0}" = 1 ]; then
+if [ "${WATCHER_SKIP:-0}" = 1 ]; then
   log "derived caps unusable — exiting for systemd to restart (RestartSec backs off; fix the baseline or config first)"
   exit 1
 fi
@@ -73,7 +73,7 @@ fi
 # Catch whatever is already running before the first `docker events` line
 # ever arrives — a systemd restart or reboot must not leave already-running
 # containers waiting for the backstop sweep's next interval.
-log "watching docker events for buildkit/test-runner/devcontainer container starts (${SWEEP_SRC})"
+log "watching docker events for buildkit/test-runner/devcontainer container starts (${WATCHER_SRC})"
 # Start the event pipeline before the reconciliation snapshot. --since covers
 # the short process-start/API-attach interval as well; duplicate starts are
 # harmless because applying the same systemd properties is idempotent.

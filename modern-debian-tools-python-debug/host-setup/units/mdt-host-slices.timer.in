@@ -1,4 +1,4 @@
-# RENDERED by host-setup/install.sh from host-setup.env (SWEEP_INTERVAL).
+# RENDERED by host-setup/install.sh from host-setup.env (WATCHER_INTERVAL).
 # Periodic re-apply: catches containers created after boot — buildx_buildkit_*
 # workers appear on demand and can't be placed via compose cgroup_parent;
 # devcontainers get recreated on every rebuild. The sweep is idempotent.
@@ -7,7 +7,7 @@ Description=mdt host-setup — periodic dev-tier cap sweep
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=@SWEEP_INTERVAL@
+OnUnitActiveSec=@WATCHER_INTERVAL@
 Unit=mdt-host-slices.service
 
 [Install]

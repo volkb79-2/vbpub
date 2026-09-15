@@ -1,0 +1,5 @@
+# Rendered by host-setup/install.sh. The value limits BuildKit's internal
+# solver parallelism; it is not a cgroup CPU limit and does not serialize
+# separate client requests.
+[worker.oci]
+  max-parallelism = @DEV_BUILDKITD_MAX_PARALLELISM@

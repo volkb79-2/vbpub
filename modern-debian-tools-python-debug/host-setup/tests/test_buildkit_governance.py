@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,34 @@ class BuildKitGovernanceTests(unittest.TestCase):
         with mock.patch.object(WIZARD, "_prompt", side_effect=["maybe", "n"]):
             self.assertFalse(WIZARD.ask_yn("policy", default=True))
 
+    def test_wizard_migrates_legacy_watcher_names(self) -> None:
+        legacy = {
+            "SWEEP_IO_CAP_PCT": "61",
+            "TESTRUNNER_IMAGE_PATTERNS": "*runner*",
+            "BUILDKIT_NAME_PATTERNS": "old_buildkit_*",
+            "DEVCONTAINER_NAME_PATTERNS": "*ide*",
+            "SWEEP_INTERVAL": "7min",
+        }
+        migrated = WIZARD.migrate_legacy_config_keys(legacy)
+        self.assertEqual(migrated["WATCHER_IO_CAP_PCT"], "61")
+        self.assertEqual(migrated["WATCHER_TESTRUNNER_IMAGE_PATTERNS"], "*runner*")
+        self.assertEqual(migrated["WATCHER_BUILDKIT_NAME_PATTERNS"], "old_buildkit_*")
+        self.assertEqual(migrated["WATCHER_DEVCONTAINER_NAME_PATTERNS"], "*ide*")
+        self.assertEqual(migrated["WATCHER_INTERVAL"], "7min")
+
+    def test_memory_aggregate_reprompts_without_restarting_the_session(self) -> None:
+        values = {
+            "DEV_MEMORY_HIGH": "4G",
+            "DEV_INTERACTIVE_MEMORY_HIGH": "2G",
+            "DEV_BACKGROUND_MEMORY_HIGH": "2G",
+            "DEV_GATES_MEMORY_HIGH": "2G",
+            "DEV_BUILDKITD_MEMORY_HIGH": "2G",
+        }
+        with mock.patch.object(WIZARD, "_prompt", side_effect=["", "8G"]) as prompt:
+            WIZARD._reprompt_memory_constraints(0, values)
+        self.assertEqual(values["DEV_MEMORY_HIGH"], "8G")
+        self.assertEqual(prompt.call_count, 2)
+
     def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
         def runner(argv, **kwargs):
             source = "overlay\n" if argv[-1] == "/var/lib/docker" else "/dev/nvme0n1\n"
@@ -67,6 +96,8 @@ class BuildKitGovernanceTests(unittest.TestCase):
         )
         self.assertIsNotNone(WIZARD.validate_io_dev_path("overlay"))
         self.assertIsNone(WIZARD.validate_io_dev_path("/dev/mapper/vg-root"))
+        self.assertIsNotNone(WIZARD.validate_io_dev_path("/dev/sda;touch /tmp/pwned"))
+        self.assertIsNotNone(WIZARD.validate_absolute_path("/var/lib/mdt/$(touch-pwned)"))
 
     def test_host_context_guard_rejects_this_container(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -75,14 +106,38 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertIn("host shell", WIZARD.host_context_error(root) or "")
             self.assertIn("host shell", BASELINE.host_context_error(root) or "")
 
-    def test_baseline_cache_requires_complete_sustained_measurement(self) -> None:
+    def test_baseline_cache_requires_complete_iocost_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.env"
             path.write_text(
+                "SCHEMA_VERSION=2\nKERNEL_RELEASE=test\nGENERATOR_SHA256=test\n"
                 "RIOPS_MAX=1\nWIOPS_MAX=1\nRBW_MAX_BPS=1\nWBW_MAX_BPS=1\n"
-                "MEASURED_AT=2026-09-15T00:00:00Z\nMEASURE_METHOD=sustained-v3\n"
+                "DEVNO=8:0\nTESTFILE_STAT_DEV=1\nDOCKER_STAT_DEV=1\n"
+                "FINDMNT_SOURCE=/dev/sda\nDEVICE_SIZE_SECTORS=1\n"
+                "DEVICE_ROTATIONAL=0\nDEVICE_TOPOLOGY=/sys/devices/test\n"
+                "TESTFILE=/var/lib/mdt/testfile\nTESTFILE_SIZE_BYTES=1\n"
+                "RBPS=1\nRSEQIOPS=1\nRRANDIOPS=1\nWBPS=1\nWSEQIOPS=1\nWRANDIOPS=1\n"
+                "MEASURED_AT=2000-01-01T00:00:00Z\nMEASURE_METHOD=iocost-coef-gen\n"
             )
             self.assertTrue(BASELINE.cache_is_valid(path))
+            target = Path(directory) / "testfile"
+            target.write_bytes(b"x")
+            values = BASELINE.parse_env(path)
+            values["KERNEL_RELEASE"] = os.uname().release
+            values["TESTFILE"] = str(target)
+            values["TESTFILE_SIZE_BYTES"] = "1"
+            values["DEVICE_SERIAL"] = ""
+            values["DEVICE_MODEL"] = ""
+            path.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
+            current_identity = {
+                "DEVNO": "8:0", "TESTFILE_STAT_DEV": "1", "DOCKER_STAT_DEV": "1",
+                "FINDMNT_SOURCE": "/dev/sda", "DEVICE_SERIAL": "",
+                "DEVICE_MODEL": "", "DEVICE_SIZE_SECTORS": "1",
+                "DEVICE_ROTATIONAL": "0", "DEVICE_TOPOLOGY": "/sys/devices/test",
+            }
+            with mock.patch.object(BASELINE, "discover_generator", return_value=None), \
+                 mock.patch.object(BASELINE, "device_identity", return_value=current_identity):
+                self.assertTrue(BASELINE.cache_is_current(path, target))
             path.write_text("RIOPS_MAX=1\n")
             self.assertFalse(BASELINE.cache_is_valid(path))
 
@@ -125,10 +180,20 @@ class BuildKitGovernanceTests(unittest.TestCase):
                  mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
                  mock.patch.object(WIZARD, "_prompt", return_value="y"), \
                  mock.patch.object(WIZARD.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-                selected, measured = WIZARD.step_io_baseline({}, {}, script)
+                selected, target, measured = WIZARD.step_io_baseline({}, {}, script)
             self.assertEqual(selected, str(cache))
+            self.assertEqual(target, str(cache))
             self.assertTrue(measured)
             self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
+
+    def test_iocost_generator_identifies_the_file_target_device(self) -> None:
+        generator = ROOT.parent.parent / "scripts/debian-install-v2/tools/iocost_coef_gen.py"
+        source = generator.read_text()
+        self.assertIn(
+            "probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'",
+            source,
+        )
+        self.assertIn("devname, devno = dir_to_dev(probe_path)", source)
 
     def test_interactive_main_smoke_writes_without_function_repr(self) -> None:
         example = ROOT / "host-setup.env.example"
@@ -293,9 +358,9 @@ class BuildKitGovernanceTests(unittest.TestCase):
         install = (ROOT / "install.sh").read_text()
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 
-    def test_wizard_enforces_memory_order_and_live_aggregate(self) -> None:
+    def test_wizard_enforces_memory_order_without_live_availability_budget(self) -> None:
         proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 2500 * 1024)
-        self.assertEqual(proposals["DEV_MEMORY_HIGH"], "2.5G")
+        self.assertEqual(proposals["DEV_MEMORY_HIGH"], "12G")
         for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
             self.assertLessEqual(
                 WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_LOW"]),
@@ -314,7 +379,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             "DEV_MEMORY_MIN_GUARANTEED_CEILING": "",
         }
         self.assertTrue(WIZARD.memory_relationship_errors(values))
-        self.assertIsNotNone(WIZARD.memory_aggregate_error(3 * 1024 * 1024, values))
+        self.assertIsNone(WIZARD.memory_aggregate_error(3 * 1024 * 1024, values))
         self.assertEqual(WIZARD.parse_size_to_kib("1.5G"), 1572864)
 
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
@@ -327,7 +392,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIn("DEV_MEMORY_MIN_GUARANTEED_CEILING", prompt_text)
         self.assertIn("updates both", prompt_text)
 
-    def test_wizard_validates_manual_config_and_guaranteed_sibling_aggregate(self) -> None:
+    def test_wizard_validates_manual_config_and_parent_aggregate(self) -> None:
         example = (ROOT / "host-setup.env.example").read_text()
         valid = example.replace("DEV_MEMORY_HIGH=\n", "DEV_MEMORY_HIGH=32G\n")
         valid = valid.replace("DEV_MEMORY_MAX=\n", "DEV_MEMORY_MAX=64G\n")
@@ -338,6 +403,10 @@ class BuildKitGovernanceTests(unittest.TestCase):
             meminfo_path = directory_path / "meminfo"
             config_path.write_text(valid)
             meminfo_path.write_text(meminfo)
+            WIZARD.validate_host_setup_config(
+                config_path, ROOT / "host-setup.env.example", meminfo_path
+            )
+            meminfo_path.write_text("MemTotal: 67108864 kB\n")
             WIZARD.validate_host_setup_config(
                 config_path, ROOT / "host-setup.env.example", meminfo_path
             )
@@ -356,13 +425,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
                     0,
                 )
 
-            sibling_over_budget = valid.replace(
-                "DEV_MEMORY_MIN_GUARANTEED_HIGH=\n",
-                "DEV_MEMORY_MIN_GUARANTEED_HIGH=16G\n",
-            ).replace(
-                "DEV_MEMORY_MIN_GUARANTEED_MAX=\n",
-                "DEV_MEMORY_MIN_GUARANTEED_MAX=16G\n",
-            )
+            sibling_over_budget = valid.replace("DEV_MEMORY_HIGH=32G", "DEV_MEMORY_HIGH=4G")
             config_path.write_text(sibling_over_budget)
             with self.assertRaises(WIZARD.TemplateError) as raised:
                 WIZARD.validate_host_setup_config(

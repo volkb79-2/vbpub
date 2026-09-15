@@ -123,10 +123,10 @@ without touching the render/apply machinery it feeds.
       inline either way). If missing or stale: ask whether to run it now
       (say plainly: ~4 minutes, saturates the disk, quiet window) —
       `subprocess.run(["python3", "<path>/mdt-io-baseline.py"], check=False)`,
-      letting IT own the quiet-window warning and the 30-day freshness
+      letting it own the quiet-window warning and identity-currentness check
       check; do not duplicate either.
 
-   c. **IO cap percentages** (`DEV_IO_CAP_PCT`, `SWEEP_IO_CAP_PCT`) —
+   c. **IO cap percentages** (`DEV_IO_CAP_PCT`, `WATCHER_IO_CAP_PCT`) —
       present the 60-80% band reasoning inline (adapted from
       `host-setup.env.example`'s own comment and README's "The IO
       baseline" section: never 100%, a saturated device queues everything

@@ -141,7 +141,8 @@ as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
 `MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
 It converts systemd binary units to KiB and rejects/re-prompts unless every
 configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
-high/max/min totals against live host facts. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
+values against configured parent ceilings; live `MemAvailable` is context only,
+while starting proposals use physical `MemTotal`. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
 is the single authoritative root `dev.slice` MemoryMin and is mirrored on the
 guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX` are the other root controls.
 Each child slice flow includes `CPUWeight`, `CPUQuota`, `IOWeight`, swap, and
@@ -378,13 +379,13 @@ cgroup, or `/etc` state, and the installer refuses that context.
 sudo ./install.sh --wizard         # preserve current values; derive missing host values
 sudo ./install.sh --wizard --force # deliberately re-seed defaults from this example
 # or: edit a complete, host-specific /etc/mdt/host-setup.env, then run install.sh
-sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~4 min saturated IO — quiet window!)
+sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min saturated IO — quiet window!)
 sudo mdt-host-check.sh             # verify
 ```
 
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, baseline
-cache path and freshness, IO cap percentages, every governed slice's four
+cache path and identity, IO cap percentages, every governed slice's four
 memory controls, CPU/IO weights, swap/zswap controls, the memory-min-
 guaranteed ceiling, BuildKit, Docker daemon.json keys, and reactive watcher
 limits) and
@@ -393,9 +394,9 @@ instead of the shipped example's fixed figures — Enter accepts the shown
 default at every step, and it falls through into the same render/apply logic
 after candidate validation. Existing values are shown as `existing:` defaults,
 host-derived values as `derived:`, and template values as `example:`. Type
-`none` only where a prompt says it clears an optional directive; blank
-CPUQuota and MemorySwapMax mean auto-detect at install time. Required
-MemoryHigh and MemoryMax values must be positive. The manual path requires a
+`-` (or compatibility spelling `none`) to clear any optional memory directive;
+blank CPUQuota and MemorySwapMax mean auto-detect at install time. All four
+memory controls may be omitted. The manual path requires a
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
@@ -421,6 +422,7 @@ the test stacks.
 |---|---|---|
 | `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-gates.slice.in`, `units/dev-memory_min_guaranteed.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
+| `buildkitd.toml.in` | `/etc/mdt/buildkitd.toml` | managed BuildKit daemon configuration, including `DEV_BUILDKITD_MAX_PARALLELISM` |
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
 | `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
@@ -434,7 +436,7 @@ the test stacks.
 | `scripts/mdt-container-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
 | `scripts/mdt-dev-cap-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | inotify watcher — instant counterpart to the sweep's per-container `MemoryMax` |
 | `scripts/mdt-slice-audit.py` | `/usr/local/sbin/` | read-only audit — logs a `[WARN]` for any `memory.min`/`memory.low` under `dev.slice` that is a silent no-op because an ancestor lacks its own value (second `ExecStart=` on the same service/timer) |
-| `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | fio benchmark → `/var/lib/mdt/io-baseline.env` (30-day cache) |
+| `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | official kernel `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound cache) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
@@ -466,7 +468,7 @@ cannot express the next:
      `dev-background.slice` combined) — `systemctl set-property --runtime`,
      reapplied each boot;
    - **per-container** caps for `buildx_buildkit_*`, `*test-runner*` and
-     devcontainer scopes (`SWEEP_IO_CAP_PCT`% io.max; bench and any accidental
+     devcontainer scopes (`WATCHER_IO_CAP_PCT`% io.max; bench and any accidental
      buildkit worker additionally get `IOWeight=1` — the devcontainer does
      **not**, it is the IDE): docker scopes are *transient*, they only exist
      while the container runs, so no unit file can pre-configure them. The
@@ -564,15 +566,33 @@ Full reasoning for each gap, and why raw cgroupfs writes lose to
 
 ## The IO baseline
 
-`mdt-io-baseline.py` measures 4 sustained ceilings (r/w IOPS at 4k QD32, r/w
-bandwidth at 128k QD8, libaio, incompressible buffers, ramp+runtime defaults
-10+40s) and caches them as `KEY=VALUE` in the path configured by
-`IO_BASELINE_ENV` (the default is `/var/lib/mdt/io-baseline.env`; atomic write,
-30-day freshness, `--force` to remeasure). Its temporary fio test file is
-`/var/lib/mdt/io-baseline.testfile` unless `IO_BASELINE_TESTFILE` is set. That
-file must be on the same block device as `IO_DEV_PATH`, or the measurement is
-for a different device. **It saturates the test-file device for ~4 minutes** —
-run it in a quiet window.
+`mdt-io-baseline.py` invokes the same official kernel `io.cost` coefficient
+matrix generator used by `scripts/debian-install-v2`: sequential and random
+read/write measurements against a persistent file. It never writes a raw block
+device. The six raw matrix values and the four `io.max` compatibility ceilings
+are cached as `KEY=VALUE` in `IO_BASELINE_ENV` (default
+`/var/lib/mdt/io-baseline.env`) with an atomic write. The persistent target is
+`IO_BASELINE_TESTFILE` (default `/var/lib/mdt/iocost-coef-fio.testfile`) and
+must be on the same filesystem/device as Docker data. **The benchmark saturates
+that device for about 12 minutes at default settings** — run it in a quiet
+window.
+
+There is no arbitrary age expiry. The cache is reusable only when the target
+path and size, Docker-data filesystem, resolved block-device identity/topology,
+device facts, kernel release and benchmark-generator fingerprint still match.
+A disk replacement, Docker-data move, target move, kernel change or generator
+change makes the cache non-current. `--force` deliberately remeasures an
+otherwise current target; it does not weaken the identity checks during or
+after the run.
+
+The mapping into `io.max` is conservative and explicit: read/write IOPS use
+the lower of that direction's sequential and random matrix values; read/write
+bandwidth use sequential bytes per second. `DEV_IO_CAP_PCT` is applied to the
+resulting whole-estate `dev.slice` pool. `WATCHER_IO_CAP_PCT` is applied to each
+matched container's cap, so it is a percentage of the measured device ceiling,
+not a percentage of the already-reduced `dev.slice` cap. Nested cgroups still
+enforce the tighter effective limit. The baseline tool does not enable the
+`io.cost` controller; it measures ceilings for the existing `io.max` policy.
 
 The baseline must also be run from the Docker host shell. `/var/lib/mdt` and
 `IO_BASELINE_TESTFILE` are host paths, and the test file must be on the same
@@ -585,7 +605,7 @@ must be reviewed by the operator.
 The caps derived from it sit in a **60–80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds 10–15+
 containers across both tiers together — protects PRODUCTION from the tier,
-but not tier members from each other), `SWEEP_IO_CAP_PCT=80` per
+but not tier members from each other), `WATCHER_IO_CAP_PCT=80` per
 bench/buildkit/devcontainer container (protects tier members from each
 other — for buildkit specifically, its *only* governance, since Buildx
 placement under `dev.slice` doesn't work at all; see above). Never 100% — a
@@ -594,12 +614,6 @@ tiering exists to prevent; below ~60% you are just throttling ordinary work.
 Where both apply, cgroup limits nest and the stricter wins — the two are
 complementary layers answering different questions, not a redundant pair to
 collapse into one number.
-
-**Bootstrapping from gstammtisch.** `install.sh` copies
-`/var/lib/gstammtisch/io-baseline.env` to the configured `IO_BASELINE_ENV` on
-first run if the latter doesn't exist yet and the former does, rather than
-re-running the ~4min benchmark — mdt owns its own copy at its own canonical
-path from then on (no runtime cross-reference between the two companions).
 
 **Sharing the measurement with ciu.** ciu governance caps individual compose
 services from the same file format (deriving `read_iops` as 2/3 of
@@ -621,7 +635,7 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`),
 effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
-`dev.slice`'s `io.max` + baseline freshness, the `docker-.scope.d` backstop's
+`dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's
 presence, BFQ scheduler, timer enablement, and lists every running
 container's cgroup parent. Exit 0 = no failures (warnings possible).
 

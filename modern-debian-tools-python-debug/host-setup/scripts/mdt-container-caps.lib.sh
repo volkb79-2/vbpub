@@ -7,7 +7,7 @@
 # capped" instead of two copies that can drift apart.
 #
 # Callers must define `log()` before sourcing this, and must call
-# `_mdt_load_config` then `_mdt_derive_sweep_caps` before `_mdt_apply_container_caps`.
+# `_mdt_load_config` then `_mdt_derive_watcher_caps` before `_mdt_apply_container_caps`.
 # Not meant to be executed directly.
 
 # _mdt_load_config: source $CONF, apply defaults.
@@ -15,11 +15,12 @@ _mdt_load_config() {
   # shellcheck disable=SC1090
   [ -f "$CONF" ] && . "$CONF" || log "WARN: $CONF not found — using built-in defaults"
 
-  SWEEP_IO_CAP_PCT="${SWEEP_IO_CAP_PCT:-80}"
-  TESTRUNNER_IMAGE_PATTERNS="${TESTRUNNER_IMAGE_PATTERNS:-*test-runner*}"
-  BUILDKIT_NAME_PATTERNS="${BUILDKIT_NAME_PATTERNS:-buildx_buildkit_*}"
-  DEVCONTAINER_NAME_PATTERNS="${DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
+  WATCHER_IO_CAP_PCT="${WATCHER_IO_CAP_PCT:-80}"
+  WATCHER_TESTRUNNER_IMAGE_PATTERNS="${WATCHER_TESTRUNNER_IMAGE_PATTERNS:-*test-runner*}"
+  WATCHER_BUILDKIT_NAME_PATTERNS="${WATCHER_BUILDKIT_NAME_PATTERNS:-buildx_buildkit_*}"
+  WATCHER_DEVCONTAINER_NAME_PATTERNS="${WATCHER_DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
   IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
+  IO_BASELINE_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
 }
 
 # _mdt_discover_io_dev_path: sets IO_DEV_PATH if not already set. Deliberately
@@ -46,51 +47,63 @@ _mdt_discover_io_dev_path() {
 _mdt_load_baseline() {
   RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD="" MEASURED_AT=""
   [ -f "$IO_BASELINE_ENV" ] || { log "no $IO_BASELINE_ENV — per-container caps use the static fallback (run mdt-io-baseline.py)"; return; }
-  local _mtime _now _age _invalid=""
-  _mtime=$(stat -c %Y "$IO_BASELINE_ENV" 2>/dev/null) || _invalid="mtime unreadable"
-  _now=$(date +%s)
-  if [ -z "$_invalid" ] && { [ $(( _now - _mtime )) -gt $((30 * 86400)) ] || [ "$_mtime" -gt "$_now" ]; }; then
-    _invalid="stale (older than 30 days or timestamp is in the future)"
-  fi
+  local _invalid=""
   # shellcheck disable=SC1090
   . "$IO_BASELINE_ENV" 2>/dev/null || true
-  [ "${MEASURE_METHOD:-}" = sustained-v3 ] || _invalid="${_invalid:-method is not sustained-v3}"
+  [ "${SCHEMA_VERSION:-}" = 2 ] || _invalid="${_invalid:-cache schema is not 2}"
+  [ "${MEASURE_METHOD:-}" = iocost-coef-gen ] || _invalid="${_invalid:-method is not iocost-coef-gen}"
   [ -n "${MEASURED_AT:-}" ] || _invalid="${_invalid:-MEASURED_AT is missing}"
-  for _baseline_key in RIOPS_MAX WIOPS_MAX RBW_MAX_BPS WBW_MAX_BPS; do
+  [ "${KERNEL_RELEASE:-}" = "$(uname -r)" ] || _invalid="${_invalid:-kernel release changed}"
+  for _baseline_key in RIOPS_MAX WIOPS_MAX RBW_MAX_BPS WBW_MAX_BPS RBPS RSEQIOPS RRANDIOPS WBPS WSEQIOPS WRANDIOPS DEVNO TESTFILE_STAT_DEV DOCKER_STAT_DEV TESTFILE TESTFILE_SIZE_BYTES; do
     _baseline_value="${!_baseline_key:-}"
     case "$_baseline_value" in
       ''|*[!0-9]*) _invalid="${_invalid:-$_baseline_key is not a positive integer}" ;;
       0) _invalid="${_invalid:-$_baseline_key is zero}" ;;
     esac
   done
+  if [ -z "$_invalid" ]; then
+    _testfile_dev=$(stat -c %d "$TESTFILE" 2>/dev/null || true)
+    _docker_dev=$(stat -c %d /var/lib/docker 2>/dev/null || true)
+    [ -f "$TESTFILE" ] || _invalid="benchmark target is missing: $TESTFILE"
+    [ "$(stat -c %s "$TESTFILE" 2>/dev/null || echo 0)" = "$TESTFILE_SIZE_BYTES" ] || _invalid="${_invalid:-benchmark target size changed}"
+    [ "$_testfile_dev" = "$TESTFILE_STAT_DEV" ] || _invalid="benchmark target filesystem changed"
+    [ "$_docker_dev" = "$DOCKER_STAT_DEV" ] || _invalid="Docker data filesystem changed"
+    _source=$(findmnt -no SOURCE --target "$TESTFILE" 2>/dev/null || true)
+    [ "$_source" = "$FINDMNT_SOURCE" ] || _invalid="benchmark target mount source changed"
+  fi
+  if [ -z "$_invalid" ] && [ -x /usr/local/sbin/mdt-io-baseline.py ] \
+     && ! python3 /usr/local/sbin/mdt-io-baseline.py --check-cache \
+          --output "$IO_BASELINE_ENV" --testfile "$IO_BASELINE_TESTFILE" >/dev/null 2>&1; then
+    _invalid="device identity is not current (run mdt-io-baseline.py)"
+  fi
   if [ -n "$_invalid" ]; then
     log "WARN: ignoring $IO_BASELINE_ENV — $_invalid; per-container and runtime estate caps use static fallbacks"
     RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
   fi
 }
 
-# _mdt_derive_sweep_caps: sets SWEEP_RBPS/WBPS/RIOPS/WIOPS/SWEEP_SRC (and
-# SWEEP_SKIP=1 if the derived cap is unusable). Call after _mdt_load_config,
+# _mdt_derive_watcher_caps: sets WATCHER_RBPS/WBPS/RIOPS/WIOPS/WATCHER_SRC (and
+# WATCHER_SKIP=1 if the derived cap is unusable). Call after _mdt_load_config,
 # _mdt_load_baseline and _mdt_discover_io_dev_path.
-_mdt_derive_sweep_caps() {
-  SWEEP_RBPS="${SWEEP_RBPS:-31457280}"; SWEEP_WBPS="${SWEEP_WBPS:-31457280}"
-  SWEEP_RIOPS="${SWEEP_RIOPS:-200}";    SWEEP_WIOPS="${SWEEP_WIOPS:-400}"
-  SWEEP_SRC="static fallback — no baseline, run mdt-io-baseline.py"
-  SWEEP_SKIP=0
+_mdt_derive_watcher_caps() {
+  WATCHER_RBPS="${WATCHER_RBPS:-31457280}"; WATCHER_WBPS="${WATCHER_WBPS:-31457280}"
+  WATCHER_RIOPS="${WATCHER_RIOPS:-200}";    WATCHER_WIOPS="${WATCHER_WIOPS:-400}"
+  WATCHER_SRC="static fallback — no baseline, run mdt-io-baseline.py"
+  WATCHER_SKIP=0
   # All four or none: a partial baseline would derive a 0 cap, and 0 in io.max
   # is not "unlimited", it stops the container's IO dead.
   if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
      && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
-    SWEEP_RIOPS=$(( RIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_WIOPS=$(( WIOPS_MAX   * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_RBPS=$((  RBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_WBPS=$((  WBW_MAX_BPS * SWEEP_IO_CAP_PCT / 100 ))
-    SWEEP_SRC="${SWEEP_IO_CAP_PCT}% of baseline"
+    WATCHER_RIOPS=$(( RIOPS_MAX   * WATCHER_IO_CAP_PCT / 100 ))
+    WATCHER_WIOPS=$(( WIOPS_MAX   * WATCHER_IO_CAP_PCT / 100 ))
+    WATCHER_RBPS=$((  RBW_MAX_BPS * WATCHER_IO_CAP_PCT / 100 ))
+    WATCHER_WBPS=$((  WBW_MAX_BPS * WATCHER_IO_CAP_PCT / 100 ))
+    WATCHER_SRC="${WATCHER_IO_CAP_PCT}% of measured io.cost ceiling"
   fi
-  if [ "$SWEEP_RIOPS" -lt 1 ] || [ "$SWEEP_WIOPS" -lt 1 ] \
-     || [ "$SWEEP_RBPS" -lt 1 ] || [ "$SWEEP_WBPS" -lt 1 ]; then
+  if [ "$WATCHER_RIOPS" -lt 1 ] || [ "$WATCHER_WIOPS" -lt 1 ] \
+     || [ "$WATCHER_RBPS" -lt 1 ] || [ "$WATCHER_WBPS" -lt 1 ]; then
     log "WARN: derived per-container cap <= 0 (bad baseline?) — skipping container caps"
-    SWEEP_SKIP=1
+    WATCHER_SKIP=1
   fi
 }
 
@@ -133,12 +146,12 @@ _mdt_apply_container_caps() {
   fi
   unit="${scope##*/}"
   [ "$deprio" = 1 ] && props+=(IOWeight=1)
-  props+=("IOReadBandwidthMax=$IO_DEV_PATH $SWEEP_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $SWEEP_WBPS"
-          "IOReadIOPSMax=$IO_DEV_PATH $SWEEP_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $SWEEP_WIOPS")
+  props+=("IOReadBandwidthMax=$IO_DEV_PATH $WATCHER_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $WATCHER_WBPS"
+          "IOReadIOPSMax=$IO_DEV_PATH $WATCHER_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $WATCHER_WIOPS")
   # set-property (not a raw io.max write): systemd re-applies its own recorded
   # properties to a scope on every daemon-reload, silently wiping raw writes.
   if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
-    log "$label ($cid): io.max=${SWEEP_RIOPS}r/${SWEEP_WIOPS}w IOPS $((SWEEP_RBPS/1048576))/$((SWEEP_WBPS/1048576))MB/s r/w (${SWEEP_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
+    log "$label ($cid): io.max=${WATCHER_RIOPS}r/${WATCHER_WIOPS}w IOPS $((WATCHER_RBPS/1048576))/$((WATCHER_WBPS/1048576))MB/s r/w (${WATCHER_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
   else
     log "WARN: $label ($cid): set-property failed — skipped"
     return 0
@@ -154,14 +167,14 @@ _mdt_apply_container_caps() {
 # Shared by the sweep's docker-ps loop and the watcher's docker-events loop.
 _mdt_classify_and_apply() {
   local cid="$1" img name
-  [ "${SWEEP_SKIP:-0}" = 1 ] && return 0
+  [ "${WATCHER_SKIP:-0}" = 1 ] && return 0
   img=$(docker inspect -f '{{.Config.Image}}' "$cid" 2>/dev/null || true)
   name=$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | tr -d '/' || true)
-  if _mdt_match "$img" "$TESTRUNNER_IMAGE_PATTERNS"; then
+  if _mdt_match "$img" "$WATCHER_TESTRUNNER_IMAGE_PATTERNS"; then
     _mdt_apply_container_caps "$cid" "bench:$name" 1
-  elif _mdt_match "$name" "$BUILDKIT_NAME_PATTERNS"; then
+  elif _mdt_match "$name" "$WATCHER_BUILDKIT_NAME_PATTERNS"; then
     _mdt_apply_container_caps "$cid" "buildkit:$name" 1
-  elif _mdt_match "$name" "$DEVCONTAINER_NAME_PATTERNS"; then
+  elif _mdt_match "$name" "$WATCHER_DEVCONTAINER_NAME_PATTERNS"; then
     _mdt_apply_container_caps "$cid" "devcontainer:$name" 0
   fi
 }

@@ -1,438 +1,472 @@
 #!/usr/bin/env python3
-# Measure the disk's r/w IOPS and r/w bandwidth ceilings with fio (4 passes)
-# and cache them at /var/lib/mdt/io-baseline.env (override: IO_BASELINE_ENV).
-#
-# Part of mdt host-setup. Consumers:
-#   - mdt-apply-dev-caps.sh sources the cache (dev.slice whole-estate caps at
-#     DEV_IO_CAP_PCT%, per-container caps at SWEEP_IO_CAP_PCT% — both in
-#     the 60-80% band, see host-setup.env.example)
-#   - ciu governance reads the same plain KEY=VALUE format, but from its own
-#     search path — point CIU_GOV_BASELINE_PATH here so one measurement serves
-#     both (host-setup.env.example, IO_BASELINE_ENV section)
-#
-# Incident notes:
-#   - libaio, NOT the psync default: psync silently caps the queue at depth 1
-#     and measures single-request latency, not the ceiling (6928 vs 90197
-#     IOPS on this host, 2026-07-07).
-#   - refuse a pre-existing testfile: cleanup must never delete a real file an
-#     operator pointed IO_BASELINE_TESTFILE at (codex review, 2026-07-07).
-#   - atomic cache write: an interrupted run must never leave a truncated
-#     cache that consumers then trust for 30 days.
-#   - sustained-v3 (2026-07-08): burst measurement through the hypervisor
-#     cache produced 4.3 GB/s 'seq read' - ramp_time + 4G span + incompressible
-#     buffers measure the storage system's real sustained capacity, which is
-#     what the 80% caps must protect.
+"""Measure and cache the MDT disk IO baseline with the kernel io.cost matrix.
+
+The benchmark implementation is the vendored Linux ``iocost_coef_gen.py``
+already used by ``scripts/debian-install-v2``. This adapter gives MDT the
+same six measurements, but always uses a file target: measuring a raw device
+would be destructive. The file is retained so the cache can record the
+filesystem/device on which the numbers were obtained.
+
+The runtime cap consumer still receives the four historical fields it needs:
+random 4-KiB IOPS for ``io.max`` and sequential bandwidth for ``io.max``. The
+complete io.cost matrix is also stored for audit and future consumers.
+
+Cache validity is identity-based, not age-based. A measurement remains
+current while its configured test file and Docker data path resolve to the
+same filesystem and underlying block-device identity. If the disk or target
+changes, the cache is rejected even if it was written moments ago.
+"""
 
 from __future__ import annotations
 
 import argparse
-import json
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 OUT = Path(os.environ.get("IO_BASELINE_ENV") or "/var/lib/mdt/io-baseline.env")
-DEFAULT_TESTFILE = "/var/lib/mdt/io-baseline.testfile"
-DEFAULT_SIZE = "4G"
-DEFAULT_RUNTIME = 40
-DEFAULT_RAMP = 10
-FRESHNESS_SECONDS = 30 * 86400
-REQUIRED_CACHE_FIELDS = ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS")
+DEFAULT_TESTFILE = "/var/lib/mdt/iocost-coef-fio.testfile"
+DEFAULT_GENERATOR = "/usr/local/lib/mdt/iocost_coef_gen.py"
+DEFAULT_SIZE_GB = 16
+DEFAULT_DURATION = 120
+DEFAULT_NUMJOBS = 1
+METHOD = "iocost-coef-gen"
+SCHEMA_VERSION = "2"
+MATRIX_KEYS = ("RBPS", "RSEQIOPS", "RRANDIOPS", "WBPS", "WSEQIOPS", "WRANDIOPS")
+SAFE_HOST_PATH_RE = re.compile(
+    r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
+)
+REQUIRED_CACHE_FIELDS = (
+    "SCHEMA_VERSION", "KERNEL_RELEASE", "GENERATOR_SHA256",
+    "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS",
+    "DEVNO", "TESTFILE_STAT_DEV", "DOCKER_STAT_DEV", "FINDMNT_SOURCE",
+    "DEVICE_SIZE_SECTORS", "DEVICE_ROTATIONAL", "DEVICE_TOPOLOGY", "TESTFILE",
+    "TESTFILE_SIZE_BYTES", *MATRIX_KEYS,
+)
+RESULT_RE = re.compile(
+    r"(?P<devno>\d+:\d+)\s+"
+    r"rbps=(?P<rbps>\d+)\s+rseqiops=(?P<rseqiops>\d+)\s+"
+    r"rrandiops=(?P<rrandiops>\d+)\s+wbps=(?P<wbps>\d+)\s+"
+    r"wseqiops=(?P<wseqiops>\d+)\s+wrandiops=(?P<wrandiops>\d+)"
+)
 
 
 def positive_int(value: object, label: str) -> int:
     try:
-        ivalue = int(value)
+        number = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} is not an integer: {value!r}") from exc
-    if ivalue <= 0:
-        raise ValueError(f"{label} must be > 0: {ivalue}")
-    return ivalue
-
-
-def env_positive_int(name: str, fallback: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return fallback
-    try:
-        return positive_int(raw, name)
-    except ValueError as exc:
-        raise SystemExit(f"ERROR: {exc}") from exc
-
-
-def env_string(name: str, fallback: str) -> str:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return fallback
-    return raw
+    if number <= 0:
+        raise ValueError(f"{label} must be greater than zero")
+    return number
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="mdt-io-baseline.py",
         description=(
-            "Measure sustained host-disk ceilings for MDT. Run from the Docker "
-            "host shell; container execution is refused."
+            "Run the official kernel io.cost coefficient matrix against a "
+            "persistent file target and cache an identity-bound MDT baseline. "
+            "Host shell only; a container invocation is refused."
         ),
     )
-    parser.add_argument("--force", action="store_true", help="ignore a fresh cache")
-    parser.add_argument(
-        "--runtime",
-        type=lambda s: positive_int(s, "--runtime"),
-        default=env_positive_int("IO_BASELINE_RUNTIME", DEFAULT_RUNTIME),
-        help="fio runtime in seconds (default: IO_BASELINE_RUNTIME or 40)",
-    )
-    parser.add_argument(
-        "--ramp",
-        type=lambda s: positive_int(s, "--ramp"),
-        default=env_positive_int("IO_BASELINE_RAMP", DEFAULT_RAMP),
-        help="fio ramp time in seconds (default: IO_BASELINE_RAMP or 10)",
-    )
-    parser.add_argument(
-        "--testfile",
-        default=os.environ.get("IO_BASELINE_TESTFILE", DEFAULT_TESTFILE),
-        help=f"benchmark file path (default: IO_BASELINE_TESTFILE or {DEFAULT_TESTFILE})",
-    )
+    parser.add_argument("--force", action="store_true", help="bypass a current-cache reuse and deliberately remeasure after the running-container warning")
+    parser.add_argument("--check-cache", action="store_true", help="check identity and structure only; never run fio")
+    parser.add_argument("--output", default=os.environ.get("IO_BASELINE_ENV", str(OUT)), help="cache file (default: IO_BASELINE_ENV or /var/lib/mdt/io-baseline.env)")
+    parser.add_argument("--testfile", default=os.environ.get("IO_BASELINE_TESTFILE", DEFAULT_TESTFILE), help="persistent file target (default: IO_BASELINE_TESTFILE or /var/lib/mdt/iocost-coef-fio.testfile)")
+    parser.add_argument("--generator", default=os.environ.get("IOCOST_COEF_GENERATOR", DEFAULT_GENERATOR), help="iocost_coef_gen.py path")
+    parser.add_argument("--testfile-size-gb", type=float, default=float(os.environ.get("IO_BASELINE_SIZE_GB", DEFAULT_SIZE_GB)), metavar="GIGABYTES", help=f"file size passed to the official generator (default: {DEFAULT_SIZE_GB})")
+    parser.add_argument("--duration", type=lambda value: positive_int(value, "--duration"), default=positive_int(os.environ.get("IO_BASELINE_DURATION", DEFAULT_DURATION), "IO_BASELINE_DURATION"), metavar="SECONDS", help=f"duration of each of the six matrix runs (default: {DEFAULT_DURATION})")
+    parser.add_argument("--numjobs", type=lambda value: positive_int(value, "--numjobs"), default=positive_int(os.environ.get("IO_BASELINE_NUMJOBS", DEFAULT_NUMJOBS), "IO_BASELINE_NUMJOBS"), metavar="JOBS", help=f"parallel fio jobs per matrix run (default: {DEFAULT_NUMJOBS})")
     return parser.parse_args()
 
 
-def cache_is_fresh(path: Path) -> bool:
-    age_seconds = time.time() - path.stat().st_mtime
-    return age_seconds < FRESHNESS_SECONDS
+def parse_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        key, sep, value = line.partition("=")
+        if sep and re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+            values[key] = value
+    return values
+
+
+def _source_for(path: Path) -> str:
+    result = subprocess.run(
+        ["findmnt", "-no", "SOURCE", "--target", str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _top_block_device(source: str) -> Path | None:
+    """Resolve a findmnt source to its top block device, including LVM."""
+    if not source.startswith("/dev/"):
+        return None
+    node = Path(os.path.realpath(source))
+    if not node.exists():
+        return None
+    name = node.name
+    for _ in range(8):
+        slaves = sorted(Path(f"/sys/class/block/{name}/slaves").glob("*"))
+        if len(slaves) == 1:
+            name = slaves[0].name
+            continue
+        sys_node = Path(f"/sys/class/block/{name}")
+        try:
+            resolved = sys_node.resolve()
+        except OSError:
+            break
+        # A partition's resolved path is .../block/<disk>/<partition>.
+        if (sys_node / "partition").exists() and resolved.parent.name != "block":
+            name = resolved.parent.name
+            continue
+        break
+    candidate = Path("/dev") / name
+    return candidate if candidate.exists() else None
+
+
+def _udev_property(device: Path, name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["udevadm", "info", "--query=property", "--name", str(device)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
+    except FileNotFoundError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    prefix = f"{name}="
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _device_facts(device: Path) -> dict[str, str]:
+    name = device.name
+    sys_node = Path(f"/sys/class/block/{name}")
+    try:
+        topology = str(sys_node.resolve())
+    except OSError:
+        topology = ""
+    facts = {
+        "DEVICE_SERIAL": _udev_property(device, "ID_SERIAL") or _udev_property(device, "ID_WWN"),
+        "DEVICE_MODEL": _udev_property(device, "ID_MODEL"),
+        "DEVICE_SIZE_SECTORS": "",
+        "DEVICE_ROTATIONAL": "",
+        "DEVICE_TOPOLOGY": topology,
+    }
+    for key, relative in (("DEVICE_SIZE_SECTORS", "size"), ("DEVICE_ROTATIONAL", "queue/rotational")):
+        try:
+            facts[key] = (sys_node / relative).read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    return facts
+
+
+def device_identity(testfile: Path, io_dev_path: Path | None = None) -> dict[str, str]:
+    """Return stable device, filesystem and target identity facts.
+
+    The filesystem device check catches a test file placed on the wrong mount;
+    the block facts catch a disk replacement even when a major/minor number is
+    reused. Missing udev serials are tolerated, while topology/size/model are
+    still compared.
+    """
+    source = _source_for(testfile)
+    device = _top_block_device(source)
+    if device is None:
+        raise ValueError(
+            f"{testfile} is on {source or 'an unknown filesystem'}, not a host block device; "
+            "place IO_BASELINE_TESTFILE on the same local disk as Docker data"
+        )
+    try:
+        device_stat = os.stat(device)
+        test_stat = os.stat(testfile)
+        docker_stat = os.stat("/var/lib/docker")
+    except OSError as exc:
+        raise ValueError(f"cannot inspect IO baseline device identity: {exc}") from exc
+    devno = f"{os.major(device_stat.st_rdev)}:{os.minor(device_stat.st_rdev)}"
+    if test_stat.st_dev != docker_stat.st_dev:
+        raise ValueError(
+            f"{testfile} and /var/lib/docker are on different filesystems "
+            f"({test_stat.st_dev} versus {docker_stat.st_dev}); choose a target on the Docker data disk"
+        )
+    facts = _device_facts(device)
+    facts.update({
+        "DEVNO": devno,
+        "TESTFILE_STAT_DEV": str(test_stat.st_dev),
+        "DOCKER_STAT_DEV": str(docker_stat.st_dev),
+        "FINDMNT_SOURCE": source,
+    })
+    if io_dev_path and str(io_dev_path) not in ("", "auto"):
+        selected_top = _top_block_device(str(io_dev_path))
+        if selected_top is None:
+            raise ValueError(f"cannot resolve IO_DEV_PATH {io_dev_path} to a host block device")
+        if selected_top.resolve() != device.resolve():
+            raise ValueError(
+                f"IO_DEV_PATH {io_dev_path} resolves to {selected_top}, but the benchmark target is on {device}; "
+                "choose the Docker-data device for both settings"
+            )
+        try:
+            selected = os.stat(io_dev_path)
+            selected_devno = f"{os.major(selected.st_rdev)}:{os.minor(selected.st_rdev)}"
+        except OSError as exc:
+            raise ValueError(f"cannot inspect IO_DEV_PATH {io_dev_path}: {exc}") from exc
+        # IO_DEV_PATH can be an LVM mapper while the generator reports the
+        # top physical disk. The resolved-top comparison above accepts that
+        # legitimate indirection but refuses a cap applied to another disk.
+        facts["CONFIGURED_IO_DEVNO"] = selected_devno
+        facts["CONFIGURED_IO_DEVICE_TOPOLOGY"] = str(selected_top.resolve())
+    return facts
 
 
 def cache_is_valid(path: Path) -> bool:
-    """Return whether ``path`` contains a complete mdt sustained baseline.
-
-    Freshness is deliberately separate: a recent truncated or hand-written
-    file is not evidence that the four values are usable. Keep this parser
-    data-only so callers do not have to source an operator-controlled file.
-    """
+    values = parse_env(path)
+    if (
+        values.get("SCHEMA_VERSION") != SCHEMA_VERSION
+        or values.get("MEASURE_METHOD") != METHOD
+        or not values.get("MEASURED_AT")
+    ):
+        return False
+    if any(not values.get(key) for key in REQUIRED_CACHE_FIELDS):
+        return False
     try:
-        values: dict[str, str] = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            key, separator, value = line.partition("=")
-            if separator:
-                values[key] = value
-        if values.get("MEASURE_METHOD") != "sustained-v3":
-            return False
-        if not values.get("MEASURED_AT"):
-            return False
-        return all(int(values[key]) > 0 for key in REQUIRED_CACHE_FIELDS)
-    except (OSError, TypeError, ValueError):
+        return all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES"))
+    except (KeyError, ValueError):
         return False
 
 
-def host_context_error(root: Path | None = None) -> str | None:
-    """Refuse a benchmark that would write container-local "host" state.
-
-    This script is part of host-setup and writes the host baseline consumed by
-    the host's cgroup services. Container root, even with a Docker socket, is
-    not host root and does not share the host's filesystem or PID 1.
-    """
-    root = Path("/") if root is None else root
-    if (
-        (root / ".dockerenv").exists()
-        or (root / "run/.containerenv").exists()
-        or (root == Path("/") and os.environ.get("container"))
-    ):
-        return (
-            "the IO baseline must run from a host shell, not inside a devcontainer "
-            "or other container; UID 0 in a container is not host root"
+def cache_is_current(path: Path, testfile: Path | None = None) -> bool:
+    """Return true only when the cache describes this current disk target."""
+    if not cache_is_valid(path):
+        return False
+    values = parse_env(path)
+    target = testfile or Path(values["TESTFILE"])
+    try:
+        if not target.is_file() or int(values.get("TESTFILE_SIZE_BYTES", "0")) != target.stat().st_size:
+            return False
+        if values.get("KERNEL_RELEASE") != os.uname().release:
+            return False
+        generator = discover_generator(
+            Path(os.environ.get("IOCOST_COEF_GENERATOR", DEFAULT_GENERATOR))
         )
+        if generator is not None and values.get("GENERATOR_SHA256") != generator_digest(generator):
+            return False
+        configured = os.environ.get("IO_DEV_PATH", "")
+        current = device_identity(target, Path(configured) if configured and configured != "auto" else None)
+    except (OSError, ValueError, TypeError):
+        return False
+    if values.get("CONFIGURED_IO_DEVNO") and current.get("CONFIGURED_IO_DEVNO") != values["CONFIGURED_IO_DEVNO"]:
+        return False
+    return (
+        all(values.get(key) == value for key, value in current.items()
+            if key in ("DEVNO", "TESTFILE_STAT_DEV", "DOCKER_STAT_DEV",
+                       "FINDMNT_SOURCE", "DEVICE_SERIAL", "DEVICE_MODEL",
+                       "DEVICE_SIZE_SECTORS", "DEVICE_ROTATIONAL",
+                       "DEVICE_TOPOLOGY"))
+        and Path(values.get("TESTFILE", "")).resolve() == target.resolve()
+    )
+
+
+# Kept as the old public helper name so existing wizard/tests do not need a
+# version-locking change. "Fresh" now means current identity, never a TTL.
+def cache_is_fresh(path: Path, testfile: Path | None = None) -> bool:
+    return cache_is_current(path, testfile)
+
+
+def host_context_error(root: Path | None = None) -> str | None:
+    root = Path("/") if root is None else root
+    if ((root / ".dockerenv").exists() or (root / "run/.containerenv").exists() or
+            (root == Path("/") and os.environ.get("container"))):
+        return "the IO baseline must run from a host shell, not inside a devcontainer or other container; UID 0 there is not host root"
     try:
         pid1 = (root / "proc/1/comm").read_text(encoding="utf-8").strip()
     except OSError:
         pid1 = ""
     if pid1 != "systemd" or not (root / "run/systemd/system").is_dir():
-        return (
-            "the IO baseline requires systemd as PID 1 and /run/systemd/system; "
-            "run it on the Docker host"
-        )
+        return "the IO baseline requires systemd as PID 1 and /run/systemd/system; run it on the Docker host"
     return None
 
 
-def print_cached_cache(path: Path) -> None:
-    text = path.read_text()
+def print_cache(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
     sys.stdout.write(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")
 
 
-def maybe_warn_containers_running() -> None:
-    # The 4 fio passes hold the disk saturated for roughly 4 x (ramp + runtime)
-    # seconds plus a one-time 4G layout write (~3.5-4 min with defaults) — any
-    # latency-sensitive workload sharing the device WILL feel it.
+def warn_running_containers() -> None:
     try:
-        ps = subprocess.run(
-            ["docker", "ps", "-q"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
+        result = subprocess.run(["docker", "ps", "-q"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
     except FileNotFoundError:
         return
-    if ps.returncode != 0:
-        return
-
-    count = len(ps.stdout.split())
-    if count:
-        print(
-            f"WARNING: {count} container(s) are RUNNING - the benchmark saturates the disk "
-            "for ~3.5-4 min (defaults). Run in a quiet window if anything on this host is "
-            "latency-sensitive (production game/DB servers especially)."
-        )
-        print("         Ctrl-C within 5s to abort...")
+    if result.returncode == 0 and result.stdout.split():
+        print("WARNING: containers are running. The six io.cost fio runs temporarily saturate the disk; use a quiet maintenance window.")
+        print("         Ctrl-C within 5 seconds to abort.")
+        import time
         time.sleep(5)
 
 
-def detect_engine() -> str:
-    help_proc = subprocess.run(
-        ["fio", "--enghelp"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    if "libaio" in (help_proc.stdout or ""):
-        return "libaio"
-    print(
-        "WARN: libaio engine unavailable - psync fallback measures queue-depth-1 latency, "
-        "not the true IOPS ceiling"
-    )
-    return "psync"
+def discover_generator(path: Path) -> Path | None:
+    candidates = [path, Path(__file__).resolve().parents[3] / "scripts/debian-install-v2/tools/iocost_coef_gen.py"]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
-def run_fio_json(
-    name: str,
-    filename: str,
-    size: str,
-    runtime: int,
-    ramp: int,
-    engine: str,
-    rw: str,
-    bs: str,
-    iodepth: int,
-    path: Path,
-) -> None:
-    cmd = [
-        "fio",
-        f"--name={name}",
-        f"--filename={filename}",
-        f"--size={size}",
-        f"--rw={rw}",
-        f"--bs={bs}",
-        "--direct=1",
-        "--randrepeat=0",
-        "--norandommap",
-        "--refill_buffers",
-        "--buffer_compress_percentage=0",
-        f"--ioengine={engine}",
-        f"--iodepth={iodepth}",
-        "--numjobs=1",
-        "--time_based",
-        f"--runtime={runtime}",
-        f"--ramp_time={ramp}",
-        "--output-format=json",
-        f"--output={path}",
+def generator_digest(path: Path) -> str:
+    """Fingerprint the exact official benchmark implementation in use."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_cache(path: Path, values: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(str(path) + ".tmp")
+    lines = [f"{key}={value}" for key, value in values.items()]
+    lines.append("")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def run(args: argparse.Namespace) -> int:
+    output = Path(args.output).expanduser()
+    testfile = Path(args.testfile).expanduser()
+    for label, path in (("--output", output), ("--testfile", testfile)):
+        if not path.is_absolute():
+            print(f"ERROR: {label} must be an absolute host path: {path}", file=sys.stderr)
+            return 2
+        if any(character.isspace() for character in str(path)):
+            print(f"ERROR: {label} contains whitespace; choose a shell-safe host path: {path}", file=sys.stderr)
+            return 2
+        if not SAFE_HOST_PATH_RE.fullmatch(str(path)):
+            print(
+                f"ERROR: {label} contains shell-special characters; choose a simple shell-safe host path: {path}",
+                file=sys.stderr,
+            )
+            return 2
+    if output.resolve() == testfile.resolve():
+        print("ERROR: --output and --testfile must be different paths", file=sys.stderr)
+        return 2
+    if args.testfile_size_gb <= 0:
+        print("ERROR: --testfile-size-gb must be greater than zero", file=sys.stderr)
+        return 2
+    if args.check_cache:
+        if cache_is_current(output, testfile):
+            print(f"current io.cost baseline: {output} (device and target identity match)")
+            return 0
+        print(f"no current io.cost baseline: {output} (missing, invalid, or device/target identity changed)", file=sys.stderr)
+        return 1
+    if os.geteuid() != 0:
+        print("ERROR: run as root from the Docker host", file=sys.stderr)
+        return 1
+    if output.exists() and not args.force and cache_is_current(output, testfile):
+        print_cache(output)
+        return 0
+    generator = discover_generator(Path(args.generator))
+    if generator is None:
+        print(f"ERROR: official iocost coefficient generator not found: {args.generator}", file=sys.stderr)
+        return 1
+    if shutil.which("fio") is None or shutil.which("pv") is None:
+        print("ERROR: the official generator needs fio and pv (install fio and pv)", file=sys.stderr)
+        return 1
+    expected_size = int(args.testfile_size_gb * 2**30)
+    if testfile.exists() and testfile.stat().st_size != expected_size:
+        print(f"ERROR: refusing to replace {testfile}: existing size is {testfile.stat().st_size} bytes, expected {expected_size}", file=sys.stderr)
+        return 1
+    try:
+        testfile.parent.mkdir(parents=True, exist_ok=True)
+        testfile.touch(exist_ok=True)
+        identity = device_identity(testfile, Path(os.environ["IO_DEV_PATH"]) if os.environ.get("IO_DEV_PATH") else None)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    warn_running_containers()
+    command = [
+        sys.executable, str(generator), "--quiet", "--testfile", str(testfile),
+        "--testfile-size-gb", str(args.testfile_size_gb), "--duration", str(args.duration),
+        "--numjobs", str(args.numjobs),
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=None, check=True)
-
-
-def parse_fio_report(path: Path, direction: str, metric: str, fallback_metric: str | None = None) -> int:
-    raw = path.read_text()
-    start = raw.find("{")
-    if start < 0:
-        raise ValueError(f"fio report {path} did not contain JSON")
-    report = json.loads(raw[start:])
+    print("Running official io.cost coefficient benchmark: six fio runs, about "
+          f"{args.duration * 6 // 60} minutes minimum; the target disk will be saturated.")
     try:
-        job = report["jobs"][0]
-        section = job[direction]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"fio report {path} missing jobs[0].{direction}") from exc
-
-    value = section.get(metric)
-    if value is None and fallback_metric is not None:
-        fallback = section.get(fallback_metric)
-        if fallback is None:
-            raise ValueError(f"fio report {path} missing {direction}.{metric} and fallback {fallback_metric}")
-        value = int(fallback) * 1024
-
-    return positive_int(value, f"{direction}.{metric}")
-
-
-def parse_fio_p99_us(path: Path, direction: str) -> int | None:
-    raw = path.read_text()
-    start = raw.find("{")
-    if start < 0:
-        raise ValueError(f"fio report {path} did not contain JSON")
-    report = json.loads(raw[start:])
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True, check=False)
+    except OSError as exc:
+        print(f"ERROR: could not start official generator: {exc}", file=sys.stderr)
+        return 1
+    if result.returncode != 0:
+        print(f"ERROR: official io.cost benchmark exited {result.returncode}; existing cache remains untouched", file=sys.stderr)
+        return result.returncode
+    match = RESULT_RE.search(result.stdout or "")
+    if not match:
+        print("ERROR: official generator returned no parseable coefficient line; existing cache remains untouched", file=sys.stderr)
+        return 1
+    if match.group("devno") != identity["DEVNO"]:
+        print(f"ERROR: device identity changed during benchmark ({identity['DEVNO']} before, {match.group('devno')} reported)", file=sys.stderr)
+        return 1
     try:
-        job = report["jobs"][0]
-        section = job[direction]
-        clat_ns = section["clat_ns"]
-        percentile = clat_ns["percentile"]
-        value = percentile["99.000000"]
-    except (KeyError, IndexError, TypeError):
-        return None
-    return int(value) // 1000
-
-
-def clean_path(path: Path) -> None:
+        final_identity = device_identity(testfile, Path(os.environ["IO_DEV_PATH"]) if os.environ.get("IO_DEV_PATH") else None)
+        if final_identity != identity:
+            raise ValueError("device or filesystem identity changed during benchmark")
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}; existing cache remains untouched", file=sys.stderr)
+        return 1
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    matrix = {key: match.group(name) for key, name in (
+        ("RBPS", "rbps"), ("RSEQIOPS", "rseqiops"), ("RRANDIOPS", "rrandiops"),
+        ("WBPS", "wbps"), ("WSEQIOPS", "wseqiops"), ("WRANDIOPS", "wrandiops"),
+    )}
+    cache = {
+        "SCHEMA_VERSION": SCHEMA_VERSION,
+        "MEASURE_METHOD": METHOD,
+        "MEASURED_AT": now,
+        "KERNEL_RELEASE": os.uname().release,
+        "GENERATOR_SHA256": generator_digest(generator),
+        **identity,
+        "TESTFILE": str(testfile.resolve()),
+        "TESTFILE_SIZE_BYTES": str(expected_size),
+        # io.max cannot distinguish sequential and random I/O. Use the lower
+        # point for IOPS so either access pattern remains within the ceiling.
+        "RIOPS_MAX": str(min(int(matrix["RSEQIOPS"]), int(matrix["RRANDIOPS"]))),
+        "WIOPS_MAX": str(min(int(matrix["WSEQIOPS"]), int(matrix["WRANDIOPS"]))),
+        "RBW_MAX_BPS": matrix["RBPS"], "WBW_MAX_BPS": matrix["WBPS"],
+        **matrix, "DURATION_SEC": str(args.duration), "NUMJOBS": str(args.numjobs),
+    }
     try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
-def write_cache_atomic(values: dict[str, int | str], engine: str, out: Path) -> None:
-    measured_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    tmp = Path(str(out) + ".tmp")
-    lines = [
-        f"RIOPS_MAX={values['RIOPS_MAX']}",
-        f"WIOPS_MAX={values['WIOPS_MAX']}",
-        f"RBW_MAX_BPS={values['RBW_MAX_BPS']}",
-        f"WBW_MAX_BPS={values['WBW_MAX_BPS']}",
-        f"IO_ENGINE={engine}",
-        f"RIOPS_ENGINE={engine}",
-        f"MEASURED_AT={measured_at}",
-    ]
-    for key in ("RIOPS_P99_US", "RBW_P99_US", "WIOPS_P99_US", "WBW_P99_US"):
-        if key in values:
-            lines.append(f"{key}={values[key]}")
-    lines.extend(
-        [
-            "MEASURE_METHOD=sustained-v3",
-            f"RAMP_SEC={values['RAMP_SEC']}",
-            f"RUNTIME_SEC={values['RUNTIME_SEC']}",
-            f"TESTFILE_SIZE={values['TESTFILE_SIZE']}",
-            "",
-        ]
-    )
-    body = "\n".join(lines)
-    with tmp.open("w", encoding="utf-8") as fh:
-        fh.write(body)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, out)
-
-
-def pct(value: int, percent: int) -> int:
-    return value * percent // 100
+        write_cache(output, cache)
+    except OSError as exc:
+        print(f"ERROR: could not write {output}: {exc}", file=sys.stderr)
+        return 1
+    print(f"wrote current io.cost baseline: {output}")
+    print("io.max mapping: read/write IOPS = random 4 KiB matrix points; read/write bandwidth = sequential matrix points")
+    print_cache(output)
+    return 0
 
 
 def main() -> int:
     args = parse_args()
-
     context_error = host_context_error()
     if context_error:
         print(f"ERROR: {context_error}", file=sys.stderr)
-        print(
-            "Leave the devcontainer and rerun this command from the host checkout.",
-            file=sys.stderr,
-        )
+        print("Leave the devcontainer and rerun this command from the host checkout.", file=sys.stderr)
         return 2
-
-    if os.geteuid() != 0:
-        print("run as root", file=sys.stderr)
-        return 1
-    if shutil.which("fio") is None:
-        print("fio not installed (apt install fio)", file=sys.stderr)
-        return 1
-
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-
-    if OUT.exists() and not args.force and cache_is_fresh(OUT) and cache_is_valid(OUT):
-        print_cached_cache(OUT)
-        return 0
-
-    maybe_warn_containers_running()
-
-    testfile = Path(args.testfile)
-    if testfile.exists() or testfile.is_symlink():
-        print(
-            f"ERROR: test file {testfile} already exists - refusing to reuse/delete it.",
-            file=sys.stderr,
-        )
-        print(
-            "       Remove it or set IO_BASELINE_TESTFILE to a fresh path.",
-            file=sys.stderr,
-        )
-        return 1
-
-    engine = detect_engine()
-    fio_tmpfiles: list[Path] = []
-    values: dict[str, int | str] = {}
-
-    try:
-        runs = [
-            ("riops-baseline", "randread", "4k", 32, "read", "iops", None, "RIOPS_MAX", "RIOPS_P99_US"),
-            ("rbw-baseline", "read", "128k", 8, "read", "bw_bytes", "bw", "RBW_MAX_BPS", "RBW_P99_US"),
-            ("wiops-baseline", "randwrite", "4k", 32, "write", "iops", None, "WIOPS_MAX", "WIOPS_P99_US"),
-            ("wbw-baseline", "write", "128k", 8, "write", "bw_bytes", "bw", "WBW_MAX_BPS", "WBW_P99_US"),
-        ]
-
-        testfile_size = env_string("IO_BASELINE_SIZE", DEFAULT_SIZE)
-        values["RAMP_SEC"] = args.ramp
-        values["RUNTIME_SEC"] = args.runtime
-        values["TESTFILE_SIZE"] = testfile_size
-
-        for name, rw, bs, iodepth, direction, metric, fallback, key, p99_key in runs:
-            fd, raw_path = tempfile.mkstemp(prefix="io-baseline-", suffix=".json")
-            os.close(fd)
-            report = Path(raw_path)
-            fio_tmpfiles.append(report)
-            run_fio_json(name, str(testfile), testfile_size, args.runtime, args.ramp, engine, rw, bs, iodepth, report)
-            values[key] = parse_fio_report(report, direction, metric, fallback)
-            p99_value = parse_fio_p99_us(report, direction)
-            if p99_value is not None:
-                values[p99_key] = p99_value
-
-        numeric_keys = {"RIOPS_MAX", "RBW_MAX_BPS", "WIOPS_MAX", "WBW_MAX_BPS", "RAMP_SEC", "RUNTIME_SEC"}
-        p99_keys = {"RIOPS_P99_US", "RBW_P99_US", "WIOPS_P99_US", "WBW_P99_US"}
-        for key, value in values.items():
-            if key in numeric_keys:
-                if not isinstance(value, int) or value <= 0:
-                    raise ValueError(f"{key} must be > 0: {value}")
-                continue
-            if key in p99_keys:
-                if not isinstance(value, int) or value < 0:
-                    raise ValueError(f"{key} must be >= 0: {value}")
-                continue
-            if key == "TESTFILE_SIZE":
-                if not isinstance(value, str) or not value:
-                    raise ValueError("TESTFILE_SIZE must be a non-empty string")
-                continue
-            raise ValueError(f"unexpected cache key: {key}")
-
-        write_cache_atomic(values, engine, OUT)
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    finally:
-        clean_path(testfile)
-        for path in fio_tmpfiles:
-            clean_path(path)
-        clean_path(Path(str(OUT) + ".tmp"))
-
-    # The two percentages mdt-apply-dev-caps.sh derives caps at by default:
-    # DEV_IO_CAP_PCT (whole dev.slice estate) and SWEEP_IO_CAP_PCT (one container).
-    print("measured ceiling            (tier 60%)   (per-container 80%)")
-    for key in ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS"):
-        v = int(values[key])
-        print(f"{key}={v:<18} {pct(v, 60):<12} {pct(v, 80)}")
-    for key in ("RIOPS_P99_US", "RBW_P99_US", "WIOPS_P99_US", "WBW_P99_US"):
-        if key in values:
-            print(f"{key}={values[key]}us")
-    print("applied on next mdt-apply-dev-caps.sh run (systemctl start mdt-host-slices.service)")
-    return 0
+    return run(args)
 
 
 if __name__ == "__main__":

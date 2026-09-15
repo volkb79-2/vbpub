@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Interactive wizard for /etc/mdt/host-setup.env — walks host-setup.env.example's
-# own section order, showing THIS host's own /proc/meminfo-derived numbers where
+# Interactive wizard for /etc/mdt/host-setup.env — walks a slice-first resource
+# order, showing THIS host's own /proc/meminfo-derived numbers where
 # it's relevant (per-tier memory, the memory-min-guaranteed ceiling), and writes
 # the result by TEMPLATE SURGERY on host-setup.env.example: only the KEY=value
 # line for a key actually walked is replaced, every comment/blank line/section
@@ -27,9 +27,9 @@
 #
 # Reuses, rather than reimplements:
 #   - mdt-io-baseline.py's own cache_is_fresh() (imported) for the IO-baseline
-#     freshness check, and its own main() (invoked as a subprocess) to
-#     actually run the benchmark — never duplicates the 30-day freshness math
-#     or the quiet-window warning.
+#     identity check, and its own main() (invoked as a subprocess) to actually
+#     run the benchmark — never duplicates the identity rules or quiet-window
+#     warning.
 #   - install.sh's own findmnt auto-discovery for IO_DEV_PATH.
 #   - the atomic-write pattern from mdt-io-baseline.py's write_cache_atomic
 #     (temp file in the same directory, fsync, os.replace) for the produced
@@ -75,6 +75,18 @@ CIU_P50_RELATIVE_PATH = (
     "ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md"
 )
 
+# These names were public in the first host-setup release. The implementation
+# now uses WATCHER_* because both the Docker-events watcher and its periodic
+# sweep consume them; migrate them when --wizard sees an old config so an
+# upgrade does not silently reseed custom values from the example.
+LEGACY_CONFIG_KEYS = {
+    "SWEEP_IO_CAP_PCT": "WATCHER_IO_CAP_PCT",
+    "TESTRUNNER_IMAGE_PATTERNS": "WATCHER_TESTRUNNER_IMAGE_PATTERNS",
+    "BUILDKIT_NAME_PATTERNS": "WATCHER_BUILDKIT_NAME_PATTERNS",
+    "DEVCONTAINER_NAME_PATTERNS": "WATCHER_DEVCONTAINER_NAME_PATTERNS",
+    "SWEEP_INTERVAL": "WATCHER_INTERVAL",
+}
+
 
 # ─── output layer (terminal-width-aware reflow + conditional highlighting) ──
 #
@@ -88,6 +100,9 @@ MAX_WIDTH = 120  # cap: fully-justified prose past ~120 columns is hard to scan
 _HIGHLIGHT = "\033[1;36m"  # bold cyan — keys, paths, commands, unit names
 _RESET = "\033[0m"
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
+_SAFE_HOST_PATH_RE = re.compile(
+    r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
+)
 # A char that cannot appear in this file's own prose, used to keep a
 # multi-word `backtick span` from being split across a wrap boundary (which
 # would leave an unmatched backtick on each of the two lines).
@@ -177,14 +192,49 @@ def _prompt(text: str) -> str:
     presses Home or an arrow key. Colour belongs on the explanatory text above
     (out()); prompt labels in this file therefore contain no backtick spans.
     """
+    # Prompt labels are passed with section-local indentation by callers, but
+    # input() has no paragraph layout and long labels take a different path
+    # through the wrapper below. Normalize that indentation here so a short
+    # label cannot look different from the same label after wrapping.
+    text = text.lstrip()
+
+    # A piped/redirected transcript does not echo the answer typed into
+    # input(), so without this explicit newline the next explanation is
+    # glued to the prompt.  A real TTY already echoes the user's Enter and
+    # must not receive a second newline.
+    echoed_by_terminal = bool(getattr(sys.stdin, "isatty", lambda: False)())
     if len(text) <= term_width():
-        return input(text)
+        try:
+            answer = input(text)
+        except EOFError:
+            if not echoed_by_terminal:
+                print()
+            raise
+        if not echoed_by_terminal:
+            print()
+        return answer
     lead, sep, tail = text.rpartition("[")
     if not sep:
         out(text)
-        return input("> ")
+        try:
+            answer = input("> ")
+        except EOFError:
+            if not echoed_by_terminal:
+                print()
+            raise
+        if not echoed_by_terminal:
+            print()
+        return answer
     out(lead.strip())
-    return input(f"[{tail}")
+    try:
+        answer = input(f"[{tail}")
+    except EOFError:
+        if not echoed_by_terminal:
+            print()
+        raise
+    if not echoed_by_terminal:
+        print()
+    return answer
 
 
 # ─── pure functions (parsing/formatting/proposals — no I/O, reviewable and
@@ -384,69 +434,45 @@ def is_size_string(value: str) -> bool:
 
 
 def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
-    """Host-scaled starting proposals for every per-tier memory key the
-    wizard walks (Work step 4d). HIGH/LOW/MAX figures scale off
-    MemAvailable — what's actually free on THIS host right now, already net
-    of anything else (including a co-located production tier) using memory —
-    NOT off MemTotal, which would overstate real headroom on a shared host.
-    MemoryMin is not invented for ordinary slices: the only MemoryMin in this
-    design is the explicit, opt-in shared guarantee prompted separately.
-    Percentages are round, easily-explained fractions of this HOST's own live
-    numbers — never this project's shipped example figures. Swap-max proposals
-    are NOT part of this dict — the slice-first flow asks those per slice."""
+    """Offer readable caps based on physical RAM, not transient free RAM.
 
-    def frac(base_kib: int, percent: int, min_mib: int = 0) -> str:
-        return kib_to_size_str(base_kib * percent // 100, min_mib=min_mib)
+    ``MemAvailable`` changes with whatever happens to be running while the
+    wizard is opened. It is shown as context, but using it as a hard sizing
+    input would make a busy host propose unusably small limits and would make
+    the same hardware produce different policy every minute. The proportions
+    below are the host policy: they leave overlap between tiers, while the
+    parent aggregate checks prevent the configured hierarchy from exceeding
+    its own parent.
+    """
+    def frac(percent: int) -> str:
+        return kib_to_size_str(max(1, total_kib * percent // 100))
 
     proposals = {
-        "DEV_MEMORY_HIGH": kib_to_size_str(avail_kib),
-        "DEV_MEMORY_MAX": kib_to_size_str(max(total_kib, avail_kib)),
-        "DEV_INTERACTIVE_MEMORY_LOW": frac(avail_kib, 15),
-        "DEV_INTERACTIVE_MEMORY_HIGH": frac(avail_kib, 30),
-        "DEV_INTERACTIVE_MEMORY_MAX": frac(avail_kib, 50),
-        "DEV_BACKGROUND_MEMORY_LOW": frac(avail_kib, 15),
-        "DEV_BACKGROUND_MEMORY_HIGH": frac(avail_kib, 30),
-        "DEV_BACKGROUND_MEMORY_MAX": frac(avail_kib, 50),
-        "DEV_GATES_MEMORY_LOW": frac(avail_kib, 5),
-        "DEV_GATES_MEMORY_HIGH": frac(avail_kib, 10),
-        "DEV_GATES_MEMORY_MAX": frac(avail_kib, 20),
-        "DEV_BUILDKITD_MEMORY_LOW": frac(avail_kib, 10),
-        "DEV_BUILDKITD_MEMORY_HIGH": frac(avail_kib, 25),
-        "DEV_BUILDKITD_MEMORY_MAX": frac(avail_kib, 45),
+        "DEV_MEMORY_HIGH": kib_to_size_str(max(1, total_kib * 75 // 100)),
+        "DEV_MEMORY_MAX": kib_to_size_str(total_kib),
+        "DEV_INTERACTIVE_MEMORY_LOW": frac(15),
+        "DEV_INTERACTIVE_MEMORY_HIGH": frac(20),
+        "DEV_INTERACTIVE_MEMORY_MAX": frac(32),
+        "DEV_BACKGROUND_MEMORY_LOW": frac(15),
+        "DEV_BACKGROUND_MEMORY_HIGH": frac(32),
+        "DEV_BACKGROUND_MEMORY_MAX": frac(50),
+        "DEV_GATES_MEMORY_LOW": frac(5),
+        "DEV_GATES_MEMORY_HIGH": frac(5),
+        "DEV_GATES_MEMORY_MAX": frac(10),
+        "DEV_BUILDKITD_MEMORY_LOW": frac(10),
+        "DEV_BUILDKITD_MEMORY_HIGH": frac(10),
+        "DEV_BUILDKITD_MEMORY_MAX": frac(12),
     }
-
-    # Human-friendly rounding can round several percentages upward at once,
-    # especially on small fixtures. Never hand the interactive flow a set of
-    # proposals that immediately violates its own aggregate rule. In that
-    # boundary case, retain the exact floor in KiB (a valid systemd size) so
-    # the operator starts from a valid, if less pretty, configuration.
-    child_high_keys = (
-        "DEV_INTERACTIVE_MEMORY_HIGH",
-        "DEV_BACKGROUND_MEMORY_HIGH",
-        "DEV_GATES_MEMORY_HIGH",
-        "DEV_BUILDKITD_MEMORY_HIGH",
+    # Readable binary rounding must not make the child High proposals exceed
+    # their parent on a very small fixture host.  Normal hosts stay at the
+    # stated 75%-of-MemTotal root policy.
+    child_high_kib = sum(
+        parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"])
+        for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD")
     )
-    child_high_total = sum(parse_size_to_kib(proposals[key]) for key in child_high_keys)
-    root_high = parse_size_to_kib(proposals["DEV_MEMORY_HIGH"])
-    if child_high_total > root_high or child_high_total > avail_kib:
-        raw_percentages = {
-            "DEV_INTERACTIVE_MEMORY_LOW": 15,
-            "DEV_INTERACTIVE_MEMORY_HIGH": 30,
-            "DEV_INTERACTIVE_MEMORY_MAX": 50,
-            "DEV_BACKGROUND_MEMORY_LOW": 15,
-            "DEV_BACKGROUND_MEMORY_HIGH": 30,
-            "DEV_BACKGROUND_MEMORY_MAX": 50,
-            "DEV_GATES_MEMORY_LOW": 5,
-            "DEV_GATES_MEMORY_HIGH": 10,
-            "DEV_GATES_MEMORY_MAX": 20,
-            "DEV_BUILDKITD_MEMORY_LOW": 10,
-            "DEV_BUILDKITD_MEMORY_HIGH": 25,
-            "DEV_BUILDKITD_MEMORY_MAX": 45,
-        }
-        for key, percent in raw_percentages.items():
-            raw_kib = max(1, avail_kib * percent // 100)
-            proposals[key] = f"{raw_kib}K"
-        proposals["DEV_MEMORY_HIGH"] = f"{max(1, avail_kib)}K"
+    root_high_kib = parse_size_to_kib(proposals["DEV_MEMORY_HIGH"])
+    if child_high_kib > root_high_kib:
+        proposals["DEV_MEMORY_HIGH"] = f"{child_high_kib}K"
     return proposals
 
 
@@ -474,6 +500,14 @@ def validate_absolute_path(value: str) -> str | None:
         return "an absolute path is required (for example '/var/lib/mdt/io-baseline.env')"
     if not value.startswith("/"):
         return f"{value!r} is not an absolute path"
+    if any(character.isspace() for character in value):
+        return f"{value!r} contains whitespace; choose a path without spaces because the host env file is shell-sourced"
+    if not _SAFE_HOST_PATH_RE.fullmatch(value):
+        return (
+            f"{value!r} contains shell-special characters; use an absolute path "
+            "made of letters, digits, '.', '_', '+', '@', '%', ':', '=', ',' "
+            "and '-' because the host env file and benchmark helper are shell-sourced"
+        )
     return None
 
 
@@ -564,11 +598,20 @@ def memory_aggregate_error(avail_kib: int, values: dict[str, str]) -> str | None
     """
     field_index = {"MEMORY_MIN": 0, "MEMORY_LOW": 1, "MEMORY_HIGH": 2, "MEMORY_MAX": 3}
 
+    del avail_kib  # MemAvailable is advisory context, never a policy limit.
+
+    def field_values(field: str) -> list[tuple[str, int]]:
+        return [
+            (slice_name, parse_size_to_kib(values.get(keys[field_index[field]], "")))
+            for slice_name, keys in MEMORY_CHILD_SPECS
+            if values.get(keys[field_index[field]], "")
+        ]
+
     def sum_field(field: str) -> int:
-        return sum(
-            parse_size_to_kib(values.get(keys[field_index[field]], ""))
-            for _, keys in MEMORY_CHILD_SPECS
-        )
+        return sum(value for _, value in field_values(field))
+
+    def detail(field: str) -> str:
+        return ", ".join(f"{name}={kib_to_size_str(value)}" for name, value in field_values(field))
 
     highs = sum_field("MEMORY_HIGH")
     lows = sum_field("MEMORY_LOW")
@@ -586,42 +629,29 @@ def memory_aggregate_error(avail_kib: int, values: dict[str, str]) -> str | None
         ),
         default=0,
     )
-    if highs > root_high:
+    if root_high and highs > root_high:
         return (
-            f"sibling MemoryHigh values ({kib_to_size_str(highs)} combined) exceed "
+            f"sibling MemoryHigh values ({kib_to_size_str(highs)} combined: {detail('MEMORY_HIGH')}) exceed "
             f"dev.slice MemoryHigh ({kib_to_size_str(root_high)}); increase the parent "
             "or reduce a child"
         )
     if lows and root_low and lows > root_low:
         return (
-            f"sibling MemoryLow values ({kib_to_size_str(lows)} combined) exceed "
+            f"sibling MemoryLow values ({kib_to_size_str(lows)} combined: {detail('MEMORY_LOW')}) exceed "
             f"dev.slice MemoryLow ({kib_to_size_str(root_low)}); increase the parent "
             "or reduce a child"
         )
-    if child_maximum > root_max:
+    if root_max and child_maximum > root_max:
         return (
-            f"a child MemoryMax ({kib_to_size_str(child_maximum)}) exceeds dev.slice "
+            f"a child MemoryMax ({kib_to_size_str(child_maximum)}; {detail('MEMORY_MAX')}) exceeds dev.slice "
             f"MemoryMax ({kib_to_size_str(root_max)}); increase the parent or reduce "
             "that child"
         )
-    if child_minimum and not minimum:
-        return (
-            "a child MemoryMin was configured while dev.slice MemoryMin is empty; "
-            "the parent must explicitly carry the hard protection budget"
-        )
     if minimum and child_minimum > minimum:
         return (
-            f"sibling MemoryMin values ({kib_to_size_str(child_minimum)} combined) "
+            f"sibling MemoryMin values ({kib_to_size_str(child_minimum)} combined: {detail('MEMORY_MIN')}) "
             f"exceed dev.slice MemoryMin ({kib_to_size_str(minimum)}); increase the "
             "parent or reduce a child"
-        )
-    if highs + child_minimum > avail_kib:
-        return (
-            "aggregate memory exceeds live MemAvailable: "
-            f"sibling MemoryHigh values ({kib_to_size_str(highs)} combined) + "
-            f"MemoryMin claims ({kib_to_size_str(child_minimum)}) > MemAvailable "
-            f"({kib_to_size_str(avail_kib)}); reduce/re-enter a MemoryHigh or "
-            "leave an optional MemoryMin empty"
         )
     return None
 
@@ -642,6 +672,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
         "DEV_ZSWAP_WRITEBACK": validate_yes_no,
         "DEV_BUILDKITD_IMAGE": validate_nonempty,
+        "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_positive_size,
@@ -651,12 +682,13 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT": validate_pct_1_100,
         "CGROUP2_FLAGS": validate_cgroup2_flags,
         "DEV_IO_CAP_PCT": validate_cap_pct,
-        "SWEEP_IO_CAP_PCT": validate_cap_pct,
-        "TESTRUNNER_IMAGE_PATTERNS": validate_nonempty,
-        "BUILDKIT_NAME_PATTERNS": validate_nonempty,
-        "DEVCONTAINER_NAME_PATTERNS": validate_nonempty,
-        "SWEEP_INTERVAL": validate_nonempty,
+        "WATCHER_IO_CAP_PCT": validate_cap_pct,
+        "WATCHER_TESTRUNNER_IMAGE_PATTERNS": validate_nonempty,
+        "WATCHER_BUILDKIT_NAME_PATTERNS": validate_nonempty,
+        "WATCHER_DEVCONTAINER_NAME_PATTERNS": validate_nonempty,
+        "WATCHER_INTERVAL": validate_nonempty,
         "IO_BASELINE_ENV": validate_absolute_path,
+        "IO_BASELINE_TESTFILE": validate_absolute_path,
     }
 
     for key in (
@@ -706,9 +738,9 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_BUILDKITD_MEMORY_HIGH",
         "DEV_BUILDKITD_MEMORY_MAX",
     ):
-        validators[key] = validate_positive_size
+        validators[key] = validate_optional_positive_size
     validators["DEV_MEMORY_LOW"] = validate_optional_positive_size
-    validators["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = validate_size_or_empty
+    validators["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = validate_optional_positive_size
     for _, keys in MEMORY_CHILD_SPECS:
         for index, key in enumerate(keys):
             if key == "DEV_MEMORY_MIN_GUARANTEED_CEILING":
@@ -716,16 +748,7 @@ def _config_value_validators() -> dict[str, Validator]:
             if index in (0, 1):
                 validators[key] = validate_optional_positive_size
             elif index in (2, 3):
-                validators[key] = (
-                    validate_positive_size
-                    if key.startswith((
-                        "DEV_INTERACTIVE_",
-                        "DEV_BACKGROUND_",
-                        "DEV_GATES_",
-                        "DEV_BUILDKITD_",
-                    ))
-                    else validate_optional_positive_size
-                )
+                validators[key] = validate_optional_positive_size
     return validators
 
 
@@ -769,10 +792,10 @@ def validate_host_setup_config(
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
 
-    avail_kib = meminfo.get("MemAvailable", 0)
-    if avail_kib <= 0:
+    total_kib = meminfo.get("MemTotal", 0)
+    if total_kib <= 0:
         raise TemplateError(
-            f"{meminfo_path} has no positive MemAvailable; refusing aggregate validation"
+            f"{meminfo_path} has no positive MemTotal; cannot validate host-sized memory policy"
         )
     relationship_errors = memory_relationship_errors(values)
     if relationship_errors:
@@ -780,13 +803,30 @@ def validate_host_setup_config(
             "invalid memory hierarchy: "
             + "; ".join(message for _, message in relationship_errors)
         )
-    aggregate_error = memory_aggregate_error(avail_kib, values)
+    aggregate_error = memory_aggregate_error(meminfo.get("MemAvailable", 0), values)
     if aggregate_error:
         raise TemplateError("invalid memory aggregate: " + aggregate_error)
 
 
+def migrate_legacy_config_keys(cfg_current: dict[str, str]) -> dict[str, str]:
+    """Translate pre-WATCHER public names without losing operator tuning."""
+    migrated = dict(cfg_current)
+    for old_key, new_key in LEGACY_CONFIG_KEYS.items():
+        if old_key not in cfg_current:
+            continue
+        if new_key in cfg_current:
+            out(f"WARN: both `{old_key}` and current `{new_key}` exist; keeping `{new_key}`")
+            continue
+        migrated[new_key] = cfg_current[old_key]
+        out(
+            f"Migrating legacy `{old_key}` to `{new_key}`; the current name covers "
+            "the event watcher and periodic sweep."
+        )
+    return migrated
+
+
 def propose_memory_min_guaranteed_suggestion(
-    avail_kib: int, tier_high_values: dict[str, str]
+    total_kib: int, tier_high_values: dict[str, str]
 ) -> tuple[int, int, str]:
     """Pure function backing Work step 4e's 'suggestion grounded in THIS
     host's own numbers'. Returns (leftover_kib, suggestion_kib, formula_text).
@@ -794,7 +834,7 @@ def propose_memory_min_guaranteed_suggestion(
     Sums every MemoryHigh figure passed in `tier_high_values` (the realistic
     'expected concurrent' load — MemoryMax already assumes swap is absorbing
     overflow, so summing Max figures would understate what's actually free
-    day to day), subtracts that from MemAvailable, and proposes a SMALL,
+    day to day), subtracts that from MemTotal, and proposes a SMALL,
     explicitly conservative 5% of whatever's left over. Callers pass ALL
     FOUR tiers' MemoryHigh as of RG-55 P8 (round-1 review S2): step d's
     three host-scaled figures (interactive/background/buildkitd) plus
@@ -814,23 +854,23 @@ def propose_memory_min_guaranteed_suggestion(
     (main() now adds dev-gates.slice's own MemoryHigh to the same dict) they
     shrink to reflect what's actually earmarked:
 
-    >>> avail_kib = 8 * 1024 * 1024  # 8 GiB
+    >>> total_kib = 8 * 1024 * 1024  # 8 GiB
     >>> before = {"DEV_INTERACTIVE_MEMORY_HIGH": "2G", "DEV_BACKGROUND_MEMORY_HIGH": "2G", "DEV_BUILDKITD_MEMORY_HIGH": "1G"}
-    >>> propose_memory_min_guaranteed_suggestion(avail_kib, before)
-    (3145728, 157286, "MemAvailable (8G) - 3 tiers' MemoryHigh figures (5G combined) = 3G left over; 5% of that leftover = 150M")
+    >>> propose_memory_min_guaranteed_suggestion(total_kib, before)
+    (3145728, 157286, "MemTotal (8G) - 3 tiers' MemoryHigh figures (5G combined) = 3G left over; 5% of that leftover = 150M")
     >>> after = dict(before, DEV_GATES_MEMORY_HIGH="4G")
-    >>> propose_memory_min_guaranteed_suggestion(avail_kib, after)
-    (0, 0, "MemAvailable (8G) - 4 tiers' MemoryHigh figures (9G combined) = 0 left over; 5% of that leftover = 0")
+    >>> propose_memory_min_guaranteed_suggestion(total_kib, after)
+    (0, 0, "MemTotal (8G) - 4 tiers' MemoryHigh figures (9G combined) = 0 left over; 5% of that leftover = 0")
     """
     earmarked_kib = sum(parse_size_to_kib(v) for v in tier_high_values.values())
-    leftover_kib = max(0, avail_kib - earmarked_kib)
+    leftover_kib = max(0, total_kib - earmarked_kib)
     suggestion_kib = leftover_kib * 5 // 100
     # "N tiers'" rather than a hardcoded "three" (round-1 review S2): the
     # caller passes step d's three PLUS dev-gates.slice's own fixed figure
     # as of RG-55 P8, and a hardcoded count would go stale again the next
     # time a tier is added.
     formula = (
-        f"MemAvailable ({kib_to_size_str(avail_kib)}) - {len(tier_high_values)} "
+        f"MemTotal ({kib_to_size_str(total_kib)}) - {len(tier_high_values)} "
         f"tiers' MemoryHigh figures ({kib_to_size_str(earmarked_kib)} combined) = "
         f"{kib_to_size_str(leftover_kib)} left over; 5% of that leftover = "
         f"{kib_to_size_str(suggestion_kib)}"
@@ -929,8 +969,9 @@ def resolve_default(
     During an upgrade, pressing Enter preserves an existing ``KEY=`` choice.
 
     An empty value is not silently converted into a discovered device, a
-    memory proposal, or an auto-detected quota. To clear a value in an
-    interactive run, type ``none`` where the prompt documents that action.
+    memory proposal, or an auto-detected quota. To clear an optional memory
+    value in an interactive run, type ``-``; ``none`` remains accepted for
+    compatibility with earlier wizard sessions.
     """
     if key in cfg_current:
         return cfg_current[key]
@@ -955,15 +996,7 @@ _SIZE_EXAMPLES = "e.g. '500M', '6G', '2048K', or a bare byte count"
 
 
 def validate_size_required(value: str) -> str | None:
-    """Every per-tier memory key and both docker-scope backstop keys.
-
-    Empty is NOT accepted here, and that is a semantic judgement per field
-    rather than a blanket rule: install.sh's render() DROPS any directive
-    whose value resolves to empty, so an empty MemoryHigh/Max/SwapMax here
-    does not mean "no limit" — it means the tier silently loses that
-    governance entirely, which is never what someone answering a prompt
-    labelled "MemoryHigh" intends. Required memory fields must also be
-    positive; ``0`` and ``no`` are not alternate spellings for "unset"."""
+    """Validate a required positive memory size."""
     if not value:
         return f"a size is required here ({_SIZE_EXAMPLES}); leaving it empty would drop this setting from the rendered unit entirely"
     if not is_size_string(value):
@@ -974,18 +1007,16 @@ def validate_size_required(value: str) -> str | None:
 
 
 def validate_size_or_empty(value: str) -> str | None:
-    """DEV_MEMORY_MIN_GUARANTEED_CEILING only — the one key where empty is a
-    first-class, documented answer ("leave the whole mechanism inert"), not
-    an omission. Any other size field uses validate_size_required."""
+    """Validate a size or an explicitly unset optional field."""
     if not value:
         return None
     if not is_size_string(value):
-        return f"{value!r} is not a systemd-style size string ({_SIZE_EXAMPLES}); press Enter or type 'none' for the documented empty state"
+        return f"{value!r} is not a systemd-style size string ({_SIZE_EXAMPLES}); type '-' for the documented empty state"
     return None
 
 
 def validate_cap_pct(value: str) -> str | None:
-    """DEV_IO_CAP_PCT / SWEEP_IO_CAP_PCT.
+    """DEV_IO_CAP_PCT / WATCHER_IO_CAP_PCT.
 
     Two different rules, deliberately not merged into one:
 
@@ -1030,6 +1061,8 @@ def validate_io_dev_path(value: str) -> str | None:
         return None
     if not value.startswith("/dev/") or value == "/dev/":
         return f"{value!r} is not a /dev block-device node -- give a path such as /dev/sda or /dev/mapper/vg-root (or leave it empty/auto to omit static caps if the host device cannot be discovered)"
+    if not _SAFE_HOST_PATH_RE.fullmatch(value):
+        return f"{value!r} contains shell-special characters; give a simple host device path such as /dev/sda or /dev/mapper/vg-root"
     return None
 
 
@@ -1166,6 +1199,7 @@ def ask(
     validate: Validator | None = None,
     *,
     empty_token: str | None = None,
+    empty_tokens: tuple[str, ...] = (),
     default_source: str | None = None,
 ) -> str:
     """Prompt for one value; Enter accepts `default` unchanged.
@@ -1193,7 +1227,10 @@ def ask(
             raw = ""
             at_eof = True
         raw = raw.strip()
-        value = "" if empty_token and raw.lower() == empty_token else (raw if raw else default)
+        tokens = tuple(token.lower() for token in empty_tokens)
+        if empty_token:
+            tokens += (empty_token.lower(),)
+        value = "" if raw.lower() in tokens else (raw if raw else default)
         if validate is None:
             return value
         error = validate(value)
@@ -1248,7 +1285,8 @@ def walk_key(
         f"{label} ({key})",
         default,
         validate=validate,
-        empty_token=empty_token or ("none" if allow_empty_token else None),
+        empty_token=empty_token,
+        empty_tokens=("-", "none") if allow_empty_token else (),
         default_source=source,
     )
 
@@ -1297,7 +1335,7 @@ def write_atomic(path: Path, content: str) -> None:
 def _load_io_baseline_module(script_path: Path) -> ModuleType | None:
     """Import mdt-io-baseline.py (a hyphenated filename, so a plain `import`
     can't name it) as a module, to reuse its own cache_is_fresh() rather
-    than reimplementing the 30-day freshness math inline. Safe to exec: the
+    than reimplementing the identity rules inline. Safe to exec: the
     module only defines functions/constants at import time, its own
     benchmark run is gated behind `if __name__ == "__main__":`."""
     if not script_path.exists():
@@ -1313,21 +1351,16 @@ def _load_io_baseline_module(script_path: Path) -> ModuleType | None:
     return module
 
 
-def check_baseline_freshness(baseline_env_path: Path, io_baseline_script: Path) -> str:
-    """Returns 'fresh', 'stale', or 'missing'. NEVER runs the benchmark
-    itself. Primary path: import mdt-io-baseline.py and call its own
-    cache_is_fresh(). Fallback (import genuinely failed): report 'stale' so
-    the wizard offers to run it — the subsequent subprocess invocation
-    (step_io_baseline, without --force) is itself cheap and safe even if the
-    cache turns out to already be fresh: mdt-io-baseline.py's own main()
-    checks freshness again before touching the disk, and just prints the
-    cached values back out if so."""
+def check_baseline_freshness(
+    baseline_env_path: Path, testfile_path: Path, io_baseline_script: Path
+) -> str:
+    """Return fresh, stale or missing without running fio."""
     if not baseline_env_path.exists():
         return "missing"
     module = _load_io_baseline_module(io_baseline_script)
     if module is not None and hasattr(module, "cache_is_fresh"):
         try:
-            fresh = module.cache_is_fresh(baseline_env_path)
+            fresh = module.cache_is_fresh(baseline_env_path, testfile_path)
             valid = not hasattr(module, "cache_is_valid") or module.cache_is_valid(baseline_env_path)
             return "fresh" if fresh and valid else "stale"
         except OSError:
@@ -1339,6 +1372,25 @@ def check_baseline_freshness(baseline_env_path: Path, io_baseline_script: Path) 
 
 
 def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+    out("\n-- storage baseline: what this setup measures --")
+    out(
+        "MDT measures the Docker data disk with the official Linux kernel "
+        "io.cost coefficient matrix: sequential and random read/write "
+        "throughput. It does not enable io.cost; it uses those measured "
+        "ceilings to populate the existing io.max controls."
+    )
+    out(
+        "The benchmark always writes a persistent file, never the raw block "
+        "device. That file must be on the same filesystem/device as "
+        "/var/lib/docker, because the runtime caps are intended for that "
+        "disk. The file remains after the run and is part of the cache identity."
+    )
+    out(
+        "There is no arbitrary 30-day expiry. A cache is reusable only while "
+        "the test-file path, filesystem identity, block-device topology, size, "
+        "model/rotation facts, and stable device identifier still match. "
+        "Changing the disk or moving Docker data requires a new measurement."
+    )
     out("\n-- a. IO device (IO_DEV_PATH) --")
     out(
         "This selects the block-device node that install.sh uses for the STATIC "
@@ -1376,8 +1428,9 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
             "returned a container filesystem such as `overlay`, or returned no source). "
             "On a supported host this should not be `overlay`; if it is, stop and leave "
             "the devcontainer because host setup is being run in the wrong context. "
-            "Otherwise, at an auto value the installer omits static IO caps; review the "
-            "host mount or enter its `/dev/...` device node explicitly."
+            "Otherwise, at an auto value the installer omits static IO caps and the "
+            "runtime watcher skips IO caps until its own discovery finds a host device; "
+            "review the host mount or enter its `/dev/...` device node explicitly."
         )
     return walk_key(
         "Device node for Docker data (/dev/... path; auto = discover)",
@@ -1394,86 +1447,87 @@ def step_io_baseline(
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
     io_baseline_script: Path,
-) -> tuple[str, bool]:
+) -> tuple[str, str, bool]:
     """Offer to measure this disk's real IO ceilings.
 
-    Returns the selected cache path and True ONLY when this call actually
-    invoked mdt-io-baseline.py and it exited 0 — i.e. there is now a fresh,
-    successful measurement from THIS session. Every other path returns the
-    selected path and False: cache already fresh, operator declined, `fio` or
-    script missing, or a nonzero exit. main() uses that to decide
-    whether the `--with-baseline` sub-question at the very end is worth
-    asking at all; re-running a ~4-minute disk-saturating benchmark that just
-    completed would buy nothing.
+    Returns the selected cache path, target path, and True ONLY when this call
+    actually invoked the adapter and it exited 0. Every other path returns
+    the selected paths and False. main() uses that to decide whether the
+    `--with-baseline` question at the end is worth asking; re-running a
+    just-completed disk-saturating benchmark would buy nothing.
     """
     out("\n-- b. IO baseline --")
     out(
-        "This step chooses the file that stores the four measured ceilings and "
-        "then checks whether that file is fresh. The runtime cap service reads "
-        "the same file; it is not a report that the wizard keeps only in memory."
+        "The cache stores the six raw io.cost coefficients plus the four "
+        "compatibility ceilings used by MDT. io.max has one IOPS value per "
+        "direction, so MDT uses the lower sequential/random IOPS value; it uses "
+        "sequential bytes per second for bandwidth. The runtime service reads "
+        "this same file; it is not a report held only in memory."
+    )
+    out(
+        "Enter the cache path and then the persistent benchmark-file path. "
+        "Enter accepts the shown default; both paths must be absolute. "
+        "The adapter reuses an existing target only when the cache is current. "
+        "To deliberately remeasure an unchanged target, run the installed "
+        "adapter later with `--force`; that bypasses reuse, not the device "
+        "identity checks."
+    )
+    out(
+        "`IO_BASELINE_ENV` is the persistent cache file: the runtime cap service "
+        "reads its measured ceilings from it. `IO_BASELINE_TESTFILE` is the "
+        "persistent file that the benchmark reads and writes; it stays on disk "
+        "so the cache can prove which filesystem and device were measured. "
+        "Changing either path changes the identity check and normally requires "
+        "a new baseline."
     )
     baseline_env = walk_key(
-        "Baseline cache file (absolute path; none is not valid)",
+        "Baseline cache file (absolute path)",
         "IO_BASELINE_ENV",
         cfg_current,
         example_defaults,
         validate=validate_absolute_path,
     )
     baseline_env_path = Path(baseline_env)
-    out(f"The cache will be read and written at `{baseline_env_path}`.")
-    testfile = Path(os.environ.get("IO_BASELINE_TESTFILE", "/var/lib/mdt/io-baseline.testfile"))
-    out(
-        "`mdt-io-baseline.py` measures this disk's real IOPS and bandwidth ceilings with "
-        "`fio` and caches the result for 30 days. By default its temporary benchmark "
-        f"file is `{testfile}`; that file must be on the same block device as `IO_DEV_PATH`, "
-        "or the numbers will describe the wrong device. Set `IO_BASELINE_TESTFILE` before "
-        "running the wizard when Docker and `/var/lib/mdt` are on different devices. The "
-        "runtime sweep takes its caps as a "
-        "PERCENTAGE of those measured numbers (steps c below), so until this has run once "
-        "there is nothing to take a percentage OF, and `mdt-apply-dev-caps.sh` falls back to "
-        f"the deliberately tight static fallback from the template: "
-        f"{example_defaults.get('DEV_STATIC_RIOPS', '<unknown>')}/"
-        f"{example_defaults.get('DEV_STATIC_WIOPS', '<unknown>')} IOPS and "
-        f"{example_defaults.get('DEV_STATIC_RBW', '<unknown>')}/"
-        f"{example_defaults.get('DEV_STATIC_WBW', '<unknown>')} bandwidth."
+    testfile_default = os.environ.get(
+        "IO_BASELINE_TESTFILE",
+        example_defaults.get("IO_BASELINE_TESTFILE", "/var/lib/mdt/iocost-coef-fio.testfile"),
     )
-    status = check_baseline_freshness(baseline_env_path, io_baseline_script)
+    testfile_text = walk_key(
+        "Benchmark target file (persistent absolute path; same device as Docker data)",
+        "IO_BASELINE_TESTFILE",
+        cfg_current,
+        example_defaults,
+        proposal=testfile_default,
+        validate=validate_absolute_path,
+    )
+    testfile = Path(testfile_text)
+    out(f"The cache will be read/written at `{baseline_env_path}`.")
+    out(f"The benchmark target remains at `{testfile}` so identity can be checked later.")
+    status = check_baseline_freshness(baseline_env_path, testfile, io_baseline_script)
     if status == "fresh":
-        out("This cache is fresh (measured less than 30 days ago) -- leaving it as-is.")
-        return baseline_env, False
-    reason = (
-        "No cache found yet."
-        if status == "missing"
-        else "This cache is stale (30 days old or more)."
-    )
-    if status == "stale":
-        reason = "This cache is stale, incomplete, or not a valid sustained mdt baseline."
-    out(reason)
+        out("This cache is current: its recorded device and persistent target still match this host. Leaving it as-is.")
+        return baseline_env, testfile_text, False
+    out("No current cache is available: it is missing, incomplete, or its device/target identity no longer matches.")
     if not io_baseline_script.exists():
         out(
             f"WARN: `{io_baseline_script}` not found -- skipping this step. Run it manually "
             "once it is installed; the static caps hold until you do."
         )
-        return baseline_env, False
-    if shutil.which("fio") is None:
+        return baseline_env, testfile_text, False
+    if shutil.which("fio") is None or shutil.which("pv") is None:
         out(
-            "`fio` is not installed, so this wizard cannot benchmark yet. On a fresh "
-            "host, install.sh installs it after this candidate is validated; run the "
-            f"benchmark later with `sudo {io_baseline_script}` in a quiet window."
+            "The official generator needs `fio` and `pv`, which are not both installed. "
+            "On a fresh host, install.sh installs them after this candidate is validated; "
+            f"run the benchmark later with `sudo {io_baseline_script}` in a quiet window."
         )
-        return baseline_env, False
+        return baseline_env, testfile_text, False
     run_now = ask_yn(
-        "Run the IO baseline benchmark now? It takes about 4 minutes and SATURATES THE "
-        "DISK for that whole time, so only do it in a quiet window -- anything else using "
-        "this disk will crawl. (The script itself also warns and gives you 5 seconds to "
-        "Ctrl-C if it finds containers running.)",
+        "Run the io.cost baseline now? It runs six fio measurements for about 12 minutes minimum and SATURATES THE DISK; use a quiet maintenance window",
         default=False,
     )
     if not run_now:
-        out(f"Skipping -- you can run it later with: sudo {io_baseline_script}")
-        return baseline_env, False
-    # Letting mdt-io-baseline.py own the quiet-window warning AND the 30-day
-    # freshness check (no --force): do not duplicate either here.
+        out(f"Skipping -- run it later with: sudo {io_baseline_script} --output `{baseline_env}` --testfile `{testfile}`")
+        return baseline_env, testfile_text, False
     # Flush first: our own stdout is block-buffered whenever it is not a
     # terminal (a piped/redirected run, i.e. every recorded transcript), while
     # the child writes to the same fd immediately -- without this the child's
@@ -1481,16 +1535,18 @@ def step_io_baseline(
     sys.stdout.flush()
     child_env = os.environ.copy()
     child_env["IO_BASELINE_ENV"] = baseline_env
+    child_env["IO_BASELINE_TESTFILE"] = testfile_text
     result = subprocess.run(
-        [sys.executable, str(io_baseline_script)], env=child_env, check=False
+        [sys.executable, str(io_baseline_script), "--output", baseline_env, "--testfile", testfile_text],
+        env=child_env, check=False
     )
     if result.returncode != 0:
         out(
             f"WARN: the IO baseline run exited {result.returncode} -- the static caps remain "
             "in force until it succeeds."
         )
-        return baseline_env, False
-    return baseline_env, True
+        return baseline_env, testfile_text, False
+    return baseline_env, testfile_text, True
 
 
 def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> tuple[str, str]:
@@ -1517,13 +1573,15 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
         hang="    ",
     )
     out(
-        "`SWEEP_IO_CAP_PCT` -- the per-container ceiling, applied to each container "
+        "`WATCHER_IO_CAP_PCT` -- the per-container ceiling, applied to each container "
         "individually. The Docker-events watcher applies it when a matching test-runner, "
         "Buildx worker, or devcontainer starts; the periodic sweep is the backstop. This "
         "protects tier members from EACH OTHER. Buildx workers created by the accidental "
         "container-driver path are not reliably placed in `dev.slice`, so their matching "
         "container scope needs this direct cap; the normal host-managed `mdt-buildkitd` "
-        "service is governed by `dev-buildkitd.slice` itself.",
+        "service is governed by `dev-buildkitd.slice` itself. This is a percentage "
+        "of the measured device ceilings, NOT a percentage of dev.slice's already "
+        "reduced cap; a matched container is still bounded by its parent when nested there.",
         indent="  ",
         hang="    ",
     )
@@ -1543,8 +1601,8 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
         validate=validate_cap_pct,
     )
     sweep_pct = walk_key(
-        "Per-container IO cap %",
-        "SWEEP_IO_CAP_PCT",
+        "Per-container IO cap (percentage of measured device ceiling)",
+        "WATCHER_IO_CAP_PCT",
         cfg_current,
         example_defaults,
         validate=validate_cap_pct,
@@ -1773,7 +1831,7 @@ def step_buildkitd(cfg_current: dict[str, str], example_defaults: dict[str, str]
 def step_docker_daemon(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> tuple[str, str, str]:
-    out("\n-- g. Docker daemon.json keys this tool owns --")
+    out("\n-- f. Docker daemon.json keys this tool owns --")
     out(
         "This sets Docker's daemon-wide DEFAULT placement (D-G7): "
         "`DOCKER_DAEMON_CGROUP_PARENT` is the slice "
@@ -1983,6 +2041,7 @@ def _prompt_shared_memory_min(values: dict[str, str]) -> None:
         authoritative,
         validate=validate_size_or_empty,
         empty_token="none",
+        empty_tokens=("-", "none"),
         default_source="confirmed above",
     )
 
@@ -1991,20 +2050,42 @@ def _reprompt_memory_constraints(
     avail_kib: int,
     values: dict[str, str],
 ) -> None:
-    """Reject hierarchy/aggregate mistakes and ask again; never clamp."""
-    for _ in range(32):
+    """Repair a hierarchy interactively without losing the whole session."""
+    def correction(key: str) -> None:
+        before = values.get(key, "")
+        validator = validate_optional_positive_size
+        while True:
+            shown = before or "<empty>"
+            try:
+                raw = _prompt(
+                    f"  corrected value for {key} [{shown}] "
+                    "(type a value, '-' to unset, q to abort): "
+                ).strip()
+            except EOFError as exc:
+                raise ValueError(
+                    "stdin ended while a memory correction was required; "
+                    "the candidate was not written"
+                ) from exc
+            if raw.lower() in ("q", "quit", "abort"):
+                raise ValueError("memory correction aborted; the candidate was not written")
+            if not raw:
+                out("  Enter keeps the invalid value; type a smaller/larger value or '-' to unset.")
+                continue
+            value = "" if raw.lower() in ("-", "none") else raw
+            error = validator(value)
+            if error:
+                out(f"  invalid: {error}")
+                continue
+            values[key] = value
+            return
+
+    for _ in range(64):
         errors = memory_relationship_errors(values)
         if errors:
-            key, message = errors[0]
-            out(f"invalid: {message}", indent="  ")
-            before = values[key]
-            values[key] = ask(
-                f"  corrected value for {key}",
-                before,
-                validate=validate_optional_positive_size if ("_MIN" in key or "_LOW" in key or key == "DEV_MEMORY_LOW") else validate_positive_size,
-            )
-            if values[key] == before and memory_relationship_errors(values):
-                raise ValueError("memory hierarchy is still invalid after re-prompt")
+            out("invalid memory hierarchy:", indent="  ")
+            for _, message in errors:
+                out(message, indent="    ")
+            correction(errors[0][0])
             continue
         aggregate = memory_aggregate_error(avail_kib, values)
         if aggregate is None:
@@ -2019,30 +2100,25 @@ def _reprompt_memory_constraints(
         )
         root_high = parse_size_to_kib(values.get("DEV_MEMORY_HIGH", ""))
         child_high_total = sum(parse_size_to_kib(values[key]) for key in high_keys)
-        if child_high_total > root_high:
+        if "MemoryLow" in aggregate:
+            key = "DEV_MEMORY_LOW"
+        elif root_high and child_high_total > root_high:
             key = "DEV_MEMORY_HIGH"
-        elif any(parse_size_to_kib(values[key]) > parse_size_to_kib(values["DEV_MEMORY_MAX"]) for key in ("DEV_INTERACTIVE_MEMORY_MAX", "DEV_BACKGROUND_MEMORY_MAX", "DEV_GATES_MEMORY_MAX", "DEV_BUILDKITD_MEMORY_MAX")):
+        elif parse_size_to_kib(values.get("DEV_MEMORY_MAX", "")) and any(
+            parse_size_to_kib(values.get(key, "")) > parse_size_to_kib(values["DEV_MEMORY_MAX"])
+            for _, keys in MEMORY_CHILD_SPECS
+            for key in (keys[3],)
+        ):
             key = "DEV_MEMORY_MAX"
-        elif any(values.get(key, "") for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")) and not minimum:
-            key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
         elif minimum and sum(parse_size_to_kib(values.get(key, "")) for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")) > minimum:
             key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
-        elif minimum:
-            key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
         else:
-            key = max(high_keys, key=lambda candidate: parse_size_to_kib(values[candidate]))
-        before = values.get(key, "")
-        values[key] = ask(
-            f"  corrected value for {key}",
-            before,
-            validate=validate_size_or_empty if key.startswith("DEV_MEMORY_MIN") else validate_positive_size,
-        )
-        if values[key] == before and memory_aggregate_error(avail_kib, values):
-            raise ValueError("aggregate memory remains above live MemAvailable after re-prompt")
-    raise ValueError("memory constraints did not converge after 32 correction prompts")
+            key = "DEV_MEMORY_HIGH"
+        correction(key)
+    raise ValueError("memory corrections did not converge after 64 prompts; the candidate was not written")
 
 
-def step_slice_first_resources(
+def _legacy_step_slice_first_resources(
     meminfo: dict[str, int],
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
@@ -2141,12 +2217,12 @@ def step_slice_first_resources(
         validate=validate_optional_positive_size, allow_empty_token=True,
     )
     values["DEV_MEMORY_HIGH"] = walk_key(
-        "  MemoryHigh (required positive size; no 0/no)",
+        "  MemoryHigh (optional; none = no directive)",
         "DEV_MEMORY_HIGH", cfg_current, example_defaults,
         proposals["DEV_MEMORY_HIGH"], validate=validate_positive_size,
     )
     values["DEV_MEMORY_MAX"] = walk_key(
-        "  MemoryMax (required positive RAM size; swap is separate)",
+        "  MemoryMax (optional; none = no directive; swap is separate)",
         "DEV_MEMORY_MAX", cfg_current, example_defaults,
         proposals["DEV_MEMORY_MAX"], validate=validate_positive_size,
     )
@@ -2285,14 +2361,13 @@ def step_slice_first_resources(
     for slice_name, prefix, keys in child_specs:
         out(f"\n  {slice_name}")
         out(
-            "  MemoryMin/Low are optional protection directives; MemoryHigh/Max are "
-            "required positive sizes. `none` clears an optional field, while blank "
+            "  MemoryMin/Low/High/Max are optional directives. `none` clears a field, while blank "
             "on CPUQuota or MemorySwapMax below means auto-detect."
         )
         for field, key in zip(("MemoryMin", "MemoryLow", "MemoryHigh", "MemoryMax"), keys):
-            validator = validate_positive_size if field in ("MemoryHigh", "MemoryMax") else validate_optional_positive_size
+            validator = validate_optional_positive_size
             values[key] = walk_key(
-                f"  {field} (optional; none = no directive)" if field in ("MemoryMin", "MemoryLow") else f"  {field} (required positive size; no 0/no)",
+                f"  {field} (optional; none = no directive)",
                 key, cfg_current, example_defaults, proposals.get(key), validator,
                 allow_empty_token=field in ("MemoryMin", "MemoryLow"),
             )
@@ -2334,6 +2409,18 @@ def step_slice_first_resources(
                 "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
                 cfg_current, example_defaults, validate=validate_nonempty,
             )
+            out(
+                "BuildKit also limits its own internal solver parallelism. This "
+                "reduces simultaneous RUN/cache operations inside one daemon; "
+                "it does not limit the number of client builds and is separate "
+                "from the release flow's REPACK_JOBS and REPACK_CONCURRENCY."
+            )
+            values["DEV_BUILDKITD_MAX_PARALLELISM"] = walk_key(
+                "  BuildKit max parallel solver operations (positive integer)",
+                "DEV_BUILDKITD_MAX_PARALLELISM", cfg_current, example_defaults,
+                proposal=str(max(1, min(4, host_nproc))),
+                validate=validate_positive_int,
+            )
             values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key(
                 "  accidental Buildx policy (terminate or report-only)",
                 "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
@@ -2354,6 +2441,315 @@ def step_slice_first_resources(
     return values
 
 
+def step_slice_first_resources(
+    meminfo: dict[str, int],
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+) -> dict[str, str]:
+    """Walk the resource policy in the same order a user reasons about it."""
+    total_kib = meminfo["MemTotal"]
+    avail_kib = meminfo.get("MemAvailable", 0)
+    swap_kib = read_swap_total_kib(meminfo, "")
+    proposals = propose_memory_tiers(total_kib, avail_kib)
+    values: dict[str, str] = {}
+    host_nproc = discover_nproc()
+    if not host_nproc:
+        raise ValueError("nproc did not return a positive CPU count; cannot explain or derive CPU ceilings")
+
+    out("\n-- d. Governed slices (slice-first) --")
+    out(
+        f"Host facts used for proposals: MemTotal={kib_to_size_str(total_kib)}, "
+        f"MemAvailable={kib_to_size_str(avail_kib) if avail_kib > 0 else 'unavailable'}, "
+        f"nproc={host_nproc}, "
+        f"SwapTotal={kib_to_size_str(swap_kib)}."
+    )
+    out(
+        "Memory proposals are percentages of physical MemTotal, because "
+        "MemAvailable is transient: a busy host must not suddenly receive tiny "
+        "limits. MemAvailable is shown as context only, not as a budget. The "
+        "proposals are caps and thresholds, not RAM reservations or allocations."
+    )
+    out(
+        "MemoryMin is hard reclaim protection, MemoryLow is best-effort "
+        "protection, MemoryHigh starts reclaim/throttling, and MemoryMax is a "
+        "hard RAM ceiling. MemoryMax excludes swap. MemorySwapMax is a separate "
+        "swap-only ceiling; a process may therefore use up to both limits, subject "
+        "to the ancestor limits. Every MemoryMin/Low/High/Max field is optional: "
+        "Enter accepts the shown value, while '-' (or the older spelling 'none') "
+        "writes no directive. An omitted parent limit is unlimited at that level."
+    )
+    out(
+        "Aggregate checks use hierarchy, not current consumption: sibling "
+        "MemoryHigh values must fit under a configured parent MemoryHigh; sibling "
+        "MemoryLow values must fit under a configured parent MemoryLow; a child's "
+        "MemoryMax must fit under a configured parent MemoryMax; and admitted "
+        "MemoryMin claims must fit under the shared guaranteed ceiling. Child "
+        "MemoryMax values are not summed because each is its own subtree cap. "
+        "The wizard shows every contributing value when a correction is needed."
+    )
+    out(
+        "The starting policy is root High=75% of MemTotal and root Max=100%. "
+        "Interactive starts at Low/High/Max=15%/20%/32%; background at "
+        "15%/32%/50%; gates at 5%/5%/10%; BuildKit at 10%/10%/12%. "
+        "For a 15.5 GiB host this is about 12 GiB root High, 15.5 GiB root "
+        "Max, 3/5 GiB interactive, 5/8 GiB background, 800 MiB/1.5 GiB gates, "
+        "and 1.5/2 GiB BuildKit. These are starting points to review, not facts."
+    )
+    _, suggested_min_kib, suggestion_formula = propose_memory_min_guaranteed_suggestion(
+        total_kib,
+        {key: proposals[key] for key in (
+            "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_HIGH",
+            "DEV_GATES_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_HIGH",
+        )},
+    )
+    out(
+        f"Advisory guaranteed-floor math: {suggestion_formula}. "
+        f"This is not a RAM reservation and is never selected automatically; "
+        f"the optional ceiling suggestion is {kib_to_size_str(suggested_min_kib)}."
+    )
+
+    out("\n  dev.slice — shared parent")
+    out(
+        "Configure the shared parent first. It bounds the whole dev estate "
+        "together; child values below describe each sibling's own workload. "
+        "The guaranteed MemoryMin value is mirrored later on the dedicated "
+        "sibling, so there is only one ceiling to decide."
+    )
+    values["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = walk_key(
+        "  MemoryMin (optional; '-' = no guaranteed tier)",
+        "DEV_MEMORY_MIN_GUARANTEED_CEILING", cfg_current, example_defaults,
+        validate=validate_optional_positive_size, allow_empty_token=True,
+    )
+    for field, key in (
+        ("MemoryLow", "DEV_MEMORY_LOW"),
+        ("MemoryHigh", "DEV_MEMORY_HIGH"),
+        ("MemoryMax", "DEV_MEMORY_MAX"),
+    ):
+        out(
+            f"  {field} is the parent {field}: it applies to the entire dev "
+            "estate, not to one container. Leave it unset with '-' when you "
+            "want systemd's default at this level."
+        )
+        values[key] = walk_key(
+            f"  {field} (optional; '-' = no directive)",
+            key, cfg_current, example_defaults, proposals.get(key),
+            validate=validate_optional_positive_size, allow_empty_token=True,
+        )
+
+    out(
+        "MemoryZSwapWriteback controls whether cold pages in this cgroup may "
+        "leave compressed zswap for disk swap. yes permits that cache to drain; "
+        "no keeps the cold tail in compressed RAM. A no on an ancestor also "
+        "disables writeback for descendants."
+    )
+    out(
+        "CPU has two different concepts. The host reserve is cores deliberately "
+        "left outside the aggregate dev quota for host/production load. The "
+        "child quota reserve is cores held outside each child's automatically "
+        "derived quota, making each child a smaller dev ceiling. Neither reserves "
+        "or pins a CPU; both only affect a blank CPUQuota."
+    )
+    out(
+        f"On this host (nproc={host_nproc}), if host reserve is 1, a blank root "
+        f"CPUQuota becomes {max(1, host_nproc - 1) * 100}%; if child quota "
+        f"reserve is 3, a blank child CPUQuota becomes "
+        f"{max(1, host_nproc - 3) * 100}%. An explicit value such as 400% "
+        "is the actual hard cap and overrides the derived value. CPUWeight is "
+        "only a relative share when peers contend."
+    )
+    values["DEV_CPU_RESERVE_CORES"] = walk_key(
+        "  host/production CPU reserve (cores excluded from root auto-quota)",
+        "DEV_CPU_RESERVE_CORES", cfg_current, example_defaults,
+        validate=validate_nonneg_int,
+    )
+    values["DEV_SUBSLICE_CPU_RESERVE_CORES"] = walk_key(
+        "  child dev CPU ceiling reserve (cores excluded from each child auto-quota)",
+        "DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults,
+        validate=validate_nonneg_int,
+    )
+    values["DEV_CPU_QUOTA"] = walk_key(
+        "  dev.slice CPUQuota (blank = derived from host reserve; N% = hard cap)",
+        "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
+    )
+    values["DEV_ZSWAP_WRITEBACK"] = walk_yn_key(
+        "  dev.slice MemoryZSwapWriteback", "DEV_ZSWAP_WRITEBACK",
+        cfg_current, example_defaults,
+    )
+
+    out(
+        "Swap policy is separate from RAM. The cascade first applies "
+        "DEV_SWAP_CASCADE_PCT to host SwapTotal for dev.slice. A blank "
+        "MemorySwapMax means derive that slice's swap-only ceiling; it does "
+        "not mean unlimited and it does not include RAM. Each child derives "
+        "the same percentage from the parent's derived swap-only ceiling; an "
+        "explicit size overrides only that slice."
+    )
+    values["DEV_SWAP_CASCADE_PCT"] = walk_key(
+        "  swap cascade percentage (host -> dev.slice -> child; bare 1-100)",
+        "DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults,
+        validate=validate_pct_1_100,
+    )
+    values["DEV_SWAP_MAX"] = walk_key(
+        "  dev.slice MemorySwapMax (blank = derive swap-only ceiling)",
+        "DEV_SWAP_MAX", cfg_current, example_defaults,
+        validate=validate_size_or_auto,
+    )
+    out(
+        "The child IOPS sub-ceiling is applied only to gates and the host-managed "
+        "BuildKit slice. It is a percentage of the already-derived dev.slice "
+        "IOPS cap, not a percentage of the raw device and not a bandwidth cap. "
+        "Bandwidth inherits the parent pool. IOWeight is intentionally absent "
+        "on the root because its absolute io.max pool is the estate cap."
+    )
+    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
+        "  child IOPS sub-ceiling (percentage of dev.slice IOPS cap; bare 1-100)",
+        "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults,
+        validate=validate_pct_1_100,
+    )
+
+    out("\n-- e. Guaranteed memory floor (opt-in; one shared ceiling) --")
+    out(
+        "This optional MemoryMin protects only containers explicitly admitted "
+        "to dev-memory_min_guaranteed.slice. It does not allocate RAM now and "
+        "does not protect ordinary devcontainers. The value above is rendered "
+        "on both the parent and this sibling; Enter confirms it, and a new "
+        "value changes both."
+    )
+    out(
+        "For orientation, the advisory suggestion is 5% of MemTotal left after "
+        "the four child MemoryHigh starting points. It is deliberately not "
+        "selected automatically; leave the ceiling unset unless measured "
+        "workload evidence calls for it."
+    )
+    _prompt_shared_memory_min(values)
+    out(
+        f"  mirrored MemoryMin: {values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'}; "
+        "the sibling has no second MemoryMin setting."
+    )
+    out(
+        "This sibling's Low/High/Max are also optional and apply only to its "
+        "admitted subtree. CPU, IOWeight and swap are inherited rather than "
+        "rendered here."
+    )
+    for field, key in (
+        ("MemoryLow", "DEV_MEMORY_MIN_GUARANTEED_LOW"),
+        ("MemoryHigh", "DEV_MEMORY_MIN_GUARANTEED_HIGH"),
+        ("MemoryMax", "DEV_MEMORY_MIN_GUARANTEED_MAX"),
+    ):
+        values[key] = walk_key(
+            f"  {field} (optional; '-' = no directive)", key,
+            cfg_current, example_defaults,
+            validate=validate_optional_positive_size, allow_empty_token=True,
+        )
+
+    child_specs = (
+        ("dev-interactive.slice", "DEV_INTERACTIVE"),
+        ("dev-background.slice", "DEV_BACKGROUND"),
+        ("dev-gates.slice", "DEV_GATES"),
+        ("dev-buildkitd.slice", "DEV_BUILDKITD"),
+    )
+    descriptions = {
+        "DEV_INTERACTIVE": "IDE servers and devcontainer tools; it gets a generous working-set cap.",
+        "DEV_BACKGROUND": "stacks, tests and background development containers; it gets the largest ordinary pool.",
+        "DEV_GATES": "short-lived gate/test lanes; its cap is higher than a tiny control-plane budget.",
+        "DEV_BUILDKITD": "the one host-managed shared BuildKit worker; size it for concurrent projects.",
+    }
+    for slice_name, prefix in child_specs:
+        out(f"\n  {slice_name}")
+        out(descriptions[prefix])
+        out(
+            "For this slice, every MemoryMin/Low/High/Max is optional. "
+            "Enter accepts the shown value; '-' explicitly removes the directive. "
+            "MemoryMax is RAM only, while MemorySwapMax below is swap only."
+        )
+        for field in ("MIN", "LOW", "HIGH", "MAX"):
+            key = f"{prefix}_MEMORY_{field}"
+            values[key] = walk_key(
+                f"  Memory{field.title()} (optional; '-' = no directive)",
+                key, cfg_current, example_defaults, proposals.get(key),
+                validate=validate_optional_positive_size, allow_empty_token=True,
+            )
+        out(
+            "CPUQuota is this slice's hard cap: blank derives from the child "
+            "quota-ceiling reserve selected above; an explicit N% wins. "
+            "CPUWeight and IOWeight are relative shares only and matter when "
+            "siblings contend."
+        )
+        values[f"{prefix}_CPU_WEIGHT"] = walk_key(
+            "  CPUWeight (1-10000; relative share, not a cap)",
+            f"{prefix}_CPU_WEIGHT", cfg_current, example_defaults,
+            validate=validate_weight,
+        )
+        values[f"{prefix}_CPU_QUOTA"] = walk_key(
+            "  CPUQuota (blank = derived child ceiling; N% = hard cap)",
+            f"{prefix}_CPU_QUOTA", cfg_current, example_defaults,
+            validate=validate_cpu_quota,
+        )
+        values[f"{prefix}_IO_WEIGHT"] = walk_key(
+            "  IOWeight (1-10000; relative share, not an IO cap)",
+            f"{prefix}_IO_WEIGHT", cfg_current, example_defaults,
+            validate=validate_weight,
+        )
+        out(
+            "MemorySwapMax here limits swap only. Blank cascades from the live "
+            "parent MemorySwapMax; an explicit size affects only this slice."
+        )
+        values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
+            "  MemorySwapMax (blank = derived swap-only ceiling)",
+            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
+            validate=validate_size_or_auto,
+        )
+        out(
+            "MemoryZSwapWriteback controls whether this slice may write cold "
+            "compressed-zswap pages to disk swap. It is a policy switch, not a "
+            "size or a memory limit."
+        )
+        values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key(
+            "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
+            cfg_current, example_defaults,
+        )
+        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
+            out(
+                "systemd-oomd watches memory pressure here and may act at the "
+                "configured percentage; it is not the same as MemoryMax."
+            )
+            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
+                "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
+                f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
+                validate=validate_systemd_pct_1_100,
+            )
+        if prefix == "DEV_BUILDKITD":
+            out(
+                "BuildKit is the host-managed rootless worker. The accidental "
+                "Buildx policy below concerns only unapproved docker-container "
+                "workers: terminate removes them; report-only logs and leaves "
+                "them running."
+            )
+            values["DEV_BUILDKITD_IMAGE"] = walk_key(
+                "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
+                cfg_current, example_defaults, validate=validate_nonempty,
+            )
+            out(
+                "BuildKit also limits its own internal solver parallelism. This "
+                "reduces simultaneous RUN/cache operations inside one daemon; "
+                "it does not limit the number of client builds and is separate "
+                "from the release flow's REPACK_JOBS and REPACK_CONCURRENCY."
+            )
+            values["DEV_BUILDKITD_MAX_PARALLELISM"] = walk_key(
+                "  BuildKit max parallel solver operations (positive integer)",
+                "DEV_BUILDKITD_MAX_PARALLELISM", cfg_current, example_defaults,
+                proposal=str(max(1, min(4, host_nproc))),
+                validate=validate_positive_int,
+            )
+            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key(
+                "  accidental Buildx policy (terminate or report-only)",
+                "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
+                validate=validate_guard_policy,
+            )
+    _reprompt_memory_constraints(avail_kib, values)
+    return values
+
+
 def step_watcher(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
@@ -2362,7 +2758,7 @@ def step_watcher(
     slice -- the answer to "a tight ceiling per consumer, with generous
     swap," since cgroup v2 has no anon-only cap of its own."""
     values: dict[str, str] = {}
-    out("\n-- i. Reactive per-container cap watcher (mdt-dev-cap-watcher.py) --")
+    out("\n-- g. Reactive per-container cap watcher (mdt-dev-cap-watcher.py) --")
     out(
         "These bound the blast radius of any ONE unlabelled container ballooning inside a "
         "governed slice. The memory watcher applies them when a new Docker scope appears "
@@ -2405,7 +2801,7 @@ def step_watcher(
     out(
         "Per-container MemorySwapMax is NOT asked here -- it is computed at runtime from "
         "whichever matched slice's own LIVE memory.swap.max, times DEV_SWAP_CASCADE_PCT "
-        "(step h above), never re-derived from this file. See "
+        "(the slice settings above), never re-derived from this file. See "
         "scripts/mdt-dev-cap-watcher.py's read_slice_swap_max_bytes()."
     )
     return values
@@ -2440,6 +2836,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
                 example; the old file is still backed up after validation.
                 (The standalone wizard itself has no --force option; that flag belongs
                 to install.sh's candidate-handling step.)
+                Do not delete the existing output to imitate --force: deletion loses
+                its values as defaults and prevents the installer's automatic backup.
 
             Host-only precondition
               Do not run this wizard or install.sh inside a devcontainer. UID 0 there
@@ -2451,28 +2849,34 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
             Defaults and empty values
               Existing output values win, including intentional empty values. For a
               missing key, a live-host proposal wins over the example's value. Enter
-              accepts the shown default. On optional fields, type `none` when the
-              prompt says that this clears the directive. Blank CPUQuota and
-              MemorySwapMax fields mean auto-detect at install time, not unlimited.
-              Required MemoryHigh and MemoryMax fields need a positive systemd size;
-              blank, 0, and `no` are rejected. Size units are binary: 2G means 2 GiB;
+              accepts the shown default. Every MemoryMin/Low/High/Max field is
+              optional; type `-` to clear it (the older spelling `none` is
+              also accepted). Blank CPUQuota and MemorySwapMax fields mean derive
+              them at install time, not unlimited. Sizes are binary: 2G means 2 GiB;
               a bare number means bytes. Percentage prompts say whether they expect a
               bare number or a systemd value such as 400%.
+              Older watcher names (`SWEEP_*`, `TESTRUNNER_IMAGE_PATTERNS`,
+              `BUILDKIT_NAME_PATTERNS`, and `DEVCONTAINER_NAME_PATTERNS`) are
+              migrated to their `WATCHER_*` names when an existing config is
+              opened. A plain non-wizard install instead asks you to run this
+              migration first.
 
             What the sizing uses
-              Memory proposals use this host's current MemAvailable (and MemTotal for
-              the root maximum). CPU auto-quota uses host nproc minus the selected
-              reserve, floored at one core. IO percentages multiply the four values
-              in IO_BASELINE_ENV: read/write IOPS and read/write bandwidth. The
-              baseline is measured by fio and cached for 30 days; without a usable
-              baseline, documented static fallback caps remain in force.
+              Memory proposals are percentages of physical MemTotal; MemAvailable is
+              shown as transient context, never used as a hard budget. CPU auto-quota
+              uses nproc minus the selected host/child quota reserve, floored at one
+              core. IO percentages multiply the measured io.cost-derived ceilings:
+              random/sequence IOPS use the lower value, while bandwidth uses sequential
+              bytes per second. The cache remains current only while device and target
+              identity match; without a current cache, static fallback caps remain.
 
             Important files and side effects
               Reads: --example, an existing --output, /proc/meminfo and /proc/swaps,
-              findmnt's Docker-data mount, the IO_BASELINE_ENV cache, and the baseline
-              script. Writes: --output, atomically at the end. If the benchmark is
-              selected, it also writes/replaces the baseline cache and temporarily
-              saturates its test-file device. install.sh additionally writes /etc/mdt,
+              findmnt's Docker-data mount, IO_BASELINE_ENV, IO_BASELINE_TESTFILE,
+              and the baseline adapter/generator. Writes: --output, atomically at
+              the end. If the benchmark is selected, it writes/replaces the baseline
+              cache and persistent target and temporarily saturates its device.
+              install.sh additionally writes /etc/mdt,
               merges its owned Docker keys into /etc/docker/daemon.json, and only
               restarts Docker when --restart-docker is explicitly supplied. These are
               host paths and side effects; the host-only preflight runs first.
@@ -2506,7 +2910,7 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--validate-config",
         type=Path,
         default=None,
-        help="validate PATH without prompting or writing; uses live MemAvailable",
+        help="validate PATH without prompting or writing; reads host memory facts and checks configured hierarchy relationships",
     )
     parser.add_argument(
         "--io-baseline-script", type=Path, default=DEFAULT_IO_BASELINE_SCRIPT,
@@ -2572,6 +2976,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             cfg_current = parse_env_file(args.output.read_text())
             out(f"Found an existing `{args.output}` -- using its values as defaults where they are actually set.")
+            cfg_current = migrate_legacy_config_keys(cfg_current)
         except OSError as exc:
             out(f"WARN: could not read the existing `{args.output}`: {exc}")
 
@@ -2580,8 +2985,8 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         out(
             f"ERROR: could not read `{args.meminfo_path}`: {exc}. A positive "
-            "`MemAvailable` value is required to derive safe host-sized limits; "
-            "provide a readable `--meminfo-path` or fix the host."
+            "`MemTotal` value is required for host-sized limits; `MemAvailable` "
+            "is optional context. Provide a readable `--meminfo-path` or fix the host."
         )
         meminfo = {}
     try:
@@ -2589,12 +2994,14 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         swaps_text = ""
     swap_kib = read_swap_total_kib(meminfo, swaps_text)
+    meminfo.setdefault("SwapTotal", swap_kib)
 
-    if meminfo.get("MemTotal", 0) <= 0 or meminfo.get("MemAvailable", 0) <= 0:
+    if meminfo.get("MemTotal", 0) <= 0:
         print(
-            f"ERROR: `{args.meminfo_path}` does not contain positive MemTotal and "
-            "MemAvailable values; the wizard cannot derive safe host-sized memory "
-            "limits and will not run the IO benchmark or write a configuration.",
+            f"ERROR: `{args.meminfo_path}` does not contain a positive MemTotal; "
+            "the wizard cannot derive host-sized memory limits and will not run "
+            "the IO benchmark or write a configuration. MemAvailable is optional "
+            "context, not a sizing input.",
             file=sys.stderr,
         )
         return 1
@@ -2624,8 +3031,9 @@ def main(argv: list[str] | None = None) -> int:
     out(
         "At a prompt, Enter accepts the shown default. A default comes from an existing "
         "value first, then a live-host proposal, then the example. Optional fields say "
-        "when `none` clears them; blank CPU/swap auto fields mean derive at install time. "
-        "Required fields reject empty, `0`, and `no`."
+        "when `-` clears them; blank CPU/swap auto fields mean derive at install time. "
+        "A cleared memory directive is omitted from the rendered unit. The wizard never "
+        "writes until all prompts and validation finish."
     )
     out(
         "Terminal formatting: text in backticks is highlighted only on an interactive "
@@ -2634,7 +3042,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     out(
         "Important files: the template is read, the output path is written, and the "
-        "baseline cache path shown in section b is read for freshness and updated only if "
+        "baseline cache and target paths shown in section b are checked for device identity; "
+        "the cache is updated only if "
         "you run the benchmark. `install.sh` additionally writes `/etc/mdt` units/scripts, merges "
         "its keys into `/etc/docker/daemon.json`, and may restart Docker only when "
         "`--restart-docker` is supplied."
@@ -2649,14 +3058,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         walked["IO_DEV_PATH"] = step_io_device(cfg_current, example_defaults)
 
-        baseline_env, baseline_measured_now = step_io_baseline(
+        baseline_env, baseline_testfile, baseline_measured_now = step_io_baseline(
             cfg_current, example_defaults, args.io_baseline_script
         )
         walked["IO_BASELINE_ENV"] = baseline_env
+        walked["IO_BASELINE_TESTFILE"] = baseline_testfile
 
         dev_pct, sweep_pct = step_io_cap_pct(cfg_current, example_defaults)
         walked["DEV_IO_CAP_PCT"] = dev_pct
-        walked["SWEEP_IO_CAP_PCT"] = sweep_pct
+        walked["WATCHER_IO_CAP_PCT"] = sweep_pct
 
         walked.update(step_slice_first_resources(meminfo, cfg_current, example_defaults))
         cgroup_parent, backstop_max, backstop_swap = step_docker_daemon(
@@ -2721,11 +3131,11 @@ def main(argv: list[str] | None = None) -> int:
             # omitted: an operator scanning back through the transcript
             # should be able to see this was a decision, not a prompt that
             # went missing. The benchmark completed successfully minutes ago
-            # in step b; --with-baseline would only repeat the same ~4-minute
+            # in step b; --with-baseline would only repeat the same ~12-minute
             # disk-saturating measurement for an identical result.
             out(
                 "Not offering --with-baseline: the IO baseline was just measured above in "
-                "this same run, so re-running it during install would repeat a ~4-minute "
+                "this same run, so re-running it during install would repeat a ~12-minute "
                 "disk-saturating benchmark for nothing."
             )
         elif ask_yn("Also pass --with-baseline (re-run the IO benchmark during install)?", default=False):

@@ -6,8 +6,9 @@
 #
 # Vendored from the Linux kernel source tree (tools/cgroup/
 # iocost_coef_gen.py, GPL-2.0) for debian-install-v2's iocost-calibrate.sh.
-# TWO local patches on top of upstream, marked inline below with
-# "LOCAL PATCH", both needed for an LVM root (confirmed live, 2026-08-28,
+# THREE local patches on top of upstream, marked inline below with
+# "LOCAL PATCH"; the first two are needed for an LVM root (confirmed live,
+# 2026-08-28,
 # /dev/mapper/<vg-lv> on dm-0 backed by /dev/vda5) — upstream's
 # dir_to_dev() assumes a /dev/<name> layout matching a bare partition:
 #  1. findmnt's SOURCE for an LVM logical volume is the /dev/mapper/<name>
@@ -18,14 +19,17 @@
 #  2. dm-0 (or whatever dm-N the LV resolves to) has no
 #     /sys/block/dm-0/queue/scheduler of its own — /sys/block/dm-0/slaves/
 #     points at the real underlying device, which does.
-# Neither patch changes behavior for a plain (non-LVM) partition or whole
-# disk — both are conditioned on the upstream path not existing / not
+# The first two patches do not change behavior for a plain (non-LVM) partition
+# or whole disk — both are conditioned on the upstream path not existing / not
 # having a scheduler file first. Everything else below is unmodified. See
 # iocost-calibrate.sh for the wrapper (device selection, the elevator-swap
 # warning, result storage) and CGROUP-NOTES.md for why this measures
 # something mdt-io-baseline.py's 4-point sustained-ceiling baseline does
 # not: a linear cost model across sequential/random x read/write, the
-# same matrix io.cost.qos/io.cost.model need if that controller is ever
+# 3. `--testfile` lets a caller place the non-destructive benchmark file on a
+#    chosen filesystem instead of relying on the upstream relative default.
+#    The file-target path is still measured through the same upstream matrix.
+# same matrix. io.cost.qos/io.cost.model need if that controller is ever
 # turned on.
 
 desc = """
@@ -57,6 +61,8 @@ parser = argparse.ArgumentParser(description=desc,
                                  formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument('--testdev', metavar='DEV',
                     help='Raw block device to use for testing, ignores --testfile-size')
+parser.add_argument('--testfile', metavar='PATH',
+                    help='File target for testing (default: ./iocost-coef-fio.testfile)')
 parser.add_argument('--testfile-size-gb', type=float, metavar='GIGABYTES', default=16,
                     help='Testfile size in gigabytes (default: %(default)s)')
 parser.add_argument('--duration', type=int, metavar='SECONDS', default=120,
@@ -177,8 +183,17 @@ if args.testdev:
     testfile = f'/dev/{devname}'
     info(f'Test target: {devname}({devno})')
 else:
-    devname, devno = dir_to_dev('.')
-    testfile = 'iocost-coef-fio.testfile'
+    # Identify the device from the benchmark target's parent, not from the
+    # caller's current directory. MDT invokes this generator from its
+    # checkout while deliberately placing the persistent target on the Docker
+    # data device; using '.' here would compare the wrong disk on a split
+    # checkout/Docker layout.
+    probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'
+    devname, devno = dir_to_dev(probe_path)
+    # LOCAL PATCH: allow the wrapper to put the benchmark file on the chosen
+    # host filesystem; preserve upstream's relative default for debian-
+    # install-v2 callers that do not need a custom location.
+    testfile = args.testfile or 'iocost-coef-fio.testfile'
     testfile_size = int(args.testfile_size_gb * 2 ** 30)
     create_testfile(testfile, testfile_size)
     info(f'Test target: {testfile} on {devname}({devno})')

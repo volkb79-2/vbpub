@@ -11,7 +11,7 @@
 #     < 256 where the MemoryZSwapWriteback= directive doesn't exist; harmless
 #     double-set on newer hosts)
 #   - per-container caps: test-runner/buildx_buildkit_*/devcontainer scopes get
-#     io.max at SWEEP_IO_CAP_PCT% of the baseline (bench+buildkit additionally
+#     io.max at WATCHER_IO_CAP_PCT% of the baseline (bench+buildkit additionally
 #     get IOWeight=1; the devcontainer does not — it is the IDE). This is the
 #     ONLY placement-independent governance buildx_buildkit_* workers get at
 #     all: Buildx's own cgroup-parent driver-opt is unreliable under the
@@ -37,7 +37,7 @@ log(){ echo "[mdt-dev-caps] $*"; }
 # shellcheck source=./mdt-container-caps.lib.sh
 . "$(dirname "$0")/mdt-container-caps.lib.sh"
 
-# _mdt_load_config: sources $CONF, sets SWEEP_IO_CAP_PCT/*_PATTERNS/
+# _mdt_load_config: sources $CONF, sets WATCHER_IO_CAP_PCT/*_PATTERNS/
 # IO_BASELINE_ENV — shared with mdt-io-cap-watcher.sh, see the lib file.
 _mdt_load_config
 DEV_IO_CAP_PCT="${DEV_IO_CAP_PCT:-60}"
@@ -56,7 +56,7 @@ DEV_BUILDKITD_ZSWAP_WRITEBACK="${DEV_BUILDKITD_ZSWAP_WRITEBACK:-no}"
 # --privileged/--cgroupns=host container touching the host mount namespace).
 # Only processes in the init cgroup namespace can change them back — i.e.
 # this script on the host, NOT anything running inside a container. Default
-# is now CGROUP2_FLAGS=fix: self-heal every sweep (<= SWEEP_INTERVAL of
+# is now CGROUP2_FLAGS=fix: self-heal every sweep (<= WATCHER_INTERVAL of
 # exposure) rather than only warn, since this flag being missing silently
 # defeats MemoryLow/MemoryMin with no other symptom.
 #
@@ -190,12 +190,12 @@ done
 # the SAME _mdt_match/_mdt_apply_container_caps/_mdt_classify_and_apply as
 # the watcher (mdt-container-caps.lib.sh), so the two can never drift apart.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  # Per-container ceilings: SWEEP_IO_CAP_PCT% of baseline, static fallbacks
+  # Per-container ceilings: WATCHER_IO_CAP_PCT% of baseline, static fallbacks
   # when no baseline exists (tight on purpose — measure!). Applies to every
   # category this sweep matches below (test-runner/"bench", buildkit,
   # devcontainer) — one percentage, three container categories.
-  _mdt_derive_sweep_caps
-  for c in $([ "${SWEEP_SKIP:-0}" = 0 ] && docker ps -q 2>/dev/null); do
+  _mdt_derive_watcher_caps
+  for c in $([ "${WATCHER_SKIP:-0}" = 0 ] && docker ps -q 2>/dev/null); do
     _mdt_classify_and_apply "$c"
   done
 else

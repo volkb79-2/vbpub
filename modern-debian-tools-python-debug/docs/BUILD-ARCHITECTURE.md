@@ -29,6 +29,14 @@ and `docker buildx build` receive the explicit `BUILDX_BUILDER` selection; the
 release hook rejects any other builder or endpoint. The finalizer reuses the
 named remote idempotently and fails closed on partial/inconsistent environment.
 
+Host setup renders `/etc/mdt/buildkitd.toml` from
+`DEV_BUILDKITD_MAX_PARALLELISM`. BuildKit uses this as the managed daemon's
+internal solver-operation ceiling: it limits simultaneous work within one
+daemon but does not serialize client requests or replace the daemon's cgroup
+CPU/memory/I/O limits. Local release repack has separate controls,
+`REPACK_JOBS` and `REPACK_CONCURRENCY`, because repack runs in the caller
+outside the BuildKit worker.
+
 Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`.
 The MDT template and derived dstdns container explicitly carry both exports
 and a mandatory `/run/mdt-buildkitd` socket mount, so a missing host setup is a
@@ -46,7 +54,9 @@ asks all four memory controls for every governed slice, distinguishes optional
 `none` from blank CPU/swap auto-detection, and compares parsed binary units in
 KiB. It rejects and re-prompts until configured values satisfy `MemoryMin <=
 MemoryLow <= MemoryHigh <= MemoryMax`, and checks child MemoryHigh/Max/Min
-totals against live `MemAvailable`. `MemoryMin` is hard hierarchical
+values against the configured parent ceilings. `MemAvailable` is displayed as
+transient context; starting proposals use physical `MemTotal`, and it is not a
+hard budget. `MemoryMin` is hard hierarchical
 protection; `MemoryLow` is soft best-effort protection; `MemoryHigh` is soft
 reclaim throttling; `MemoryMax` is the hard RAM ceiling and does not include
 swap, which is governed separately by `MemorySwapMax`.

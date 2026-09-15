@@ -14,6 +14,7 @@ info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure onl
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
+IO_BASELINE_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
 
 # systemd derives child slice paths from their dash-separated unit names:
 # dev-interactive.slice is /dev.slice/dev-interactive.slice in cgroupfs.
@@ -385,10 +386,15 @@ else
 fi
 # Independent of the slice: a missing/stale baseline means the caps in force are
 # the tight unit statics, whether or not any member has started.
-if [ -f "$IO_BASELINE_ENV" ]; then
-  age_days=$(( ($(date +%s) - $(stat -c %Y "$IO_BASELINE_ENV")) / 86400 ))
-  [ "$age_days" -le 30 ] && ok "baseline present (${age_days}d old, $IO_BASELINE_ENV)" \
-    || warn "baseline is ${age_days}d old — re-run mdt-io-baseline.py --force in a quiet window"
+if [ -f "$IO_BASELINE_ENV" ] && [ -x /usr/local/sbin/mdt-io-baseline.py ]; then
+  if baseline_status=$(python3 /usr/local/sbin/mdt-io-baseline.py --check-cache \
+      --output "$IO_BASELINE_ENV" --testfile "$IO_BASELINE_TESTFILE" 2>&1); then
+    ok "current io.cost baseline ($IO_BASELINE_ENV; device and target identity match)"
+  else
+    warn "no current io.cost baseline ($IO_BASELINE_ENV): $baseline_status"
+  fi
+elif [ -f "$IO_BASELINE_ENV" ]; then
+  warn "baseline exists but its validator is not installed ($IO_BASELINE_ENV) — run mdt-io-baseline.py"
 else
   warn "no baseline ($IO_BASELINE_ENV) — tight unit statics in force; run mdt-io-baseline.py"
 fi

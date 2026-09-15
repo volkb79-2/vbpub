@@ -339,7 +339,7 @@ image, so it lives in two places that must agree:
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
 ```bash
-sudo host-setup/install.sh --with-baseline    # ~4 min of saturated disk — quiet window
+sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — quiet window
 sudo mdt-host-check.sh
 ```
 
@@ -353,6 +353,9 @@ Buildx remote backed by `mdt-buildkitd.service`; the template supplies
 accidental-worker guard, and the fail-closed memory policy are documented in
 [the managed BuildKit architecture](docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
 and [consumer instructions](docs/CONSUMERS.md).
+The host wizard also writes `DEV_BUILDKITD_MAX_PARALLELISM` into the managed
+daemon configuration; it limits one BuildKit daemon's internal solver work and
+is independent of release repack concurrency.
 
 ## Building and publishing
 
