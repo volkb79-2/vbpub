@@ -15658,13 +15658,15 @@ class TestResolveSelfContainerIdDirectBranches:
         assert "permission denied" in reason
         assert "not running in a container" not in reason
 
-    def test_docker_inspect_empty_stdout(self, monkeypatch):
+    def test_docker_inspect_empty_success_is_indeterminate(self, monkeypatch):
         monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: "abc123\n")
         cp = subprocess.CompletedProcess(["docker"], 0, stdout="\n", stderr="")
         monkeypatch.setattr(run_gate.subprocess, "run", lambda *a, **k: cp)
         container_id, reason = run_gate.resolve_self_container_id("docker")
         assert container_id is None
+        assert "could not verify current container identity" in reason
         assert "returned no id" in reason
+        assert "not running in a container" not in reason
 
     def test_docker_inspect_captures_stdout_and_stderr(self, monkeypatch):
         # Both identity comparisons are argv-safe subprocesses whose output

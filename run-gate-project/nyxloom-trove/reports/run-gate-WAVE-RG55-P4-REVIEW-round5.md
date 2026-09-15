@@ -29,7 +29,7 @@ REJECT
 
 ## Initial verdict
 
-P4 is not acceptable at the captured tree. Five shipped paths contradict the
+P4 is not acceptable at the captured tree. Six shipped paths contradict the
 binding R-36h/R-39/R-43 contracts or the estate-wide status-comparison rule.
 They are independently reproducible and are repairable inside the authorized
 `run-gate-project/run-gate.py`, `run-gate-project/tests/`, and report scope.
@@ -144,6 +144,24 @@ They are independently reproducible and are repairable inside the authorized
   successful-response values as usable non-empty values so malformed envelopes
   degrade explicitly instead of reaching subprocess argv construction.
 
+### B6 — high — empty successful inspect output is falsely certified as absence
+
+- Location: `run-gate-project/run-gate.py:1867-1869` after the B2 repair.
+- Observable failure: a zero-exit `docker inspect` whose stdout is empty is
+  reported as "not running in a container". Docker has not supplied an absence
+  fact in that state; it supplied a malformed/empty successful response. The
+  result collapses the contract's explicit missing-vs-empty distinction and
+  falsely certifies absence instead of disclosing indeterminate identity.
+- Reproduction: patching `Path.read_text` and `os.readlink` to return a candidate
+  hostname and valid local mount namespace, then returning
+  `CompletedProcess(..., 0, stdout="", stderr="")` for the direct inspect,
+  makes `resolve_self_container_id()` return an absence message. No Docker-owned
+  `no such object` or `no such container` comparison occurred.
+- Prescription: classify empty zero-exit inspect output with the other malformed
+  identity responses as "could not verify current container identity" and pin
+  both directions: explicit Docker absence remains ordinary absence, while an
+  empty successful result is indeterminate.
+
 ## Initial traceability and combined attacks
 
 | Requirement | Code path | Positive observable | Negative/combined attack | Initial result |
@@ -153,6 +171,7 @@ They are independently reproducible and are repairable inside the authorized
 | RG-59 / status doctrine | `_ctl`, `cmd_doctor` | absent differs from unreachable/malformed | Docker-owned prefix + permission/exit 125 | **B3** |
 | R-36h / Summary accuracy | bare-host wait4 path | verdict neutral and honest profile | prior daemon miss + wait4 failure; subsecond child | **B4** |
 | R-43c / R-36h | start -> state -> finish | every successful start is stopped | valid session + optional target wrong type | **B5** |
+| R-43i / status doctrine | `resolve_self_container_id` | Docker-owned absence differs from empty success | exit 0 + empty inspect stdout | **B6** |
 | R-44d | `footprint_manifest_lane_expected` | five keys incl. source | old manifest method/scope derivation | verified in source; gates pending |
 | RG-58 | load + doctor | WARN, never refusal | bare-host vs container/exec | verified in source; gates pending |
 | RW-46a | `_lock_dir`, test fixture | production `/tmp`, tests isolated | directory plant + concurrent suite | verified in source; gates pending |
@@ -164,6 +183,13 @@ optional start metadata. These are deliberately pairwise combinations: each
 previous single-axis happy/negative test passed while the combined condition
 remained unsafe.
 
+During final evidence collection on repaired commit `095f763d`, the complete
+production-delta reread exposed B6. The in-flight R2 was therefore deliberately
+invalidated at 22/85 candidates (all 22 recorded candidates killed) and its exact
+review-owned process group was terminated. The wrapper received `SIGTERM`, so it
+could not append `JOB_EXIT`; this partial stream is not a product or mutation
+verdict and will not be reused after the B6 repair.
+
 ## Evidence status
 
 The controller's earlier exact-product-tree results (59/59 R2 killed,
@@ -171,4 +197,3 @@ selftest 1161 passed/3 skipped, two R3 canaries rejected, doctor exit 0) are
 historical evidence only. Commit `6b8e3252` already changed the judged tree,
 so the final packet's per-tree rule requires fresh evidence after repairs.
 No final gate, coverage, mutation, or release verdict is claimed here.
-
