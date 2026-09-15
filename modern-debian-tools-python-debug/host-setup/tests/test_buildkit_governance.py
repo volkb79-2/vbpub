@@ -28,6 +28,14 @@ WIZARD = load_module(ROOT / "mdt-host-setup-wizard.py", "mdt_wizard_test")
 BASELINE = load_module(ROOT / "scripts/mdt-io-baseline.py", "mdt_baseline_test")
 GUARD = load_module(ROOT / "scripts/mdt-buildkit-guard.py", "mdt_guard_test")
 BUILDER = load_module(ROOT.parent / "scripts/mdt_buildkit_builder.py", "mdt_builder_test")
+# finalize_container_environment.py has a source-tree fallback import from
+# ``scripts.mdt_buildkit_builder``.  The assay entrypoint runs this test by
+# absolute path, so make the project root importable explicitly rather than
+# relying on the caller's current-directory sys.path behavior.
+sys.path.insert(0, str(ROOT.parent))
+FINALIZE = load_module(
+    ROOT.parent / "scripts/finalize_container_environment.py", "mdt_finalize_test"
+)
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
@@ -927,6 +935,35 @@ esac
         install = (ROOT / "install.sh").read_text()
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 
+    def test_devcontainer_finalizer_requires_and_verifies_managed_remote(self) -> None:
+        with mock.patch.dict(
+            FINALIZE.os.environ,
+            {
+                "BUILDX_BUILDER": "wrong-builder",
+                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
+            },
+            clear=True,
+        ), mock.patch.object(FINALIZE, "shutil") as shutil_mock:
+            shutil_mock.which.return_value = "docker"
+            self.assertFalse(FINALIZE.setup_buildkit_builder(required=True))
+
+        with mock.patch.dict(
+            FINALIZE.os.environ,
+            {
+                "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
+                "BUILDX_BUILDER": BUILDER.MANAGED_BUILDER,
+                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
+            },
+            clear=True,
+        ), mock.patch.object(FINALIZE, "shutil") as shutil_mock, mock.patch.object(
+            FINALIZE, "ensure_managed_builder"
+        ) as ensure:
+            shutil_mock.which.return_value = "docker"
+            self.assertTrue(FINALIZE.setup_buildkit_builder(required=True))
+            ensure.assert_called_once_with(
+                "docker", BUILDER.MANAGED_ENDPOINT, create_if_missing=True
+            )
+
     def test_wizard_enforces_memory_order_without_live_availability_budget(self) -> None:
         proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 2500 * 1024)
         self.assertEqual(proposals["DEV_MEMORY_HIGH"], "12G")
@@ -1063,6 +1100,7 @@ esac
             self.assertIn(f"{key}=", example)
             self.assertIn(f"@{key}@", templates)
         template = (ROOT / "../templates/devcontainer.json").resolve().read_text()
+        self.assertIn('"BUILDX_CONFIG": "/home/vscode/.config/docker/buildx"', template)
         self.assertIn('"BUILDX_BUILDER": "mdt-managed"', template)
         self.assertIn('source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind', template)
         self.assertNotIn("host-buildkitd", template)

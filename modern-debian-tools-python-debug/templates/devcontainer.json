@@ -171,6 +171,10 @@
     "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
     "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+    // Buildx stores the named remote registration in the already-persisted
+    // .config mount. The finalizer creates/verifies this entry; keeping it
+    // here means a rebuild does not lose the selected remote state.
+    "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
     // Explicitly select the durable host-managed remote for all builds.
     "BUILDX_BUILDER": "mdt-managed",
     "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"

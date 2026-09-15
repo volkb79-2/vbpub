@@ -122,9 +122,11 @@ Buildx container-driver cgroup option.
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
-with `BUILDX_BUILDER=mdt-managed` and the socket endpoint. The devcontainer
-template repeats both variables explicitly and bind-mounts `/run/mdt-buildkitd`;
-the mount is mandatory, so a missing host prerequisite fails container start.
+with `BUILDX_CONFIG=/etc/mdt/buildx`, `BUILDX_BUILDER=mdt-managed`, and the
+socket endpoint. The devcontainer template repeats the builder and endpoint,
+sets its own persistent `BUILDX_CONFIG` below the already-mounted
+`/home/vscode/.config`, and bind-mounts `/run/mdt-buildkitd`; the mount is
+mandatory, so a missing host prerequisite fails container start.
 
 The accidental-worker guard is an event-driven systemd service. It inspects
 reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
@@ -568,9 +570,10 @@ systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 **Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
 `buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
 `mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
-ships the socket bind mount plus the explicit `BUILDX_BUILDER=mdt-managed` and
-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The in-container
-finalizer validates and reuses that remote on every start. A missing or
+ships the socket bind mount plus the explicit `BUILDX_CONFIG`,
+`BUILDX_BUILDER=mdt-managed`, and
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The
+in-container finalizer validates and reuses that remote on every start. A missing or
 inconsistent variable, endpoint, builder, or host service is an error; MDT does
 not fall through to embedded BuildKit or create a per-container worker.
 

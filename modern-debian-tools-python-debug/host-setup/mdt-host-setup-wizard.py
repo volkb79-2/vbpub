@@ -1055,10 +1055,10 @@ def validate_cap_pct(value: str) -> str | None:
 
     Two different rules, deliberately not merged into one:
 
-    * HARD refuse anything that is not an integer in 1..100. A percentage of
-      a measured device ceiling that is <= 0 or > 100 is not "an unusual
-      choice", it is not a cap at all — 120% of the measured ceiling caps
-      nothing, and 0% would wedge the whole tier.
+    * HARD refuse anything that is not an integer in 1..99. A percentage of
+      a measured device ceiling that is <= 0 or >= 100 is not "an unusual
+      choice", it is not an appropriate safety cap — 100% leaves no headroom,
+      120% caps nothing, and 0% would wedge the whole tier.
     * WARN, but accept, outside the documented 60-80 band. That band is a
       strong recommendation this file argues for at length, not a protocol
       constraint the way a size string's syntax is: an operator on hardware
@@ -1069,7 +1069,7 @@ def validate_cap_pct(value: str) -> str | None:
       warning is the kindness; the refusal would be presumption.
     """
     if not value:
-        return "a percentage is required (an integer, 1-100)"
+        return "a percentage is required (an integer, 1-99; 100% is refused to preserve headroom)"
     try:
         pct = int(value)
     except ValueError:
