@@ -2680,3 +2680,24 @@ immediately verified at `NanoCpus=3000000000`. P1 now has terminal mutation
 records and green final non-mutation evidence; the seven mutation survivors
 remain the documented equivalent dispositions. No package merge, release, or
 daemon start has occurred.
+
+### RW-219 — 2026-09-15 02:12:50Z — P4 terminal mutation and final gates
+
+P4's required fresh R2 on clean tip `c8f1654cc371c09e78faa6bf66feaf2aaf2e1a22`
+reached a separately read terminal PASS: 59/59 candidates killed, 0 survived,
+0 equivalent, 0 budget-exceeded, and 0 crashed. The lane is bare-host, so no
+mutation container was expected. Its launch snapshot had stale/high host PSI
+(`full avg10=10.57%`); the run was admitted before that reading was observed,
+and the later in-run condition is disclosed as host contention/infrastructure
+evidence, not a product verdict. Main also advanced after the synthetic snapshot;
+the committed judged tree remained unchanged throughout the run.
+
+On the unchanged P4 tree, `selftest` passed with 1161 passed and 3 skipped,
+`assay-r1` passed with exit 0, `assay-r3` passed with 2/2 canaries rejected and
+0 survived, and `doctor` exited 0 with 8 OK, 2 warnings, 2 skips, and 2 info.
+The r1 artifact reports zero considered changed executable lines because the
+merge tip's first-parent resolution selects the pre-existing P4 tree; this is
+not treated as package coverage proof. The substantive package evidence is the
+terminal R2 result and selftest. P4 is ready for the required fresh Sol xhigh
+review; no package merge, release, or daemon action is authorized by this
+ruling.
