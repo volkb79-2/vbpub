@@ -1,4 +1,4 @@
-# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-62 transport/watch/placement, RG-56 admission)
+# run-gate-WAVE-RG55-P5 — run-gate client v1.1 (RG-63 transport/watch/placement, RG-56 admission)
 
 **Implementer:** FRESH Sonnet session, checkpoint clause on (HARD).
 Fourth run-gate package of the RG-55 wave (rulings RW-29..RW-35). Records:
@@ -39,11 +39,11 @@ brief (controller's).
    shapes per verb), `cgprofile-P6-FOLLOWUPS-REPORT.md` (probe evidence).
 5. `SPEC.md` R-04, R-09, R-29, R-30, R-36, R-39, R-40, R-41, R-43 a–i,
    R-44; `CONSUMERS.md` §6; `LANE-AUTHORING.md`; `CHANGES.md`;
-   backlog RG-56 (exists) — RG-62 you file (C1).
+   backlog RG-56 (exists) — RG-63 you file (C1).
 
 ## Deliverables (commit each separately, in this order)
 
-**C1 — backlog rows.** File **RG-62** (policy author / watch consumer /
+**C1 — backlog rows.** File **RG-63** (policy author / watch consumer /
 transport seam / placement requests — mechanism, proposed contract, oracle
 sketch per row convention, provenance RW-29..RW-35) and update RG-56's
 "next wave" wording to "this package (P5)". No code.
@@ -138,7 +138,7 @@ two traps on the new keys); `history --json` prints them; `stats` and
 
 **C9 — close-out.** SPEC R-40a/b, R-43 j–l, R-45 (admission), Rev bump;
 README; CONSUMERS §6 (transport, gates slice, admission); LANE-AUTHORING;
-CHANGES `[Unreleased]` per RG id; RG-56 + RG-62 → FIXED with evidence;
+CHANGES `[Unreleased]` per RG id; RG-56 + RG-63 → FIXED with evidence;
 `__revision__ = 43`; `usage()`; the `doctor` output in the REPORT.
 
 ## Live probes (yours; daemon state is announced in the dispatch message)

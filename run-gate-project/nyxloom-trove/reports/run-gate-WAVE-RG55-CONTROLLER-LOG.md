@@ -2750,3 +2750,11 @@ estate-pairing test fix at `84341e75`; its full local run-gate suite then passed
 `1101 passed, 3 skipped`. RG-56 remains future-wave work and is not merged.
 P1 and P6 R2 mutation processes remain active; no package merge or release is
 authorized until their evidence and a genuine Sol xhigh review are present.
+
+### RW-223 — 2026-09-15 02:47:19Z — correct P5 backlog identity before dispatch
+
+The future P5 handoff incorrectly reused RG-62, which belongs to P4's flaky
+test follow-up. Its new transport/watch/placement row and all P5 close-out
+references now consistently use RG-63. This is a handoff-only correction; P5
+still cannot dispatch until P4 and P6 are merged, and no current mutation tree
+was touched.
