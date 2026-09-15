@@ -243,30 +243,39 @@ def read_slice_swap_max_bytes(slice_path: str) -> int | None:
         return None
 
 
-def has_explicit_memory_limit(container_id: str) -> bool:
-    """A container created with its own --memory (cmru's tester-gate
-    pattern, e.g.) must keep it — this watcher only fills in containers
-    that asked for nothing."""
+def has_explicit_memory_limit(container_id: str) -> bool | None:
+    """Return whether a container supplied its own ``--memory``.
+
+    ``None`` means Docker could not answer.  Treating an inspect failure as
+    ``False`` is unsafe: a transient daemon/API failure would make the
+    watcher overwrite an explicit container limit with its default.  The
+    caller must leave that scope unchanged and let the periodic sweep or a
+    later inotify event retry.
+    """
     try:
         out = subprocess.run(
             ["docker", "inspect", "-f", "{{.HostConfig.Memory}}", container_id],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
     if out.returncode != 0:
-        return False
+        return None
     try:
         return int(out.stdout.strip()) != 0
     except ValueError:
-        return False
+        return None
 
 
 def apply_default_cap(slice_path: str, slice_name: str, scope_name: str) -> None:
     container_id = resolve_container_id(scope_name)
     if container_id is None:
         return
-    if has_explicit_memory_limit(container_id):
+    explicit_memory = has_explicit_memory_limit(container_id)
+    if explicit_memory is None:
+        log(f"WARN: {scope_name}: Docker inspect could not determine --memory; leaving the scope unchanged")
+        return
+    if explicit_memory:
         log(f"{scope_name}: explicit --memory already set, leaving as-is")
         return
     unit = scope_name

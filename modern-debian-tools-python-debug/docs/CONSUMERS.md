@@ -32,19 +32,35 @@ facts. It walks `dev.slice`, the guaranteed sibling,
 `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and
 `dev-buildkitd.slice` in that order. For each it asks `MemoryMin`, `MemoryLow`,
 `MemoryHigh`, and `MemoryMax`, plus the applicable CPU, `IOWeight`, swap, and
-zswap controls. Empty means the operator explicitly chose no directive; it is
-not an invented fallback. Type `-` to omit any optional memory directive; Enter
-accepts its shown proposal. The wizard compares binary sizes after converting
-them to KiB and re-prompts on `MemoryMin <= MemoryLow <= MemoryHigh <=
-MemoryMax` or configured-parent aggregate violations. MemoryMax is RAM only;
-MemorySwapMax is swap only. A baseline benchmark uses the official kernel
-`io.cost` matrix against the persistent `IO_BASELINE_TESTFILE`, never a raw
-device, and is reusable by identity rather than by age. It saturates the disk
-for about 12 minutes at default settings, so run it in a quiet window. The
-baseline run is offered only when `fio` and `pv` are already installed; otherwise
-the installer installs them after validation and you run the benchmark later.
+zswap controls. Its memory policy is:
 
-The wizard also asks for `DEV_BUILDKITD_MAX_PARALLELISM`. This limits one
+- configured values within one slice must satisfy `MemoryMin <= MemoryLow <=
+  MemoryHigh <= MemoryMax`; the wizard re-prompts the invalid right-hand field;
+- sibling controls are independent and are not summed;
+- a child `MemoryMin`/`MemoryLow` without matching parent protection remains
+  valid but is reported because the requested protection may be ineffective;
+- a single child `MemoryHigh` or `MemoryMax` above the configured parent is
+  re-prompted; sibling `MemoryLow`/`MemoryHigh` totals above the parent are
+  advisory only and do not block an intentional overlapping policy.
+
+Empty means the operator explicitly chose no directive; it is not an invented
+fallback. Type `-` to omit any optional memory directive, or to select derived
+CPUQuota/MemorySwapMax during an upgrade; Enter accepts the shown value,
+including an existing explicit CPU/swap value. MemoryMax is RAM only;
+MemorySwapMax is swap only. A baseline
+benchmark uses the official kernel `io.cost` matrix against the persistent
+`IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
+than by age. It saturates the disk for about 12 minutes at default settings,
+so run it in a quiet window. The baseline run is offered only when `fio` and
+`pv` are already installed; otherwise the installer installs them after
+validation and you run the benchmark later.
+
+The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the three
+watcher match-pattern fields. `CGROUP2_FLAGS=fix` lets the periodic host
+service restore the `memory_recursiveprot` mount flag; `warn` only reports a
+missing flag. The interval is a single systemd duration such as `5min`; match
+patterns are space-separated shell globs. The wizard also asks for
+`DEV_BUILDKITD_MAX_PARALLELISM`. This limits one
 managed BuildKit daemon's internal solver parallelism; it does not serialize
 client requests and is separate from release repack concurrency.
 

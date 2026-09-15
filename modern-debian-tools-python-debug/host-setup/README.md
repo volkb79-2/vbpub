@@ -122,9 +122,11 @@ Buildx container-driver cgroup option.
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
-with `BUILDX_BUILDER=mdt-managed` and the socket endpoint. The devcontainer
-template repeats both variables explicitly and bind-mounts `/run/mdt-buildkitd`;
-the mount is mandatory, so a missing host prerequisite fails container start.
+with `BUILDX_CONFIG=/etc/mdt/buildx`, `BUILDX_BUILDER=mdt-managed`, and the
+socket endpoint. The devcontainer template repeats the builder and endpoint,
+sets its own persistent `BUILDX_CONFIG` below the already-mounted
+`/home/vscode/.config`, and bind-mounts `/run/mdt-buildkitd`; the mount is
+mandatory, so a missing host prerequisite fails container start.
 
 The accidental-worker guard is an event-driven systemd service. It inspects
 reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
@@ -140,12 +142,13 @@ empty value where that slice should omit a directive. It explains `MemoryMin`
 as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
 `MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
 It converts systemd binary units to KiB and rejects/re-prompts unless every
-configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
-values against configured parent ceilings as review-only warnings; sibling
-`MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls and are not
-summed. A child `MemoryHigh` or `MemoryMax` above its parent counterpart does
-not reprompt or refuse the configuration. Live `MemAvailable` is context only,
-while starting proposals use physical `MemTotal`.
+configured chain satisfies `Min <= Low <= High <= Max`. A single child
+`MemoryHigh` or `MemoryMax` above its configured parent is re-prompted; sibling
+`MemoryLow`/`MemoryHigh` totals above the parent are shown as advisory warnings
+and are not treated as a summed budget. A child `MemoryMin`/`MemoryLow` without
+matching parent protection remains allowed but is reported because it may be
+ineffective. Live `MemAvailable` is context only, while starting proposals use
+physical `MemTotal`.
 `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the single authoritative root `dev.slice`
 MemoryMin and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`
 are the other root controls.
@@ -371,8 +374,9 @@ before either backup or replacement. Deleting the old file first is different:
 it loses the source of the old defaults and has no automatic backup if the
 wizard is interrupted. The wizard walks every section it knows, preserves
 non-prompted values represented by the template, and rejects per-slice
- hierarchy violations before rendering. Parent/child MemoryHigh/MemoryMax
- differences are reported for review but do not block rendering.
+hierarchy violations before rendering. A child MemoryHigh/MemoryMax larger
+than its configured parent is re-prompted; sibling totals larger than the
+parent are reported for review but do not block rendering.
 
 ## Quick start
 
@@ -391,17 +395,19 @@ sudo mdt-host-check.sh             # verify
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, baseline
 cache path and identity, IO cap percentages, every governed slice's four
-memory controls, CPU/IO weights, swap/zswap controls, the memory-min-
-guaranteed ceiling, BuildKit, Docker daemon.json keys, and reactive watcher
-limits) and
+memory controls, CPU/IO weights, swap/zswap controls, cgroup mount policy,
+the memory-min-guaranteed ceiling, BuildKit, Docker daemon.json keys, and
+reactive watcher cadence, match patterns, and limits) and
 proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
 instead of the shipped example's fixed figures — Enter accepts the shown
 default at every step, and it falls through into the same render/apply logic
 after candidate validation. Existing values are shown as `existing:` defaults,
 host-derived values as `derived:`, and template values as `example:`. Type
 `-` (or compatibility spelling `none`) to clear any optional memory directive;
-blank CPUQuota and MemorySwapMax mean auto-detect at install time. All four
-memory controls may be omitted. The manual path requires a
+type `-` for derived CPUQuota or MemorySwapMax. Enter always accepts the shown
+value, including an existing explicit CPU/swap value, so it does not silently
+change an upgrade. An empty resulting CPUQuota/MemorySwapMax is auto-detected
+at install time. All four memory controls may be omitted. The manual path requires a
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
@@ -472,11 +478,17 @@ cannot express the next:
    sub-ceilings on `dev-gates.slice`/`dev-buildkitd.slice`. That makes the
    configured static unit-file values authoritative again instead of allowing
    stale measured values to survive; unrelated cgroup properties are untouched.
-   Matched containers still receive the deliberately tight, host-independent
-   per-container fallback of **200 read / 400 write IOPS and 30 MiB/s read /
-   write** until a valid baseline is available. This includes the interactive
-   devcontainer by the current fail-safe policy; changing that policy is a
-   separate operator decision, not an implicit hardware-based default.
+   On a no-baseline or no-device transition, MDT also clears its previously
+   applied transient caps from currently matched containers; otherwise an old
+   cap would remain indefinitely. Matched containers then receive **no guessed
+   per-container IO cap** until a valid baseline is available. A missing or invalid measurement is indeterminate;
+   applying a host-independent 200/400-IOPS, 30-MiB/s fallback can turn normal
+   interactive IO into D-state stalls. The Docker-events watcher remains
+   connected but skips cap application, and the periodic sweep applies measured
+   caps after the baseline is installed; restart the watcher after creating a
+   baseline so its one-time configuration load sees it. The explicit static
+   `DEV_STATIC_*` values remain the boot-window fallback for the root unit and
+   are a separate, operator-tunable policy.
 2. **Boot service + periodic timer** (`mdt-host-slices.service/.timer` →
    `mdt-apply-dev-caps.sh`) — everything units *can't* declare:
    - the **measured** whole-estate IO caps on `dev.slice` (`DEV_IO_CAP_PCT`%
@@ -560,9 +572,10 @@ systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 **Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
 `buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
 `mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
-ships the socket bind mount plus the explicit `BUILDX_BUILDER=mdt-managed` and
-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The in-container
-finalizer validates and reuses that remote on every start. A missing or
+ships the socket bind mount plus the explicit `BUILDX_CONFIG`,
+`BUILDX_BUILDER=mdt-managed`, and
+`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The
+in-container finalizer validates and reuses that remote on every start. A missing or
 inconsistent variable, endpoint, builder, or host service is an error; MDT does
 not fall through to embedded BuildKit or create a per-container worker.
 

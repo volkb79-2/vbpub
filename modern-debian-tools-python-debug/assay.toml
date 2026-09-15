@@ -1,0 +1,57 @@
+# MDT's focused R0-R3 judgment lane.  Shell/install behaviour remains in the
+# command gate; this lane gives the Python wizard its reproducible coverage,
+# mutation, and canary evidence.
+schema_version = 2
+
+[lanes.host_setup]
+scope = "S1"
+rigor = ["R0", "R1", "R2", "R3"]
+enforcement = "gate"
+# Keep the baseline as one direct Python process. A shell chain here would let
+# a per-candidate timeout kill only bash while orphaning coverage/pytest; the
+# runner owns coverage and writes the JSON artifact before it exits.
+argv = ["/opt/tester-venv/bin/python", "host-setup/tests/run_coverage.py"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1h"
+allow_argv_append = false
+
+[lanes.host_setup.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.host_setup.judge]
+language = "python"
+source_roots = ["host-setup"]
+mode = "whole_target"
+targets = ["host-setup/mdt-host-setup-wizard.py"]
+fail_under = 60.0
+allow_excluded = false
+
+[lanes.host_setup.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage.json"
+
+[lanes.host_setup.judge.mutation]
+jobs = 1
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+  # The direct Python baseline runner invokes pytest in-process and emits the
+  # coverage artifact itself. assay's literal-argv liveness detector cannot
+  # see that in-process call; explicit false is intentional. The direct
+  # process remains subject to the per-candidate wall-clock bound.
+  # A full host-setup pytest process is intentionally run serially. A few
+  # mutation variants exercise EOF/validation paths and need more than the
+  # ordinary test-suite duration; 4m keeps them bounded without turning a
+  # slow or leaked candidate into an unbounded gate.
+  budget_per_candidate = "4m"
+  liveness = false
+
+[lanes.host_setup.judge.canary]
+mechanism = "import-break"
+target = "host-setup/mdt-host-setup-wizard.py"
+budget_per_attempt = "2m"

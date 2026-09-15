@@ -7,13 +7,34 @@
 # tokens survive, and bash -n/shellcheck-checks every shell script that
 # package touches — see host-setup/tests/test-render.sh). The image builds
 # themselves belong to the cmru image-bake dependency chain (D-110.2), not a
-# per-commit gate. Host lane.
+# per-commit gate. The command runs in tester-unified, never in the cockpit
+# devcontainer. The assay lane below supplies the Python R0-R3 evidence.
 # See run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
 
 [lanes.smoke]
 kind = "command"
-environment = "host"
-argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && echo 'smoke: OK'"]
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && export PYTHONPATH=. && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts -q && echo 'smoke: OK'"]
 budget = "2m"
+
+[lanes.smoke.resources]
+memory = "1g"
+memory_swap = "2g"
+
+[lanes.assay-full]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && mkdir -p .assay && export PYTHONPATH={worktree}/assay/src && /opt/tester-venv/bin/python -c 'from assay.cli import main; raise SystemExit(main())' run host_setup --file assay.toml --verdict-json .assay/verdict-host_setup.json --resume --progress .assay/progress-host_setup.jsonl"]
+budget = "2h"
+artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl"]
+
+[lanes.assay-full.resources]
+# The full wizard R0-R3 lane routinely exceeds 4 GiB while executing the
+# serial mutation campaign (the observed peak was just over 4.1 GiB). Keep a
+# 6 GiB per-container ceiling so a normal mutation candidate is not mistaken
+# for a leaked/over-budget process; the surrounding dev slice remains the
+# aggregate host boundary.
+memory = "6g"
+memory_swap = "16g"

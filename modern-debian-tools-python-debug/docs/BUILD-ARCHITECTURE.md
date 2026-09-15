@@ -51,15 +51,30 @@ inspect failure is indeterminate and stops the watcher for systemd to restart.
 
 The host wizard follows the same fail-closed resource model. It is slice-first,
 asks all four memory controls for every governed slice, distinguishes optional
-`none` from blank CPU/swap auto-detection, and compares parsed binary units in
-KiB. It rejects and re-prompts until configured values satisfy `MemoryMin <=
-MemoryLow <= MemoryHigh <= MemoryMax`, and checks child MemoryHigh/Max/Min
-values against the configured parent ceilings. `MemAvailable` is displayed as
-transient context; starting proposals use physical `MemTotal`, and it is not a
-hard budget. `MemoryMin` is hard hierarchical
-protection; `MemoryLow` is soft best-effort protection; `MemoryHigh` is soft
-reclaim throttling; `MemoryMax` is the hard RAM ceiling and does not include
-swap, which is governed separately by `MemorySwapMax`.
+`none` from the explicit `-` token, and makes CPU/swap auto-detection an
+explicit `-` choice during upgrades; it compares parsed binary units in
+KiB. Its validation contract is deliberately split:
+
+- Within one slice, configured values must satisfy `MemoryMin <= MemoryLow <=
+  MemoryHigh <= MemoryMax`; an invalid right-hand value is re-prompted before
+  the candidate can be written.
+- Sibling `MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls,
+  not a sum that must fit a parent. This permits overlapping working-set
+  thresholds on a host where several tiers are active at different times.
+- A child `MemoryMin`/`MemoryLow` without matching parent protection remains
+  valid but is reported because that protection may be ineffective at the
+  ancestor boundary.
+- A single child `MemoryHigh` or `MemoryMax` above its configured parent is
+  re-prompted because the child's declared ceiling would be misleading. The
+  wizard does not sum sibling thresholds: combined child `MemoryLow`/`MemoryHigh`
+  values above the parent are printed as advisory warnings and remain valid;
+  the parent still governs the combined subtree.
+
+`MemAvailable` is displayed as transient context; starting proposals use
+physical `MemTotal`, and it is not a hard budget. `MemoryMin` is hard
+hierarchical protection; `MemoryLow` is soft best-effort protection;
+`MemoryHigh` is soft reclaim throttling; `MemoryMax` is the hard RAM ceiling
+and does not include swap, which is governed separately by `MemorySwapMax`.
 
 Host setup is host-only. The installer and wizard refuse a devcontainer before
 reading or writing host policy: UID 0 there is container root, not root of the
