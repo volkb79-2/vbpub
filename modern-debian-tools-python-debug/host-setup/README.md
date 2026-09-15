@@ -141,10 +141,14 @@ as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
 `MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
 It converts systemd binary units to KiB and rejects/re-prompts unless every
 configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
-values against configured parent ceilings; live `MemAvailable` is context only,
-while starting proposals use physical `MemTotal`. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
-is the single authoritative root `dev.slice` MemoryMin and is mirrored on the
-guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX` are the other root controls.
+values against configured parent ceilings as review-only warnings; sibling
+`MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls and are not
+summed. A child `MemoryHigh` or `MemoryMax` above its parent counterpart does
+not reprompt or refuse the configuration. Live `MemAvailable` is context only,
+while starting proposals use physical `MemTotal`.
+`DEV_MEMORY_MIN_GUARANTEED_CEILING` is the single authoritative root `dev.slice`
+MemoryMin and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`
+are the other root controls.
 Each child slice flow includes `CPUWeight`, `CPUQuota`, `IOWeight`, swap, and
 zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.md#managed-buildkit-backend)
 for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
@@ -366,8 +370,9 @@ after a schema change. The old file is still backed up; validation happens
 before either backup or replacement. Deleting the old file first is different:
 it loses the source of the old defaults and has no automatic backup if the
 wizard is interrupted. The wizard walks every section it knows, preserves
-non-prompted values represented by the template, and rejects hierarchy or
-live-host aggregate violations before rendering.
+non-prompted values represented by the template, and rejects per-slice
+ hierarchy violations before rendering. Parent/child MemoryHigh/MemoryMax
+ differences are reported for review but do not block rendering.
 
 ## Quick start
 
@@ -461,6 +466,17 @@ cannot express the next:
    reboot and `daemon-reload` by themselves; zero runtime machinery. Rendered
    from `host-setup.env` at install time so per-host tuning stays in one
    reviewable file.
+
+   If the io.cost baseline is missing or invalid, `mdt-apply-dev-caps.sh`
+   clears only MDT's runtime IO properties on `dev.slice` and its runtime IOPS
+   sub-ceilings on `dev-gates.slice`/`dev-buildkitd.slice`. That makes the
+   configured static unit-file values authoritative again instead of allowing
+   stale measured values to survive; unrelated cgroup properties are untouched.
+   Matched containers still receive the deliberately tight, host-independent
+   per-container fallback of **200 read / 400 write IOPS and 30 MiB/s read /
+   write** until a valid baseline is available. This includes the interactive
+   devcontainer by the current fail-safe policy; changing that policy is a
+   separate operator decision, not an implicit hardware-based default.
 2. **Boot service + periodic timer** (`mdt-host-slices.service/.timer` →
    `mdt-apply-dev-caps.sh`) — everything units *can't* declare:
    - the **measured** whole-estate IO caps on `dev.slice` (`DEV_IO_CAP_PCT`%

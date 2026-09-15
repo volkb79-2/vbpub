@@ -55,6 +55,15 @@ class BuildKitGovernanceTests(unittest.TestCase):
                 ),
                 "",
             )
+        with mock.patch.object(WIZARD, "_prompt", return_value="-"):
+            self.assertEqual(
+                WIZARD.ask(
+                    "optional", "2G", WIZARD.validate_optional_positive_size,
+                    empty_token="none",
+                    empty_tokens=("-",),
+                ),
+                "",
+            )
         with mock.patch.object(WIZARD, "_prompt", side_effect=["maybe", "n"]):
             self.assertFalse(WIZARD.ask_yn("policy", default=True))
 
@@ -73,18 +82,37 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertEqual(migrated["WATCHER_DEVCONTAINER_NAME_PATTERNS"], "*ide*")
         self.assertEqual(migrated["WATCHER_INTERVAL"], "7min")
 
-    def test_memory_aggregate_reprompts_without_restarting_the_session(self) -> None:
+    def test_memory_sibling_sums_are_allowed_and_parent_mismatches_warn_only(self) -> None:
         values = {
             "DEV_MEMORY_HIGH": "4G",
+            "DEV_MEMORY_MAX": "8G",
             "DEV_INTERACTIVE_MEMORY_HIGH": "2G",
+            "DEV_INTERACTIVE_MEMORY_MAX": "10G",
             "DEV_BACKGROUND_MEMORY_HIGH": "2G",
+            "DEV_BACKGROUND_MEMORY_MAX": "2G",
             "DEV_GATES_MEMORY_HIGH": "2G",
+            "DEV_GATES_MEMORY_MAX": "2G",
             "DEV_BUILDKITD_MEMORY_HIGH": "2G",
+            "DEV_BUILDKITD_MEMORY_MAX": "2G",
+            "DEV_INTERACTIVE_MEMORY_MIN": "",
+            "DEV_INTERACTIVE_MEMORY_LOW": "",
+            "DEV_BACKGROUND_MEMORY_MIN": "",
+            "DEV_BACKGROUND_MEMORY_LOW": "",
+            "DEV_GATES_MEMORY_MIN": "",
+            "DEV_GATES_MEMORY_LOW": "",
+            "DEV_BUILDKITD_MEMORY_MIN": "",
+            "DEV_BUILDKITD_MEMORY_LOW": "",
+            "DEV_MEMORY_MIN_GUARANTEED_CEILING": "",
         }
-        with mock.patch.object(WIZARD, "_prompt", side_effect=["", "8G"]) as prompt:
+        with mock.patch.object(WIZARD, "_prompt") as prompt, \
+             mock.patch.object(WIZARD, "out") as output:
             WIZARD._reprompt_memory_constraints(0, values)
-        self.assertEqual(values["DEV_MEMORY_HIGH"], "8G")
-        self.assertEqual(prompt.call_count, 2)
+        self.assertEqual(values["DEV_MEMORY_HIGH"], "4G")
+        self.assertEqual(prompt.call_count, 0)
+        warnings = WIZARD.memory_review_warnings(values)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("dev-interactive.slice MemoryMax=10G", warnings[0])
+        self.assertTrue(any("does not block" in call.args[0] for call in output.call_args_list))
 
     def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
         def runner(argv, **kwargs):
@@ -141,22 +169,237 @@ class BuildKitGovernanceTests(unittest.TestCase):
             path.write_text("RIOPS_MAX=1\n")
             self.assertFalse(BASELINE.cache_is_valid(path))
 
-    def test_memory_proposals_are_aggregate_safe_at_rounding_boundaries(self) -> None:
+    def test_io_watcher_accepts_docker_actor_id_event_shape_and_keeps_status(self) -> None:
+        watcher = ROOT / "scripts" / "mdt-io-cap-watcher.sh"
+        service = (ROOT / "units" / "mdt-io-cap-watcher.service").read_text()
+        self.assertIn("--format '{{.Actor.ID}}'", watcher.read_text())
+        self.assertIn("Restart=always", service)
+        self.assertIn("RestartSec=5", service)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            docker_log = root / "docker.log"
+            config = root / "host-setup.env"
+            config.write_text(
+                f"IO_DEV_PATH=/dev/fake\nIO_BASELINE_ENV={root / 'missing-baseline'}\n"
+            )
+            docker = fake_bin / "docker"
+            docker.write_text(
+                """#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  info|ps) exit 0 ;;
+  inspect)
+    template="${3:-}"
+    cid="${4:-}"
+    printf '%s %s\\n' "$template" "$cid" >> "$FAKE_DOCKER_LOG"
+    case "$template" in
+      *State.Pid*) echo 0 ;;
+      *Config.Image*) echo test-runner:fake ;;
+      *Name*) echo /test-runner ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  events)
+    format=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --format) format="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ "$format" = "{{.Actor.ID}}" ] || { echo "unexpected format: $format" >&2; exit 42; }
+    printf '%s\\n' '{"status":"start","Actor":{"ID":"event-container-id"}}' \\
+      | python3 -c 'import json, sys; print(json.load(sys.stdin)["Actor"]["ID"])'
+    exit 17
+    ;;
+  *) exit 2 ;;
+esac
+"""
+            )
+            docker.chmod(0o755)
+            systemctl = fake_bin / "systemctl"
+            systemctl.write_text("#!/usr/bin/env bash\nexit 0\n")
+            systemctl.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "CONF": str(config),
+                "FAKE_DOCKER_LOG": str(docker_log),
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            })
+            result = subprocess.run(
+                [str(watcher)], env=env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("docker events stream ended (status=17)", result.stdout)
+            self.assertIn("event-container-id", docker_log.read_text())
+
+    def test_no_baseline_uses_explicit_static_per_container_fallback(self) -> None:
+        library = ROOT / "scripts" / "mdt-container-caps.lib.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            env = os.environ.copy()
+            env.update({
+                "CONF": str(Path(directory) / "missing-config"),
+                "IO_BASELINE_ENV": str(Path(directory) / "missing-baseline"),
+            })
+            result = subprocess.run(
+                ["bash", "-c", f"""
+set -u
+log() {{ :; }}
+. "{library}"
+_mdt_load_config
+_mdt_load_baseline
+_mdt_derive_watcher_caps
+printf '%s %s %s %s %s %s\\n' \\
+  "$WATCHER_RIOPS" "$WATCHER_WIOPS" "$WATCHER_RBPS" "$WATCHER_WBPS" \\
+  "$WATCHER_SRC" "$MDT_IO_BASELINE_VALID"
+"""],
+                env=env, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(
+                result.stdout.strip(),
+                "200 400 31457280 31457280 static fallback — no baseline, run mdt-io-baseline.py 0",
+            )
+
+    def test_no_baseline_clears_only_mdt_runtime_io_properties(self) -> None:
+        apply_script = ROOT / "scripts" / "mdt-apply-dev-caps.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            state = root / "cgroup-state"
+            systemctl_log = root / "systemctl.log"
+            missing_baseline = root / "missing-baseline"
+            config = root / "host-setup.env"
+            config.write_text(
+                f"IO_BASELINE_ENV={missing_baseline}\n"
+                "CGROUP2_FLAGS=warn\n"
+            )
+            systemctl = fake_bin / "systemctl"
+            systemctl.write_text(
+                """#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
+if [ "${1:-}" = set-property ]; then
+  unit="$3"
+  shift 3
+  for assignment in "$@"; do
+    key="${assignment%%=*}"
+    value="${assignment#*=}"
+    [ -z "$value" ] || continue
+    tmp="${STATE_PATH}.tmp"
+    awk -F'|' -v unit="$unit" -v key="$key" \\
+      '!(($1 == unit) && ($2 == key))' "$STATE_PATH" > "$tmp"
+    mv "$tmp" "$STATE_PATH"
+  done
+fi
+exit 0
+"""
+            )
+            systemctl.chmod(0o755)
+            findmnt = fake_bin / "findmnt"
+            findmnt.write_text(
+                """#!/usr/bin/env bash
+if [ "${2:-}" = SOURCE ]; then
+  echo overlay
+fi
+exit 0
+"""
+            )
+            findmnt.chmod(0o755)
+            docker = fake_bin / "docker"
+            docker.write_text("#!/usr/bin/env bash\nexit 1\n")
+            docker.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "CG": str(root / "cgroup"),
+                "CONF": str(config),
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "STATE_PATH": str(state),
+                "SYSTEMCTL_LOG": str(systemctl_log),
+            })
+            for io_device in ("/dev/fake", ""):
+                state.write_text(
+                    "dev.slice|IOReadBandwidthMax|stale-read-bandwidth\n"
+                    "dev.slice|IOWriteBandwidthMax|stale-write-bandwidth\n"
+                    "dev.slice|IOReadIOPSMax|stale-read-iops\n"
+                    "dev.slice|IOWriteIOPSMax|stale-write-iops\n"
+                    "dev.slice|CPUWeight|900\n"
+                    "dev.slice|MemoryMax|123456\n"
+                    "dev-gates.slice|IOReadIOPSMax|stale-gates\n"
+                    "dev-gates.slice|IOWriteIOPSMax|stale-gates\n"
+                    "dev-gates.slice|MemoryMax|234567\n"
+                    "dev-buildkitd.slice|IOReadIOPSMax|stale-buildkit-read\n"
+                    "dev-buildkitd.slice|IOWriteIOPSMax|stale-buildkit-write\n"
+                )
+                config.write_text(
+                    f"IO_DEV_PATH={io_device}\nIO_BASELINE_ENV={missing_baseline}\n"
+                    "CGROUP2_FLAGS=warn\n"
+                )
+                systemctl_log.write_text("")
+                result = subprocess.run(
+                    ["bash", str(apply_script)], env=env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("unit-file static fallback is authoritative", result.stdout)
+                calls = systemctl_log.read_text()
+                self.assertIn(
+                    "set-property --runtime dev.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",
+                    calls,
+                )
+                self.assertIn(
+                    "set-property --runtime dev-gates.slice IOReadIOPSMax= IOWriteIOPSMax=",
+                    calls,
+                )
+                self.assertIn(
+                    "set-property --runtime dev-buildkitd.slice IOReadIOPSMax= IOWriteIOPSMax=",
+                    calls,
+                )
+                self.assertNotIn("CPUWeight=", calls)
+                self.assertNotIn("MemoryMax=", calls)
+                remaining = state.read_text()
+                self.assertIn("dev.slice|CPUWeight|900", remaining)
+                self.assertIn("dev.slice|MemoryMax|123456", remaining)
+                self.assertIn("dev-gates.slice|MemoryMax|234567", remaining)
+                self.assertNotIn("IOReadBandwidthMax", remaining)
+                self.assertNotIn("IOWriteBandwidthMax", remaining)
+                self.assertNotIn("IOReadIOPSMax", remaining)
+                self.assertNotIn("IOWriteIOPSMax", remaining)
+
+    def test_memory_proposals_keep_per_slice_order_at_rounding_boundaries(self) -> None:
         for avail_kib in (1 * 1024 * 1024, 25 * 1024, 7_800 * 1024):
             proposals = WIZARD.propose_memory_tiers(avail_kib, avail_kib)
-            child_highs = sum(
-                WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"])
-                for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD")
+            self.assertEqual(
+                proposals["DEV_MEMORY_HIGH"],
+                WIZARD.kib_to_size_str(max(1, avail_kib * 75 // 100)),
             )
-            self.assertLessEqual(child_highs, WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_HIGH"]))
-            self.assertLessEqual(child_highs, avail_kib)
+            self.assertLessEqual(
+                WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_HIGH"]),
+                WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_MAX"]),
+            )
+            for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
+                self.assertLessEqual(
+                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_LOW"]),
+                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
+                )
+                self.assertLessEqual(
+                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
+                    WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
+                )
 
     def test_slice_flow_passes_reserve_validators_as_validators(self) -> None:
         example = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
         calls = {}
 
         def fake_walk(label, key, cfg, defaults, proposal=None, validate=None, **kwargs):
-            calls[key] = (label, validate)
+            calls[key] = (label, validate, kwargs)
             return cfg.get(key) or proposal or defaults.get(key, "")
 
         with mock.patch.object(WIZARD, "walk_key", side_effect=fake_walk), \
@@ -169,6 +412,57 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIs(calls["DEV_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
         self.assertIs(calls["DEV_SUBSLICE_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
         self.assertNotIn("<function", calls["DEV_CPU_RESERVE_CORES"][0])
+        memory_keys = {
+            "DEV_MEMORY_LOW", "DEV_MEMORY_HIGH", "DEV_MEMORY_MAX",
+            "DEV_MEMORY_MIN_GUARANTEED_CEILING",
+            "DEV_MEMORY_MIN_GUARANTEED_LOW",
+            "DEV_MEMORY_MIN_GUARANTEED_HIGH",
+            "DEV_MEMORY_MIN_GUARANTEED_MAX",
+            *WIZARD.MEMORY_CHILD_KEYS,
+        }
+        for key in memory_keys:
+            self.assertIs(calls[key][1], WIZARD.validate_optional_positive_size, key)
+            self.assertTrue(calls[key][2].get("allow_empty_token"), key)
+
+    def test_memory_relationships_cover_each_adjacent_configured_pair(self) -> None:
+        base = {
+            "DEV_INTERACTIVE_MEMORY_MIN": "1G",
+            "DEV_INTERACTIVE_MEMORY_LOW": "2G",
+            "DEV_INTERACTIVE_MEMORY_HIGH": "3G",
+            "DEV_INTERACTIVE_MEMORY_MAX": "4G",
+        }
+        for key, invalid_value, expected_right_key in (
+            ("DEV_INTERACTIVE_MEMORY_MIN", "3G", "DEV_INTERACTIVE_MEMORY_LOW"),
+            ("DEV_INTERACTIVE_MEMORY_LOW", "4G", "DEV_INTERACTIVE_MEMORY_HIGH"),
+            ("DEV_INTERACTIVE_MEMORY_HIGH", "5G", "DEV_INTERACTIVE_MEMORY_MAX"),
+        ):
+            values = dict(base)
+            values[key] = invalid_value
+            errors = WIZARD.memory_relationship_errors(values)
+            self.assertTrue(errors, key)
+            self.assertEqual(errors[0][0], expected_right_key)
+
+        with_optional_gap = dict(base)
+        with_optional_gap["DEV_INTERACTIVE_MEMORY_LOW"] = ""
+        with_optional_gap["DEV_INTERACTIVE_MEMORY_MIN"] = "3G"
+        self.assertFalse(WIZARD.memory_relationship_errors(with_optional_gap))
+
+    def test_memory_validator_map_matches_optional_prompt_contract(self) -> None:
+        validators = WIZARD._config_value_validators()
+        memory_keys = {
+            "DEV_MEMORY_LOW", "DEV_MEMORY_HIGH", "DEV_MEMORY_MAX",
+            "DEV_MEMORY_MIN_GUARANTEED_CEILING",
+            "DEV_MEMORY_MIN_GUARANTEED_LOW",
+            "DEV_MEMORY_MIN_GUARANTEED_HIGH",
+            "DEV_MEMORY_MIN_GUARANTEED_MAX",
+            *WIZARD.MEMORY_CHILD_KEYS,
+        }
+        self.assertTrue(memory_keys <= validators.keys())
+        for key in memory_keys:
+            self.assertIs(validators[key], WIZARD.validate_optional_positive_size, key)
+            self.assertIsNone(validators[key](""))
+            self.assertIsNone(validators[key]("2G"))
+            self.assertIsNotNone(validators[key]("0"))
 
     def test_custom_baseline_path_is_passed_to_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -202,9 +496,11 @@ class BuildKitGovernanceTests(unittest.TestCase):
             meminfo = directory_path / "meminfo"
             meminfo.write_text("MemTotal: 16777216 kB\nMemAvailable: 16777216 kB\n")
             output = directory_path / "host-setup.env"
+            transcript = io.StringIO()
             with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
                  mock.patch.object(WIZARD, "check_baseline_freshness", return_value="fresh"), \
-                 mock.patch("sys.stdin", io.StringIO("\n" * 100)):
+                 mock.patch("sys.stdin", io.StringIO("\n" * 100)), \
+                 mock.patch("sys.stdout", transcript):
                 self.assertEqual(
                     WIZARD.main([
                         "--example", str(example), "--output", str(output),
@@ -216,6 +512,21 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertNotIn("<function", rendered)
             self.assertIn("DEV_CPU_RESERVE_CORES=1", rendered)
             self.assertIn("DEV_SUBSLICE_CPU_RESERVE_CORES=3", rendered)
+            transcript_text = transcript.getvalue()
+            self.assertLess(
+                transcript_text.index("-- install map: what this creates and enables --"),
+                transcript_text.index("-- a. IO device (IO_DEV_PATH) --"),
+            )
+            for bullet in (
+                "mdt-io-cap-watcher.service",
+                "DEV_IO_CAP_PCT",
+                "WATCHER_IO_CAP_PCT",
+                "no host mutation occurs",
+                "Docker is not restarted automatically",
+                "Sibling Min/Low/High controls are independent",
+                "does not block",
+            ):
+                self.assertIn(bullet, transcript_text)
 
     def test_guard_policy_and_missing_config_fail_closed(self) -> None:
         config = GUARD.load_config(ROOT / "host-setup.env.example")
@@ -379,7 +690,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             "DEV_MEMORY_MIN_GUARANTEED_CEILING": "",
         }
         self.assertTrue(WIZARD.memory_relationship_errors(values))
-        self.assertIsNone(WIZARD.memory_aggregate_error(3 * 1024 * 1024, values))
+        self.assertEqual(WIZARD.memory_review_warnings(values), [])
         self.assertEqual(WIZARD.parse_size_to_kib("1.5G"), 1572864)
 
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
@@ -392,7 +703,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIn("DEV_MEMORY_MIN_GUARANTEED_CEILING", prompt_text)
         self.assertIn("updates both", prompt_text)
 
-    def test_wizard_validates_manual_config_and_parent_aggregate(self) -> None:
+    def test_wizard_validates_manual_config_and_reports_parent_review_warnings(self) -> None:
         example = (ROOT / "host-setup.env.example").read_text()
         valid = example.replace("DEV_MEMORY_HIGH=\n", "DEV_MEMORY_HIGH=32G\n")
         valid = valid.replace("DEV_MEMORY_MAX=\n", "DEV_MEMORY_MAX=64G\n")
@@ -427,11 +738,27 @@ class BuildKitGovernanceTests(unittest.TestCase):
 
             sibling_over_budget = valid.replace("DEV_MEMORY_HIGH=32G", "DEV_MEMORY_HIGH=4G")
             config_path.write_text(sibling_over_budget)
-            with self.assertRaises(WIZARD.TemplateError) as raised:
-                WIZARD.validate_host_setup_config(
-                    config_path, ROOT / "host-setup.env.example", meminfo_path
+            warnings = WIZARD.validate_host_setup_config(
+                config_path, ROOT / "host-setup.env.example", meminfo_path
+            )
+            self.assertTrue(any("MemoryHigh" in warning for warning in warnings))
+            self.assertTrue(any("does not block" in warning for warning in warnings))
+            with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
+                 mock.patch("sys.stdout", io.StringIO()) as transcript:
+                self.assertEqual(
+                    WIZARD.main(
+                        [
+                            "--validate-config",
+                            str(config_path),
+                            "--example",
+                            str(ROOT / "host-setup.env.example"),
+                            "--meminfo-path",
+                            str(meminfo_path),
+                        ]
+                    ),
+                    0,
                 )
-            self.assertIn("memory aggregate", str(raised.exception))
+                self.assertIn("REVIEW WARNING (does not block)", transcript.getvalue())
 
             invalid_hierarchy = valid.replace(
                 "DEV_BUILDKITD_MEMORY_LOW=\n", "DEV_BUILDKITD_MEMORY_LOW=7G\n"

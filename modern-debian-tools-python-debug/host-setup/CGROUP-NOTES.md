@@ -90,7 +90,16 @@ and `dev-background.slice` combined, cgroup v2's hierarchical accounting does
 the rest, and neither child needs its own IO cap). The unit files keep
 deliberately **tight** static caps on `dev.slice` as the boot-window fallback:
 between boot and the first sweep, and forever on a host where nobody ran the
-benchmark, those statics are the operative values.
+benchmark, those statics are the operative values. On every no-valid-baseline
+or no-device sweep, MDT also clears only its runtime `io.max` properties on
+`dev.slice` and its runtime IOPS sub-ceilings on `dev-gates.slice` and
+`dev-buildkitd.slice`, using empty systemd assignments so stale measured values
+cannot override the unit-file statics. It does not revert or clear unrelated
+cgroup properties. The matched per-container watcher has its own deliberately
+tight, host-independent fallback: **200 read / 400 write IOPS and 30 MiB/s
+read / write**. That fallback currently applies to devcontainers as well as
+test-runner and BuildKit matches; it is the fail-safe policy, not a guessed
+hardware number, until a valid baseline is measured.
 
 **Why the cap sits at 60–80% and never 100%:** a device driven to saturation
 queues everything behind the burst, which is precisely the stall the tiering

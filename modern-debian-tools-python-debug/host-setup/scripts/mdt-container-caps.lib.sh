@@ -45,6 +45,11 @@ _mdt_discover_io_dev_path() {
 # provenance warnings mdt-apply-dev-caps.sh always has (burst-v1 reads high on
 # a VM; unrecognised/missing method means "unverified").
 _mdt_load_baseline() {
+  # This is deliberately a state bit, not inferred from whichever numeric
+  # fields happened to survive a partial/invalid cache.  The runtime root cap
+  # must be cleared whenever the cache is not fully current, so a stale
+  # measured io.max value cannot outlive the baseline that justified it.
+  MDT_IO_BASELINE_VALID=0
   RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD="" MEASURED_AT=""
   [ -f "$IO_BASELINE_ENV" ] || { log "no $IO_BASELINE_ENV — per-container caps use the static fallback (run mdt-io-baseline.py)"; return; }
   local _invalid=""
@@ -79,6 +84,8 @@ _mdt_load_baseline() {
   if [ -n "$_invalid" ]; then
     log "WARN: ignoring $IO_BASELINE_ENV — $_invalid; per-container and runtime estate caps use static fallbacks"
     RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
+  else
+    MDT_IO_BASELINE_VALID=1
   fi
 }
 
@@ -86,6 +93,8 @@ _mdt_load_baseline() {
 # WATCHER_SKIP=1 if the derived cap is unusable). Call after _mdt_load_config,
 # _mdt_load_baseline and _mdt_discover_io_dev_path.
 _mdt_derive_watcher_caps() {
+  # Deliberately tight, host-independent fail-safe values.  They are not a
+  # hardware estimate: a valid io.cost baseline replaces all four values.
   WATCHER_RBPS="${WATCHER_RBPS:-31457280}"; WATCHER_WBPS="${WATCHER_WBPS:-31457280}"
   WATCHER_RIOPS="${WATCHER_RIOPS:-200}";    WATCHER_WIOPS="${WATCHER_WIOPS:-400}"
   WATCHER_SRC="static fallback — no baseline, run mdt-io-baseline.py"
@@ -99,6 +108,8 @@ _mdt_derive_watcher_caps() {
     WATCHER_RBPS=$((  RBW_MAX_BPS * WATCHER_IO_CAP_PCT / 100 ))
     WATCHER_WBPS=$((  WBW_MAX_BPS * WATCHER_IO_CAP_PCT / 100 ))
     WATCHER_SRC="${WATCHER_IO_CAP_PCT}% of measured io.cost ceiling"
+  else
+    log "per-container IO caps: static fail-safe fallback is 200 read/400 write IOPS and 30 MiB/s read/write (no valid baseline)"
   fi
   if [ "$WATCHER_RIOPS" -lt 1 ] || [ "$WATCHER_WIOPS" -lt 1 ] \
      || [ "$WATCHER_RBPS" -lt 1 ] || [ "$WATCHER_WBPS" -lt 1 ]; then
