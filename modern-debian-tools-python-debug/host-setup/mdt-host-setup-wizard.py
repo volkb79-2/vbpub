@@ -1902,7 +1902,7 @@ def step_slice_first_resources(
     for bullet in (
         "Host/production reserve: cores excluded from the aggregate dev.slice auto-quota.",
         "Child reserve: cores excluded from each child slice's auto-quota.",
-        "Neither reserve pins a CPU; they affect only a blank CPUQuota.",
+        "Neither reserve pins a CPU; they affect only an empty CPUQuota value.",
         f"With nproc={host_nproc}, reserve 1 -> root {max(1, host_nproc - 1) * 100}%; reserve 3 -> child {max(1, host_nproc - 3) * 100}%.",
         "An explicit N% is the hard cap and overrides auto-detection; CPUWeight is only a relative share.",
     ):
@@ -2037,7 +2037,7 @@ def step_slice_first_resources(
             )
         out("CPU and IO controls:")
         for bullet in (
-            "CPUQuota is this slice's hard cap; blank derives from the child reserve above.",
+            "CPUQuota is this slice's hard cap; an empty value derives from the child reserve above. Type `-` to choose that when upgrading.",
             "Explicit N% wins; CPUWeight and IOWeight are relative shares, not caps.",
             "Weights matter only when siblings contend.",
         ):
@@ -2061,7 +2061,7 @@ def step_slice_first_resources(
         out("Swap control:")
         for bullet in (
             "MemorySwapMax limits swap only.",
-            "Blank cascades from the live parent; an explicit size affects only this slice.",
+            "An empty value cascades from the live parent; an explicit size affects only this slice. Type `-` to choose cascade when upgrading.",
         ):
             out(f"- {bullet}", hang="  ")
         values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(

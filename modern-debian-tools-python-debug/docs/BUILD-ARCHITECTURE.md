@@ -51,7 +51,8 @@ inspect failure is indeterminate and stops the watcher for systemd to restart.
 
 The host wizard follows the same fail-closed resource model. It is slice-first,
 asks all four memory controls for every governed slice, distinguishes optional
-`none` from blank CPU/swap auto-detection, and compares parsed binary units in
+`none` from the explicit `-` token, and makes CPU/swap auto-detection an
+explicit `-` choice during upgrades; it compares parsed binary units in
 KiB. Its validation contract is deliberately split:
 
 - Within one slice, configured values must satisfy `MemoryMin <= MemoryLow <=

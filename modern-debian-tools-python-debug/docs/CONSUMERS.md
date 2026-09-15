@@ -44,8 +44,10 @@ zswap controls. Its memory policy is:
   advisory only and do not block an intentional overlapping policy.
 
 Empty means the operator explicitly chose no directive; it is not an invented
-fallback. Type `-` to omit any optional memory directive; Enter accepts its
-shown proposal. MemoryMax is RAM only; MemorySwapMax is swap only. A baseline
+fallback. Type `-` to omit any optional memory directive, or to select derived
+CPUQuota/MemorySwapMax during an upgrade; Enter accepts the shown value,
+including an existing explicit CPU/swap value. MemoryMax is RAM only;
+MemorySwapMax is swap only. A baseline
 benchmark uses the official kernel `io.cost` matrix against the persistent
 `IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
 than by age. It saturates the disk for about 12 minutes at default settings,

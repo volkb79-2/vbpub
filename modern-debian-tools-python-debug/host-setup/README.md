@@ -404,8 +404,10 @@ default at every step, and it falls through into the same render/apply logic
 after candidate validation. Existing values are shown as `existing:` defaults,
 host-derived values as `derived:`, and template values as `example:`. Type
 `-` (or compatibility spelling `none`) to clear any optional memory directive;
-blank CPUQuota and MemorySwapMax mean auto-detect at install time. All four
-memory controls may be omitted. The manual path requires a
+type `-` for derived CPUQuota or MemorySwapMax. Enter always accepts the shown
+value, including an existing explicit CPU/swap value, so it does not silently
+change an upgrade. An empty resulting CPUQuota/MemorySwapMax is auto-detected
+at install time. All four memory controls may be omitted. The manual path requires a
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
