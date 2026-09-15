@@ -7,7 +7,10 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["bash", "-lc", "set -euo pipefail; mkdir -p .assay; /opt/tester-venv/bin/coverage run --branch --source=host-setup -m pytest host-setup/tests/test_buildkit_governance.py -q; /opt/tester-venv/bin/coverage json --data-file=.coverage -o .assay/coverage.json"]
+# Keep the baseline as one direct Python process. A shell chain here would let
+# a per-candidate timeout kill only bash while orphaning coverage/pytest; the
+# runner owns coverage and writes the JSON artifact before it exits.
+argv = ["/opt/tester-venv/bin/python", "host-setup/tests/run_coverage.py"]
 env = {}
 env_passthrough = ["PATH"]
 budget = "1h"
@@ -37,10 +40,10 @@ artifact = ".assay/coverage.json"
 jobs = 1
 max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
-  # The baseline command is wrapped in `bash -lc` so it can emit the coverage
-  # artifact after pytest. assay's literal-argv liveness detector cannot see
-  # through that shell wrapper; the explicit false is intentional. The
-  # per-candidate wall-clock bound remains active.
+  # The direct Python baseline runner invokes pytest in-process and emits the
+  # coverage artifact itself. assay's literal-argv liveness detector cannot
+  # see that in-process call; explicit false is intentional. The direct
+  # process remains subject to the per-candidate wall-clock bound.
   budget_per_candidate = "2m"
   liveness = false
 
