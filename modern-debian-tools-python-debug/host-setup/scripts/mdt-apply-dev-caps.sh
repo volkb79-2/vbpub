@@ -100,10 +100,35 @@ _mdt_discover_io_dev_path
 # --- baseline: shared by the dev.slice cap below AND the per-container caps --
 _mdt_load_baseline
 
+# A measured runtime cap is an override owned by MDT.  If there is no current
+# baseline, or no host device node to which it can safely refer, remove only
+# those MDT-owned runtime IO properties.  Empty systemd assignments reset the
+# runtime values and reveal the values declared by the installed slice unit;
+# `systemctl revert` is intentionally not used because it would remove
+# unrelated runtime properties from the same cgroups.
+_mdt_clear_runtime_io_caps() {
+  local _clear_error _sub_slice
+  if _clear_error=$(systemctl set-property --runtime dev.slice \
+       IOReadBandwidthMax= IOWriteBandwidthMax= \
+       IOReadIOPSMax= IOWriteIOPSMax= 2>&1); then
+    log "dev.slice: cleared MDT runtime IO caps; unit-file static fallback is authoritative"
+  else
+    log "WARN: dev.slice runtime IO-cap clear failed ($_clear_error) — stale values may remain until the unit is recreated or rebooted"
+  fi
+  for _sub_slice in dev-gates.slice dev-buildkitd.slice; do
+    if _clear_error=$(systemctl set-property --runtime "$_sub_slice" \
+         IOReadIOPSMax= IOWriteIOPSMax= 2>&1); then
+      log "$_sub_slice: cleared MDT runtime IOPS sub-ceiling"
+    else
+      log "WARN: $_sub_slice runtime IOPS clear failed ($_clear_error)"
+    fi
+  done
+}
+
 # --- dev.slice: whole-estate measured IO caps (dev-interactive + dev-background) --
-if [ -n "${RIOPS_MAX:-}" ]; then
+if [ "${MDT_IO_BASELINE_VALID:-0}" = 1 ] && [ -n "${IO_DEV_PATH:-}" ]; then
   if [ -n "${WIOPS_MAX:-}" ] && [ -n "${RBW_MAX_BPS:-}" ] \
-     && [ -n "${WBW_MAX_BPS:-}" ] && [ -n "${IO_DEV_PATH:-}" ]; then
+     && [ -n "${WBW_MAX_BPS:-}" ]; then
     DEV_RIOPS=$(( RIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
     DEV_WIOPS=$(( WIOPS_MAX * DEV_IO_CAP_PCT / 100 ))
     DEV_RBPS=$(( RBW_MAX_BPS * DEV_IO_CAP_PCT / 100 ))
@@ -111,7 +136,8 @@ if [ -n "${RIOPS_MAX:-}" ]; then
     # 0 in io.max is not "unlimited" — it halts IO. Refuse a bad baseline and
     # leave the unit-file statics (tight, but a working host) in force.
     if [ "$DEV_RIOPS" -lt 1 ] || [ "$DEV_WIOPS" -lt 1 ] || [ "$DEV_RBPS" -lt 1 ] || [ "$DEV_WBPS" -lt 1 ]; then
-      log "WARN: baseline yields a <= 0 estate cap — dev.slice keeps unit-file statics"
+      log "WARN: baseline yields a <= 0 estate cap — clearing MDT runtime IO so dev.slice keeps unit-file statics"
+      _mdt_clear_runtime_io_caps
     # --runtime: survives daemon-reload (runtime drop-in), gone at reboot —
     # which is exactly right, this service re-runs at every boot.
     elif systemctl set-property --runtime dev.slice \
@@ -145,10 +171,12 @@ if [ -n "${RIOPS_MAX:-}" ]; then
       log "WARN: dev.slice set-property failed ($(cat /tmp/mdt-cg-err 2>/dev/null)) — unit-file statics remain in force"
     fi
   else
-    log "baseline file incomplete or no device — dev.slice keeps unit-file statics"
+    log "baseline file incomplete — clearing MDT runtime IO so dev.slice keeps unit-file statics"
+    _mdt_clear_runtime_io_caps
   fi
 else
-  log "no $IO_BASELINE_ENV — dev.slice keeps unit-file statics (run mdt-io-baseline.py)"
+  log "no valid baseline or no host IO device — clearing MDT runtime IO so dev.slice keeps unit-file statics (run mdt-io-baseline.py)"
+  _mdt_clear_runtime_io_caps
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

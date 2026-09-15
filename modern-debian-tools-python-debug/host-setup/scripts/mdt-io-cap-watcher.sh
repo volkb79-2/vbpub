@@ -77,8 +77,11 @@ log "watching docker events for buildkit/test-runner/devcontainer container star
 # Start the event pipeline before the reconciliation snapshot. --since covers
 # the short process-start/API-attach interval as well; duplicate starts are
 # harmless because applying the same systemd properties is idempotent.
+# Docker's event object carries the container ID under Actor.ID.  Using the
+# top-level .ID asks Docker 29.8 for a field that does not exist and makes the
+# long-running watcher terminate before it can cap a new container.
 WATCH_SINCE=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
-docker events --since "$WATCH_SINCE" --filter type=container --filter event=start --format '{{.ID}}' |
+docker events --since "$WATCH_SINCE" --filter type=container --filter event=start --format '{{.Actor.ID}}' |
 while IFS= read -r cid; do
   [ -n "$cid" ] || continue
   _mdt_classify_and_apply "$cid"
