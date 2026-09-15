@@ -1888,8 +1888,8 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
                       f"{probe.returncode}: {tail})")
     container_id = probe.stdout.strip()
     if not container_id:
-        return None, (f"not running in a container (docker inspect "
-                      f"{hostname!r} returned no id)")
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} returned no id)")
     if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
         return None, ("could not verify current container identity "
                       f"(docker inspect returned malformed container id "
