@@ -2625,3 +2625,12 @@ residuals from RW-208 and adds the machine-discoverable P36 and cgprofile P07
 companion packets. It remains design-only and unaccepted: no implementation,
 producer gate, or fresh adversarial verification is recorded, so no dispatch,
 merge, or release follows from this checkpoint.
+
+### RW-214 — 2026-09-15 00:22:31Z — CMRU candidate non-mutation gates green
+
+The isolated CMRU promotion-recovery candidate `5d4b79e0` passed the real
+tester-unified assay-r1 lane and the independent assay-r3 canary lane. The
+candidate remains clean and unmerged. The required fresh Sol xhigh final
+review and any release mutation gate have not run; the controller is not
+claiming merge or release readiness while subagent creation is disabled by
+the operator.
