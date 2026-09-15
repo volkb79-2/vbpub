@@ -4797,7 +4797,8 @@ class TestAssayToolchainFitness:
             if re.search(r'\[docker, "(run|exec)"', chunk):
                 builders.add(name)
         assert builders == {"run_container_lane", "run_exec_lane",
-                            "build_env_probe_argv"}, builders
+                            "build_env_probe_argv",
+                            "resolve_self_container_id"}, builders
         for consumer in ("assay_inventory", "probe_missing_tools"):
             body = src.split(f"\ndef {consumer}(")[1].split("\ndef ")[0]
             assert "build_env_probe_argv" in body
@@ -14826,6 +14827,47 @@ class TestBareHostProfilingWiring:
         assert isinstance(mem["floor_bytes"], int) and mem["floor_bytes"] > 0
         assert mem["peak_at_floor"] in (True, False)  # a real answer, not None
         assert mem["peak_bytes"] >= 0
+
+    def test_runner_wires_monotonic_subsecond_duration_end_to_end(
+            self, tmp_path, monkeypatch):
+        """The runner must pass the monotonic interval into the summary.
+        Both UTC display reads deliberately return the same whole second;
+        deriving duration by subtracting them would record zero."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        repo, proj = make_history_repo(tmp_path, self._config())
+        fake_docker(tmp_path, monkeypatch)  # inspect miss -> rusage path
+        real_time = run_gate.time
+        monotonic_values = iter((100.0, 100.375))
+
+        class _Clock:
+            @staticmethod
+            def monotonic():
+                return next(monotonic_values)
+
+            @staticmethod
+            def time():
+                return 1_789_440_000.25
+
+            def __getattr__(self, name):
+                return getattr(real_time, name)
+
+        monkeypatch.setattr(run_gate, "time", _Clock())
+        record = {}
+        plan = {"enabled": True,
+                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
+                "damon": run_gate.PROFILE_DAMON_DEFAULT,
+                "source": "test", "disabled_reason": "disabled",
+                "token": None}
+        code = run_gate.run_bare_host_lane(
+            {"kind": "command", "environment": "bare-host",
+             "argv": ["true"], "clean_tree": False},
+            "suite", proj, repo, repo, dry_run=False, request_base=None,
+            run_record=record, profile_plan=plan)
+        assert code == 0
+        resources = record["resources"]
+        assert resources["started_at"] == resources["ended_at"]
+        assert resources["duration_seconds"] == 0.375
 
     def test_daemon_path_never_computes_a_floor(self, tmp_path, monkeypatch,
                                                capsys):
