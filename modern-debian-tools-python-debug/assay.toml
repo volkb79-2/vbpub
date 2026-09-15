@@ -7,7 +7,7 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["bash", "-lc", "set -euo pipefail; mkdir -p .assay; /opt/tester-venv/bin/coverage run --branch --source=host-setup/mdt-host-setup-wizard.py -m pytest host-setup/tests/test_buildkit_governance.py -q; /opt/tester-venv/bin/coverage json --data-file=.coverage --outfile=.assay/coverage.json"]
+argv = ["bash", "-lc", "set -euo pipefail; mkdir -p .assay; /opt/tester-venv/bin/coverage run --branch --source=host-setup -m pytest host-setup/tests/test_buildkit_governance.py -q; /opt/tester-venv/bin/coverage json --data-file=.coverage -o .assay/coverage.json"]
 env = {}
 env_passthrough = ["PATH"]
 budget = "30m"
