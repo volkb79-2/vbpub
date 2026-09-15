@@ -582,11 +582,16 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
     not a budget to add together.  A child High or Max above the configured
     parent counterpart is still useful for an operator to review: the parent
     remains an ancestor limit, so the effective child ceiling/protection may
-    be lower than the child declaration.  These observations must never turn
-    a valid per-slice configuration into a reprompt or a refused install.
+    be lower than the child declaration.  A child Min/Low without the matching
+    ancestor protection is also worth naming: it is valid configuration, but
+    the requested protection may be ineffective at that hierarchy boundary.
+    These observations must never turn a valid per-slice configuration into a
+    reprompt or a refused install.
     """
     warnings: list[str] = []
     parent_fields = (
+        ("MemoryMin", "DEV_MEMORY_MIN_GUARANTEED_CEILING", 0),
+        ("MemoryLow", "DEV_MEMORY_LOW", 1),
         ("MemoryHigh", "DEV_MEMORY_HIGH", 2),
         ("MemoryMax", "DEV_MEMORY_MAX", 3),
     )
@@ -595,7 +600,15 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
             parent = parse_size_to_kib(values.get(parent_key, ""))
             child_key = keys[child_index]
             child = parse_size_to_kib(values.get(child_key, ""))
-            if parent and child and child > parent:
+            if not child:
+                continue
+            if not parent and field in ("MemoryMin", "MemoryLow"):
+                warnings.append(
+                    f"{slice_name} {field}={values[child_key]} has no configured "
+                    f"ancestor dev.slice {field}; the requested protection may be "
+                    "ineffective (does not block)"
+                )
+            elif parent and child > parent:
                 warnings.append(
                     f"{slice_name} {field}={values[child_key]} exceeds parent "
                     f"dev.slice {field}={values[parent_key]}; review the effective "
@@ -1126,7 +1139,8 @@ def validate_nonempty(value: str) -> str | None:
 def validate_cgroup_parent(value: str) -> str | None:
     """DOCKER_DAEMON_CGROUP_PARENT. Non-empty is a hard requirement (this key
     is merged verbatim into /etc/docker/daemon.json; an empty string there is
-    not a valid daemon-wide default). The data-only validator checks syntax;
+    not a valid daemon-wide default). The data-only validator checks the
+    required `.slice` shape;
     install.sh verifies LoadState=loaded and a non-empty FragmentPath after
     rendering the units and refuses to start governed services for an unknown
     slice. This matters because Docker can otherwise accept a typo and fail
@@ -1134,7 +1148,10 @@ def validate_cgroup_parent(value: str) -> str | None:
     if not value:
         return "a cgroup parent is required (e.g. 'dev-background.slice')"
     if not value.endswith(".slice"):
-        out(f"WARN: {value!r} does not end in '.slice' -- install.sh will reject it before starting governed services.")
+        return (
+            f"{value!r} is not a systemd slice name; it must end in '.slice' "
+            "(for example 'dev-background.slice')"
+        )
     return None
 
 
@@ -1334,6 +1351,7 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
     for bullet in (
         "`IO_DEV_PATH` selects the device for static `dev.slice` IOPS/bandwidth caps.",
         "Static fallback values come from `DEV_STATIC_RIOPS/WIOPS/RBW/WBW` in the template/config.",
+        "Those four static values are not prompted here; edit the config deliberately if you need a different boot fallback.",
         "They are authoritative from boot until a valid baseline is applied.",
         "Empty or `auto` discovers with `findmnt`; no device omits static IO caps but keeps CPU/memory governance.",
         "The watcher has separate per-container fallback behavior; there is no global IO off switch.",
@@ -1652,6 +1670,7 @@ def step_slice_first_resources(
     for bullet in (
         "Sibling Min/Low/High controls are independent; their values are not summed.",
         "Each slice still requires Min <= Low <= High <= Max for configured fields.",
+        "A child Min/Low without matching parent protection is allowed but may be ineffective; the wizard reports it.",
         "A child High/Max above its parent is a review warning only; it does not block.",
     ):
         out(f"- {bullet}", hang="  ")

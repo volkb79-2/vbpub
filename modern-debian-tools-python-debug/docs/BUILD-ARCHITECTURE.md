@@ -60,6 +60,9 @@ KiB. Its validation contract is deliberately split:
 - Sibling `MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls,
   not a sum that must fit a parent. This permits overlapping working-set
   thresholds on a host where several tiers are active at different times.
+- A child `MemoryMin`/`MemoryLow` without matching parent protection remains
+  valid but is reported because that protection may be ineffective at the
+  ancestor boundary.
 - A child `MemoryHigh` or `MemoryMax` above its configured parent is printed as
   a review warning. It remains valid because the ancestor is still the effective
   bound; the wizard does not force the operator to resize an intentionally

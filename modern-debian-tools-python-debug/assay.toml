@@ -10,7 +10,7 @@ enforcement = "gate"
 argv = ["bash", "-lc", "set -euo pipefail; mkdir -p .assay; /opt/tester-venv/bin/coverage run --branch --source=host-setup -m pytest host-setup/tests/test_buildkit_governance.py -q; /opt/tester-venv/bin/coverage json --data-file=.coverage -o .assay/coverage.json"]
 env = {}
 env_passthrough = ["PATH"]
-budget = "45m"
+budget = "1h"
 allow_argv_append = false
 
 [lanes.host_setup.isolation]
@@ -34,7 +34,7 @@ format = "coverage-py-json"
 artifact = ".assay/coverage.json"
 
 [lanes.host_setup.judge.mutation]
-jobs = 4
+jobs = 1
 max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
   # The baseline command is wrapped in `bash -lc` so it can emit the coverage

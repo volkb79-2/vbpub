@@ -144,7 +144,9 @@ configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
 values against configured parent ceilings as review-only warnings; sibling
 `MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls and are not
 summed. A child `MemoryHigh` or `MemoryMax` above its parent counterpart does
-not reprompt or refuse the configuration. Live `MemAvailable` is context only,
+not reprompt or refuse the configuration. A child `MemoryMin`/`MemoryLow`
+without matching parent protection is also allowed but reported because that
+protection may be ineffective at the ancestor boundary. Live `MemAvailable` is context only,
 while starting proposals use physical `MemTotal`.
 `DEV_MEMORY_MIN_GUARANTEED_CEILING` is the single authoritative root `dev.slice`
 MemoryMin and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX`

@@ -31,6 +31,80 @@ BUILDER = load_module(ROOT.parent / "scripts/mdt_buildkit_builder.py", "mdt_buil
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
+    def test_wizard_parser_and_terminal_boundaries(self) -> None:
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        tty = TTY()
+        with mock.patch.object(WIZARD.sys, "stdout", tty), \
+             mock.patch.dict(WIZARD.os.environ, {"TERM": "xterm"}, clear=True):
+            self.assertTrue(WIZARD.color_enabled())
+            self.assertIn("\033[1;36mkey", WIZARD._render("`key`"))
+            self.assertFalse(WIZARD.color_enabled(io.StringIO()))
+            with mock.patch.dict(WIZARD.os.environ, {"TERM": "dumb"}, clear=True):
+                self.assertFalse(WIZARD.color_enabled())
+            with mock.patch.dict(WIZARD.os.environ, {"TERM": "xterm", "NO_COLOR": ""}, clear=True):
+                self.assertFalse(WIZARD.color_enabled())
+
+        with mock.patch.object(WIZARD, "term_width", return_value=24), \
+             mock.patch.object(WIZARD, "_render", side_effect=lambda line: line) as render, \
+             mock.patch("builtins.input", return_value="answer") as input_fn:
+            result = WIZARD._prompt("A deliberately long question [default]: ")
+        self.assertEqual(result, "answer")
+        self.assertEqual(input_fn.call_args.args, ("[default]: ",))
+        self.assertTrue(render.called)
+
+    def test_wizard_parser_rejects_malformed_strict_input_and_preserves_template_bytes(self) -> None:
+        self.assertEqual(
+            WIZARD.parse_env_file("A='one'\nB=\"two\"\n# comment\n"),
+            {"A": "one", "B": "two"},
+        )
+        for malformed in ("not-an-assignment\n", "bad-key=value\n", "A=1\nA=2\n"):
+            with self.assertRaises(WIZARD.TemplateError):
+                WIZARD.parse_env_file(malformed, strict=True)
+
+        original = "# KEY=untouched\nKEY='old value'\nOTHER=mentions KEY= here\n"
+        updated = WIZARD.apply_value(original, "KEY", "new value")
+        self.assertEqual(updated, "# KEY=untouched\nKEY='new value'\nOTHER=mentions KEY= here\n")
+        with self.assertRaises(WIZARD.TemplateError):
+            WIZARD.apply_value(original, "MISSING", "value")
+
+    def test_wizard_size_swap_cpu_and_io_boundaries(self) -> None:
+        self.assertEqual(WIZARD.parse_meminfo("Bad\nMemTotal: 12 kB\nBroken: nope\n"), {"MemTotal": 12})
+        swaps = "Filename\tType\tSize\tUsed\tPriority\n/swap-a\tfile\t10\t0\t-2\ninvalid\n/swap-b\tpartition\tbad\t0\t-3\n"
+        self.assertEqual(WIZARD.parse_swaps(swaps), 10)
+        self.assertEqual(WIZARD.read_swap_total_kib({"SwapTotal": 7}, swaps), 7)
+        self.assertEqual(WIZARD.read_swap_total_kib({}, swaps), 10)
+        self.assertEqual(WIZARD.kib_to_size_str(1), "5M")
+        self.assertEqual(WIZARD.kib_to_size_str(1024 * 1024), "1G")
+        self.assertTrue(WIZARD.is_size_string("4.5G"))
+        self.assertFalse(WIZARD.is_size_string("4G!"))
+        self.assertIsNone(WIZARD.validate_cpu_quota("100%"))
+        self.assertIsNone(WIZARD.validate_cpu_quota(""))
+        self.assertIsNotNone(WIZARD.validate_cpu_quota("0%"))
+        self.assertIsNone(WIZARD.validate_cap_pct("99"))
+        self.assertIsNotNone(WIZARD.validate_cap_pct("100"))
+        self.assertIsNotNone(WIZARD.validate_weight("0"))
+        self.assertIsNone(WIZARD.validate_weight("10000"))
+
+    def test_wizard_discovery_handles_missing_and_invalid_host_facts(self) -> None:
+        def missing(argv, **kwargs):
+            raise FileNotFoundError
+
+        self.assertEqual(WIZARD.discover_io_dev_path_from_findmnt(missing), "")
+        self.assertIsNone(WIZARD.discover_nproc(missing))
+        self.assertIsNone(
+            WIZARD.discover_nproc(
+                lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, "8\n", "")
+            )
+        )
+        self.assertIsNone(
+            WIZARD.discover_nproc(
+                lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "0\n", "")
+            )
+        )
+
     def test_wizard_defaults_preserve_existing_empty_and_name_provenance(self) -> None:
         self.assertEqual(
             WIZARD.resolve_default("OPTIONAL", {"OPTIONAL": ""}, {"OPTIONAL": "6G"}, "8G"),
@@ -113,6 +187,19 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("dev-interactive.slice MemoryMax=10G", warnings[0])
         self.assertTrue(any("does not block" in call.args[0] for call in output.call_args_list))
+
+    def test_memory_protection_without_parent_is_reported_but_allowed(self) -> None:
+        values = {
+            "DEV_MEMORY_LOW": "",
+            "DEV_INTERACTIVE_MEMORY_LOW": "2G",
+            "DEV_INTERACTIVE_MEMORY_HIGH": "4G",
+            "DEV_INTERACTIVE_MEMORY_MAX": "8G",
+        }
+        warnings = WIZARD.memory_review_warnings(values)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("dev-interactive.slice MemoryLow=2G", warnings[0])
+        self.assertIn("no configured ancestor dev.slice MemoryLow", warnings[0])
+        self.assertIn("does not block", warnings[0])
 
     def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
         def runner(argv, **kwargs):
@@ -466,19 +553,27 @@ exit 0
 
     def test_custom_baseline_path_is_passed_to_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cache = Path(directory) / "baseline.env"
+            cache = Path(directory) / "cache" / "baseline.env"
+            target_path = Path(directory) / "docker-data" / "iocost.testfile"
+            cache.parent.mkdir()
             cache.write_text("RIOPS_MAX=1\n")
             script = ROOT / "scripts" / "mdt-io-baseline.py"
-            with mock.patch.object(WIZARD, "walk_key", return_value=str(cache)), \
+            with mock.patch.object(WIZARD, "walk_key", side_effect=[str(cache), str(target_path)]), \
                  mock.patch.object(WIZARD, "check_baseline_freshness", return_value="stale"), \
                  mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
                  mock.patch.object(WIZARD, "_prompt", return_value="y"), \
                  mock.patch.object(WIZARD.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-                selected, target, measured = WIZARD.step_io_baseline({}, {}, script)
+                selected, selected_target, measured = WIZARD.step_io_baseline({}, {}, script)
             self.assertEqual(selected, str(cache))
-            self.assertEqual(target, str(cache))
+            self.assertEqual(selected_target, str(target_path))
             self.assertTrue(measured)
+            command = run.call_args.args[0]
+            self.assertEqual(
+                command,
+                [sys.executable, str(script), "--output", str(cache), "--testfile", str(target_path)],
+            )
             self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
+            self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_TESTFILE"], str(target_path))
 
     def test_iocost_generator_identifies_the_file_target_device(self) -> None:
         generator = ROOT.parent.parent / "scripts/debian-install-v2/tools/iocost_coef_gen.py"
@@ -682,6 +777,7 @@ exit 0
                 WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
             )
         values = {
+            "DEV_MEMORY_LOW": "2G",
             "DEV_MEMORY_HIGH": "8G", "DEV_MEMORY_MAX": "16G",
             "DEV_INTERACTIVE_MEMORY_MIN": "", "DEV_INTERACTIVE_MEMORY_LOW": "2G",
             "DEV_INTERACTIVE_MEMORY_HIGH": "1G", "DEV_INTERACTIVE_MEMORY_MAX": "3G",
@@ -696,6 +792,12 @@ exit 0
         self.assertTrue(WIZARD.memory_relationship_errors(values))
         self.assertEqual(WIZARD.memory_review_warnings(values), [])
         self.assertEqual(WIZARD.parse_size_to_kib("1.5G"), 1572864)
+
+    def test_cgroup_parent_requires_a_systemd_slice_name(self) -> None:
+        self.assertIsNone(WIZARD.validate_cgroup_parent("dev-background.slice"))
+        error = WIZARD.validate_cgroup_parent("dev-background")
+        self.assertIsNotNone(error)
+        self.assertIn("must end in '.slice'", error or "")
 
     def test_guaranteed_sibling_memory_min_confirms_and_updates_shared_key(self) -> None:
         values = {"DEV_MEMORY_MIN_GUARANTEED_CEILING": "1G"}

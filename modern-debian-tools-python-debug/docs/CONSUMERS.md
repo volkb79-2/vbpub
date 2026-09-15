@@ -37,6 +37,8 @@ zswap controls. Its memory policy is:
 - configured values within one slice must satisfy `MemoryMin <= MemoryLow <=
   MemoryHigh <= MemoryMax`; the wizard re-prompts the invalid right-hand field;
 - sibling controls are independent and are not summed;
+- a child `MemoryMin`/`MemoryLow` without matching parent protection remains
+  valid but is reported because the requested protection may be ineffective;
 - a child `MemoryHigh` or `MemoryMax` above the parent is a review warning only,
   so an intentional overlapping policy remains possible.
 
