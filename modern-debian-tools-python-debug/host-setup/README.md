@@ -141,7 +141,8 @@ as hard hierarchical protection, `MemoryLow` as soft best-effort protection,
 `MemoryHigh` as soft reclaim throttling, and `MemoryMax` as the hard RAM cap.
 It converts systemd binary units to KiB and rejects/re-prompts unless every
 configured chain satisfies `Min <= Low <= High <= Max`. It also checks child
-high/max/min totals against live host facts. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
+values against configured parent ceilings; live `MemAvailable` is context only,
+while starting proposals use physical `MemTotal`. `DEV_MEMORY_MIN_GUARANTEED_CEILING`
 is the single authoritative root `dev.slice` MemoryMin and is mirrored on the
 guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MAX` are the other root controls.
 Each child slice flow includes `CPUWeight`, `CPUQuota`, `IOWeight`, swap, and

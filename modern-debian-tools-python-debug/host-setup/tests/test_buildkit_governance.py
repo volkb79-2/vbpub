@@ -58,6 +58,21 @@ class BuildKitGovernanceTests(unittest.TestCase):
         with mock.patch.object(WIZARD, "_prompt", side_effect=["maybe", "n"]):
             self.assertFalse(WIZARD.ask_yn("policy", default=True))
 
+    def test_wizard_migrates_legacy_watcher_names(self) -> None:
+        legacy = {
+            "SWEEP_IO_CAP_PCT": "61",
+            "TESTRUNNER_IMAGE_PATTERNS": "*runner*",
+            "BUILDKIT_NAME_PATTERNS": "old_buildkit_*",
+            "DEVCONTAINER_NAME_PATTERNS": "*ide*",
+            "SWEEP_INTERVAL": "7min",
+        }
+        migrated = WIZARD.migrate_legacy_config_keys(legacy)
+        self.assertEqual(migrated["WATCHER_IO_CAP_PCT"], "61")
+        self.assertEqual(migrated["WATCHER_TESTRUNNER_IMAGE_PATTERNS"], "*runner*")
+        self.assertEqual(migrated["WATCHER_BUILDKIT_NAME_PATTERNS"], "old_buildkit_*")
+        self.assertEqual(migrated["WATCHER_DEVCONTAINER_NAME_PATTERNS"], "*ide*")
+        self.assertEqual(migrated["WATCHER_INTERVAL"], "7min")
+
     def test_memory_aggregate_reprompts_without_restarting_the_session(self) -> None:
         values = {
             "DEV_MEMORY_HIGH": "4G",
@@ -170,6 +185,15 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertEqual(target, str(cache))
             self.assertTrue(measured)
             self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
+
+    def test_iocost_generator_identifies_the_file_target_device(self) -> None:
+        generator = ROOT.parent.parent / "scripts/debian-install-v2/tools/iocost_coef_gen.py"
+        source = generator.read_text()
+        self.assertIn(
+            "probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'",
+            source,
+        )
+        self.assertIn("devname, devno = dir_to_dev(probe_path)", source)
 
     def test_interactive_main_smoke_writes_without_function_repr(self) -> None:
         example = ROOT / "host-setup.env.example"
@@ -379,6 +403,10 @@ class BuildKitGovernanceTests(unittest.TestCase):
             meminfo_path = directory_path / "meminfo"
             config_path.write_text(valid)
             meminfo_path.write_text(meminfo)
+            WIZARD.validate_host_setup_config(
+                config_path, ROOT / "host-setup.env.example", meminfo_path
+            )
+            meminfo_path.write_text("MemTotal: 67108864 kB\n")
             WIZARD.validate_host_setup_config(
                 config_path, ROOT / "host-setup.env.example", meminfo_path
             )

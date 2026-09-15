@@ -183,7 +183,13 @@ if args.testdev:
     testfile = f'/dev/{devname}'
     info(f'Test target: {devname}({devno})')
 else:
-    devname, devno = dir_to_dev('.')
+    # Identify the device from the benchmark target's parent, not from the
+    # caller's current directory. MDT invokes this generator from its
+    # checkout while deliberately placing the persistent target on the Docker
+    # data device; using '.' here would compare the wrong disk on a split
+    # checkout/Docker layout.
+    probe_path = os.path.dirname(os.path.abspath(args.testfile)) if args.testfile else '.'
+    devname, devno = dir_to_dev(probe_path)
     # LOCAL PATCH: allow the wrapper to put the benchmark file on the chosen
     # host filesystem; preserve upstream's relative default for debian-
     # install-v2 callers that do not need a custom location.

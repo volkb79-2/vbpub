@@ -20,7 +20,11 @@ complete, host-specific config already present. With an existing config,
 those values as defaults and start from the current repository example. In
 both cases replacement/backup happens only after the generated candidate
 passes strict validation. Deleting the old file first loses those defaults and
-does not create the automatic backup.
+does not create the automatic backup. The wizard also migrates the former
+watcher names (`SWEEP_*`, `TESTRUNNER_IMAGE_PATTERNS`,
+`BUILDKIT_NAME_PATTERNS`, and `DEVCONTAINER_NAME_PATTERNS`) to their current
+`WATCHER_*` names when it opens an existing config, preserving tuned values
+during an upgrade.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` cache and `IO_BASELINE_TESTFILE`, and Docker mount

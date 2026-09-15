@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Interactive wizard for /etc/mdt/host-setup.env — walks host-setup.env.example's
-# own section order, showing THIS host's own /proc/meminfo-derived numbers where
+# Interactive wizard for /etc/mdt/host-setup.env — walks a slice-first resource
+# order, showing THIS host's own /proc/meminfo-derived numbers where
 # it's relevant (per-tier memory, the memory-min-guaranteed ceiling), and writes
 # the result by TEMPLATE SURGERY on host-setup.env.example: only the KEY=value
 # line for a key actually walked is replaced, every comment/blank line/section
@@ -74,6 +74,18 @@ CIU_P50_RELATIVE_PATH = (
     "../../ciu/nyxloom-trove/handoffs/"
     "ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md"
 )
+
+# These names were public in the first host-setup release. The implementation
+# now uses WATCHER_* because both the Docker-events watcher and its periodic
+# sweep consume them; migrate them when --wizard sees an old config so an
+# upgrade does not silently reseed custom values from the example.
+LEGACY_CONFIG_KEYS = {
+    "SWEEP_IO_CAP_PCT": "WATCHER_IO_CAP_PCT",
+    "TESTRUNNER_IMAGE_PATTERNS": "WATCHER_TESTRUNNER_IMAGE_PATTERNS",
+    "BUILDKIT_NAME_PATTERNS": "WATCHER_BUILDKIT_NAME_PATTERNS",
+    "DEVCONTAINER_NAME_PATTERNS": "WATCHER_DEVCONTAINER_NAME_PATTERNS",
+    "SWEEP_INTERVAL": "WATCHER_INTERVAL",
+}
 
 
 # ─── output layer (terminal-width-aware reflow + conditional highlighting) ──
@@ -180,6 +192,12 @@ def _prompt(text: str) -> str:
     presses Home or an arrow key. Colour belongs on the explanatory text above
     (out()); prompt labels in this file therefore contain no backtick spans.
     """
+    # Prompt labels are passed with section-local indentation by callers, but
+    # input() has no paragraph layout and long labels take a different path
+    # through the wrapper below. Normalize that indentation here so a short
+    # label cannot look different from the same label after wrapping.
+    text = text.lstrip()
+
     # A piped/redirected transcript does not echo the answer typed into
     # input(), so without this explicit newline the next explanation is
     # glued to the prompt.  A real TTY already echoes the user's Enter and
@@ -774,10 +792,10 @@ def validate_host_setup_config(
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
 
-    avail_kib = meminfo.get("MemAvailable", 0)
-    if avail_kib <= 0:
+    total_kib = meminfo.get("MemTotal", 0)
+    if total_kib <= 0:
         raise TemplateError(
-            f"{meminfo_path} has no positive MemAvailable; refusing aggregate validation"
+            f"{meminfo_path} has no positive MemTotal; cannot validate host-sized memory policy"
         )
     relationship_errors = memory_relationship_errors(values)
     if relationship_errors:
@@ -785,9 +803,26 @@ def validate_host_setup_config(
             "invalid memory hierarchy: "
             + "; ".join(message for _, message in relationship_errors)
         )
-    aggregate_error = memory_aggregate_error(avail_kib, values)
+    aggregate_error = memory_aggregate_error(meminfo.get("MemAvailable", 0), values)
     if aggregate_error:
         raise TemplateError("invalid memory aggregate: " + aggregate_error)
+
+
+def migrate_legacy_config_keys(cfg_current: dict[str, str]) -> dict[str, str]:
+    """Translate pre-WATCHER public names without losing operator tuning."""
+    migrated = dict(cfg_current)
+    for old_key, new_key in LEGACY_CONFIG_KEYS.items():
+        if old_key not in cfg_current:
+            continue
+        if new_key in cfg_current:
+            out(f"WARN: both `{old_key}` and current `{new_key}` exist; keeping `{new_key}`")
+            continue
+        migrated[new_key] = cfg_current[old_key]
+        out(
+            f"Migrating legacy `{old_key}` to `{new_key}`; the current name covers "
+            "the event watcher and periodic sweep."
+        )
+    return migrated
 
 
 def propose_memory_min_guaranteed_suggestion(
@@ -2069,7 +2104,11 @@ def _reprompt_memory_constraints(
             key = "DEV_MEMORY_LOW"
         elif root_high and child_high_total > root_high:
             key = "DEV_MEMORY_HIGH"
-        elif parse_size_to_kib(values.get("DEV_MEMORY_MAX", "")) and any(parse_size_to_kib(values.get(key, "")) > parse_size_to_kib(values["DEV_MEMORY_MAX"]) for key in ("DEV_INTERACTIVE_MEMORY_MAX", "DEV_BACKGROUND_MEMORY_MAX", "DEV_GATES_MEMORY_MAX", "DEV_BUILDKITD_MEMORY_MAX")):
+        elif parse_size_to_kib(values.get("DEV_MEMORY_MAX", "")) and any(
+            parse_size_to_kib(values.get(key, "")) > parse_size_to_kib(values["DEV_MEMORY_MAX"])
+            for _, keys in MEMORY_CHILD_SPECS
+            for key in (keys[3],)
+        ):
             key = "DEV_MEMORY_MAX"
         elif minimum and sum(parse_size_to_kib(values.get(key, "")) for key in ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_MIN", "DEV_GATES_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_MIN")) > minimum:
             key = "DEV_MEMORY_MIN_GUARANTEED_CEILING"
@@ -2409,7 +2448,7 @@ def step_slice_first_resources(
 ) -> dict[str, str]:
     """Walk the resource policy in the same order a user reasons about it."""
     total_kib = meminfo["MemTotal"]
-    avail_kib = meminfo["MemAvailable"]
+    avail_kib = meminfo.get("MemAvailable", 0)
     swap_kib = read_swap_total_kib(meminfo, "")
     proposals = propose_memory_tiers(total_kib, avail_kib)
     values: dict[str, str] = {}
@@ -2420,7 +2459,8 @@ def step_slice_first_resources(
     out("\n-- d. Governed slices (slice-first) --")
     out(
         f"Host facts used for proposals: MemTotal={kib_to_size_str(total_kib)}, "
-        f"MemAvailable={kib_to_size_str(avail_kib)}, nproc={host_nproc}, "
+        f"MemAvailable={kib_to_size_str(avail_kib) if avail_kib > 0 else 'unavailable'}, "
+        f"nproc={host_nproc}, "
         f"SwapTotal={kib_to_size_str(swap_kib)}."
     )
     out(
@@ -2815,6 +2855,11 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               them at install time, not unlimited. Sizes are binary: 2G means 2 GiB;
               a bare number means bytes. Percentage prompts say whether they expect a
               bare number or a systemd value such as 400%.
+              Older watcher names (`SWEEP_*`, `TESTRUNNER_IMAGE_PATTERNS`,
+              `BUILDKIT_NAME_PATTERNS`, and `DEVCONTAINER_NAME_PATTERNS`) are
+              migrated to their `WATCHER_*` names when an existing config is
+              opened. A plain non-wizard install instead asks you to run this
+              migration first.
 
             What the sizing uses
               Memory proposals are percentages of physical MemTotal; MemAvailable is
@@ -2931,6 +2976,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             cfg_current = parse_env_file(args.output.read_text())
             out(f"Found an existing `{args.output}` -- using its values as defaults where they are actually set.")
+            cfg_current = migrate_legacy_config_keys(cfg_current)
         except OSError as exc:
             out(f"WARN: could not read the existing `{args.output}`: {exc}")
 
@@ -2939,8 +2985,8 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         out(
             f"ERROR: could not read `{args.meminfo_path}`: {exc}. A positive "
-            "`MemAvailable` value is required to derive safe host-sized limits; "
-            "provide a readable `--meminfo-path` or fix the host."
+            "`MemTotal` value is required for host-sized limits; `MemAvailable` "
+            "is optional context. Provide a readable `--meminfo-path` or fix the host."
         )
         meminfo = {}
     try:
@@ -2950,11 +2996,12 @@ def main(argv: list[str] | None = None) -> int:
     swap_kib = read_swap_total_kib(meminfo, swaps_text)
     meminfo.setdefault("SwapTotal", swap_kib)
 
-    if meminfo.get("MemTotal", 0) <= 0 or meminfo.get("MemAvailable", 0) <= 0:
+    if meminfo.get("MemTotal", 0) <= 0:
         print(
-            f"ERROR: `{args.meminfo_path}` does not contain positive MemTotal and "
-            "MemAvailable values; the wizard cannot derive safe host-sized memory "
-            "limits and will not run the IO benchmark or write a configuration.",
+            f"ERROR: `{args.meminfo_path}` does not contain a positive MemTotal; "
+            "the wizard cannot derive host-sized memory limits and will not run "
+            "the IO benchmark or write a configuration. MemAvailable is optional "
+            "context, not a sizing input.",
             file=sys.stderr,
         )
         return 1
@@ -3084,11 +3131,11 @@ def main(argv: list[str] | None = None) -> int:
             # omitted: an operator scanning back through the transcript
             # should be able to see this was a decision, not a prompt that
             # went missing. The benchmark completed successfully minutes ago
-            # in step b; --with-baseline would only repeat the same ~4-minute
+            # in step b; --with-baseline would only repeat the same ~12-minute
             # disk-saturating measurement for an identical result.
             out(
                 "Not offering --with-baseline: the IO baseline was just measured above in "
-                "this same run, so re-running it during install would repeat a ~4-minute "
+                "this same run, so re-running it during install would repeat a ~12-minute "
                 "disk-saturating benchmark for nothing."
             )
         elif ask_yn("Also pass --with-baseline (re-run the IO benchmark during install)?", default=False):

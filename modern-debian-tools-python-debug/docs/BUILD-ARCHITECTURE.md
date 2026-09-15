@@ -54,7 +54,9 @@ asks all four memory controls for every governed slice, distinguishes optional
 `none` from blank CPU/swap auto-detection, and compares parsed binary units in
 KiB. It rejects and re-prompts until configured values satisfy `MemoryMin <=
 MemoryLow <= MemoryHigh <= MemoryMax`, and checks child MemoryHigh/Max/Min
-totals against live `MemAvailable`. `MemoryMin` is hard hierarchical
+values against the configured parent ceilings. `MemAvailable` is displayed as
+transient context; starting proposals use physical `MemTotal`, and it is not a
+hard budget. `MemoryMin` is hard hierarchical
 protection; `MemoryLow` is soft best-effort protection; `MemoryHigh` is soft
 reclaim throttling; `MemoryMax` is the hard RAM ceiling and does not include
 swap, which is governed separately by `MemorySwapMax`.
