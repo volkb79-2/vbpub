@@ -13,9 +13,9 @@ import pytest
 from nyxloom.session_extract.adapters import ADAPTERS, DetectionError, detect, get_adapter
 
 
-def test_registry_has_all_three_adapters():
+def test_registry_has_all_four_adapters():
     names = {a.name for a in ADAPTERS}
-    assert names == {"claude-code", "codex", "opencode"}
+    assert names == {"claude-code", "codex", "opencode", "reasonix"}
 
 
 def test_get_adapter_known_name():
@@ -26,7 +26,7 @@ def test_get_adapter_unknown_name_lists_known_formats():
     with pytest.raises(DetectionError) as exc:
         get_adapter("not-a-real-cli")
     msg = str(exc.value)
-    assert "claude-code" in msg and "codex" in msg and "opencode" in msg
+    assert "claude-code" in msg and "codex" in msg and "opencode" in msg and "reasonix" in msg
 
 
 def test_detect_no_match_raises_and_lists_known_formats(tmp_path):
@@ -36,7 +36,7 @@ def test_detect_no_match_raises_and_lists_known_formats(tmp_path):
         detect(fp)
     msg = str(exc.value)
     assert "could not detect" in msg
-    assert "claude-code" in msg and "codex" in msg and "opencode" in msg
+    assert "claude-code" in msg and "codex" in msg and "opencode" in msg and "reasonix" in msg
 
 
 def test_detect_claude_code_match(tmp_path):

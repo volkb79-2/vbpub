@@ -12,6 +12,8 @@ hand-authored draft, it refuses when the heading collides and otherwise leaves
 it in place).
 
 ### Added
+- feat(nyxloom): Reasonix session extraction -- content-based primary JSONL
+  detection, stable line markers, lossless dumps, and incremental follow
 - feat(nyxloom-P112): `extract`/`extract-lossless`/`extract-debug`/`extract-report`/`extract-sessions` accept a bare session ID in place of a path (`session_extract/locate.py`) -- a Claude Code/Codex uuid, a 17-hex-char Claude Code sub-agent agentId, or an opencode `ses_...` id, resolved to the file/store holding it; errors rather than guessing on 0 or >1 matches
 - feat(nyxloom-P113): `extract --render-markdown` renders each kept block's markdown for reading (via `rich`), leaving separators/notes/marker footer untouched; `--color`/`--no-color` mirror extract-debug's pair
 - feat(nyxloom-P115): `--follow`/`-f` on `extract` and `extract-lossless` -- genuine incremental tailing (byte-offset seek, never a re-scan), each verb keeping its own selection semantics live, plus `--highlight` (markdown syntax coloring via `pygments` that preserves every markup character, for copy-paste), attention detection (`interview_pending`/`checkpoint_detected`/`long_block`) and delivery via `--bell`/`--on-attention`/`--notify-project`

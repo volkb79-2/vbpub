@@ -906,8 +906,8 @@ def cmd_extract(args) -> int:
 
     Mechanical (no LLM roundtrip) session-log extraction -- see
     session_extract/__init__.py's module docstring for the full contract.
-    Auto-detects the source CLI's format from the path (a Claude Code or
-    Codex CLI JSONL file, or an opencode SQLite store); --format overrides
+    Auto-detects the source CLI's format from the path (a Claude Code, Codex,
+    or Reasonix JSONL file, or an opencode SQLite store); --format overrides
     when detection is ambiguous or wrong. Prints the resumable brief to
     stdout: delimited text by default, or --json for a second-stage tool.
     For a raw, unclassified verbatim dump instead of this command's
@@ -1162,8 +1162,8 @@ def cmd_extract_lossless(args) -> int:
     bookkeeping records -- see session_extract/lossless.py's module
     docstring for the two use cases this exists for (a ground-truth
     superset for judging what `extract` selects, and raw material for a
-    future hybrid condensation design). Supports Claude Code, Codex, and
-    opencode (an opencode store holding more than one session needs
+    future hybrid condensation design). Supports Claude Code, Codex, Reasonix,
+    and opencode (an opencode store holding more than one session needs
     --opencode-session). --since/--since-file/--until work exactly as they do for
     `extract` (same opaque per-adapter marker, same cross-check against
     --format).
@@ -1224,6 +1224,11 @@ def cmd_extract_lossless(args) -> int:
         ))
     elif fmt == "codex":
         _emit(lossless.dump_codex(
+            path, since_marker=since_marker, until_marker=args.until,
+            block_render=block_render,
+        ))
+    elif fmt == "reasonix":
+        _emit(lossless.dump_reasonix(
             path, since_marker=since_marker, until_marker=args.until,
             block_render=block_render,
         ))
@@ -1293,6 +1298,8 @@ def cmd_extract_debug(args) -> int:
         lossless_text = lossless.dump_claude_code(path)
     elif fmt == "codex":
         lossless_text = lossless.dump_codex(path)
+    elif fmt == "reasonix":
+        lossless_text = lossless.dump_reasonix(path)
     elif fmt == "opencode":
         from .session_extract.adapters import opencode as opencode_adapter
 
@@ -2647,10 +2654,13 @@ _SESSION_LOG_HELP = (
     "Claude Code transcript (~/.claude/projects/<project>/<session-id>"
     ".jsonl, or one of its own subagents/agent-<id>.jsonl sub-agent "
     "files), a Codex rollout file (~/.codex/sessions/YYYY/MM/DD/"
-    "rollout-*.jsonl), or an opencode SQLite store (a file, or its "
-    "containing directory). OR just the session's own ID, with no path at "
-    "all -- a Claude Code/Codex session uuid, a 17-hex-char Claude Code "
-    "sub-agent agentId, or an opencode `ses_...` id -- and the file (or "
+    "rollout-*.jsonl), a Reasonix primary file (~/.reasonix/projects/"
+    "<escaped-cwd>/sessions/<timestamp-model>.jsonl, including "
+    "sessions/subagents/*.jsonl), or an opencode SQLite store (a file, or "
+    "its containing directory). OR just the session's own ID, with no path at "
+    "all -- a Claude Code/Codex session uuid, a Reasonix timestamp/model or "
+    "`sa_...` sub-agent id, a 17-hex-char Claude Code sub-agent agentId, or an "
+    "opencode `ses_...` id -- and the file (or "
     "store) holding it is located automatically, erroring rather than "
     "guessing if the id matches nothing or more than one session (see "
     "session_extract/locate.py). NOT a nyxloom registered project id "
@@ -2726,7 +2736,7 @@ def _add_follow_flags(parser) -> None:
                         help="Ring a terminal bell (\\a on STDERR, so a piped stream stays clean) "
                              "whenever an attention signal fires: an "
                              "unanswered AskUserQuestion (Claude Code only -- no equivalent is "
-                             "known in the Codex/opencode schema), a detected checkpoint, or "
+                             "known in the Codex/opencode/Reasonix schemas), a detected checkpoint, or "
                              "--attention-min-chars below. Independent of --on-attention")
     group.add_argument("--on-attention", metavar="COMMAND",
                         help="Shell command to run on each attention signal, with "
@@ -2754,7 +2764,7 @@ _VERB_GROUPS: dict[str, list[str]] = {
         "decide", "discuss", "gate", "leases", "merge", "pause", "project",
         "reject", "resume", "resync", "status", "tick",
     ],
-    "session-log extraction (Claude Code / Codex / opencode)": [
+    "session-log extraction (Claude Code / Codex / opencode / Reasonix)": [
         "extract", "extract-debug", "extract-lossless", "extract-report",
         "extract-sessions",
     ],
@@ -2965,7 +2975,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
     extract_parser.add_argument("--opencode-session", metavar="SESSION_ID",
                                  help=_OPENCODE_SESSION_HELP)
-    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                  help="Force the adapter instead of auto-detecting from the path")
     extract_parser.add_argument("--json", action="store_true",
                                  help="JSON output instead of delimited text")
@@ -3036,7 +3046,8 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
                               help="Resume marker from a prior run's last_marker -- only "
                                    "events after it are considered. The marker is an opaque, "
                                    "adapter-specific token (a Claude Code record uuid, a Codex "
-                                   "ordinal, an opencode message-table row id) -- not a "
+                                   "ordinal, a Reasonix line<N> marker, or an opencode "
+                                   "message-table row id) -- not a "
                                    "timestamp. Copy it from the trailing HTML comment a prior "
                                    "run's own output ends with: `<!-- nyxloom-extract: "
                                    "format=... marker=... -->`. In practice --since-file below "
@@ -3169,7 +3180,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_lossless_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
     extract_lossless_parser.add_argument("--opencode-session", metavar="SESSION_ID",
                                           help=_OPENCODE_SESSION_HELP)
-    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_lossless_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                           help="Force the adapter instead of auto-detecting from "
                                                "the path")
     lossless_since_group = extract_lossless_parser.add_mutually_exclusive_group()
@@ -3207,7 +3218,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     extract_debug_parser.add_argument("path", metavar="SESSION_LOG", help=_SESSION_LOG_HELP)
     extract_debug_parser.add_argument("--opencode-session", metavar="SESSION_ID",
                                        help=_OPENCODE_SESSION_HELP)
-    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode"],
+    extract_debug_parser.add_argument("--format", choices=["claude-code", "codex", "opencode", "reasonix"],
                                        help="Force the adapter instead of auto-detecting from the path")
     extract_debug_parser.add_argument("--profile", choices=sorted(PROFILES),
                                        help="Same meaning as extract's --profile -- run this "

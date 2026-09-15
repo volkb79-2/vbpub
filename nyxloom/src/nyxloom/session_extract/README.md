@@ -200,12 +200,13 @@ first principles.
 
 ## Cross-CLI adapter findings
 
-Skimmed real session logs from Claude Code, Codex, and opencode before
+Skimmed real session logs from Claude Code, Codex, Reasonix, and opencode before
 finalizing the `SessionAdapter` protocol (`adapters/base.py`), to avoid
-designing an interface that only fits Claude Code's shape. All three
+designing an interface that only fits Claude Code's shape. All four
 adapters have since been run end-to-end against real local session data
 (hundreds of Codex rollout files spanning cli_version 0.142.2-0.151.0, a
-72-session opencode.db, and multiple real Claude Code project logs), not
+real Reasonix primary and event-snapshot pair, a 72-session opencode.db, and
+multiple real Claude Code project logs), not
 just synthetic fixtures — one of those real runs is what found the
 schema-migration bug below. Findings, in descending order of how much they
 constrained the interface or turned up a real bug:
@@ -285,6 +286,17 @@ constrained the interface or turned up a real bug:
   generated from a uuid-less record must be resolved via the exact same
   `f"line{i}"` fallback used to generate it, or it can never be resolved
   again.
+- **Reasonix** (`adapters/reasonix.py`) — flat JSONL chat records stored
+  under `~/.reasonix/projects/<escaped-cwd>/sessions/`; normal session files
+  use timestamp/model-name stems and subagents live in `sessions/subagents/`.
+  User string content becomes `OPERATOR_TEXT`, assistant string content
+  becomes `ASSISTANT_TEXT`, and assistant `reasoning_content` becomes
+  `THINKING` only with `--include-thinking`. System prompts, tool output,
+  structured tool calls, empty/malformed records, and the companion
+  `*.events.jsonl` replace-snapshot logs are excluded. Reasonix chat records
+  carry no timestamp, so the adapter preserves the normalized empty
+  timestamp representation rather than manufacturing one. Markers are
+  stable `line<N>` positions in the valid chat-record stream.
 - **opencode** (`adapters/opencode.py`) — the odd one out: a relational
   SQLite store (`session`/`message`/`part` tables), not flat JSONL. This
   is why `SessionAdapter.parse()` takes a path and a `config`, not a
@@ -460,7 +472,9 @@ rejects `--redact-pattern`; use `extract` for a redacted stream.
 ## Follow mode (`--follow`/`-f`)
 
 `extract --follow` and `extract-lossless --follow` keep printing new content
-as the session grows. It is a flag on **both** verbs rather than a fourth
+as the session grows. Claude Code, Codex, and Reasonix use the same
+byte-offset JSONL source path; opencode retains its indexed SQLite source.
+It is a flag on **both** verbs rather than a fourth
 verb, so each keeps its own selection semantics live: `extract --follow`
 surfaces only what its backward walk would have kept, `extract-lossless
 --follow` keeps everything, in the same block format its own dump uses.
@@ -551,7 +565,7 @@ never saw.
 | `long_block` | any new block over `--attention-min-chars N` (off by default) | all |
 
 **Honest gaps, not guessed at:** no `AskUserQuestion` equivalent has been
-identified in Codex's or opencode's schema (both adapters' own "Known gaps"
+identified in Codex's, Reasonix's, or opencode's schema (the adapters' own "Known gaps"
 notes say so), so signal 1 is Claude-Code-only. Signal 2's
 `extract-lossless` form is weaker than its `extract` form — no pause bonus,
 and it also scores operator/thinking text, which the scored path never does.
@@ -600,8 +614,9 @@ Two ways to resume from a known point instead of re-walking a whole
 session:
 
 - `--since <marker>` — an opaque `event.marker` value (adapter-specific:
-  a Claude Code `uuid`, a Codex event id, an opencode message id) from a
-  prior run. Only events strictly after it are considered.
+  a Claude Code `uuid`, a Codex event id, a Reasonix `line<N>` marker, or an
+  opencode message id) from a prior run. Only events strictly after it are
+  considered.
 - `--since-file <path>` — point at a **prior run's saved output** (text
   or JSON) instead of hunting down or hand-copying a raw marker. Every
   render embeds the true end-of-session marker from the *full* parse
@@ -654,7 +669,7 @@ chain two real hops and assert the second returns nothing, not a replay.
 
 ## Lossless dump
 
-`nyxloom extract-lossless` (Claude Code, Codex, and opencode today,
+`nyxloom extract-lossless` (Claude Code, Codex, Reasonix, and opencode today,
 `lossless.py`; a separate verb from `extract` since 2026-09-11 -- see `cli.py`'s
 `cmd_extract_lossless` docstring for why) bypasses classification/windowing
 entirely: it keeps every text/thinking
@@ -670,6 +685,9 @@ Text dumps append the same `format`/`marker` footer as `extract`, so a saved
 the adapter-compatible `uuid` marker, or the stable `lineN` position among
 valid conversation records when a record has no uuid; this includes the
 rare UUID-less system record and keeps chained resumes consistent.
+Reasonix uses the same stable `lineN` convention over its valid chat-record
+stream, including ignored system/tool records, and leaves its timestamp field
+empty because the source records do not contain timestamps.
 
 1. **A ground-truth baseline for judging and tuning the real classifier.**
    `select()`'s job is to pick a small, curated subset of a session's
@@ -803,8 +821,13 @@ for how this could fit the hard-reset-past-N-boundaries case specifically.
   individually lack `ordinal`, is fixed and covered by regression tests
   (see "Delta extraction" above); only a hop that crosses the schema-version
   boundary mid-chain is the still-open gap.
-- `extract-lossless` and `extract-report` now both support Claude Code, Codex, and
-  opencode (2026-09-10) -- see `stats.py`/`lossless.py`'s own module
+- Reasonix: no structured Q&A or lifecycle semantics are claimed; system and
+  tool records are ignored, and the `*.events.jsonl` replace-snapshot
+  companions are not session inputs. Reasonix chat records have no timestamp,
+  so normalized events intentionally carry the empty timestamp representation.
+- `extract-lossless` supports Claude Code, Codex, Reasonix, and opencode;
+  `extract-report` supports Claude Code, Codex, and opencode (2026-09-10) -- see
+  `stats.py`/`lossless.py`'s own module
   docstrings for the real per-format usage-ledger shape and gaps each
   found (incl. a correction to `adapters/codex.py`'s own claim about
   `compacted.payload.message` always carrying real compaction summary

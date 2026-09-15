@@ -65,7 +65,7 @@ reason:
      one: an `AskUserQuestion` tool_use with no matching tool_result yet
      (adapters/claude_code.update_interview_pending, reusing that adapter's
      own tool_use/tool_result pairing). **Documented gap**: no equivalent
-     exists in Codex's or opencode's schema as currently understood -- see
+     exists in Codex's, Reasonix's, or opencode's schema as currently understood -- see
      both adapters' own "Known gaps" notes. Not guessed at.
   2. `checkpoint_detected` -- all adapters. Under `extract --follow` this is
      the real scored decision above. Under `extract-lossless --follow` there
@@ -124,7 +124,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import classifier, mangle, render
-from .adapters import claude_code, codex, opencode
+from .adapters import claude_code, codex, opencode, reasonix
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
 from .lossless import (
@@ -133,6 +133,7 @@ from .lossless import (
     codex_blocks,
     opencode_block_for_texts,
     opencode_blocks,
+    reasonix_blocks,
 )
 from .select import decide
 
@@ -360,7 +361,7 @@ def _prime_interview_pending(
 
 
 class JsonlSource:
-    """New Claude Code / Codex records, byte-offset tailed.
+    """New Claude Code / Codex / Reasonix records, byte-offset tailed.
 
     `seq` and a uuid-less/ordinal-less record's fallback marker are
     STREAM-LOCAL here (`follow<n>`), deliberately distinct from phase 1's
@@ -404,7 +405,13 @@ class JsonlSource:
             if self._fmt == "claude-code":
                 if not claude_code.is_conversation_record(rec):
                     continue
-            elif not codex.is_top_level_record(rec):
+            elif self._fmt == "codex":
+                if not codex.is_top_level_record(rec):
+                    continue
+            elif self._fmt == "reasonix":
+                if not reasonix.is_chat_record(rec):
+                    continue
+            else:
                 continue
             records.append(rec)
 
@@ -427,14 +434,18 @@ class JsonlSource:
             if self._lossless:
                 if self._fmt == "claude-code":
                     blocks = claude_code_blocks(rec, marker)
-                else:
+                elif self._fmt == "codex":
                     blocks = codex_blocks(rec, str(rec.get("ordinal", marker)))
+                else:
+                    blocks = reasonix_blocks(rec, marker)
                 arrivals.append(Arrival(blocks=blocks, raw=rec))
             else:
                 if self._fmt == "claude-code":
                     events = claude_code.parse_record(rec, self._seq, marker, self._config, self._state)
-                else:
+                elif self._fmt == "codex":
                     events = codex.parse_record(rec, self._seq, marker, self._config)
+                else:
+                    events = reasonix.parse_record(rec, self._seq, marker, self._config)
                 arrivals.append(Arrival(events=events, raw=rec))
             self._seq += 1
         return arrivals

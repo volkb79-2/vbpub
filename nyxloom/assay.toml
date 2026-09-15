@@ -123,6 +123,7 @@ rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_adapters_registry.py",
+  "tests/test_session_extract_reasonix.py",
   "tests/test_session_extract_classifier.py",
   "tests/test_session_extract_claude_code.py",
   "tests/test_session_extract_codex.py",

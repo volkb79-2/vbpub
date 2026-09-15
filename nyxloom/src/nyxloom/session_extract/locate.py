@@ -10,7 +10,7 @@ scrollback copy, or a chat message is the session's own id. This module
 maps that id back to the path, so `nyxloom extract <id>` works without
 hand-constructing anything.
 
-Three recognized ref shapes, each verified against this machine's own real
+Four recognized ref shapes, each verified against this machine's own real
 session history rather than assumed:
 
   - **Claude Code / Codex session UUID** -- the canonical 8-4-4-4-12 form.
@@ -39,6 +39,12 @@ session history rather than assumed:
     trigger would have rejected every real opencode id there is. opencode
     keeps one machine-wide store, not a per-project tree, so this is a
     short fixed candidate list of DB paths, not a walk.
+  - **Reasonix session id** -- a timestamp/model filename stem such as
+    `20260724-001821.579557040-deepseek-v4-flash`, or a `sa_...` subagent
+    filename stem. Reasonix keeps primary files directly under
+    `~/.reasonix/projects/<escaped-cwd>/sessions/` and subagents under its
+    `sessions/subagents/` directory; the exact filename is matched across
+    all escaped-cwd project directories.
 
 Resolution rules, deliberately strict:
 
@@ -100,6 +106,9 @@ _SUBAGENT_ID_RE = re.compile(r"^[0-9a-f]{17}$", re.IGNORECASE)
 # own case is meaningful and must be passed through to the DB lookup
 # verbatim (see the module docstring's real-data note).
 _OPENCODE_SESSION_RE = re.compile(r"^ses_[0-9A-Za-z]+$")
+_REASONIX_SESSION_RE = re.compile(
+    r"^(?:\d{8}-\d{6}(?:\.\d+)?-[A-Za-z0-9][A-Za-z0-9._-]*|sa_[A-Za-z0-9_]+)$"
+)
 
 
 def _claude_projects_root() -> Path:
@@ -108,6 +117,10 @@ def _claude_projects_root() -> Path:
 
 def _codex_sessions_root() -> Path:
     return Path.home() / ".codex" / "sessions"
+
+
+def _reasonix_projects_root() -> Path:
+    return Path.home() / ".reasonix" / "projects"
 
 
 def _opencode_db_candidates() -> list[Path]:
@@ -223,6 +236,37 @@ def _codex_matches(ref: str) -> list[Path]:
                 matches.append(path)
 
     visit(root, missing_ok=True)
+    return sorted(matches)
+
+
+def _reasonix_matches(ref: str) -> list[Path]:
+    """Find an exact primary or subagent Reasonix filename.
+
+    The events companion suffix is intentionally not a candidate: matching
+    only ``<id>.jsonl`` keeps replace-snapshot logs out of extraction even
+    when a companion exists beside the primary file.
+    """
+    root = _reasonix_projects_root()
+    matches: list[Path] = []
+    wanted_name = f"{ref}.jsonl"
+
+    for project_dir in _scan_directory(root, missing_ok=True):
+        if not stat.S_ISDIR(_entry_mode(project_dir)):
+            continue
+        sessions = project_dir / "sessions"
+        for session_path in _scan_directory(sessions, missing_ok=True):
+            mode = _entry_mode(session_path)
+            if stat.S_ISREG(mode) and session_path.name == wanted_name:
+                matches.append(session_path)
+                continue
+            if not stat.S_ISDIR(mode) or session_path.name != "subagents":
+                continue
+            for subagent_path in _scan_directory(session_path, missing_ok=True):
+                if (
+                    stat.S_ISREG(_entry_mode(subagent_path))
+                    and subagent_path.name == wanted_name
+                ):
+                    matches.append(subagent_path)
     return sorted(matches)
 
 
@@ -348,6 +392,18 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
             )
         raise _ambiguous(ref, [f"{db} --opencode-session {ref}" for db in dbs])
 
+    if _REASONIX_SESSION_RE.match(ref):
+        candidates = _reasonix_matches(ref)
+        if len(candidates) == 1:
+            return SessionRef(path=candidates[0])
+        if not candidates:
+            raise LocateError(
+                f"Reasonix session {ref!r} not found under {_reasonix_projects_root()} "
+                f"-- pass the primary session file's full path, or see "
+                f"`nyxloom extract-sessions <directory>` to list what exists"
+            )
+        raise _ambiguous(ref, [str(c) for c in candidates])
+
     if _UUID_RE.match(ref) or _SUBAGENT_ID_RE.match(ref):
         projects_root = _claude_projects_root()
         candidates: list[Path] = []
@@ -384,5 +440,6 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
     raise LocateError(
         f"{ref!r} is neither an existing path nor a recognized session id "
         f"(a Claude Code/Codex uuid, a 17-hex-char Claude Code sub-agent agentId, "
-        f"or an opencode `ses_...` id)"
+        f"a Reasonix timestamp/model or `sa_...` sub-agent id, or an opencode "
+        f"`ses_...` id)"
     )

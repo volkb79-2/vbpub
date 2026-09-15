@@ -250,3 +250,15 @@ def test_every_subcommand_help_carries_the_version_banner():
     _, subparsers = _build_parser()
     for verb, sub in subparsers.choices.items():
         assert sub.description == f"nyxloom {__version__}", verb
+
+
+def test_reasonix_is_a_public_format_for_extract_surfaces():
+    _, subparsers = _build_parser()
+    for verb in ("extract", "extract-lossless", "extract-debug"):
+        action = subparsers.choices[verb]._option_string_actions["--format"]
+        assert "reasonix" in action.choices
+    # Report and session-family discovery have no Reasonix contract yet:
+    # neither source-backed usage records nor lineage metadata were supplied.
+    for verb in ("extract-report", "extract-sessions"):
+        action = subparsers.choices[verb]._option_string_actions["--format"]
+        assert "reasonix" not in action.choices

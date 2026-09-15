@@ -24,11 +24,12 @@ these; the explanation belongs once, here, not N times in the rendered
 text. `show_gap_marker=True` opts into a longer form that names the
 adapter's own opaque marker token bounding the gap ("...raw log continues
 after marker <marker>") -- the SAME token --since/--until already resolve
-against, so it generalizes across all three adapters for free: a Claude
+against, so it generalizes across all four adapters for free: a Claude
 Code marker is a uuid (or a `lineN` fallback) grep-able in the JSONL, a
-Codex marker is an ordinal (or an index fallback) likewise grep-able, an
-opencode marker is a message-table row id queryable against its SQLite
-store. Nothing new to build per-adapter -- this reuses the exact identifier
+Codex marker is an ordinal (or an index fallback) likewise grep-able, a
+Reasonix marker is a `lineN` position in its JSONL, and an opencode marker
+is a message-table row id queryable against its SQLite store. Nothing new
+to build per-adapter -- this reuses the exact identifier
 each adapter already mints for delta extraction, just surfaced to the
 reader as a "go look here" pointer instead of consumed internally by
 --since. Off by default because most readers most of the time don't need

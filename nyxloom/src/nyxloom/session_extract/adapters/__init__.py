@@ -1,6 +1,6 @@
 """Adapter registry + format auto-detection.
 
-Adding a fifth CLI: write adapters/<name>.py exposing `name`, `sniff`,
+Adding another CLI: write adapters/<name>.py exposing `name`, `sniff`,
 `list_sessions`, `parse` (see base.SessionAdapter), then add the module to
 ADAPTERS below. Nothing else in this package changes.
 """
@@ -10,9 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
-from . import claude_code, codex, opencode
+from . import claude_code, codex, opencode, reasonix
 
-ADAPTERS: list[ModuleType] = [claude_code, codex, opencode]
+ADAPTERS: list[ModuleType] = [claude_code, codex, opencode, reasonix]
 
 
 class DetectionError(ValueError):

@@ -1,6 +1,7 @@
 """Normalized event model shared by every session-log adapter.
 
-Every adapter (adapters/claude_code.py, adapters/codex.py, adapters/opencode.py)
+Every adapter (adapters/claude_code.py, adapters/codex.py,
+adapters/reasonix.py, adapters/opencode.py)
 parses its own on-disk format into a flat, chronologically-ordered list of
 NormalizedEvent. Nothing downstream (classifier.py, select.py, render.py) knows
 anything about JSONL, SQLite, or any particular CLI's schema — this is the one

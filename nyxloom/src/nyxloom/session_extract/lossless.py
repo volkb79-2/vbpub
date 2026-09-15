@@ -37,8 +37,9 @@ Two use cases this exists for:
    unsummarized prose for the segment that IS still cache-worth keeping
    verbatim. See the session_extract README's "Future" section.
 
-Claude Code, Codex, and opencode are all supported today (`dump_claude_code`,
-`dump_codex`, `dump_opencode`) -- each independently reads its own format's
+Claude Code, Codex, opencode, and Reasonix are all supported today
+(`dump_claude_code`, `dump_codex`, `dump_opencode`, `dump_reasonix`) -- each
+independently reads its own format's
 raw records rather than sharing code with that format's adapters/*.py
 parse(), per this module's own "unbiased ground-truth" design point above.
 None of the Codex/opencode dumpers has been exercised against a real
@@ -60,7 +61,7 @@ about WHAT counts as prose to
 keep is independently re-derived here, same as `dump_claude_code`.
 
 The per-record block functions (`claude_code_blocks`, `codex_blocks`,
-`opencode_blocks` -- see `LosslessBlock`) are the whole-file dumpers' own
+`reasonix_blocks`, `opencode_blocks` -- see `LosslessBlock`) are the whole-file dumpers' own
 loop bodies, factored out 2026-09-12 so `extract-lossless --follow` can
 apply them to a newly-appended record. That sharing is WITHIN this module,
 so it does not weaken the independence-from-adapters point above.
@@ -99,7 +100,7 @@ class LosslessBlock:
     verbatim prose under it, kept apart so a caller can use either half.
 
     The per-record functions below (`claude_code_blocks`, `codex_blocks`,
-    `opencode_blocks`) were factored out of the whole-file dumpers'
+    `reasonix_blocks`, `opencode_blocks`) were factored out of the whole-file dumpers'
     respective loops (2026-09-12) so `extract-lossless --follow` streams
     newly-appended records through exactly the same rules a one-shot dump
     applies, rather than a second implementation of "what counts as prose"
@@ -237,6 +238,29 @@ def codex_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
     # else: task_started/token_count/web_search_end/task_complete/
     # patch_apply_end/turn_aborted/... -- noise, no prose to lose.
     return []
+
+
+def reasonix_blocks(rec: dict, marker: str) -> list[LosslessBlock]:
+    """Every user/assistant text field Reasonix contributes.
+
+    ``reasoning_content`` is kept unconditionally here: lossless mode does
+    not apply ``ExtractConfig.include_thinking``. Tool calls, tool output,
+    system prompts, and empty/malformed content have no prose block to dump.
+    """
+    role = rec.get("role")
+    content = rec.get("content")
+    blocks: list[LosslessBlock] = []
+
+    if role == "user" and isinstance(content, str) and content:
+        blocks.append(LosslessBlock(f"===[{marker} |  | USER]===", content))
+    elif role == "assistant":
+        if isinstance(content, str) and content:
+            blocks.append(LosslessBlock(f"===[{marker} |  | ASSISTANT]===", content))
+        reasoning = rec.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning:
+            blocks.append(LosslessBlock(f"===[{marker} |  | THINKING]===", reasoning))
+
+    return blocks
 
 
 def opencode_block_for_texts(
@@ -433,6 +457,70 @@ def dump_codex(
         raise ValueError(f"--until marker {until_marker!r} not found as an ordinal in {path}")
 
     return _render_dump(blocks, "codex", last_marker, block_render)
+
+
+def dump_reasonix(
+    path: Path,
+    since_marker: str | None = None,
+    until_marker: str | None = None,
+    *,
+    block_render: Callable[[str], str] | None = None,
+) -> str:
+    """Render Reasonix user/assistant text and reasoning blocks.
+
+    Markers are stable ``line<N>`` positions in the complete primary-chat
+    record universe (including system/tool records), and the bounds have the
+    same exclusive-``since``/inclusive-``until`` semantics as the adapter.
+    """
+    from .adapters import reasonix
+
+    if reasonix.is_events_path(path):
+        raise ValueError(f"{path} is a Reasonix events snapshot, not a primary session file")
+
+    filtered: list[dict] = []
+    with Path(path).open("r", errors="ignore") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if reasonix._is_event_snapshot(rec):
+                raise ValueError(
+                    f"{path} is a Reasonix events snapshot, not a primary session file"
+                )
+            if isinstance(rec, dict) and reasonix.is_chat_record(rec):
+                filtered.append(rec)
+
+    indexed = list(enumerate(filtered))
+    if since_marker is not None:
+        idx = next((i for i, _rec in indexed if f"line{i}" == since_marker), None)
+        if idx is None:
+            raise ValueError(
+                f"--since marker {since_marker!r} not found as a Reasonix line marker in {path}"
+            )
+        indexed = [(i, rec) for i, rec in indexed if i > idx]
+
+    if until_marker is not None:
+        idx = next((i for i, _rec in indexed if f"line{i}" == until_marker), None)
+        if idx is None:
+            raise ValueError(
+                f"--until marker {until_marker!r} not found as a Reasonix line marker in {path}"
+            )
+        indexed = [(i, rec) for i, rec in indexed if i <= idx]
+
+    blocks: list[LosslessBlock] = []
+    last_marker = since_marker
+    for absolute_index, rec in indexed:
+        marker = f"line{absolute_index}"
+        record_blocks = reasonix_blocks(rec, marker)
+        blocks.extend(record_blocks)
+        if record_blocks:
+            last_marker = marker
+
+    return _render_dump(blocks, "reasonix", last_marker, block_render)
 
 
 def dump_opencode(

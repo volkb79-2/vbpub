@@ -2,7 +2,7 @@
 
 The case this exists for, and the reason it is NOT the same thing as
 `--render-markdown` (render_markdown.py, via `rich`): copying real markdown
-back out of a terminal. A running Claude Code / Codex / opencode pane only
+back out of a terminal. A running Claude Code / Codex / Reasonix / opencode pane only
 ever RENDERS the model's markdown -- the terminal shows bold text, not
 `**bold**` -- so what you select and copy has already lost the markup. Piping
 the same session through a renderer again reproduces exactly that loss.

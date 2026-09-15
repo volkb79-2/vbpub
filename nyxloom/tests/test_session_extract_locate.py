@@ -26,6 +26,9 @@ _AGENT_ID = "a36c6ff1d3cc69767"
 # mixed-case here so a hex-only trigger pattern (this feature's first design,
 # read off the adapter docstring's truncated example) cannot pass these tests.
 _OPENCODE_SID = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+# Real Reasonix filename stems observed under ~/.reasonix/projects/*/sessions.
+_REASONIX_SID = "20260724-001821.579557040-deepseek-v4-flash"
+_REASONIX_AGENT_ID = "sa_20260724_001900_000000000_abcdef1234567890"
 
 
 @pytest.fixture
@@ -75,6 +78,16 @@ def _opencode_db(path: Path, session_ids: list[str]) -> Path:
         conn.execute("INSERT INTO session VALUES (?, 1)", (sid,))
     conn.commit()
     conn.close()
+    return path
+
+
+def _reasonix_session(home: Path, project: str, session_id: str, *, subagent: bool = False) -> Path:
+    directory = home / ".reasonix" / "projects" / project / "sessions"
+    if subagent:
+        directory /= "subagents"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session_id}.jsonl"
+    path.write_text('{"role":"user","content":"fixture"}\n', encoding="utf-8")
     return path
 
 
@@ -280,6 +293,42 @@ def test_an_unknown_opencode_id_errors_naming_the_stores_searched(home):
     assert "opencode.db" in message
     assert "not found" in message
     assert "indeterminate" not in message
+
+
+def test_bare_reasonix_session_id_resolves_to_the_primary_file(home):
+    path = _reasonix_session(home, "-workspaces-vbpub", _REASONIX_SID)
+    ref = resolve_session_ref(_REASONIX_SID, Path("/workspaces/vbpub"))
+    assert ref.path == path
+    assert ref.session_id is None
+
+
+def test_bare_reasonix_subagent_id_resolves_to_the_subagents_file(home):
+    path = _reasonix_session(
+        home, "-workspaces-vbpub", _REASONIX_AGENT_ID, subagent=True
+    )
+    assert resolve_session_ref(_REASONIX_AGENT_ID, Path("/workspaces/vbpub")).path == path
+
+
+def test_reasonix_event_snapshot_companion_is_not_a_bare_session_match(home):
+    directory = home / ".reasonix" / "projects" / "-workspaces-vbpub" / "sessions"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{_REASONIX_SID}.events.jsonl").write_text(
+        '{"type":"replace","messages":[]}\n', encoding="utf-8"
+    )
+    with pytest.raises(LocateError) as exc:
+        resolve_session_ref(_REASONIX_SID, Path("/workspaces/vbpub"))
+    assert "Reasonix" in str(exc.value)
+    assert "not found" in str(exc.value)
+
+
+def test_two_reasonix_projects_with_the_same_session_id_are_ambiguous(home):
+    first = _reasonix_session(home, "-workspaces-vbpub", _REASONIX_SID)
+    second = _reasonix_session(home, "-workspaces-other", _REASONIX_SID)
+    with pytest.raises(LocateError) as exc:
+        resolve_session_ref(_REASONIX_SID, Path("/workspaces/vbpub"))
+    message = str(exc.value)
+    assert "matches 2 sessions" in message
+    assert str(first) in message and str(second) in message
 
 
 def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypatch):
