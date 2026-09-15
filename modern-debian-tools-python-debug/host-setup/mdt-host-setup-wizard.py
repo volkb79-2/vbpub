@@ -444,8 +444,10 @@ def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
     ``MemoryLow`` is intentionally not proposed on a fresh configuration
     because the parent ``MemoryLow`` is unset by default; a protection value
     that cannot reach through its ancestor is a misleading default.  Each
-    child control is independent; only the ordering within one slice is a
-    hard relationship, while parent/child differences are review information.
+    child control is independent; ordering within one slice is a hard
+    relationship, and a single child High/Max above its configured parent is
+    also refused, while sibling totals and Min/Low effectiveness remain review
+    information.
     """
     def frac(percent: int) -> str:
         return kib_to_size_str(max(1, total_kib * percent // 100))
