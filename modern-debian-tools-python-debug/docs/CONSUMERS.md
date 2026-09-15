@@ -121,6 +121,12 @@ must be copied to that dedicated source. For the complete mount list, bootstrap 
 and rollback, see [the template guide](../templates/README.md) and the
 [devcontainer lifecycle reference](../DEVCONTAINER-LIFECYCLE.md).
 
+If Pi or ClaudeLink state currently exists only in a running devcontainer, use the
+[running-container migration runbook](../DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
+before rebuilding. It stops and verifies the container, then uses `docker cp` only after
+ClaudeLink is quiesced; the complete `.claudelink` directory is copied so `nexus.db` stays
+paired with any SQLite WAL/SHM sidecars.
+
 ## Release consumer
 
 The MDT release configuration (schema version 1) contains these values:

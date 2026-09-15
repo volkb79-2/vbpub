@@ -81,6 +81,12 @@ The dedicated `opencode-data` mount overlays that path inside the broader `.loca
 so copy OpenCode's `~/.local/share/opencode` separately as shown. Pi state is restored from
 `~/.pi`; ClaudeLink state is restored from `~/.claudelink`.
 
+If Pi or ClaudeLink state currently exists only in the running devcontainer, do not rebuild
+or copy the live database. First follow the [running-container migration runbook](../DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts),
+which quiesces ClaudeLink, stops and verifies the container, and uses `docker cp` to copy the
+complete roots (including SQLite WAL/SHM sidecars) to these host sources. Then use the host-path
+recipe above for any state that already lives on the host.
+
 ## initialize_container_environment.py — host bootstrap (why it exists)
 `devcontainer.json` wires `"initializeCommand": "python3 .devcontainer/initialize_container_environment.py"`. It runs **on the
 host, before the container is created**, and ensures every `$HOME` bind-mount source exists with correct

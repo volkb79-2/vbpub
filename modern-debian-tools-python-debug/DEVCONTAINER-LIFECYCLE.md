@@ -186,6 +186,48 @@ The above covers the devcontainer *itself*. Release builds run through `docker b
 cgroup normally appears as a separate scope in `system.slice`, and how the local repack workers
 inherit the caller's slice.
 
+## Migrating a running devcontainer before adopting the mounts
+
+The host-side `cp` recipe below is correct only when the source state already exists on the host.
+If Pi or ClaudeLink has state in the current container's writable layer, copy it out before
+rebuilding; a rebuild can remove that container and its unmounted state.
+
+First use ClaudeLink's own documented graceful shutdown or service-control command if it has one.
+Then stop the whole devcontainer and wait for Docker to report it stopped. Stopping the whole
+container is the fallback that quiesces ClaudeLink and every other writer before the copy:
+
+```sh
+set -eu
+container_name="myrepo-devcontainer-alice"  # replace with the current template-generated name
+host_state="$HOME/mdt--mounted-folders"
+docker inspect "$container_name" >/dev/null
+test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "true"
+pi_present=false
+claudelink_present=false
+if docker exec "$container_name" test -d /home/vscode/.pi; then pi_present=true; fi
+if docker exec "$container_name" test -d /home/vscode/.claudelink; then claudelink_present=true; fi
+mkdir -p "$host_state/.pi" "$host_state/.claudelink"
+docker stop --timeout 30 "$container_name"
+test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "false"
+if [ "$pi_present" = true ]; then
+  docker cp "$container_name:/home/vscode/.pi/." "$host_state/.pi/"
+fi
+if [ "$claudelink_present" = true ]; then
+  docker cp "$container_name:/home/vscode/.claudelink/." "$host_state/.claudelink/"
+fi
+```
+
+Replace the example name with the existing container name (the template derives it from the
+workspace basename and host user). Do not use `docker cp` while ClaudeLink is running. ClaudeLink
+stores durable state in SQLite's `nexus.db`; copy the complete `.claudelink` directory after the
+container is stopped, including any `nexus.db-wal` and `nexus.db-shm` sidecars. Never copy only
+`nexus.db`, delete its WAL/SHM files, or mix files from different snapshots. A graceful shutdown
+may checkpoint the WAL, but copying the complete quiesced directory remains the safe rule.
+
+The two `docker exec test -d` checks make absent roots a clean no-op; the host bootstrap will
+create their empty sources before the rebuild. Any failure from `docker stop`, the stopped-state
+check, or `docker cp` is an error to investigate before rebuilding.
+
 ## Adopting the consolidation in a consuming repo
 
 1. Point the `mounts` in `devcontainer.json` at `${localEnv:HOME}/mdt--mounted-folders/<name>` (+ keep

@@ -115,6 +115,7 @@ def test_bootstrap_main_uses_complete_fallback_when_template_is_unreadable(
         ROOT / "templates" / "README.md",
         ROOT / "DEVCONTAINER-LIFECYCLE.md",
         ROOT / "docs" / "CONSUMERS.md",
+        ROOT / "USAGE.md",
         ROOT / "README.md",
     ],
 )
@@ -135,14 +136,38 @@ def test_persistence_docs_expose_migration_recipe_and_no_stale_opencode_path() -
     template_readme = (ROOT / "templates" / "README.md").read_text(encoding="utf-8")
     lifecycle = (ROOT / "DEVCONTAINER-LIFECYCLE.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    usage = (ROOT / "USAGE.md").read_text(encoding="utf-8")
     top_readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     for text in (template_readme, lifecycle, consumers):
         assert "cp -a" in text
+    for text in (template_readme, lifecycle, consumers, usage):
         assert ".claudelink" in text
         assert ".pi" in text
         assert ".local/share/opencode" in text
         assert "mdt--mounted-folders/opencode-data" in text
+        assert "docker cp" in text
+        assert "WAL" in text
     assert "`~/.opencode`" not in template_readme
     assert "`~/tmp`" not in template_readme
+    assert "DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts" in top_readme
     assert "templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once" in top_readme
+
+
+def test_running_container_recipe_quiesces_before_copying_sqlite_state() -> None:
+    lifecycle = (ROOT / "DEVCONTAINER-LIFECYCLE.md").read_text(encoding="utf-8")
+
+    runbook_heading = "## Migrating a running devcontainer before adopting the mounts"
+    stopped_check = 'test "$(docker inspect --format \'{{.State.Running}}\' "$container_name")" = "false"'
+    claudelink_copy = 'docker cp "$container_name:/home/vscode/.claudelink/." "$host_state/.claudelink/"'
+    assert runbook_heading in lifecycle
+    assert "set -eu" in lifecycle
+    assert 'docker stop --timeout 30 "$container_name"' in lifecycle
+    assert 'docker exec "$container_name" test -d /home/vscode/.claudelink' in lifecycle
+    assert stopped_check in lifecycle
+    assert claudelink_copy in lifecycle
+    assert lifecycle.index("docker stop --timeout 30") < lifecycle.index(stopped_check)
+    assert lifecycle.index(stopped_check) < lifecycle.index(claudelink_copy)
+    for sidecar in ("nexus.db", "nexus.db-wal", "nexus.db-shm"):
+        assert sidecar in lifecycle
+    assert "Never copy only" in lifecycle

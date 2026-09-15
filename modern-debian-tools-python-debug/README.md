@@ -279,6 +279,8 @@ state/logs, and related runtime files. Their grouped host sources are
 `${localEnv:HOME}/mdt--mounted-folders/.claudelink`. The host bootstrap creates empty sources;
 OpenCode's `/home/vscode/.local/share/opencode` target is backed by the grouped
 `opencode-data` source. For the one-time migration from an existing host install, follow
+the [running-container migration runbook](DEVCONTAINER-LIFECYCLE.md#migrating-a-running-devcontainer-before-adopting-the-mounts)
+first when state is still in a devcontainer; otherwise use
 [the template migration recipe](templates/README.md#migrate-existing-pi-claudelink-and-opencode-state-once)
 and then rebuild the container.
 
