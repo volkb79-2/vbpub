@@ -2720,3 +2720,15 @@ changes a judged tree invalidates that tree's mutation evidence; backport or
 rebase it to the final tip and rerun the affected gate before marking the item
 closed. Never convert partial, stale-tree, or budget-truncated evidence into a
 passing checkmark.
+
+### RW-221 — 2026-09-15 02:30:30Z — P6 fresh R2 after oracle repair
+
+P6's timeout-oracle repair is committed at `8076246c3d365df04ecdd1d2f041ada75c081b40`.
+The package's targeted `tests/test_summary.py tests/test_serve.py` suite passed
+143/143. Because the repair changes the judged tree, all earlier P6 mutation
+records are invalid for closure. A fresh detached R2 was launched at this
+quiet tip as PID `3403254`, with the exact container
+`run-gate-vbpub-r2-3403254-1789439415`; Docker reports it running under
+`dev-background.slice` with `NanoCpus=3000000000`. Its completion marker is
+`/tmp/rg55-p6-r2-fresh.log` (`P6_R2_FRESH_EXIT=`). P1 remains the other active
+mutation lane. No commit may be made to the P6 worktree while this run judges.
