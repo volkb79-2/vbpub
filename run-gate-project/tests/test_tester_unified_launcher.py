@@ -159,10 +159,12 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     temp_sources = [line.removesuffix(" -> /tmp") for line in mounts
                     if line.endswith(" -> /tmp")]
     assert len(temp_sources) == 1
-    assert temp_sources[0].startswith(
-        f"{host_workspace}/.worktrees/rg55-followups-run-gate/"
-        ".assay/tester-unified-tmp/run."
+    worktree_relative = REPO.relative_to(Path(workspace))
+    expected_temp_parent = (
+        Path(host_workspace) / worktree_relative
+        / ".assay" / "tester-unified-tmp"
     )
+    assert temp_sources[0].startswith(f"{expected_temp_parent}/run.")
     run_evidence = evidence / "tester-unified-contract-test"
     assert (run_evidence / "container.inspect.json").read_text().startswith("[")
     assert (run_evidence / "docker-wait.exit").read_text() == "0\n"
