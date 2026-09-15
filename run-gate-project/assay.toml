@@ -73,7 +73,7 @@ artifact = "coverage.json"
 scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
-argv = ["python3", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
+argv = ["python3", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
@@ -103,6 +103,12 @@ base_source = "request"
 # game server, ≤ 2 gate containers estate-wide): each candidate runs in
 # its own assay scratch snapshot with its own pytest basetemp, so two
 # candidates do not share state and jobs=2 leaves 6 cores of headroom.
+# The R2 pytest argv also carries `-x`: one failed behavioral oracle already
+# kills the mutant, so continuing the remaining integration-heavy suite can
+# add no evidence. More importantly, a mutation can break cleanup after an
+# assertion has already killed it and otherwise strand a child/thread until
+# `budget_per_candidate` expires. Stop at the first proof instead of turning a
+# killed mutant into BUDGET_EXCEEDED (P4 review B10, observed on six candidates).
 [lanes.r2.judge.mutation]
 jobs = 2
 # budget_per_candidate = "900s" (RW-28, mandatory for every R2 lane from

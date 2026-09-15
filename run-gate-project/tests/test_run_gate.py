@@ -299,6 +299,109 @@ def run_tool(proj: Path, *args, cwd=None):
 
 
 # ---------------------------------------------------------------------------
+# P4 review B10 -- mutation sentinels before integration-heavy tests
+# ---------------------------------------------------------------------------
+
+class TestEarlyMutationSentinels:
+    """Cheap behavioral boundaries run before tests which create subprocesses
+    and threads. Assay stops R2 at the first failed oracle, so a mutant already
+    proven wrong cannot later strand integration-test resources and be
+    misclassified as BUDGET_EXCEEDED instead of killed."""
+
+    def test_r2_stops_after_the_first_mutant_killing_assertion(self):
+        config = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        assert "-x" in config["lanes"]["r2"]["argv"]
+
+    def test_invalid_resident_pages_are_unknown_not_an_invented_value(
+            self, tmp_path, monkeypatch):
+        root = tmp_path / "proc"
+        (root / "self").mkdir(parents=True)
+        (root / "self" / "statm").write_text("10000 -1 0 0 0 0 0\n")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(root))
+        assert run_gate._self_rss_bytes() is None
+
+    def test_bare_host_profile_mode_boundaries_are_distinct(self, monkeypatch):
+        delegated = {"delegated": True}
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: delegated)
+        assert run_gate.finish_bare_host_profiling(
+            {"mode": "daemon"}, None, "start", "end", 1.0) is delegated
+
+        disabled = run_gate.finish_bare_host_profiling(
+            {"mode": "disabled", "disabled_reason": "planted disabled"},
+            None, "start", "end", 1.0)
+        assert disabled == {"resources": None,
+                            "profile_error": "planted disabled",
+                            "profile_ref": None}
+
+        unsupported = run_gate.finish_bare_host_profiling(
+            {"mode": "unsupported", "warning": "planted unsupported"},
+            type("Rusage", (), {"ru_maxrss": 1, "ru_utime": 0.0,
+                                 "ru_stime": 0.0})(),
+            "start", "end", 1.0)
+        assert unsupported == {"resources": None,
+                               "profile_error": "planted unsupported",
+                               "profile_ref": None}
+
+    def test_doctor_captures_docker_ps_diagnostics(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda path, **kwargs: Path("/phys"))
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        real_run = subprocess.run
+
+        def fail_ps(argv, *args, **kwargs):
+            if len(argv) > 1 and argv[1] == "ps":
+                captured = kwargs.get("capture_output") is True
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="" if captured else None,
+                    stderr=("planted Docker denial\n" if captured else None))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["doctor"]) == 0
+        assert "planted Docker denial" in capsys.readouterr().out
+
+    def test_one_stale_lock_is_reported_with_the_singular_noun(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        stale = _shared_lock_dir() / "run-gate-exec-one.lock"
+        stale.write_text("")
+        old = time.time() - 90000
+        os.utime(stale, (old, old))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["doctor"]) == 0
+        assert "1 entry older than 1 day" in capsys.readouterr().out
+
+    def test_foreign_record_dry_run_is_flushed_and_terminal(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        plant_inflight(proj, repo, None, runner="exec")
+        calls = []
+        real_print = print
+
+        def spy(*args, **kwargs):
+            if args and "foreign record" in str(args[0]):
+                calls.append(kwargs)
+            return real_print(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "print", spy, raising=False)
+        result = run_gate.resolve_inflight(
+            "docker", {}, "suite", proj, repo, repo,
+            fresh=False, dry_run=True, run_record=None)
+        assert result == 0
+        assert len(calls) == 1
+        assert calls[0]["flush"] is True
+
+
+# ---------------------------------------------------------------------------
 # O1 — UX surface (R-01..R-05)
 # ---------------------------------------------------------------------------
 
