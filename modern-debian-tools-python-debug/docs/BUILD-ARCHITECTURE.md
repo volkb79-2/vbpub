@@ -52,14 +52,24 @@ inspect failure is indeterminate and stops the watcher for systemd to restart.
 The host wizard follows the same fail-closed resource model. It is slice-first,
 asks all four memory controls for every governed slice, distinguishes optional
 `none` from blank CPU/swap auto-detection, and compares parsed binary units in
-KiB. It rejects and re-prompts until configured values satisfy `MemoryMin <=
-MemoryLow <= MemoryHigh <= MemoryMax`, and checks child MemoryHigh/Max/Min
-values against the configured parent ceilings. `MemAvailable` is displayed as
-transient context; starting proposals use physical `MemTotal`, and it is not a
-hard budget. `MemoryMin` is hard hierarchical
-protection; `MemoryLow` is soft best-effort protection; `MemoryHigh` is soft
-reclaim throttling; `MemoryMax` is the hard RAM ceiling and does not include
-swap, which is governed separately by `MemorySwapMax`.
+KiB. Its validation contract is deliberately split:
+
+- Within one slice, configured values must satisfy `MemoryMin <= MemoryLow <=
+  MemoryHigh <= MemoryMax`; an invalid right-hand value is re-prompted before
+  the candidate can be written.
+- Sibling `MemoryMin`/`MemoryLow`/`MemoryHigh` values are independent controls,
+  not a sum that must fit a parent. This permits overlapping working-set
+  thresholds on a host where several tiers are active at different times.
+- A child `MemoryHigh` or `MemoryMax` above its configured parent is printed as
+  a review warning. It remains valid because the ancestor is still the effective
+  bound; the wizard does not force the operator to resize an intentionally
+  overlapping policy.
+
+`MemAvailable` is displayed as transient context; starting proposals use
+physical `MemTotal`, and it is not a hard budget. `MemoryMin` is hard
+hierarchical protection; `MemoryLow` is soft best-effort protection;
+`MemoryHigh` is soft reclaim throttling; `MemoryMax` is the hard RAM ceiling
+and does not include swap, which is governed separately by `MemorySwapMax`.
 
 Host setup is host-only. The installer and wizard refuse a devcontainer before
 reading or writing host policy: UID 0 there is container root, not root of the

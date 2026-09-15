@@ -621,3 +621,17 @@ External references:
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
+
+- `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
+  the complete `scripts/` pytest suite (73 tests at the current baseline).
+- `./run-gate.py assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
+  R2 is a full 174-mutant campaign at the current source and resumes from the
+  git-ignored `.assay/` progress stream after an interrupted session.
+
+`assay.toml` is the judgment contract for the wizard. The shell installer and
+renderer remain command-tested because assay's Python adapter cannot judge
+shell behavior. The source checkout's `assay/` package is imported at lane
+runtime, as required for same-repository vbpub consumers; no stale vendored
+assay copy is used.

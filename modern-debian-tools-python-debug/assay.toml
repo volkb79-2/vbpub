@@ -1,0 +1,46 @@
+# MDT's focused R0-R3 judgment lane.  Shell/install behaviour remains in the
+# command gate; this lane gives the Python wizard its reproducible coverage,
+# mutation, and canary evidence.
+schema_version = 2
+
+[lanes.host_setup]
+scope = "S1"
+rigor = ["R0", "R1", "R2", "R3"]
+enforcement = "gate"
+argv = ["bash", "-lc", "set -euo pipefail; mkdir -p .assay; /opt/tester-venv/bin/coverage run --branch --source=host-setup/mdt-host-setup-wizard.py -m pytest host-setup/tests/test_buildkit_governance.py -q; /opt/tester-venv/bin/coverage json --data-file=.coverage --outfile=.assay/coverage.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.host_setup.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.host_setup.judge]
+language = "python"
+source_roots = ["host-setup"]
+mode = "whole_target"
+targets = ["host-setup/mdt-host-setup-wizard.py"]
+fail_under = 60.0
+allow_excluded = false
+
+[lanes.host_setup.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage.json"
+
+[lanes.host_setup.judge.mutation]
+jobs = 4
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = "auto"
+
+[lanes.host_setup.judge.canary]
+mechanism = "import-break"
+target = "host-setup/mdt-host-setup-wizard.py"
+budget_per_attempt = "2m"

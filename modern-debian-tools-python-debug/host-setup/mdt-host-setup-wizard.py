@@ -791,7 +791,7 @@ def propose_memory_min_guaranteed_suggestion(
     systematically OVERSTATE the leftover (leaking protection to
     dev-interactive.slice/dev-background.slice, the exact failure direction
     CGROUP-NOTES.md warns about). This is advisory text only — see
-    step_memory_min_guaranteed(): the prompt's actual DEFAULT stays whatever
+    the guaranteed-floor prompt's actual DEFAULT stays whatever
     is already configured or empty, never this suggestion, so leaving the
     ceiling unset is never the awkward path.
 
@@ -1333,7 +1333,8 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
     out("Ownership and fallback:")
     for bullet in (
         "`IO_DEV_PATH` selects the device for static `dev.slice` IOPS/bandwidth caps.",
-        "Static caps are authoritative from boot until a valid baseline is applied.",
+        "Static fallback values come from `DEV_STATIC_RIOPS/WIOPS/RBW/WBW` in the template/config.",
+        "They are authoritative from boot until a valid baseline is applied.",
         "Empty or `auto` discovers with `findmnt`; no device omits static IO caps but keeps CPU/memory governance.",
         "The watcher has separate per-container fallback behavior; there is no global IO off switch.",
         "This answer is checked for `/dev/...` shape only; host setup must run outside the devcontainer.",
@@ -1485,239 +1486,19 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
     return dev_pct, sweep_pct
 
 
-def step_memory_tiers(
-    meminfo: dict[str, int],
-    swap_kib: int,
-    cfg_current: dict[str, str],
-    example_defaults: dict[str, str],
-) -> dict[str, str]:
-    total_kib = meminfo.get("MemTotal", 0)
-    avail_kib = meminfo.get("MemAvailable", total_kib)
-    total_gib = total_kib / (1024 * 1024)
-    avail_gib = avail_kib / (1024 * 1024)
-    swap_gib = swap_kib / (1024 * 1024)
-
-    out("\n-- d. Per-tier memory --")
-    out(
-        f"This host, right now: MemTotal={total_gib:.1f}GiB, MemAvailable={avail_gib:.1f}GiB, "
-        f"SwapTotal={swap_gib:.1f}GiB."
-    )
-    out()
-    out(
-        "The proposals below scale off MemAvailable rather than MemTotal, deliberately: "
-        "MemAvailable is what is genuinely free on THIS host at this moment, already net of "
-        "everything else using memory -- including any co-located production tier -- whereas "
-        "MemTotal would overstate the real headroom on a shared host."
-    )
-    out()
-    out(
-        "They also overlap across the three tiers rather than partitioning 100% of RAM up "
-        "front, and that is intentional too. MemoryHigh is a SOFT throttle (the kernel "
-        "reclaims harder above it, it does not refuse allocations), and MemoryMax relies on "
-        "this host's swap to absorb the overflow (see the README's tiering model). Three "
-        "tiers that each occasionally use their full share is normal; three tiers whose "
-        "ceilings sum to exactly RAM would just be a partition with extra steps. Override "
-        "any of them if you know better for this host."
-    )
-    out(
-        "Swap ceilings for these tiers are NOT asked here -- see step h below, which walks "
-        "the whole DEV_SWAP_CASCADE_PCT cascade (host swap -> dev.slice -> each child) in "
-        "one place."
-    )
-
-    proposals = propose_memory_tiers(total_kib, avail_kib)
-    values: dict[str, str] = {}
-
-    out()
-    out(
-        "`dev-interactive.slice` -- devcontainers and IDE work. Its MemoryMin is a small, "
-        "STABLE percentage of MemTotal rather than of MemAvailable: a protection floor that "
-        "shrank whenever something else on the host got busy would give way exactly when it "
-        "is most needed. Low, High and Max scale off MemAvailable as described above.",
-        indent="  ",
-        hang="  ",
-    )
-    for key, label in (
-        ("DEV_INTERACTIVE_MEMORY_LOW", "  MemoryLow"),
-        ("DEV_INTERACTIVE_MEMORY_HIGH", "  MemoryHigh"),
-        ("DEV_INTERACTIVE_MEMORY_MAX", "  MemoryMax"),
-    ):
-        values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
-        )
-
-    out()
-    out(
-        "`dev-background.slice` -- test, build and gate containers. Its MemorySwapMax "
-        "(step h) is deliberately relaxed relative to these: a build that swaps just "
-        "finishes slowly, while a build that OOMs fails outright and has to be re-run.",
-        indent="  ",
-        hang="  ",
-    )
-    for key, label in (
-        ("DEV_BACKGROUND_MEMORY_MIN", "  MemoryMin (empty = none)"),
-        ("DEV_BACKGROUND_MEMORY_LOW", "  MemoryLow (empty = none)"),
-        ("DEV_BACKGROUND_MEMORY_HIGH", "  MemoryHigh"),
-        ("DEV_BACKGROUND_MEMORY_MAX", "  MemoryMax"),
-    ):
-        values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
-        )
-
-    out()
-    out(
-        "`dev-buildkitd.slice` -- the shared BuildKit worker. Size this for CONCURRENT "
-        "multi-project builds, not for one build at a time: a single daemon serves every "
-        "project on the host, so its peak is the sum of whatever happens to be building "
-        "together, not the cost of the largest single build.",
-        indent="  ",
-        hang="  ",
-    )
-    for key, label in (
-        ("DEV_GATES_MEMORY_MIN", "  MemoryMin (empty = none)"),
-        ("DEV_GATES_MEMORY_LOW", "  MemoryLow (empty = none)"),
-        ("DEV_GATES_MEMORY_HIGH", "  MemoryHigh"),
-        ("DEV_GATES_MEMORY_MAX", "  MemoryMax"),
-        ("DEV_BUILDKITD_MEMORY_MIN", "  BuildKit MemoryMin (empty = none)"),
-        ("DEV_BUILDKITD_MEMORY_LOW", "  BuildKit MemoryLow (empty = none)"),
-        ("DEV_BUILDKITD_MEMORY_HIGH", "  BuildKit MemoryHigh"),
-        ("DEV_BUILDKITD_MEMORY_MAX", "  BuildKit MemoryMax"),
-    ):
-        values[key] = walk_key(
-            label, key, cfg_current, example_defaults, proposals.get(key), validate=validate_optional_positive_size if key.endswith(("_MIN", "_LOW")) else validate_positive_size
-        )
-
-    return values
-
-
-def step_memory_min_guaranteed(
-    avail_kib: int,
-    tier_high_values: dict[str, str],
-    cfg_current: dict[str, str],
-    example_defaults: dict[str, str],
-) -> str:
-    out("\n-- e. Memory-min-guaranteed ceiling (DEV_MEMORY_MIN_GUARANTEED_CEILING) --")
-    out(
-        "What it is: a HARD memory floor, as opposed to MemoryLow's soft, best-effort "
-        "protection. It is memory a cgroup keeps even under host-wide pressure, protected "
-        "from reclaim outright rather than merely reclaimed-last."
-    )
-    out()
-    out(
-        "Where it is set, and why in TWO places at once: this one number is written both to "
-        "`dev.slice` (the root of the dev estate) and to `dev-memory_min_guaranteed.slice`, "
-        "which is a SIBLING of the interactive and background tiers you just configured -- "
-        "not nested underneath either of them -- and the two must be pinned to the EXACT "
-        "same value on purpose."
-    )
-    out()
-    out(
-        "The reason is cgroup v2's redistribution rule: a parent hands its UNCLAIMED "
-        "protection down to whichever child is actually using memory, proportionally. So a "
-        "generous number on `dev.slice` alone does not sit there in reserve -- the surplus "
-        "leaks to the interactive and background tiers, which defeats the entire point of "
-        "having a dedicated guaranteed tier. Give `dev.slice` LESS than this ceiling instead "
-        "and you get the opposite failure: the leaf slice's own MemoryMin becomes silently "
-        "inert, because a child's floor is only as real as what its ancestors hand down. "
-        "Both slices need exactly this one number, never two independently-chosen ones."
-    )
-    out()
-    out(
-        "The effect, and who actually gets protected: nothing, by default. This mechanism is "
-        "opt-in PER CONTAINER -- a stack must explicitly place itself on "
-        "`dev-memory_min_guaranteed.slice` (via `governance.cgroup_parent` in its ciu config) "
-        "and declare its own claim (`governance.mem_min`). Setting this ceiling on its own "
-        "protects NOTHING; all it does is raise the total that placed stacks COULD claim "
-        "between them. (The admission control that enforces this ceiling against live claims "
-        f"is a separate, in-flight piece of work on ciu's side -- see {CIU_P50_RELATIVE_PATH})"
-    )
-
-    leftover_kib, suggestion_kib, formula = propose_memory_min_guaranteed_suggestion(
-        avail_kib, tier_high_values
-    )
-    out()
-    out(f"This host: {formula}.")
-    if suggestion_kib > 0:
-        out(
-            f"So, IF you want a nonzero ceiling at all, a conservative suggestion would be "
-            f"{kib_to_size_str(suggestion_kib)}. It is meant to stay small: see "
-            "CGROUP-NOTES.md 'Per-container memory.min guarantees' for why a generous number "
-            "here is actively harmful rather than merely wasteful."
-        )
-    else:
-        out(
-            "This host has little to no headroom left after step d's tiers, so leaving this "
-            "unset is the reasonable choice here."
-        )
-    out()
-    out(
-        "Leaving this EMPTY -- just press Enter -- keeps the whole mechanism fully inert and "
-        "matches host-setup.env.example's own shipped default. That empty value, not the "
-        "suggestion above, is the default answer offered below."
-    )
-    # proposal=None, deliberately: the prompt default is whatever's already
-    # configured (or empty) -- NEVER the suggestion above. See
-    # resolve_default(): leaving this unset must be at least as easy as
-    # typing a number, so Enter here always means "leave it empty" on a
-    # fresh host, never "accept a computed number."
-    return walk_key(
-        "Memory-min-guaranteed ceiling (empty = leave the mechanism off)",
-        "DEV_MEMORY_MIN_GUARANTEED_CEILING",
-        cfg_current,
-        example_defaults,
-        proposal=None,
-        validate=validate_size_or_empty,
-    )
-
-
-def step_buildkitd(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> tuple[str, str]:
-    out("\n-- f. buildkitd --")
-    out(
-        "The container image the host-managed BuildKit worker runs from "
-        "(`mdt-buildkitd.service`). The rootless variant is what the shipped default uses."
-    )
-    image = walk_key(
-        "BuildKit worker image",
-        "DEV_BUILDKITD_IMAGE",
-        cfg_current,
-        example_defaults,
-        validate=validate_nonempty,
-    )
-    out()
-    out(
-        "CPUQuota uses a DIFFERENT empty-means convention from every other key in this file, "
-        "so read this one carefully: empty here does NOT mean 'not applied'. It means "
-        "'auto-detect (nproc - DEV_SUBSLICE_CPU_RESERVE_CORES) cores at install time' "
-        "(default reserve 3, the same auto-detect every sibling child slice uses, step h "
-        "below), floored at one core. An explicit percentage always overrides that "
-        "auto-detection -- systemd counts one core as 100%, so `400%` means four cores. Do "
-        "not assume empty means uncapped here; it does not."
-    )
-    cpu_quota = walk_key(
-        "CPUQuota (empty = auto-detect nproc - DEV_SUBSLICE_CPU_RESERVE_CORES cores)",
-        "DEV_BUILDKITD_CPU_QUOTA",
-        cfg_current,
-        example_defaults,
-        validate=validate_cpu_quota,
-    )
-    return image, cpu_quota
-
-
 def step_docker_daemon(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> tuple[str, str, str]:
     out("\n-- f. Docker daemon.json keys this tool owns --")
-    out(
-        "This sets Docker's daemon-wide DEFAULT placement (D-G7): "
-        "`DOCKER_DAEMON_CGROUP_PARENT` is the slice "
-        "any container lands in when it names no `--cgroup-parent` of its own. install.sh "
-        "MERGES this single key into `/etc/docker/daemon.json` -- it never overwrites that "
-        "file and never touches any other key in it. The value must name the intended "
-        "already-installed `.slice`; a typo can make Docker place a container in an "
-        "unbounded transient scope, so verify the resulting placement with "
-        "`mdt-host-check.sh`. The daemon needs a full RESTART, not a reload, before a "
-        "changed default takes effect; the wizard never restarts it by itself."
-    )
+    out("Default placement:")
+    for bullet in (
+        "DOCKER_DAEMON_CGROUP_PARENT is Docker's default for containers without their own --cgroup-parent.",
+        "install.sh merges only this owned key into /etc/docker/daemon.json; other keys are preserved.",
+        "The value must name the intended loaded .slice; a typo can create an unbounded transient slice.",
+        "A changed daemon default needs a full Docker restart; the wizard never restarts Docker itself.",
+        "Verify placement after install with mdt-host-check.sh.",
+    ):
+        out(f"- {bullet}", hang="  ")
     cgroup_parent = walk_key(
         "Default cgroup-parent (must be a loaded .slice)",
         "DOCKER_DAEMON_CGROUP_PARENT",
@@ -1725,18 +1506,14 @@ def step_docker_daemon(
         example_defaults,
         validate=validate_cgroup_parent,
     )
-    out()
-    out(
-        "The `docker-.scope.d` backstop (D-G8) is a 'never truly unbounded' floor applied to "
-        "EVERY container's transient scope, whichever slice it named -- or none. It exists "
-        "for the case where placement went wrong (a typo'd slice, a container started before "
-        "the units were installed), so size it GENEROUSLY: comfortably above any legitimate "
-        "single container's real ceiling on this host. It is a fail-open backstop, not a "
-        "tier limit, and a tight number here would throttle healthy containers to catch a "
-        "rare mistake. Its `MemoryMax` is a RAM limit and its `MemorySwapMax` is a separate "
-        "swap limit; both are required positive sizes and should be comfortably above a "
-        "legitimate single container's normal peak."
-    )
+    out("Transient-scope backstop:")
+    for bullet in (
+        "docker-.scope.d applies to every Docker transient scope, even when placement is wrong or absent.",
+        "It is a generous fail-open safety floor, not a tier limit; keep it above a legitimate container's peak.",
+        "MemoryMax limits RAM; MemorySwapMax limits swap separately.",
+        "Both values are required positive sizes and should not be tight enough to throttle healthy work.",
+    ):
+        out(f"- {bullet}", hang="  ")
     backstop_max = walk_key(
         "Backstop MemoryMax",
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX",
@@ -1752,152 +1529,6 @@ def step_docker_daemon(
         validate=validate_positive_size,
     )
     return cgroup_parent, backstop_max, backstop_swap
-
-
-def step_cpu_and_swap_cascade(
-    cfg_current: dict[str, str], example_defaults: dict[str, str]
-) -> dict[str, str]:
-    """dev.slice's own absolute CPU/swap ceilings, each child's tighter
-    sub-ceiling of the same two, the dev-gates.slice/dev-buildkitd.slice
-    IOPS sub-ceiling, and the MemoryZSwapWriteback policy for all five
-    slices -- one section, because all of them follow the identical "one
-    ceiling at dev.slice, one tighter fraction per child" shape."""
-    values: dict[str, str] = {}
-
-    out("\n-- h. CPU ceiling, IOPS sub-ceiling, swap cascade, zswap writeback --")
-    out(
-        "CPUQuota: dev.slice reserves DEV_CPU_RESERVE_CORES cores for the host/production "
-        "(auto-detected as nproc minus this many, floored at 1 core, when the quota itself "
-        "is left empty below). Every child slice reserves DEV_SUBSLICE_CPU_RESERVE_CORES "
-        "instead -- a LARGER reservation, so no single tier can alone claim dev.slice's "
-        "whole budget."
-    )
-    values["DEV_CPU_RESERVE_CORES"] = walk_key(
-        "dev.slice CPU core reserve",
-        "DEV_CPU_RESERVE_CORES",
-        cfg_current,
-        example_defaults,
-        validate=validate_nonneg_int,
-    )
-    values["DEV_SUBSLICE_CPU_RESERVE_CORES"] = walk_key(
-        "Child-slice CPU core reserve",
-        "DEV_SUBSLICE_CPU_RESERVE_CORES",
-        cfg_current,
-        example_defaults,
-        validate=validate_nonneg_int,
-    )
-    out()
-    out(
-        "The quotas themselves: leave any of these empty to auto-detect from the reserve "
-        "counts above at install time; an explicit `N%` (systemd counts one core as 100%) "
-        "always overrides."
-    )
-    for key, label in (
-        ("DEV_CPU_QUOTA", "  dev.slice CPUQuota"),
-        ("DEV_INTERACTIVE_CPU_QUOTA", "  dev-interactive.slice CPUQuota"),
-        ("DEV_BACKGROUND_CPU_QUOTA", "  dev-background.slice CPUQuota"),
-        ("DEV_GATES_CPU_QUOTA", "  dev-gates.slice CPUQuota"),
-    ):
-        values[key] = walk_key(
-            label, key, cfg_current, example_defaults, validate=validate_cpu_quota
-        )
-    out(
-        "(dev-buildkitd.slice's own CPUQuota was already asked in step f above -- same "
-        "auto-detect convention.)"
-    )
-
-    out()
-    out(
-        "IOPS sub-ceiling: dev-gates.slice and dev-buildkitd.slice each additionally get "
-        "IOReadIOPSMax/IOWriteIOPSMax at this percentage of whatever the runtime sweep just "
-        "measured for dev.slice's own shared ceiling -- IOPS only, bandwidth stays at the "
-        "shared ceiling untouched. Applied at runtime (mdt-apply-dev-caps.sh), not a static "
-        "unit-file line, because it is a percentage of a number only known once measured."
-    )
-    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
-        "dev-gates/dev-buildkitd IOPS sub-ceiling %",
-        "DEV_SUBSLICE_IOPS_PCT",
-        cfg_current,
-        example_defaults,
-        validate=validate_pct_1_100,
-    )
-
-    out()
-    out(
-        "MemoryZSwapWriteback: whether a tier's coldest pages may drain from zswap out to "
-        "disk swap ('yes', the default, keeps zswap a cache; 'no' pins the cold tail in "
-        "compressed RAM). This is a PLAIN PER-CGROUP TOGGLE THAT DOES NOT CASCADE: each "
-        "slice's own file value is independent, so every slice below needs its own answer "
-        "-- dev.slice's is a safety anchor only, since a 'no' on ANY ancestor silently "
-        "disables writeback for its whole subtree regardless of what a child's own file "
-        "says (CGROUP-NOTES.md 'zswap writeback -- who may page to disk')."
-    )
-    for key, label in (
-        ("DEV_ZSWAP_WRITEBACK", "  dev.slice (safety anchor)"),
-        ("DEV_INTERACTIVE_ZSWAP_WRITEBACK", "  dev-interactive.slice"),
-        ("DEV_BACKGROUND_ZSWAP_WRITEBACK", "  dev-background.slice"),
-        ("DEV_GATES_ZSWAP_WRITEBACK", "  dev-gates.slice"),
-        ("DEV_BUILDKITD_ZSWAP_WRITEBACK", "  dev-buildkitd.slice"),
-    ):
-        values[key] = walk_yn_key(label, key, cfg_current, example_defaults)
-
-    out()
-    out(
-        "Swap cascade: dev.slice's own MemorySwapMax auto-detects as this percentage of the "
-        "host's real total swap (/proc/meminfo SwapTotal) when left empty; each child's own "
-        "MemorySwapMax then auto-detects as the SAME percentage of dev.slice's own derived "
-        "value, not of the host total again -- and the reactive watcher's per-container swap "
-        "cap (step i, below) applies the same percentage a third time. Absolute ceiling at "
-        "every level, same 'children combined still bounded by the parent' reasoning as CPU."
-    )
-    values["DEV_SWAP_CASCADE_PCT"] = walk_key(
-        "Swap cascade %",
-        "DEV_SWAP_CASCADE_PCT",
-        cfg_current,
-        example_defaults,
-        validate=validate_pct_1_100,
-    )
-    out(
-        "Leave any of the five below empty to auto-detect from the cascade; an explicit size "
-        "always overrides just that one slice."
-    )
-    for key, label in (
-        ("DEV_SWAP_MAX", "  dev.slice MemorySwapMax"),
-        ("DEV_INTERACTIVE_MEMORY_SWAP_MAX", "  dev-interactive.slice MemorySwapMax"),
-        ("DEV_BACKGROUND_MEMORY_SWAP_MAX", "  dev-background.slice MemorySwapMax"),
-        ("DEV_GATES_MEMORY_SWAP_MAX", "  dev-gates.slice MemorySwapMax"),
-        ("DEV_BUILDKITD_MEMORY_SWAP_MAX", "  dev-buildkitd.slice MemorySwapMax"),
-    ):
-        values[key] = walk_key(
-            label, key, cfg_current, example_defaults, validate=validate_size_or_auto
-        )
-
-    return values
-
-
-def _none_memory_field(slice_name: str, field: str, reason: str) -> None:
-    out(f"  {field}: none ({slice_name} has no {field}= directive; {reason})")
-
-
-def _prompt_slice_memory(
-    slice_name: str,
-    fields: tuple[tuple[str, str, Validator], ...],
-    cfg_current: dict[str, str],
-    example_defaults: dict[str, str],
-    proposals: dict[str, str],
-    values: dict[str, str],
-) -> None:
-    out(f"\n  {slice_name} memory hierarchy")
-    out(
-        "  MemoryMin is hard protection that participates in the parent/child "
-        "hierarchy; MemoryLow is soft best-effort protection; MemoryHigh is a "
-        "soft throttle into reclaim; MemoryMax is the hard RAM ceiling. Values "
-        "are entered with binary units (K/M/G, converted to KiB for validation); "
-        "MemorySwapMax is asked separately because it is the swap ceiling."
-    )
-    for field, key, validator in fields:
-        value = walk_key(f"  {field}", key, cfg_current, example_defaults, proposals.get(key), validator)
-        values[key] = value
 
 
 def _prompt_shared_memory_min(values: dict[str, str]) -> None:
@@ -1974,329 +1605,6 @@ def _reprompt_memory_constraints(
     raise ValueError("memory corrections did not converge after 64 prompts; the candidate was not written")
 
 
-def _legacy_step_slice_first_resources(
-    meminfo: dict[str, int],
-    cfg_current: dict[str, str],
-    example_defaults: dict[str, str],
-) -> dict[str, str]:
-    """Walk each governed slice as one unit of policy, from parent to leaves."""
-    total_kib = meminfo.get("MemTotal", 0)
-    avail_kib = meminfo.get("MemAvailable", 0)
-    if total_kib <= 0 or avail_kib <= 0:
-        raise ValueError(
-            "positive MemTotal and MemAvailable are required; refusing to invent memory limits"
-        )
-    proposals = propose_memory_tiers(total_kib, avail_kib)
-    values: dict[str, str] = {}
-    host_nproc = discover_nproc()
-    if host_nproc is None:
-        raise ValueError(
-            "nproc did not return a positive CPU count; install.sh needs this "
-            "fact even when quotas are explicit, so fix CPU-count discovery before "
-            "running the wizard"
-        )
-
-    out("\n-- d. Governed slices (slice-first) --")
-    out(
-        f"Live host facts: `MemTotal={kib_to_size_str(total_kib)}`, "
-        f"`MemAvailable={kib_to_size_str(avail_kib)}`. Suggestions use the "
-        "current `MemAvailable` from `/proc/meminfo`; every entered size is "
-        "converted to KiB before hierarchy and aggregate checks. These are "
-        "starting points, not facts about how much a slice will actually use."
-    )
-    out(
-        "First configure the shared `dev.slice` policy, then complete the guaranteed "
-        "sibling and each child slice before moving on. Shared parent controls are "
-        "asked once; a child CPU quota, IOWeight, swap setting, and zswap policy are "
-        "shown inside that child's block. Ordinary slices do not receive a fabricated "
-        "MemoryMin, the root uses absolute measured IO caps rather than IOWeight, and "
-        "the guaranteed sibling's MemoryMin is the same key as the parent's."
-    )
-    out(
-        "Memory meanings: `MemoryMin` is hard reclaim protection, `MemoryLow` is "
-        "best-effort protection, `MemoryHigh` is a reclaim/throttling threshold, and "
-        "`MemoryMax` is a hard RAM ceiling. `MemoryMax` does NOT include swap; "
-        "`MemorySwapMax` is the separate swap-only ceiling. For optional memory fields, "
-        "press Enter to keep the shown value or type `none` to remove the directive. "
-        "For required `MemoryHigh`/`MemoryMax`, a positive size is mandatory: neither "
-        "empty, `0`, nor `no` means unlimited. Sizes use binary `K/M/G` units; a bare "
-        "number is bytes."
-    )
-    out(
-        "The host-scaled starting values are: `dev.slice` MemoryHigh = current "
-        "MemAvailable and MemoryMax = the larger of MemTotal and MemAvailable; "
-        "interactive/background low-high-max = 15%/30%/50% of MemAvailable; "
-        "gates = 5%/10%/20%; BuildKit = 10%/25%/45%. Values are rounded to readable "
-        "binary sizes. The optional guaranteed MemoryMin suggestion is 5% of the "
-        "remaining MemAvailable after the four proposed child MemoryHigh values; it "
-        "is advisory and is not selected automatically."
-    )
-    out(
-        f"CPU fact: `nproc={host_nproc}`. With a blank CPUQuota, the root and "
-        "each child use the reserve selected below in `max(1, nproc - reserve) × "
-        "100%`; the installer reads nproc again, so a later host change can "
-        "change the derived quota."
-    )
-    _, suggestion_kib, formula = propose_memory_min_guaranteed_suggestion(
-        avail_kib,
-        {key: proposals[key] for key in (
-            "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_HIGH",
-            "DEV_GATES_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_HIGH",
-        )},
-    )
-    out(
-        f"Computed MemoryMin suggestion (advisory only, before your answers and not "
-        f"auto-selected): {formula}. It will be checked again against the values "
-        "you enter."
-    )
-    if suggestion_kib:
-        out(f"A conservative optional ceiling would be {kib_to_size_str(suggestion_kib)}; Enter keeps it empty.")
-
-    # Parent slice: this existing key is the only authoritative dev.slice
-    # MemoryMin and is mirrored byte-for-byte on the guaranteed sibling below.
-    out("\n  dev.slice — shared parent")
-    out(
-        "  MemoryMin is an optional hard protection budget for explicitly admitted "
-        "containers; it is not a per-IDE floor and does not pre-allocate RAM. It "
-        "matters under reclaim pressure, and is effective only when the ancestor "
-        "chain carries the corresponding protection."
-    )
-    values["DEV_MEMORY_MIN_GUARANTEED_CEILING"] = walk_key(
-        "  MemoryMin (optional; none = no guaranteed tier)",
-        "DEV_MEMORY_MIN_GUARANTEED_CEILING", cfg_current, example_defaults,
-        proposal=None, validate=validate_size_or_empty,
-        allow_empty_token=True,
-    )
-    values["DEV_MEMORY_LOW"] = walk_key(
-        "  MemoryLow (optional; none = no directive)",
-        "DEV_MEMORY_LOW", cfg_current, example_defaults,
-        validate=validate_optional_positive_size, allow_empty_token=True,
-    )
-    values["DEV_MEMORY_HIGH"] = walk_key(
-        "  MemoryHigh (optional; none = no directive)",
-        "DEV_MEMORY_HIGH", cfg_current, example_defaults,
-        proposals["DEV_MEMORY_HIGH"], validate=validate_positive_size,
-    )
-    values["DEV_MEMORY_MAX"] = walk_key(
-        "  MemoryMax (optional; none = no directive; swap is separate)",
-        "DEV_MEMORY_MAX", cfg_current, example_defaults,
-        proposals["DEV_MEMORY_MAX"], validate=validate_positive_size,
-    )
-    out(
-        "`MemoryZSwapWriteback` controls whether cold pages in this cgroup may "
-        "leave compressed zswap for disk swap. `yes` keeps zswap useful as a "
-        "cache; `no` avoids swap-out of the cold tail but permanently consumes "
-        "compressed RAM. The setting is asked per cgroup: a `no` on an ancestor "
-        "also disables writeback for its descendants."
-    )
-    values["DEV_CPU_RESERVE_CORES"] = walk_key(
-        "  host reserve (whole cores excluded from auto quota)",
-        "DEV_CPU_RESERVE_CORES", cfg_current, example_defaults,
-        validate=validate_nonneg_int,
-    )
-    values["DEV_SUBSLICE_CPU_RESERVE_CORES"] = walk_key(
-        "  child-slice reserve (whole cores excluded from auto quota)",
-        "DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults,
-        validate=validate_nonneg_int,
-    )
-    out(
-        f"A reserve is not a pinned CPU allocation. For this host, a blank root quota "
-        f"will become `{max(1, host_nproc - int(values['DEV_CPU_RESERVE_CORES'])) * 100}%` "
-        f"and a blank child quota will become `{max(1, host_nproc - int(values['DEV_SUBSLICE_CPU_RESERVE_CORES'])) * 100}%`. "
-        "The formula is `max(1, nproc - reserve) × 100%`; an explicit `N%` such as "
-        "`400%` overrides it. These are hard aggregate caps, while `CPUWeight` is only "
-        "a relative share when CPU is contested."
-    )
-    values["DEV_CPU_QUOTA"] = walk_key(
-        "  CPUQuota (blank = nproc minus reserve; N% = hard cap, e.g. 400%)",
-        "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
-    )
-    values["DEV_ZSWAP_WRITEBACK"] = walk_yn_key(
-        "  MemoryZSwapWriteback (yes = may page cold zswap to disk)",
-        "DEV_ZSWAP_WRITEBACK", cfg_current, example_defaults,
-    )
-    out(
-        "Swap cascade: the percentage below is applied first to the host's total swap "
-        "to derive dev.slice's swap ceiling. Each child then gets the same percentage "
-        "of its parent's derived ceiling, and the per-container watcher applies it once "
-        "more to the matching child value. Blank MemorySwapMax means use that cascade; "
-        "it means auto-detect, not unlimited. An explicit size overrides only that slice."
-    )
-    values["DEV_SWAP_CASCADE_PCT"] = walk_key(
-        "  Swap cascade percentage (bare 1-100; host -> parent -> child)",
-        "DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults, validate=validate_pct_1_100,
-    )
-    values["DEV_SWAP_MAX"] = walk_key(
-        "  MemorySwapMax (blank = cascade from host swap; swap only)",
-        "DEV_SWAP_MAX", cfg_current, example_defaults, validate=validate_size_or_auto,
-    )
-    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
-        "  child IOPS sub-ceiling % (gates/BuildKit; bandwidth unchanged)",
-        "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults, validate=validate_pct_1_100,
-    )
-    out(
-        "The child IOPS sub-ceiling is applied at runtime to gates and BuildKit only; "
-        "bandwidth continues to inherit the parent pool. `IOWeight` is intentionally "
-        "absent on the root because its absolute `io.max` pool is the estate cap."
-    )
-
-    out("\n-- e. Guaranteed memory floor (opt-in; one shared ceiling) --")
-    out(
-        "What this is: an optional HARD memory floor for a special class of explicitly "
-        "admitted containers. Unlike `MemoryLow`, which is best-effort, `MemoryMin` "
-        "is protected from reclaim under pressure. Setting this value does not reserve "
-        "RAM immediately and does not protect every devcontainer."
-    )
-    out(
-        "Where it is set: the same `DEV_MEMORY_MIN_GUARANTEED_CEILING` value is written "
-        "to both `dev.slice` (the shared parent) and its sibling "
-        "`dev-memory_min_guaranteed.slice`. The sibling is beside the interactive, "
-        "background, gates, and BuildKit slices; it is not inside one of them. These "
-        "two values must stay exactly equal. There is deliberately no second root/sibling "
-        "MemoryMin setting to tune independently."
-    )
-    out(
-        "Why the duplicate rendering matters: cgroup v2 redistributes a parent's unused "
-        "protection among children that are using memory. If the parent carries a larger "
-        "MemoryMin than the dedicated sibling, the surplus can leak to ordinary tiers; "
-        "if the parent carries less, the sibling's floor is silently ineffective. The "
-        "wizard asks for the one value and mirrors it so this cannot drift."
-    )
-    out(
-        "Who gets the protection: only a container that explicitly joins "
-        "`dev-memory_min_guaranteed.slice` and declares its own memory claim. The "
-        "ceiling alone protects nothing; it only sets the total that admitted claims "
-        "may share. ciu's consumer-side admission check is separate; see "
-        f"`{CIU_P50_RELATIVE_PATH}` for that part."
-    )
-    _, guaranteed_suggestion_kib, guaranteed_formula = propose_memory_min_guaranteed_suggestion(
-        avail_kib,
-        {key: proposals[key] for key in (
-            "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_HIGH",
-            "DEV_GATES_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_HIGH",
-        )},
-    )
-    out(
-        f"Before your answers, this host's advisory calculation is: {guaranteed_formula}. "
-        "It sums the four child MemoryHigh starting points, not their hard Max values, "
-        "because High is the expected reclaim/throttle boundary. The suggestion is only "
-        "5% of the leftover and is never selected automatically; Enter keeps this "
-        "mechanism empty and inert."
-    )
-    if guaranteed_suggestion_kib:
-        out(f"For orientation, that conservative 5% would be `{kib_to_size_str(guaranteed_suggestion_kib)}`; choose a value only if you have measured a workload that needs it.")
-    else:
-        out("There is no positive suggested headroom after the starting child highs; leave the mechanism empty unless measured evidence says otherwise.")
-
-    # Walk the sibling's complete memory sequence. MemoryMin is prompted as an
-    # explicit confirmation, but edits the same authoritative key already used
-    # for dev.slice rather than introducing a shadow sibling variable.
-    out("\n  dev-memory_min_guaranteed.slice — admitted hard-floor sibling")
-    _prompt_shared_memory_min(values)
-    out(f"  MemoryMin is now mirrored on dev.slice ({values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'}); no separate sibling MemoryMin key exists.")
-    out(
-        "  The sibling's MemoryLow/High/Max are separate optional controls for this "
-        "admission tier. Leave them empty if its admitted containers provide their own "
-        "tighter limits; type none to remove an existing directive. They do not replace "
-        "the shared MemoryMin ceiling above."
-    )
-    for field, key in (("MemoryLow", "DEV_MEMORY_MIN_GUARANTEED_LOW"), ("MemoryHigh", "DEV_MEMORY_MIN_GUARANTEED_HIGH"), ("MemoryMax", "DEV_MEMORY_MIN_GUARANTEED_MAX")):
-        values[key] = walk_key(
-            f"  {field} (optional; `none` = no directive)", key,
-            cfg_current, example_defaults,
-            validate=validate_optional_positive_size, allow_empty_token=True,
-        )
-    out("  CPUQuota, CPUWeight, IOWeight, and MemorySwapMax are not rendered on this admission-only sibling; systemd and the ancestor hierarchy provide the effective values.")
-
-    child_specs = (
-        ("dev-interactive.slice", "DEV_INTERACTIVE", ("DEV_INTERACTIVE_MEMORY_MIN", "DEV_INTERACTIVE_MEMORY_LOW", "DEV_INTERACTIVE_MEMORY_HIGH", "DEV_INTERACTIVE_MEMORY_MAX")),
-        ("dev-background.slice", "DEV_BACKGROUND", ("DEV_BACKGROUND_MEMORY_MIN", "DEV_BACKGROUND_MEMORY_LOW", "DEV_BACKGROUND_MEMORY_HIGH", "DEV_BACKGROUND_MEMORY_MAX")),
-        ("dev-gates.slice", "DEV_GATES", ("DEV_GATES_MEMORY_MIN", "DEV_GATES_MEMORY_LOW", "DEV_GATES_MEMORY_HIGH", "DEV_GATES_MEMORY_MAX")),
-        ("dev-buildkitd.slice", "DEV_BUILDKITD", ("DEV_BUILDKITD_MEMORY_MIN", "DEV_BUILDKITD_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_MAX")),
-    )
-    for slice_name, prefix, keys in child_specs:
-        out(f"\n  {slice_name}")
-        out(
-            "  MemoryMin/Low/High/Max are optional directives. `none` clears a field, while blank "
-            "on CPUQuota or MemorySwapMax below means auto-detect."
-        )
-        for field, key in zip(("MemoryMin", "MemoryLow", "MemoryHigh", "MemoryMax"), keys):
-            validator = validate_optional_positive_size
-            values[key] = walk_key(
-                f"  {field} (optional; none = no directive)",
-                key, cfg_current, example_defaults, proposals.get(key), validator,
-                allow_empty_token=field in ("MemoryMin", "MemoryLow"),
-            )
-        values[f"{prefix}_CPU_WEIGHT"] = walk_key(
-            "  CPUWeight (1-10000; relative share, not a cap)",
-            f"{prefix}_CPU_WEIGHT", cfg_current, example_defaults, validate=validate_weight,
-        )
-        values[f"{prefix}_CPU_QUOTA"] = walk_key(
-            "  CPUQuota (blank = nproc minus reserve; N% = hard cap, e.g. 400%)",
-            f"{prefix}_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
-        )
-        values[f"{prefix}_IO_WEIGHT"] = walk_key(
-            "  IOWeight (1-10000; relative share; BFQ usually <=100)",
-            f"{prefix}_IO_WEIGHT", cfg_current, example_defaults, validate=validate_weight,
-        )
-        values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
-            "  MemorySwapMax (blank = derive from parent; swap only)",
-            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, validate=validate_size_or_auto,
-        )
-        values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key(
-            "  MemoryZSwapWriteback (yes/no; per-slice policy)",
-            f"{prefix}_ZSWAP_WRITEBACK", cfg_current, example_defaults,
-        )
-        if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
-                "  ManagedOOMMemoryPressureLimit (pressure % before systemd-oomd acts)",
-                f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
-                validate=validate_systemd_pct_1_100,
-            )
-        if prefix == "DEV_BUILDKITD":
-            out(
-                "  BuildKit is the host-managed rootless worker shared by projects. "
-                "The image is a pinned OCI reference used by the service; the "
-                "accidental-worker policy applies only to unapproved Buildx "
-                "docker-container workers: `terminate` removes them, while "
-                "`report-only` logs them and leaves them running."
-            )
-            values["DEV_BUILDKITD_IMAGE"] = walk_key(
-                "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
-                cfg_current, example_defaults, validate=validate_nonempty,
-            )
-            out(
-                "BuildKit also limits its own internal solver parallelism. This "
-                "reduces simultaneous RUN/cache operations inside one daemon; "
-                "it does not limit the number of client builds and is separate "
-                "from the release flow's REPACK_JOBS and REPACK_CONCURRENCY."
-            )
-            values["DEV_BUILDKITD_MAX_PARALLELISM"] = walk_key(
-                "  BuildKit max parallel solver operations (positive integer)",
-                "DEV_BUILDKITD_MAX_PARALLELISM", cfg_current, example_defaults,
-                proposal=str(max(1, min(4, host_nproc))),
-                validate=validate_positive_int,
-            )
-            values["BUILDX_ACCIDENTAL_CONTAINER_POLICY"] = walk_key(
-                "  accidental Buildx policy (terminate or report-only)",
-                "BUILDX_ACCIDENTAL_CONTAINER_POLICY", cfg_current, example_defaults,
-                validate=validate_guard_policy,
-            )
-
-    _reprompt_memory_constraints(avail_kib, values)
-    _, _, final_formula = propose_memory_min_guaranteed_suggestion(
-        avail_kib,
-        {key: values[key] for key in (
-            "DEV_INTERACTIVE_MEMORY_HIGH",
-            "DEV_BACKGROUND_MEMORY_HIGH",
-            "DEV_GATES_MEMORY_HIGH",
-            "DEV_BUILDKITD_MEMORY_HIGH",
-        )},
-    )
-    out(f"After your entries, the advisory calculation is: {final_formula}.")
-    return values
-
-
 def step_slice_first_resources(
     meminfo: dict[str, int],
     cfg_current: dict[str, str],
@@ -2347,7 +1655,16 @@ def step_slice_first_resources(
         "A child High/Max above its parent is a review warning only; it does not block.",
     ):
         out(f"- {bullet}", hang="  ")
-    out("Starting percentages (review them): root High/Max=75%/100%; interactive=15%/20%/32%; background=15%/32%/50%; gates=5%/5%/10%; BuildKit=10%/10%/12% for Low/High/Max where shown.")
+    out("Starting proposals (review before accepting):")
+    for line in (
+        "dev.slice: MemoryHigh=75% / MemoryMax=100% of physical RAM",
+        "dev-interactive.slice: MemoryLow/High/Max=15% / 20% / 32%",
+        "dev-background.slice: MemoryLow/High/Max=15% / 32% / 50%",
+        "dev-gates.slice: MemoryLow/High/Max=5% / 5% / 10%",
+        "dev-buildkitd.slice: MemoryLow/High/Max=10% / 10% / 12%",
+        "These are independent slice controls; the wizard does not add sibling values together.",
+    ):
+        out(f"- {line}", hang="  ")
     _, suggested_min_kib, suggestion_formula = propose_memory_min_guaranteed_suggestion(
         total_kib,
         {key: proposals[key] for key in (
@@ -2355,11 +1672,13 @@ def step_slice_first_resources(
             "DEV_GATES_MEMORY_HIGH", "DEV_BUILDKITD_MEMORY_HIGH",
         )},
     )
-    out(
-        f"Advisory guaranteed-floor math: {suggestion_formula}. "
-        f"This is not a RAM reservation and is never selected automatically; "
-        f"the optional ceiling suggestion is {kib_to_size_str(suggested_min_kib)}."
-    )
+    out("Advisory guaranteed-floor math:")
+    for bullet in (
+        suggestion_formula,
+        "This is not a RAM reservation and is never selected automatically.",
+        f"Optional ceiling suggestion: {kib_to_size_str(suggested_min_kib)}.",
+    ):
+        out(f"- {bullet}", hang="  ")
 
     out("\n  dev.slice — shared parent")
     out("Parent role:")
@@ -2386,27 +1705,22 @@ def step_slice_first_resources(
             validate=validate_optional_positive_size, allow_empty_token=True,
         )
 
-    out(
-        "MemoryZSwapWriteback controls whether cold pages in this cgroup may "
-        "leave compressed zswap for disk swap. yes permits that cache to drain; "
-        "no keeps the cold tail in compressed RAM. A no on an ancestor also "
-        "disables writeback for descendants."
-    )
-    out(
-        "CPU has two different concepts. The host reserve is cores deliberately "
-        "left outside the aggregate dev quota for host/production load. The "
-        "child quota reserve is cores held outside each child's automatically "
-        "derived quota, making each child a smaller dev ceiling. Neither reserves "
-        "or pins a CPU; both only affect a blank CPUQuota."
-    )
-    out(
-        f"On this host (nproc={host_nproc}), if host reserve is 1, a blank root "
-        f"CPUQuota becomes {max(1, host_nproc - 1) * 100}%; if child quota "
-        f"reserve is 3, a blank child CPUQuota becomes "
-        f"{max(1, host_nproc - 3) * 100}%. An explicit value such as 400% "
-        "is the actual hard cap and overrides the derived value. CPUWeight is "
-        "only a relative share when peers contend."
-    )
+    out("Zswap policy:")
+    for bullet in (
+        "yes lets cold compressed pages drain to disk swap, keeping zswap available as a cache.",
+        "no keeps the cold tail in compressed RAM, reducing swap-out but consuming RAM.",
+        "A no on any ancestor disables writeback for its descendants.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    out("CPU ceilings:")
+    for bullet in (
+        "Host/production reserve: cores excluded from the aggregate dev.slice auto-quota.",
+        "Child reserve: cores excluded from each child slice's auto-quota.",
+        "Neither reserve pins a CPU; they affect only a blank CPUQuota.",
+        f"With nproc={host_nproc}, reserve 1 -> root {max(1, host_nproc - 1) * 100}%; reserve 3 -> child {max(1, host_nproc - 3) * 100}%.",
+        "An explicit N% is the hard cap and overrides auto-detection; CPUWeight is only a relative share.",
+    ):
+        out(f"- {bullet}", hang="  ")
     values["DEV_CPU_RESERVE_CORES"] = walk_key(
         "  host/production CPU reserve (cores excluded from root auto-quota)",
         "DEV_CPU_RESERVE_CORES", cfg_current, example_defaults,
@@ -2426,14 +1740,14 @@ def step_slice_first_resources(
         cfg_current, example_defaults,
     )
 
-    out(
-        "Swap policy is separate from RAM. The cascade first applies "
-        "DEV_SWAP_CASCADE_PCT to host SwapTotal for dev.slice. A blank "
-        "MemorySwapMax means derive that slice's swap-only ceiling; it does "
-        "not mean unlimited and it does not include RAM. Each child derives "
-        "the same percentage from the parent's derived swap-only ceiling; an "
-        "explicit size overrides only that slice."
-    )
+    out("Swap cascade:")
+    for bullet in (
+        "Swap is separate from RAM; MemorySwapMax limits swap only.",
+        "dev.slice blank -> DEV_SWAP_CASCADE_PCT% of host SwapTotal.",
+        "Child blank -> the same percentage of dev.slice's derived swap ceiling.",
+        "An explicit size overrides only that slice; blank means derived, not unlimited.",
+    ):
+        out(f"- {bullet}", hang="  ")
     values["DEV_SWAP_CASCADE_PCT"] = walk_key(
         "  swap cascade percentage (host -> dev.slice -> child; bare 1-100)",
         "DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults,
@@ -2444,13 +1758,14 @@ def step_slice_first_resources(
         "DEV_SWAP_MAX", cfg_current, example_defaults,
         validate=validate_size_or_auto,
     )
-    out(
-        "The child IOPS sub-ceiling is applied only to gates and the host-managed "
-        "BuildKit slice. It is a percentage of the already-derived dev.slice "
-        "IOPS cap, not a percentage of the raw device and not a bandwidth cap. "
-        "Bandwidth inherits the parent pool. IOWeight is intentionally absent "
-        "on the root because its absolute io.max pool is the estate cap."
-    )
+    out("IOPS sub-ceiling:")
+    for bullet in (
+        "Applies only to dev-gates.slice and dev-buildkitd.slice.",
+        "Percentage of dev.slice's already-derived IOPS cap, not the raw device ceiling.",
+        "IOPS only; bandwidth inherits the parent pool.",
+        "The root uses absolute io.max caps, so it has no IOWeight setting.",
+    ):
+        out(f"- {bullet}", hang="  ")
     values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
         "  child IOPS sub-ceiling (percentage of dev.slice IOPS cap; bare 1-100)",
         "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults,
@@ -2518,12 +1833,13 @@ def step_slice_first_resources(
                 key, cfg_current, example_defaults, proposals.get(key),
                 validate=validate_optional_positive_size, allow_empty_token=True,
             )
-        out(
-            "CPUQuota is this slice's hard cap: blank derives from the child "
-            "quota-ceiling reserve selected above; an explicit N% wins. "
-            "CPUWeight and IOWeight are relative shares only and matter when "
-            "siblings contend."
-        )
+        out("CPU and IO controls:")
+        for bullet in (
+            "CPUQuota is this slice's hard cap; blank derives from the child reserve above.",
+            "Explicit N% wins; CPUWeight and IOWeight are relative shares, not caps.",
+            "Weights matter only when siblings contend.",
+        ):
+            out(f"- {bullet}", hang="  ")
         values[f"{prefix}_CPU_WEIGHT"] = walk_key(
             "  CPUWeight (1-10000; relative share, not a cap)",
             f"{prefix}_CPU_WEIGHT", cfg_current, example_defaults,
@@ -2539,51 +1855,53 @@ def step_slice_first_resources(
             f"{prefix}_IO_WEIGHT", cfg_current, example_defaults,
             validate=validate_weight,
         )
-        out(
-            "MemorySwapMax here limits swap only. Blank cascades from the live "
-            "parent MemorySwapMax; an explicit size affects only this slice."
-        )
+        out("Swap control:")
+        for bullet in (
+            "MemorySwapMax limits swap only.",
+            "Blank cascades from the live parent; an explicit size affects only this slice.",
+        ):
+            out(f"- {bullet}", hang="  ")
         values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
             "  MemorySwapMax (blank = derived swap-only ceiling)",
             f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
             validate=validate_size_or_auto,
         )
-        out(
-            "MemoryZSwapWriteback controls whether this slice may write cold "
-            "compressed-zswap pages to disk swap. It is a policy switch, not a "
-            "size or a memory limit."
-        )
+        out("Zswap control:")
+        for bullet in (
+            "MemoryZSwapWriteback is a per-slice yes/no policy, not a size or memory limit.",
+            "A no on an ancestor still disables writeback below it.",
+        ):
+            out(f"- {bullet}", hang="  ")
         values[f"{prefix}_ZSWAP_WRITEBACK"] = walk_yn_key(
             "  MemoryZSwapWriteback", f"{prefix}_ZSWAP_WRITEBACK",
             cfg_current, example_defaults,
         )
         if prefix in ("DEV_BACKGROUND", "DEV_GATES"):
-            out(
-                "systemd-oomd watches memory pressure here and may act at the "
-                "configured percentage; it is not the same as MemoryMax."
-            )
+            out("OOM policy:")
+            out("- systemd-oomd may act at the configured pressure percentage; this is separate from MemoryMax.", hang="  ")
             values[f"{prefix}_OOM_PRESSURE_LIMIT"] = walk_key(
                 "  ManagedOOMMemoryPressureLimit (systemd percentage, e.g. 75%)",
                 f"{prefix}_OOM_PRESSURE_LIMIT", cfg_current, example_defaults,
                 validate=validate_systemd_pct_1_100,
             )
         if prefix == "DEV_BUILDKITD":
-            out(
-                "BuildKit is the host-managed rootless worker. The accidental "
-                "Buildx policy below concerns only unapproved docker-container "
-                "workers: terminate removes them; report-only logs and leaves "
-                "them running."
-            )
+            out("BuildKit-specific controls:")
+            for bullet in (
+                "The host-managed rootless worker is the only approved normal worker.",
+                "Accidental docker-container workers: terminate removes them; report-only logs them.",
+            ):
+                out(f"- {bullet}", hang="  ")
             values["DEV_BUILDKITD_IMAGE"] = walk_key(
                 "  BuildKit image (rootless OCI reference)", "DEV_BUILDKITD_IMAGE",
                 cfg_current, example_defaults, validate=validate_nonempty,
             )
-            out(
-                "BuildKit also limits its own internal solver parallelism. This "
-                "reduces simultaneous RUN/cache operations inside one daemon; "
-                "it does not limit the number of client builds and is separate "
-                "from the release flow's REPACK_JOBS and REPACK_CONCURRENCY."
-            )
+            out("Solver parallelism:")
+            for bullet in (
+                "Limits simultaneous RUN/cache operations inside this daemon.",
+                "Does not limit the number of client builds.",
+                "Separate from release REPACK_JOBS and REPACK_CONCURRENCY.",
+            ):
+                out(f"- {bullet}", hang="  ")
             values["DEV_BUILDKITD_MAX_PARALLELISM"] = walk_key(
                 "  BuildKit max parallel solver operations (positive integer)",
                 "DEV_BUILDKITD_MAX_PARALLELISM", cfg_current, example_defaults,
@@ -2608,13 +1926,13 @@ def step_watcher(
     swap," since cgroup v2 has no anon-only cap of its own."""
     values: dict[str, str] = {}
     out("\n-- g. Reactive per-container cap watcher (mdt-dev-cap-watcher.py) --")
-    out(
-        "These bound the blast radius of any ONE unlabelled container ballooning inside a "
-        "governed slice. The memory watcher applies them when a new Docker scope appears "
-        "if this host has working inotify; if not, the periodic sweep remains the "
-        "backstop. A container's own explicit `docker run --memory` always wins; this "
-        "only fills in containers that asked for no memory limit."
-    )
+    out("Purpose and precedence:")
+    for bullet in (
+        "Caps the blast radius of one unlabelled container inside a governed slice.",
+        "The memory watcher applies caps on cgroup creation when inotify works; the periodic sweep is the backstop.",
+        "A container's explicit docker run --memory wins; these values fill only an omitted memory limit.",
+    ):
+        out(f"- {bullet}", hang="  ")
     values["WATCHER_PER_CONTAINER_MEMORY_MAX"] = walk_key(
         "Per-container MemoryMax (interactive/background; positive size)",
         "WATCHER_PER_CONTAINER_MEMORY_MAX",
@@ -2622,12 +1940,12 @@ def step_watcher(
         example_defaults,
         validate=validate_positive_size,
     )
-    out(
-        "dev-gates.slice gets its OWN, separate ceiling here -- deliberately not the shared "
-        "value above -- sized against what a lane container actually needs (see "
-        "'dev-gates: why' in the README): too tight here would re-create the exact headroom "
-        "incident dev-gates.slice exists to fix."
-    )
+    out("Gate-container ceiling:")
+    for bullet in (
+        "dev-gates.slice uses its own per-container MemoryMax, separate from interactive/background.",
+        "It is sized for one lane container; making it too small recreates the headroom incident this tier fixes.",
+    ):
+        out(f"- {bullet}", hang="  ")
     values["WATCHER_PER_CONTAINER_GATES_MEMORY_MAX"] = walk_key(
         "Per-container MemoryMax (gates; positive size)",
         "WATCHER_PER_CONTAINER_GATES_MEMORY_MAX",
@@ -2635,11 +1953,8 @@ def step_watcher(
         example_defaults,
         validate=validate_positive_size,
     )
-    out(
-        "MemoryHigh is derived from whichever Max above applies, as this percentage -- a "
-        "soft throttle-into-reclaim step below the hard cap, same pairing the slices "
-        "themselves use."
-    )
+    out("Per-container MemoryHigh:")
+    out("- Derived as this percentage of the selected per-container MemoryMax; it is a soft throttle below the hard cap.", hang="  ")
     values["WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT"] = walk_key(
         "Per-container MemoryHigh (% of that MemoryMax; bare 1-100)",
         "WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT",
@@ -2647,12 +1962,13 @@ def step_watcher(
         example_defaults,
         validate=validate_pct_1_100,
     )
-    out(
-        "Per-container MemorySwapMax is NOT asked here -- it is computed at runtime from "
-        "whichever matched slice's own LIVE memory.swap.max, times DEV_SWAP_CASCADE_PCT "
-        "(the slice settings above), never re-derived from this file. See "
-        "scripts/mdt-dev-cap-watcher.py's read_slice_swap_max_bytes()."
-    )
+    out("Per-container swap:")
+    for bullet in (
+        "Not prompted here.",
+        "At runtime it uses the matched slice's live memory.swap.max and applies DEV_SWAP_CASCADE_PCT.",
+        "It is not re-derived from this file; see read_slice_swap_max_bytes() in mdt-dev-cap-watcher.py.",
+    ):
+        out(f"- {bullet}", hang="  ")
     return values
 
 

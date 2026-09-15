@@ -521,12 +521,16 @@ exit 0
                 "mdt-io-cap-watcher.service",
                 "DEV_IO_CAP_PCT",
                 "WATCHER_IO_CAP_PCT",
+                "Starting proposals (review before accepting)",
+                "+-- dev-gates.slice",
+                "Static fallback values come from",
                 "no host mutation occurs",
                 "Docker is not restarted automatically",
                 "Sibling Min/Low/High controls are independent",
                 "does not block",
             ):
                 self.assertIn(bullet, transcript_text)
+            self.assertNotIn("aggregate violations", transcript_text)
 
     def test_guard_policy_and_missing_config_fail_closed(self) -> None:
         config = GUARD.load_config(ROOT / "host-setup.env.example")
