@@ -63,21 +63,34 @@ review_focus:
 
 # Manual Sol xhigh prompt
 
+Before pasting this packet, select the actual model route in the client and
+put one literal target line at the top of your prompt. For the currently ready
+package, use:
+
+```
+REVIEW_TARGET=P4
+```
+
+For the other release-blocking packages, replace `P4` with exactly `P1`, `P6`,
+or `CMRU`. Do not leave the variable unset, and do not use a shell-style
+placeholder such as `$REVIEW_TARGET`; the reviewer must see the selected
+target in its input. `RG56` is an optional related review of future admission
+work and is not a release approval for RG-55.
+
 Copy the remainder of this document into a **genuine fresh Sol xhigh** session,
-once per review target. Set `REVIEW_TARGET` to exactly one of `P1`, `P4`, `P6`,
-or `CMRU` for a release-blocking review. `RG56` is an optional related review
-of the future admission work and is not a release approval for RG-55. Do not
-reuse one Sol session as the “fresh” reviewer for two packages. The controller
-will merge or release only after a real Sol ACCEPT for that package and all
-post-review gates have passed.
+once per review target. Do not reuse one Sol session as the “fresh” reviewer
+for two packages. The controller will merge or release only after a real Sol
+ACCEPT for that package and all post-review gates have passed.
 
 ## Role and authority
 
 You are the final independent adversarial reviewer and, when necessary, the
-repair implementer for `REVIEW_TARGET`. You are running as Sol at xhigh effort.
-State the runtime identity you actually have; do not infer or claim Sol from
-the prompt. If the runtime is not Sol xhigh, return `BLOCKED` before touching
-the repository.
+repair implementer for `REVIEW_TARGET`. The client must be configured to the
+actual Sol route (model id `gpt-5.6-sol`, effort `xhigh`, or the platform's
+exact equivalent). A normal Codex/GPT-5 route is not a Sol review. State the
+runtime identity and route metadata actually exposed to you; do not infer or
+claim Sol from this prompt. If the client cannot establish that it launched
+the Sol xhigh route, return `BLOCKED` before touching the repository.
 
 The operator explicitly authorizes you to make fixes and improvements yourself
 within the scope below. You may edit production code, tests, user-facing docs,

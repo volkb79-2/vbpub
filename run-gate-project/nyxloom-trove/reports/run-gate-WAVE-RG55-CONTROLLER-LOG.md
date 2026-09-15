@@ -2778,6 +2778,16 @@ gates. For P4 or CMRU, a manually launched fresh Sol xhigh session may review
 or repair the isolated candidate immediately, but it must not merge/release.
 No further controller mutation or tree edits are authorized at this pause.
 
+### RW-226 — 2026-09-15 02:57:59Z — clarify manual Sol launch contract
+
+The manual reviewer returned `BLOCKED` because its target was unset and the
+runtime identified as Codex/GPT-5 rather than a verifiable Sol xhigh route.
+The review packet now requires a literal `REVIEW_TARGET=P4` (or exactly P1,
+P6, or CMRU) in the pasted prompt and names the required Sol route as
+`gpt-5.6-sol` at `xhigh`. It explicitly states that prompt text cannot turn a
+Codex runtime into Sol; if the client cannot expose that route, the reviewer
+must remain blocked before repository work. No package tree was touched.
+
 ### RW-223 — 2026-09-15 02:47:19Z — correct P5 backlog identity before dispatch
 
 The future P5 handoff incorrectly reused RG-62, which belongs to P4's flaky
