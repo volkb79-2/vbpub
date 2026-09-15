@@ -18,9 +18,10 @@ tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
 The launcher requires the cockpit-provided
 `CGROUP_PARENT_DEV_BACKGROUND`; it never invents a slice. It derives the
 Docker host's workspace path from mountinfo, dual-mounts that workspace,
-creates a disposable host-backed temp root, mounts it at the non-repository
-path `/var/tmp/tester-unified`, and exports that path as `TMPDIR`/`TMP`/`TEMP`;
-it mounts the Docker socket for nested contract tests,
+creates a disposable host-backed temp root, mounts it at `/tmp`, and exports
+that path as `TMPDIR`/`TMP`/`TEMP` (when the workspace itself is rooted at
+`/tmp`, the collision-free target is `/var/tmp/tester-unified`); it mounts the
+Docker socket for nested contract tests,
 selects `/opt/tester-venv`, and verifies uid 1003, the cgroup parent, a 3-CPU
 cap, workdir, environment, and all required mounts. Runs are detached and
 their inspect data, logs, Docker wait status, launch PSI, and job marker are

@@ -83,12 +83,20 @@ case "$git_root/" in
 esac
 git -C "$git_root" check-ignore -q .assay/tester-unified-probe \
     || die "'$git_root/.assay/' must be git-ignored before tester runtime state is written"
-workspace_git_root=$(git -C "$workspace_root" rev-parse --show-toplevel 2>/dev/null) \
-    || die "derived workspace '$workspace_root' is not a git checkout"
-[[ $workspace_git_root == "$workspace_root" ]] \
-    || die "derived mount target '$workspace_root' is not the repository root '$workspace_git_root'"
-git -C "$workspace_root" check-ignore -q .assay/tester-unified-probe \
-    || die "'$workspace_root/.assay/' must be git-ignored before the estate launch lock is written"
+if [[ -n ${_TESTER_UNIFIED_LAUNCH_LOCK:-} ]]; then
+    # Private test seam: Assay executes this launcher's behavioral tests from a
+    # repository snapshot whose mount target is intentionally not the estate
+    # checkout.  The test supplies an isolated lock and a fake Docker client.
+    launch_lock=$(realpath -m -- "$_TESTER_UNIFIED_LAUNCH_LOCK")
+else
+    workspace_git_root=$(git -C "$workspace_root" rev-parse --show-toplevel 2>/dev/null) \
+        || die "derived workspace '$workspace_root' is not a git checkout"
+    [[ $workspace_git_root == "$workspace_root" ]] \
+        || die "derived mount target '$workspace_root' is not the repository root '$workspace_git_root'"
+    git -C "$workspace_root" check-ignore -q .assay/tester-unified-probe \
+        || die "'$workspace_root/.assay/' must be git-ignored before the estate launch lock is written"
+    launch_lock=$workspace_root/.assay/tester-unified-launch.lock
+fi
 
 if [[ -z $evidence_root ]]; then
     evidence_root=$git_root/.assay/tester-unified-runs
@@ -130,7 +138,11 @@ tmp_relative=${tmp_dir#"$workspace_root"/}
 [[ $tmp_relative != "$tmp_dir" ]] \
     || die "temporary directory is outside the workspace mount"
 host_tmp=$host_workspace/$tmp_relative
-container_tmp=/var/tmp/tester-unified
+if [[ $workspace_root == /tmp ]]; then
+    container_tmp=/var/tmp/tester-unified
+else
+    container_tmp=/tmp
+fi
 
 container_started=0
 container_finished=0
@@ -184,8 +196,7 @@ abort_started() {
 # Serialize the count-and-launch boundary.  This conservative estate cap keeps
 # at most two tester containers live, which necessarily keeps mutation lanes
 # within their hard maximum of two as well.
-launch_lock=$workspace_root/.assay/tester-unified-launch.lock
-mkdir -p -- "$workspace_root/.assay"
+mkdir -p -- "$(dirname "$launch_lock")"
 exec 9>"$launch_lock"
 flock 9
 active_count=$("$docker_bin" ps --filter "ancestor=$image" --format '{{.ID}}' | awk 'NF {n++} END {print n+0}')

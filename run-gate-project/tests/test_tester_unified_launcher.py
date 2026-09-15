@@ -118,6 +118,7 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["FAKE_DOCKER_STATE"] = str(log.parent)
     env["_TESTER_UNIFIED_PRESSURE_FILE"] = str(pressure_file)
+    env["_TESTER_UNIFIED_LAUNCH_LOCK"] = str(tmp_path / "launch.lock")
     env["TESTER_UNIFIED_RUN_NAME"] = "tester-unified-contract-test"
     env["FAKE_DOCKER_UPDATE_FAIL"] = "1" if update_fails else "0"
     if cgroup is None:
@@ -162,10 +163,11 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     assert "logs tester-unified-contract-test" in calls
     assert "rm tester-unified-contract-test" in calls
 
+    container_tmp = "/var/tmp/tester-unified" if workspace == "/tmp" else "/tmp"
     mounts = (log.parent / "mounts").read_text().splitlines()
-    temp_mounts = [line.removesuffix(" -> /var/tmp/tester-unified")
+    temp_mounts = [line.removesuffix(f" -> {container_tmp}")
                    for line in mounts
-                   if line.endswith(" -> /var/tmp/tester-unified")]
+                   if line.endswith(f" -> {container_tmp}")]
     assert len(temp_mounts) == 1
     worktree_relative = REPO.relative_to(Path(workspace))
     expected_temp_parent = (
@@ -174,9 +176,9 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     )
     assert temp_mounts[0].startswith(f"{expected_temp_parent}/run.")
     environment = (log.parent / "environment").read_text().splitlines()
-    assert "TMPDIR=/var/tmp/tester-unified" in environment
-    assert "TMP=/var/tmp/tester-unified" in environment
-    assert "TEMP=/var/tmp/tester-unified" in environment
+    assert f"TMPDIR={container_tmp}" in environment
+    assert f"TMP={container_tmp}" in environment
+    assert f"TEMP={container_tmp}" in environment
     run_evidence = evidence / "tester-unified-contract-test"
     assert (run_evidence / "container.inspect.json").read_text().startswith("[")
     assert (run_evidence / "docker-wait.exit").read_text() == "0\n"
