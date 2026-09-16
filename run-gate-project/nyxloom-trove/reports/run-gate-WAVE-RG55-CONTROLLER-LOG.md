@@ -2888,3 +2888,17 @@ on the nondeterministic `test_new_run_id_is_unique_even_for_the_same_instant`
 (49 unique IDs of 50), not in a mutation candidate. P6 remains the sole live
 mutation container, `run-gate-vbpub-r2-1710318-1789560817`; no progress poll
 is made before the 20-minute interval.
+
+### RW-232 — 2026-09-16 12:37:43Z — relaunch P1 after collected baseline failure
+
+The first retry invocation was initially made from `run-gate-project/`, whose
+nearest configuration declares only `selftest`; it therefore exited before
+starting a container. The correct cgroup-profiler symlink entrypoint was then
+run from `scripts/cgroup-profiler/`. Its first invocation collected the old
+exited P1 container instead of starting a replacement. `--fresh` was used only
+against that exact exited name and launched
+`run-gate-vbpub-r2-1754081-1789562243` for the unchanged clean tree
+`8df62f628b20c6280574aef8f6e76a53f9d00e35`; it was immediately verified at
+`NanoCpus=3000000000` with `CgroupParent=dev-background.slice`. P1 and P6
+are now the two allowed mutation slots; neither will be polled before the
+20-minute interval.
