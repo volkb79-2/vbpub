@@ -2977,3 +2977,13 @@ quiet P5 tree with an explicit terminal marker at
 `/tmp/rg55-p5-selftest-coverage3.log`; no result will be inferred from its
 launcher. This is a non-mutation validation lane; P1 and P6 remain the only
 mutation slots in use.
+
+### RW-240 — 2026-09-16 14:44:38Z — P5 ended-watch repair checkpoint
+
+The P5 exec-carrier profiler watch had a substantive safety gap: the lane
+loop retried only an idle watch, so a watch whose reader thread had ended could
+be retained silently. The repair checks `ended()` as well as `idle()`, reports
+the distinct state, and reattaches once before using the progress fallback.
+Four focused regression tests pass, and the implementation plus tests are
+committed on P5 as `26e6f344`. Any earlier P5 selftest predating this commit is
+invalid evidence and must be rerun from the quiet new tree.
