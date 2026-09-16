@@ -3152,3 +3152,13 @@ transaction, subprocess, gate, or error record. It is therefore insufficient
 evidence for a release defect; no speculative cmru change is made. The
 authoritative RG-55 release checks remain the real project-specific release
 gates after assay 6.3 is integrated.
+
+### RW-255 — 2026-09-16 16:23:27Z — validate staged source-backed P5 dry run
+
+On clean reconciliation tip `6c02e512`, `run-gate.py --base main assay-r1
+--dry-run` exited 0 and printed rev 43's source-backed Assay installation
+(`pip install --editable <selected-worktree>/assay --no-deps
+--no-build-isolation`) with no 6.1.1 artifact or pin. It also exercised the
+RG-55 profile/placement planning path without launching a container; observed
+host memory PSI `full avg10=0.57%`, below the launch threshold. This does not
+replace the tester-unified gate or final mutation evidence.
