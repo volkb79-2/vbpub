@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "4d12c430b421bd32f961112bd82e651b5a60c981"
+input_revision: "f4e304815fdbb284133fd46c8f29b9dbb7dfb89e"
 depends_on: []
 session: fresh
 source:
@@ -206,7 +206,7 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 ### `P5`: run-gate v1.1 client, revision 43
 
 Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `4d12c430b421bd32f961112bd82e651b5a60c981` (the packet is a
+implementation tip `f4e304815fdbb284133fd46c8f29b9dbb7dfb89e` (the packet is a
 tracked report in the same worktree). Read:
 
 ```
@@ -481,6 +481,13 @@ perform those operations after your ACCEPT and the required post-review gates.
    run against a 600-second budget. It is evidence for a future measurement /
    infrastructure follow-up only. Do not touch dstdns or rewrite RG-55's
    contention-agnostic principle from that observation.
+10. Assay 6.3 is being prepared in the operator-owned
+    `.worktrees/assay-source-backed-20260916` worktree to remove internal
+    hard pins before release. Do not edit that worktree or create another
+    re-vendoring cycle. If a P5 gate is refused solely because this checkout's
+    assay pin is stale, report the exact dependency and let the controller
+    rerun it after the source-backed 6.3 release; do not misclassify that
+    sequencing issue as a P5 product failure.
 
 ## Mechanical BLOCKED rule
 
