@@ -2825,3 +2825,19 @@ operator-owned evidence (as ruled in RW-60/RW-97/RW-170/RW-189/RW-210): it
 was preserved with a path-scoped stash across the merge and restored
 byte-for-byte, and remains dirty and uncommitted. No operator-owned file was
 committed.
+
+### RW-229 — 2026-09-16 11:25:20Z — run-gate 23.8.0 released and installed
+
+After the P4 merge, committed `main` was pushed to `origin/main` so CMRU's
+local-ahead safety precondition was satisfied. `cmru release --project
+run-gate-project --set-version 23.8.0 --allow-uncommitted` completed its
+isolated transaction: the release selftest gate passed with 1,201 passed and
+3 skipped in 230.84 seconds; CMRU promoted the prepared release commit,
+tagged and published `run-gate-v23.8.0`, and published the wheel with SHA256
+`197a600a13ba064702f15347701cea323cbdaf03030201e731e87e34194439af`.
+The wheel was installed into `/home/vscode/.venv`; `run-gate --help` reports
+`run-gate rev 42`. CMRU could not synchronize the caller checkout afterward
+because the operator-owned RG-45 backlog addendum remained dirty; that file
+was preserved and restored without staging or committing it. Local `main` was
+then fast-forwarded to the promoted release commit and remains equal to
+`origin/main`, with only that addendum dirty.
