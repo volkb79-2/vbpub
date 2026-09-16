@@ -3091,3 +3091,23 @@ refusal safety rule. The scoped documentation commit is `9c6a044c`; the
 canonical Sol packet was synchronized to RW-248 in `bf5217bc`. No judged tree,
 operator-owned assay-source worktree, running mutation process, or assay
 record was changed.
+
+### RW-250 — 2026-09-16 16:03:49Z — P1 survivor repair and fresh R2 launch
+
+P1's exact-tree R2 verdict for `8df62f628b20c6280574aef8f6e76a53f9d00e35`
+was terminal and complete: 250 candidates, 248 killed, 2 survived, 0
+equivalent, 0 budget-exceeded, and 0 crashed; outcome
+`FAIL/MUTANTS_SURVIVED`, exit 1. `damon.py:325` (`Gt->GtE`) is accepted as
+equivalent because `current == expected_end` implies `current > baseline` for
+every reachable pool release. `damon.py:385` (`False->True`) was a real
+oracle gap: failed second acquisition could release a first session's live
+constructor index. The red-first regression failed under that exact mutant
+and passed restored; `test_damon.py` then passed 82 tests.
+
+The regression is committed as `8cc740a2`; the P1 LOG/REPORT receipt and
+triage are committed as `4845a58a`. Those commits invalidate the old R2 for
+release, so a fresh R2 was launched on quiet tree `4845a58a` as Python PID
+`2389540`, exact container
+`run-gate-vbpub-r2-2389540-1789574615`, under `dev-background.slice` with
+`NanoCpus=3000000000`. P5 remains the other mutation lane. No P1 merge,
+release, or Sol review is authorized from the old result.
