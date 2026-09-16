@@ -3111,3 +3111,13 @@ release, so a fresh R2 was launched on quiet tree `4845a58a` as Python PID
 `run-gate-vbpub-r2-2389540-1789574615`, under `dev-background.slice` with
 `NanoCpus=3000000000`. P5 remains the other mutation lane. No P1 merge,
 release, or Sol review is authorized from the old result.
+
+### RW-251 — 2026-09-16 16:06:48Z — refresh P3 release evidence for P4
+
+The isolated P3 close-out preparation report now records the already-shipped
+run-gate 23.8.0 evidence: annotated tag object
+`b986a2fc8be585654f73ca0657b1528d656d88cd` peels to commit
+`409439c15132724d36ffc8db61a1324dac542585`, `/home/vscode/.venv` reports
+23.8.0, and `run-gate --help` prints rev 42. The preparation commits are
+`9deca699` and its tag-object correction `f6c51ab7`. No mutation lane was
+queried or changed.
