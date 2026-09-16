@@ -3190,3 +3190,14 @@ live: Python PID `2389540`, exact container
 PID `2275238` (started by its bare-host lane, so there is no P5 mutation
 container to inspect). No progress stream or verdict was read because both
 authoritative handles are still live; no mutation result is claimed.
+
+### RW-259 — 2026-09-16 16:41:42Z — remove stale P5 vendored assay artifact
+
+The isolated P5 assay-6.3 reconciliation audit found that the selected
+source-backed consumer changes had left the old tracked
+`run-gate-project/tools/assay/assay-6.1.1.pyz` and checksum in place. These
+two exact files were removed in commit `37fe63aa` on
+`rg55-p5-assay63-reconcile`, matching the source-backed consumer contract.
+Historical RG-55 reports retain their 6.1.1 evidence references; no active
+configuration or mutation lane was changed, and no long-running mutation
+state was queried.
