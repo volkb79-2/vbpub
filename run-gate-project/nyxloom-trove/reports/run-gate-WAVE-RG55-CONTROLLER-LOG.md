@@ -2967,3 +2967,13 @@ invocation; a second invocation with `--fresh` then started
 capped at three CPUs and verified under `dev-background.slice`. Assay's
 persisted resume/progress state remains the source of truth; P1 remains the
 other active mutation lane.
+
+### RW-239 — 2026-09-16 14:40:02Z — fresh P5 full selftest after watch coverage
+
+P5's in-process daemon-watch transition tests now pass four-for-four, and the
+fixture correction is committed as `aa9d4a20` on top of the earlier coverage
+commit `0f40eca7`. A fresh full `run-gate.py selftest` was launched from that
+quiet P5 tree with an explicit terminal marker at
+`/tmp/rg55-p5-selftest-coverage3.log`; no result will be inferred from its
+launcher. This is a non-mutation validation lane; P1 and P6 remain the only
+mutation slots in use.
