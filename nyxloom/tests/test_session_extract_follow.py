@@ -408,6 +408,36 @@ def test_jsonl_source_uses_codex_lossless_and_selected_record_paths(tmp_path):
     selected.close()
 
 
+def test_jsonl_source_skips_non_chat_reasonix_records(tmp_path):
+    path = tmp_path / "reasonix.jsonl"
+    _append(path, {"role": "developer", "content": "not chat"})
+    source = JsonlSource(path, "reasonix", 0, ExtractConfig(), lossless_mode=False)
+    assert source.poll() == []
+    source.close()
+
+
+def test_jsonl_source_ignores_an_unknown_format(tmp_path):
+    path = tmp_path / "unknown.jsonl"
+    _append(path, _user("u1", "ignored"))
+    source = JsonlSource(path, "future-format", 0, ExtractConfig(), lossless_mode=False)
+    assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_restores_tracked_fingerprints(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    source = OpencodeSource(
+        db,
+        sid,
+        ExtractConfig(),
+        lossless_mode=False,
+        tracked_fingerprints=(((10, "m10"), ("fingerprint",)),),
+    )
+    assert source._tracked_rows[(10, "m10")] == ("fingerprint",)
+    source.close()
+
+
 # --------------------------------------------------------------------------
 # FollowSelector -- select()'s per-event rule, applied forward
 # --------------------------------------------------------------------------

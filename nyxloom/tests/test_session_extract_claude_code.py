@@ -1021,6 +1021,37 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert "OPERATOR: yes" in events[0].text
 
 
+def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
+    record = _rec(
+        type="assistant",
+        uuid="no-id",
+        message={"role": "assistant", "content": [{
+            "type": "tool_use",
+            "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "Unnamed?"}]},
+        }]},
+    )
+    assert claude_code.parse_record(
+        record, 0, "line0", ExtractConfig(), claude_code.StreamState()
+    ) == []
+
+
+def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state(
+    tmp_path,
+):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps(_rec(
+        type="assistant",
+        uuid="no-id",
+        message={"role": "assistant", "content": [{
+            "type": "tool_use",
+            "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "Unnamed?"}]},
+        }]},
+    )) + "\n", encoding="utf-8")
+    assert claude_code.parse(fp, str(fp), ExtractConfig()) == []
+
+
 def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():
     config = ExtractConfig()
     with_uuid = _rec(type="user", uuid="u9", timestamp="t",

@@ -107,6 +107,66 @@ def test_sniff_does_not_accept_a_file_with_a_late_event_snapshot(tmp_path):
     assert reasonix.sniff(path) is False
 
 
+def test_sniff_stops_after_its_bounded_scan_window(tmp_path):
+    path = tmp_path / "long-invalid.jsonl"
+    path.write_text("\n{}\n" * 51, encoding="utf-8")
+    assert reasonix.sniff(path) is False
+
+
+def test_sniff_treats_an_unreadable_file_as_not_a_match(tmp_path, monkeypatch):
+    path = tmp_path / "unreadable.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    original_open = Path.open
+
+    def fail_open(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("forced sniff denial")
+        return original_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    assert reasonix.sniff(path) is False
+
+
+def test_parse_skips_blank_malformed_and_non_chat_records(tmp_path):
+    path = tmp_path / "partial.jsonl"
+    path.write_text(
+        "\nnot json\n"
+        + json.dumps({"role": "user", "content": "kept"})
+        + "\n",
+        encoding="utf-8",
+    )
+    events = reasonix.parse(path, str(path), ExtractConfig())
+    assert [event.text for event in events] == ["kept"]
+
+
+def test_parse_rejects_an_inline_event_snapshot(tmp_path):
+    path = tmp_path / "primary.jsonl"
+    path.write_text(
+        json.dumps({"role": "user", "content": "before"})
+        + "\n"
+        + json.dumps({"type": "replace", "messages": []})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="events snapshot"):
+        reasonix.parse(path, str(path), ExtractConfig())
+
+
+def test_parse_reports_an_unreadable_primary_file(tmp_path, monkeypatch):
+    path = tmp_path / "unreadable.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    original_open = Path.open
+
+    def fail_open(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("forced parse denial")
+        return original_open(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(ValueError, match="could not read Reasonix session"):
+        reasonix.parse(path, str(path), ExtractConfig())
+
+
 def test_report_and_discovery_do_not_claim_unsupported_reasonix_surfaces(
     tmp_path, capsys
 ):

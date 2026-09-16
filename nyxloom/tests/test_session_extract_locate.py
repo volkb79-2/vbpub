@@ -331,6 +331,24 @@ def test_two_reasonix_projects_with_the_same_session_id_are_ambiguous(home):
     assert str(first) in message and str(second) in message
 
 
+def test_reasonix_scan_ignores_a_non_directory_project_entry(home):
+    root = home / ".reasonix" / "projects"
+    root.mkdir(parents=True)
+    (root / "not-a-project").write_text("not a directory", encoding="utf-8")
+    assert locate._reasonix_matches(_REASONIX_SID) == []
+
+
+def test_reasonix_scan_ignores_nonmatching_subagent_files(home):
+    directory = (
+        home / ".reasonix" / "projects" / "-workspaces-vbpub" / "sessions" / "subagents"
+    )
+    directory.mkdir(parents=True)
+    (directory / "other-session.jsonl").write_text("{}\n", encoding="utf-8")
+    wanted = directory / f"{_REASONIX_SID}.jsonl"
+    wanted.write_text("{}\n", encoding="utf-8")
+    assert locate._reasonix_matches(_REASONIX_SID) == [wanted]
+
+
 def test_xdg_data_home_equal_to_the_default_is_not_searched_twice(home, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     assert locate._opencode_db_candidates() == [

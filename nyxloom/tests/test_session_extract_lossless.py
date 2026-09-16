@@ -128,6 +128,33 @@ def test_unknown_until_marker_raises(tmp_path):
         lossless.dump_claude_code(fp, until_marker="does-not-exist")
 
 
+def test_render_dump_omits_footer_without_a_last_marker():
+    assert lossless._render_dump([], "reasonix", None) == "\n"
+
+
+def test_reasonix_lossless_skips_blank_and_malformed_lines_before_rejecting_snapshot(
+    tmp_path,
+):
+    fp = tmp_path / "reasonix.jsonl"
+    fp.write_text(
+        "\nnot json\n"
+        + json.dumps({"role": "user", "content": "before"})
+        + "\n"
+        + json.dumps({"type": "append", "messages": []})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="events snapshot"):
+        lossless.dump_reasonix(fp)
+
+
+def test_reasonix_lossless_rejects_an_events_companion_path(tmp_path):
+    fp = tmp_path / "session.events.jsonl"
+    fp.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="events snapshot"):
+        lossless.dump_reasonix(fp)
+
+
 def test_skips_blank_and_malformed_lines(tmp_path):
     fp = tmp_path / "session.jsonl"
     fp.write_text(
