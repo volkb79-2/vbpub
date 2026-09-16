@@ -8957,12 +8957,14 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                         proc.terminate()
                         proc.wait()
                         break
-                    if daemon_watch.idle():
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
                         daemon_watch.close()
                         if watch_restarts == 0:
                             watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
                             print(f"run-gate: WARNING profiling: daemon watch "
-                                  f"for lane {lane_name!r} went idle; "
+                                  f"for lane {lane_name!r} {state}; "
                                   "reattaching once", file=sys.stderr,
                                   flush=True)
                             daemon_watch = profiler_state["client"].watch(
