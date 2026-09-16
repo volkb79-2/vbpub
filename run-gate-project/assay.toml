@@ -1,9 +1,6 @@
 # run-gate-project's assay lane declarations (RG-55/D-11). Consumed by
-# run-gate.toml's [lanes.assay-r1]/[lanes.assay-r2] via a pinned zipapp
-# (tools/assay/assay-6.1.1.pyz) — a downstream consumer, not an in-repo one
-# (assay/docs/INTERNAL-CONSUMERS.md's distinction; cmru/assay.toml is the
-# reference shape for a pinned-pyz consumer, scripts/cgroup-profiler/
-# assay.toml for a live-worktree one).
+# run-gate.toml's [lanes.assay-r1]/[lanes.assay-r2] via the selected worktree's
+# assay/ source — an in-repo consumer following assay/docs/INTERNAL-CONSUMERS.md.
 #
 # RW-8 (controller ruling, run-gate-WAVE-RG55-CONTROLLER-LOG.md): both lanes
 # below judge `source_roots = ["."]` with `base_source = "request"` — the

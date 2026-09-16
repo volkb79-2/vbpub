@@ -83,13 +83,8 @@ artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 kind = "assay"
 assay_lane = "r1"                   # -> assay.toml [lanes.r1]
 environment = "bare-host"
-assay_command = ["python3", "tools/assay/assay-6.1.1.pyz"]
 clean_tree = true
 budget = "30m"
-
-[lanes.assay-r1.pins.assay]
-version = "6.1.1"
-sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 
 # Mutation (R2). Bare-host and serial (HOST LOAD §6: 8 cores shared with a
 # production game server, jobs = 1 in assay.toml's own [lanes.r2.judge.
@@ -112,13 +107,8 @@ sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 kind = "assay"
 assay_lane = "r2"                   # -> assay.toml [lanes.r2]
 environment = "bare-host"
-assay_command = ["python3", "tools/assay/assay-6.1.1.pyz"]
 clean_tree = true
 budget = "4h"
-
-[lanes.assay-r2.pins.assay]
-version = "6.1.1"
-sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 
 # R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, one
 # canary today — median-not-mean on `duration_stats`, the RG-27 trap). A
