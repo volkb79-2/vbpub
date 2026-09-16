@@ -145,13 +145,19 @@ test guests:
 
 These are command-line tools, not a VM service: MDT does not install or start
 libvirt, a system-wide QEMU daemon, or a guest agent. Package installation does
-not grant a container access to KVM or TAP networking. A VM runner must be
-created with the host's explicit `/dev/kvm` and networking devices (or use slow
-software emulation), and it must be placed in the host's governed slice. Keep
-the VM image and firmware scratch files on the runner's disposable storage.
-The existing `debian-install-v2` privileged container remains the right shape
-for loop-device/partition tests; use a VM only when the test contract includes
-boot, reboot, firmware, or kernel behavior.
+not grant a container access to KVM or TAP networking. The default test shape is
+an unprivileged runner using QEMU's TCG software emulation and user-mode
+networking; it needs neither `/dev/kvm` nor `/dev/net/tun`. If a runner opts in
+to KVM or TAP, it must request those host devices explicitly and remain in the
+host's governed slice. Keep VM images and firmware scratch files on disposable
+storage.
+
+Do not use a privileged container as the isolation boundary for loop devices,
+partition devices, `mkswap`, `swapon`, `swapoff`, initramfs, reboot, or other
+host-kernel state. Docker containers share the host kernel; loop and swap are
+not container-namespaced. Put those tests in a QEMU guest, whose own kernel
+owns its loop devices and swap. A privileged container is suitable only for
+tests that do not create/access such devices or mutate global kernel state.
 
 ### AI CLI tools
 

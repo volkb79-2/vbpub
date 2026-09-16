@@ -77,6 +77,12 @@ class ReleaseFlowTests(unittest.TestCase):
         readme = " ".join((ROOT / "README.md").read_text().split())
         self.assertIn("Package installation does not grant a container access to KVM", readme)
         self.assertIn("does not install or start libvirt", readme)
+        self.assertIn("loop and swap are not container-namespaced", readme)
+        self.assertIn("Put those tests in a QEMU guest", readme)
+        consumers = " ".join((ROOT / "docs/CONSUMERS.md").read_text().split())
+        self.assertIn("Use a VM for loop devices, partition devices", consumers)
+        self.assertNotIn("--device=/dev/kvm", consumers)
+        self.assertNotIn("--device=/dev/net/tun", consumers)
 
     def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
