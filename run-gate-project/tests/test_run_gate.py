@@ -1449,7 +1449,7 @@ def test_no_stdlib_violations():
                # threading: RG-41's LogStreamWatch pumps a container command
                # lane's stdout on a background thread so the main poll loop
                # can ask, non-blockingly, how long it has been silent.
-               "threading",
+                   "threading", "queue", "socket",
                # math: RG-55 ResourceAccumulator's nearest-rank percentile
                # (contract Sec 7's own ceil(p/100*N) formula, math.ceil).
                "math",
@@ -11085,6 +11085,60 @@ class TestProgressWatch:
         w.clock.advance(100000)
         assert w.watch.poll() is None              # behaviour unchanged
 
+    def test_auto_bound_uses_the_stream_plan_cadence(self, tmp_path, capsys):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-auto.jsonl"
+        write_progress(path,
+                       {"event": "plan",
+                        "expect_next_event_within_s": 120.0},
+                       candidate(1))
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(359)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 360s" in stalled
+
+    def test_auto_bound_arms_from_plan_before_first_candidate(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-auto-plan.jsonl"
+        write_progress(path, {"event": "plan",
+                              "expect_next_event_within_s": 100.0})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last event seen: the plan event" in stalled
+
+    def test_auto_bound_pauses_for_high_host_memory_psi(self, tmp_path):
+        clock = FakeClock()
+        psi = [0.0]
+        path = tmp_path / ".assay" / "progress-auto-psi.jsonl"
+        write_progress(path,
+                       {"event": "plan",
+                        "expect_next_event_within_s": 100.0},
+                       candidate(1))
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True,
+            pressure_reader=lambda: psi[0])
+        assert watch.poll() is None
+        clock.advance(299)
+        psi[0] = 6.0
+        assert watch.poll() is None
+        clock.advance(600)
+        assert watch.poll() is None
+        psi[0] = 0.0
+        assert watch.poll() is None
+        clock.advance(300)
+        assert watch.poll() is not None
+
     def test_movement_resets_the_stall_clock(self, tmp_path, capsys):
         w = self._watch(tmp_path, stall=900)
         write_progress(w.path, candidate(37))
@@ -13545,6 +13599,173 @@ class TestProfilerClient:
         assert doc is None
         assert "path absent" in reason
 
+    def test_socket_watch_stream_is_single_reader_and_preserves_events(
+            self, tmp_path):
+        response = (
+            '{"event":"reading","reading":{"memory_current_bytes":7}}\n'
+            '{"event":"verdict","watch":{"verdict":"reported",'
+            '"reason":"brief gap"}}\n')
+        path, received, thread = self._socket_round_trip(tmp_path, response)
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="socket", socket_path=str(path))
+        watch = client.watch("s-test", watch_interval=2)
+        thread.join(timeout=2)
+        watch._thread.join(timeout=2)
+        events = watch.drain()
+        assert [kind for kind, _ in events] == ["event", "event", "end"]
+        assert events[0][1]["event"] == "reading"
+        assert events[1][1]["watch"]["verdict"] == "reported"
+        wire = json.loads(received[0])
+        assert wire == {"verb": "watch",
+                        "args": {"session": "s-test", "watch_interval": 2},
+                        "contract": 1}
+        watch.close()
+
+    def test_exec_watch_reader_death_is_a_profile_warning(self, monkeypatch):
+        class Proc:
+            stdout = []
+
+            def wait(self):
+                return 17
+
+            def poll(self):
+                return 17
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: Proc())
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
+        watch = client.watch("s-test", watch_interval=2)
+        watch._thread.join(timeout=2)
+        events = watch.drain()
+        assert ("error", "watch command exited 17") in events
+        assert events[-1] == ("end", None)
+        watch.close()
+
+    def test_watch_consumer_records_reading_and_killed_verdict(self, monkeypatch):
+        class Stream:
+            def drain(self):
+                return [
+                    ("error", "planted reader warning"),
+                    ("event", {"event": "reading", "reading": {"n": 1}}),
+                    ("event", {"event": "verdict", "watch": {
+                        "verdict": "killed", "reason": "idle"}}),
+                ]
+
+        writes = []
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            lambda *args: writes.append(args[-1]))
+        record = {"_inflight": {}}
+        profiler = {}
+        reason = run_gate.consume_profiler_watch(
+            Stream(), profiler, "suite", Path("/project"), Path("/tree"),
+            record)
+        assert reason == "idle"
+        assert profiler["warning"] == "daemon watch failed: planted reader warning"
+        assert record["watch"]["event"] == "verdict"
+        assert record["_inflight"]["watch"]["watch"]["verdict"] == "killed"
+        assert writes
+
+    def test_placement_prefers_lane_declarations_and_host_ceiling(self):
+        lane = {"resources": {"memory": "512M", "memory_max": "2G",
+                               "cpu_weight": 250}}
+        host = {"host": {"gates_slice": {"memory_max_bytes": 999}}}
+        plan = run_gate.profile_placement_plan(lane, "suite", Path("/p"), host)
+        assert plan["place"] is True
+        assert plan["memory_high"] == 512 * 1024 ** 2
+        assert plan["memory_max"] == 2 * 1024 ** 3
+        assert plan["cpu_weight"] == 250
+        assert plan["source"] == "declared"
+
+    def test_placement_derives_one_and_a_half_times_manifest_median(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate, "load_footprint_manifest",
+            lambda project: {"lanes": {"suite": {
+                "memory_peak_bytes": {"median": 1000}}}})
+        lane = {"resources": {}}
+        host = {"host": {"gates_slice": {"memory_max_bytes": 5000}}}
+        plan = run_gate.profile_placement_plan(lane, "suite", Path("/p"), host)
+        assert plan["request"] == 1500
+        assert plan["memory_max"] == 3000
+        assert plan["source"] == "derived"
+
+    def test_placement_without_declaration_or_manifest_is_not_requested(
+            self, monkeypatch):
+        monkeypatch.setattr(run_gate, "load_footprint_manifest",
+                            lambda project: None)
+        plan = run_gate.profile_placement_plan(
+            {"resources": {}}, "suite", Path("/p"), None)
+        assert plan["place"] is False
+        assert plan["reason"] == "no request"
+
+    def test_admission_accepts_immediately_under_ninety_percent(self):
+        class Client:
+            def host(self):
+                raise AssertionError("an admitted lane must not poll")
+        placement = {"request": 1 * 1024 ** 2}
+        host = {"host": {"gates_slice": {
+            "present": True, "memory_current_bytes": 1 * 1024 ** 2,
+            "memory_max_bytes": 10 * 1024 ** 2}}}
+        result = run_gate.profile_admission(
+            Client(), "suite", placement, "10m", host)
+        assert result["state"] == "admitted"
+
+    def test_admission_waits_then_accepts_when_host_headroom_clears(self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def host(self):
+                self.calls += 1
+                return {"host": {"gates_slice": {
+                    "present": True, "memory_current_bytes": 1 * 1024 ** 2,
+                    "memory_max_bytes": 10 * 1024 ** 2}}}, None
+        now = [0.0]
+        sleeps = []
+        client = Client()
+        host = {"host": {"gates_slice": {
+            "present": True, "memory_current_bytes": 9 * 1024 ** 2,
+            "memory_max_bytes": 10 * 1024 ** 2}}}
+        result = run_gate.profile_admission(
+            client, "suite", {"request": 1 * 1024 ** 2}, "10m", host,
+            clock=lambda: now[0],
+            sleeper=lambda seconds: (sleeps.append(seconds),
+                                     now.__setitem__(0, now[0] + seconds)))
+        assert result["state"] == "admitted-after-wait"
+        assert client.calls == 1
+        assert sleeps == [30.0]
+
+    def test_admission_bound_proceeds_with_one_warning(self, capsys):
+        class Client:
+            def host(self):
+                return {"host": {"gates_slice": {
+                    "present": True, "memory_current_bytes": 9 * 1024 ** 2,
+                    "memory_max_bytes": 10 * 1024 ** 2}}}, None
+        now = [0.0]
+        result = run_gate.profile_admission(
+            Client(), "suite", {"request": 1 * 1024 ** 2}, "1s",
+            {"host": {"gates_slice": {
+                "present": True, "memory_current_bytes": 9 * 1024 ** 2,
+                "memory_max_bytes": 10 * 1024 ** 2}}},
+            clock=lambda: now[0],
+            sleeper=lambda seconds: now.__setitem__(0, now[0] + seconds))
+        assert result["state"] == "proceeded-after-bound"
+        assert "proceeding" in capsys.readouterr().err
+
+    def test_admission_dry_run_never_sleeps(self):
+        class Client:
+            def host(self):
+                raise AssertionError("dry-run admission must not poll")
+        host = {"host": {"gates_slice": {
+            "present": True, "memory_current_bytes": 9 * 1024 ** 2,
+            "memory_max_bytes": 10 * 1024 ** 2}}}
+        result = run_gate.profile_admission(
+            Client(), "suite", {"request": 1 * 1024 ** 2}, "10m", host,
+            dry_run=True, sleeper=lambda _: pytest.fail("slept"))
+        assert result["state"] == "would-wait"
+
     def test_host_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "host-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, host=(golden, None, None))
@@ -14665,7 +14886,9 @@ class TestProfilingOrchestration:
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         start = (RG55_FIXTURES / "start-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
-                           start=(start, None, None))
+                           start=(start, None, None),
+                           host=((RG55_FIXTURES / "host-v1.json").read_text(),
+                                 None, None))
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
         state = run_gate.start_lane_profiling(
@@ -15207,7 +15430,9 @@ class TestBareHostProfilingWiring:
         start = (RG55_FIXTURES / "start-v1.json").read_text()
         stop = (RG55_FIXTURES / "stop-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
-                           start=(start, None, None), stop=(stop, None, None))
+                           start=(start, None, None), stop=(stop, None, None),
+                           host=((RG55_FIXTURES / "host-v1.json").read_text(),
+                                 None, None))
         monkeypatch.setattr(run_gate, "resolve_self_container_id",
                             lambda docker: (RG55_CONTAINER_ID, None))
         assert run_gate.main(["suite"]) == 0
@@ -15266,12 +15491,15 @@ class TestBareHostProfilingWiring:
         start = (RG55_FIXTURES / "start-v1.json").read_text()
         stop = (RG55_FIXTURES / "stop-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
-                           start=(start, None, None), stop=(stop, None, None))
+                           start=(start, None, None), stop=(stop, None, None),
+                           host=((RG55_FIXTURES / "host-v1.json").read_text(),
+                                 None, None))
         monkeypatch.setattr(run_gate, "resolve_self_container_id",
                             lambda docker: (RG55_CONTAINER_ID, None))
         monkeypatch.setattr(run_gate, "generate_profile_token",
                             lambda: "deadbeefcafebabedeadbeefcafebabe")
         real_run = subprocess.run
+        real_popen = subprocess.Popen
         captured_env = {}
 
         def spy(cmd, **kw):
@@ -15279,6 +15507,11 @@ class TestBareHostProfilingWiring:
                 captured_env["env"] = kw.get("env")
             return real_run(cmd, **kw)
         monkeypatch.setattr(run_gate.subprocess, "run", spy)
+        def popen_spy(cmd, **kw):
+            if cmd == ["true"]:
+                captured_env["env"] = kw.get("env")
+            return real_popen(cmd, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "Popen", popen_spy)
         assert run_gate.main(["suite"]) == 0
         out = capsys.readouterr().out
         assert (f"profile session s-20260912T101500Z-9f01 is "
