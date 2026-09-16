@@ -3006,3 +3006,16 @@ state. Its exact container is `run-gate-vbpub-r2-2071035-1789570162`; it is
 running under `dev-background.slice` with `NanoCpus=3000000000`. P1 remains
 the other active mutation lane. No P6 tree mutation is permitted until this
 run reaches a terminal verdict.
+
+### RW-243 — 2026-09-16 14:50:56Z — source-backed assay integration preview
+
+A read-only `git merge-tree` preview of P5 `26e6f344` with the operator's
+assay-source-backed branch `37d7adcc` (common base
+`0c0d55e42f2589be6378706a7f29bf988f5f2bec`) reports real content conflicts in
+`run-gate-project/run-gate.py`, `SPEC.md`, and `CHANGES.md`; the other
+run-gate consumer documents merge mechanically. The source branch also owns
+protected `nyxloom/` and other estate-wide consumer changes, so it must not be
+merged wholesale by this controller. After assay 6.3.0 is published, reconcile
+the source-backed consumer commits into the final P5 tree, preserving the P5
+implementation and its evidence, then rerun all affected gates on the final
+quiet tree.
