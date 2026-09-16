@@ -5,6 +5,8 @@ windowing rules themselves are pinned down precisely.
 
 from __future__ import annotations
 
+import pytest
+
 from nyxloom.session_extract.config import ExtractConfig
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.select import select
@@ -350,6 +352,15 @@ def test_decide_drops_an_unknown_event_kind():
 
     malformed = NormalizedEvent(0, "unknown", _TS, "unknown-kind", "metadata")
     assert not decide(malformed, ExtractConfig()).keep
+
+
+def test_event_decision_is_immutable():
+    from dataclasses import FrozenInstanceError
+    from nyxloom.session_extract.select import EventDecision
+
+    decision = EventDecision(keep=True)
+    with pytest.raises(FrozenInstanceError):
+        decision.keep = False
 
 
 def test_decide_drops_an_api_error_before_any_rescue_applies():

@@ -245,3 +245,28 @@ def test_thinking_blocks_are_dumped_from_their_own_field(tmp_path):
     out = lossless.dump_claude_code(fp)
     assert "the real reasoning text" in out
     assert "ASSISTANT thinking]===" in out
+
+
+def test_reasonix_lossless_does_not_accept_non_string_reasoning_content():
+    from nyxloom.session_extract.lossless import reasonix_blocks
+
+    blocks = reasonix_blocks({
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": {"private": "not prose"},
+    }, "line0")
+    assert [block.text for block in blocks] == ["answer"]
+
+
+def test_lossless_dumper_skips_a_json_record_that_is_not_a_mapping(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(
+        "[]\n"
+        + json.dumps({
+            "type": "assistant", "uuid": "a1", "timestamp": "t",
+            "message": {"role": "assistant", "content": "kept"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    out = lossless.dump_claude_code(fp)
+    assert "kept" in out

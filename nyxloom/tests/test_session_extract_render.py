@@ -483,6 +483,18 @@ def test_highlight_colorless_mode_returns_source_unchanged():
     assert highlight_markdown(source, color=False) == source
 
 
+def test_highlight_defaults_to_colored_markdown_source():
+    from nyxloom.session_extract.highlight import highlight_markdown
+
+    assert "\x1b[" in highlight_markdown("**bold**")
+
+
+def test_render_markdown_defaults_to_colored_terminal_output():
+    from nyxloom.session_extract.render_markdown import render_markdown
+
+    assert "\x1b[" in render_markdown("**bold**", width=40)
+
+
 def test_highlight_handles_empty_source_in_color_mode():
     from nyxloom.session_extract.highlight import highlight_markdown
 
