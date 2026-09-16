@@ -2946,3 +2946,13 @@ gate must consume RG-55's profiler registry and contract, not invent a second
 profiling or admission vocabulary. This documentation close-out is separate
 from the later v8 implementation work and does not touch the protected CIU
 round-4 files.
+
+### RW-237 — 2026-09-16 14:31:23Z — P5 defensive coverage checkpoint
+
+The P5 worktree's changed-line coverage additions are committed as
+`0f40eca7` on the exact P5 branch. The focused placement/admission regression
+set passes 44 tests. A full P5 selftest was launched asynchronously against
+that tree with an explicit terminal marker at
+`/tmp/rg55-p5-selftest-coverage2.log`; its result is not inferred from the
+launcher. No mutation lane was restarted or altered, and the operator-owned
+assay source-backed worktree remains untouched.
