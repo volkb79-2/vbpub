@@ -176,6 +176,23 @@ def test_extract_default_run_produces_delimited_text(tmp_path, capsys):
     assert "nyxloom-extract: format=claude-code" in out
 
 
+def test_extract_with_explicit_format_does_not_probe_for_incremental_state(
+    tmp_path, capsys, monkeypatch,
+):
+    # Format detection is needed only when --since-file or --follow asks for
+    # adapter-specific state.  An explicit format on an ordinary one-shot
+    # extraction must not call detect() (and must remain usable even if the
+    # detector cannot classify this path).
+    fp = _write_claude_code_fixture(tmp_path)
+
+    def _unexpected_detect(_path):
+        raise AssertionError("ordinary explicit-format extraction must not detect")
+
+    monkeypatch.setattr("nyxloom.session_extract.adapters.detect", _unexpected_detect)
+    assert cli.main(["extract", str(fp), "--format", "claude-code"]) == 0
+    assert "please look into this" in capsys.readouterr().out
+
+
 def _write_subagent_fixture(tmp_path: Path) -> Path:
     # Mirrors a real dispatched Agent-tool subagent's own transcript: every
     # record carries isSidechain=true (operator-verified against a live one).
