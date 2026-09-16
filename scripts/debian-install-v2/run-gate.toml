@@ -24,14 +24,14 @@
 # guidance: "adopt R2 deliberately... expand only after observing real
 # runs"). Fold it back into [lanes.gate] once real coverage closes the gap.
 #
-# environment = "tester-unified", deliberately, every lane (run-gate RG-43):
-# as of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE),
-# not bare execution, and that image has no pytest at all. tester-unified
-# (the shared [environments.tester-unified] in the repo-root run-gate.toml
-# — already built, already what every vbpub-internal project's own lanes
-# use) DOES carry test tooling, but in its own dedicated venv at
-# /opt/tester-venv/, not on the default PATH/python3 — every argv below
-# that needs pytest/pip/assay says so explicitly
+# Ordinary lanes use environment = "tester-unified", deliberately
+# (run-gate RG-43): as of rev 36, plain "host" is a CONTAINER default
+# (DEFAULT_HOST_IMAGE), not bare execution, and that image has no pytest at
+# all. tester-unified (the shared [environments.tester-unified] in the
+# repo-root run-gate.toml — already built, already what every vbpub-internal
+# project's ordinary lanes use) DOES carry test tooling, but in its own
+# dedicated venv at /opt/tester-venv/, not on the default PATH/python3 — every
+# argv below that needs pytest/pip/assay says so explicitly
 # (/opt/tester-venv/bin/python3, matching assay/docs/INTERNAL-CONSUMERS.md's
 # own documented mechanism for exactly this). A first pass at this fix
 # used environment = "bare-host" instead (running directly on the invoking

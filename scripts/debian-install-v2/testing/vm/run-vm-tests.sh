@@ -21,7 +21,7 @@ trap cleanup EXIT
 # The guest is the only place where this opt-in is ever set. The test itself
 # also requires systemd-detect-virt --vm to report QEMU/KVM, so a copied test
 # command cannot accidentally activate swap on a bare host or Docker kernel.
-"$HERE/run-vm-harness.sh" ssh "$RUN" -- bash -lc \
+"$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        python3 python3-pytest python3-pytest-cov util-linux fdisk udev systemd'
@@ -31,7 +31,7 @@ trap cleanup EXIT
 # worktree path here because the Docker daemon's namespace is different.
 "$HERE/run-vm-harness.sh" copy "$RUN" "$RUNNER_SRC" "$GUEST_SRC"
 
-"$HERE/run-vm-harness.sh" ssh "$RUN" -- bash -lc \
+"$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     "cd '$GUEST_SRC' && sudo env VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1 \
        PYTHONPATH='$GUEST_SRC' python3 -m pytest \
        debian_install_v2/tests/test_inuse_partition_editor.py \
