@@ -126,7 +126,7 @@ cmd_prepare_base() {
             log "staging $downloaded -> $dest (copy, not symlink: base images are never written to, but a copy means the original download cache can be independently re-verified/refreshed without disturbing an in-use base)"
             cp "$downloaded" "$dest.tmp"
             mv "$dest.tmp" "$dest"
-            log "case-b base ready: $dest (root fills the disk -- matches a real Netcup rootPartitionFullDiskSize=false... actually true-shape deploy; this is intentionally the UNMODIFIED cloud image)"
+            log "case-b base ready: $dest (the unmodified cloud image models a root partition that fills its disk, the Case-B starting shape)"
             ;;
         case-a)
             die "case-a base prep (small root + disabled-growpart + resized-up free tail) is not yet implemented in this script -- see the design discussion in project memory (resume-2026-09-08-netcup-debian-install-v2-livetest.md) for the exact recipe: boot small with growpart enabled, disable growpart+resize_rootfs, qemu-img resize the qcow2 up, sgdisk -e to relocate the backup GPT header, then flatten with qemu-img convert. Build case-b first and get the harness itself proven before adding this."
