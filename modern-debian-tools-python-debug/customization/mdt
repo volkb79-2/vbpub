@@ -35,14 +35,14 @@
 # configured value). Only a process in the host's own init cgroup namespace
 # can restore it, never anything inside a container — so this still nsenters
 # into the host to run the fix, same as host-exec. Mirrors
-# host-setup/scripts/mdt-apply-dev-caps.sh's own check exactly (same flags,
+# host-setup/scripts/mdt-dev-governance-reconcile.sh's own check exactly (same flags,
 # same remount command) so there is one definition of "what's required",
 # even though that copy runs directly on the host via systemd on a 5-minute
 # timer and this one runs on demand from inside a devcontainer.
 #
 # host-exec/host-shell always end with an automatic `mdt doctor` pass rather
 # than waiting up to 5 minutes for the host's own timer sweep: per
-# mdt-apply-dev-caps.sh's own comment, an external --privileged/
+# mdt-dev-governance-reconcile.sh's own comment, an external --privileged/
 # --cgroupns=host container touching the host mount namespace is the most
 # likely trigger for the flags going missing in the first place — and that
 # is exactly this command's own mechanism, so the exposure window it can

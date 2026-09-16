@@ -157,7 +157,7 @@ only a provisioning-and-policy one.
      concrete decision at implementation time: literal `ConditionPathExists`
      against a sentinel written only when the operator opts in, OR
      `install.sh` skips installing the unit file entirely when the gate is
-     empty (simpler, matches how `mdt-dev-cap-watcher.py` is only installed
+     empty (simpler, matches how `mdt-container-memory-inotify-watcher.py` is only installed
      `if [ "$INOTIFY_OK" = 1 ]`, `install.sh:227-229`) — **recommend the
      latter**, it's the established idiom in this exact file already).
    - `ExecStart` sequence: switch the target device's elevator to `none`
@@ -203,7 +203,7 @@ only a provisioning-and-policy one.
 
 ### Out of scope (explicitly, so a future reader doesn't assume it's covered)
 
-- Any change to `DEV_IO_CAP_PCT`/`WATCHER_IO_CAP_PCT` or `mdt-apply-dev-caps.sh`'s
+- Any change to `DEV_IO_CAP_PCT`/`WATCHER_IO_CAP_PCT` or `mdt-dev-governance-reconcile.sh`'s
   `io.max` logic — D1/finding 4.
 - Auto-running `iocost-calibrate.sh` from host-setup — D6.
 - A formula that derives `rlat`/`wlat` from the percentile table — D4.

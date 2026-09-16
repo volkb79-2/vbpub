@@ -629,7 +629,7 @@ width being used, not a fixed 80 with a 120 ceiling.
 There is no single oracle for "reads better", so the check performed instead
 was a **fact-preservation audit**: every distinct technical claim in the
 original prose was enumerated from the pre-fix file and located in the new one.
-**Correction (post-review fix-round):** claim #5 below (`mdt-apply-dev-caps.sh`
+**Correction (post-review fix-round):** claim #5 below (`mdt-dev-governance-reconcile.sh`
 falls back to the tight `DEV_STATIC_*` caps) did NOT actually survive as
 written — the round-2 rewrite kept the fact (statics remain in force until
 measured) but silently dropped the script's name, so the reader lost the
@@ -642,7 +642,7 @@ IO device (1-3): the static caps are `dev.slice`'s `IOReadBandwidthMax` etc.;
 they are the boot-window fallback until the baseline runs; auto-discovery is
 `findmnt` against `/var/lib/docker` falling back to `/`; nothing discovered ⇒
 static caps omitted. IO baseline (4-7): cache path; 30-day freshness; until
-measured, `mdt-apply-dev-caps.sh` falls back to the tight `DEV_STATIC_*` caps;
+measured, `mdt-dev-governance-reconcile.sh` falls back to the tight `DEV_STATIC_*` caps;
 ~4 min, saturates the disk, quiet window, the script's own 5s Ctrl-C warning;
 how to run it later; nonzero exit ⇒ statics remain in force. IO cap
 percentages (8-10): percentages of the *measured* ceilings; the 60-80 band with
@@ -677,7 +677,7 @@ length, ordering, and explicitness about *why*.
 
 One point of care worth flagging: the plan's item-4 examples list "the
 `--replace` rotation model" among the facts to preserve. No `--replace` prose
-exists anywhere in the wizard — the nearest thing is `install.sh`'s `--force`
+exists anywhere in the wizard — the nearest thing is `install.sh`'s `--reset`
 backup-and-reseed, which the wizard never described. Nothing to preserve, and
 nothing was removed.
 

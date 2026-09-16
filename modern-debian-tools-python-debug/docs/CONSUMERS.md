@@ -16,18 +16,16 @@ sudo mdt-host-check.sh
 On a fresh host, use the wizard: a plain first run refuses the incomplete
 example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a
 complete, host-specific config already present. With an existing config,
-`--wizard` preserves its values as defaults; add `--force` only to discard
+`--wizard` preserves its values as defaults; add `--reset` only to discard
 those values as defaults and start from the current repository example. In
 both cases replacement/backup happens only after the generated candidate
 passes strict validation. Deleting the old file first loses those defaults and
-does not create the automatic backup. The wizard also migrates the former
-watcher names (`SWEEP_*`, `TESTRUNNER_IMAGE_PATTERNS`,
-`BUILDKIT_NAME_PATTERNS`, and `DEVCONTAINER_NAME_PATTERNS`) to their current
-`WATCHER_*` names when it opens an existing config, preserving tuned values
-during an upgrade.
+does not create the automatic backup. The watcher configuration uses the
+current `WATCHER_*` names shown in `host-setup.env.example`; old names are not
+aliases for the new clean configuration.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
-configured `IO_BASELINE_ENV` cache and `IO_BASELINE_TESTFILE`, and Docker mount
+configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
 facts. It walks `dev.slice`, the guaranteed sibling,
 `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and
 `dev-buildkitd.slice` in that order. For each it asks `MemoryMin`, `MemoryLow`,
@@ -43,20 +41,30 @@ zswap controls. Its memory policy is:
   re-prompted; sibling `MemoryLow`/`MemoryHigh` totals above the parent are
   advisory only and do not block an intentional overlapping policy.
 
-Empty means the operator explicitly chose no directive; it is not an invented
-fallback. Type `-` to omit any optional memory directive, or to select derived
-CPUQuota/MemorySwapMax during an upgrade; Enter accepts the shown value,
-including an existing explicit CPU/swap value. MemoryMax is RAM only;
-MemorySwapMax is swap only. A baseline
-benchmark uses the official kernel `io.cost` matrix against the persistent
+Enter accepts the shown default. For CPUQuota/MemorySwapMax, `auto` derives at
+install time and `-` omits the directive (unlimited/default); for optional
+memory fields, `-` also omits the directive. MemoryMax is RAM only;
+MemorySwapMax is swap only. A benchmark uses the official kernel `io.cost` matrix against the persistent
 `IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
 than by age. It saturates the disk for about 12 minutes at default settings,
-so run it in a quiet window. The baseline run is offered only when `fio` and
-`pv` are already installed; otherwise the installer installs them after
-validation and you run the benchmark later.
+so run it in a quiet window. `--with-baseline` installs missing `fio`/`pv`
+before the wizard, asks for confirmation near the start, and runs one
+background measurement while the remaining questions continue. Without that
+flag, the wizard offers the measurement only when both tools are already
+installed; otherwise the candidate is installed first and you can run the
+benchmark later.
 
-The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the three
-watcher match-pattern fields. `CGROUP2_FLAGS=fix` lets the periodic host
+After that run, the wizard asks for four explicit static IO fallback values:
+`DEV_STATIC_RIOPS`, `DEV_STATIC_WIOPS`, `DEV_STATIC_RBW`, and
+`DEV_STATIC_WBW`. They are hard caps on the aggregate `dev.slice` root and
+apply at boot or whenever no identity-verified benchmark results are
+available. A successful measurement temporarily replaces them with
+`DEV_IO_CAP_PCT` percent of the measured ceilings. Without current results,
+containers receive no guessed per-container IO cap.
+
+The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the one
+out-of-tree Buildx name-pattern field. Correctly placed containers are selected
+by their cgroup path, not a pattern. `CGROUP2_FLAGS=fix` lets the periodic host
 service restore the `memory_recursiveprot` mount flag; `warn` only reports a
 missing flag. The interval is a single systemd duration such as `5min`; match
 patterns are space-separated shell globs. The wizard also asks for

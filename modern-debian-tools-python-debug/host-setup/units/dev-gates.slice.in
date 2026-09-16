@@ -41,7 +41,7 @@ IOWeight=@DEV_GATES_IO_WEIGHT@
 CPUQuota=@DEV_GATES_CPU_QUOTA@
 # Absolute IOPS sub-ceiling too, tighter than the shared dev.slice IO
 # ceiling this tier otherwise inherits — RUNTIME-ONLY (not a
-# static directive here): mdt-apply-dev-caps.sh applies
+# static directive here): mdt-dev-governance-reconcile.sh applies
 # IOReadIOPSMax/IOWriteIOPSMax at DEV_SUBSLICE_IOPS_PCT% (default 60%) of
 # whatever it just derived for dev.slice itself, every time it runs
 # (same reason dev.slice's own IO ceiling is runtime-derived rather than a

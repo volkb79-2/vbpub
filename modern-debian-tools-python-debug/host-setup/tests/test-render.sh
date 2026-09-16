@@ -319,7 +319,7 @@ echo "GOVERNANCE_TEST_EXIT=$GOV_RC"
 pass "focused BuildKit guard identity, policy, builder idempotency, memory constraints, and template invariants"
 
 # --- bash -n + shellcheck (if available) on every shell script this package touches --
-SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-apply-dev-caps.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-dev-cap-watcher.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
+SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
     *.py) python3 -m py_compile "$s" || fail "py_compile failed: $s" ;;
@@ -328,13 +328,13 @@ for s in "${SCRIPTS[@]}"; do
 done
 pass "bash -n / py_compile clean on every touched script"
 
-SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-apply-dev-caps.sh" "$HERE/scripts/check.sh" "${BASH_SOURCE[0]}")
+SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "${BASH_SOURCE[0]}")
 if command -v shellcheck >/dev/null 2>&1; then
   # -S warning: this package leaves a handful of PRE-EXISTING info/style
   # findings untouched (SC2015 "A && B || C", SC2181 "check $? directly") --
   # verified none are on a line this package's diff touches, and fixing
   # decades of pre-existing style debt across install.sh/check.sh/
-  # mdt-apply-dev-caps.sh is out of this package's scope. warning severity
+  # mdt-dev-governance-reconcile.sh is out of this package's scope. warning severity
   # and above is a real correctness bar; style/info is not enforced here.
   shellcheck -S warning "${SHELL_SCRIPTS[@]}" || fail "shellcheck (warning severity) reported an issue -- see above"
   pass "shellcheck (warning severity+) clean on every touched shell script"

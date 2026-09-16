@@ -27,7 +27,7 @@ def load_module(path: Path, name: str):
 WIZARD = load_module(ROOT / "mdt-host-setup-wizard.py", "mdt_wizard_test")
 BASELINE = load_module(ROOT / "scripts/mdt-io-baseline.py", "mdt_baseline_test")
 GUARD = load_module(ROOT / "scripts/mdt-buildkit-guard.py", "mdt_guard_test")
-DEV_WATCHER = load_module(ROOT / "scripts/mdt-dev-cap-watcher.py", "mdt_dev_watcher_test")
+DEV_WATCHER = load_module(ROOT / "scripts/mdt-container-memory-inotify-watcher.py", "mdt_dev_watcher_test")
 BUILDER = load_module(ROOT.parent / "scripts/mdt_buildkit_builder.py", "mdt_builder_test")
 # finalize_container_environment.py has a source-tree fallback import from
 # ``scripts.mdt_buildkit_builder``.  The assay entrypoint runs this test by
@@ -140,12 +140,12 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertIn("existing: 2G", prompt.call_args.args[0])
         self.assertNotIn("<function", prompt.call_args.args[0])
 
-    def test_wizard_optional_none_and_invalid_yes_no_are_visible(self) -> None:
-        with mock.patch.object(WIZARD, "_prompt", return_value="none"):
+    def test_wizard_optional_dash_and_invalid_yes_no_are_visible(self) -> None:
+        with mock.patch.object(WIZARD, "_prompt", side_effect=["none", "-"]):
             self.assertEqual(
                 WIZARD.ask(
                     "optional", "2G", WIZARD.validate_optional_positive_size,
-                    empty_token="none",
+                    empty_token="-", empty_tokens=("-",),
                 ),
                 "",
             )
@@ -153,28 +153,21 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertEqual(
                 WIZARD.ask(
                     "optional", "2G", WIZARD.validate_optional_positive_size,
-                    empty_token="none",
+                    empty_token="-",
                     empty_tokens=("-",),
                 ),
                 "",
             )
+            self.assertEqual(
+                WIZARD.walk_key(
+                    "optional", "OPTIONAL", {"OPTIONAL": "2G"}, {},
+                    validate=WIZARD.validate_optional_positive_size,
+                    allow_empty_token=True,
+                ),
+                "-",
+            )
         with mock.patch.object(WIZARD, "_prompt", side_effect=["maybe", "n"]):
             self.assertFalse(WIZARD.ask_yn("policy", default=True))
-
-    def test_wizard_migrates_legacy_watcher_names(self) -> None:
-        legacy = {
-            "SWEEP_IO_CAP_PCT": "61",
-            "TESTRUNNER_IMAGE_PATTERNS": "*runner*",
-            "BUILDKIT_NAME_PATTERNS": "old_buildkit_*",
-            "DEVCONTAINER_NAME_PATTERNS": "*ide*",
-            "SWEEP_INTERVAL": "7min",
-        }
-        migrated = WIZARD.migrate_legacy_config_keys(legacy)
-        self.assertEqual(migrated["WATCHER_IO_CAP_PCT"], "61")
-        self.assertEqual(migrated["WATCHER_TESTRUNNER_IMAGE_PATTERNS"], "*runner*")
-        self.assertEqual(migrated["WATCHER_BUILDKIT_NAME_PATTERNS"], "old_buildkit_*")
-        self.assertEqual(migrated["WATCHER_DEVCONTAINER_NAME_PATTERNS"], "*ide*")
-        self.assertEqual(migrated["WATCHER_INTERVAL"], "7min")
 
     def test_memory_sibling_sums_warn_but_single_child_ceiling_mismatch_blocks(self) -> None:
         values = {
@@ -222,6 +215,11 @@ class BuildKitGovernanceTests(unittest.TestCase):
         self.assertEqual(values["DEV_INTERACTIVE_MEMORY_HIGH"], "4G")
         self.assertEqual(correction.call_count, 1)
 
+        values["DEV_INTERACTIVE_MEMORY_LOW"] = "-"
+        values["DEV_INTERACTIVE_MEMORY_HIGH"] = "4G"
+        values["DEV_INTERACTIVE_MEMORY_MAX"] = "8G"
+        self.assertFalse(WIZARD.memory_relationship_errors(values))
+
     def test_memory_protection_without_parent_is_reported_but_allowed(self) -> None:
         values = {
             "DEV_MEMORY_LOW": "",
@@ -255,7 +253,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             self.assertIn("host shell", WIZARD.host_context_error(root) or "")
             self.assertIn("host shell", BASELINE.host_context_error(root) or "")
 
-    def test_baseline_cache_requires_complete_iocost_measurement(self) -> None:
+    def test_benchmark_results_require_complete_iocost_measurement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.env"
             path.write_text(
@@ -268,7 +266,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
                 "RBPS=1\nRSEQIOPS=1\nRRANDIOPS=1\nWBPS=1\nWSEQIOPS=1\nWRANDIOPS=1\n"
                 "MEASURED_AT=2000-01-01T00:00:00Z\nMEASURE_METHOD=iocost-coef-gen\n"
             )
-            self.assertTrue(BASELINE.cache_is_valid(path))
+            self.assertTrue(BASELINE.results_are_valid(path))
             target = Path(directory) / "testfile"
             target.write_bytes(b"x")
             values = BASELINE.parse_env(path)
@@ -286,13 +284,13 @@ class BuildKitGovernanceTests(unittest.TestCase):
             }
             with mock.patch.object(BASELINE, "discover_generator", return_value=None), \
                  mock.patch.object(BASELINE, "device_identity", return_value=current_identity):
-                self.assertTrue(BASELINE.cache_is_current(path, target))
+                self.assertTrue(BASELINE.results_are_current(path, target))
             path.write_text("RIOPS_MAX=1\n")
-            self.assertFalse(BASELINE.cache_is_valid(path))
+            self.assertFalse(BASELINE.results_are_valid(path))
 
     def test_io_watcher_accepts_docker_actor_id_event_shape_and_keeps_status(self) -> None:
-        watcher = ROOT / "scripts" / "mdt-io-cap-watcher.sh"
-        service = (ROOT / "units" / "mdt-io-cap-watcher.service").read_text()
+        watcher = ROOT / "scripts" / "mdt-container-io-events-watcher.sh"
+        service = (ROOT / "units" / "mdt-container-io-events-watcher.service").read_text()
         self.assertIn("--format '{{.Actor.ID}}'", watcher.read_text())
         self.assertIn("Restart=always", service)
         self.assertIn("RestartSec=5", service)
@@ -388,7 +386,7 @@ esac
             self.assertIn("event-container-id", docker_log.read_text())
 
     def test_no_baseline_disables_per_container_io_caps(self) -> None:
-        library = ROOT / "scripts" / "mdt-container-caps.lib.sh"
+        library = ROOT / "scripts" / "mdt-container-io-caps.lib.sh"
         with tempfile.TemporaryDirectory() as directory:
             env = os.environ.copy()
             env.update({
@@ -418,11 +416,11 @@ printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
             )
 
     def test_no_baseline_io_watcher_stays_alive_instead_of_restart_loop(self) -> None:
-        watcher = ROOT / "scripts" / "mdt-io-cap-watcher.sh"
+        watcher = ROOT / "scripts" / "mdt-container-io-events-watcher.sh"
         source = watcher.read_text()
         self.assertIn("no current baseline — watching Docker events", source)
         self.assertNotIn("derived caps unusable — exiting for systemd to restart", source)
-        self.assertIn("Restart=always", (ROOT / "units/mdt-io-cap-watcher.service").read_text())
+        self.assertIn("Restart=always", (ROOT / "units/mdt-container-io-events-watcher.service").read_text())
 
     def test_memory_watcher_does_not_cap_when_docker_inspect_is_indeterminate(self) -> None:
         with mock.patch.object(
@@ -448,7 +446,7 @@ printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
         self.assertIn("leaving the scope unchanged", log.call_args.args[0])
 
     def test_no_baseline_clears_only_mdt_runtime_io_properties(self) -> None:
-        apply_script = ROOT / "scripts" / "mdt-apply-dev-caps.sh"
+        apply_script = ROOT / "scripts" / "mdt-dev-governance-reconcile.sh"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fake_bin = root / "bin"
@@ -559,7 +557,7 @@ esac
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
-                self.assertIn("unit-file static fallback is authoritative", result.stdout)
+                self.assertIn("dev.slice keeps static fallback", result.stdout)
                 calls = systemctl_log.read_text()
                 self.assertIn(
                     "set-property --runtime dev.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",
@@ -587,9 +585,14 @@ esac
                 self.assertNotIn("docker-stale.scope|IOWriteBandwidthMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOReadIOPSMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOWriteIOPSMax", remaining)
-                self.assertNotIn("docker-stale.scope|IOWeight", remaining)
+                # Interactive scopes receive rate caps, but IOWeight is not an
+                # MDT-owned property there. Preserve it rather than deleting
+                # a value another policy may have installed.
+                self.assertIn("docker-stale.scope|IOWeight|1", remaining)
                 self.assertIn("docker-stale.scope|MemoryMax|123456", remaining)
-                self.assertEqual((scope / "io.bfq.weight").read_text(), "default 100\n")
+            # Interactive IOWeight/BFQ weight is not an MDT-owned property;
+            # clearing an IO rate cap must not rewrite it.
+            self.assertEqual((scope / "io.bfq.weight").read_text(), "default 1\n")
 
     def test_memory_proposals_keep_per_slice_order_at_rounding_boundaries(self) -> None:
         for avail_kib in (1 * 1024 * 1024, 25 * 1024, 7_800 * 1024):
@@ -642,7 +645,7 @@ esac
             with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
                  mock.patch.object(WIZARD, "discover_io_dev_path_from_findmnt", return_value="/dev/sda"), \
                  mock.patch.object(WIZARD, "discover_nproc", return_value=8), \
-                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="fresh"), \
+                 mock.patch.object(WIZARD, "check_benchmark_results", return_value="current"), \
                  mock.patch("sys.stdin", io.StringIO("\n" * 100)), \
                  mock.patch("sys.stdout", io.StringIO()):
                 result = WIZARD.main([
@@ -748,34 +751,118 @@ esac
             self.assertIsNone(validators[key]("2G"))
             self.assertIsNotNone(validators[key]("0"))
 
-    def test_custom_baseline_path_is_passed_to_benchmark(self) -> None:
+    def test_custom_results_path_and_target_are_passed_to_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            cache = Path(directory) / "cache" / "baseline.env"
+            results = Path(directory) / "results" / "benchmark.env"
             target_path = Path(directory) / "docker-data" / "iocost.testfile"
-            cache.parent.mkdir()
-            cache.write_text("RIOPS_MAX=1\n")
+            results.parent.mkdir()
+            results.write_text("RIOPS_MAX=1\n")
             script = ROOT / "scripts" / "mdt-io-baseline.py"
-            with mock.patch.object(WIZARD, "walk_key", side_effect=[str(cache), str(target_path)]), \
-                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="stale") as freshness, \
+            process = mock.Mock(pid=1234)
+            process.wait.return_value = 1
+            with mock.patch.object(WIZARD, "walk_key", side_effect=[str(results), str(target_path)]), \
+                 mock.patch.object(WIZARD, "check_benchmark_results", return_value="changed") as freshness, \
                  mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
-                 mock.patch.object(WIZARD, "_prompt", return_value="y"), \
-                 mock.patch.object(WIZARD.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
-                selected, selected_target, measured = WIZARD.step_io_baseline({}, {}, script, "/dev/sda")
-            self.assertEqual(selected, str(cache))
+                 mock.patch.object(WIZARD, "ask_yn", return_value=True), \
+                 mock.patch.object(WIZARD.subprocess, "Popen", return_value=process) as popen:
+                selected, selected_target, job = WIZARD.step_io_baseline_start(
+                    {}, {}, script, "/dev/sda", status_path=None
+                )
+            self.assertEqual(selected, str(results))
             self.assertEqual(selected_target, str(target_path))
-            self.assertTrue(measured)
-            command = run.call_args.args[0]
+            self.assertIsNotNone(job)
+            command = popen.call_args.args[0]
             self.assertEqual(
                 command,
-                [sys.executable, str(script), "--output", str(cache), "--testfile", str(target_path)],
+                [sys.executable, str(script), "--output", str(results), "--testfile", str(target_path)],
             )
-            self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(cache))
-            self.assertEqual(run.call_args.kwargs["env"]["IO_BASELINE_TESTFILE"], str(target_path))
-            self.assertEqual(run.call_args.kwargs["env"]["IO_DEV_PATH"], "/dev/sda")
+            self.assertEqual(popen.call_args.kwargs["env"]["IO_BASELINE_ENV"], str(results))
+            self.assertEqual(popen.call_args.kwargs["env"]["IO_BASELINE_TESTFILE"], str(target_path))
+            self.assertEqual(popen.call_args.kwargs["env"]["IO_DEV_PATH"], "/dev/sda")
             self.assertEqual(
                 freshness.call_args.args,
-                (cache, target_path, script, "/dev/sda"),
+                (results, target_path, script, "/dev/sda"),
             )
+
+    def test_with_baseline_defaults_yes_starts_one_background_job_and_waits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "benchmark.env"
+            target = root / "iocost.testfile"
+            process = mock.Mock(pid=9876)
+
+            def complete_benchmark() -> int:
+                results.write_text(
+                    "RIOPS_MAX=1100\nWIOPS_MAX=2200\n"
+                    "RBW_MAX_BPS=300000000\nWBW_MAX_BPS=400000000\n"
+                )
+                return 0
+
+            process.wait.side_effect = complete_benchmark
+            with mock.patch.object(WIZARD, "walk_key", side_effect=[str(results), str(target)]), \
+                 mock.patch.object(WIZARD, "check_benchmark_results", return_value="missing"), \
+                 mock.patch.object(WIZARD.shutil, "which", return_value="/usr/bin/fio"), \
+                 mock.patch.object(WIZARD, "ask_yn", return_value=True) as ask, \
+                 mock.patch.object(WIZARD.subprocess, "Popen", return_value=process) as popen:
+                _, _, job = WIZARD.step_io_baseline_start(
+                    {}, {}, ROOT / "scripts/mdt-io-baseline.py", "/dev/sda",
+                    baseline_requested=True,
+                )
+                self.assertIsNotNone(job)
+                self.assertEqual(ask.call_args.kwargs["default"], True)
+                self.assertEqual(popen.call_count, 1)
+                self.assertEqual(popen.call_args.args[0][-1], "--force")
+                measured = WIZARD.finish_io_baseline(job)
+
+            self.assertEqual(measured, {
+                "RIOPS_MAX": 1100, "WIOPS_MAX": 2200,
+                "RBW_MAX_BPS": 300000000, "WBW_MAX_BPS": 400000000,
+            })
+            self.assertEqual(process.wait.call_count, 1)
+
+    def test_governed_cgroup_path_selects_all_child_slices_not_names(self) -> None:
+        library = ROOT / "scripts" / "mdt-container-io-caps.lib.sh"
+        result = subprocess.run(
+            ["bash", "-c", f'''
+set -u
+CG=/sys/fs/cgroup
+log() {{ :; }}
+. "{library}"
+for path in \
+  /sys/fs/cgroup/dev.slice/dev-interactive.slice/docker-a.scope \
+  /sys/fs/cgroup/dev.slice/dev-background.slice/docker-b.scope \
+  /sys/fs/cgroup/dev.slice/dev-gates.slice/docker-c.scope \
+  /sys/fs/cgroup/dev.slice/dev-buildkitd.slice/docker-d.scope \
+  /sys/fs/cgroup/dev.slice/dev-memory_min_guaranteed.slice/docker-e.scope \
+  /sys/fs/cgroup/system.slice/docker-f.scope; do
+  printf '%s=' "$path"
+  _mdt_governed_slice "$path" || printf 'outside'
+done
+'''],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("docker-a.scope=dev-interactive.slice", result.stdout)
+        self.assertIn("docker-b.scope=dev-background.slice", result.stdout)
+        self.assertIn("docker-c.scope=dev-gates.slice", result.stdout)
+        self.assertIn("docker-d.scope=dev-buildkitd.slice", result.stdout)
+        self.assertIn("docker-e.scope=dev-memory_min_guaranteed.slice", result.stdout)
+        self.assertIn("docker-f.scope=outside", result.stdout)
+
+    def test_static_io_fallback_values_are_explicit_wizard_answers(self) -> None:
+        answers = iter(("500", "700", "150M", "175M"))
+        with mock.patch.object(WIZARD, "walk_key", side_effect=lambda *args, **kwargs: next(answers)):
+            values = WIZARD.step_static_io_fallback({}, {})
+        self.assertEqual(
+            values,
+            {
+                "DEV_STATIC_RIOPS": "500",
+                "DEV_STATIC_WIOPS": "700",
+                "DEV_STATIC_RBW": "150M",
+                "DEV_STATIC_WBW": "175M",
+            },
+        )
 
     def test_auto_fields_can_clear_an_existing_explicit_value(self) -> None:
         with mock.patch.object(WIZARD, "_prompt", return_value="-"):
@@ -788,7 +875,7 @@ esac
                         key, key, {key: old_value}, {},
                         validate=validator, allow_empty_token=True,
                     ),
-                    "",
+                    "-",
                 )
 
     def test_iocost_generator_identifies_the_file_target_device(self) -> None:
@@ -799,6 +886,9 @@ esac
             source,
         )
         self.assertIn("devname, devno = dir_to_dev(probe_path)", source)
+        self.assertIn("subprocess.run(\n            ['chattr', '+C', path]", source)
+        self.assertIn("filesystem does not support the optional no-COW flag", source)
+        self.assertNotIn("check_call(f'chattr +C", source)
 
     def test_interactive_main_smoke_writes_without_function_repr(self) -> None:
         example = ROOT / "host-setup.env.example"
@@ -809,7 +899,7 @@ esac
             output = directory_path / "host-setup.env"
             transcript = io.StringIO()
             with mock.patch.object(WIZARD, "host_context_error", return_value=None), \
-                 mock.patch.object(WIZARD, "check_baseline_freshness", return_value="fresh"), \
+                 mock.patch.object(WIZARD, "check_benchmark_results", return_value="current"), \
                  mock.patch("sys.stdin", io.StringIO("\n" * 100)), \
                  mock.patch("sys.stdout", transcript):
                 self.assertEqual(
@@ -826,16 +916,16 @@ esac
             transcript_text = transcript.getvalue()
             self.assertLess(
                 transcript_text.index("-- install map: what this creates and enables --"),
-                transcript_text.index("-- a. IO device (IO_DEV_PATH) --"),
+                transcript_text.index("-- a. storage measurement setup --"),
             )
             for bullet in (
-                "mdt-io-cap-watcher.service",
+                "mdt-container-io-events-watcher.service",
                 "DEV_IO_CAP_PCT",
                 "WATCHER_IO_CAP_PCT",
                 "Starting proposals (review before accepting)",
                 "+-- dev-gates.slice",
-                "Static fallback values come from",
-                "matched-container IO caps stay disabled",
+                "Static fallback values (used before a valid baseline)",
+                "unavailable until current benchmark results exist",
                 "no host mutation occurs",
                 "Docker is not restarted automatically",
                 "Sibling Min/Low/High controls are independent",
@@ -1190,8 +1280,46 @@ esac
         self.assertIn('CANDIDATE_DIR="$(mktemp -d', install)
         self.assertIn('cp -- "$HERE/host-setup.env.example" "$CANDIDATE_PATH"', install)
         self.assertIn("no valid /etc/mdt/host-setup.env exists; the shipped example is incomplete", install)
-        self.assertIn("--force requires --wizard", install)
+        self.assertIn("--reset requires --wizard", install)
+        prereqs = install.index('if [ "$WITH_BASELINE" = 1 ] && [ "$WIZARD" = 1 ]')
+        wizard = install.index('python3 "$HERE/mdt-host-setup-wizard.py"')
+        self.assertLess(prereqs, wizard)
+        self.assertIn("apt-get install -y --no-install-recommends fio pv", install[prereqs:wizard])
+        self.assertIn("DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW", install)
+        self.assertNotIn("--force requires --wizard", install)
         self.assertNotIn('cp -- "$HERE/host-setup.env.example" /etc/mdt/host-setup.env', install)
+
+    def test_installer_uses_only_new_runtime_names_and_retires_old_names(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        # The old names may occur only in the explicit retirement block. They
+        # must never be the destination of a new install: leaving an enabled
+        # old watcher behind would let it reapply its obsolete per-container
+        # IOPS limits after the new setup is installed.
+        retirement_start = install.index("for _old_unit in")
+        retirement_end = install.index('echo "== render + install units =="')
+        retirement = install[retirement_start:retirement_end]
+        for old_name in (
+            "mdt-host-slices.service",
+            "mdt-host-slices.timer",
+            "mdt-io-cap-watcher.service",
+            "mdt-dev-cap-watcher.service",
+            "/usr/local/sbin/mdt-apply-dev-caps.sh",
+            "/usr/local/sbin/mdt-io-cap-watcher.sh",
+            "/usr/local/sbin/mdt-dev-cap-watcher.py",
+        ):
+            self.assertIn(old_name, retirement)
+        for new_name in (
+            "mdt-dev-governance-reconcile.service",
+            "mdt-dev-governance-reconcile.timer",
+            "mdt-container-io-events-watcher.service",
+            "mdt-container-memory-inotify-watcher.service",
+            "/usr/local/sbin/mdt-dev-governance-reconcile.sh",
+            "/usr/local/sbin/mdt-container-io-events-watcher.sh",
+            "/usr/local/sbin/mdt-container-memory-inotify-watcher.py",
+            "/usr/local/sbin/mdt-slice-memory-min-low-audit.py",
+        ):
+            self.assertIn(new_name, install)
+            self.assertNotIn(new_name, retirement)
 
 
 if __name__ == "__main__":

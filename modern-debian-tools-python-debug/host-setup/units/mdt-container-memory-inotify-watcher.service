@@ -1,23 +1,23 @@
-# mdt host-setup — reactive counterpart to mdt-host-slices.timer's periodic
+# mdt host-setup — reactive counterpart to mdt-dev-governance-reconcile.timer's periodic
 # sweep: watches dev-interactive.slice + dev-background.slice + dev-gates.slice
 # via inotify and applies a PER-SLICE default MemoryMax (dev-gates.slice gets
-# its own knob, DEV_CAP_GATES_MEMORY_MAX, RW-32/D1) to any new container that
+# its own WATCHER_GATES_MEMORY_HIGH/MAX pair, RW-32/D1) to any new container that
 # didn't request its own, within the same second it's created rather than up
 # to WATCHER_INTERVAL later. Proven live (2026-08-28) with a plain read-only
 # inotify watch on cgroupfs — no Docker API, no authorization plugin, no
-# socket proxy. See scripts/mdt-dev-cap-watcher.py's own docstring and
+# socket proxy. See scripts/mdt-container-memory-inotify-watcher.py's own docstring and
 # CGROUP-NOTES.md for why a periodic sweep alone leaves a real exposure
 # window and why this can't replace it entirely (cgroup-parent placement
 # stays create-time-only either way).
 [Unit]
-Description=mdt host-setup — reactive per-container MemoryMax on dev-tier container creation
+Description=mdt host-setup — container memory inotify watcher
 Documentation=file:/etc/mdt/host-setup.env
-After=docker.service mdt-host-slices.service
+After=docker.service mdt-dev-governance-reconcile.service
 Wants=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/mdt-dev-cap-watcher.py
+ExecStart=/usr/local/sbin/mdt-container-memory-inotify-watcher.py
 Restart=always
 RestartSec=2
 EnvironmentFile=-/etc/mdt/host-setup.env

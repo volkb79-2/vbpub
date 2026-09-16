@@ -10,37 +10,39 @@
 #   - every dev slice's memory.zswap.writeback (raw-write fallback for systemd
 #     < 256 where the MemoryZSwapWriteback= directive doesn't exist; harmless
 #     double-set on newer hosts)
-#   - per-container caps: test-runner/buildx_buildkit_*/devcontainer scopes get
-#     io.max at WATCHER_IO_CAP_PCT% of the baseline (bench+buildkit additionally
-#     get IOWeight=1; the devcontainer does not — it is the IDE). This is the
-#     ONLY placement-independent governance buildx_buildkit_* workers get at
-#     all: Buildx's own cgroup-parent driver-opt is unreliable under the
-#     systemd cgroup driver (docs/BUILD-ARCHITECTURE.md), so they can't be
-#     PLACED under dev.slice — DEV_IO_CAP_PCT's aggregate never reaches them.
-#     Docker scopes are also transient units: they exist only while the
-#     container runs, so this can only ever be done at runtime, never
-#     declaratively in a unit file. This sweep is the BACKSTOP:
-#     mdt-io-cap-watcher.service applies the same caps within the same
+#   - per-container caps: every Docker scope under a governed child gets
+#     io.max at WATCHER_IO_CAP_PCT% of the benchmark results (gates and the
+#     managed BuildKit scope additionally get IOWeight=1; interactive and
+#     background scopes do not). An out-of-tree Buildx worker is selected only
+#     by WATCHER_BUILDKIT_NAME_PATTERNS. Docker scopes are transient units:
+#     they exist only while the container runs, so this can only ever be done
+#     at runtime, never declaratively in a unit file. This sweep is the BACKSTOP:
+#     mdt-container-io-events-watcher.service applies the same caps within the same
 #     second of container start via `docker events` — see
-#     mdt-container-caps.lib.sh (shared by both) and host-setup/README.md
+#     mdt-container-io-caps.lib.sh (shared by both) and host-setup/README.md
 #     "Persistence model".
 #   - cgroup2 mount-flag check: without memory_recursiveprot every slice-level
 #     MemoryLow/MemoryMin silently stops protecting container pages
 # Idempotent; tolerant of missing docker/baseline/slices. Config:
 # /etc/mdt/host-setup.env (see host-setup.env.example). Run by
-# mdt-host-slices.service at boot + mdt-host-slices.timer periodically.
+# mdt-dev-governance-reconcile.service at boot + mdt-dev-governance-reconcile.timer periodically.
 set -uo pipefail
 CG="${CG:-/sys/fs/cgroup}"
 CONF="${CONF:-/etc/mdt/host-setup.env}"
-log(){ echo "[mdt-dev-caps] $*"; }
+log(){ echo "[mdt-dev-governance-reconcile] $*"; }
 
-# shellcheck source=./mdt-container-caps.lib.sh
-. "$(dirname "$0")/mdt-container-caps.lib.sh"
+# shellcheck source=./mdt-container-io-caps.lib.sh
+. "$(dirname "$0")/mdt-container-io-caps.lib.sh"
 
-# _mdt_load_config: sources $CONF, sets WATCHER_IO_CAP_PCT/*_PATTERNS/
-# IO_BASELINE_ENV — shared with mdt-io-cap-watcher.sh, see the lib file.
+# _mdt_load_config: sources $CONF, sets WATCHER_IO_CAP_PCT and the optional
+# out-of-tree Buildx name patterns.
+# IO_BASELINE_ENV — shared with mdt-container-io-events-watcher.sh, see the lib file.
 _mdt_load_config
 DEV_IO_CAP_PCT="${DEV_IO_CAP_PCT:-60}"
+DEV_STATIC_RIOPS="${DEV_STATIC_RIOPS:-500}"
+DEV_STATIC_WIOPS="${DEV_STATIC_WIOPS:-500}"
+DEV_STATIC_RBW="${DEV_STATIC_RBW:-150M}"
+DEV_STATIC_WBW="${DEV_STATIC_WBW:-150M}"
 CGROUP2_FLAGS="${CGROUP2_FLAGS:-fix}"
 DEV_ZSWAP_WRITEBACK="${DEV_ZSWAP_WRITEBACK:-no}"
 DEV_INTERACTIVE_ZSWAP_WRITEBACK="${DEV_INTERACTIVE_ZSWAP_WRITEBACK:-no}"
@@ -111,7 +113,11 @@ _mdt_clear_runtime_io_caps() {
   if _clear_error=$(systemctl set-property --runtime dev.slice \
        IOReadBandwidthMax= IOWriteBandwidthMax= \
        IOReadIOPSMax= IOWriteIOPSMax= 2>&1); then
-    log "dev.slice: cleared MDT runtime IO caps; unit-file static fallback is authoritative"
+    if [ -n "${IO_DEV_PATH:-}" ]; then
+      log "dev.slice: cleared MDT runtime IO caps; static unit fallback is authoritative: ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS and ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} read/write bandwidth on ${IO_DEV_PATH}; this aggregate cap covers every dev.slice child until a current baseline is applied"
+    else
+      log "dev.slice: cleared MDT runtime IO caps; no static IO cap is active because no host block device was discovered"
+    fi
   else
     log "WARN: dev.slice runtime IO-cap clear failed ($_clear_error) — stale values may remain until the unit is recreated or rebooted"
   fi
@@ -175,7 +181,7 @@ if [ "${MDT_IO_BASELINE_VALID:-0}" = 1 ] && [ -n "${IO_DEV_PATH:-}" ]; then
     _mdt_clear_runtime_io_caps
   fi
 else
-  log "no valid baseline or no host IO device — clearing MDT runtime IO so dev.slice keeps unit-file statics (run mdt-io-baseline.py)"
+  log "no valid baseline or no host IO device — clearing MDT runtime IO; dev.slice keeps static fallback ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS and ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} read/write bandwidth for the aggregate dev tier (run mdt-io-baseline.py to replace it with measured caps)"
   _mdt_clear_runtime_io_caps
 fi
 
@@ -209,21 +215,21 @@ for _zswap_entry in \
   fi
 done
 
-# --- per-container caps: bench / buildkit / devcontainer ----------------------
-# These target the transient docker-<id>.scope of each matched container —
-# scopes exist only while the container runs. mdt-io-cap-watcher.service now
+# --- per-container caps: governed child scopes + out-of-tree Buildx ----------
+# These target the transient docker-<id>.scope of each governed container —
+# scopes exist only while the container runs. mdt-container-io-events-watcher.service now
 # applies this instantly on container start via `docker events`; this sweep
 # is the backstop for whatever it missed (a restart window, a docker daemon
 # restart mid-stream) — see host-setup/README.md "Persistence model". Uses
 # the SAME _mdt_match/_mdt_apply_container_caps/_mdt_classify_and_apply as
-# the watcher (mdt-container-caps.lib.sh), so the two can never drift apart.
+# the watcher (mdt-container-io-caps.lib.sh), so the two can never drift apart.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   # Per-container ceilings: WATCHER_IO_CAP_PCT% of the current baseline.
   # Without a valid baseline _mdt_derive_watcher_caps sets WATCHER_SKIP=1, so
   # this sweep clears old MDT-owned transient IO properties rather than
   # inventing a host-independent cap that could stall an interactive
   # container. With a valid baseline it applies one percentage to every
-  # category below (test-runner/"bench", buildkit, devcontainer).
+  # governed child scopes and explicitly-patterned out-of-tree Buildx workers.
   _mdt_derive_watcher_caps
   if [ "${WATCHER_SKIP:-0}" = 1 ]; then
     _mdt_clear_container_caps

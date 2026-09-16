@@ -54,7 +54,7 @@ MemoryLow=@DEV_MEMORY_LOW@
 MemoryHigh=@DEV_MEMORY_HIGH@
 MemoryMax=@DEV_MEMORY_MAX@
 #
-# Static boot-window fallbacks (deliberately tight — mdt-host-slices.service
+# Static boot-window fallbacks (deliberately tight — mdt-dev-governance-reconcile.service
 # overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the
 # measured ceilings from io-baseline.env; a static unit file cannot express
 # "a percentage of what this disk actually does"). If no baseline has been

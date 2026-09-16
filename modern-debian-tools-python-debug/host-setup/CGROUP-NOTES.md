@@ -25,7 +25,7 @@ time. `MemoryHigh/Max/Low/Min/SwapMax`, `CPUWeight`/`CPUQuota`, `IOWeight`,
 and `daemon-reload` by themselves and need zero runtime machinery — which is
 why `dev-interactive.slice`/`dev-background.slice` carry as much as they possibly can.
 
-The five things below are the entire reason `mdt-apply-dev-caps.sh` exists.
+The five things below are the entire reason `mdt-dev-governance-reconcile.sh` exists.
 
 ## What a slice unit cannot express
 
@@ -67,8 +67,8 @@ Two workloads can't be placed into a tier declaratively at all:
 You can only reach these at runtime, on a unit name you discover by inspecting
 the running container. Hence a sweep, not a unit.
 
-*Owned by:* `mdt-apply-dev-caps.sh` (`docker ps` → `/proc/<pid>/cgroup` → the
-scope name), re-run by `mdt-host-slices.timer` so containers created since boot
+*Owned by:* `mdt-dev-governance-reconcile.sh` (`docker ps` → `/proc/<pid>/cgroup` → the
+scope name), re-run by `mdt-dev-governance-reconcile.timer` so containers created since boot
 get caught within `WATCHER_INTERVAL`.
 
 > BuildKit nests its own sub-cgroups *inside* the container, so PID 1's cgroup
@@ -82,7 +82,7 @@ sustained random-read IOPS" is not something a unit file can say, and it is the
 only form of the rule that ports between hosts. Only a benchmark knows the
 number.
 
-*Owned by:* `mdt-io-baseline.py` (measures, caches) + `mdt-apply-dev-caps.sh`
+*Owned by:* `mdt-io-baseline.py` (measures, writes benchmark results) + `mdt-dev-governance-reconcile.sh`
 (derives `DEV_IO_CAP_PCT`% and applies via `systemctl set-property --runtime`
 to the **root `dev.slice`**, not per-child — host dev-tier cgroup governance
 rollout: one absolute IOPS/bandwidth ceiling covers `dev-interactive.slice`
@@ -96,10 +96,10 @@ or no-device sweep, MDT also clears only its runtime `io.max` properties on
 `dev-buildkitd.slice`, using empty systemd assignments so stale measured values
 cannot override the unit-file statics. It does not revert or clear unrelated
 cgroup properties. On the same transition it clears MDT's previously applied
-transient IO properties from currently matched containers; otherwise an old
-cap would remain indefinitely. Matched containers then receive **no guessed
+transient IO properties from currently governed containers; otherwise an old
+cap would remain indefinitely. Governed containers then receive **no guessed
 per-container IO cap** until a valid baseline exists. A missing or invalid measurement is
-indeterminate; applying a host-independent 200/400-IOPS, 30-MiB/s fallback can
+indeterminate; applying a host-independent per-container fallback can
 turn normal interactive IO into D-state stalls. The Docker-events watcher
 remains connected but skips cap application, and the periodic sweep applies
 measured caps after the baseline is installed; restart the watcher after
@@ -125,7 +125,7 @@ Not every cgroupfs file has a unit setting. Two matter here:
 
 | Attribute | Directive? | Handling |
 |---|---|---|
-| `memory.zswap.writeback` | `MemoryZSwapWriteback=` — systemd ≥ 256 **only** | `install.sh` drops the line on older systemd; `mdt-apply-dev-caps.sh` raw-writes the file as fallback (harmless double-set on new hosts) |
+| `memory.zswap.writeback` | `MemoryZSwapWriteback=` — systemd ≥ 256 **only** | `install.sh` drops the line on older systemd; `mdt-dev-governance-reconcile.sh` raw-writes the file as fallback (harmless double-set on new hosts) |
 | `io.bfq.weight` | **never** — systemd only knows `IOWeight` | raw write, see [BFQ caveats](#bfq-caveats) |
 
 ### 5. cgroup2 mount options — not a unit setting at all
@@ -145,7 +145,7 @@ change from a non-init namespace):
 mount -o remount,nsdelegate,memory_recursiveprot /sys/fs/cgroup
 ```
 
-*Owned by:* `mdt-apply-dev-caps.sh` (`CGROUP2_FLAGS=warn|fix`) and
+*Owned by:* `mdt-dev-governance-reconcile.sh` (`CGROUP2_FLAGS=warn|fix`) and
 `mdt-host-check.sh`, which **FAILs** — not warns — when it is missing.
 
 ---
@@ -163,7 +163,7 @@ about an hour after it had been applied *and verified*.)
 `systemctl set-property --runtime <unit> …` makes systemd the owner of the
 value, so a reload **re-applies** it instead. `--runtime` writes a drop-in
 under `/run`: it survives `daemon-reload`, and is gone after reboot — which is
-correct here, because `mdt-host-slices.service` re-derives everything at every
+correct here, because `mdt-dev-governance-reconcile.service` re-derives everything at every
 boot from a baseline that may meanwhile have been re-measured.
 
 The exception is attributes systemd has no property for (`io.bfq.weight`,
@@ -226,7 +226,7 @@ cat /sys/fs/cgroup/dev-background.slice/io.bfq.weight
 
 ### 3. `io.bfq.weight` has no systemd property — raw write only
 
-There is no unit directive and no `set-property` for it. `mdt-apply-dev-caps.sh`
+There is no unit directive and no `set-property` for it. `mdt-dev-governance-reconcile.sh`
 raw-writes `default 1` into the bench/buildkit scopes. That write is safe from
 the daemon-reload wipe (systemd doesn't manage the attribute) but is gone when
 the scope dies, i.e. when the container stops — the timer sweep re-applies it.
@@ -275,7 +275,7 @@ systemctl show dev-interactive.slice -p FragmentPath     # unit file exists (not
 cat /sys/fs/cgroup/dev.slice/io.max                      # aggregate cap in force (statics or measured?)
 cat /sys/fs/cgroup/dev-interactive.slice/io.bfq.weight   # NOT io.weight
 docker inspect -f '{{.HostConfig.CgroupParent}}' <c> # placement — create-time, recreate to change
-journalctl -u mdt-host-slices.service -n 40          # what the last sweep did
+journalctl -u mdt-dev-governance-reconcile.service -n 40          # what the last sweep did
 ```
 
 ## zswap writeback — who may page to disk

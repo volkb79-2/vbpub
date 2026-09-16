@@ -46,7 +46,7 @@ governance. In order:
    - **IOPS sub-ceiling**: `dev-gates.slice` and `dev-buildkitd.slice` each
      get a RUNTIME-ONLY (not a static unit line) `IOReadIOPSMax`/
      `IOWriteIOPSMax` at `DEV_SUBSLICE_IOPS_PCT`% (default 60%) of whatever
-     `mdt-apply-dev-caps.sh` just measured for `dev.slice` itself. Bandwidth
+     `mdt-dev-governance-reconcile.sh` just measured for `dev.slice` itself. Bandwidth
      deliberately untouched — IOPS only.
    - **Swap cascade**: `DEV_SWAP_CASCADE_PCT` (default 80%) applied
      recursively — host total swap (`/proc/meminfo` `SwapTotal`) → `dev.slice`
@@ -70,16 +70,16 @@ governance. In order:
    - Renamed the watcher's old `DEV_CAP_MEMORY_MAX`/`DEV_CAP_GATES_MEMORY_MAX`
      to `WATCHER_PER_CONTAINER_MEMORY_MAX`/`WATCHER_PER_CONTAINER_GATES_MEMORY_MAX`,
      added a sibling `WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT` (default 80%).
-6. New `host-setup/scripts/mdt-container-caps.lib.sh` — shared per-container
-   IO-cap matching/apply logic, extracted from `mdt-apply-dev-caps.sh` so it
+6. New `host-setup/scripts/mdt-container-io-caps.lib.sh` — shared per-container
+   IO-cap matching/apply logic, extracted from `mdt-dev-governance-reconcile.sh` so it
    can be sourced by BOTH the periodic sweep AND a new reactive watcher.
-7. New `host-setup/scripts/mdt-io-cap-watcher.sh` +
-   `host-setup/units/mdt-io-cap-watcher.service` — a `docker events`-driven
+7. New `host-setup/scripts/mdt-container-io-events-watcher.sh` +
+   `host-setup/units/mdt-container-io-events-watcher.service` — a `docker events`-driven
    reactive watcher that applies per-container IO caps the instant a
    matching `buildx_buildkit_*`/`*test-runner*`/devcontainer container
    starts, replacing the periodic sweep as the PRIMARY mechanism for that
    (the sweep is now the backstop). `docker events`, not inotify (unlike the
-   sibling `mdt-dev-cap-watcher.py` for memory caps), because buildkit
+   sibling `mdt-container-memory-inotify-watcher.py` for memory caps), because buildkit
    workers have no fixed, predictable cgroup path to inotify-watch in the
    first place (Buildx's own `cgroup-parent` driver-opt is unreliable under
    the systemd cgroup driver).
@@ -123,8 +123,8 @@ M  modern-debian-tools-python-debug/host-setup/host-setup.env.example
 M  modern-debian-tools-python-debug/host-setup/install.sh
 M  modern-debian-tools-python-debug/host-setup/mdt-host-setup-wizard.py
 M  modern-debian-tools-python-debug/host-setup/scripts/check.sh
-M  modern-debian-tools-python-debug/host-setup/scripts/mdt-apply-dev-caps.sh
-M  modern-debian-tools-python-debug/host-setup/scripts/mdt-dev-cap-watcher.py
+M  modern-debian-tools-python-debug/host-setup/scripts/mdt-dev-governance-reconcile.sh
+M  modern-debian-tools-python-debug/host-setup/scripts/mdt-container-memory-inotify-watcher.py
 M  modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in
 M  modern-debian-tools-python-debug/host-setup/units/dev-buildkitd.slice.in
 M  modern-debian-tools-python-debug/host-setup/units/dev-gates.slice.in
@@ -136,9 +136,9 @@ M  modern-debian-tools-python-debug/scripts/manifest_sections.py
 M  modern-debian-tools-python-debug/scripts/stage_tool_artifacts.py
 M  modern-debian-tools-python-debug/scripts/test_release_flow.py
 ?? modern-debian-tools-python-debug/customization/mdt
-?? modern-debian-tools-python-debug/host-setup/scripts/mdt-container-caps.lib.sh
-?? modern-debian-tools-python-debug/host-setup/scripts/mdt-io-cap-watcher.sh
-?? modern-debian-tools-python-debug/host-setup/units/mdt-io-cap-watcher.service
+?? modern-debian-tools-python-debug/host-setup/scripts/mdt-container-io-caps.lib.sh
+?? modern-debian-tools-python-debug/host-setup/scripts/mdt-container-io-events-watcher.sh
+?? modern-debian-tools-python-debug/host-setup/units/mdt-container-io-events-watcher.service
 ?? modern-debian-tools-python-debug/scripts/report-image-size-breakdown.py
 ?? modern-debian-tools-python-debug/scripts/test_report_image_size_breakdown.py
 ```
@@ -201,7 +201,7 @@ this session was stopped mid-verification.
    line citation is from before any other fix in this list was applied and
    may have shifted.
 
-2. **`host-setup/scripts/mdt-dev-cap-watcher.py` lines 119 and 127**
+2. **`host-setup/scripts/mdt-container-memory-inotify-watcher.py` lines 119 and 127**
    (`WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT = int(_get("WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT", "80"))`
    and `DEV_SWAP_CASCADE_PCT = int(_get("DEV_SWAP_CASCADE_PCT", "80"))`):
    **LIKELY CONFIRMED, NOT YET FIXED — this session was interrupted while
@@ -215,9 +215,9 @@ this session was stopped mid-verification.
    keys in the exact same file, e.g. `DEV_SWAP_MAX`, genuinely use
    "empty string = auto-detect" as their documented convention), `_get()`
    returns `""`, and `int("")` raises an uncaught `ValueError` at import
-   time. Need to confirm: (a) is `mdt-dev-cap-watcher.service`'s
+   time. Need to confirm: (a) is `mdt-container-memory-inotify-watcher.service`'s
    `Restart=always` actually set (if so this is a crash-loop, not a one-time
-   failure — check `host-setup/units/mdt-dev-cap-watcher.service`); (b) is
+   failure — check `host-setup/units/mdt-container-memory-inotify-watcher.service`); (b) is
    there any existing input validation upstream (the wizard's own
    `validate_pct_1_100`/`validate_nonneg_int` reject empty for these
    analogous keys with a clear error message, so a wizard-produced config
@@ -251,7 +251,7 @@ reading the code, and the agent explicitly skipped that step. Treat every
 line number as approximate; some are flagged below as explicitly disputed by
 the review agent itself.
 
-3. `host-setup/scripts/mdt-dev-cap-watcher.py` (~line 187, agent notes a
+3. `host-setup/scripts/mdt-container-memory-inotify-watcher.py` (~line 187, agent notes a
    second citation at 244 — re-check): `parse_size()` allegedly only strips a
    single trailing K/M/G/T character, so a value like `4GiB` or `500MB`
    (both wizard-legal size strings elsewhere in this project — see
@@ -262,7 +262,7 @@ the review agent itself.
    into systemd's own `set-property` parser (which DOES accept `GiB`/`MB`
    suffixes) rather than parsing it in Python at all.
 
-4. `host-setup/scripts/mdt-apply-dev-caps.sh` (~line 150, agent notes a
+4. `host-setup/scripts/mdt-dev-governance-reconcile.sh` (~line 150, agent notes a
    second citation at 158 — re-check): the raw-cgroupfs-write fallback for
    `MemoryZSwapWriteback` (needed on systemd < 256, where `install.sh`
    strips the static unit-file directive entirely) is allegedly applied ONLY
@@ -272,19 +272,19 @@ the review agent itself.
    already flagged as a possible gap by the PREVIOUS agent in this same
    session** (see the compacted summary this session inherited: "this
    actually seems like a real correctness issue... the raw-write fallback
-   in mdt-apply-dev-caps.sh should mirror what the units do now" was
+   in mdt-dev-governance-reconcile.sh should mirror what the units do now" was
    explicitly noted but never acted on before the session got interrupted
    by an unrelated task). If confirmed, this needs the same raw-write
    block generalized into a loop over all 5 slices with their own
    `DEV_*_ZSWAP_WRITEBACK` var, mirroring the existing
-   `dev-interactive.slice`-only block in `mdt-apply-dev-caps.sh`.
+   `dev-interactive.slice`-only block in `mdt-dev-governance-reconcile.sh`.
    `check.sh`'s own `_zswap_check` helper (added this session) may also need
    its "file absent" vs "value 0 because unset-defaults-to-kernel-1"
    messaging revisited once this is fixed, per the review's compounding
    note.
 
 5. `customization/mdt` (~line 79): `mdt doctor`'s embedded self-heal heredoc
-   allegedly sets `set -euo pipefail`, while `mdt-apply-dev-caps.sh` (which
+   allegedly sets `set -euo pipefail`, while `mdt-dev-governance-reconcile.sh` (which
    `mdt doctor` is documented as copying "verbatim" from) sets only `set -uo
    pipefail` (no `-e`) for the identical `uname -r | grep -oE ...`
    kernel-version-parsing line. If the kernel version string fails that
@@ -292,10 +292,10 @@ the review agent itself.
    attempts the `memory_recursiveprot` fix — silently defeating the
    documented purpose of `mdt doctor`. If confirmed, remove `-e` from that
    heredoc (or restructure the kernel-version check to not rely on `set -e`
-   forgiveness either way — verify which behavior `mdt-apply-dev-caps.sh`'s
+   forgiveness either way — verify which behavior `mdt-dev-governance-reconcile.sh`'s
    version actually relies on before copying it verbatim again).
 
-6. `host-setup/scripts/mdt-io-cap-watcher.sh` (~line 63, "independently
+6. `host-setup/scripts/mdt-container-io-events-watcher.sh` (~line 63, "independently
    found by 5 different review angles" per the agent): the watcher loads
    config/baseline ONCE at process start; the periodic sweep re-reads both
    fresh every `SWEEP_INTERVAL`. `install.sh`'s `systemctl enable --now` is
@@ -307,7 +307,7 @@ the review agent itself.
    session's own doc claim (`host-setup/README.md`) that the two mechanisms
    "share every line of logic... so the two can't drift apart" (true for the
    CODE, not for the DATA each has loaded). If confirmed, `install.sh` needs
-   an explicit `systemctl restart mdt-io-cap-watcher.service` (not
+   an explicit `systemctl restart mdt-container-io-events-watcher.service` (not
    `enable --now`) whenever it re-renders config that this watcher reads,
    OR the watcher needs to re-source config on some signal/interval of its
    own.
@@ -326,7 +326,7 @@ the review agent itself.
    new intended state) while still catching a GENUINELY missing/mistyped
    var some other way, or (less likely) the auto-detect default is wrong.
 
-10. `host-setup/scripts/mdt-io-cap-watcher.sh` (~line 76): the initial
+10. `host-setup/scripts/mdt-container-io-events-watcher.sh` (~line 76): the initial
     `docker ps -q` reconciliation snapshot allegedly completes fully BEFORE
     the `docker events` subscription actually attaches (sequential, not
     concurrent), leaving a real gap rather than the claimed zero-gap
@@ -337,7 +337,7 @@ the review agent itself.
     during the snapshot is still caught by the now-already-open events
     stream.
 
-11. `host-setup/scripts/mdt-container-caps.lib.sh` (~line 105):
+11. `host-setup/scripts/mdt-container-io-caps.lib.sh` (~line 105):
     `_mdt_apply_container_caps` allegedly silently returns with no retry and
     no log line if the container's `docker-<id>.scope` cgroup directory
     hasn't materialized yet when it's processed (a systemd/D-Bus race under
@@ -380,7 +380,7 @@ the review agent itself.
     `mt_glances`'s own subtree from the broader glob or clamp/flag a
     negative unattributed total explicitly as an error rather than "(OK)".
 
-15. `host-setup/scripts/mdt-dev-cap-watcher.py` "line 2026" — **the review
+15. `host-setup/scripts/mdt-container-memory-inotify-watcher.py` "line 2026" — **the review
     agent flagged this exact citation as implausible itself** (the file is
     nowhere near 2000 lines). The claimed MECHANISM (same
     once-loaded-at-startup staleness class as finding #6, applied to
@@ -392,7 +392,7 @@ the review agent itself.
 
 ### Findings that are NOT bugs — do not revert
 
-7. `host-setup/scripts/mdt-container-caps.lib.sh` line ~14: the review flags
+7. `host-setup/scripts/mdt-container-io-caps.lib.sh` line ~14: the review flags
    that `_mdt_load_config()` no longer aliases old `BENCH_IO_CAP_PCT`/
    `BENCH_IMAGE_PATTERNS`/`BENCH_NAME_PATTERNS` names to their
    `SWEEP_*`/`TESTRUNNER_*`/`BUILDKIT_*` replacements. **This removal was
@@ -400,7 +400,7 @@ the review agent itself.
    *"no no legacy compat, all clean pls. also no backward references in
    comments."* Do not re-add this fallback.
 
-8. `host-setup/scripts/mdt-dev-cap-watcher.py` line ~108: the review flags
+8. `host-setup/scripts/mdt-container-memory-inotify-watcher.py` line ~108: the review flags
    that the `DEV_CAP_MEMORY_MAX`/`DEV_CAP_GATES_MEMORY_MAX` →
    `WATCHER_PER_CONTAINER_MEMORY_MAX`/`WATCHER_PER_CONTAINER_GATES_MEMORY_MAX`
    rename has no back-compat fallback. **Also deliberate, same operator

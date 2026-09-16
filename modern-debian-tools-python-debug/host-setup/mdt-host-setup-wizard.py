@@ -26,12 +26,12 @@
 # of the example's own defaults).
 #
 # Reuses, rather than reimplements:
-#   - mdt-io-baseline.py's own cache_is_fresh() (imported) for the IO-baseline
+#   - mdt-io-baseline.py's own identity check (imported) for the benchmark results
 #     identity check, and its own main() (invoked as a subprocess) to actually
 #     run the benchmark — never duplicates the identity rules or quiet-window
 #     warning.
 #   - install.sh's own findmnt auto-discovery for IO_DEV_PATH.
-#   - the atomic-write pattern from mdt-io-baseline.py's write_cache_atomic
+#   - the atomic-write pattern from mdt-io-baseline.py's results writer
 #     (temp file in the same directory, fsync, os.replace) for the produced
 #     host-setup.env itself.
 #   - this file's own _SIZE_RE (the regex parse_size_to_kib already parses
@@ -43,10 +43,12 @@ import argparse
 import importlib.util
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Callable
@@ -74,19 +76,6 @@ CIU_P50_RELATIVE_PATH = (
     "../../ciu/nyxloom-trove/handoffs/"
     "ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md"
 )
-
-# These names were public in the first host-setup release. The implementation
-# now uses WATCHER_* because both the Docker-events watcher and its periodic
-# sweep consume them; migrate them when --wizard sees an old config so an
-# upgrade does not silently reseed custom values from the example.
-LEGACY_CONFIG_KEYS = {
-    "SWEEP_IO_CAP_PCT": "WATCHER_IO_CAP_PCT",
-    "TESTRUNNER_IMAGE_PATTERNS": "WATCHER_TESTRUNNER_IMAGE_PATTERNS",
-    "BUILDKIT_NAME_PATTERNS": "WATCHER_BUILDKIT_NAME_PATTERNS",
-    "DEVCONTAINER_NAME_PATTERNS": "WATCHER_DEVCONTAINER_NAME_PATTERNS",
-    "SWEEP_INTERVAL": "WATCHER_INTERVAL",
-}
-
 
 # ─── output layer (terminal-width-aware reflow + conditional highlighting) ──
 #
@@ -284,14 +273,14 @@ def parse_env_file(text: str, *, strict: bool = False) -> dict[str, str]:
     return out_map
 
 
-_KEY_LINE_RE_CACHE: dict[str, re.Pattern[str]] = {}
+_KEY_LINE_RE_BY_NAME: dict[str, re.Pattern[str]] = {}
 
 
 def _key_line_re(key: str) -> re.Pattern[str]:
-    pattern = _KEY_LINE_RE_CACHE.get(key)
+    pattern = _KEY_LINE_RE_BY_NAME.get(key)
     if pattern is None:
         pattern = re.compile(rf'^{re.escape(key)}=([\'"]?).*$', re.MULTILINE)
-        _KEY_LINE_RE_CACHE[key] = pattern
+        _KEY_LINE_RE_BY_NAME[key] = pattern
     return pattern
 
 
@@ -475,12 +464,12 @@ def validate_positive_size(value: str) -> str | None:
     if error:
         return error
     if parse_size_to_kib(value) <= 0:
-        return "a memory limit must be greater than zero; do not use 0 or 'no'. For optional fields, press Enter for the documented empty/none state"
+        return "a memory limit must be greater than zero; do not use 0 or 'no'. For optional fields, press Enter for the shown default or type '-' to omit the directive"
     return None
 
 
 def validate_optional_positive_size(value: str) -> str | None:
-    if not value:
+    if value in ("", "-"):
         return None
     return validate_positive_size(value)
 
@@ -520,11 +509,16 @@ def validate_guard_policy(value: str) -> str | None:
     return None
 
 
+def _memory_value_configured(value: str) -> bool:
+    """Return whether an env value represents an actual memory directive."""
+    return bool(value and value not in ("-", "auto"))
+
+
 def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
     """Return (key, message) pairs for cgroup memory hierarchy violations.
 
-    Values are normalized to KiB before comparison. Empty entries are the
-    explicit architectural ``none`` state and are not compared; configured
+    Values are normalized to KiB before comparison. Empty entries mean that
+    the directive is omitted and are not compared; configured
     fields are ordered exactly as the cgroup v2 hierarchy requires.
     """
     groups = (
@@ -537,7 +531,10 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
     )
     errors: list[tuple[str, str]] = []
     for slice_name, keys in groups:
-        parsed = [(key, parse_size_to_kib(values.get(key, ""))) for key in keys if values.get(key, "")]
+        parsed = [
+            (key, parse_size_to_kib(values.get(key, "")))
+            for key in keys if _memory_value_configured(values.get(key, ""))
+        ]
         for (left_key, left), (right_key, right) in zip(parsed, parsed[1:]):
             if left > right:
                 errors.append(
@@ -559,9 +556,9 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
     )
     for slice_name, keys in MEMORY_CHILD_SPECS:
         for field, parent_key, child_index in parent_checks:
-            parent = parse_size_to_kib(values.get(parent_key, ""))
+            parent = parse_size_to_kib(values.get(parent_key, "")) if _memory_value_configured(values.get(parent_key, "")) else 0
             child_key = keys[child_index]
-            child = parse_size_to_kib(values.get(child_key, ""))
+            child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if parent and child > parent:
                 errors.append(
                     (
@@ -572,6 +569,17 @@ def memory_relationship_errors(values: dict[str, str]) -> list[tuple[str, str]]:
                         "not summed for this check)",
                     )
                 )
+    for slice_name, high_key, max_key in WATCHER_MEMORY_PAIR_SPECS:
+        high = parse_size_to_kib(values.get(high_key, "")) if _memory_value_configured(values.get(high_key, "")) else 0
+        maximum = parse_size_to_kib(values.get(max_key, "")) if _memory_value_configured(values.get(max_key, "")) else 0
+        if high and maximum and high > maximum:
+            errors.append(
+                (
+                    max_key,
+                    f"{slice_name} per-container MemoryHigh={values[high_key]} must be <= "
+                    f"MemoryMax={values[max_key]}; re-enter the pair in that order",
+                )
+            )
     return errors
 
 
@@ -596,6 +604,11 @@ MEMORY_CHILD_SPECS = (
         "DEV_MEMORY_MIN_GUARANTEED_CEILING", "DEV_MEMORY_MIN_GUARANTEED_LOW",
         "DEV_MEMORY_MIN_GUARANTEED_HIGH", "DEV_MEMORY_MIN_GUARANTEED_MAX",
     )),
+)
+WATCHER_MEMORY_PAIR_SPECS = (
+    ("dev-interactive.slice", "WATCHER_INTERACTIVE_MEMORY_HIGH", "WATCHER_INTERACTIVE_MEMORY_MAX"),
+    ("dev-background.slice", "WATCHER_BACKGROUND_MEMORY_HIGH", "WATCHER_BACKGROUND_MEMORY_MAX"),
+    ("dev-gates.slice", "WATCHER_GATES_MEMORY_HIGH", "WATCHER_GATES_MEMORY_MAX"),
 )
 MEMORY_CHILD_KEYS = tuple(
     key for _, keys in MEMORY_CHILD_SPECS for key in keys
@@ -623,9 +636,9 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
     )
     for slice_name, keys in MEMORY_CHILD_SPECS:
         for field, parent_key, child_index in parent_fields:
-            parent = parse_size_to_kib(values.get(parent_key, ""))
+            parent = parse_size_to_kib(values.get(parent_key, "")) if _memory_value_configured(values.get(parent_key, "")) else 0
             child_key = keys[child_index]
-            child = parse_size_to_kib(values.get(child_key, ""))
+            child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if not child:
                 continue
             if not parent and field in ("MemoryMin", "MemoryLow"):
@@ -645,14 +658,14 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
         ("MemoryHigh", "DEV_MEMORY_HIGH", 2),
     )
     for field, parent_key, child_index in aggregate_fields:
-        parent = parse_size_to_kib(values.get(parent_key, ""))
+        parent = parse_size_to_kib(values.get(parent_key, "")) if _memory_value_configured(values.get(parent_key, "")) else 0
         if not parent:
             continue
         contributing: list[str] = []
         total = 0
         for slice_name, keys in MEMORY_CHILD_SPECS:
             child_key = keys[child_index]
-            child = parse_size_to_kib(values.get(child_key, ""))
+            child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if child:
                 total += child
                 contributing.append(f"{slice_name}={values[child_key]}")
@@ -687,15 +700,16 @@ def _config_value_validators() -> dict[str, Validator]:
         "DOCKER_DAEMON_CGROUP_PARENT": validate_cgroup_parent,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_MAX": validate_positive_size,
         "DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX": validate_positive_size,
-        "WATCHER_PER_CONTAINER_MEMORY_MAX": validate_positive_size,
-        "WATCHER_PER_CONTAINER_GATES_MEMORY_MAX": validate_positive_size,
-        "WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT": validate_pct_1_100,
+        "WATCHER_INTERACTIVE_MEMORY_HIGH": validate_optional_positive_size,
+        "WATCHER_INTERACTIVE_MEMORY_MAX": validate_optional_positive_size,
+        "WATCHER_BACKGROUND_MEMORY_HIGH": validate_optional_positive_size,
+        "WATCHER_BACKGROUND_MEMORY_MAX": validate_optional_positive_size,
+        "WATCHER_GATES_MEMORY_HIGH": validate_optional_positive_size,
+        "WATCHER_GATES_MEMORY_MAX": validate_optional_positive_size,
         "CGROUP2_FLAGS": validate_cgroup2_flags,
         "DEV_IO_CAP_PCT": validate_cap_pct,
         "WATCHER_IO_CAP_PCT": validate_cap_pct,
-        "WATCHER_TESTRUNNER_IMAGE_PATTERNS": validate_watcher_patterns,
         "WATCHER_BUILDKIT_NAME_PATTERNS": validate_watcher_patterns,
-        "WATCHER_DEVCONTAINER_NAME_PATTERNS": validate_watcher_patterns,
         "WATCHER_INTERVAL": validate_systemd_timespan,
         "IO_BASELINE_ENV": validate_absolute_path,
         "IO_BASELINE_TESTFILE": validate_absolute_path,
@@ -843,23 +857,6 @@ def validate_host_setup_config(
     )
 
 
-def migrate_legacy_config_keys(cfg_current: dict[str, str]) -> dict[str, str]:
-    """Translate pre-WATCHER public names without losing operator tuning."""
-    migrated = dict(cfg_current)
-    for old_key, new_key in LEGACY_CONFIG_KEYS.items():
-        if old_key not in cfg_current:
-            continue
-        if new_key in cfg_current:
-            out(f"WARN: both `{old_key}` and current `{new_key}` exist; keeping `{new_key}`")
-            continue
-        migrated[new_key] = cfg_current[old_key]
-        out(
-            f"Migrating legacy `{old_key}` to `{new_key}`; the current name covers "
-            "the event watcher and periodic sweep."
-        )
-    return migrated
-
-
 def propose_memory_min_guaranteed_suggestion(
     total_kib: int, tier_high_values: dict[str, str]
 ) -> tuple[int, int, str]:
@@ -1004,9 +1001,9 @@ def resolve_default(
     During an upgrade, pressing Enter preserves an existing ``KEY=`` choice.
 
     An empty value is not silently converted into a discovered device, a
-    memory proposal, or an auto-detected quota. To clear an optional memory
-    value in an interactive run, type ``-``; ``none`` remains accepted for
-    compatibility with earlier wizard sessions.
+    memory proposal, or an auto-detected quota. To clear an optional value in
+    an interactive run, type ``-``. The same ``-`` sentinel is used everywhere
+    a directive may be omitted.
     """
     if key in cfg_current:
         return cfg_current[key]
@@ -1110,16 +1107,17 @@ def validate_cpu_quota(value: str) -> str | None:
     DEV_GATES_CPU_QUOTA, DEV_BUILDKITD_CPU_QUOTA). Empty means "auto-detect
     nproc - DEV_SUBSLICE_CPU_RESERVE_CORES cores at install time" (default
     reserve 3; dev.slice itself uses DEV_CPU_RESERVE_CORES, default 1) —
-    this key's own documented convention, NOT "unlimited" — so empty is
-    valid. Anything else must be systemd's own CPUQuota= percentage shape:
+    ``auto`` means derive the value at install time. ``-`` means omit the
+    directive (systemd's unlimited/default behavior). Anything else must be
+    systemd's own CPUQuota= percentage shape:
     an integer followed by '%', greater than zero."""
-    if not value:
+    if value in ("", "auto", "-"):
         return None
     match = _CPU_QUOTA_RE.match(value)
     if not match:
-        return f"{value!r} is not a systemd CPUQuota= percentage -- use N% (e.g. '400%' for 4 cores), or leave it empty to auto-detect"
+        return f"{value!r} is not a systemd CPUQuota= percentage -- use N% (e.g. '400%' for 4 cores), 'auto' to derive, or '-' to omit"
     if int(match.group(1)) <= 0:
-        return "a CPUQuota of 0% would stop the slice from running anything at all -- give at least '100%' (one core), or leave it empty to auto-detect"
+        return "a CPUQuota of 0% would stop the slice from running anything at all -- give at least '100%' (one core), use 'auto' to derive, or '-' to omit"
     return None
 
 
@@ -1241,12 +1239,13 @@ def validate_watcher_patterns(value: str) -> str | None:
 def validate_size_or_auto(value: str) -> str | None:
     """Per-tier MemorySwapMax and dev.slice's own DEV_SWAP_MAX: empty means
     "auto-detect DEV_SWAP_CASCADE_PCT% of the parent's own derived swap
-    ceiling at install time" — a real, documented behavior, not an
-    omission — so empty is valid here, unlike validate_size_required."""
-    if not value:
+    ceiling at install time. ``-`` means omit the directive, so it is not
+    confused with the derived state. Empty is retained as the file-level
+    representation of the example's ``auto`` choice."""
+    if value in ("", "auto", "-"):
         return None
     if not is_size_string(value):
-        return f"{value!r} is not a systemd-style size string ({_SIZE_EXAMPLES}) -- or leave it empty to auto-detect from DEV_SWAP_CASCADE_PCT"
+        return f"{value!r} is not a systemd-style size string ({_SIZE_EXAMPLES}) -- use 'auto' to derive from DEV_SWAP_CASCADE_PCT or '-' to omit"
     return None
 
 
@@ -1311,6 +1310,8 @@ def ask(
     empty_token: str | None = None,
     empty_tokens: tuple[str, ...] = (),
     default_source: str | None = None,
+    default_display: str | None = None,
+    empty_value: str = "",
 ) -> str:
     """Prompt for one value; Enter accepts `default` unchanged.
 
@@ -1326,7 +1327,7 @@ def ask(
     exhausted stdin would spin forever, and accepting the value would turn an
     input-abort into a misleading successful write.
     """
-    shown_value = default if default else "<empty>"
+    shown_value = default_display if default_display is not None else (default if default else "<empty>")
     shown = f"{default_source}: {shown_value}" if default_source else shown_value
     while True:
         at_eof = False
@@ -1340,7 +1341,7 @@ def ask(
         tokens = tuple(token.lower() for token in empty_tokens)
         if empty_token:
             tokens += (empty_token.lower(),)
-        value = "" if raw.lower() in tokens else (raw if raw else default)
+        value = empty_value if raw.lower() in tokens else (raw if raw else default)
         if validate is None:
             return value
         error = validate(value)
@@ -1383,6 +1384,8 @@ def walk_key(
     *,
     allow_empty_token: bool = False,
     empty_token: str | None = None,
+    empty_value: str = "",
+    default_display: str | None = None,
 ) -> str:
     default = resolve_default(key, cfg_current, example_defaults, proposal)
     if key in cfg_current:
@@ -1391,13 +1394,17 @@ def walk_key(
         source = "derived"
     else:
         source = "example"
+    if allow_empty_token and not empty_value:
+        empty_value = "-"
     return ask(
         f"{label} ({key})",
         default,
         validate=validate,
         empty_token=empty_token,
-        empty_tokens=("-", "none") if allow_empty_token else (),
+        empty_tokens=("-",) if allow_empty_token else (),
         default_source=source,
+        default_display=default_display,
+        empty_value=empty_value,
     )
 
 
@@ -1428,7 +1435,7 @@ def walk_yn_key(
 
 
 def write_atomic(path: Path, content: str) -> None:
-    """Same pattern as mdt-io-baseline.py's write_cache_atomic: a temp file
+    """Same pattern as mdt-io-baseline.py's write_results: a temp file
     in the SAME directory (so os.replace is an atomic same-filesystem
     rename, never a cross-filesystem copy), fsync before replace, so an
     interrupted run never leaves a truncated/partial host-setup.env that
@@ -1444,7 +1451,7 @@ def write_atomic(path: Path, content: str) -> None:
 
 def _load_io_baseline_module(script_path: Path) -> ModuleType | None:
     """Import mdt-io-baseline.py (a hyphenated filename, so a plain `import`
-    can't name it) as a module, to reuse its own cache_is_fresh() rather
+    can't name it) as a module, to reuse its own results_are_current() rather
     than reimplementing the identity rules inline. Safe to exec: the
     module only defines functions/constants at import time, its own
     benchmark run is gated behind `if __name__ == "__main__":`."""
@@ -1461,13 +1468,13 @@ def _load_io_baseline_module(script_path: Path) -> ModuleType | None:
     return module
 
 
-def check_baseline_freshness(
+def check_benchmark_results(
     baseline_env_path: Path,
     testfile_path: Path,
     io_baseline_script: Path,
     io_dev_path: str = "",
 ) -> str:
-    """Return fresh, stale or missing without running fio.
+    """Return current, changed or missing without running fio.
 
     The baseline adapter takes ``IO_DEV_PATH`` from its environment. Set it
     explicitly for this check rather than inheriting whatever happened to be
@@ -1476,45 +1483,41 @@ def check_baseline_freshness(
     if not baseline_env_path.exists():
         return "missing"
     module = _load_io_baseline_module(io_baseline_script)
-    if module is not None and hasattr(module, "cache_is_fresh"):
+    if module is not None and hasattr(module, "results_are_current"):
         previous_io_dev_path = os.environ.get("IO_DEV_PATH")
         os.environ["IO_DEV_PATH"] = io_dev_path
         try:
-            fresh = module.cache_is_fresh(baseline_env_path, testfile_path)
-            valid = not hasattr(module, "cache_is_valid") or module.cache_is_valid(baseline_env_path)
-            return "fresh" if fresh and valid else "stale"
+            current = module.results_are_current(baseline_env_path, testfile_path)
+            valid = not hasattr(module, "results_are_valid") or module.results_are_valid(baseline_env_path)
+            return "current" if current and valid else "changed"
         except OSError:
-            return "stale"
+            return "changed"
         finally:
             if previous_io_dev_path is None:
                 os.environ.pop("IO_DEV_PATH", None)
             else:
                 os.environ["IO_DEV_PATH"] = previous_io_dev_path
-    return "stale"
+    return "changed"
 
 
 # ─── interactive sections (Work step 4a-4i) ────────────────────────────────
 
 
 def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
-    out("\n-- storage baseline: what this setup measures --")
+    out("\n-- a. storage measurement setup --")
     out("Measurement:")
     for bullet in (
         "Official kernel `io.cost` matrix: sequential and random read/write throughput.",
-        "The benchmark fills `io.max` ceilings; it does not enable `io.cost`.",
+        "The benchmark writes results used to set `io.max` ceilings; it does not enable `io.cost`.",
         "The persistent target file stays on the Docker-data filesystem/device.",
-        "Cache reuse requires matching target, filesystem, device identity, topology, and kernel/generator.",
+        "Results are reusable only while target, filesystem, device identity, topology, and kernel/generator match.",
+        "The benchmark target is a file, never the raw block device, so this measurement is non-destructive.",
     ):
         out(f"- {bullet}", hang="  ")
-    out("\n-- a. IO device (IO_DEV_PATH) --")
-    out("Ownership and fallback:")
+    out("Docker data device:")
     for bullet in (
-        "`IO_DEV_PATH` selects the device for static `dev.slice` IOPS/bandwidth caps.",
-        "Static fallback values come from `DEV_STATIC_RIOPS/WIOPS/RBW/WBW` in the template/config.",
-        "Those four static values are not prompted here; edit the config deliberately if you need a different boot fallback.",
-        "They are authoritative from boot until a valid baseline is applied.",
+        "`IO_DEV_PATH` selects the host block device named by the static root limits and measured results.",
         "Empty or `auto` discovers with `findmnt`; no device omits static IO caps but keeps CPU/memory governance.",
-        "No valid baseline disables matched-container IO caps; there is no global IO off switch for other governance.",
         "This answer is checked for `/dev/...` shape only; host setup must run outside the devcontainer.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -1525,11 +1528,9 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
         out(
             "auto-discovery found no usable host block-device node (findmnt may have failed, "
             "returned a container filesystem such as `overlay`, or returned no source). "
-            "On a supported host this should not be `overlay`; if it is, stop and leave "
-            "the devcontainer because host setup is being run in the wrong context. "
-            "Otherwise, at an auto value the installer omits static IO caps and the "
-            "runtime watcher skips IO caps until its own discovery finds a host device; "
-            "review the host mount or enter its `/dev/...` device node explicitly."
+            "If this is `overlay`, stop: host setup is running in the wrong namespace. "
+            "Otherwise, an auto value omits static IO caps and the runtime services skip "
+            "IO caps until a host device is discoverable; enter the host `/dev/...` node explicitly."
         )
     return walk_key(
         "Device node for Docker data (/dev/... path; auto = discover)",
@@ -1542,31 +1543,173 @@ def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]
     )
 
 
-def step_io_baseline(
+def step_static_io_fallback(
+    cfg_current: dict[str, str], example_defaults: dict[str, str]
+) -> dict[str, str]:
+    """Ask for the explicit boot-window IO fallback values.
+
+    These values are rendered into ``dev.slice`` and therefore remain the
+    authoritative hard cap while no current baseline can justify measured
+    runtime properties. They are deliberately separate from the measured
+    percentage settings and from transient per-container caps.
+    """
+    out("Static fallback values (used before a valid baseline):")
+    for bullet in (
+        "These four positive values are written to `dev.slice`'s unit file and apply to every dev child together.",
+        "They are used at boot and whenever the baseline is missing, incomplete, or fails its device-identity check.",
+        "After a successful baseline, `mdt-dev-governance-reconcile.service` temporarily overrides them with `DEV_IO_CAP_PCT`% of the measured ceiling.",
+        "If results are unavailable, these are the only active root IO limits; no per-container rate is guessed.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    fields: tuple[tuple[str, str, Validator], ...] = (
+        (
+            "Static root read IOPS (positive integer; aggregate dev.slice boot fallback)",
+            "DEV_STATIC_RIOPS",
+            validate_positive_int,
+        ),
+        (
+            "Static root write IOPS (positive integer; aggregate dev.slice boot fallback)",
+            "DEV_STATIC_WIOPS",
+            validate_positive_int,
+        ),
+        (
+            "Static root read bandwidth (positive systemd size; e.g. 150M)",
+            "DEV_STATIC_RBW",
+            validate_positive_size,
+        ),
+        (
+            "Static root write bandwidth (positive systemd size; e.g. 150M)",
+            "DEV_STATIC_WBW",
+            validate_positive_size,
+        ),
+    )
+    return {
+        key: walk_key(label, key, cfg_current, example_defaults, validate=validator)
+        for label, key, validator in fields
+    }
+
+
+@dataclass
+class BaselineJob:
+    process: subprocess.Popen
+    output: Path
+    target: Path
+    status_path: Path | None = None
+
+
+def abort_io_baseline(job: BaselineJob | None) -> None:
+    """Stop a background measurement if a later wizard step aborts.
+
+    The generator launches fio children of its own. A separate process group
+    makes an input/validation abort stop the whole saturated-disk workload,
+    rather than leaving fio behind after the wizard has returned.
+    """
+    if job is None or job.process.poll() is not None:
+        return
+    out("Wizard aborted; stopping the background benchmark.")
+    try:
+        os.killpg(job.process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        try:
+            job.process.terminate()
+        except OSError:
+            pass
+    try:
+        job.process.wait(timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            os.killpg(job.process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                job.process.kill()
+            except OSError:
+                pass
+        try:
+            job.process.wait()
+        except OSError:
+            pass
+    _write_baseline_status(job.status_path, "failed")
+
+
+def _write_baseline_status(path: Path | None, status: str) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(status + "\n", encoding="utf-8")
+
+
+def read_baseline_results(path: Path) -> dict[str, int]:
+    """Read the numeric ceilings from a completed benchmark-results file."""
+    try:
+        values = parse_env_file(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    result: dict[str, int] = {}
+    for key in ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS"):
+        try:
+            number = int(values.get(key, ""))
+        except ValueError:
+            continue
+        if number > 0:
+            result[key] = number
+    return result
+
+
+def _format_rate_bps(value: int) -> str:
+    if value >= 1024 ** 3:
+        return f"{value / 1024 ** 3:.1f} GiB/s"
+    return f"{value / 1024 ** 2:.0f} MiB/s"
+
+
+def parse_int_or_default(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def kib_or_auto(value: int | str) -> str:
+    if isinstance(value, int):
+        return kib_to_size_str(max(1, value // 1024))
+    return value
+
+
+def _io_cap_result_text(results: dict[str, int], pct: str) -> str:
+    try:
+        percent = int(pct)
+    except ValueError:
+        return "derived result unavailable until a valid percentage is entered"
+    if not all(key in results for key in ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS")):
+        return f"{percent}% -> unavailable until current benchmark results exist"
+    return (
+        f"{percent}% -> {results['RIOPS_MAX'] * percent // 100:,} read / "
+        f"{results['WIOPS_MAX'] * percent // 100:,} write IOPS; "
+        f"{_format_rate_bps(results['RBW_MAX_BPS'] * percent // 100)} read / "
+        f"{_format_rate_bps(results['WBW_MAX_BPS'] * percent // 100)} write"
+    )
+
+
+def step_io_baseline_start(
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
     io_baseline_script: Path,
     io_dev_path: str = "",
-) -> tuple[str, str, bool]:
-    """Offer to measure this disk's real IO ceilings.
-
-    Returns the selected cache path, target path, and True ONLY when this call
-    actually invoked the adapter and it exited 0. Every other path returns
-    the selected paths and False. main() uses that to decide whether the
-    `--with-baseline` question at the end is worth asking; re-running a
-    just-completed disk-saturating benchmark would buy nothing.
-    """
-    out("\n-- b. IO baseline --")
-    out("Cache contract:")
+    *,
+    baseline_requested: bool = False,
+    status_path: Path | None = None,
+) -> tuple[str, str, BaselineJob | None]:
+    """Collect result paths and start one optional benchmark in the background."""
+    out("\n-- b. benchmark results --")
+    out("Results file contract:")
     for bullet in (
         "Stores six raw coefficients plus four `io.max` ceilings.",
         "Uses the lower sequential/random IOPS value and sequential bytes/s bandwidth.",
-        "`IO_BASELINE_ENV` is read by the runtime service; it is durable state, not a report.",
+        "`IO_BASELINE_ENV` is the results file read by the runtime services.",
         "Both paths are absolute; `--force` remeasures but never bypasses identity checks.",
     ):
         out(f"- {bullet}", hang="  ")
     baseline_env = walk_key(
-        "Baseline cache file (absolute path)",
+        "Benchmark results file (absolute path)",
         "IO_BASELINE_ENV",
         cfg_current,
         example_defaults,
@@ -1586,35 +1729,44 @@ def step_io_baseline(
         validate=validate_absolute_path,
     )
     testfile = Path(testfile_text)
-    out(f"The cache will be read/written at `{baseline_env_path}`.")
-    out(f"The benchmark target remains at `{testfile}` so identity can be checked later.")
-    status = check_baseline_freshness(
+    out(f"Results will be read/written at `{baseline_env_path}`.")
+    out(f"The persistent benchmark target is `{testfile}`; its identity is recorded in the results file.")
+    status = check_benchmark_results(
         baseline_env_path, testfile, io_baseline_script, io_dev_path
     )
-    if status == "fresh":
-        out("This cache is current: its recorded device and persistent target still match this host. Leaving it as-is.")
-        return baseline_env, testfile_text, False
-    out("No current cache is available: it is missing, incomplete, or its device/target identity no longer matches.")
+    if status == "current" and not baseline_requested:
+        out("These benchmark results are current: their recorded device and target still match this host.")
+        _write_baseline_status(status_path, "current")
+        return baseline_env, testfile_text, None
+    if status == "current":
+        out("Existing benchmark results are current, but `--with-baseline` explicitly requests a new measurement.")
+    else:
+        out("No current benchmark results are available: the file is missing, incomplete, or its device/target identity changed.")
     if not io_baseline_script.exists():
         out(
             f"WARN: `{io_baseline_script}` not found -- skipping this step. Run it manually "
             "once it is installed; the static caps hold until you do."
         )
-        return baseline_env, testfile_text, False
+        _write_baseline_status(status_path, "deferred")
+        return baseline_env, testfile_text, None
     if shutil.which("fio") is None or shutil.which("pv") is None:
         out(
             "The official generator needs `fio` and `pv`, which are not both installed. "
             "On a fresh host, install.sh installs them after this candidate is validated; "
             f"run the benchmark later with `sudo {io_baseline_script}` in a quiet window."
         )
-        return baseline_env, testfile_text, False
+        _write_baseline_status(status_path, "deferred")
+        return baseline_env, testfile_text, None
     run_now = ask_yn(
-        "Run the io.cost baseline now? It runs six fio measurements for about 12 minutes minimum and SATURATES THE DISK; use a quiet maintenance window",
-        default=False,
+        "Start the io.cost benchmark now while the wizard continues? Six fio measurements take about 12 minutes minimum and saturate the target disk",
+        default=baseline_requested,
+        default_source="requested by --with-baseline" if baseline_requested else "optional",
     )
     if not run_now:
-        out(f"Skipping -- run it later with: sudo {io_baseline_script} --output `{baseline_env}` --testfile `{testfile}`")
-        return baseline_env, testfile_text, False
+        out("Decision recorded: do not benchmark now. IO settings will use the static root limits until current results exist; no per-container rate is guessed.")
+        out(f"Run it later with: sudo {io_baseline_script} --output `{baseline_env}` --testfile `{testfile}`")
+        _write_baseline_status(status_path, "declined")
+        return baseline_env, testfile_text, None
     # Flush first: our own stdout is block-buffered whenever it is not a
     # terminal (a piped/redirected run, i.e. every recorded transcript), while
     # the child writes to the same fd immediately -- without this the child's
@@ -1626,26 +1778,118 @@ def step_io_baseline(
     # The adapter's identity check must use the device the operator selected,
     # not an unrelated ambient value inherited from the launching shell.
     child_env["IO_DEV_PATH"] = io_dev_path
-    result = subprocess.run(
-        [sys.executable, str(io_baseline_script), "--output", baseline_env, "--testfile", testfile_text],
-        env=child_env, check=False
-    )
-    if result.returncode != 0:
-        out(
-            f"WARN: the IO baseline run exited {result.returncode} -- the static caps remain "
-            "in force until it succeeds."
+    try:
+        command = [sys.executable, str(io_baseline_script), "--output", baseline_env, "--testfile", testfile_text]
+        if baseline_requested:
+            command.append("--force")
+        process = subprocess.Popen(
+            command,
+            env=child_env,
+            start_new_session=True,
         )
-        return baseline_env, testfile_text, False
-    return baseline_env, testfile_text, True
+    except OSError as exc:
+        out(f"WARN: could not start the IO benchmark: {exc}; static root limits remain in force.")
+        _write_baseline_status(status_path, "failed")
+        return baseline_env, testfile_text, None
+    out(f"Benchmark started in background (pid {process.pid}); the wizard will wait for it before the final IO questions.")
+    _write_baseline_status(status_path, "running")
+    return baseline_env, testfile_text, BaselineJob(process, baseline_env_path, testfile, status_path)
+
+
+def finish_io_baseline(job: BaselineJob | None) -> dict[str, int]:
+    if job is None:
+        return {}
+    out("\n-- benchmark completion --")
+    out("Waiting for the background benchmark to finish before calculating IO settings...")
+    returncode = job.process.wait()
+    if returncode != 0:
+        out(f"WARN: the IO benchmark exited {returncode}; static root IO limits remain in force.")
+        _write_baseline_status(job.status_path, "failed")
+        return {}
+    results = read_baseline_results(job.output)
+    if len(results) != 4:
+        out("WARN: the benchmark exited successfully but did not produce complete results; static root IO limits remain in force.")
+        _write_baseline_status(job.status_path, "failed")
+        return {}
+    out("Benchmark completed; the four measured ceilings are available for the final IO settings.")
+    _write_baseline_status(job.status_path, "completed")
+    return results
+
+
+def _io_subslice_result_text(results: dict[str, int], dev_pct: str, sub_pct: str) -> str:
+    try:
+        parent_pct = int(dev_pct)
+        child_pct = int(sub_pct)
+    except ValueError:
+        return "derived result unavailable until valid percentages are entered"
+    if not all(key in results for key in ("RIOPS_MAX", "WIOPS_MAX")):
+        return f"{child_pct}% -> unavailable until current benchmark results exist"
+    return (
+        f"gates/BuildKit -> {results['RIOPS_MAX'] * parent_pct * child_pct // 10000:,} read / "
+        f"{results['WIOPS_MAX'] * parent_pct * child_pct // 10000:,} write IOPS"
+    )
+
+
+def step_io_settings(
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+    results: dict[str, int],
+) -> dict[str, str]:
+    """Converge all IO choices after the background measurement has finished."""
+    out("\n-- h. final IO settings --")
+    out("The benchmark has finished (or was intentionally skipped), so these prompts now show the actual result of each percentage.")
+    out("IO hierarchy, top down:")
+    for bullet in (
+        "`dev.slice`: one aggregate `io.max` pool protects production from all dev containers together.",
+        "A container inside a governed child gets the per-container cap as an additional leaf ceiling; the tightest ancestor still wins.",
+        "`dev-gates.slice` and `dev-buildkitd.slice`: their IOPS sub-ceiling is a percentage of the already-derived dev.slice IOPS, while bandwidth inherits the parent.",
+        "A Buildx worker outside the governed tree is capped only when its configured name matches the out-of-tree BuildKit pattern.",
+        "`IOWeight` is a relative share among sibling slices; `io.max` is an absolute rate ceiling.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    out("Static root limits:")
+    values = step_static_io_fallback(cfg_current, example_defaults)
+    out("Measured percentage limits:")
+    dev_default = resolve_default("DEV_IO_CAP_PCT", cfg_current, example_defaults, None)
+    watcher_default = resolve_default("WATCHER_IO_CAP_PCT", cfg_current, example_defaults, None)
+    dev_pct = walk_key(
+        "Whole-estate cap (percentage of measured device ceiling)",
+        "DEV_IO_CAP_PCT",
+        cfg_current,
+        example_defaults,
+        validate=validate_cap_pct,
+        default_display=_io_cap_result_text(results, dev_default),
+    )
+    watcher_pct = walk_key(
+        "Per-container cap (percentage of measured device ceiling)",
+        "WATCHER_IO_CAP_PCT",
+        cfg_current,
+        example_defaults,
+        validate=validate_cap_pct,
+        default_display=_io_cap_result_text(results, watcher_default),
+    )
+    values["DEV_IO_CAP_PCT"] = dev_pct
+    values["WATCHER_IO_CAP_PCT"] = watcher_pct
+    sub_default = resolve_default("DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults, None)
+    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
+        "Gates/BuildKit IOPS sub-ceiling (percentage of dev.slice IOPS; bandwidth unchanged)",
+        "DEV_SUBSLICE_IOPS_PCT",
+        cfg_current,
+        example_defaults,
+        validate=validate_pct_1_100,
+        default_display=_io_subslice_result_text(results, dev_pct, sub_default),
+    )
+    return values
 
 
 def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> tuple[str, str]:
-    out("\n-- c. IO cap percentages --")
+    """Retained for focused callers; the main wizard uses step_io_settings."""
+    out("\n-- final IO cap percentages --")
     out("Formula: `cap = floor(measured ceiling × percentage / 100)`.")
     out("Two owners, two protections:")
     for bullet in (
         "`DEV_IO_CAP_PCT` -> `dev.slice`; one pool protects production from all dev IO together.",
-        "`WATCHER_IO_CAP_PCT` -> each matched container; sweep + Docker events protect tier members from each other.",
+        "`WATCHER_IO_CAP_PCT` -> each governed container; sweep + Docker events protect tier members from each other.",
         "Buildx placement can bypass `dev.slice`, so direct watcher caps remain necessary.",
         "`IOWeight` is a relative share; `io.max` is an absolute rate cap.",
         "No valid baseline -> matched-container IO caps stay disabled; no guessed rate is applied.",
@@ -1730,8 +1974,8 @@ def _prompt_shared_memory_min(values: dict[str, str]) -> None:
         f"  MemoryMin ({key}; shared with dev.slice; Enter confirms, a different value updates both)",
         authoritative,
         validate=validate_optional_positive_size,
-        empty_token="none",
-        empty_tokens=("-", "none"),
+        empty_token="-",
+        empty_tokens=("-",),
         default_source="confirmed above",
     )
 
@@ -1767,7 +2011,7 @@ def _reprompt_memory_constraints(
             if not raw:
                 out("  Enter keeps the invalid value; type a smaller/larger value or '-' to unset.")
                 continue
-            value = "" if raw.lower() in ("-", "none") else raw
+            value = "" if raw.lower() == "-" else raw
             error = validator(value)
             if error:
                 out(f"  invalid: {error}")
@@ -1819,7 +2063,7 @@ def step_slice_first_resources(
         "`MemoryLow` -> soft, best-effort protection.",
         "`MemoryHigh` -> soft reclaim/throttling threshold.",
         "`MemoryMax` -> hard RAM ceiling; `MemorySwapMax` is separate swap.",
-        "Every field is optional; Enter keeps the default and `-`/`none` omits it.",
+        "Every field is optional; Enter keeps the shown default and `-` omits the directive.",
     ):
         out(f"- {bullet}", hang="  ")
     out("Memory hierarchy:")
@@ -1832,6 +2076,58 @@ def step_slice_first_resources(
         "+-- dev-memory_min_guaranteed.slice (sibling: admitted floor)",
     ):
         out(line, indent="  ")
+    out("Top-down example (starting proposals; your answers replace these values):")
+    root_reserve = parse_int_or_default(
+        resolve_default("DEV_CPU_RESERVE_CORES", cfg_current, example_defaults, None), 1
+    )
+    child_reserve = parse_int_or_default(
+        resolve_default("DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults, None), 3
+    )
+    swap_pct = parse_int_or_default(
+        resolve_default("DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults, None), 80
+    )
+    root_swap = (swap_kib * 1024 * swap_pct // 100) if swap_kib else "auto"
+    child_swap = (
+        (root_swap * swap_pct // 100) if isinstance(root_swap, int) else "derived from parent"
+    )
+    table_rows = (
+        ("dev.slice", "root estate", proposals["DEV_MEMORY_HIGH"] + "/" + proposals["DEV_MEMORY_MAX"],
+         f"{max(1, host_nproc - root_reserve) * 100}%", kib_or_auto(root_swap),
+         "60% of measured device"),
+        ("├─ dev-interactive.slice", "IDE/devcontainers", proposals["DEV_INTERACTIVE_MEMORY_HIGH"] + "/" + proposals["DEV_INTERACTIVE_MEMORY_MAX"],
+         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         "parent + leaf"),
+        ("├─ dev-background.slice", "stacks/tests", proposals["DEV_BACKGROUND_MEMORY_HIGH"] + "/" + proposals["DEV_BACKGROUND_MEMORY_MAX"],
+         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         "parent + leaf"),
+        ("├─ dev-gates.slice", "short gate lanes", proposals["DEV_GATES_MEMORY_HIGH"] + "/" + proposals["DEV_GATES_MEMORY_MAX"],
+         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         "parent IOPS × 60%"),
+        ("├─ dev-buildkitd.slice", "shared BuildKit", proposals["DEV_BUILDKITD_MEMORY_HIGH"] + "/" + proposals["DEV_BUILDKITD_MEMORY_MAX"],
+         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         "parent IOPS × 60%"),
+        ("└─ dev-memory_min_guaranteed.slice", "admitted floor", "optional/optional", "inherited", "inherited",
+         "inherited"),
+    )
+    why_by_cgroup = {
+        "dev.slice": "one aggregate shield for production",
+        "├─ dev-interactive.slice": "keep interactive work responsive",
+        "├─ dev-background.slice": "absorb ordinary background load",
+        "├─ dev-gates.slice": "bound disposable work without starving it",
+        "├─ dev-buildkitd.slice": "protect the shared builder and cache",
+        "└─ dev-memory_min_guaranteed.slice": "only admitted containers share MemoryMin",
+    }
+    if term_width() >= 105:
+        out("cgroup                         role             High/Max       CPUQuota   SwapMax         IO policy", indent="  ")
+        for row in table_rows:
+            out(f"{row[0]:<32} {row[1]:<16} {row[2]:<14} {row[3]:<10} {row[4]:<15} {row[5]}", indent="  ")
+            out(f"why: {why_by_cgroup[row[0]]}", indent="    ", hang="      ")
+    else:
+        out("cgroup tree | High/Max | CPUQuota | SwapMax | IO policy", indent="  ")
+        for row in table_rows:
+            out(f"{row[0]} | H/M {row[2]} | CPU {row[3]} | swap {row[4]}", indent="  ")
+            out(f"IO: {row[5]}; why: {why_by_cgroup[row[0]]}", indent="    ", hang="      ")
+    out("  * This is a concrete 16-GiB-style starting example. `auto` CPU/swap values are derived at install time; IO percentages are applied only after current benchmark results exist.")
     out("Validation policy:")
     for bullet in (
         "Sibling Min/Low/High controls are independent; their values are not summed.",
@@ -1917,10 +2213,19 @@ def step_slice_first_resources(
         "DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults,
         validate=validate_nonneg_int,
     )
+    entered_root_reserve = parse_int_or_default(
+        values["DEV_CPU_RESERVE_CORES"], root_reserve
+    )
+    root_cpu_default = resolve_default("DEV_CPU_QUOTA", cfg_current, example_defaults, "auto")
     values["DEV_CPU_QUOTA"] = walk_key(
-        "  dev.slice CPUQuota ('-' = derived from host reserve; N% = hard cap)",
+        "  dev.slice CPUQuota (auto = derived; '-' = no directive/unlimited; N% = hard cap)",
         "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
-        allow_empty_token=True,
+        proposal="auto",
+        default_display=(
+            f"auto -> {max(1, host_nproc - entered_root_reserve) * 100}%"
+            if root_cpu_default in ("", "auto") else None
+        ),
+        allow_empty_token=True, empty_value="-",
     )
     values["DEV_ZSWAP_WRITEBACK"] = walk_yn_key(
         "  dev.slice MemoryZSwapWriteback", "DEV_ZSWAP_WRITEBACK",
@@ -1932,7 +2237,7 @@ def step_slice_first_resources(
         "Swap is separate from RAM; MemorySwapMax limits swap only.",
         "dev.slice blank -> DEV_SWAP_CASCADE_PCT% of host SwapTotal.",
         "Child blank -> the same percentage of dev.slice's derived swap ceiling.",
-        "An explicit size overrides only that slice; blank means derived, not unlimited.",
+        "`auto` derives; an explicit size overrides only that slice; `-` omits the directive and means unlimited/default at that level.",
     ):
         out(f"- {bullet}", hang="  ")
     values["DEV_SWAP_CASCADE_PCT"] = walk_key(
@@ -1940,26 +2245,30 @@ def step_slice_first_resources(
         "DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults,
         validate=validate_pct_1_100,
     )
+    entered_swap_pct = parse_int_or_default(values["DEV_SWAP_CASCADE_PCT"], swap_pct)
+    root_swap = (swap_kib * 1024 * entered_swap_pct // 100) if swap_kib else "auto"
+    root_swap_default = resolve_default("DEV_SWAP_MAX", cfg_current, example_defaults, "auto")
+    root_swap_display = None
+    if root_swap_default in ("", "auto"):
+        root_swap_display = (
+            f"auto -> {kib_or_auto(root_swap)}"
+            if isinstance(root_swap, int)
+            else "auto -> unavailable (host swap is zero)"
+        )
     values["DEV_SWAP_MAX"] = walk_key(
-        "  dev.slice MemorySwapMax ('-' = derive swap-only ceiling)",
+        "  dev.slice MemorySwapMax (auto = derived; '-' = no directive/unlimited)",
         "DEV_SWAP_MAX", cfg_current, example_defaults,
         validate=validate_size_or_auto,
-        allow_empty_token=True,
+        proposal="auto",
+        default_display=root_swap_display,
+        allow_empty_token=True, empty_value="-",
     )
-    out("IOPS sub-ceiling:")
-    for bullet in (
-        "Applies only to dev-gates.slice and dev-buildkitd.slice.",
-        "Percentage of dev.slice's already-derived IOPS cap, not the raw device ceiling.",
-        "IOPS only; bandwidth inherits the parent pool.",
-        "The root uses absolute io.max caps, so it has no IOWeight setting.",
-    ):
-        out(f"- {bullet}", hang="  ")
-    values["DEV_SUBSLICE_IOPS_PCT"] = walk_key(
-        "  child IOPS sub-ceiling (percentage of dev.slice IOPS cap; bare 1-100)",
-        "DEV_SUBSLICE_IOPS_PCT", cfg_current, example_defaults,
-        validate=validate_pct_1_100,
-    )
-
+    if values["DEV_SWAP_MAX"] in ("", "auto"):
+        child_swap = (swap_kib * 1024 * entered_swap_pct // 100) if swap_kib else "derived from host swap"
+    elif values["DEV_SWAP_MAX"] == "-":
+        child_swap = "not derived because the parent is unlimited"
+    else:
+        child_swap = (parse_size_to_kib(values["DEV_SWAP_MAX"]) * 1024 * entered_swap_pct // 100)
     out("Cgroup mount safety:")
     for bullet in (
         "The periodic host service checks `memory_recursiveprot`; without it, slice MemoryMin/Low may not protect container pages.",
@@ -1985,7 +2294,7 @@ def step_slice_first_resources(
         out(f"- {bullet}", hang="  ")
     _prompt_shared_memory_min(values)
     out(
-        f"  mirrored MemoryMin: {values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'none'}; "
+        f"  mirrored MemoryMin: {values['DEV_MEMORY_MIN_GUARANTEED_CEILING'] or 'unset'}; "
         "the sibling has no second MemoryMin setting."
     )
     out(
@@ -2037,38 +2346,62 @@ def step_slice_first_resources(
             )
         out("CPU and IO controls:")
         for bullet in (
-            "CPUQuota is this slice's hard cap; an empty value derives from the child reserve above. Type `-` to choose that when upgrading.",
+            "CPUQuota is this slice's hard cap; `auto` derives it from the child reserve above, `-` omits it, and an explicit N% wins.",
             "Explicit N% wins; CPUWeight and IOWeight are relative shares, not caps.",
             "Weights matter only when siblings contend.",
         ):
             out(f"- {bullet}", hang="  ")
+        child_cpu_default = resolve_default(
+            f"{prefix}_CPU_QUOTA", cfg_current, example_defaults, "auto"
+        )
+        entered_child_reserve = parse_int_or_default(
+            values["DEV_SUBSLICE_CPU_RESERVE_CORES"], child_reserve
+        )
+        values[f"{prefix}_CPU_QUOTA"] = walk_key(
+            "  CPUQuota (auto = derived; '-' = no directive/unlimited; N% = hard cap)",
+            f"{prefix}_CPU_QUOTA", cfg_current, example_defaults,
+            proposal="auto",
+            default_display=(
+                f"auto -> {max(1, host_nproc - entered_child_reserve) * 100}%"
+                if child_cpu_default in ("", "auto") else None
+            ),
+            validate=validate_cpu_quota,
+            allow_empty_token=True, empty_value="-",
+        )
         values[f"{prefix}_CPU_WEIGHT"] = walk_key(
-            "  CPUWeight (1-10000; relative share, not a cap)",
+            "  CPUWeight (1-10000; relative share among dev.slice sibling slices)",
             f"{prefix}_CPU_WEIGHT", cfg_current, example_defaults,
             validate=validate_weight,
         )
-        values[f"{prefix}_CPU_QUOTA"] = walk_key(
-            "  CPUQuota ('-' = derived child ceiling; N% = hard cap)",
-            f"{prefix}_CPU_QUOTA", cfg_current, example_defaults,
-            validate=validate_cpu_quota,
-            allow_empty_token=True,
-        )
         values[f"{prefix}_IO_WEIGHT"] = walk_key(
-            "  IOWeight (1-10000; relative share, not an IO cap)",
+            "  IOWeight (1-10000; relative share among dev.slice sibling slices)",
             f"{prefix}_IO_WEIGHT", cfg_current, example_defaults,
             validate=validate_weight,
         )
         out("Swap control:")
         for bullet in (
             "MemorySwapMax limits swap only.",
-            "An empty value cascades from the live parent; an explicit size affects only this slice. Type `-` to choose cascade when upgrading.",
+            "`auto` derives from the live parent; a size is this slice's explicit swap-only ceiling; `-` omits the directive (unlimited/default).",
         ):
             out(f"- {bullet}", hang="  ")
+        child_swap_default = resolve_default(
+            f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults, "auto"
+        )
+        child_swap_display = None
+        if child_swap_default in ("", "auto"):
+            if isinstance(child_swap, int):
+                child_swap_display = f"auto -> {kib_or_auto(child_swap)}"
+            elif child_swap == "not derived because the parent is unlimited":
+                child_swap_display = "auto -> unavailable because parent is unlimited"
+            else:
+                child_swap_display = "auto -> unavailable (host swap is zero)"
         values[f"{prefix}_MEMORY_SWAP_MAX"] = walk_key(
-            "  MemorySwapMax ('-' = derived swap-only ceiling)",
+            "  MemorySwapMax (auto = derived; '-' = no directive/unlimited)",
             f"{prefix}_MEMORY_SWAP_MAX", cfg_current, example_defaults,
+            proposal="auto",
+            default_display=child_swap_display,
             validate=validate_size_or_auto,
-            allow_empty_token=True,
+            allow_empty_token=True, empty_value="-",
         )
         out("Zswap control:")
         for bullet in (
@@ -2124,26 +2457,23 @@ def step_slice_first_resources(
 def step_watcher(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
-    """Per-container defaults `mdt-dev-cap-watcher.py` applies to an
-    unlabelled docker-*.scope the instant it appears under a governed
-    slice -- the answer to "a tight ceiling per consumer, with generous
-    swap," since cgroup v2 has no anon-only cap of its own."""
+    """Configure the in-slice memory defaults and the out-of-tree Buildx match."""
     values: dict[str, str] = {}
-    out("\n-- g. Reactive per-container cap watcher (mdt-dev-cap-watcher.py) --")
+    out("\n-- g. reactive container safeguards --")
     out("Purpose and precedence:")
     for bullet in (
-        "Caps the blast radius of one unlabelled container inside a governed slice.",
-        "The memory watcher applies caps on cgroup creation when inotify works; the periodic sweep is the backstop.",
-        "A container's explicit docker run --memory wins; these values fill only an omitted memory limit.",
+        "The inotify memory watcher applies defaults to every unlabelled Docker scope it sees under interactive, background, and gates.",
+        "Each of those slices has its own MemoryHigh/MemoryMax pair below; a container's explicit docker run --memory still wins.",
+        "The periodic reconciliation service remains the backstop when inotify is unavailable or misses an event.",
     ):
         out(f"- {bullet}", hang="  ")
     out("Matching and cadence:")
     for bullet in (
-        "Docker events apply IO caps immediately; the periodic timer is the restart-gap/backstop sweep.",
+        "The Docker-events IO watcher applies the measured per-container cap immediately; the periodic timer is its backstop.",
         "The same interval also checks cgroup mount flags, so a shorter interval reduces that repair window at some host overhead.",
-        "Image patterns match `.Config.Image`; name patterns match the Docker container name.",
-        "Patterns are space-separated shell globs such as `*test-runner*`; at least one pattern is required in each field.",
-        "Changing these values affects future sweeps/events after the service reloads its config; re-run install.sh or restart the watcher.",
+        "No pattern is needed for a container correctly placed under a governed child: its cgroup path is authoritative.",
+        "The only pattern below is for an unapproved Buildx worker outside the tree, where its broken placement cannot select it.",
+        "Changing these values affects future events/sweeps after the services reload their config; re-run install.sh or restart them.",
     ):
         out(f"- {bullet}", hang="  ")
     values["WATCHER_INTERVAL"] = walk_key(
@@ -2151,50 +2481,34 @@ def step_watcher(
         "WATCHER_INTERVAL", cfg_current, example_defaults,
         validate=validate_systemd_timespan,
     )
-    for label, key in (
-        ("test-runner image match patterns", "WATCHER_TESTRUNNER_IMAGE_PATTERNS"),
-        ("BuildKit container-name match patterns", "WATCHER_BUILDKIT_NAME_PATTERNS"),
-        ("devcontainer-name match patterns", "WATCHER_DEVCONTAINER_NAME_PATTERNS"),
+    values["WATCHER_BUILDKIT_NAME_PATTERNS"] = walk_key(
+        "Out-of-tree Buildx container-name patterns (space-separated shell globs)",
+        "WATCHER_BUILDKIT_NAME_PATTERNS", cfg_current, example_defaults,
+        validate=validate_watcher_patterns,
+    )
+    out("Per-container memory pairs (queried High before Max):")
+    for slice_name, prefix, reason in (
+        ("interactive", "WATCHER_INTERACTIVE", "IDE and devcontainer leaf ceiling"),
+        ("background", "WATCHER_BACKGROUND", "ordinary stack/test leaf ceiling"),
+        ("gates", "WATCHER_GATES", "one disposable lane; keep enough headroom for a gate"),
     ):
-        values[key] = walk_key(
-            f"{label} (space-separated shell globs)", key,
-            cfg_current, example_defaults,
-            validate=validate_watcher_patterns,
+        out(f"{slice_name}: {reason}", indent="  ")
+        high_key = f"{prefix}_MEMORY_HIGH"
+        max_key = f"{prefix}_MEMORY_MAX"
+        values[high_key] = walk_key(
+            f"  {slice_name} per-container MemoryHigh (optional; '-' = no directive)",
+            high_key, cfg_current, example_defaults,
+            validate=validate_optional_positive_size, allow_empty_token=True,
         )
-    values["WATCHER_PER_CONTAINER_MEMORY_MAX"] = walk_key(
-        "Per-container MemoryMax (interactive/background; positive size)",
-        "WATCHER_PER_CONTAINER_MEMORY_MAX",
-        cfg_current,
-        example_defaults,
-        validate=validate_positive_size,
-    )
-    out("Gate-container ceiling:")
-    for bullet in (
-        "dev-gates.slice uses its own per-container MemoryMax, separate from interactive/background.",
-        "It is sized for one lane container; making it too small recreates the headroom incident this tier fixes.",
-    ):
-        out(f"- {bullet}", hang="  ")
-    values["WATCHER_PER_CONTAINER_GATES_MEMORY_MAX"] = walk_key(
-        "Per-container MemoryMax (gates; positive size)",
-        "WATCHER_PER_CONTAINER_GATES_MEMORY_MAX",
-        cfg_current,
-        example_defaults,
-        validate=validate_positive_size,
-    )
-    out("Per-container MemoryHigh:")
-    out("- Derived as this percentage of the selected per-container MemoryMax; it is a soft throttle below the hard cap.", hang="  ")
-    values["WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT"] = walk_key(
-        "Per-container MemoryHigh (% of that MemoryMax; bare 1-100)",
-        "WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT",
-        cfg_current,
-        example_defaults,
-        validate=validate_pct_1_100,
-    )
+        values[max_key] = walk_key(
+            f"  {slice_name} per-container MemoryMax (optional; '-' = no directive)",
+            max_key, cfg_current, example_defaults,
+            validate=validate_optional_positive_size, allow_empty_token=True,
+        )
     out("Per-container swap:")
     for bullet in (
-        "Not prompted here.",
-        "At runtime it uses the matched slice's live memory.swap.max and applies DEV_SWAP_CASCADE_PCT.",
-        "It is not re-derived from this file; see read_slice_swap_max_bytes() in mdt-dev-cap-watcher.py.",
+        "Not prompted here: the watcher derives it from the matched slice's live swap-only ceiling.",
+        "It applies DEV_SWAP_CASCADE_PCT once more; if the slice is unlimited, no percentage is invented.",
     ):
         out(f"- {bullet}", hang="  ")
     return values
@@ -2222,10 +2536,11 @@ def explain_install_map() -> None:
     for bullet in (
         "`dev*.slice` units — static CPU, memory, swap, weights, and tight IO fallback.",
         "`dev-gates.slice` is ready for gate consumers; run-gate, cmru tester-gate, and srdm still use `dev-background.slice` until they adopt `CGROUP_PARENT_DEV_GATES`.",
-        "`mdt-host-slices.service` + timer — measured root IO caps, zswap fallback, sweep, and audit.",
-        "`mdt-io-cap-watcher.service` — Docker start events -> immediate IO caps.",
-        "Transient scopes and unreliable Buildx placement are why this watcher exists; the sweep is its backstop.",
-        "`mdt-dev-cap-watcher.service` — inotify memory backstop, only when available.",
+        "`mdt-dev-governance-reconcile.service` + timer — measured root IO caps, zswap fallback, sweep, and audit.",
+        "`mdt-container-io-events-watcher.service` — Docker start events -> immediate IO caps on governed scopes and named out-of-tree Buildx workers.",
+        "Transient scopes and unreliable Buildx placement are why the container events watcher exists; reconciliation is its backstop.",
+        "`mdt-container-memory-inotify-watcher.service` — inotify memory caps on newly-created container scopes, only when available.",
+        "`mdt-slice-memory-min-low-audit.py` — read-only audit of only `memory.min`/`memory.low` ancestor effectiveness.",
         "`mdt-buildkitd.service` + remote — rootless worker in `dev-buildkitd.slice`.",
         "BuildKit image and maximum solver parallelism are configured here.",
         "`mdt-buildkit-guard.service` — enforce accidental Buildx terminate/report-only policy.",
@@ -2235,7 +2550,7 @@ def explain_install_map() -> None:
         out(f"- {bullet}", hang="  ")
     out("Where answers go:")
     for bullet in (
-        "`DEV_IO_CAP_PCT` -> `mdt-host-slices.service` root cap.",
+        "`DEV_IO_CAP_PCT` -> `mdt-dev-governance-reconcile.service` root cap.",
         "`WATCHER_IO_CAP_PCT` -> periodic sweep + IO watcher.",
         "Slice resource keys -> their matching slice units.",
         "BuildKit image/parallelism/policy -> BuildKit + guard.",
@@ -2272,12 +2587,13 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               sudo ./install.sh --wizard
                 The installer supplies a temporary candidate, runs this wizard, then
                 validates it before installing /etc/mdt, rendering systemd units, and
-                applying the policy. Use --force with --wizard only when you want to
+                applying the policy. Use --reset with --wizard only when you want to
                 discard the old config's values as defaults and start from the current
-                example; the old file is still backed up after validation.
-                (The standalone wizard itself has no --force option; that flag belongs
+                example plus live-host proposals; the old file is still backed up after
+                validation. Without --reset, existing values are the defaults.
+                (The standalone wizard itself has no --reset option; that flag belongs
                 to install.sh's candidate-handling step.)
-                Do not delete the existing output to imitate --force: deletion loses
+                Do not delete the existing output to imitate --reset: deletion loses
                 its values as defaults and prevents the installer's automatic backup.
 
             Host-only precondition
@@ -2290,14 +2606,11 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
             Defaults and empty values
               - Existing output values win, including intentional empty values.
               - For a missing key, a live-host proposal wins over the example.
-              - Enter accepts the shown default; `-` (or `none`) clears optional memory.
-              - Type `-` for derived CPUQuota or MemorySwapMax; Enter keeps the shown value,
-                including an existing explicit setting.
+              - Enter accepts the shown default; `-` omits an optional directive.
+              - For CPUQuota/MemorySwapMax, `auto` derives at install time and `-` omits the
+                directive (unlimited/default); Enter accepts the shown choice.
               - Sizes are binary (`2G` means 2 GiB); a bare number means bytes.
               - Percentage prompts say whether they expect a bare number or `400%`.
-              - Old watcher names are migrated to their `WATCHER_*` names when an
-                existing config is opened; a plain install asks for this migration first.
-
             What the sizing uses
               - Memory proposals use physical MemTotal; MemAvailable is context only.
               - Sibling Min/Low/High controls are independent, not a summed budget.
@@ -2307,14 +2620,14 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               - CPU auto-quota uses nproc minus the selected host/child reserve, floored
                 at one core.
               - IO percentages use measured io.cost ceilings: lower IOPS and sequential
-                bandwidth; no current cache leaves root unit statics authoritative and
-                disables guessed per-container IO caps.
+                bandwidth; no current results leave root unit statics authoritative and
+                disable guessed per-container IO caps.
 
             Important files and side effects
               - Reads: --example, existing --output, memory/swap facts, Docker mount,
                 IO_BASELINE_ENV/TESTFILE, and the baseline adapter/generator.
               - Writes --output atomically at the end. Selecting the benchmark also
-                writes the baseline cache/target and temporarily saturates its device.
+                writes the benchmark results/target and temporarily saturates its device.
               - install.sh writes /etc/mdt and merges owned Docker keys into
                 /etc/docker/daemon.json.
               - Docker restarts only when --restart-docker is explicitly supplied.
@@ -2375,6 +2688,21 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
             "which validates and applies the candidate itself"
         ),
     )
+    parser.add_argument(
+        "--with-baseline",
+        action="store_true",
+        help=(
+            "request the benchmark at the start of the wizard; it runs in the "
+            "background while the other questions are answered"
+        ),
+    )
+    parser.add_argument(
+        "--baseline-status",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="internal installer status file for the one benchmark lifecycle",
+    )
     return parser.parse_args(argv)
 
 
@@ -2417,7 +2745,6 @@ def main(argv: list[str] | None = None) -> int:
         try:
             cfg_current = parse_env_file(args.output.read_text(), strict=True)
             out(f"Found an existing `{args.output}` -- using its values as defaults where they are actually set.")
-            cfg_current = migrate_legacy_config_keys(cfg_current)
         except (OSError, TemplateError) as exc:
             print(
                 f"ERROR: could not safely read existing `{args.output}`: {exc}",
@@ -2425,7 +2752,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(
                 "No configuration was written. Repair the existing file or use "
-                "install.sh --wizard --force after reviewing the replacement.",
+                "install.sh --wizard --reset after reviewing the replacement.",
                 file=sys.stderr,
             )
             return 1
@@ -2459,7 +2786,7 @@ def main(argv: list[str] | None = None) -> int:
     out("== mdt host-setup wizard ==")
     out("Run contract:")
     for bullet in (
-        "Reads the template, existing output, host memory/swap facts, Docker mount, and IO cache.",
+        "Reads the template, existing output, host memory/swap facts, Docker mount, and benchmark results.",
         "Existing values win; otherwise defaults come from a live-host proposal, then the example.",
         "Writes the candidate atomically only after all prompts and validation finish.",
     ):
@@ -2475,7 +2802,7 @@ def main(argv: list[str] | None = None) -> int:
     out("Prompt conventions:")
     for bullet in (
         "Enter accepts the shown default; `-` clears optional memory directives.",
-        "Type `-` for derived CPUQuota or MemorySwapMax; Enter keeps the shown value, including an existing explicit setting.",
+        "For derived CPUQuota/MemorySwapMax, `auto` means derive at install time and `-` means no directive (unlimited/default). Enter accepts the shown choice and its displayed result.",
         "A cleared memory directive is omitted from the rendered unit.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2486,8 +2813,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     out("Important files and side effects:")
     for bullet in (
-        "Template and output paths are read/written; baseline cache and target identity are checked in section b.",
-        "The cache and target change only if the benchmark is selected.",
+        "Template and output paths are read/written; benchmark-results and target identity are checked in section b.",
+        "The results file and target change only if the benchmark is selected.",
         "`install.sh` writes `/etc/mdt`, merges owned Docker keys, and restarts Docker only with `--restart-docker`.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2499,19 +2826,20 @@ def main(argv: list[str] | None = None) -> int:
     explain_install_map()
 
     walked: dict[str, str] = {}
+    baseline_job: BaselineJob | None = None
     try:
+        # Start the optional disk measurement before the resource questions.
+        # It runs concurrently with the rest of the wizard; all IO choices are
+        # deliberately collected after the one job has finished.
         io_dev_path = step_io_device(cfg_current, example_defaults)
         walked["IO_DEV_PATH"] = io_dev_path
-
-        baseline_env, baseline_testfile, baseline_measured_now = step_io_baseline(
-            cfg_current, example_defaults, args.io_baseline_script, io_dev_path
+        baseline_env, baseline_testfile, baseline_job = step_io_baseline_start(
+            cfg_current, example_defaults, args.io_baseline_script, io_dev_path,
+            baseline_requested=args.with_baseline,
+            status_path=args.baseline_status,
         )
         walked["IO_BASELINE_ENV"] = baseline_env
         walked["IO_BASELINE_TESTFILE"] = baseline_testfile
-
-        dev_pct, sweep_pct = step_io_cap_pct(cfg_current, example_defaults)
-        walked["DEV_IO_CAP_PCT"] = dev_pct
-        walked["WATCHER_IO_CAP_PCT"] = sweep_pct
 
         walked.update(step_slice_first_resources(meminfo, cfg_current, example_defaults))
         cgroup_parent, backstop_max, backstop_swap = step_docker_daemon(
@@ -2522,7 +2850,13 @@ def main(argv: list[str] | None = None) -> int:
         walked["DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX"] = backstop_swap
 
         walked.update(step_watcher(cfg_current, example_defaults))
+        _reprompt_memory_constraints(meminfo.get("MemAvailable", 0), walked)
+        baseline_results = finish_io_baseline(baseline_job)
+        if not baseline_results:
+            baseline_results = read_baseline_results(Path(baseline_env))
+        walked.update(step_io_settings(cfg_current, example_defaults, baseline_results))
     except (ValueError, EOFError) as exc:
+        abort_io_baseline(baseline_job)
         sys.stdout.flush()
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -2598,22 +2932,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if ask_yn("Run install.sh now to render + apply this config?", default=False):
         cmd = [str(args.install_script)]
-        if baseline_measured_now:
-            # Deliberately NOT asked, and said out loud rather than silently
-            # omitted: an operator scanning back through the transcript
-            # should be able to see this was a decision, not a prompt that
-            # went missing. The benchmark completed successfully minutes ago
-            # in step b; --with-baseline would only repeat the same ~12-minute
-            # disk-saturating measurement for an identical result.
-            out(
-                "Not offering --with-baseline: the IO baseline was just measured above in "
-                "this same run, so re-running it during install would repeat a ~12-minute "
-                "disk-saturating benchmark for nothing."
-            )
-        elif ask_yn("Also pass --with-baseline (re-run the IO benchmark during install)?", default=False):
-            cmd.append("--with-baseline")
+        out("The benchmark decision was handled at the start of this wizard; install will not start a second run.")
         out(f"running: {' '.join(cmd)}")
-        sys.stdout.flush()  # see step_io_baseline() for why
+        sys.stdout.flush()
         result = subprocess.run(cmd, check=False)
         if result.returncode != 0:
             out(f"install failed with exit status {result.returncode}.")

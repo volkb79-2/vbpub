@@ -122,7 +122,7 @@ REPORT. Nothing weakened, nothing dropped.
 
 (The plan's item-4 examples mention "the `--replace` rotation model" among the
 facts to preserve. There is no `--replace` prose anywhere in the wizard — the
-nearest thing is `install.sh`'s own `--force` backup-and-reseed, which the
+nearest thing is `install.sh`'s own `--reset` backup-and-reseed, which the
 wizard does not describe. Nothing to preserve, and nothing was removed.)
 
 ### 5 + 6. Executable, and moved beside `install.sh`

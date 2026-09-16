@@ -312,7 +312,7 @@ Block device node backing docker's data dir (IO_DEV_PATH) [overlay]:
 
 -- b. IO baseline --
 cache: /var/lib/mdt/io-baseline.env
-no cache found yet. Until this is measured, mdt-apply-dev-caps.sh falls back to
+no cache found yet. Until this is measured, mdt-dev-governance-reconcile.sh falls back to
 the deliberately tight DEV_STATIC_* caps in host-setup.env.
 Run the IO baseline benchmark now? It takes ~4 minutes and SATURATES THE DISK -- only in a quiet window (the script itself also warns and gives you 5s to Ctrl-C if containers are running) [y/N]:
 Skipping -- run it later with: sudo .../scripts/mdt-io-baseline.py
@@ -444,7 +444,7 @@ scratch file, never `/etc/mdt/host-setup.env`.)
 complete (previously truncated) usage block:
 
 ```
-  sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
+  sudo ./install.sh [--wizard] [--with-baseline] [--reset] [--restart-docker]
 ...
 it, then re-run to apply your edits). --wizard walks that seeding step
 interactively instead (scripts/mdt-host-setup-wizard.py) — sizes the tiers

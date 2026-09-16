@@ -44,7 +44,7 @@ without touching the render/apply machinery it feeds.
    `DEV_MEMORY_MIN_GUARANTEED_CEILING`), the `render()` function (drops any
    directive whose value resolves to empty — "not set" means "not applied,"
    never a fallback number), the IO-device auto-discovery block (`findmnt`
-   against `/var/lib/docker` then `/`), the `--with-baseline`/`--force`
+   against `/var/lib/docker` then `/`), the `--with-baseline`/`--reset`
    flag handling, and the seed-from-example step this wizard runs BEFORE
    instead of.
 4. `CGROUP-NOTES.md` §"Per-container `memory.min` guarantees" — read in

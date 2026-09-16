@@ -11,7 +11,7 @@
 # you can see at a glance which slices are near/over their protection or
 # their throttle point.
 #
-# Companion to mdt-slice-audit.py (which flags no-op protection caused by an
+# Companion to mdt-slice-memory-min-low-audit.py (which flags no-op protection caused by an
 # unprotected ancestor) — this is a live/one-shot viewer, not an auditor.
 #
 # Usage:

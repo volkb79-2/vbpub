@@ -227,14 +227,14 @@ BuildKit.
 container-driver creation or drift-repair path. The same environment is
 mandatory in the MDT template and dstdns devcontainer.
 
-## 6. `--force` reinstall
+## 6. `--reset` wizard reseed
 
-`install.sh --force` now backs up any existing `/etc/mdt/host-setup.env` to
+`install.sh --wizard --reset` now backs up any existing `/etc/mdt/host-setup.env` to
 `host-setup.env.bak-<timestamp>` and re-seeds it from the current
 `host-setup.env.example` — needed because this plan adds new variables
 (`DEV_BUILDKITD_*`) that an already-installed host's config predates. Without
-`--force`, install.sh keeps its existing "never touch a config that's
-already there" behavior.
+`--reset`, `install.sh --wizard` preserves existing values as prompt defaults;
+a plain non-wizard `install.sh` leaves an existing config untouched.
 
 ## 7. Migration / rollback
 

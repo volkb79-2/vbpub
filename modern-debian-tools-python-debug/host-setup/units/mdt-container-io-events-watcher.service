@@ -1,23 +1,23 @@
-# mdt host-setup — reactive counterpart to mdt-host-slices.timer's periodic
-# sweep, for the per-container IO caps mdt-dev-cap-watcher.py (inotify) does
+# mdt host-setup — reactive counterpart to mdt-dev-governance-reconcile.timer's periodic
+# sweep, for the per-container IO caps mdt-container-memory-inotify-watcher.py (inotify) does
 # NOT touch. Watches `docker events` for container starts and applies
 # test-runner/buildx_buildkit_*/devcontainer IO caps within the same second,
 # rather than up to WATCHER_INTERVAL later. `docker events`, not inotify on a
 # fixed cgroup path, because buildx_buildkit_* workers have no such fixed
-# path to watch in the first place — see scripts/mdt-io-cap-watcher.sh's own
+# path to watch in the first place — see scripts/mdt-container-io-events-watcher.sh's own
 # header for why, and host-setup/README.md "Persistence model" for the full
-# reasoning. Requires docker, unlike mdt-dev-cap-watcher.py which is pure
+# reasoning. Requires docker, unlike mdt-container-memory-inotify-watcher.py which is pure
 # cgroupfs+inotify — this unit failing (docker down) is not fatal to the
 # host, systemd just keeps retrying per Restart=.
 [Unit]
-Description=mdt host-setup — reactive per-container IO caps via docker events (buildx_buildkit_*/test-runner/devcontainer)
+Description=mdt host-setup — container IO events watcher (docker events)
 Documentation=file:/etc/mdt/host-setup.env
-After=docker.service mdt-host-slices.service
+After=docker.service mdt-dev-governance-reconcile.service
 Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/mdt-io-cap-watcher.sh
+ExecStart=/usr/local/sbin/mdt-container-io-events-watcher.sh
 Restart=always
 RestartSec=5
 EnvironmentFile=-/etc/mdt/host-setup.env

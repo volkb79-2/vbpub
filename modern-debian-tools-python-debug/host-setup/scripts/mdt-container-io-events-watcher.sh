@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 # mdt host-setup — instant per-container IO caps via `docker events`.
 #
-# Primary mechanism for capping buildx_buildkit_*/test-runner/devcontainer
-# scopes; mdt-apply-dev-caps.sh's per-container sweep is the BACKSTOP — see
-# host-setup/README.md "Persistence model" layer 2. Containers matching
-# TESTRUNNER_IMAGE_PATTERNS/BUILDKIT_NAME_PATTERNS/DEVCONTAINER_NAME_PATTERNS
-# get their caps applied the moment `docker events` reports their `start`,
-# not up to WATCHER_INTERVAL later. Uses the SAME _mdt_match/
-# _mdt_apply_container_caps/_mdt_classify_and_apply as the sweep
-# (mdt-container-caps.lib.sh) — one definition of "what gets capped and
-# how", two triggers.
+# Primary mechanism for capping every container scope under a governed dev
+# child; mdt-dev-governance-reconcile.sh's per-container sweep is the BACKSTOP —
+# see host-setup/README.md "Persistence model" layer 2. A scope's cgroup path
+# is authoritative for ordinary dev containers, so no image/name guess is
+# needed. WATCHER_BUILDKIT_NAME_PATTERNS is used only for an unapproved
+# Buildx worker that landed outside the governed tree. Matching scopes get
+# their measured caps applied the moment `docker events` reports `start`, not
+# up to WATCHER_INTERVAL later. With no current identity-verified results,
+# this process stays connected but applies no per-container IO cap.
 #
 # Long-running by design (docker-events watcher). This script does NOT
 # retry its own `docker events` connection internally: on any exit (docker
 # restart, a dropped pipe, an unexpected error) it exits and lets
-# mdt-io-cap-watcher.service's `Restart=always` bring it back — systemd's
+# mdt-container-io-events-watcher.service's `Restart=always` bring it back — systemd's
 # restart machinery is better tested for this than a hand-rolled retry loop,
 # and the periodic sweep still catches anything created during a restart gap.
 #
-# Why `docker events`, not inotify on cgroupfs like mdt-dev-cap-watcher.py
+# Why `docker events`, not inotify on cgroupfs like mdt-container-memory-inotify-watcher.py
 # (the sibling reactive watcher, for MemoryMax): that one watches a FIXED,
 # already-known directory (dev-interactive.slice/dev-background.slice/
 # dev-gates.slice) because its targets ARE reliably placed there at create
@@ -32,17 +32,17 @@
 # inotify watch requires a real path that exists before you can watch it;
 # `docker events` doesn't, because it comes from the daemon's own bookkeeping
 # regardless of where a container's cgroup ended up. Same reasoning applies
-# to test-runner-image and devcontainer matches here even though THEY are
-# reliably placed (keeping all three categories on one mechanism, rather than
-# splitting into "inotify for two of these, docker-events for the third", is
-# the smaller total surface to reason about — see host-setup/README.md).
+# to any correctly placed container here even though its cgroup path is known
+# (keeping all IO selection on one mechanism, rather than splitting ordinary
+# scopes from out-of-tree Buildx workers, is the smaller surface to reason
+# about — see host-setup/README.md).
 set -uo pipefail
 CG="${CG:-/sys/fs/cgroup}"
 CONF="${CONF:-/etc/mdt/host-setup.env}"
-log(){ echo "[mdt-io-cap-watcher] $*"; }
+log(){ echo "[mdt-container-io-events-watcher] $*"; }
 
-# shellcheck source=./mdt-container-caps.lib.sh
-. "$(dirname "$0")/mdt-container-caps.lib.sh"
+# shellcheck source=./mdt-container-io-caps.lib.sh
+. "$(dirname "$0")/mdt-container-io-caps.lib.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
   log "docker not found — nothing to watch"
@@ -78,7 +78,7 @@ fi
 # Catch whatever is already running before the first `docker events` line
 # ever arrives — a systemd restart or reboot must not leave already-running
 # containers waiting for the backstop sweep's next interval.
-log "watching docker events for buildkit/test-runner/devcontainer container starts (${WATCHER_SRC})"
+log "watching Docker starts for governed child scopes and out-of-tree Buildx workers (${WATCHER_SRC})"
 # Start the event pipeline before the reconciliation snapshot. --since covers
 # the short process-start/API-attach interval as well; duplicate starts are
 # harmless because applying the same systemd properties is idempotent.

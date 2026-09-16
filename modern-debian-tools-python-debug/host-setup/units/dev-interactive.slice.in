@@ -20,7 +20,7 @@ MemoryMax=@DEV_INTERACTIVE_MEMORY_MAX@
 # Soft protection of the IDE working set against OTHER tiers' pressure.
 # NOTE: this only reaches the container's pages if cgroup2 is mounted with
 # memory_recursiveprot (the systemd >= 248 boot default — but runtime remounts
-# can strip it; check.sh verifies, mdt-apply-dev-caps.sh warns/fixes).
+# can strip it; check.sh verifies, mdt-dev-governance-reconcile.sh warns/fixes).
 MemoryLow=@DEV_INTERACTIVE_MEMORY_LOW@
 
 CPUWeight=@DEV_INTERACTIVE_CPU_WEIGHT@
@@ -53,7 +53,7 @@ MemorySwapMax=@DEV_INTERACTIVE_MEMORY_SWAP_MAX@
 # instead — that avoids disk swap-in stalls in the IDE, but permanently spends
 # pool RAM on pages nobody is touching. See host-setup.env.example.
 # (Directive needs systemd >= 256; install.sh drops this line on older hosts
-# and mdt-apply-dev-caps.sh raw-writes memory.zswap.writeback as the fallback.)
+# and mdt-dev-governance-reconcile.sh raw-writes memory.zswap.writeback as the fallback.)
 # NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's own value
 # above (or vice versa) — every tier needs its own explicit line to state its
 # own intent. Full reasoning: units/dev.slice.in's own MemoryZSwapWriteback

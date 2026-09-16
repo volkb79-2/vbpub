@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Measure and cache the MDT disk IO baseline with the kernel io.cost matrix.
+"""Measure and write the MDT disk IO benchmark results with the kernel io.cost matrix.
 
 The benchmark implementation is the vendored Linux ``iocost_coef_gen.py``
 already used by ``scripts/debian-install-v2``. This adapter gives MDT the
 same six measurements, but always uses a file target: measuring a raw device
-would be destructive. The file is retained so the cache can record the
+would be destructive. The file is retained so the results can record the
 filesystem/device on which the numbers were obtained.
 
-The runtime cap consumer still receives the four historical fields it needs:
-random 4-KiB IOPS for ``io.max`` and sequential bandwidth for ``io.max``. The
-complete io.cost matrix is also stored for audit and future consumers.
+The runtime cap consumer receives four derived ceilings: the lower sequential
+or random 4-KiB IOPS value for each direction, and sequential bandwidth for
+each direction. The complete io.cost matrix is also stored for audit and
+future consumers.
 
-Cache validity is identity-based, not age-based. A measurement remains
+Result validity is identity-based, not age-based. A measurement remains
 current while its configured test file and Docker data path resolve to the
 same filesystem and underlying block-device identity. If the disk or target
-changes, the cache is rejected even if it was written moments ago.
+changes, the results are rejected even if they were written moments ago.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ MATRIX_KEYS = ("RBPS", "RSEQIOPS", "RRANDIOPS", "WBPS", "WSEQIOPS", "WRANDIOPS")
 SAFE_HOST_PATH_RE = re.compile(
     r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
 )
-REQUIRED_CACHE_FIELDS = (
+REQUIRED_RESULT_FIELDS = (
     "SCHEMA_VERSION", "KERNEL_RELEASE", "GENERATOR_SHA256",
     "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS",
     "DEVNO", "TESTFILE_STAT_DEV", "DOCKER_STAT_DEV", "FINDMNT_SOURCE",
@@ -72,13 +73,13 @@ def parse_args() -> argparse.Namespace:
         prog="mdt-io-baseline.py",
         description=(
             "Run the official kernel io.cost coefficient matrix against a "
-            "persistent file target and cache an identity-bound MDT baseline. "
-            "Host shell only; a container invocation is refused."
+            "persistent file target and write identity-bound MDT benchmark "
+            "results. Host shell only; a container invocation is refused."
         ),
     )
-    parser.add_argument("--force", action="store_true", help="bypass a current-cache reuse and deliberately remeasure after the running-container warning")
-    parser.add_argument("--check-cache", action="store_true", help="check identity and structure only; never run fio")
-    parser.add_argument("--output", default=os.environ.get("IO_BASELINE_ENV", str(OUT)), help="cache file (default: IO_BASELINE_ENV or /var/lib/mdt/io-baseline.env)")
+    parser.add_argument("--force", action="store_true", help="bypass current-result reuse and deliberately remeasure after the running-container warning")
+    parser.add_argument("--check-results", action="store_true", help="check result identity and structure only; never run fio")
+    parser.add_argument("--output", default=os.environ.get("IO_BASELINE_ENV", str(OUT)), help="benchmark-results file (default: IO_BASELINE_ENV or /var/lib/mdt/io-baseline.env)")
     parser.add_argument("--testfile", default=os.environ.get("IO_BASELINE_TESTFILE", DEFAULT_TESTFILE), help="persistent file target (default: IO_BASELINE_TESTFILE or /var/lib/mdt/iocost-coef-fio.testfile)")
     parser.add_argument("--generator", default=os.environ.get("IOCOST_COEF_GENERATOR", DEFAULT_GENERATOR), help="iocost_coef_gen.py path")
     parser.add_argument("--testfile-size-gb", type=float, default=float(os.environ.get("IO_BASELINE_SIZE_GB", DEFAULT_SIZE_GB)), metavar="GIGABYTES", help=f"file size passed to the official generator (default: {DEFAULT_SIZE_GB})")
@@ -232,7 +233,7 @@ def device_identity(testfile: Path, io_dev_path: Path | None = None) -> dict[str
     return facts
 
 
-def cache_is_valid(path: Path) -> bool:
+def results_are_valid(path: Path) -> bool:
     values = parse_env(path)
     if (
         values.get("SCHEMA_VERSION") != SCHEMA_VERSION
@@ -240,7 +241,7 @@ def cache_is_valid(path: Path) -> bool:
         or not values.get("MEASURED_AT")
     ):
         return False
-    if any(not values.get(key) for key in REQUIRED_CACHE_FIELDS):
+    if any(not values.get(key) for key in REQUIRED_RESULT_FIELDS):
         return False
     try:
         return all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES"))
@@ -248,9 +249,9 @@ def cache_is_valid(path: Path) -> bool:
         return False
 
 
-def cache_is_current(path: Path, testfile: Path | None = None) -> bool:
-    """Return true only when the cache describes this current disk target."""
-    if not cache_is_valid(path):
+def results_are_current(path: Path, testfile: Path | None = None) -> bool:
+    """Return true only when the results describe this current disk target."""
+    if not results_are_valid(path):
         return False
     values = parse_env(path)
     target = testfile or Path(values["TESTFILE"])
@@ -280,12 +281,6 @@ def cache_is_current(path: Path, testfile: Path | None = None) -> bool:
     )
 
 
-# Kept as the old public helper name so existing wizard/tests do not need a
-# version-locking change. "Fresh" now means current identity, never a TTL.
-def cache_is_fresh(path: Path, testfile: Path | None = None) -> bool:
-    return cache_is_current(path, testfile)
-
-
 def host_context_error(root: Path | None = None) -> str | None:
     root = Path("/") if root is None else root
     if ((root / ".dockerenv").exists() or (root / "run/.containerenv").exists() or
@@ -300,7 +295,7 @@ def host_context_error(root: Path | None = None) -> str | None:
     return None
 
 
-def print_cache(path: Path) -> None:
+def print_results(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     sys.stdout.write(text)
     if not text.endswith("\n"):
@@ -333,7 +328,7 @@ def generator_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def write_cache(path: Path, values: dict[str, str]) -> None:
+def write_results(path: Path, values: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(str(path) + ".tmp")
     lines = [f"{key}={value}" for key, value in values.items()]
@@ -367,17 +362,17 @@ def run(args: argparse.Namespace) -> int:
     if args.testfile_size_gb <= 0:
         print("ERROR: --testfile-size-gb must be greater than zero", file=sys.stderr)
         return 2
-    if args.check_cache:
-        if cache_is_current(output, testfile):
-            print(f"current io.cost baseline: {output} (device and target identity match)")
+    if args.check_results:
+        if results_are_current(output, testfile):
+            print(f"current io.cost benchmark results: {output} (device and target identity match)")
             return 0
-        print(f"no current io.cost baseline: {output} (missing, invalid, or device/target identity changed)", file=sys.stderr)
+        print(f"no current io.cost benchmark results: {output} (missing, invalid, or device/target identity changed)", file=sys.stderr)
         return 1
     if os.geteuid() != 0:
         print("ERROR: run as root from the Docker host", file=sys.stderr)
         return 1
-    if output.exists() and not args.force and cache_is_current(output, testfile):
-        print_cache(output)
+    if output.exists() and not args.force and results_are_current(output, testfile):
+        print_results(output)
         return 0
     generator = discover_generator(Path(args.generator))
     if generator is None:
@@ -411,11 +406,11 @@ def run(args: argparse.Namespace) -> int:
         print(f"ERROR: could not start official generator: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
-        print(f"ERROR: official io.cost benchmark exited {result.returncode}; existing cache remains untouched", file=sys.stderr)
+        print(f"ERROR: official io.cost benchmark exited {result.returncode}; existing benchmark results remain untouched", file=sys.stderr)
         return result.returncode
     match = RESULT_RE.search(result.stdout or "")
     if not match:
-        print("ERROR: official generator returned no parseable coefficient line; existing cache remains untouched", file=sys.stderr)
+        print("ERROR: official generator returned no parseable coefficient line; existing benchmark results remain untouched", file=sys.stderr)
         return 1
     if match.group("devno") != identity["DEVNO"]:
         print(f"ERROR: device identity changed during benchmark ({identity['DEVNO']} before, {match.group('devno')} reported)", file=sys.stderr)
@@ -425,14 +420,14 @@ def run(args: argparse.Namespace) -> int:
         if final_identity != identity:
             raise ValueError("device or filesystem identity changed during benchmark")
     except (OSError, ValueError) as exc:
-        print(f"ERROR: {exc}; existing cache remains untouched", file=sys.stderr)
+        print(f"ERROR: {exc}; existing benchmark results remain untouched", file=sys.stderr)
         return 1
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     matrix = {key: match.group(name) for key, name in (
         ("RBPS", "rbps"), ("RSEQIOPS", "rseqiops"), ("RRANDIOPS", "rrandiops"),
         ("WBPS", "wbps"), ("WSEQIOPS", "wseqiops"), ("WRANDIOPS", "wrandiops"),
     )}
-    cache = {
+    results = {
         "SCHEMA_VERSION": SCHEMA_VERSION,
         "MEASURE_METHOD": METHOD,
         "MEASURED_AT": now,
@@ -449,13 +444,13 @@ def run(args: argparse.Namespace) -> int:
         **matrix, "DURATION_SEC": str(args.duration), "NUMJOBS": str(args.numjobs),
     }
     try:
-        write_cache(output, cache)
+        write_results(output, results)
     except OSError as exc:
         print(f"ERROR: could not write {output}: {exc}", file=sys.stderr)
         return 1
-    print(f"wrote current io.cost baseline: {output}")
+    print(f"wrote current io.cost benchmark results: {output}")
     print("io.max mapping: read/write IOPS = random 4 KiB matrix points; read/write bandwidth = sequential matrix points")
-    print_cache(output)
+    print_results(output)
     return 0
 
 

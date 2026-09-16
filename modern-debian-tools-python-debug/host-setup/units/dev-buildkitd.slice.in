@@ -43,7 +43,7 @@ IOWeight=@DEV_BUILDKITD_IO_WEIGHT@
 # NO absolute bandwidth cap here — inherits dev.slice's DEV_IO_CAP_PCT-derived
 # ceiling, same "one estate ceiling, not one per child" reasoning as the
 # other tiers. See units/dev.slice.in. IOPS IS additionally capped, tighter —
-# RUNTIME-ONLY (not a static directive here): mdt-apply-dev-caps.sh applies
+# RUNTIME-ONLY (not a static directive here): mdt-dev-governance-reconcile.sh applies
 # IOReadIOPSMax/IOWriteIOPSMax at DEV_SUBSLICE_IOPS_PCT% (default 60%) of
 # whatever it just derived for dev.slice itself, every time it runs (a
 # static line here can't express "a percentage of what dev.slice just

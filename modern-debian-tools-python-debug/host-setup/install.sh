@@ -5,9 +5,9 @@
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
-#   sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
+#   sudo ./install.sh [--wizard] [--with-baseline] [--reset] [--restart-docker]
 #   sudo ./install.sh --wizard              # first install or preserve old values
-#   sudo ./install.sh --wizard --force      # re-seed answers from this example
+#   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
 # Run these commands from the Docker host shell, never from a devcontainer;
 # container root cannot apply the host's systemd, cgroup, or /etc policy.
@@ -20,10 +20,10 @@
 # THIS host's own /proc/meminfo rather than the example's fixed numbers, then
 # falls through into the same render/apply logic below. --with-baseline
 # additionally runs the official io.cost benchmark (~12 min of saturated disk — quiet
-# window!). --force is accepted only with --wizard; it deliberately starts the
+# window!). --reset is accepted only with --wizard; it deliberately starts the
 # wizard from the current example instead of using the installed config as
 # defaults. After successful candidate validation the old config is backed up
-# and replaced. Without --force, --wizard preserves existing values as defaults.
+# and replaced. Without --reset, --wizard preserves existing values as defaults.
 # --restart-docker will
 # automatically restart docker.socket and docker.service at the end (warning:
 # disrupts all running containers). See README.md.
@@ -42,7 +42,7 @@ Purpose
   mounts, or /etc.
 
 Usage
-  sudo ./install.sh --wizard [--force] [--with-baseline] [--restart-docker]
+  sudo ./install.sh --wizard [--reset] [--with-baseline] [--restart-docker]
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
   sudo ./install.sh --help
@@ -51,17 +51,23 @@ Options
   --wizard            Ask every host policy question, write a temporary
                       candidate, validate it, then install and apply it.
                       Required on a first install. Existing values are the
-                      defaults unless --force is also supplied.
-  --force             With --wizard, ignore the installed config as prompt
-                      defaults and start from the current example. The old
-                      config is backed up only after the candidate validates.
-                      It does not mean "skip validation" and is rejected alone.
+                      defaults unless --reset is also supplied.
+  --reset             With --wizard, ignore the installed config as prompt
+                      defaults and start from the current example plus live
+                      host proposals. The old config is backed up only after
+                      the candidate validates. It does not mean "skip
+                      validation" and is rejected alone. This option resets
+                      wizard input defaults; it does not delete the old file.
   --with-baseline     Run the official kernel io.cost coefficient benchmark
                       against the configured persistent file target. It runs
                       six fio passes (about 12 minutes minimum at defaults)
                       and saturates that disk; use a quiet maintenance window.
-                      The cache is reused only when its device/target identity
-                      still matches; it has no time-based expiry.
+                      Without --wizard, current benchmark results are reused
+                      when their device/target identity still matches;
+                      --with-baseline deliberately remeasures. There is no
+                      time-based expiry. With --wizard, the question is asked
+                      near the start, one background run is waited for, and
+                      the installer never starts a second run.
   --restart-docker    Restart docker.socket and docker.service after applying
                       the policy. This disrupts running containers. Without
                       it, changed Docker daemon defaults take effect after
@@ -74,7 +80,7 @@ Files and ownership
   Read on the host: /proc/meminfo, /proc/swaps, Docker mount discovery, and
   Docker/Buildx state.
   Write: /etc/mdt/host-setup.env and rendered /etc/systemd/system units;
-  /var/lib/mdt/io-baseline.env and its persistent test file when a baseline
+  /var/lib/mdt/io-baseline.env and its persistent test file when a benchmark
   is run; owned keys in /etc/docker/daemon.json. An existing config is backed
   up as /etc/mdt/host-setup.env.bak-TIMESTAMP before replacement.
 
@@ -86,14 +92,14 @@ EOF
 }
 
 WITH_BASELINE=0
-FORCE=0
+RESET=0
 AUTO_RESTART_DOCKER=0
 WIZARD=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
-    --force) FORCE=1 ;;
+    --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
@@ -118,8 +124,8 @@ if [ "$_pid1_comm" != systemd ] || [ ! -d /run/systemd/system ]; then
   exit 2
 fi
 
-if [ "$FORCE" = 1 ] && [ "$WIZARD" != 1 ]; then
-  echo "ERROR: --force requires --wizard; refusing to re-seed an unvalidated example" >&2
+if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
+  echo "ERROR: --reset requires --wizard; refusing to re-seed an unvalidated example" >&2
   exit 2
 fi
 
@@ -137,11 +143,23 @@ if ! "$DOCKER_BIN" buildx version >/dev/null 2>&1; then
   exit 2
 fi
 
-echo "== reactive per-container cap watcher: inotify availability check =="
-# mdt-dev-cap-watcher.py needs a working inotify_init1() — true on any
+# --with-baseline is an explicit request for the wizard to start the
+# measurement before its resource questions. Make the benchmark prerequisites
+# available before launching that wizard; otherwise the wizard would have to
+# defer the measurement until after it exits, defeating the one-background-job
+# lifecycle and causing the operator to see a misleading second opportunity.
+if [ "$WITH_BASELINE" = 1 ] && [ "$WIZARD" = 1 ] && { ! command -v fio >/dev/null 2>&1 || ! command -v pv >/dev/null 2>&1; }; then
+  echo "== benchmark prerequisites (before wizard) =="
+  echo "--with-baseline needs fio and pv before the wizard can start its one background benchmark"
+  apt-get update -qq || echo "WARN: apt-get update failed — trying the installed package index"
+  apt-get install -y --no-install-recommends fio pv || echo "WARN: could not install fio/pv before the wizard — the benchmark will be deferred and attempted once after package installation"
+fi
+
+echo "== container memory inotify watcher: availability check =="
+# mdt-container-memory-inotify-watcher.py needs a working inotify_init1() — true on any
 # kernel since 2.6.27, but checked explicitly rather than let a confusing
 # errno surface later inside the service. A failure here skips installing
-# the watcher entirely; mdt-apply-dev-caps.sh's periodic sweep still runs
+# the watcher entirely; mdt-dev-governance-reconcile.sh's periodic sweep still runs
 # either way, just without the reactive/instant half.
 if python3 -c "
 import ctypes, ctypes.util, sys
@@ -153,7 +171,7 @@ sys.exit(0 if fd >= 0 else 1)
   echo "inotify: available"
 else
   INOTIFY_OK=0
-  echo "WARN: inotify_init1() failed on this host — skipping mdt-dev-cap-watcher.service; the periodic sweep (mdt-host-slices.timer) still applies IO caps and will be the only source of per-container limits"
+  echo "WARN: inotify_init1() failed on this host — skipping mdt-container-memory-inotify-watcher.service; the periodic sweep (mdt-dev-governance-reconcile.timer) still applies IO caps and will be the only source of per-container limits"
 fi
 
 echo "== config =="
@@ -171,18 +189,23 @@ fi
 CANDIDATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mdt-host-setup.XXXXXXXX")"
 trap 'rm -rf -- "$CANDIDATE_DIR"' EXIT
 CANDIDATE_PATH="$CANDIDATE_DIR/host-setup.env"
+BASELINE_STATUS_PATH="$CANDIDATE_DIR/benchmark.status"
 if [ "$WIZARD" = 1 ]; then
   # Copy only to the safe candidate path so the wizard can use existing values
   # as defaults without being able to damage the installed config on failure.
-  if [ "$HAD_CONFIG" = 1 ] && [ "$FORCE" = 0 ]; then
+  if [ "$HAD_CONFIG" = 1 ] && [ "$RESET" = 0 ]; then
     cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
   fi
-  python3 "$HERE/mdt-host-setup-wizard.py" \
-    --example "$HERE/host-setup.env.example" \
-    --output "$CANDIDATE_PATH" \
-    --io-baseline-script "$HERE/scripts/mdt-io-baseline.py" \
-    --install-script "$HERE/install.sh" \
+  WIZARD_ARGS=(
+    --example "$HERE/host-setup.env.example"
+    --output "$CANDIDATE_PATH"
+    --io-baseline-script "$HERE/scripts/mdt-io-baseline.py"
+    --install-script "$HERE/install.sh"
+    --baseline-status "$BASELINE_STATUS_PATH"
     --skip-run-offer
+  )
+  [ "$WITH_BASELINE" = 1 ] && WIZARD_ARGS+=(--with-baseline)
+  python3 "$HERE/mdt-host-setup-wizard.py" "${WIZARD_ARGS[@]}"
 elif [ "$HAD_CONFIG" = 1 ]; then
   cp -- "$CONFIG_PATH" "$CANDIDATE_PATH"
 else
@@ -300,14 +323,27 @@ _auto_cpu_quota() { # _auto_cpu_quota <reserve-cores> -> "<cores>00%"
   cores=$(( _nproc > reserve ? _nproc - reserve : 1 ))
   echo "${cores}00%"
 }
-if [ -z "${DEV_CPU_QUOTA:-}" ]; then
+# `auto` is the explicit config spelling for install-time derivation. `-`
+# means omit the directive (systemd's unlimited/default behavior); keep a
+# separate bit because both render to an empty template value but only `auto`
+# may be derived below.
+for _quota_var in DEV_CPU_QUOTA DEV_INTERACTIVE_CPU_QUOTA DEV_BACKGROUND_CPU_QUOTA DEV_GATES_CPU_QUOTA DEV_BUILDKITD_CPU_QUOTA; do
+  _quota_value="${!_quota_var:-}"
+  _unset_var="${_quota_var}_UNSET"
+  case "$_quota_value" in
+    auto) printf -v "$_quota_var" '%s' "" ;;
+    -) printf -v "$_unset_var" '%s' 1; printf -v "$_quota_var" '%s' "" ;;
+  esac
+done
+if [ -z "${DEV_CPU_QUOTA:-}" ] && [ "${DEV_CPU_QUOTA_UNSET:-0}" != 1 ]; then
   DEV_CPU_QUOTA=$(_auto_cpu_quota "$DEV_CPU_RESERVE_CORES")
   echo "dev.slice CPUQuota: auto-detected (host has $_nproc, reserving $DEV_CPU_RESERVE_CORES) -> $DEV_CPU_QUOTA"
 fi
 for _tier_var in DEV_INTERACTIVE_CPU_QUOTA DEV_BACKGROUND_CPU_QUOTA DEV_GATES_CPU_QUOTA DEV_BUILDKITD_CPU_QUOTA; do
-  if [ -z "$(eval echo "\${$_tier_var:-}")" ]; then
-    eval "$_tier_var=\$(_auto_cpu_quota \"\$DEV_SUBSLICE_CPU_RESERVE_CORES\")"
-    echo "$_tier_var: auto-detected (host has $_nproc, reserving $DEV_SUBSLICE_CPU_RESERVE_CORES) -> $(eval echo "\${$_tier_var}")"
+  _unset_var="${_tier_var}_UNSET"
+  if [ -z "${!_tier_var:-}" ] && [ "${!_unset_var:-0}" != 1 ]; then
+    printf -v "$_tier_var" '%s' "$(_auto_cpu_quota "$DEV_SUBSLICE_CPU_RESERVE_CORES")"
+    echo "$_tier_var: auto-detected (host has $_nproc, reserving $DEV_SUBSLICE_CPU_RESERVE_CORES) -> ${!_tier_var}"
   fi
 done
 
@@ -315,7 +351,7 @@ done
 # DEV_SWAP_CASCADE_PCT (default 80%) at each level — host swap -> dev.slice's
 # own MemorySwapMax -> each child's own (same 80%, of the PARENT's derived
 # value, not of the host total again) -> the watcher's per-container
-# MemorySwapMax (mdt-dev-cap-watcher.py reads DEV_SWAP_CASCADE_PCT itself and
+# MemorySwapMax (mdt-container-memory-inotify-watcher.py reads DEV_SWAP_CASCADE_PCT itself and
 # applies it a third time, of whichever child's derived value matches). Same
 # "absolute ceiling at every level" reasoning as CPU/IO above. Bytes, not a
 # size-suffixed string — valid for systemd set-property AND the Python
@@ -363,6 +399,29 @@ if value < 0:
 print(value)
 PY
 }
+for _swap_var in DEV_SWAP_MAX DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
+  _swap_value="${!_swap_var:-}"
+  _unset_var="${_swap_var}_UNSET"
+  case "$_swap_value" in
+    auto) printf -v "$_swap_var" '%s' "" ;;
+    -) printf -v "$_unset_var" '%s' 1; printf -v "$_swap_var" '%s' "" ;;
+  esac
+done
+# The wizard keeps the operator's explicit `-` in the candidate so the
+# distinction from `auto` remains visible during validation and review. Before
+# rendering, turn that sentinel into an omitted systemd directive. CPU/swap
+# `-` values above also leave *_UNSET markers so they are not auto-derived.
+for _optional_memory_var in \
+  DEV_MEMORY_MIN_GUARANTEED_CEILING DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
+  DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX \
+  DEV_BACKGROUND_MEMORY_MIN DEV_BACKGROUND_MEMORY_LOW DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
+  DEV_GATES_MEMORY_MIN DEV_GATES_MEMORY_LOW DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX \
+  DEV_BUILDKITD_MEMORY_MIN DEV_BUILDKITD_MEMORY_LOW DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX \
+  DEV_MEMORY_MIN_GUARANTEED_LOW DEV_MEMORY_MIN_GUARANTEED_HIGH DEV_MEMORY_MIN_GUARANTEED_MAX; do
+  if [ "${!_optional_memory_var:-}" = - ]; then
+    printf -v "$_optional_memory_var" '%s' ""
+  fi
+done
 if [ -n "${DEV_SWAP_MAX:-}" ]; then
   if ! _swap_max_bytes=$(_size_to_bytes "$DEV_SWAP_MAX"); then
     echo "ERROR: DEV_SWAP_MAX is not a systemd size that can be converted to bytes: $DEV_SWAP_MAX" >&2
@@ -371,14 +430,17 @@ if [ -n "${DEV_SWAP_MAX:-}" ]; then
   DEV_SWAP_MAX="$_swap_max_bytes"
 fi
 if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
-  if [ -z "${DEV_SWAP_MAX:-}" ]; then
+  if [ -z "${DEV_SWAP_MAX:-}" ] && [ "${DEV_SWAP_MAX_UNSET:-0}" != 1 ]; then
     DEV_SWAP_MAX=$(_pct_of "$_host_swap_bytes" "$DEV_SWAP_CASCADE_PCT")
     echo "dev.slice MemorySwapMax: auto-detected (host swap ${_host_swap_bytes}B, ${DEV_SWAP_CASCADE_PCT}%) -> ${DEV_SWAP_MAX}B"
   fi
   for _swap_var in DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
-    if [ -z "$(eval echo "\${$_swap_var:-}")" ]; then
-      eval "$_swap_var=\$(_pct_of \"\$DEV_SWAP_MAX\" \"\$DEV_SWAP_CASCADE_PCT\")"
-      echo "$_swap_var: auto-detected (${DEV_SWAP_CASCADE_PCT}% of dev.slice's ${DEV_SWAP_MAX}B) -> $(eval echo "\${$_swap_var}")B"
+    _unset_var="${_swap_var}_UNSET"
+    if [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ] && [ -n "${DEV_SWAP_MAX:-}" ]; then
+      printf -v "$_swap_var" '%s' "$(_pct_of "$DEV_SWAP_MAX" "$DEV_SWAP_CASCADE_PCT")"
+      echo "$_swap_var: auto-detected (${DEV_SWAP_CASCADE_PCT}% of dev.slice's ${DEV_SWAP_MAX}B) -> ${!_swap_var}B"
+    elif [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ]; then
+      echo "$_swap_var: parent swap ceiling is unset — leaving this child swap ceiling unset"
     fi
   done
 elif [ "${_host_swap_bytes:-}" = 0 ]; then
@@ -397,6 +459,26 @@ apt-get install -y --no-install-recommends fio pv systemd-oomd \
 
 MDT_BASELINE="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
 MDT_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
+
+# The service/script names are intentionally a clean vocabulary, not aliases
+# layered over the old names. Stop and remove the old installed components
+# before daemon-reload: an old enabled events watcher can otherwise continue
+# applying a stale per-container policy while the new setup is being installed.
+for _old_unit in \
+  mdt-host-slices.timer mdt-host-slices.service \
+  mdt-io-cap-watcher.service mdt-dev-cap-watcher.service; do
+  if systemctl is-active --quiet "$_old_unit" || systemctl is-enabled --quiet "$_old_unit"; then
+    echo "retiring obsolete MDT unit: $_old_unit"
+    systemctl disable --now "$_old_unit" 2>/dev/null || true
+  fi
+  rm -f "/etc/systemd/system/$_old_unit"
+done
+rm -f \
+  /usr/local/sbin/mdt-apply-dev-caps.sh \
+  /usr/local/sbin/mdt-io-cap-watcher.sh \
+  /usr/local/sbin/mdt-dev-cap-watcher.py \
+  /usr/local/sbin/mdt-container-caps.lib.sh \
+  /usr/local/sbin/mdt-slice-audit.py
 
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
@@ -439,20 +521,27 @@ render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.sli
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
-render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
-install -m 0644 "$HERE/units/mdt-host-slices.service" /etc/systemd/system/mdt-host-slices.service
+render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
+install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
-  install -m 0644 "$HERE/units/mdt-dev-cap-watcher.service" /etc/systemd/system/mdt-dev-cap-watcher.service
+  install -m 0644 "$HERE/units/mdt-container-memory-inotify-watcher.service" /etc/systemd/system/mdt-container-memory-inotify-watcher.service
 fi
 # Not gated by INOTIFY_OK: this one reacts via `docker events`, not inotify —
-# see scripts/mdt-io-cap-watcher.sh for why it can't use the same mechanism
-# as mdt-dev-cap-watcher.py above.
-install -m 0644 "$HERE/units/mdt-io-cap-watcher.service" /etc/systemd/system/mdt-io-cap-watcher.service
+# see scripts/mdt-container-io-events-watcher.sh for why it can't use the same mechanism
+# as mdt-container-memory-inotify-watcher.py above.
+install -m 0644 "$HERE/units/mdt-container-io-events-watcher.service" /etc/systemd/system/mdt-container-io-events-watcher.service
 install -m 0644 "$HERE/units/mdt-buildkit-guard.service" /etc/systemd/system/mdt-buildkit-guard.service
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
+
+if [ -n "${IO_DEV_PATH:-}" ]; then
+  echo "static IO fallback: dev.slice on ${IO_DEV_PATH} = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} read/write bandwidth"
+  echo "  applies from boot, and whenever no current identity-verified baseline is available; the reconciliation service replaces it with measured percentage caps after a successful baseline"
+else
+  echo "static IO fallback: NOT ACTIVE — no host block device was discovered; the four configured values (${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bandwidth) are retained for the next host-side device discovery"
+fi
 
 # Directory-mountable Docker API socket (/run/docker-api/docker.sock),
 # alongside the default /run/docker.sock — see units/docker-api-socket.conf
@@ -491,7 +580,7 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
   echo "no device — dropped static IO*Max lines (runtime caps may still apply if discovery succeeds later)"
 fi
 # - MemoryZSwapWriteback= needs systemd >= 256; older hosts get the raw-write
-#   fallback from mdt-apply-dev-caps.sh instead. Applies to dev.slice AND
+#   fallback from mdt-dev-governance-reconcile.sh instead. Applies to dev.slice AND
 #   every child.
 SD_VER=$(systemctl --version | awk 'NR==1{print $2}')
 if [ -n "$SD_VER" ] && [ "$SD_VER" -lt 256 ] 2>/dev/null; then
@@ -531,24 +620,24 @@ print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTA
 PY
 
 echo "== scripts =="
-# mdt-container-caps.lib.sh: sourced by BOTH scripts below via
-# "$(dirname "$0")/mdt-container-caps.lib.sh" — must land in the same
+# mdt-container-io-caps.lib.sh: sourced by BOTH scripts below via
+# "$(dirname "$0")/mdt-container-io-caps.lib.sh" — must land in the same
 # directory as them, not just be present in the repo checkout.
-install -m 0644 "$HERE/scripts/mdt-container-caps.lib.sh" /usr/local/sbin/mdt-container-caps.lib.sh
-install -m 0755 "$HERE/scripts/mdt-apply-dev-caps.sh"  /usr/local/sbin/mdt-apply-dev-caps.sh
-install -m 0755 "$HERE/scripts/mdt-io-cap-watcher.sh"  /usr/local/sbin/mdt-io-cap-watcher.sh
+install -m 0644 "$HERE/scripts/mdt-container-io-caps.lib.sh" /usr/local/sbin/mdt-container-io-caps.lib.sh
+install -m 0755 "$HERE/scripts/mdt-dev-governance-reconcile.sh"  /usr/local/sbin/mdt-dev-governance-reconcile.sh
+install -m 0755 "$HERE/scripts/mdt-container-io-events-watcher.sh"  /usr/local/sbin/mdt-container-io-events-watcher.sh
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
 install -d -m 0755 /usr/local/lib/mdt
 install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py" \
   /usr/local/lib/mdt/iocost_coef_gen.py
-install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
+install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local/sbin/mdt-slice-memory-min-low-audit.py
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
 if [ "$INOTIFY_OK" = 1 ]; then
-  install -m 0755 "$HERE/scripts/mdt-dev-cap-watcher.py" /usr/local/sbin/mdt-dev-cap-watcher.py
+  install -m 0755 "$HERE/scripts/mdt-container-memory-inotify-watcher.py" /usr/local/sbin/mdt-container-memory-inotify-watcher.py
 fi
 
 echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
@@ -583,8 +672,8 @@ fi
 echo "verified Docker default cgroup parent: $DOCKER_DAEMON_CGROUP_PARENT (loaded, fragment=$_parent_fragment)"
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
   dev-gates.slice dev-buildkitd.slice
-systemctl enable mdt-host-slices.service          # boot-time apply
-systemctl enable --now mdt-host-slices.timer      # periodic sweep
+systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
+systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
 if systemctl is-active --quiet mdt-buildkitd.service; then
   echo "restarting mdt-buildkitd.service; active builds will be interrupted"
   systemctl restart mdt-buildkitd.service
@@ -617,11 +706,24 @@ find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0
 systemctl enable --now mdt-buildkit-guard.service
 systemctl restart mdt-buildkit-guard.service
 if [ "$INOTIFY_OK" = 1 ]; then
-  systemctl enable --now mdt-dev-cap-watcher.service  # reactive per-container MemoryMax
+  systemctl enable --now mdt-container-memory-inotify-watcher.service  # reactive per-container MemoryMax
 fi
-systemctl enable mdt-io-cap-watcher.service         # reactive per-container IO caps (docker events)
+systemctl enable mdt-container-io-events-watcher.service         # reactive per-container IO caps (docker events)
 
-if [ "$WITH_BASELINE" = 1 ]; then
+BASELINE_HANDLED=0
+if [ "$WIZARD" = 1 ] && [ "$WITH_BASELINE" = 1 ] && [ -f "$BASELINE_STATUS_PATH" ]; then
+  _baseline_status="$(<"$BASELINE_STATUS_PATH")"
+  case "$_baseline_status" in
+    current|running|completed|declined|failed)
+      BASELINE_HANDLED=1
+      echo "== io.cost benchmark =="
+      echo "wizard already handled the single benchmark lifecycle ($_baseline_status); no second run will be started"
+      ;;
+    deferred) echo "== io.cost benchmark deferred by wizard; prerequisites are now installed, running once during install ==" ;;
+    *) echo "WARN: unrecognized wizard benchmark status; install will run the requested benchmark once" ;;
+  esac
+fi
+if [ "$WITH_BASELINE" = 1 ] && [ "$BASELINE_HANDLED" = 0 ]; then
   echo "== io.cost baseline (six fio runs — disk will be saturated for ~12 min) =="
   IO_BASELINE_ENV="$MDT_BASELINE" IO_BASELINE_TESTFILE="$MDT_TESTFILE" \
     IO_DEV_PATH="${IO_DEV_PATH:-}" \
@@ -629,14 +731,14 @@ if [ "$WITH_BASELINE" = 1 ]; then
     --testfile "$MDT_TESTFILE" || echo "WARN: baseline failed — statics remain in force"
 fi
 
-systemctl start mdt-host-slices.service           # apply runtime caps now
+systemctl start mdt-dev-governance-reconcile.service           # apply runtime caps now
 # Both reactive watchers load their configuration and baseline once per
 # process. Restart after the optional baseline measurement so a re-run of this
 # installer cannot leave an already-running watcher applying stale values.
 if [ "$INOTIFY_OK" = 1 ]; then
-  systemctl restart mdt-dev-cap-watcher.service
+  systemctl restart mdt-container-memory-inotify-watcher.service
 fi
-systemctl restart mdt-io-cap-watcher.service
+systemctl restart mdt-container-io-events-watcher.service
 
 # Optional: automatically restart docker if requested (--restart-docker flag)
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then

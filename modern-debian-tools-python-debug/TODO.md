@@ -39,18 +39,18 @@ already documents but never turned into tooling: `memory_recursiveprot` (+
 `nsdelegate`, + `memory_hugetlb_accounting` since accounting was added) is a
 **mount flag**, not a per-cgroup property, and gets silently stripped by "an
 external `--privileged`/`--cgroupns=host` container touching the host mount
-namespace" (`mdt-apply-dev-caps.sh`'s own comment; CGROUP-NOTES.md §5 dates an
+namespace" (`mdt-dev-governance-reconcile.sh`'s own comment; CGROUP-NOTES.md §5 dates an
 occurrence 2026-07-17, the timer-service comment dates another 2026-08-28).
 While stripped, **every** slice's `MemoryMin`/`MemoryLow` on the whole host
 silently protects nothing — `systemctl show` still reports the configured
-value, so there is no other symptom. `mdt-host-slices.timer`'s 5-minute sweep
+value, so there is no other symptom. `mdt-dev-governance-reconcile.timer`'s 5-minute sweep
 self-heals it, but that's up to 5 minutes of real exposure per occurrence, and
 the exact trigger (`--privileged` vs `--cgroupns=host`, or something else) is
 still only "most likely" per the sweep script's own comment — never actually
 pinned down.
 
 Confirmed recurring again live, 2026-09-08 (gstammtisch soulmask-stall
-investigation): journalctl caught `mdt-apply-dev-caps.sh` finding
+investigation): journalctl caught `mdt-dev-governance-reconcile.sh` finding
 `memory_recursiveprot`+`memory_hugetlb_accounting` missing and restoring them
 mid-session, most plausibly triggered by one of the two ad hoc/tool-internal
 escapes above (both were in active use in the same window; which one isn't
@@ -67,7 +67,7 @@ investigation.
    nothing that already called `host-escape` breaks.
 2. **DONE (2026-09-12):** `mdt host-exec`/`mdt host-shell` end with an
    automatic `mdt doctor` pass — re-checks `findmnt -no OPTIONS
-   /sys/fs/cgroup` for the same flags `mdt-apply-dev-caps.sh` checks
+   /sys/fs/cgroup` for the same flags `mdt-dev-governance-reconcile.sh` checks
    (mirrors its check + remount command exactly, kernel-gating
    `memory_hugetlb_accounting` the same way) and restores them inline if
    missing, immediately rather than waiting for the next up-to-5-minute
@@ -86,7 +86,7 @@ investigation.
    privileged re-exec + any ad hoc mount-flag handling.
 5. Still open: `mdt doctor`'s remount command is `mount -o
    remount,nsdelegate,memory_recursiveprot${HUGETLB_OPT} $CG` — copied
-   verbatim from `mdt-apply-dev-caps.sh` for one source of truth, so it
+   verbatim from `mdt-dev-governance-reconcile.sh` for one source of truth, so it
    inherits whatever correctness properties (or gaps) that command already
    has for preserving the rest of the host's existing cgroup2 mount state;
    this ask is about auditing that command itself, not something `mdt

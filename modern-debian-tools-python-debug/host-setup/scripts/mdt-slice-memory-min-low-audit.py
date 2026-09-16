@@ -16,15 +16,15 @@
 # explicitly. See ciu/docs/DESIGN-NOTES.md D1/D3/D4/D6 for the cross-project
 # design discussion that identified this and led to this script.
 #
-# Companion to mdt-apply-dev-caps.sh, which APPLIES caps; this script only
+# Companion to mdt-dev-governance-reconcile.sh, which APPLIES caps; this script only
 # AUDITS and logs — it never writes anything to any cgroup or unit. Run by
-# mdt-host-slices.service (a second ExecStart= on the same oneshot, so it
-# rides the existing boot + mdt-host-slices.timer cadence — no new timer).
+# mdt-dev-governance-reconcile.service (a second ExecStart= on the same oneshot, so it
+# rides the existing boot + mdt-dev-governance-reconcile.timer cadence — no new timer).
 #
 # Why Python and not another shell function: this needs a full recursive
 # tree walk carrying per-node state (a cgroup's own value AND its complete
 # ancestor chain), which is a straightforward `pathlib` walk here and a real
-# undertaking in POSIX sh/bash's array/string primitives — mdt-apply-dev-caps.sh
+# undertaking in POSIX sh/bash's array/string primitives — mdt-dev-governance-reconcile.sh
 # already shows the strain (manual awk-based cgroup-path parsing, a shared
 # fixed-path stderr tempfile). Kept as a SEPARATE script (not folded into that
 # one, and not a rewrite of it) so the existing, working sweep is untouched.
@@ -44,7 +44,7 @@ PROPERTIES = ("memory.min", "memory.low")
 
 
 def log(message: str) -> None:
-    print(f"[mdt-slice-audit] {message}", flush=True)
+    print(f"[mdt-slice-memory-min-low-audit] {message}", flush=True)
 
 
 def read_protection(cgroup_dir: Path, prop: str) -> int:

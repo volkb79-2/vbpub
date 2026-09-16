@@ -132,7 +132,26 @@ def create_testfile(path, size):
     info(f'Creating testfile {path}')
     subprocess.check_call(f'rm -f {path}', shell=True)
     subprocess.check_call(f'touch {path}', shell=True)
-    subprocess.call(f'chattr +C {path}', shell=True)
+    # No-COW improves repeatability on filesystems that support it, but it is
+    # not part of the measurement contract. Some valid Docker data
+    # filesystems reject this inode flag. Keep that advisory failure out of
+    # stderr: fio can measure the persistent regular file normally.
+    try:
+        no_cow = subprocess.run(
+            ['chattr', '+C', path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        no_cow = None
+    if no_cow is not None and no_cow.returncode != 0:
+        detail = (no_cow.stderr or no_cow.stdout or '').strip()
+        info(
+            f'NOTICE: filesystem does not support the optional no-COW flag for {path}'
+            f'{f": {detail}" if detail else ""}; continuing with the file target'
+        )
     subprocess.check_call(
         f'pv -s {size} -pr /dev/urandom {"-q" if args.quiet else ""} | '
         f'dd of={path} count={size} '

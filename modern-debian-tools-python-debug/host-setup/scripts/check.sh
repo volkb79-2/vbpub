@@ -70,7 +70,7 @@ _zswap_check() {
   val=$(cat "$path" 2>/dev/null)
   case "${!var:-no}" in no|0|false) want=0 ;; *) want=1 ;; esac
   [ "$val" = "$want" ] && ok "$slice memory.zswap.writeback=$val (matches $var)" \
-    || warn "$slice memory.zswap.writeback=$val (expected $want from $var — run mdt-apply-dev-caps.sh)"
+    || warn "$slice memory.zswap.writeback=$val (expected $want from $var — run mdt-dev-governance-reconcile.sh)"
 }
 
 # _cpu_quota_check <slice> <config-var-name>: prints cpu.max and, when the
@@ -129,7 +129,7 @@ _swap_max_check() {
 
 # _iops_subceiling_check <slice>: dev-gates.slice/dev-buildkitd.slice each
 # get a tighter IOPS-only sub-ceiling (DEV_SUBSLICE_IOPS_PCT% of whatever
-# mdt-apply-dev-caps.sh just measured for dev.slice itself) applied at
+# mdt-dev-governance-reconcile.sh just measured for dev.slice itself) applied at
 # RUNTIME, not a static unit-file line — see units/dev-gates.slice.in and
 # units/dev-buildkitd.slice.in. Bandwidth is deliberately left untouched.
 _iops_subceiling_check() {
@@ -146,7 +146,7 @@ _iops_subceiling_check() {
   sub_riops=$(printf '%s\n' "$sub_iom" | grep -oE 'riops=[0-9]+' | cut -d= -f2)
   sub_wiops=$(printf '%s\n' "$sub_iom" | grep -oE 'wiops=[0-9]+' | cut -d= -f2)
   if [ -z "$dev_riops" ] || [ -z "$dev_wiops" ] || [ -z "$sub_riops" ] || [ -z "$sub_wiops" ]; then
-    info "$slice IOPS sub-ceiling: riops/wiops not numeric in io.max yet (mdt-apply-dev-caps.sh has not run, or no IO baseline) — skipped"
+    info "$slice IOPS sub-ceiling: riops/wiops not numeric in io.max yet (mdt-dev-governance-reconcile.sh has not run, or no IO baseline) — skipped"
     return
   fi
   want_r=$(( dev_riops * pct / 100 ))
@@ -154,7 +154,7 @@ _iops_subceiling_check() {
   if [ "$sub_riops" -eq "$want_r" ] && [ "$sub_wiops" -eq "$want_w" ]; then
     ok "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops matches ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops"
   else
-    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops (want riops=$want_r/wiops=$want_w) — run mdt-apply-dev-caps.sh"
+    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops (want riops=$want_r/wiops=$want_w) — run mdt-dev-governance-reconcile.sh"
   fi
 }
 
@@ -387,7 +387,7 @@ fi
 # Independent of the slice: a missing/stale baseline means the caps in force are
 # the tight unit statics, whether or not any member has started.
 if [ -f "$IO_BASELINE_ENV" ] && [ -x /usr/local/sbin/mdt-io-baseline.py ]; then
-  if baseline_status=$(python3 /usr/local/sbin/mdt-io-baseline.py --check-cache \
+  if baseline_status=$(python3 /usr/local/sbin/mdt-io-baseline.py --check-results \
       --output "$IO_BASELINE_ENV" --testfile "$IO_BASELINE_TESTFILE" 2>&1); then
     ok "current io.cost baseline ($IO_BASELINE_ENV; device and target identity match)"
   else
@@ -412,15 +412,15 @@ done
   || warn "no disk uses BFQ — IOWeight is inert, only the io.max caps enforce. Expected on NVMe (the shipped udev rule matches vd*/sd* only, on purpose); on vd*/sd* it means the rule or the module did not load"
 
 echo "== sweep service/timer =="
-systemctl is-enabled mdt-host-slices.timer >/dev/null 2>&1 \
-  && ok "mdt-host-slices.timer enabled ($(systemctl show mdt-host-slices.timer -p NextElapseUSecRealtime --value 2>/dev/null))" \
-  || warn "mdt-host-slices.timer not enabled — this sweep is the BACKSTOP; without it, only whatever mdt-io-cap-watcher.service already caught stays capped"
-systemctl is-active mdt-io-cap-watcher.service >/dev/null 2>&1 \
-  && ok "mdt-io-cap-watcher.service active (docker-events reactive per-container IO caps)" \
-  || warn "mdt-io-cap-watcher.service not active — buildx_buildkit_*/test-runner/devcontainer containers only get capped on the next mdt-host-slices.timer sweep, not instantly on start"
-systemctl is-active mdt-dev-cap-watcher.service >/dev/null 2>&1 \
-  && ok "mdt-dev-cap-watcher.service active (inotify reactive per-container memory/swap caps)" \
-  || warn "mdt-dev-cap-watcher.service not active — unlabelled containers in dev-interactive.slice/dev-background.slice/dev-gates.slice only get a default MemoryMax on the next sweep, not instantly on start"
+systemctl is-enabled mdt-dev-governance-reconcile.timer >/dev/null 2>&1 \
+  && ok "mdt-dev-governance-reconcile.timer enabled ($(systemctl show mdt-dev-governance-reconcile.timer -p NextElapseUSecRealtime --value 2>/dev/null))" \
+  || warn "mdt-dev-governance-reconcile.timer not enabled — this sweep is the BACKSTOP; without it, only whatever mdt-container-io-events-watcher.service already caught stays capped"
+systemctl is-active mdt-container-io-events-watcher.service >/dev/null 2>&1 \
+  && ok "mdt-container-io-events-watcher.service active (docker-events reactive per-container IO caps)" \
+  || warn "mdt-container-io-events-watcher.service not active — governed Docker scopes and out-of-tree Buildx workers only get capped on the next mdt-dev-governance-reconcile.timer sweep, not instantly on start"
+systemctl is-active mdt-container-memory-inotify-watcher.service >/dev/null 2>&1 \
+  && ok "mdt-container-memory-inotify-watcher.service active (inotify reactive per-container memory/swap caps)" \
+  || warn "mdt-container-memory-inotify-watcher.service not active — unlabelled containers in dev-interactive.slice/dev-background.slice/dev-gates.slice only get a default MemoryMax on the next sweep, not instantly on start"
 
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

@@ -39,7 +39,7 @@ This atomically:
 The installer now accepts an optional `--restart-docker` flag:
 
 ```bash
-sudo ./install.sh --force --restart-docker
+sudo ./install.sh --reset --restart-docker
 ```
 
 This automatically restarts Docker at the end of configuration updates, rather than leaving it as a manual step.
@@ -67,7 +67,7 @@ This script:
 Use the `--restart-docker` flag to restart Docker immediately:
 
 ```bash
-sudo ./install.sh --force --restart-docker
+sudo ./install.sh --reset --restart-docker
 ```
 
 **When to use:** During initial setup or maintenance windows.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """mdt host-setup — reactive dev-tier container cap watcher.
 
-Everything mdt-apply-dev-caps.sh's periodic sweep does for per-container
+Everything mdt-dev-governance-reconcile.sh's periodic sweep does for per-container
 caps, it does up to WATCHER_INTERVAL late: a container created right after a
 sweep runs unbounded until the next one. This watches dev-interactive.slice,
 dev-background.slice AND dev-gates.slice directly via inotify and applies a
@@ -10,7 +10,7 @@ docker-*.scope appears — proven live (2026-08-28) to fire within the same
 second a container is created, using nothing but a read-only inotify watch
 on cgroupfs (no Docker API, no plugin, no proxy).
 
-Default MemoryMax exists to bound the blast radius of any single
+Default per-container memory limits exist to bound the blast radius of any single
 unlabelled dev/test/build/gate container: without it, one container
 ballooning under memory pressure can force reclaim on every OTHER cgroup
 sharing the tier (including, transitively, anything memory.low/min
@@ -18,10 +18,8 @@ protection on a sibling tier is supposed to shield) before the tier's own
 MemoryHigh/Max ever triggers. A caller's own explicit `--memory` always
 wins — this only fills in containers that didn't ask for anything.
 
-MemoryHigh is the same soft-throttle-before-the-hard-cap pairing the slices
-themselves already use, computed as a percentage of whichever Max applies
-(WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT, default 80%) so it tracks gates'
-different Max automatically. MemorySwapMax is what makes this a real
+MemoryHigh is configured separately for each watched slice and is asked before
+that slice's MemoryMax in the wizard. MemorySwapMax is what makes this a real
 per-consumer "tight ceiling, generous swap" pair rather than MemoryMax
 alone: cgroup v2 has no anon-only cap, so bounding total resident while
 allowing swap absorbs anon growth beyond the cap rather than OOM-killing at
@@ -29,19 +27,19 @@ the boundary. Computed from the matched slice's own LIVE memory.swap.max
 (cgroupfs), not re-derived from host-setup.env — see
 read_slice_swap_max_bytes()'s own docstring for why.
 
-dev-gates.slice (RG-55 D-19, RW-32/D1) gets its OWN knob,
-WATCHER_PER_CONTAINER_GATES_MEMORY_MAX, defaulting to the tier's own
-MemoryHigh (4G) — NOT the shared WATCHER_PER_CONTAINER_MEMORY_MAX (1G):
+dev-gates.slice (RG-55 D-19, RW-32/D1) gets its own high/max pair,
+WATCHER_GATES_MEMORY_HIGH and WATCHER_GATES_MEMORY_MAX. Interactive and
+background have their own corresponding pairs, so one setting does not
+silently cover two different workloads:
 today's run-gate lane containers
 land in dev-background.slice with no --memory of their own (this watcher's
 whole reason to exist), and the moment a consumer honours
 CGROUP_PARENT_DEV_GATES those same unlabelled containers move to
-dev-gates.slice. Capping them at 1G there would be BELOW the ~2 GiB of
-headroom the 2026-08-04 incident says a gate already needed — re-creating,
-inside the very tier built to fix it, the problem dev-gates.slice exists to
-solve. 4G lets one unlabelled lane alone drive the tier into MemoryHigh
-throttle but never past MemoryMax (6G); two such lanes are bounded by the
-tier's own oomd pressure kill, not by this watcher.
+dev-gates.slice. The shipped gates pair is 3G MemoryHigh and 4G MemoryMax,
+so one unlabelled lane has room for a realistic gate workload while still
+being bounded before it can consume the whole gates tier. The pair is a
+per-container default; the slice's own limits and systemd-oomd remain the
+aggregate safeguards when several lanes run together.
 
 This is the COARSE, tier-wide backstop. It COMPOSES with, and is NOT
 withdrawn by, the daemon's future per-lane placement caps (D-20/D-25,
@@ -52,7 +50,7 @@ already does for the other two tiers today.
 
 Cannot fix cgroup-parent placement itself (create-time only, see
 CGROUP-NOTES.md #1) — this only reacts to attributes WITHIN a cgroup
-Docker already placed correctly. Keep mdt-apply-dev-caps.sh's periodic
+Docker already placed correctly. Keep mdt-dev-governance-reconcile.sh's periodic
 sweep running too: it is the backstop for whatever this watcher misses
 across its own restart window, and it is still the only mechanism for the
 IO caps this script does not touch.
@@ -70,7 +68,7 @@ import time
 
 CG = os.environ.get("CG", "/sys/fs/cgroup")
 CONF = os.environ.get("CONF", "/etc/mdt/host-setup.env")
-log_prefix = "[mdt-dev-cap-watcher]"
+log_prefix = "[mdt-container-memory-inotify-watcher]"
 
 
 def log(msg: str) -> None:
@@ -78,7 +76,7 @@ def log(msg: str) -> None:
 
 
 def load_env(path: str) -> dict:
-    """Minimal KEY=VALUE parser — same shell-env shape mdt-apply-dev-caps.sh
+    """Minimal KEY=VALUE parser — same shell-env shape mdt-dev-governance-reconcile.sh
     reads, so one file stays the single source of truth for both."""
     out = {}
     try:
@@ -125,18 +123,12 @@ def _get_pct(name: str, default: int) -> int:
 
 # Per-container defaults, namespaced separately from the DEV_* slice-level
 # settings (see host-setup.env.example).
-WATCHER_PER_CONTAINER_MEMORY_MAX = _get("WATCHER_PER_CONTAINER_MEMORY_MAX", "1G")
-# dev-gates.slice's own knob (RW-32/D1) -- deliberately NOT
-# WATCHER_PER_CONTAINER_MEMORY_MAX, see the module docstring for why 1G
-# there would re-create the 2026-08-04 incident inside the tier built to fix
-# it. Default = the tier's own MemoryHigh (host-setup.env.example
-# DEV_GATES_MEMORY_HIGH=4G).
-WATCHER_PER_CONTAINER_GATES_MEMORY_MAX = _get("WATCHER_PER_CONTAINER_GATES_MEMORY_MAX", "4G")
-# Soft ceiling below the hard Max, same High+Max pairing the slices
-# themselves already use — computed as a percentage of whichever Max
-# resolves per-tier (not a separate absolute value) so it automatically
-# tracks gates' different Max instead of needing its own override.
-WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT = _get_pct("WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT", 80)
+WATCHER_INTERACTIVE_MEMORY_HIGH = _get("WATCHER_INTERACTIVE_MEMORY_HIGH", "800M")
+WATCHER_INTERACTIVE_MEMORY_MAX = _get("WATCHER_INTERACTIVE_MEMORY_MAX", "1G")
+WATCHER_BACKGROUND_MEMORY_HIGH = _get("WATCHER_BACKGROUND_MEMORY_HIGH", "800M")
+WATCHER_BACKGROUND_MEMORY_MAX = _get("WATCHER_BACKGROUND_MEMORY_MAX", "1G")
+WATCHER_GATES_MEMORY_HIGH = _get("WATCHER_GATES_MEMORY_HIGH", "3G")
+WATCHER_GATES_MEMORY_MAX = _get("WATCHER_GATES_MEMORY_MAX", "4G")
 # Per-container swap ceiling: DEV_SWAP_CASCADE_PCT% of the MATCHED SLICE's
 # own LIVE memory.swap.max (read from cgroupfs at apply time, not re-derived
 # from host-setup.env) -- install.sh auto-computes DEV_*_MEMORY_SWAP_MAX
@@ -150,20 +142,16 @@ WATCHED_SLICES = ["dev-interactive.slice", "dev-background.slice", "dev-gates.sl
 # here (checked at startup in main()), so a slice added to one list without
 # the other fails loudly instead of silently falling back to a value nobody
 # chose for it.
-SLICE_DEFAULT_MEMORY_MAX = {
-    "dev-interactive.slice": WATCHER_PER_CONTAINER_MEMORY_MAX,
-    "dev-background.slice": WATCHER_PER_CONTAINER_MEMORY_MAX,
-    "dev-gates.slice": WATCHER_PER_CONTAINER_GATES_MEMORY_MAX,
+SLICE_DEFAULT_MEMORY_HIGH = {
+    "dev-interactive.slice": WATCHER_INTERACTIVE_MEMORY_HIGH,
+    "dev-background.slice": WATCHER_BACKGROUND_MEMORY_HIGH,
+    "dev-gates.slice": WATCHER_GATES_MEMORY_HIGH,
 }
-
-# Additional cgroup properties worth capping on creation, left commented —
-# uncomment and set a value (in host-setup.env, then export it below, or
-# hardcode here) to also apply them. Not enabled by default: these are
-# documented, not guessed at.
-#
-# WATCHER_PER_CONTAINER_CPU_WEIGHT = _get("WATCHER_PER_CONTAINER_CPU_WEIGHT", default="")
-# WATCHER_PER_CONTAINER_IO_WEIGHT  = _get("WATCHER_PER_CONTAINER_IO_WEIGHT", default="")
-# WATCHER_PER_CONTAINER_TASKS_MAX  = _get("WATCHER_PER_CONTAINER_TASKS_MAX", default="")
+SLICE_DEFAULT_MEMORY_MAX = {
+    "dev-interactive.slice": WATCHER_INTERACTIVE_MEMORY_MAX,
+    "dev-background.slice": WATCHER_BACKGROUND_MEMORY_MAX,
+    "dev-gates.slice": WATCHER_GATES_MEMORY_MAX,
+}
 
 IN_CREATE = 0x00000100
 IN_ISDIR = 0x40000000
@@ -182,7 +170,7 @@ def check_inotify_available() -> None:
         errno = ctypes.get_errno()
         log(f"FATAL: inotify_init1 failed (errno={errno}) — this kernel/"
             f"container cannot use inotify; the reactive watcher cannot "
-            f"run. mdt-apply-dev-caps.sh's periodic sweep still applies IO "
+            f"run. mdt-dev-governance-reconcile.sh's periodic sweep still applies IO "
             f"caps on its own schedule, but per-container MemoryMax will "
             f"only ever be as fresh as that sweep without this.")
         sys.exit(1)
@@ -279,12 +267,25 @@ def apply_default_cap(slice_path: str, slice_name: str, scope_name: str) -> None
         log(f"{scope_name}: explicit --memory already set, leaving as-is")
         return
     unit = scope_name
+    default_memory_high = SLICE_DEFAULT_MEMORY_HIGH[slice_name]
     default_memory_max = SLICE_DEFAULT_MEMORY_MAX[slice_name]
-    max_bytes = parse_size(default_memory_max)
-    # Soft throttle-into-reclaim step below the hard cap, same High+Max
-    # pairing the slices themselves already use.
-    high_bytes = max_bytes * WATCHER_PER_CONTAINER_MEMORY_HIGH_PCT // 100
-    props = [f"MemoryMax={default_memory_max}", f"MemoryHigh={high_bytes}"]
+    try:
+        high_bytes = parse_size(default_memory_high) if default_memory_high not in ("", "-") else None
+        max_bytes = parse_size(default_memory_max) if default_memory_max not in ("", "-") else None
+    except ValueError as exc:
+        log(f"WARN: {scope_name}: invalid configured per-container memory pair: {exc}; leaving it unchanged")
+        return
+    if high_bytes is not None and max_bytes is not None and high_bytes > max_bytes:
+        log(f"WARN: {scope_name}: configured MemoryHigh exceeds MemoryMax; leaving the pair unchanged")
+        return
+    props = []
+    if high_bytes is not None:
+        props.append(f"MemoryHigh={default_memory_high}")
+    if max_bytes is not None:
+        props.append(f"MemoryMax={default_memory_max}")
+    if not props:
+        log(f"{scope_name}: no per-container memory directive configured")
+        return
     # Per-container swap ceiling: the "tight anon ceiling, generous swap"
     # pairing — cgroup v2 has no anon-only cap, so a total-resident cap
     # (MemoryMax/High above) plus a
@@ -295,13 +296,6 @@ def apply_default_cap(slice_path: str, slice_name: str, scope_name: str) -> None
     swap_bytes = read_slice_swap_max_bytes(slice_path)
     if swap_bytes is not None:
         props.append(f"MemorySwapMax={swap_bytes * DEV_SWAP_CASCADE_PCT // 100}")
-    # Uncomment corresponding lines above and here to also apply them:
-    # if WATCHER_PER_CONTAINER_CPU_WEIGHT:
-    #     props.append(f"CPUWeight={WATCHER_PER_CONTAINER_CPU_WEIGHT}")
-    # if WATCHER_PER_CONTAINER_IO_WEIGHT:
-    #     props.append(f"IOWeight={WATCHER_PER_CONTAINER_IO_WEIGHT}")
-    # if WATCHER_PER_CONTAINER_TASKS_MAX:
-    #     props.append(f"TasksMax={WATCHER_PER_CONTAINER_TASKS_MAX}")
     result = subprocess.run(
         ["systemctl", "set-property", "--runtime", unit, *props],
         capture_output=True, text=True, timeout=5,
@@ -329,11 +323,12 @@ def watch_slice(fd: int, slice_name: str) -> dict:
 
 
 def main() -> None:
-    missing = [s for s in WATCHED_SLICES if s not in SLICE_DEFAULT_MEMORY_MAX]
+    missing = [
+        s for s in WATCHED_SLICES
+        if s not in SLICE_DEFAULT_MEMORY_HIGH or s not in SLICE_DEFAULT_MEMORY_MAX
+    ]
     if missing:
-        log(f"FATAL: {missing} in WATCHED_SLICES but SLICE_DEFAULT_MEMORY_MAX "
-            f"has no default for it -- every watched slice needs a chosen "
-            f"default, add one instead of falling back silently")
+        log(f"FATAL: {missing} in WATCHED_SLICES lacks a configured MemoryHigh/MemoryMax pair")
         sys.exit(1)
     check_inotify_available()
     fd = _libc.inotify_init1(0)
@@ -345,7 +340,7 @@ def main() -> None:
     for slice_name in WATCHED_SLICES:
         watches.update(watch_slice(fd, slice_name))
 
-    log(f"per-slice default MemoryMax: {SLICE_DEFAULT_MEMORY_MAX}; watched: {WATCHED_SLICES}")
+    log(f"per-slice container memory defaults: high={SLICE_DEFAULT_MEMORY_HIGH}, max={SLICE_DEFAULT_MEMORY_MAX}; watched: {WATCHED_SLICES}")
 
     last_retry = 0.0
     while True:

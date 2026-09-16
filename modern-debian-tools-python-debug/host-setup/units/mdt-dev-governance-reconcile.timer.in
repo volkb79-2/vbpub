@@ -3,12 +3,12 @@
 # workers appear on demand and can't be placed via compose cgroup_parent;
 # devcontainers get recreated on every rebuild. The sweep is idempotent.
 [Unit]
-Description=mdt host-setup — periodic dev-tier cap sweep
+Description=mdt host-setup — periodic dev governance reconciliation
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=@WATCHER_INTERVAL@
-Unit=mdt-host-slices.service
+Unit=mdt-dev-governance-reconcile.service
 
 [Install]
 WantedBy=timers.target
