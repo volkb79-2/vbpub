@@ -2902,3 +2902,13 @@ against that exact exited name and launched
 `NanoCpus=3000000000` with `CgroupParent=dev-background.slice`. P1 and P6
 are now the two allowed mutation slots; neither will be polled before the
 20-minute interval.
+
+### RW-233 — 2026-09-16 13:50:48Z — P5 v1.1 client checkpoint
+
+Controller Luna xhigh completed the isolated P5 run-gate client implementation
+and documentation checkpoint at `4d12c430b421bd32f961112bd82e651b5a60c981`.
+The full local `tests/test_run_gate.py` suite passed 1,116 tests with 3
+skipped; the ended-daemon-watch regression is included. P5 remains unmerged
+and unreleased pending the post-P6 ordering and the required fresh Sol xhigh
+review. The final-review packet must target P5 explicitly; the assay
+source-backed 6.3 worktree remains operator-owned and untouched.

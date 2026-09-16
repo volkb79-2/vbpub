@@ -5,16 +5,22 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "8247d917"
+input_revision: "4d12c430b421bd32f961112bd82e651b5a60c981"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-221
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-233
 scope:
   touch:
     - run-gate-project/run-gate.py
     - run-gate-project/tests/
+    - run-gate-project/README.md
+    - run-gate-project/CONSUMERS.md
+    - run-gate-project/LANE-AUTHORING.md
+    - run-gate-project/SPEC.md
+    - run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
+    - run-gate-project/CHANGES.md
     - scripts/cgroup-profiler/
     - cmru/
     - run-gate-project/nyxloom-trove/reports/
@@ -70,25 +76,25 @@ its body. The first message to the fresh Sol xhigh session should therefore
 contain these literal instructions (change only the target when appropriate):
 
 ```
-REVIEW_TARGET=P4
+REVIEW_TARGET=P5
 Read /workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
 Follow that packet as the review contract. Review exactly the selected target, make scoped repairs when needed, and return the required verdict and artifact. Do not merge or release.
 ```
 
-`REVIEW_TARGET=P4` is an explicit task parameter, not a shell variable that
+`REVIEW_TARGET=P5` is an explicit task parameter, not a shell variable that
 the reviewer is expected to discover. If the line is absent or names anything
-outside `P1`, `P4`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
+outside `P1`, `P4`, `P5`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
 
 Before pasting this packet, select the actual model route in the client and
 put one literal target line at the top of your prompt. For the currently ready
-package, use:
+P5 package, use:
 
 ```
-REVIEW_TARGET=P4
+REVIEW_TARGET=P5
 ```
 
-For the other release-blocking packages, replace `P4` with exactly `P1`, `P6`,
-or `CMRU`. Do not leave the variable unset, and do not use a shell-style
+For the other release-blocking packages, replace `P5` with exactly `P1`, `P4`,
+`P6`, or `CMRU`. Do not leave the variable unset, and do not use a shell-style
 placeholder such as `$REVIEW_TARGET`; the reviewer must see the selected
 target in its input. `RG56` is an optional related review of future admission
 work and is not a release approval for RG-55.
@@ -196,6 +202,41 @@ names and equivalent decomposition remain free; public names, serialized
 shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
+
+### `P5`: run-gate v1.1 client, revision 43
+
+Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
+implementation tip `4d12c430b421bd32f961112bd82e651b5a60c981` (the packet is a
+tracked report in the same worktree). Read:
+
+```
+run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
+run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md
+run-gate-project/run-gate.py
+run-gate-project/tests/test_run_gate.py
+run-gate-project/README.md
+run-gate-project/SPEC.md
+run-gate-project/CONSUMERS.md
+run-gate-project/LANE-AUTHORING.md
+run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
+run-gate-project/CHANGES.md
+```
+
+This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
+transport seam, one-reader daemon watch with ended/failed retry and fallback,
+policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
+admission, schema-2 nullable watch/placement history, and synchronized
+adopter-facing documentation. The local `tests/test_run_gate.py` suite was
+1,116 passed and 3 skipped on this exact tip; that is not the release gate.
+Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
+`assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
+running in their separate worktrees; do not edit, switch, or invalidate them.
+The P5 branch itself must be quiet while its mutation evidence is collected.
+Check the new request shape against both contract mirrors, run live acceptance
+probes for socket and Docker-exec carriers where the installed daemon permits,
+and disclose the cockpit's known `place-refused:no-gates-slice` condition if
+the unrebuilt devcontainer cannot expose the host gates slice. Do not merge,
+release, install, start the final daemon, or touch dstdns.
 
 ### `P1`: cgprofile 1.0.0 daemon
 
