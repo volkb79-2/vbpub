@@ -116,6 +116,8 @@ budget = "3m"
 [lanes.r1-vm-real-commit]
 kind = "command"
 environment = "bare-host"
+description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"
+required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE"]
 argv = [
     "bash", "{worktree}/scripts/debian-install-v2/testing/vm/run-vm-tests.sh",
 ]

@@ -80,7 +80,7 @@ Subcommands: `prepare-base <case>`, `prepare-ready-base <case>` (see below),
 `start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]
 [--no-apt-cache]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
 `copy <run> <src> <dst>`, `snapshot <run> <new-case>` (flatten a *stopped*
-run's disk into a new `.vm/images/<new-case>-base.qcow2`), `console <run>`,
+run's disk into a new runner-local `<new-case>-base.qcow2`), `console <run>`,
 `status <run>`, `stop <run>` (graceful QMP `system_powerdown`, falling
 back to SIGTERM then SIGKILL), `destroy <run>` (stop + remove all state).
 
@@ -90,8 +90,8 @@ back to SIGTERM then SIGKILL), `destroy <run>` (stop + remove all state).
 base once, waits for cloud-init's full first-boot sequence to finish (see
 "What happens before our own installer runs" below), then permanently
 disables cloud-init (`touch /etc/cloud/cloud-init.disabled` + masking its
-four unit files) and flattens the result into `.vm/images/<case>-ready-
-base.qcow2` via `vmctl snapshot`. Starting from `--case <case>-ready`
+four unit files) and flattens the result into the runner-local
+`<case>-ready-base.qcow2` via `vmctl snapshot`. Starting from `--case <case>-ready`
 instead of the raw `<case>` skips cloud-init's network/user/SSH-key/apt-
 sources setup entirely on every subsequent boot — this is the disk state
 right at the moment a real host would hand off to this project's own
@@ -146,7 +146,8 @@ wrapper falls back to a local `.vm/` directory for interactive debugging.
 - **`case-b`** (implemented): the plain, unmodified Debian genericcloud
   qcow2 — root fills the disk, exactly Case B's real starting shape on a
   freshly-imaged host. `prepare-base case-b` calls the sibling
-  `../download-base-image.sh` and stages a copy under `.vm/images/`.
+  `../download-base-image.sh` and stages a copy in the runner-local image
+  directory.
 - **`case-a`** (not yet implemented — `prepare-base case-a` says so and
   exits non-zero): needs a small root with real free trailing space,
   which the stock cloud image doesn't have (cloud-init's `growpart` grows

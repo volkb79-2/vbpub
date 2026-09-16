@@ -159,10 +159,14 @@ run-vm-harness.sh (wrapper, on the devcontainer host)
               └── SSH (127.0.0.1:<port>, QEMU user-mode hostfwd)
                                        → guest operations (commands, file copy)
 
-.vm/images/<case>-base.qcow2   (immutable, shared across every run)
-.vm/runs/<run>/disk.qcow2      (disposable qcow2 CoW overlay, one per run)
-.vm/runs/<run>/{qemu.pid, qmp.sock, serial.log, seed.iso}
-.vm/ssh/id_ed25519{,.pub}      (one generated keypair, shared across runs)
+/var/lib/mdt-debian-install-vm/<worktree-hash>/images/<case>-base.qcow2
+                                (immutable, shared across every run)
+/var/lib/mdt-debian-install-vm/<worktree-hash>/runs/<run>/disk.qcow2
+                                (disposable qcow2 CoW overlay, one per run)
+/var/lib/mdt-debian-install-vm/<worktree-hash>/runs/<run>/{qemu.pid,
+                                qmp.sock, serial.log, seed.iso}
+/var/lib/mdt-debian-install-vm/<worktree-hash>/ssh/id_ed25519{,.pub}
+                                (one generated keypair, shared across runs)
 ```
 
 Three deliberate separations, each solving a specific problem observed
@@ -328,7 +332,8 @@ stock image already matches it.
 ## 4. Detailed walkthrough (what was actually run, live, 2026-09-09)
 
 This is the real transcript of the harness's first end-to-end proof,
-not an idealized example.
+not an idealized example. It predates the later state move out of the
+worktree; current wrapper runs use the runner-local paths described above.
 
 ```
 $ ./run-vm-harness.sh prepare-base case-b
@@ -403,12 +408,10 @@ consistency requirement to preserve here, unlike a real disk.
 
 ## 5. What this harness does not yet do
 
-Only the harness plumbing is built and proven: stage a base image, boot
-it, SSH in, tear it down cleanly, do it again cheaply via a fresh
-overlay. The actual acceptance tests this whole thing exists for are not
-built yet. The suggested first milestone (matching the design discussion
-this implementation was cross-checked against): a single `case-a-
-base.qcow2` plus one test script proving, in sequence —
+The standard `run-vm-tests.sh` lane is built and proven for Case B: it
+boots a disposable guest and runs the real loop/swap commit tests. The
+larger installer acceptance flow is still pending. The next milestone is
+a `case-a-base.qcow2` plus one test script proving, in sequence —
 
 1. `/` is mounted from `/dev/vdaN` (fixture sanity: this is the load-
    bearing property `inuse_partition_editor.py` depends on that no other

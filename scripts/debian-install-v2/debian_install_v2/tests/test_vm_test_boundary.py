@@ -28,6 +28,8 @@ def test_legacy_privileged_container_runner_is_gone():
 def test_gate_routes_real_commit_lane_to_qemu_guest():
     gate = (PROJECT / "run-gate.toml").read_text()
     assert "[lanes.r1-vm-real-commit]" in gate
+    assert 'description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"' in gate
+    assert 'required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE"]' in gate
     assert "testing/vm/run-vm-tests.sh" in gate
     assert "[lanes.r1-privileged-commit]" not in gate
     assert "run-privileged-tests.sh" not in gate
