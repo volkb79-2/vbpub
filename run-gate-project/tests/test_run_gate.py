@@ -13864,6 +13864,26 @@ class TestProfilerClient:
         assert watch.ended()
         watch.close()
 
+    def test_exec_watch_exception_after_close_only_emits_end(self, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+
+        def _boom(*args, **kwargs):
+            started.set()
+            assert release.wait(timeout=2)
+            raise OSError("planted late reader failure")
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", _boom)
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
+        watch = client.watch("s-closed", watch_interval=2)
+        assert started.wait(timeout=2)
+        watch._closed = True
+        release.set()
+        watch._thread.join(timeout=2)
+        assert watch.drain() == [("end", None)]
+        watch.close()
+
     def test_exec_watch_reader_accepts_events_before_clean_end(self, monkeypatch):
         class Proc:
             stdout = ['{"event":"reading"}\n']
@@ -15870,7 +15890,8 @@ class TestAwaitContainerProfilingWiring:
         docker = shutil.which("docker")
         assert run_gate.await_container(
             docker, name, {"kind": "assay", "assay_lane": "suite"},
-            "suite", tmp_path, tmp_path, tmp_path, profiler=profiler) == 0
+            "suite", tmp_path, tmp_path, tmp_path, profiler=profiler,
+            watch=fallback) == 0
         assert fallback.poll_calls >= 1
         assert "daemon watch could not start" in profiler["warning"]
         assert "in-process watch" in capsys.readouterr().out
@@ -15922,14 +15943,18 @@ class TestAwaitContainerProfilingWiring:
         name = "run-gate-test-container"
 
         class _Watch:
+            def __init__(self, ended, idle):
+                self._ended = ended
+                self._idle = idle
+
             def drain(self):
                 return []
 
             def ended(self):
-                return True
+                return self._ended
 
             def idle(self):
-                return False
+                return self._idle
 
             def close(self):
                 pass
@@ -15940,7 +15965,7 @@ class TestAwaitContainerProfilingWiring:
 
             def watch(self, session):
                 self.watch_calls += 1
-                return _Watch()
+                return _Watch(self.watch_calls != 1, self.watch_calls == 1)
 
         class _Process:
             def __init__(self):
@@ -15974,7 +15999,9 @@ class TestAwaitContainerProfilingWiring:
             docker, name, {"kind": "command"}, "suite", tmp_path,
             tmp_path, tmp_path, profiler=profiler) == 0
         assert client.watch_calls == 2
-        assert "continuing without daemon liveness" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "went idle" in err
+        assert "continuing without daemon liveness" in err
 
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait
@@ -16846,14 +16873,18 @@ class TestBareHostProfilingWiring:
     def test_bare_host_ended_watch_reattaches_then_continues_without_liveness(
             self, tmp_path, monkeypatch, capsys):
         class Watch:
+            def __init__(self, ended, idle):
+                self._ended = ended
+                self._idle = idle
+
             def drain(self):
                 return []
 
             def ended(self):
-                return True
+                return self._ended
 
             def idle(self):
-                return False
+                return self._idle
 
             def close(self):
                 pass
@@ -16864,7 +16895,7 @@ class TestBareHostProfilingWiring:
 
             def watch(self, session):
                 self.watch_calls += 1
-                return Watch()
+                return Watch(self.watch_calls != 1, self.watch_calls == 1)
 
         class Process:
             def __init__(self):
@@ -16900,7 +16931,9 @@ class TestBareHostProfilingWiring:
              "argv": ["true"], "clean_tree": False},
             "suite", repo, repo, repo, run_record={}, profile_plan=plan) == 0
         assert client.watch_calls == 2
-        assert "ended" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "went idle" in err
+        assert "continuing without daemon liveness" in err
 
     def test_direct_call_with_no_run_record_still_profiles(
             self, tmp_path, monkeypatch):
@@ -17993,14 +18026,18 @@ class TestExecLaneProfilingWiring:
     def test_exec_second_ended_watch_can_kill_via_progress_fallback(
             self, tmp_path, monkeypatch):
         class Watch:
+            def __init__(self, ended, idle):
+                self._ended = ended
+                self._idle = idle
+
             def drain(self):
                 return []
 
             def ended(self):
-                return True
+                return self._ended
 
             def idle(self):
-                return False
+                return self._idle
 
             def close(self):
                 pass
@@ -18014,7 +18051,7 @@ class TestExecLaneProfilingWiring:
 
             def watch(self, session):
                 self.watch_calls += 1
-                return Watch()
+                return Watch(self.watch_calls != 1, self.watch_calls == 1)
 
         class Fallback:
             def __init__(self):
