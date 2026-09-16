@@ -3056,3 +3056,13 @@ canaries rejected and zero survivors. `doctor` exited 0 with 8 OK, 2 warnings,
 linked-worktree host-lane git view and the not-running cockpit daemon; no
 socket-carrier live acceptance evidence exists yet. P5 R2 mutation evidence
 is still outstanding and must be run after source-backed assay integration.
+
+### RW-247 — 2026-09-16 15:46:06Z — P5 gate-full green
+
+The P5 `gate-full --base main` wrapper passed on the quiet tree
+`8823dca820cf6ffc6520da57663f8b7424f1ce35`: nested selftest passed 1,287 with
+3 skips and 642/642 changed lines plus 276/276 branches; nested R1 passed;
+R3 rejected both canaries with zero survivors; and the wrapper exited 0. The
+daemon-absent rusage warning remains disclosed. This does not replace the
+pending R2 mutation run or the fresh Sol review, and source-backed assay 6.3
+integration will require this gate again on the final tree.
