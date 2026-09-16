@@ -15197,14 +15197,8 @@ class TestAwaitContainerProfilingWiring:
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         name = "run-gate-test-container"
         self._start_container(state, name)
-        (state / ".hang").write_text("")
         progress = tmp_path / ".assay" / "progress-suite.jsonl"
         write_progress(progress, candidate(0, total=1))
-
-        def _clear_hang():
-            time.sleep(0.3)
-            (state / ".hang").unlink(missing_ok=True)
-        threading.Thread(target=_clear_hang, daemon=True).start()
 
         class _EndedWatch:
             def drain(self):
@@ -15229,6 +15223,29 @@ class TestAwaitContainerProfilingWiring:
                 self.watch_calls += 1
                 return _EndedWatch()
 
+        class _OneTimeoutProcess:
+            def __init__(self):
+                self.calls = 0
+                self.returncode = None
+
+            def wait(self, timeout=None):
+                self.calls += 1
+                if timeout is not None and self.calls <= 2:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                self.returncode = 0
+                return 0
+
+            def terminate(self):
+                self.returncode = 0
+
+        monkeypatch.setattr(
+            run_gate.subprocess, "Popen", lambda *args, **kwargs:
+            _OneTimeoutProcess())
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout="0\n", stderr=""))
+
         client = _Client()
         profiler = {"mode": "daemon", "client": client, "daemon": "d",
                     "session": "s-x", "warning": None, "session_line": None,
@@ -15240,7 +15257,9 @@ class TestAwaitContainerProfilingWiring:
             run_record={})
         assert code == 0
         assert client.watch_calls == 2
-        assert "reattaching once" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "reattaching once" in captured.err
+        assert "in-process watch" in captured.out
 
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait
