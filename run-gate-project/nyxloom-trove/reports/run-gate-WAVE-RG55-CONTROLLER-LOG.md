@@ -3382,3 +3382,18 @@ and the stale provisional P5 mutation campaign remain live, so no new
 mutation lane was launched; P6's same-tree retry still ended with the same
 two `budget_exceeded` placeholders and remains incomplete. No Sol acceptance,
 merge, or release is claimed by this ruling.
+
+### RW-277 — 2026-09-16 18:15:58Z — restore detached gate observation and advance P3 preparation
+
+The first P5 final-r2 watcher left only an `armed` line and no live process or
+terminal result, so it is not evidence. The controller launched the missing
+P5 non-mutation `gate-full --base main` from clean reconciled tree `8a879c52`
+under the existing niced execution policy (supervisor PID `3693232`) and
+armed a proper `nohup` watcher (PID `3693233`) that waits at least one
+20-minute boundary before checking the terminal marker. P1 and the stale
+provisional P5 mutation supervisors remain live; no mutation tree was touched.
+
+In isolated P3 preparation, the report records the verified source-backed
+Assay 6.3.0 publication, installed wheel hash, and release commit as
+`984e9823`. This is preparation evidence only: mutation, Sol review, daemon
+releases, and live probes remain outstanding.
