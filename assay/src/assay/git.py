@@ -91,6 +91,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
@@ -869,6 +870,28 @@ def path_is_ignored(
         f"git check-ignore {relative_path} failed ({returncode}): "
         f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
     )
+
+
+def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
+    """Source of the effective ignore rule, or None for an unignored path.
+
+    Review telemetry must distinguish repository policy from personal excludes.
+    Like path_is_ignored, check-ignore needs the sanitized boundary without
+    Git's unsupported --literal-pathspecs option. Fail on unknown job statuses.
+    """
+    returncode, stdout, stderr = _run_raw(
+        repo, "check-ignore", "-v", "--", relative_path, literal_pathspecs=False,
+    )
+    if returncode == 1:
+        return None
+    if returncode != 0:
+        raise _git_failed(f"git check-ignore failed ({returncode}): "
+                          f"{stderr.decode('utf-8', errors='replace').strip()[:200]}")
+    metadata = _decode_or_reject(stdout, "ignore rule metadata").split("\t", 1)[0]
+    fields = re.fullmatch(r"(.+?):(\d+):(.*)", metadata)
+    if fields is None:
+        raise _git_failed("malformed git check-ignore rule metadata")
+    return None if fields.group(3).startswith("!") else fields.group(1)
 
 
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:

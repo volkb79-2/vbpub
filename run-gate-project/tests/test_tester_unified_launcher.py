@@ -59,6 +59,10 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
                   printf '%s' "$2" > "$state/cgroup"
                   shift 2
                   ;;
+                --network)
+                  printf '%s' "$2" > "$state/network"
+                  shift 2
+                  ;;
                 -w)
                   printf '%s' "$2" > "$state/workdir"
                   shift 2
@@ -81,6 +85,8 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
               sed -n '1,$p' "$state/mounts"
             elif [[ $* == *'.Config.Env'* ]]; then
               sed -n '1,$p' "$state/environment"
+            elif [[ $* == *'.HostConfig.NetworkMode'* ]]; then
+              printf '%s\\n' "${FAKE_DOCKER_NETWORK:-$(<"$state/network")}"
             else
               printf '[{"Id":"fake"}]\\n'
             fi
@@ -106,7 +112,8 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
 
 def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
                   cgroup: str | None = "dev-background.slice",
-                  update_fails: bool = False):
+                  update_fails: bool = False, network: str | None = None,
+                  accepted_network: str | None = None):
     bin_dir, log = _fake_docker(tmp_path)
     pressure_file = tmp_path / "pressure"
     pressure_file.write_text(
@@ -121,13 +128,16 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     env["_TESTER_UNIFIED_LAUNCH_LOCK"] = str(tmp_path / "launch.lock")
     env["TESTER_UNIFIED_RUN_NAME"] = "tester-unified-contract-test"
     env["FAKE_DOCKER_UPDATE_FAIL"] = "1" if update_fails else "0"
+    if accepted_network is not None:
+        env["FAKE_DOCKER_NETWORK"] = accepted_network
     if cgroup is None:
         env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
     else:
         env["CGROUP_PARENT_DEV_BACKGROUND"] = cgroup
     proc = subprocess.run(
         [str(LAUNCHER), "--workdir", str(REPO / "run-gate-project"),
-         "--evidence-dir", str(evidence), "--", *args],
+         "--evidence-dir", str(evidence),
+         *(["--network", network] if network is not None else []), "--", *args],
         text=True, capture_output=True, env=env, check=False,
     )
     return proc, log, evidence
@@ -215,6 +225,27 @@ def test_post_launch_verification_failure_stops_and_removes_only_its_container(
     assert "rm tester-unified-contract-test" in calls
 
 
+def test_launcher_preserves_offline_gate_policy_and_records_live_acceptance(tmp_path):
+    proc, log, evidence = _run_launcher(tmp_path, "true", network="none")
+    assert proc.returncode == 0, proc.stderr
+    assert "--network none" in log.read_text()
+    assert "network_mode=none\n" in (evidence / "tester-unified-contract-test/launch.txt").read_text()
+
+
+def test_launcher_refuses_network_argument_or_failed_acceptance(tmp_path):
+    invalid = tmp_path / "invalid"
+    invalid.mkdir()
+    proc, log, _ = _run_launcher(invalid, "true", network="host")
+    assert proc.returncode == 2 and "accepts only none" in proc.stderr
+    assert not log.exists()
+    rejected = tmp_path / "rejected"
+    rejected.mkdir()
+    proc, log, _ = _run_launcher(rejected, "true", network="none", accepted_network="bridge")
+    assert proc.returncode == 125 and "did not accept network mode none" in proc.stderr
+    assert "stop -t 10 tester-unified-contract-test" in log.read_text()
+    assert "rm tester-unified-contract-test" in log.read_text()
+
+
 def _heading_ids(text: str) -> set[str]:
     result = set()
     for line in text.splitlines():
@@ -238,7 +269,7 @@ def test_launcher_docs_are_linked_and_document_the_complete_cli():
                     f"broken anchor in {document}: {target}"
                 )
     combined = "\n".join(path.read_text() for path in DOCS)
-    for token in ("--workdir", "--evidence-dir", "--help", " -- "):
+    for token in ("--workdir", "--evidence-dir", "--network none", "--help", " -- "):
         assert token in combined
     assert "tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest" \
         in (DOCS[0].read_text() + DOCS[2].read_text())

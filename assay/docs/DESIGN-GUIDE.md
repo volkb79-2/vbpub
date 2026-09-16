@@ -3010,3 +3010,91 @@ did.
 | Flat verdict with optional detail blocks | *"R2 declared but rendered no judgement"* becomes indistinguishable from *"R2 never declared"*. |
 | Fold `BUDGET_EXCEEDED` into `ERROR` | A slow lane and a broken lane get the same code and the same retry policy. |
 | Rename `NO_MEASUREMENT` to `DIRTY_TREE` | Names only one of its three causes; `BASE_IS_HEAD` is ref resolution, not tree state. A required `reason_code` gives the specificity without proliferating exit codes. |
+
+
+## Review evidence analysis
+
+P4 and P5 run-gate reviews repeatedly needed the same operations: archive logs,
+check exact Git identities, read the job's exit separately from the launching
+process, validate verdicts, and distinguish resumed work from newly judged
+mutants. P4 already provided the repository-owned `tester-unified/run` launcher
+and its transport records. `assay analyze` consumes those records instead of
+reimplementing Docker launch, namespace translation, cgroup admission, or exit
+transport. It also produces simple recorded-command evidence for other drivers.
+The common library lives in the shipped Assay package: wheel, zipapp and source
+consumers use the same implementation, with no new runtime dependency.
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze receipt --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
+  --tester-run selftest "$LAUNCH_EVIDENCE" \
+  --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
+  --progress r2 "$WORKTREE/.assay/progress-r2.jsonl" \
+  --output "$WORKTREE/.assay/review-receipt.json"
+```
+
+There is no inferred review commit and no automatic directory search. The
+controller's expected full HEAD is explicit, while the current tree and root
+are derived through Assay's existing sanitized, bounded Git boundary, including
+its protection against environment/configuration redirects and personal ignore
+rules hiding dirty source files. Missing files, duplicate names/JSON keys, malformed records, stale
+identities, dirty worktrees, inconsistent wait/job statuses and corrupt archives
+fail loudly. New archives and receipt files are never overwritten. Recorded-job
+and receipt outputs within the inspected worktree must be untracked and ignored
+by repository `.gitignore` rules; create them
+outside the worktree otherwise. This keeps review telemetry out of the judged
+source. `record` does not choose a container or resource policy: execute it in
+the approved test environment or explicitly name the approved launcher command.
+
+Collection hashes the copied bytes. Inspection hashes the same bytes it parses,
+including CRLF; it does not parse one read and fingerprint a later read. A
+`collect --receipt` archive selects all fingerprinted inputs from the receipt
+and refuses changed bytes, removing the need for a second hand-maintained
+file list. Arbitrary supplementary files still require explicit names.
+Binary job output is retained byte-for-byte and decoded with visible escapes
+for marker inspection; structured JSON and identity records require UTF-8. A
+relocated archive is checked against its own manifest, not the original source
+paths. These are integrity checks, not producer authentication: replacing both
+a manifest and its files can defeat them. A receipt checks Git before and after
+inspection, but cannot prove the tree stayed unchanged during a historical job
+from its two endpoint snapshots. Recorded-command evidence contains argv, not
+a complete reproducible environment. Preserve image/tool identities separately
+when the review contract requires them.
+
+Launcher inspect records are labelled `launcher-pre-wait`; they are not final
+Docker/OOM evidence. Their recorded configuration is compared with launcher
+metadata, but analysis does not query the host or certify a loaded cgroup unit.
+The launcher owns those acceptance probes. Historical P4 evidence naming an
+older product HEAD must not be rebound to a later administrative/current HEAD;
+use standalone launcher/verdict/progress inspection with that historical expected commit,
+or inspect an actual checkout of the recorded commit.
+
+Verdict inspection delegates schema, rollup and behavioral consistency to
+`assay verify`'s implementation. A valid ERROR artifact is successfully inspected
+with its recorded nonzero exit intact. Progress summaries retain every matching
+run, ordered line references, event counts and milestone payloads; no end event
+means no recorded terminal event, not an invented PASS. Missing optional counts
+are not filled with zero. Even a recorded `end` or `verdict_written` event does
+not replace validation of the referenced verdict. Receipts have no review
+verdict: ordinary green gates can coexist with an adversarial blocker, as they
+did for P5's malformed resume record.
+
+Analysis archives, receipts and progress summaries use their own
+`schema_version = 1`; lane and verdict schema versions are unchanged. Default
+JSON output is for machine consumption; `verdict --format text` is the concise
+human view. Unknown archive schema versions refuse. Analysis validation errors
+exit 1 with an explanation on stderr and no success JSON. `record` returns the
+job's exit (a signal becomes 128 plus its number at the CLI boundary; the
+negative subprocess status is preserved in `record.json`). If the command
+cannot start or capture is interrupted, partial files remain for diagnosis;
+receipt inspection refuses incomplete records. A command that dirties or
+moves the checkout is recorded as observed and cannot obtain a matching clean
+receipt. None of these operations silently edits a provider or an expected
+artifact toward green.
+
+Archive and receipt shape contracts ship as Draft 2020-12 JSON Schemas in
+`assay/schemas/analysis-{archive,receipt}.schema.json`. Tests validate actual
+outputs from both recording adapters, ERROR verdicts and partial progress,
+and reject invented review verdicts, malformed Git IDs and boolean byte counts.
+Runtime checks remain stdlib domain checks; no JSON-Schema engine is injected
+into the runtime dependency closure.

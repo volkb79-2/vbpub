@@ -3623,3 +3623,110 @@ denominator, every line of which begins no statement. Both tools agree on all
 names are closing braces and signatures a developer cannot make executable.
 That difference is the whole reason A-217 ruled for a source-side oracle, and
 it is what a Go consumer gains by moving.
+
+
+## Review evidence analysis
+
+Use the same installed wheel or zipapp that provides `assay run`. Internal
+vbpub lanes normally install Assay from the selected bind-mounted worktree at
+lane time; Assay's own self-hosting gate builds and installs an exact-OID wheel
+in temporary container environments. `analyze` is part of that CLI, not a
+separately injected tool. These operations accept explicit files and paths,
+require no lane configuration, and add no runtime dependencies.
+
+Set `WORKTREE` to the reviewed project's directory containing `run-gate.py`
+(for P5, the checkout's `run-gate-project/`) and `REVIEW_HEAD` to the full expected
+commit from the controller. Do not compute the expected value from the current
+HEAD as a substitute for checking the agreed candidate. The examples below
+assume `.assay/` is git-ignored and the worktree is initially clean. Execute
+build/test jobs only in the approved container or VM; the cockpit can inspect
+existing files. For a P4-style container run, retain the existing launcher's
+five-file evidence directory and pass it with `--tester-run`.
+
+To create P5-style command evidence in the approved environment, capture the
+command directly. `record` forwards the job's status, so a failed job must not
+be hidden by a pipe or a shell wrapper. Its stdout is JSON; job output is in
+`job.log` and can be followed separately.
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze record --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
+  --output "$WORKTREE/.assay/review-selftest" -- ./run-gate.py selftest
+assay analyze receipt --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
+  --recorded selftest "$WORKTREE/.assay/review-selftest/job" ASSAY_ANALYSIS_JOB_EXIT \
+  --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
+  --progress r2 "$WORKTREE/.assay/progress-r2.jsonl" \
+  --output "$WORKTREE/.assay/review-receipt.json"
+assay analyze collect --output "$WORKTREE/.assay/review-bundle" \
+  --receipt "$WORKTREE/.assay/review-receipt.json"
+assay analyze check "$WORKTREE/.assay/review-bundle"
+assay analyze verdict "$WORKTREE/.assay/review-bundle/assay_verdicts/r2" \
+  --expected-commit "$REVIEW_HEAD" --format json
+assay analyze verdict "$WORKTREE/.assay/review-bundle/assay_verdicts/r2" \
+  --expected-commit "$REVIEW_HEAD" --format text
+assay analyze progress "$WORKTREE/.assay/review-bundle/progress/r2" \
+  --expected-commit "$REVIEW_HEAD"
+assay analyze launcher "$LAUNCH_EVIDENCE" --expected-commit "$LAUNCH_HEAD"
+assay analyze collect --output "$WORKTREE/.assay/extra-bundle" \
+  --artifact static-checks.json "$STATIC_CHECKS"
+```
+
+The original P5 prefix layout is supported without renaming: `--recorded NAME
+PREFIX MARKER` reads `PREFIX.identity`, `.final-identity`, `.status`,
+`.final-status` and `.log`. The first log line must be `COMMAND=<JSON argv>`;
+the last line must be the single `MARKER=<actual job exit>` record. Dots in a
+prefix are preserved. Do not supply a wrapper's status as the job marker.
+`--tester-run NAME DIRECTORY` reads `launch.txt`, `container.inspect.json`,
+`docker-wait.exit`, `container.log`, and `launch-memory-pressure.txt`; its wait
+status and terminal `TESTER_UNIFIED_JOB_EXIT` must agree, as must the declared
+container identity, user, workdir, cgroup and CPU value with Docker inspect.
+These can be mixed with repeated named verdict/progress inputs in one receipt.
+At least one input is required; a missing declared file is an error, never a
+silently skipped file. Job names must be unique across both recording formats.
+
+Receipt JSON contains `schema_version` (1), `analyzer_version`, `head`, `tree`,
+`worktree`, `current_worktree_status`, `jobs`, `assay_verdicts` and `progress`.
+Its jobs preserve `job_exit`; verdict entries preserve the complete validated
+verdict and a compact summary; progress entries preserve separate matching
+runs and their explicit milestone payloads. Each inspected file has its
+absolute provenance path, SHA256 and byte count. The collection manifest uses
+`schema_version` (1) and `artifacts`, keyed by your relative archive names,
+with original `source`, `sha256` and `bytes`. Original source paths are
+provenance labels: `check` validates the bundled bytes without reopening them.
+`collect --receipt` includes `receipt.json`, all job files under `jobs/NAME/`,
+verdicts under `assay_verdicts/NAME`, and progress under `progress/NAME`. It
+compares the copied bytes with the receipt fingerprints and refuses if any
+input changed since inspection; it does not silently refresh the receipt.
+Additional `--artifact NAME FILE` inputs can be supplied alongside it.
+For historical P4 launch records, set `LAUNCH_EVIDENCE` to the existing launch
+directory and `LAUNCH_HEAD` to that run's full recorded product commit.
+`launcher` validates those records without requiring today's checkout to be
+at the historical commit; a current-tree receipt still requires an exact match.
+Archive names must be normalized relative POSIX paths without traversal;
+`manifest.json` is reserved at the archive root. Duplicate JSON keys, symlinks,
+extra unmanifested files and fingerprint mismatches refuse.
+
+Each command emits JSON on stdout on success, except `verdict --format text`.
+The inspection/check/receipt commands exit 0 when their stated validation
+succeeds, including for a valid FAIL or ERROR verdict or recorded failed job.
+Read the preserved outcome and exits to decide whether the job passed. Exit 1
+with a diagnostic on stderr means analysis could not validate the input;
+argparse syntax errors exit 2. `record` returns the actual job exit instead.
+Existing archives and receipt paths refuse overwrite: choose a new generation
+rather than refresh frozen evidence. A partial progress stream containing
+complete JSONL events is inspectable, but a truncated JSON event refuses.
+Appended runs at other commits are excluded from the summary; multiple retries
+at the expected commit remain separate, so resumed and fresh work cannot be
+mistaken for one run. Analysis does not read private mutation-state records.
+
+Keep the review findings and ACCEPT/REJECT decision in a separate report and
+link its evidence bundle. Passing gates do not close an independent blocker.
+See [the design limits](DESIGN-GUIDE.md#review-evidence-analysis) before treating
+integrity checks as authentication or historical endpoint snapshots as proof
+of continuous checkout cleanliness.
+
+The wheel and zipapp package `assay/schemas/analysis-archive.schema.json`
+and `assay/schemas/analysis-receipt.schema.json` (Draft 2020-12) for machine
+consumers. The receipt schema checks the outer shape; embedded verdicts still
+require the shipped `verdict.schema.json` and behavioral `assay verify` checks.
+A schema-valid receipt alone does not prove its files exist or its hashes match.

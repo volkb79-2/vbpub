@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `assay analyze`: record commands with before/after Git identities and actual
+  job exits; collect and check portable artifact archives; inspect verdicts
+  and appended mutation progress; produce receipts from these facts and
+  `tester-unified/run` evidence. JSON is the default output; verdict inspection
+  also offers a concise text summary. No runtime dependencies are added.
+
 <!-- cmru: release history -->
 
 ## [6.3.0] - 2026-09-16

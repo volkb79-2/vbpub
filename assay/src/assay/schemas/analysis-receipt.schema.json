@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Assay analysis receipt v1",
+  "description": "Recorded facts, not a release or review verdict. Assay verdict payloads must also satisfy verdict.schema.json and assay verify.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "analyzer_version", "head", "tree", "worktree", "current_worktree_status", "jobs", "assay_verdicts", "progress"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "analyzer_version": {"type": "string", "minLength": 1},
+    "head": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "tree": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "worktree": {"type": "string", "minLength": 1},
+    "current_worktree_status": {"const": "clean"},
+    "jobs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/job"}},
+    "assay_verdicts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/verdict"}},
+    "progress": {"type": "object", "additionalProperties": {"$ref": "#/$defs/progress"}}
+  },
+  "anyOf": [
+    {"properties": {"jobs": {"minProperties": 1}}},
+    {"properties": {"assay_verdicts": {"minProperties": 1}}},
+    {"properties": {"progress": {"minProperties": 1}}}
+  ],
+  "$defs": {
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "argv": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "files": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/fingerprint"}},
+    "job": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "command", "job_exit", "files"],
+          "properties": {
+            "kind": {"const": "recorded"}, "command": {"$ref": "#/$defs/argv"},
+            "job_exit": {"type": "integer"}, "files": {"$ref": "#/$defs/files"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "job_exit", "launch", "inspect_phase", "launch_memory_pressure", "files"],
+          "properties": {
+            "kind": {"const": "tester-unified"}, "job_exit": {"type": "integer", "minimum": 0},
+            "launch": {"type": "object", "additionalProperties": {"type": "string"}},
+            "inspect_phase": {"const": "launcher-pre-wait"}, "launch_memory_pressure": {"type": "string"},
+            "files": {"$ref": "#/$defs/files"}
+          }
+        }
+      ]
+    },
+    "verdict": {
+      "type": "object", "additionalProperties": false,
+      "required": ["validation", "artifact", "summary", "verdict"],
+      "properties": {
+        "validation": {"const": "schema-and-internal-consistency-plus-expected-commit"},
+        "artifact": {"$ref": "#/$defs/fingerprint"}, "summary": {"type": "object"},
+        "verdict": {"type": "object", "description": "Validated separately using assay verify and the shipped verdict schema."}
+      }
+    },
+    "progress": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "validation", "artifact", "runs"],
+      "properties": {
+        "schema_version": {"const": 1, "type": "integer"},
+        "validation": {"const": "progress-framing-and-expected-commit"},
+        "artifact": {"$ref": "#/$defs/fingerprint"},
+        "runs": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["line", "run", "event_counts", "milestones"],
+            "properties": {
+              "line": {"type": "integer", "minimum": 1}, "run": {"type": "object"},
+              "event_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+              "milestones": {
+                "type": "array", "items": {
+                  "type": "object", "additionalProperties": false, "required": ["line", "event"],
+                  "properties": {"line": {"type": "integer", "minimum": 1}, "event": {"type": "object"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

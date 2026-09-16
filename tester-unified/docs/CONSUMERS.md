@@ -10,6 +10,22 @@ tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
 tester-unified/run --workdir run-gate-project -- ./run-gate.py --base BASE_SHA assay-r1
 ```
 
+Assay's offline wheel/self-hosting phases can run through the same launcher:
+
+```bash
+tester-unified/run --network none --workdir "$WORKTREE/assay" -- \
+  bash "$WORKTREE/assay/tools/tester-unified-gate.sh" --inner "$WORKTREE"
+```
+
+`WORKTREE` is the absolute, committed checkout to judge. The `--inner` driver
+builds its exact-OID wheel and temporary environments within this container;
+it launches no second outer gate container. Preserve the resulting launcher
+directory and consume it with `assay analyze launcher DIRECTORY
+--expected-commit HEAD` or as a named input to `assay analyze receipt`.
+`--network none` is the only explicit network selection, is verified against
+Docker inspect and recorded in `launch.txt`. See
+[why offline gates share the launcher](DESIGN-GUIDE.md#offline-gates).
+
 For a linked worktree, invoke that worktree's launcher or give an absolute
 workdir. The launcher derives the enclosing workspace bind and records the
 exact commit, temp root, and container facts it used.
