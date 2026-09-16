@@ -12,7 +12,9 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+__revision__ = 43  # rev 43: RG-55 wave, package P5 (v1.1 profiler transport,
+# streaming watch, placement, gates-slice admission, and calibrated fallback;
+# the rev-42 P4 follow-ups remain included below.
 # third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
 # where rev 41 shipped them categorically unprofiled. Daemon path: the
 # target is run-gate's OWN process (self container id from /etc/hostname +
@@ -1541,6 +1543,17 @@ class ProfilerWatch:
     def idle(self) -> bool:
         return self._thread.is_alive() and \
             self.clock() - self._last_event_at > 3 * self.watch_interval
+
+    def ended(self) -> bool:
+        """Whether the reader has closed without an active watch stream.
+
+        A clean thread exit is still a transport failure while the lane is
+        running: `ctl watch` is expected to remain open until the session is
+        stopped.  Keeping this separate from `idle()` matters because an
+        ended reader is no longer alive and therefore cannot satisfy
+        `idle()`'s liveness predicate.
+        """
+        return not self._thread.is_alive()
 
     def close(self) -> None:
         self._closed = True
@@ -7504,12 +7517,14 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     if watch_stall is not None:
                         stalled = watch_stall
                         break
-                    if daemon_watch.idle():
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
                         daemon_watch.close()
                         if watch_restarts == 0:
                             watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
                             print(f"run-gate: WARNING profiling: daemon watch "
-                                  f"for lane {lane_name!r} went idle; "
+                                  f"for lane {lane_name!r} {state}; "
                                   "reattaching once", file=sys.stderr,
                                   flush=True)
                             daemon_watch = profiler["client"].watch(
@@ -9162,6 +9177,18 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              judge.mutation.budget_per_candidate + this key. R0/R1:",
         "              the command's own bound is all there is",
         "",
+        "profiling (RG-55/RG-63) — optional resource telemetry, never judgment:",
+        "  [profile]   enabled, daemon, interval, damon, transport (auto|exec|socket),",
+        "              socket_path, and bounded admission_wait (default 10m);",
+        "              auto selects the socket only after a valid version probe",
+        "  watch       one daemon reader per session records readings/verdicts;",
+        "              killed follows the declared stall path, reported warns once;",
+        "              an ended/failed watch retries once, then falls back to the",
+        "              calibrated in-process assay watch with host-PSI idle pause",
+        "  placement   daemon-backed exec/bare-host lanes may use resources.memory",
+        "              or the committed footprint median plus resources.memory_max;",
+        "              ephemeral lanes use CGROUP_PARENT_DEV_GATES when configured",
+        "",
         "lane history (RG-27) — measured and persisted, never acted on here:",
         f"  store       <project>/{HISTORY_DIR_NAME}/{HISTORY_FILE_NAME} in the JUDGED",
         "              worktree — per (worktree x project), so two worktrees' gates",
@@ -9179,6 +9206,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  CGROUP_PARENT_DEV_BACKGROUND  container lanes take their cgroup slice",
         "                                from the environment's declared cgroup_slice,",
         "                                else THIS variable; absent = hard error",
+        f"  {CGROUP_GATES_ENV_VAR}       optional sibling parent for ephemeral gate lanes",
+        "                                after LoadState verification; absent is disclosed",
         "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",

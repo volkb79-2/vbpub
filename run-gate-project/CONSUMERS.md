@@ -89,6 +89,16 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    lane override, so it always wins). Any other value refuses at load, by
    name — a mistyped override is a refusal, never a silent no-op.
 
+   The daemon watch is one stream per profiling session. Readings and the
+   final verdict are recorded in the run's history/inflight record; a daemon
+   `killed` verdict follows the declared stall path, while `reported` is one
+   warning and never a lane verdict. If the daemon or its watch transport is
+   unavailable, run-gate uses its in-process assay progress watch. That
+   fallback uses the assay plan's calibrated cadence (`max(300s, 3x the
+   advertised next-event bound)`) and pauses its idle clock while host memory
+   PSI `full avg10` is above 5, so host contention cannot become a false
+   liveness verdict.
+
    ```toml
    # run-gate.toml — [profile]: central/project, whole-table shadowing
    # (the SAME rule [history] uses — a project's own [profile] REPLACES a
@@ -103,6 +113,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
+   transport = "auto"             # auto | exec | socket
+   socket_path = "/run/cgprofile/ctl.sock"  # socket carrier path
+   admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml — [footprint]: same whole-table shadowing rule; consumed
    # by `doctor`'s staleness/drift check and by `footprint --write`
@@ -168,8 +181,9 @@ profile = false                     # optional (RG-55): opt this lane OUT of pro
 # RG-20 resources (optional sub-table — declare RAM so admission can protect
 # the host; supersedes the top-level `memory` key, never both):
 [lanes.<name>.resources]
-memory = "1g"                       # hard RAM cap (--memory) + admission accounting:
-                                    # refused if slice usage + this exceeds memory.max
+memory = "1g"                       # hard RAM cap (--memory); daemon-backed
+                                    # admission uses this as the request
+memory_max = "2g"                   # optional placement ceiling for exec/bare-host
 memory_swap = "16g"                 # --memory-swap; tight RAM + ample swap absorbs bursts
 cpu_weight = 100                    # advisory 1..10000 (printed; no portable docker flag)
 io_weight = 100                     # advisory 1..10000 (printed; no portable docker flag)
@@ -179,6 +193,11 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
+
+# `memory_max` is a daemon placement ceiling, not a second Docker limit. It
+# applies to exec/bare-host placement requests; ephemeral lanes keep their
+# Docker `--memory`/gates-slice controls. If omitted, the client derives the
+# placement ceiling from the verified gates slice and the lane request.
 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
@@ -204,7 +223,10 @@ sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own director
 
 Environment facts resolution order (no silent fallbacks anywhere):
 `cgroup_slice` declared on the environment → `$CGROUP_PARENT_DEV_BACKGROUND`
-(hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
+(hard error if absent). Ephemeral profiling lanes use the sibling
+`$CGROUP_PARENT_DEV_GATES` when it is set and LoadState-verified, and disclose
+when that optional gates slice is unavailable; physical repo root is DERIVED
+from `/proc/self/mountinfo`;
 LoadState pre-check only where systemd is reachable. Container lanes
 dual-mount the repo (physical + namespace views) for worktree gitfiles;
 outside the devcontainer namespace — where no second view is derivable — the
@@ -1008,7 +1030,7 @@ directly; the table's own shape is the part that generalizes):
 
 ```console
 $ ./run-gate.py footprint --write
-run-gate rev 42 — lane resource footprint
+run-gate rev 43 — lane resource footprint
 store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
 manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
   LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
@@ -1054,10 +1076,15 @@ would silently drop every other lane's committed data).
   tail next to the run's own peak and the standing history median — three
   numbers, one line: what just happened, what has been typical, and what
   was budgeted.
-- **RG-56 (a later wave, not this one)** is where a footprint becomes an
-  ADMISSION signal — scheduling concurrent lanes against a slice's real
-  remaining budget instead of a guess. This package only measures and
-  commits the number; nothing here decides policy on it yet.
+- **RG-56 admission (P5).** Before a daemon-backed lane starts, run-gate reads
+  the gates slice through the profiler registry. When the lane's declared or
+  derived request would exceed the 90% headroom threshold, it waits in 30-second
+  checks, prints a notice at most once per minute, and then proceeds after the
+  bounded `admission_wait` (10 minutes by default) with one warning. It never
+  refuses a lane or changes its verdict because of host load; `--dry-run`
+  reports the decision without waiting. Ephemeral lanes are admitted before
+  Docker starts, and use `$CGROUP_PARENT_DEV_GATES` when that verified sibling
+  slice is available.
 
 ## Per-project-type recipes
 

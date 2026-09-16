@@ -32,7 +32,8 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
-   table — `memory`, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   table — `memory`, optional `memory_max` placement ceiling for daemon-backed
+   exec/bare-host lanes, `memory_swap`, `cpu_weight`/`io_weight` advisory,
    `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
    `docker run --cpus`, with an environment-level fallback
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
@@ -49,7 +50,20 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `judge.mutation.budget_per_candidate` + this key), `profile` (RG-55:
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
-   `R-43h`).
+   `R-43h`). The project-level `[profile]` table also accepts
+   `transport = "auto" | "exec" | "socket"`, `socket_path`, and bounded
+   `admission_wait`; `auto` uses the mounted Unix socket only after a
+   successful version probe and otherwise uses the Docker-exec carrier.
+   Daemon-backed exec and bare-host lanes may request measured memory
+   placement; ephemeral lanes use `CGROUP_PARENT_DEV_GATES` when configured.
+   A daemon watch is one reader per session and records readings/verdicts;
+   `killed` follows the declared stall path and `reported` is one warning,
+   never a profiling verdict. When the daemon/watch is unavailable, the
+   in-process assay watch uses the plan's calibrated cadence and pauses its
+   idle clock while host memory PSI `full avg10` is above 5. Before an
+   ephemeral lane starts, admission checks the verified gates slice; any
+   wait is bounded by `admission_wait` (10m default), then the lane proceeds
+   with one warning rather than being refused or changing its verdict.
 
 ## Gate and evidence
 
@@ -286,6 +300,16 @@ the tool's reason to exist and MUST be implemented + tested:
   distills that history into a COMMITTED `run-gate.footprint.json` —
   budgets other projects and `doctor` can compare against, not just this
   invocation's own number (SPEC `R-44`).
+
+  The v1.1 client opens one daemon watch per session. A daemon `killed`
+  liveness verdict follows the existing stall exit path; `reported` is one
+  warning and never changes the test verdict. If the daemon or its watch is
+  unavailable, the in-process progress fallback uses the assay stream's
+  calibrated cadence and pauses its idle clock while host memory PSI is above
+  the threshold. Host contention is therefore disclosed scheduling state,
+  never a test result. Before a daemon-backed lane starts, gates-slice
+  admission waits for headroom and then proceeds at the configured bound; it
+  does not refuse a lane merely because the host was busy.
 
 ### Distribution — symlink inside vbpub, copy outside
 

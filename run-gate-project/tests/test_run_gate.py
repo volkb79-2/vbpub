@@ -13641,6 +13641,7 @@ class TestProfilerClient:
         events = watch.drain()
         assert ("error", "watch command exited 17") in events
         assert events[-1] == ("end", None)
+        assert watch.ended()
         watch.close()
 
     def test_watch_consumer_records_reading_and_killed_verdict(self, monkeypatch):
@@ -15186,6 +15187,60 @@ class TestAwaitContainerProfilingWiring:
         assert client.stop_calls == ["s-x"]
         calls = [c[0] for c in _docker_calls(log)]
         assert calls[-1] == "rm"
+
+    def test_ended_daemon_watch_reattaches_then_falls_back(self, tmp_path,
+                                                           monkeypatch, capsys):
+        """A reader that exits is not idle (and therefore must be checked
+        separately). One retry is made, then the assay progress watch owns
+        liveness; an ended stream itself never becomes a lane verdict."""
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+        progress = tmp_path / ".assay" / "progress-suite.jsonl"
+        write_progress(progress, candidate(0, total=1))
+
+        def _clear_hang():
+            time.sleep(0.3)
+            (state / ".hang").unlink(missing_ok=True)
+        threading.Thread(target=_clear_hang, daemon=True).start()
+
+        class _EndedWatch:
+            def drain(self):
+                return [("end", None)]
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class _Client(_StubProfilerClient):
+            def __init__(self):
+                super().__init__(({"summary": {"method": "daemon"},
+                                   "session_dir": None}, None))
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return _EndedWatch()
+
+        client = _Client()
+        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+                    "session": "s-x", "warning": None, "session_line": None,
+                    "sampler": None, "profiler_status": None}
+        docker = shutil.which("docker")
+        code = run_gate.await_container(
+            docker, name, {"kind": "assay", "assay_lane": "suite"},
+            "suite", tmp_path, tmp_path, tmp_path, profiler=profiler,
+            run_record={})
+        assert code == 0
+        assert client.watch_calls == 2
+        assert "reattaching once" in capsys.readouterr().err
 
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait

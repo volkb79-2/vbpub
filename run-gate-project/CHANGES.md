@@ -7,7 +7,22 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release; NOT empty as of this note (RG-61, 2026-09-12) -- 100+ lines accumulated since, all of it the RG-55 wave's own P1/P2 base package (rev 41) plus this P4 follow-up package (rev 42, RG-57/58/59/60/61 below). `__revision__` 41 -> 42 in this same revision bump; every entry below names its own RG id. -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package (rev 42 -> 43); every entry below names its own RG id. -->
+
+- **RG-63 / P5 transport and watch client.** Add the v1.1 `auto`/`exec`/
+  `socket` profiler carriers with one shared request/response parser, a
+  single streaming watch reader, and nullable watch/placement fields in
+  history and inflight records. Daemon `killed` follows the declared stall
+  path; `reported` warns once. A failed/ended watch retries once and then
+  falls back to the calibrated in-process assay watch, whose automatic idle
+  bound is derived from the plan and pauses during high host memory PSI.
+- **RG-56 admission and placement.** Daemon-backed exec/bare-host lanes send
+  declared or manifest-derived placement requests; ephemeral lanes use the
+  verified `CGROUP_PARENT_DEV_GATES` parent when available. Before a lane
+  starts, a gates-slice request over the 90% headroom threshold waits at
+  30-second checks for bounded `admission_wait` (10 minutes by default), then
+  proceeds with one warning. Host load, daemon reachability, transport
+  failure, and the wait bound never change the lane verdict.
 
 - fix(run-gate): make `gate-full` propagate an explicit comparison base to
   its delegating `assay-r1` sub-lane, so linked worktrees can run the complete

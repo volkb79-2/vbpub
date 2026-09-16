@@ -248,6 +248,10 @@ with sqlfluff in a command lane if the project wants it.
 
 - Declare `memory` (hard cap + admission, RG-20) on anything that can grow;
   a mutation lane running out of RAM is a `crashed` candidate, not a kill.
+  `resources.memory_max` is an optional daemon placement ceiling for exec and
+  bare-host lanes; it is not a second Docker limit and is ignored for
+  ephemeral lanes. The client derives a ceiling from the verified gates slice
+  when the lane does not declare one.
 - From 23.4.0 a mutation lane gets `stall_timeout`: it stops the lane only
   when the container is still running AND the progress file has been silent
   that long, never on elapsed time. That plus a generous `budget` plus
@@ -259,8 +263,18 @@ with sqlfluff in a command lane if the project wants it.
   itself, seen live in this wave) is not a slow candidate `budget`/
   `stall_timeout` will ever catch — nothing else bounds a single candidate,
   and assay waits on it forever with no default.
-- One gate container at a time across every agent on the host; cap it
-  (`docker update --cpus=3`) right after launch while the host is shared.
+- Gate containers share the verified gates-slice admission object. The host
+  policy permits the configured concurrent mutation slots; every launched
+  container is still capped immediately (`docker update --cpus=3` while the
+  host is shared). A daemon-backed lane waits for gates-slice headroom before
+  starting and then proceeds after its bounded `admission_wait` with one
+  warning; host load never becomes a lane verdict.
+- The project-level `[profile]` table may select `transport = "auto"`,
+  `"exec"`, or `"socket"`, set `socket_path`, and set `admission_wait`.
+  `auto` uses the socket only after a successful version probe and otherwise
+  uses Docker exec. The daemon watch is one reader per session; if it is
+  unavailable, the in-process assay watch uses the producer's calibrated
+  cadence and pauses its idle clock during high host memory PSI.
 - Declare `resources.cpus` (RG-48) on any container lane whose argv spawns
   workers by NAME (`-n auto`, `--workers auto`) — otherwise the worker
   count is decided by the CONTAINER's visible CPU count (which nothing
@@ -348,7 +362,11 @@ a yes/no.
 - [ ] Clean tree; judge pinned by digest; environment facts from the central
       config.
 - [ ] Floors measured before set; R2 has `budget`, `budget_per_candidate`
-      and (23.4.0) `stall_timeout`; `memory` declared.
+      and (23.4.0) `stall_timeout`; `memory` declared, with `memory_max`
+      where daemon placement of an exec/bare-host lane needs a ceiling.
+- [ ] If profiling is configured, `[profile]`'s transport/socket/admission
+      fields are documented for the adopter and exercised by `doctor` or
+      `--dry-run`; no consumer starts or stops the daemon.
 - [ ] Artifacts declared if the lane may run remotely.
 - [ ] `./run-gate.py doctor` clean; the lane run once from a fresh clone.
 
@@ -360,7 +378,7 @@ Filed items carry their id; unfiled ones say where they would go.
 
 | item | where | state |
 |---|---|---|
-| This guide's backlog row (docs, no code) | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md`, next free RG id after the 23.4.0 wave merges (RG-41 expected) | to file after the merge, to avoid an append conflict with RG-39/RG-40 |
+| RG-63 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in progress; close with the P5 R1/R2/R3 evidence and release |
 | `stall_timeout` for container COMMAND lanes, judged from log-stream silence | run-gate RG-40 | OPEN, E-3 candidate (23.5.0) |
 | `coverage_gate.py` line offsets under `--allow-dirty` | run-gate RG-39 | OPEN, first item of E-3 |
 | Re-attach / follow a running lane after the client dies | run-gate RG-35 → 23.4.0 | in review |
