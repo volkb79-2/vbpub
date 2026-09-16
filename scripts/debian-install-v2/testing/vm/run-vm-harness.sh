@@ -80,13 +80,20 @@ verify_cgroup_parent() {
         *) die "invalid cgroup probe parent '$VM_PROBE_CGROUP_PARENT' (expected a .slice unit)" ;;
     esac
 
-    # The cockpit is already running in VM_PROBE_CGROUP_PARENT.  Confirm that
-    # Docker agrees with the ambient placement before borrowing that tier for
-    # this one-shot host-cgroupfs probe.  A typo in --cgroup-parent otherwise
-    # causes systemd to auto-create an unlimited transient slice (fail-open).
+    # When the caller is a Docker cockpit, it is already running in
+    # VM_PROBE_CGROUP_PARENT. Confirm that Docker agrees with that ambient
+    # placement before borrowing the tier for this one-shot host-cgroupfs
+    # probe. A typo in --cgroup-parent otherwise causes systemd to auto-create
+    # an unlimited transient slice (fail-open). A genuine host-shell caller
+    # has no container identity to compare, so the host-cgroupfs/unit probe
+    # below remains the authority.
     if [ -n "$self_id" ]; then
         current_parent="$(docker inspect "$self_id" --format '{{.HostConfig.CgroupParent}}' 2>/dev/null || true)"
-        [ "${current_parent##*/}" = "$VM_PROBE_CGROUP_PARENT" ] || die \
+    else
+        current_parent=""
+    fi
+    if [ -n "$current_parent" ] && [ "${current_parent##*/}" != "$VM_PROBE_CGROUP_PARENT" ]; then
+        die \
             "current cockpit cgroup parent is '${current_parent:-<unknown>}', expected '$VM_PROBE_CGROUP_PARENT'"
     fi
 
