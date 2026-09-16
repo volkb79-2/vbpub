@@ -3355,3 +3355,13 @@ same-tree `r2` resume. Wrapper PID `3263920` launched exact container
 `run-gate-vbpub-r2-3263927-1789580561`; `docker update --cpus=3` succeeded and
 read back `NanoCpus=3000000000`. No commit or tree change was made, and a
 session-detached terminal observer was armed for the next 20-minute window.
+
+### RW-275 — 2026-09-16 17:47:27Z — reconcile the CMRU release-safety candidate with main
+
+The isolated `cmru-release-dirty-sync` candidate was clean at `b1150e6d` and
+was merged with current `main` using `--no-ff`, producing merge commit
+`f4ed5f44`. The merged CMRU configuration now uses the source-backed Assay
+consumer path and no longer declares the obsolete 6.1.1 pin; the worktree is
+clean. This preparation does not claim CMRU gates, mutation evidence, Sol
+acceptance, merge to main, or release; those remain after the operator's
+Assay release completes. No running mutation worktree was changed.
