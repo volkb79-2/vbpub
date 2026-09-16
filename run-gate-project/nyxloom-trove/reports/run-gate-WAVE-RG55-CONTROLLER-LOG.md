@@ -3344,3 +3344,14 @@ was appended. To preserve the append-only record, the immediately preceding
 2026-09-16 17:33:46Z entry labeled `RW-59` is hereby identified as the
 current-controller takeover ruling for this wave and is to be read as
 `RW-273`; no state, constraint, or decision in that entry changes.
+
+### RW-274 — 2026-09-16 17:42:59Z — P6 same-tree resume relaunch
+
+P6's terminal run on judged tree `8076246c` had exactly two lane-level
+`budget_exceeded` placeholders and therefore was incomplete. With memory PSI
+`full avg10=4.59%`, the detached P6 worktree still clean at that exact tree,
+and only P1 occupying a mutation container, the controller relaunched the
+same-tree `r2` resume. Wrapper PID `3263920` launched exact container
+`run-gate-vbpub-r2-3263927-1789580561`; `docker update --cpus=3` succeeded and
+read back `NanoCpus=3000000000`. No commit or tree change was made, and a
+session-detached terminal observer was armed for the next 20-minute window.
