@@ -3433,3 +3433,14 @@ PID `3874052`, creating exact container
 `dev-background.slice` with `NanoCpus=3000000000`; memory PSI was
 `full avg10=0.23` at launch. A one-shot 20-minute observer PID `3880578` is
 armed. No commit or judged-tree mutation was made.
+
+### RW-281 — 2026-09-16 18:30:55Z — record cockpit carrier limitation for P3
+
+The read-only cockpit audit found no `/run/cgprofile` directory or
+`/run/cgprofile/ctl.sock`; systemd is not running inside this devcontainer,
+`CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice`, and
+`CGROUP_PARENT_DEV_GATES` is unset. The controller therefore claims no
+socket-carrier or gates-slice success. The isolated P3 report records that
+the eventual live probes must use the approved docker-exec carrier and must
+disclose any observed `place-refused:no-gates-slice` result until the
+devcontainer is rebuilt with the host mount.
