@@ -176,20 +176,23 @@ def test_extract_default_run_produces_delimited_text(tmp_path, capsys):
     assert "nyxloom-extract: format=claude-code" in out
 
 
-def test_extract_with_explicit_format_does_not_probe_for_incremental_state(
+def test_extract_with_explicit_format_does_not_auto_detect_for_follow(
     tmp_path, capsys, monkeypatch,
 ):
     # Format detection is needed only when --since-file or --follow asks for
-    # adapter-specific state.  An explicit format on an ordinary one-shot
-    # extraction must not call detect() (and must remain usable even if the
-    # detector cannot classify this path).
+    # adapter-specific state AND the format was omitted.  An explicit format
+    # remains authoritative even for follow mode; it must not call detect()
+    # (and must remain usable even if the detector cannot classify this path).
     fp = _write_claude_code_fixture(tmp_path)
 
     def _unexpected_detect(_path):
-        raise AssertionError("ordinary explicit-format extraction must not detect")
+        raise AssertionError("explicit-format follow must not auto-detect")
 
     monkeypatch.setattr("nyxloom.session_extract.adapters.detect", _unexpected_detect)
-    assert cli.main(["extract", str(fp), "--format", "claude-code"]) == 0
+    monkeypatch.setattr(follow_mod.Follower, "run_forever", lambda self: 0)
+    assert cli.main([
+        "extract", str(fp), "--format", "claude-code", "--follow",
+    ]) == 0
     assert "please look into this" in capsys.readouterr().out
 
 
