@@ -11,6 +11,32 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.2.2] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=2bc07098c881d10ecbb6cdc522d3c20a39a9abdb -->
+
+### Fixed
+- fix(cmru): preserve ignored caller content during cleanup (6b476268)
+- fix(cmru): preserve dirty caller main during release cleanup (d775bb40)
+
+### Changed
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- review(cmru): final dirty-sync adversarial acceptance (b1150e6d)
+
+### Documentation
+- docs(cmru): clarify external assay refresh scope (f1d54948)
+- docs(gates): close stale assay pin guidance (a8f04686)
+- docs(cmru): record release sync final review (443e4d75)
+- docs(cmru): record cleanup fix verification (f6972c98)
+- docs(cmru): record dirty-main cleanup review (48e99c7f)
+
+### Testing
+- test(cmru): collect interrupted rebase coverage (700ef5f8)
+- test(cmru): isolate interrupted rebase fixture (2eff6bdd)
+- test(cmru): replace rejected release sync survivor oracles (e224579c)
+- test(cmru): close release sync mutation survivors (08692bf2)
+- test(cmru): cover release sync defensive outcomes (164b114c)
+
 ### Fixed
 - fix(cmru): refuse cleanup rebase from dirty caller `main` including ignored content, preserve its files/ref, and report the per-call cleanup reason on every release outcome
 
