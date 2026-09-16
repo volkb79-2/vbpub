@@ -15976,57 +15976,6 @@ class TestAwaitContainerProfilingWiring:
         assert client.watch_calls == 2
         assert "continuing without daemon liveness" in capsys.readouterr().err
 
-
-class TestContainerProfilingDefensiveBranches:
-    def test_daemon_placement_tolerates_no_run_record(
-            self, tmp_path, monkeypatch):
-        repo = make_repo(tmp_path)
-        fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setattr(run_gate, "resolve_inflight",
-                            lambda *args, **kwargs: None)
-        monkeypatch.setattr(run_gate, "physical_path", lambda path: path)
-        monkeypatch.setattr(run_gate, "dual_mount_flags",
-                            lambda *args: ["-v", "host:container"])
-        monkeypatch.setattr(run_gate, "resolve_gate_slice",
-                            lambda *args: ("dev-gates.slice", "test"))
-        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *args: None)
-        monkeypatch.setattr(run_gate, "prepare_profile_start",
-                            lambda *args, **kwargs: {"state": "admitted"})
-        monkeypatch.setattr(run_gate, "head_commit", lambda *args: "deadbeef")
-        monkeypatch.setattr(run_gate, "write_inflight_record",
-                            lambda *args, **kwargs: None)
-        monkeypatch.setattr(run_gate, "container_state",
-                            lambda *args: {"id": "container-id"})
-        placement = {"place": "rg-test", "memory_high": None,
-                     "memory_max": None, "cpu_weight": None}
-        monkeypatch.setattr(run_gate, "start_lane_profiling",
-                            lambda *args, **kwargs: {
-                                "mode": "daemon", "client": None,
-                                "daemon": "d", "session": "s-container",
-                                "session_line": None, "warning": None,
-                                "sampler": None, "profiler_status": None,
-                                "placement": placement})
-        monkeypatch.setattr(run_gate, "print_profile_warning", lambda *args: None)
-        monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *args: None)
-        monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *args: None)
-        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *args, **kwargs: None)
-        monkeypatch.setattr(run_gate, "await_container",
-                            lambda *args, **kwargs: 0)
-        def _run(argv, *args, **kwargs):
-            assert argv[1] == "run"
-            return subprocess.CompletedProcess(argv, 0,
-                                               stdout="container-id\n",
-                                               stderr="")
-        monkeypatch.setattr(run_gate.subprocess, "run", _run)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
-                "damon": True, "source": "test", "token": "tok"}
-        lane = {"kind": "command", "environment": "tester-unified",
-                "argv": ["true"], "clean_tree": False}
-        assert run_gate.run_container_lane(
-            lane, "suite", repo, repo, repo,
-            {"image": "tester:local"}, "test-env", "dev-background.slice",
-            "test", run_record=None, profile_plan=plan) == 0
-
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait
         # loop -- the lane still completes and the container is still
@@ -16130,6 +16079,57 @@ class TestContainerProfilingDefensiveBranches:
         assert code == 0
         calls = [c[0] for c in _docker_calls(log)]
         assert calls[-1] == "rm"
+
+
+class TestContainerProfilingDefensiveBranches:
+    def test_daemon_placement_tolerates_no_run_record(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: path)
+        monkeypatch.setattr(run_gate, "dual_mount_flags",
+                            lambda *args: ["-v", "host:container"])
+        monkeypatch.setattr(run_gate, "resolve_gate_slice",
+                            lambda *args: ("dev-gates.slice", "test"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *args: None)
+        monkeypatch.setattr(run_gate, "prepare_profile_start",
+                            lambda *args, **kwargs: {"state": "admitted"})
+        monkeypatch.setattr(run_gate, "head_commit", lambda *args: "deadbeef")
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *args: {"id": "container-id"})
+        placement = {"place": "rg-test", "memory_high": None,
+                     "memory_max": None, "cpu_weight": None}
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": None,
+                                "daemon": "d", "session": "s-container",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "placement": placement})
+        monkeypatch.setattr(run_gate, "print_profile_warning", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *args, **kwargs: 0)
+        def _run(argv, *args, **kwargs):
+            assert argv[1] == "run"
+            return subprocess.CompletedProcess(argv, 0,
+                                               stdout="container-id\n",
+                                               stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run", _run)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        lane = {"kind": "command", "environment": "tester-unified",
+                "argv": ["true"], "clean_tree": False}
+        assert run_gate.run_container_lane(
+            lane, "suite", repo, repo, repo,
+            {"image": "tester:local"}, "test-env", "dev-background.slice",
+            "test", run_record=None, profile_plan=plan) == 0
 
 
 class TestBareHostProfilingWiring:
