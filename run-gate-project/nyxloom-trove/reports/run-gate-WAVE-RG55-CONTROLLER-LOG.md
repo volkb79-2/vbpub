@@ -2925,3 +2925,15 @@ pytest processes in both containers; neither current run has a terminal
 verdict yet. The visible `verdict-r2.json` files are the prior completed
 attempts and were not treated as evidence for these live runs. No progress
 stream was polled.
+
+### RW-235 — 2026-09-16 14:07:40Z — sequence P5 after source-backed assay 6.3
+
+The operator-owned `assay-source-backed-20260916` worktree contains the
+committed removal of internal assay 6.1.1 artifact pins, including the
+run-gate-project consumer. This is the authoritative dependency path for the
+remaining RG-55 run-gate releases: do not release the P5 client from its
+stale-pyz branch and thereby create a second mandatory re-vendoring cycle.
+After the operator's assay 6.3 release is published, merge the source-backed
+consumer changes with P5, reconcile the revision/CHANGES and documentation,
+and rerun the full required gates and mutation evidence on that resulting
+tree. The controller will not edit or commit the operator's worktree.
