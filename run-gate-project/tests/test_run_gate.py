@@ -16940,6 +16940,50 @@ class TestEphemeralProfilingWiring:
         # nothing left behind.
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
+    def test_ephemeral_daemon_start_forwards_gates_parent_and_placement(
+            self, tmp_path, monkeypatch):
+        """The live in-process runner carries both RG-55 facts in its argv
+        and its second inflight write, not only in a subprocess construction
+        test whose coverage belongs to the child."""
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.CGROUP_GATES_ENV_VAR, "dev-gates.slice")
+        repo, proj = make_history_repo(tmp_path, self._config())
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+
+        class Client:
+            def watch(self, session):
+                raise RuntimeError("planted watch unavailable")
+
+        placement = {"place": True, "request": 10,
+                     "memory_high": 10, "memory_max": 20,
+                     "cpu_weight": 100}
+        daemon_state = {
+            "mode": "daemon", "client": Client(),
+            "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "session": "s-placement", "session_line": None,
+            "warning": None, "sampler": None,
+            "profiler_status": None, "placement": placement,
+            "admission": {"state": "admitted"},
+        }
+        monkeypatch.setattr(run_gate, "prepare_profile_start",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: daemon_state)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert run_gate.main(["suite"]) == 0
+        run_call = docker_runs(log)[0]
+        assert (f"{run_gate.CGROUP_GATES_ENV_VAR}=dev-gates.slice"
+                in run_call)
+        record = lane_slot(proj)["latest"]
+        assert record["placement"] == placement
+        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
     def test_disabled_lane_has_no_token_and_no_profiling_calls(
             self, tmp_path, monkeypatch):
         # `RUN_GATE_PROFILE=off` stays set (the module autouse default) --
@@ -17354,6 +17398,253 @@ class TestExecLaneProfilingWiring:
                          "token": None})
         assert code == 0
 
+    def test_exec_daemon_watch_retries_then_uses_progress_fallback(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def __init__(self):
+                self.closed = False
+
+            def drain(self):
+                return []
+
+            def idle(self):
+                return True
+
+            def close(self):
+                self.closed = True
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return Watch()
+
+        class Fallback:
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+                self.returncode = None
+                self.killed = False
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 2:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        client = Client()
+        fallback = Fallback()
+        process = Process()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-watch", "session_line": None,
+                                "warning": None, "sampler": None,
+                                "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: fallback)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        code = self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: process)
+        assert code == 0
+        assert client.watch_calls == 2
+        assert fallback.poll_calls == 1
+        assert process.killed is True
+        out = capsys.readouterr()
+        assert "in-process watch" in out.out
+        assert "reattaching once" in out.err
+
+    def test_exec_daemon_watch_retries_without_fallback_discloses_warning(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def drain(self):
+                return []
+
+            def idle(self):
+                return True
+
+            def close(self):
+                pass
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return Watch()
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+                self.returncode = None
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 2:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                pass
+
+        client = Client()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-no-fallback", "session_line": None,
+                                "warning": None, "sampler": None,
+                                "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert client.watch_calls == 2
+        err = capsys.readouterr().err
+        assert "continuing without daemon liveness" in err
+
+    def test_exec_daemon_watch_finally_drains_a_live_reader(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def __init__(self):
+                self.drain_calls = 0
+                self.closed = False
+
+            def drain(self):
+                self.drain_calls += 1
+                return []
+
+            def idle(self):
+                return False
+
+            def close(self):
+                self.closed = True
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.watch_obj = Watch()
+
+            def watch(self, session):
+                return self.watch_obj
+
+        class Process:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        client = Client()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-final", "session_line": None,
+                                "warning": None, "sampler": None,
+                                "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert client.watch_obj.drain_calls == 2
+        assert client.watch_obj.closed is True
+
+    def test_exec_daemon_watch_verdict_stops_the_lane_as_infrastructure(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def drain(self):
+                return [("event", {"event": "verdict", "watch": {
+                    "verdict": "killed", "reason": "planted stall"}})]
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def watch(self, session):
+                return Watch()
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+                self.returncode = None
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                self.returncode = 0
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": Client(),
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-killed", "session_line": None,
+                                "warning": None, "sampler": None,
+                                "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._exec_lane_call(
+                tmp_path, monkeypatch, ["true"], {},
+                popen_factory=lambda *args, **kwargs: Process())
+
     # -- B1d (round-1 review): the SAME never-raises call-site wraps proven
     # end-to-end for the ephemeral path (TestProfilingNeverRaisesEndToEnd)
     # also exist in run_exec_lane, at three DIFFERENT points (its own
@@ -17363,7 +17654,8 @@ class TestExecLaneProfilingWiring:
     # MODULE-LEVEL functions run_exec_lane calls -- isolates exactly which
     # wrap is under test without needing a working daemon/sampler shim.
 
-    def _exec_lane_call(self, tmp_path, monkeypatch, argv, run_record):
+    def _exec_lane_call(self, tmp_path, monkeypatch, argv, run_record,
+                        popen_factory=None):
         repo = make_repo(tmp_path)
         fake_docker_executing(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
@@ -17375,6 +17667,23 @@ class TestExecLaneProfilingWiring:
             f'2026-09-02T11:00:00Z|{RG55_CONTAINER_ID}\\n\' ;;\n'
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
+        if popen_factory is not None:
+            def _run(argv, *args, **kwargs):
+                if len(argv) > 1 and argv[1] == "ps":
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="the-runner\n", stderr="")
+                if len(argv) > 1 and argv[1] == "inspect":
+                    return subprocess.CompletedProcess(
+                        argv, 0,
+                        stdout=("running|0|2026-09-02T12:00:00Z|"
+                                "2026-09-02T11:00:00Z|"
+                                f"{RG55_CONTAINER_ID}\n"), stderr="")
+                if argv and argv[0] == "git":
+                    return subprocess.CompletedProcess(
+                        argv, 0, stdout="deadbeef\n", stderr="")
+                raise AssertionError(f"unexpected subprocess.run: {argv!r}")
+            monkeypatch.setattr(run_gate.subprocess, "run", _run)
+            monkeypatch.setattr(run_gate.subprocess, "Popen", popen_factory)
         env = {"forward_env": []}
         lane = {"kind": "command", "argv": argv}
         return run_gate.run_exec_lane(
