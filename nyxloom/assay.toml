@@ -180,9 +180,9 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative source-backed Assay discovery with a temporary cap above
-# The high discovery pass found 413 candidates after the final source shape;
-# 413 is the exact finite cap without turning this into an open-ended campaign.
+# The authoritative source-backed Assay discovery found 413 candidates after
+# the final source shape; 413 is the exact finite cap without turning this
+# into an open-ended campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
