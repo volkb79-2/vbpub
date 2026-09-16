@@ -205,8 +205,9 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ### `P5`: run-gate v1.1 client, revision 43
 
-Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, current
-tip `4d12c430b421bd32f961112bd82e651b5a60c981`. Read:
+Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
+implementation tip `4d12c430b421bd32f961112bd82e651b5a60c981` (the packet is a
+tracked report in the same worktree). Read:
 
 ```
 run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
