@@ -108,6 +108,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -119,6 +120,7 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 SCHEMA_VERSION = 1
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+CGROUP_GATES_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
@@ -275,6 +277,11 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+PROFILE_TRANSPORT_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
+PROFILE_TRANSPORTS = ("auto", "exec", "socket")
+PROFILE_TRANSPORT_DEFAULT = "auto"
+PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/ctl.sock"
+PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
 # Self-target discovery is optional profiling preflight, so neither Docker
 # identity probe may hold a lane longer than the ctl status/version probes.
 PROFILE_IDENTITY_TIMEOUT_SECONDS = 5
@@ -696,7 +703,8 @@ def _validate_profile_policy(table: object, where: str) -> None:
     exact pattern `_validate_history_policy` already establishes."""
     if not isinstance(table, dict):
         fail(f"{where}: 'profile' must be a table")
-    _check_keys(table, {"enabled", "daemon", "interval", "damon"},
+    _check_keys(table, {"enabled", "daemon", "interval", "damon",
+                        "transport", "socket_path", "admission_wait"},
                 f"{where} [profile]")
     if "enabled" in table and not isinstance(table["enabled"], bool):
         fail(f"{where} [profile]: 'enabled' must be a boolean")
@@ -707,6 +715,16 @@ def _validate_profile_policy(table: object, where: str) -> None:
         _validate_budget(table["interval"], f"{where} [profile]", "interval")
     if "damon" in table and not isinstance(table["damon"], bool):
         fail(f"{where} [profile]: 'damon' must be a boolean")
+    if "transport" in table and table["transport"] not in PROFILE_TRANSPORTS:
+        fail(f"{where} [profile]: 'transport' must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {table['transport']!r})")
+    if "socket_path" in table and (not isinstance(table["socket_path"], str)
+                                    or not table["socket_path"].strip()
+                                    or not table["socket_path"].startswith("/")):
+        fail(f"{where} [profile]: 'socket_path' must be a non-empty absolute path")
+    if "admission_wait" in table:
+        _validate_budget(table["admission_wait"], f"{where} [profile]",
+                         "admission_wait")
 
 
 def _validate_footprint_policy(table: object, where: str) -> None:
@@ -731,7 +749,8 @@ def _validate_footprint_policy(table: object, where: str) -> None:
 def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
                              central: dict, central_path: Path | None) -> dict:
     """Always-fully-populated `[profile]` settings for ONE lane:
-    `{'enabled', 'daemon', 'interval', 'damon', 'source'}`. Project
+    `{'enabled', 'daemon', 'interval', 'damon', 'transport', 'socket_path',
+    'admission_wait', 'source'}`. Project
     `[profile]` shadows the central one WHOLE-TABLE (R-09,
     `resolve_history_keep`'s pattern — never a per-key merge), then the
     documented defaults, then the lane's own `profile` key on top (a bool
@@ -766,6 +785,9 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         return {"enabled": False, "daemon": PROFILE_DAEMON_DEFAULT,
                "interval": PROFILE_INTERVAL_DEFAULT,
                "damon": PROFILE_DAMON_DEFAULT,
+               "transport": PROFILE_TRANSPORT_DEFAULT,
+               "socket_path": PROFILE_SOCKET_PATH_DEFAULT,
+               "admission_wait": PROFILE_ADMISSION_WAIT_DEFAULT,
                "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
                "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
     if "profile" in cfg:
@@ -779,6 +801,10 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         "daemon": table.get("daemon", PROFILE_DAEMON_DEFAULT),
         "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
         "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
+        "transport": table.get("transport", PROFILE_TRANSPORT_DEFAULT),
+        "socket_path": table.get("socket_path", PROFILE_SOCKET_PATH_DEFAULT),
+        "admission_wait": table.get("admission_wait",
+                                      PROFILE_ADMISSION_WAIT_DEFAULT),
         "source": source,
         "disabled_reason": "disabled",
     }
@@ -805,6 +831,16 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     if ambient == "on":
         settings["enabled"] = True
         settings["source"] = f"${PROFILE_AMBIENT_ENV_VAR}=on (base: {settings['source']})"
+    transport = os.environ.get(PROFILE_TRANSPORT_ENV_VAR)
+    if transport == "":
+        transport = None
+    if transport is not None and transport not in PROFILE_TRANSPORTS:
+        fail(f"{PROFILE_TRANSPORT_ENV_VAR} must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {transport!r})")
+    if transport is not None:
+        settings["transport"] = transport
+        settings["source"] = (f"${PROFILE_TRANSPORT_ENV_VAR}={transport} "
+                               f"(base: {settings['source']})")
     return settings
 
 
@@ -1180,93 +1216,55 @@ def daemon_broken_reason(daemon_name: str) -> str:
 
 
 class ProfilerClient:
-    """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
-    `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
-    itself changes a lane's verdict (R-04/R-36h). The caller prints ONE
-    warning per lane invocation from the reason string; `resources: null` +
-    `profile_error: <reason>` is the record-level consequence, decided by
-    the CALLER, not this class.
+    """The v1.1 daemon client with one parser behind two carriers.
 
-    Contract rule 2 promises stdout is EXACTLY one JSON object REGARDLESS
-    of exit code — so JSON is parsed FIRST, exit code SECOND: a doc that
-    parses, carries the right `contract`, and says `"ok": true` is trusted
-    over a nonzero exit the daemon might raise for unrelated reasons (none
-    currently defined, but the contract does not forbid it); every failure
-    mode (non-zero exit with valid `error` JSON, timeout, garbage stdout,
-    non-object JSON, wrong contract, `"ok": false`) collapses to the same
-    `(None, reason)` shape through one code path rather than a per-exit-code
-    branch tree."""
+    The exec carrier remains the compatibility path.  The socket carrier is
+    deliberately stdlib-only: it sends the same request object the daemon's
+    in-image translator sends, then reads one response to EOF.  Transport
+    failures always return a profiling warning to the caller; they never
+    alter the lane verdict (R-36h).
+    """
 
-    def __init__(self, docker: str, daemon: str):
+    def __init__(self, docker: str, daemon: str,
+                 transport: str = PROFILE_TRANSPORT_DEFAULT,
+                 socket_path: str = PROFILE_SOCKET_PATH_DEFAULT):
         self.docker = docker
         self.daemon = daemon
+        self.transport = transport
+        self.socket_path = socket_path
+        self._carrier: str | None = None
+        self.transport_reason: str | None = None
 
-    # B1 (round-1 review): `--target`/`--meta` etc are ALL long options, so
-    # a verb never needs a positional required-key map beyond this one --
-    # the two verbs whose response the caller immediately subscripts.
     _REQUIRED_KEY = {"start": "session", "stop": "summary"}
 
-    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
-        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
-               *args, "--json"]
+    @property
+    def carrier(self) -> str:
+        """The selected carrier, or the configured carrier before a call."""
+        return self._carrier or self.transport
+
+    def _parse_response(self, verb: str, raw: str, returncode: int = 0,
+                        stderr: str = "") -> tuple[dict | None, str | None]:
+        stderr_tail = (stderr.strip().splitlines() or ["(no stderr)"])[-1]
         try:
-            # errors="replace" (B1a, round-1 review): text=True's STRICT
-            # decoding means a single non-UTF-8 byte anywhere in the
-            # daemon's stdout/stderr (contract Sec 1.2 promises stdout is
-            # JSON but stderr is explicitly "free text" -- no encoding
-            # guarantee) raises UnicodeDecodeError, a ValueError NOT caught
-            # by (TimeoutExpired, OSError) below -- exactly the same failure
-            # class `docker logs` already guards against elsewhere in this
-            # file (see the errors="replace" comment near `LogStreamWatch`).
-            proc = subprocess.run(argv, capture_output=True, text=True,
-                                  errors="replace",
-                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
-        except subprocess.TimeoutExpired:
-            return None, (f"`cgprofile ctl {verb}` timed out after "
-                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
-        except OSError as exc:
-            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
-        except Exception as exc:
-            # B1b (round-1 review): this class's own docstring promises
-            # NEVER raises -- broadened from (TimeoutExpired, OSError) so an
-            # unanticipated subprocess failure degrades to "profiling
-            # unavailable" (contract Sec 1.3) instead of escaping main().
-            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
-        stderr_tail = (proc.stderr.strip().splitlines() or ["(no stderr)"])[-1]
-        try:
-            doc = json.loads(proc.stdout)
+            doc = json.loads(raw)
         except json.JSONDecodeError:
-            # RG-59: this `docker exec` can fail BEFORE `cgprofile` ever
-            # runs (the daemon container itself is absent/stopped) -- stdout
-            # is then empty, so this SAME exception fires for a completely
-            # different, far more common cause than "a running daemon
-            # returned garbage". `stderr_tail` is docker's own wording, not
-            # cgprofile's, and is the only place the two are told apart:
-            # named explicitly here rather than folded into the generic
-            # "unparsable stdout" reason, which stays reserved for an
-            # ACTUALLY malformed response from a daemon that IS running.
-            if _stderr_names_daemon_not_running(stderr_tail, proc.returncode):
+            if returncode and _stderr_names_daemon_not_running(
+                    stderr_tail, returncode):
                 return None, daemon_not_running_reason(self.daemon)
-            # S11 (round-2 review, RW-51): 126/127 reach a LIVE container
-            # that could not start `cgprofile` -- a distinct condition
-            # from "not running", checked after the not-running/stderr-
-            # prefix test above so a real docker "not running" stderr
-            # wording still wins even on one of these exit codes.
-            if proc.returncode in _DAEMON_BROKEN_EXIT_CODES:
+            if returncode in _DAEMON_BROKEN_EXIT_CODES:
                 return None, daemon_broken_reason(self.daemon)
-            if proc.returncode != 0 and not proc.stdout.strip():
-                return None, (f"`docker exec` for `cgprofile ctl {verb}` "
-                              f"failed before a valid cgprofile response "
-                              f"(exit {proc.returncode}); stderr: "
-                              f"{stderr_tail}")
+            if returncode != 0 and not raw.strip():
+                return None, (f"`cgprofile ctl {verb}` failed before a valid "
+                              f"cgprofile response (exit {returncode}); "
+                              f"stderr: {stderr_tail}")
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
-                          f"(exit {proc.returncode}); stderr: {stderr_tail}")
+                          f"(exit {returncode}); stderr: {stderr_tail}")
         except Exception as exc:
             return None, (f"`cgprofile ctl {verb}` JSON parser failed "
                           f"unexpectedly: {exc}")
         if not isinstance(doc, dict):
             return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
-                          f"(exit {proc.returncode})")
+                          f"(exit {returncode})")
         if doc.get("contract") != PROFILE_CONTRACT:
             return None, (f"`cgprofile ctl {verb}` reports contract "
                           f"{doc.get('contract')!r}, this client accepts "
@@ -1280,25 +1278,143 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
-        # B1c (round-1 review): a well-formed, "ok": true response that is
-        # missing the ONE key the caller immediately subscripts (a P1 bug,
-        # or minor-version skew INSIDE contract major 1, which Sec 1.4
-        # explicitly permits) must degrade here, not crash the caller with
-        # a bare KeyError.
         required = self._REQUIRED_KEY.get(verb)
         if required is not None and required not in doc:
             return None, (f"`cgprofile ctl {verb}` response is missing the "
                           f"required {required!r} key (contract Sec 1.4 "
                           f"minor-version skew?)")
         if verb == "start" and (
-                not isinstance(doc["session"], str)
+                not isinstance(doc.get("session"), str)
                 or not doc["session"].strip()):
             return None, ("`cgprofile ctl start` response has an unusable "
                           "'session' value (expected a non-empty string)")
-        if verb == "stop" and not isinstance(doc["summary"], dict):
+        if verb == "stop" and not isinstance(doc.get("summary"), dict):
             return None, ("`cgprofile ctl stop` response has an unusable "
                           "'summary' value (expected an object)")
         return doc, None
+
+    @staticmethod
+    def _wire_args(verb: str, args: tuple[str, ...]) -> dict:
+        if verb in ("version", "host", "gc"):
+            return {}
+        if verb in ("status", "stop", "report", "watch"):
+            result = {"session": args[0] if args else None}
+            if verb == "watch":
+                result["watch_interval"] = 30
+                for index, value in enumerate(args[1:]):
+                    if value == "--watch-interval" and index + 2 < len(args):
+                        result["watch_interval"] = float(args[index + 2])
+            return result
+        if verb != "start":
+            raise ValueError(f"unsupported cgprofile verb {verb!r}")
+        result = {"target": None, "scope": None, "token": None,
+                  "damon": None, "interval": None, "meta": {},
+                  "progress_stream": None, "idle_bound": None,
+                  "ceiling": None, "on_stall": None, "place": False,
+                  "memory_high": None, "memory_max": None,
+                  "cpu_weight": None}
+        index = 0
+        while index < len(args):
+            value = args[index]
+            if value == "--place":
+                result["place"] = True
+                index += 1
+                continue
+            if not value.startswith("--") or index + 1 >= len(args):
+                raise ValueError(f"invalid {verb} argument {value!r}")
+            key = value[2:].replace("-", "_")
+            raw = args[index + 1]
+            if key == "meta":
+                result[key] = json.loads(raw)
+            elif key in ("interval", "idle_bound", "ceiling"):
+                result[key] = (float(raw) if key == "interval"
+                               else (raw if raw == "auto" else float(raw)))
+            elif key in ("memory_high", "memory_max", "cpu_weight"):
+                result[key] = int(raw)
+            elif key in result:
+                result[key] = raw
+            else:
+                raise ValueError(f"unknown {verb} argument {value!r}")
+            index += 2
+        return result
+
+    def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
+        payload = {"verb": verb, "args": self._wire_args(verb, args),
+                   "contract": PROFILE_CONTRACT}
+        request = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        timeout = PROFILE_CTL_TIMEOUTS.get(verb, PROFILE_CTL_TIMEOUTS["status"])
+        chunks: list[bytes] = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as carrier:
+            carrier.settimeout(timeout)
+            carrier.connect(self.socket_path)
+            carrier.sendall(request.encode("utf-8"))
+            carrier.shutdown(socket.SHUT_WR)
+            while True:
+                chunk = carrier.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    def _socket_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        try:
+            raw = self._socket_request(verb, args)
+        except FileNotFoundError:
+            return None, (f"cgprofile socket carrier path absent: "
+                          f"{self.socket_path}")
+        except PermissionError as exc:
+            return None, (f"cgprofile socket carrier permission denied at "
+                          f"{self.socket_path}: {exc}")
+        except socket.timeout:
+            return None, (f"cgprofile socket ctl {verb} timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS.get(verb, 5)}s")
+        except OSError as exc:
+            return None, (f"cgprofile socket carrier failed for ctl {verb}: "
+                          f"{exc}")
+        except Exception as exc:
+            return None, (f"cgprofile socket ctl {verb} failed unexpectedly: "
+                          f"{exc}")
+        return self._parse_response(verb, raw)
+
+    def _exec_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
+                *args, "--json"]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace",
+                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
+        except subprocess.TimeoutExpired:
+            return None, (f"`cgprofile ctl {verb}` timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
+        except OSError as exc:
+            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
+        except Exception as exc:
+            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
+        return self._parse_response(verb, proc.stdout, proc.returncode,
+                                    proc.stderr)
+
+    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        if self.transport not in PROFILE_TRANSPORTS:
+            return None, (f"unknown profiler transport {self.transport!r}")
+        if self.transport == "auto" and self._carrier is None:
+            if os.path.exists(self.socket_path):
+                probe_doc, probe_reason = self._socket_ctl("version")
+                if probe_doc is not None:
+                    self._carrier = "socket"
+                    self.transport_reason = "socket version probe succeeded"
+                    if verb == "version":
+                        return probe_doc, None
+                else:
+                    self.transport_reason = (probe_reason or
+                                             "socket version probe failed")
+            else:
+                self.transport_reason = f"socket path absent: {self.socket_path}"
+            if self._carrier is None:
+                self._carrier = "exec"
+        carrier = self._carrier or self.transport
+        if carrier == "socket":
+            return self._socket_ctl(verb, *args)
+        return self._exec_ctl(verb, *args)
 
     def version(self) -> tuple[dict | None, str | None]:
         return self._ctl("version")
@@ -1311,7 +1427,12 @@ class ProfilerClient:
 
     def start(self, container_id: str, scope: str, *, token: str | None = None,
              damon: bool | None = None, interval: float | None = None,
-             meta: dict | None = None) -> tuple[dict | None, str | None]:
+             meta: dict | None = None, progress_stream: str | None = None,
+             idle_bound: str | float | None = None,
+             ceiling: str | float | None = None, on_stall: str | None = None,
+             place: bool = False, memory_high: int | None = None,
+             memory_max: int | None = None,
+             cpu_weight: int | None = None) -> tuple[dict | None, str | None]:
         args = ["--target", f"containerid:{container_id}", "--scope", scope]
         if token:
             args += ["--token", token]
@@ -1320,6 +1441,18 @@ class ProfilerClient:
         if interval is not None:
             args += ["--interval", str(interval)]
         args += ["--meta", json.dumps(meta or {})]
+        for key, value in (("progress-stream", progress_stream),
+                           ("idle-bound", idle_bound), ("ceiling", ceiling),
+                           ("on-stall", on_stall)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
+        if place:
+            args += ["--place"]
+        for key, value in (("memory-high", memory_high),
+                           ("memory-max", memory_max),
+                           ("cpu-weight", cpu_weight)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
         return self._ctl("start", *args)
 
     def stop(self, session: str) -> tuple[dict | None, str | None]:
@@ -1920,6 +2053,25 @@ def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
     return container_id, None
 
 
+def profile_start_policy(lane: dict, project_dir: Path) -> dict:
+    """Build the v1.1 stall policy from the lane's authoritative facts.
+
+    `stall_timeout` remains the lane's existing R-40 declaration; run-gate
+    does not invent a second timeout grammar or ask the daemon to infer it.
+    Assay progress is the only filesystem stream whose path is known to the
+    client.  Command lanes are watched from Docker's log stream by the
+    existing wait path, so they deliberately omit `progress_stream`.
+    """
+    stall = lane.get("stall_timeout")
+    return {
+        "progress_stream": (str(project_dir / assay_progress_rel(
+            lane["assay_lane"])) if lane["kind"] == "assay" else None),
+        "idle_bound": budget_seconds(stall) if stall else "auto",
+        "ceiling": "auto",
+        "on_stall": "kill" if stall else "report",
+    }
+
+
 def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          worktree: Path, docker: str, plan: dict,
                          container_name: str, container_id: str,
@@ -1950,7 +2102,11 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not plan["enabled"]:
         return state
-    client = ProfilerClient(docker, plan["daemon"])
+    client = ProfilerClient(docker, plan["daemon"],
+                            transport=plan.get("transport",
+                                               PROFILE_TRANSPORT_DEFAULT),
+                            socket_path=plan.get("socket_path",
+                                                 PROFILE_SOCKET_PATH_DEFAULT))
     state["client"] = client
     version_doc, reason = client.version()
     if version_doc is not None:
@@ -1960,9 +2116,16 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                                     f"{cgprofile_ver}, damon {daemon_damon})")
         meta = profile_meta(lane, lane_name, project_dir, worktree)
         interval = float(budget_seconds(plan["interval"]))
+        policy = profile_start_policy(lane, project_dir)
         start_doc, start_reason = client.start(
             container_id, scope, token=plan.get("token"), damon=plan["damon"],
-            interval=interval, meta=meta)
+            interval=interval, meta=meta,
+            progress_stream=policy["progress_stream"],
+            idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+            on_stall=policy["on_stall"], place=plan.get("place", False),
+            memory_high=plan.get("memory_high"),
+            memory_max=plan.get("memory_max"),
+            cpu_weight=plan.get("cpu_weight"))
         if start_doc is not None:
             state["mode"] = "daemon"
             # B1c (round-1 review): `_ctl` already validates `session` is
@@ -1981,7 +2144,9 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             state["session_line"] = (
                 f"run-gate: profile session {state['session']} "
                 f"(scope {scope}, baseline {baseline_mib} MiB, "
-                f"damon {damon_state})")
+                f"damon {damon_state}, via {client.carrier}, policy idle "
+                f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+                f"on-stall {policy['on_stall']})")
             return state
         reason = start_reason
     state["warning"] = reason
@@ -2074,7 +2239,11 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     if container_id is None:
         state["warning"] = skip_reason
         return state
-    client = ProfilerClient(docker, plan["daemon"])
+    client = ProfilerClient(docker, plan["daemon"],
+                            transport=plan.get("transport",
+                                               PROFILE_TRANSPORT_DEFAULT),
+                            socket_path=plan.get("socket_path",
+                                                 PROFILE_SOCKET_PATH_DEFAULT))
     state["client"] = client
     version_doc, reason = client.version()
     if version_doc is None:
@@ -2086,9 +2255,16 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
                                 f"{cgprofile_ver}, damon {daemon_damon})")
     meta = profile_meta(lane, lane_name, project_dir, worktree)
     interval = float(budget_seconds(plan["interval"]))
+    policy = profile_start_policy(lane, project_dir)
     start_doc, start_reason = client.start(
         container_id, "container-shared", token=plan.get("token"),
-        damon=plan["damon"], interval=interval, meta=meta)
+        damon=plan["damon"], interval=interval, meta=meta,
+        progress_stream=policy["progress_stream"],
+        idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+        on_stall=policy["on_stall"], place=plan.get("place", False),
+        memory_high=plan.get("memory_high"),
+        memory_max=plan.get("memory_max"),
+        cpu_weight=plan.get("cpu_weight"))
     if start_doc is None:
         state["warning"] = start_reason
         return state
@@ -2106,7 +2282,9 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     state["session_line"] = (
         f"run-gate: profile session {state['session']} "
         f"(scope container-shared, baseline {baseline_mib} MiB, "
-        f"damon {damon_state})")
+        f"damon {damon_state}, via {client.carrier}, policy idle "
+        f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+        f"on-stall {policy['on_stall']})")
     return state
 
 
@@ -2528,6 +2706,22 @@ def resolve_slice(env: dict, env_source: str) -> tuple[str, str]:
              f"devcontainer.json) or declare cgroup_slice on the lane's environment "
              f"{env_source}")
     return ambient, f"${CGROUP_ENV_VAR}"
+
+
+def resolve_gate_slice(slice_name: str, slice_src: str) -> tuple[str, str]:
+    """Resolve the admission parent for a NEW ephemeral lane container.
+
+    The environment's declared/background slice remains useful provenance
+    for existing resource checks and for the child environment.  RG-55's
+    gates slice is a separate, optional host capacity object: use it only
+    when the operator supplied it, never invent a fallback or silently move a
+    failed Docker launch to another parent.
+    """
+    gates = os.environ.get(CGROUP_GATES_ENV_VAR)
+    if gates:
+        return gates, f"${CGROUP_GATES_ENV_VAR} (gates capacity; base {slice_name})"
+    return slice_name, (f"{slice_src}; ${CGROUP_GATES_ENV_VAR} not configured "
+                       "(default parent)")
 
 
 def verify_slice_loaded(slice_name: str) -> None:
@@ -7365,15 +7559,18 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         if not source or not target:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
         mounts += ["-v", f"{source}:{target}"]
-    verify_slice_loaded(slice_name)
+    gate_slice, gate_slice_src = resolve_gate_slice(slice_name, slice_src)
+    verify_slice_loaded(gate_slice)
     inner = build_assay_inner(lane, project_dir, repo, request_base) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
     argv = [docker, "run", "-d", "--name", name,
-            "--cgroup-parent", slice_name,
+            "--cgroup-parent", gate_slice,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}",
             *mounts]
+    if os.environ.get(CGROUP_GATES_ENV_VAR):
+        argv += ["-e", f"{CGROUP_GATES_ENV_VAR}={gate_slice}"]
     if env.get("user"):
         # Additive, optional (default unset — every OTHER environment,
         # tester-unified included, is unaffected): the 'host' default's own
@@ -7414,7 +7611,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         argv += ["--cpus", cpus]
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env {env_source} | "
-          f"slice {slice_name} ({slice_src})", flush=True)
+          f"slice {gate_slice} ({gate_slice_src})", flush=True)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "

@@ -12711,6 +12711,9 @@ class TestProfileConfigValidation:
         assert settings == {
             "enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
             "interval": "1s", "damon": True, "source": "default",
+            "transport": "auto",
+            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+            "admission_wait": "10m",
             "disabled_reason": "disabled"}
 
     def test_top_level_profile_table_overrides_defaults(self, tmp_path):
@@ -13410,6 +13413,31 @@ class TestLastSuccessful:
 # ---------------------------------------------------------------------------
 
 class TestProfilerClient:
+    def _socket_round_trip(self, tmp_path, response: str):
+        path = tmp_path / "cgprofile.sock"
+        listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
+                                          run_gate.socket.SOCK_STREAM)
+        listener.bind(str(path))
+        listener.listen(1)
+        received = []
+
+        def serve():
+            with listener:
+                conn, _ = listener.accept()
+                with conn:
+                    chunks = []
+                    while True:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    received.append(b"".join(chunks).decode())
+                    conn.sendall(response.encode())
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        return path, received, thread
+
     def _client(self, tmp_path, monkeypatch) -> "run_gate.ProfilerClient":
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
@@ -13422,6 +13450,84 @@ class TestProfilerClient:
         doc, reason = client.version()
         assert reason is None
         assert doc == json.loads(golden)
+
+    def test_socket_start_emits_the_v11_request_shape(self, tmp_path):
+        response = '{"ok": true, "contract": 1, "session": "s-test"}\n'
+        path, received, thread = self._socket_round_trip(tmp_path, response)
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="socket", socket_path=str(path))
+        meta = {"lane": "rg55-fixture-lane", "expected": None}
+        doc, reason = client.start(
+            "a" * 64, "container-shared", token="rg55-parity-token-a",
+            damon=False, interval=1.0, meta=meta,
+            progress_stream="/tmp/progress.ndjson", idle_bound=30,
+            ceiling="auto", on_stall="kill", place=True,
+            memory_high=100, memory_max=200, cpu_weight=100)
+        thread.join(timeout=2)
+        assert reason is None
+        assert doc == {"ok": True, "contract": 1, "session": "s-test"}
+        expected = {
+            "verb": "start",
+            "args": {
+                "target": "containerid:" + "a" * 64,
+                "scope": "container-shared",
+                "token": "rg55-parity-token-a", "damon": "off",
+                "interval": 1.0, "meta": meta,
+                "progress_stream": "/tmp/progress.ndjson",
+                "idle_bound": 30.0, "ceiling": "auto",
+                "on_stall": "kill", "place": True,
+                "memory_high": 100, "memory_max": 200,
+                "cpu_weight": 100,
+            },
+            "contract": 1,
+        }
+        assert received == [json.dumps(expected, indent=2) + "\n"]
+
+    @pytest.mark.parametrize("verb, args, body", [
+        ("version", (), '{"ok": true, "contract": 1}\n'),
+        ("host", (), '{"ok": true, "contract": 1}\n'),
+        ("status", ("s-test",), '{"ok": true, "contract": 1}\n'),
+        ("stop", ("s-test",),
+         '{"ok": true, "contract": 1, "summary": {}}\n'),
+    ])
+    def test_socket_request_uses_wire_args_for_non_start_verbs(
+            self, tmp_path, verb, args, body):
+        path, received, thread = self._socket_round_trip(tmp_path, body)
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="socket", socket_path=str(path))
+        doc, reason = client._ctl(verb, *args)
+        thread.join(timeout=2)
+        assert reason is None
+        assert doc is not None
+        wire = json.loads(received[0])
+        assert set(wire) == {"verb", "args", "contract"}
+        assert wire["verb"] == verb
+        assert wire["contract"] == 1
+        assert wire["args"] == ({"session": args[0]} if args else {})
+
+    def test_auto_selects_socket_only_after_version_probe(self, tmp_path):
+        path, received, thread = self._socket_round_trip(
+            tmp_path, '{"ok": true, "contract": 1}\n')
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="auto", socket_path=str(path))
+        doc, reason = client.version()
+        thread.join(timeout=2)
+        assert reason is None
+        assert doc == {"ok": True, "contract": 1}
+        assert client.carrier == "socket"
+        assert client.transport_reason == "socket version probe succeeded"
+        assert json.loads(received[0])["verb"] == "version"
+
+    def test_socket_path_failure_is_a_profile_reason(self, tmp_path):
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
+            transport="socket", socket_path=str(tmp_path / "absent.sock"))
+        doc, reason = client.version()
+        assert doc is None
+        assert "path absent" in reason
 
     def test_host_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "host-v1.json").read_text()
