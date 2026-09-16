@@ -3171,3 +3171,12 @@ on `rg55-closeout-prep`. It records the clean assay source tip, P5
 reconciliation commits, the `1184 passed, 3 skipped` local suite, and the
 successful rev-43 dry run while explicitly keeping tester-unified, assay 6.3,
 mutation, Sol, release, and live-probe evidence pending.
+
+### RW-257 — 2026-09-16 16:27:44Z — correct P3 follow-up scope wording
+
+The P3 close-out draft's opening incorrectly described RG-56 and RG-57 as
+outside the wave even though P5 and P4 deliver those follow-ups. It now
+distinguishes the RG-55 measurement baseline from the wave's separate
+admission/placement and bare-host packages. Historical backlog statuses and
+evidence were not changed. The correction is committed as `1a0a936d` on
+`rg55-closeout-prep`.
