@@ -1678,3 +1678,89 @@ packet's mechanical precondition, no P4 diff, product code, tests, gates,
 mutation lane, or live probe was reviewed or run. The disposition and exact
 restart prescription are recorded in
 `run-gate-WAVE-RG55-P4-REVIEW-round4.md`.
+
+## Session 13 — final adversarial review, repairs, and ACCEPT
+
+The operator explicitly overrode Session 12's route-metadata blocker after
+independently verifying the configured `gpt-5.6-sol`/`xhigh` route. The runtime
+continued to expose only Codex/GPT-5 metadata, which the review records without
+inventing unavailable fields. Review target remained exactly P4 in isolated
+worktree `.worktrees/rg55-followups-run-gate`; frozen base was
+`3df192a3b4c994cec41d1dca585139666ef812ef`. The initial product diff had been
+captured blind with SHA-256
+`9f327596d4ba569246e3bfa08647e1fa4a66e42f4d27afeb9f6f4bfba1621eb3`.
+
+Rounds 5 and 6 recorded B1–B9 before repair. B1–B7 hardened foreign inflight
+ownership, full-ID/mount-namespace identity, absent-vs-indeterminate daemon
+states, monotonic/wait4 accounting, malformed optional target metadata, empty
+inspect success, and tester mount isolation. B8 produced repository-owned
+`tester-unified/run` plus executable tests and README/DESIGN-GUIDE/CONSUMERS,
+eliminating manual PATH/tmp/socket/cgroup launch facts. B9 replaced a scheduler-
+timed moving-progress oracle with an event-synchronized production-poll proof.
+
+Exact `eae1accf` R2 then executed all 85 candidates and correctly returned red:
+76 killed, 3 survived, 6 budget-exceeded, exit 4. B10 added R2 `-x` and early
+behavioral boundaries so a mutant already killed by an assertion cannot strand
+later integration resources; it also closed the three survivor gaps. Exact
+`e4888a7f` R2 had 84 killed, 1 survivor, no budget placeholders; the remaining
+mutation was the `text=True -> False` Docker diagnostic path. `1dda3bb0` modeled
+real subprocess text/binary results and reached 85/85. Final oracle reread found
+B11: the first foreign-refusal test inspected print kwargs/call count and a
+helper sentinel. `b2eb633e` replaced it with a no-fresh-preflight end-to-end
+boundary and a real buffered child/pipe proof synchronized after the producer
+returned but before it exited. Focused canonical tester run: 2 passed.
+
+All evidence was regenerated on exact quiet candidate
+`b2eb633e7ed2574d4752e6b3e406446bf03a8321`, exclusively through
+repository-owned `tester-unified/run`. Every accepted launcher record says
+user 1003, `CgroupParent=dev-background.slice`,
+`NanoCpus=3000000000`, the exact git SHA, host-backed `/tmp`, Docker wait 0,
+and `TESTER_UNIFIED_JOB_EXIT=0`.
+
+```text
+selftest  rg55-p4-selftest-b2eb633e
+  1201 passed, 3 skipped
+  diff coverage 274/274 executable lines, 96/96 branches
+  exit 0
+
+assay-r1  rg55-p4-r1-b2eb633e
+  Assay 6.1.1 PASS, commit b2eb633e..., base 3df192a3...
+  coverage 568/568 executable, 96/96 branches
+  exit 0
+
+assay-r2  rg55-p4-r2-b2eb633e
+  Assay 6.1.1 PASS, commit b2eb633e..., base 3df192a3...
+  85 candidates: 85 killed, 0 survived/equivalent/budget-exceeded/crashed
+  exit 0
+
+assay-r3  rg55-p4-r3-b2eb633e
+  2 canaries rejected, 0 survived, exit 0
+
+gate-full  rg55-p4-gate-full-b2eb633e-r2
+  selftest + R1 + R3 green, exit 0
+
+doctor  rg55-p4-doctor-b2eb633e
+  9 OK, 2 WARN, 0 FAIL, 2 SKIP, 1 INFO, exit 0
+```
+
+The first final gate-full launch was refused by the canonical launcher at
+memory PSI `full avg10=9.43`; the accepted retry launched at 0.24. Post-launch
+PSI later rose without changing the functional verdict, as required by the
+contention-agnostic contract. At final R2 launch one unrelated tester existed;
+P4 was the second and the cap of two was respected. Progress was read no more
+often than every 20 minutes.
+
+Final live namespace probe resolved the devcontainer's full ID
+`047fa698976acf3a0a72dd80b3d7cfb58a281f7f428434798f084c9c43a06fc2`;
+local and fixed-argv Docker-exec mount-namespace reads both returned
+`mnt:[4026534299]`, exec 0. Both RG55 interface-contract copies hash to
+`ecae45b46d81f557d050687a7a4c8000541c4e5a1cb006028b39fb0e90a10be7`.
+The tracked revision-42 footprint manifest is real and doctor found it current
+and within drift. `cgprofile-host-daemon` and `/run/cgprofile/ctl.sock` were
+absent; no daemon or carrier/place success was invented or started.
+
+Terminal verdict: ACCEPT. Full blocker disposition, traceability table,
+combined-axis fixtures, exact commands/evidence, invalidation ledger, and
+commit list are in `run-gate-WAVE-RG55-P4-REVIEW-round7.md`. No merge, release,
+push, tag, install, final-daemon start, dstdns change, or forbidden-path change
+was performed.
