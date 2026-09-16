@@ -905,6 +905,21 @@ class TestArgvConstruction:
         assert (f"{run_gate.CGROUP_GATES_ENV_VAR}=dev-gates.slice"
                 in run_call)
 
+    def test_resolve_gate_slice_uses_ambient_gates_or_declared_base(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.CGROUP_GATES_ENV_VAR, "dev-gates.slice")
+        assert run_gate.resolve_gate_slice(
+            "dev-background.slice", "$CGROUP_PARENT_DEV_BACKGROUND") == (
+                "dev-gates.slice",
+                "$CGROUP_PARENT_DEV_GATES (gates capacity; base "
+                "dev-background.slice)")
+        monkeypatch.delenv(run_gate.CGROUP_GATES_ENV_VAR)
+        assert run_gate.resolve_gate_slice(
+            "dev-background.slice", "declared env") == (
+                "dev-background.slice",
+                "declared env; $CGROUP_PARENT_DEV_GATES not configured "
+                "(default parent)")
+
     def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
@@ -11117,6 +11132,23 @@ class TestProgressWatch:
         assert stalled is not None
         assert "last event seen: the plan event" in stalled
 
+    def test_auto_bound_plan_rewrite_reseeds_from_the_new_plan_time(self,
+                                                                     tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-auto-rewrite.jsonl"
+        write_progress(path, {"event": "plan",
+                              "expect_next_event_within_s": 100.0})
+        watch = run_gate.ProgressWatch(path, "sql-mutation", None, clock,
+                                       auto_bound=True)
+        assert watch.poll() is None
+        old_mtime = path.stat().st_mtime
+        write_progress(path, {"event": "plan",
+                              "expect_next_event_within_s": 200.0})
+        os.utime(path, (old_mtime + 1, old_mtime + 1))
+        clock.advance(10)
+        assert watch.poll() is None
+        assert watch._token_at == clock.t
+
     def test_auto_bound_pauses_for_high_host_memory_psi(self, tmp_path):
         clock = FakeClock()
         psi = [0.0]
@@ -11157,6 +11189,18 @@ class TestProgressWatch:
         out = capsys.readouterr().out
         assert "run-gate: progress sql-mutation: candidate 3\n" in out
         assert "ETA" not in out
+
+    def test_auto_progress_watch_pressure_reader_reads_current_snapshot(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "read_host_pressure_snapshot",
+                            lambda: {"full_avg10": 7.5})
+        watch = run_gate.make_progress_watch(
+            {"kind": "assay", "assay_lane": "suite"}, "suite",
+            tmp_path, auto_bound=True)
+        assert watch.pressure_reader() == 7.5
+        monkeypatch.setattr(run_gate, "read_host_pressure_snapshot",
+                            lambda: None)
+        assert watch.pressure_reader() is None
 
 
 class FakeLogStream:
@@ -13193,6 +13237,71 @@ class TestProfileConfigValidation:
         with pytest.raises(run_gate.GateError, match="'footprint' must be a table"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
+    def test_profile_transport_socket_and_admission_wait_validate(self, tmp_path):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [profile]
+            transport = "socket"
+            socket_path = "/run/cgprofile/ctl.sock"
+            admission_wait = "2m"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path,
+                                        central=False)
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["transport"] == "socket"
+        assert settings["socket_path"] == "/run/cgprofile/ctl.sock"
+        assert settings["admission_wait"] == "2m"
+
+    @pytest.mark.parametrize("field, value, phrase", [
+        ("transport", '"serial"', "transport"),
+        ("socket_path", '"relative.sock"', "socket_path"),
+        ("admission_wait", '"not-a-duration"', "admission_wait"),
+    ])
+    def test_profile_transport_socket_and_wait_reject_bad_values(
+            self, tmp_path, field, value, phrase):
+        path = self._cfg(tmp_path, f"""\
+            schema_version = 1
+            [profile]
+            {field} = {value}
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        with pytest.raises(run_gate.GateError, match=phrase):
+            run_gate._validate_config(run_gate._read_toml(path), path,
+                                      central=False)
+
+    def test_profile_transport_environment_override_covers_empty_bad_and_valid(
+            self, tmp_path, monkeypatch):
+        path = self._cfg(tmp_path, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """)
+        cfg = run_gate._validate_config(run_gate._read_toml(path), path,
+                                        central=False)
+        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "")
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["transport"] == run_gate.PROFILE_TRANSPORT_DEFAULT
+        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "bad")
+        with pytest.raises(run_gate.GateError, match="must be one of"):
+            run_gate.resolve_profile_settings(
+                cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "socket")
+        settings = run_gate.resolve_profile_settings(
+            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
+        assert settings["transport"] == "socket"
+        assert "RUN_GATE_PROFILE_TRANSPORT=socket" in settings["source"]
+
 
 # ---------------------------------------------------------------------------
 # ResourceAccumulator, tested standalone against the golden frames -- no
@@ -13513,6 +13622,57 @@ class TestProfilerClient:
         docker = shutil.which("docker")
         return run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
 
+    def test_wire_args_covers_watch_defaults_and_start_rejections(self):
+        assert run_gate.ProfilerClient._wire_args(
+            "watch", ("s-test", "--watch-interval", "2")) == {
+                "session": "s-test", "watch_interval": 2.0}
+        assert run_gate.ProfilerClient._wire_args(
+            "watch", ("s-test", "--other", "ignored"))["watch_interval"] == 30
+        with pytest.raises(ValueError, match="unsupported"):
+            run_gate.ProfilerClient._wire_args("bogus", ())
+        with pytest.raises(ValueError, match="invalid start argument"):
+            run_gate.ProfilerClient._wire_args("start", ("bare",))
+        with pytest.raises(ValueError, match="unknown start argument"):
+            run_gate.ProfilerClient._wire_args("start", ("--unknown", "x"))
+
+    @pytest.mark.parametrize("error, phrase", [
+        (PermissionError("denied"), "permission denied"),
+        (run_gate.socket.timeout("late"), "timed out"),
+        (OSError("broken"), "carrier failed"),
+        (RuntimeError("unexpected"), "failed unexpectedly"),
+    ])
+    def test_socket_transport_failures_are_profile_reasons(
+            self, monkeypatch, error, phrase):
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="socket")
+        monkeypatch.setattr(client, "_socket_request",
+                            lambda *args: (_ for _ in ()).throw(error))
+        doc, reason = client.version()
+        assert doc is None
+        assert phrase in reason
+
+    def test_unknown_transport_is_refused_before_any_carrier(self):
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="bogus")
+        doc, reason = client.version()
+        assert doc is None
+        assert "unknown profiler transport" in reason
+
+    def test_auto_transport_records_probe_failure_then_uses_exec(
+            self, tmp_path, monkeypatch):
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="auto",
+            socket_path=str(tmp_path / "cgprofile.sock"))
+        monkeypatch.setattr(run_gate.os.path, "exists", lambda path: True)
+        monkeypatch.setattr(client, "_socket_ctl",
+                            lambda *args: (None, "socket probe failed"))
+        monkeypatch.setattr(client, "_exec_ctl",
+                            lambda *args: ({"ok": True, "contract": 1}, None))
+        doc, reason = client.version()
+        assert reason is None and doc["ok"] is True
+        assert client.carrier == "exec"
+        assert client.transport_reason == "socket probe failed"
+
     def test_version_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "version-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(golden, None, None))
@@ -13644,6 +13804,89 @@ class TestProfilerClient:
         assert watch.ended()
         watch.close()
 
+    def test_exec_watch_reader_accepts_events_before_clean_end(self, monkeypatch):
+        class Proc:
+            stdout = ['{"event":"reading"}\n']
+
+            def wait(self):
+                return 0
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: Proc())
+        client = run_gate.ProfilerClient(
+            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
+        watch = client.watch("s-test", watch_interval=2)
+        watch._thread.join(timeout=2)
+        assert watch.drain()[0] == ("event", {"event": "reading"})
+        watch.close()
+
+    def test_watch_reader_and_accept_report_transport_shape_errors(self):
+        watch = object.__new__(run_gate.ProfilerWatch)
+        watch._events = queue.SimpleQueue()
+        watch._accept("not json")
+        watch._accept("[1, 2]")
+        assert watch.drain() == [
+            ("error", "watch returned unparsable JSON"),
+            ("error", "watch returned non-object JSON"),
+        ]
+
+    def test_watch_idle_and_close_cover_dead_socket_and_kill_timeout(
+            self, monkeypatch):
+        class Thread:
+            def __init__(self, alive):
+                self.alive = alive
+
+            def is_alive(self):
+                return self.alive
+
+            def join(self, timeout=None):
+                self.joined = timeout
+
+        class Socket:
+            def shutdown(self, how):
+                raise OSError("already closed")
+
+            def close(self):
+                self.closed = True
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                if timeout == 1:
+                    raise subprocess.TimeoutExpired("watch", timeout)
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        watch = object.__new__(run_gate.ProfilerWatch)
+        watch._events = queue.SimpleQueue()
+        watch._last_event_at = 0.0
+        watch.clock = lambda: 10.0
+        watch.watch_interval = 2
+        watch._thread = Thread(True)
+        assert watch.idle() is True
+        watch._thread = Thread(False)
+        assert watch.idle() is False
+        watch._closed = False
+        watch._socket = Socket()
+        watch._process = Process()
+        watch.close()
+        assert watch._closed is True
+        assert watch._process.terminated and watch._process.killed
+
     def test_watch_consumer_records_reading_and_killed_verdict(self, monkeypatch):
         class Stream:
             def drain(self):
@@ -13700,6 +13943,16 @@ class TestProfilerClient:
             {"resources": {}}, "suite", Path("/p"), None)
         assert plan["place"] is False
         assert plan["reason"] == "no request"
+
+    def test_placement_ignores_an_invalid_host_ceiling(self):
+        """A malformed daemon cap cannot become a made-up placement limit."""
+        plan = run_gate.profile_placement_plan(
+            {"resources": {"memory": "1M"}}, "suite", Path("/p"),
+            {"host": {"gates_slice": {"memory_max_bytes": "not-an-int"}}})
+        assert plan["place"] is True
+        assert plan["gates_max"] is None
+        assert plan["memory_max"] == 2 * 1024 ** 2
+        assert plan["ceiling_source"] == "derived"
 
     def test_admission_accepts_immediately_under_ninety_percent(self):
         class Client:
@@ -13766,6 +14019,66 @@ class TestProfilerClient:
             Client(), "suite", {"request": 1 * 1024 ** 2}, "10m", host,
             dry_run=True, sleeper=lambda _: pytest.fail("slept"))
         assert result["state"] == "would-wait"
+
+    def test_admission_skips_without_a_present_gates_slice(self, capsys):
+        class Client:
+            def host(self):
+                raise AssertionError("missing gates must not poll")
+        result = run_gate.profile_admission(
+            Client(), "suite", {"request": 1}, "10m",
+            {"host": {"gates_slice": {"present": False}}})
+        assert result == {"state": "skipped", "waited_seconds": 0.0,
+                          "warning": None}
+        assert "no gates slice" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("placement, gates", [
+        ({"request": "1"}, {"present": True,
+                              "memory_current_bytes": 1,
+                              "memory_max_bytes": 10}),
+        ({"request": 1}, {"present": True,
+                           "memory_current_bytes": "unknown",
+                           "memory_max_bytes": 10}),
+        ({"request": 1}, {"present": True,
+                           "memory_current_bytes": 1,
+                           "memory_max_bytes": 0}),
+    ])
+    def test_admission_skips_when_capacity_is_not_derivable(
+            self, placement, gates, capsys):
+        class Client:
+            def host(self):
+                raise AssertionError("invalid capacity must not poll")
+        result = run_gate.profile_admission(
+            Client(), "suite", placement, "10m",
+            {"host": {"gates_slice": gates}})
+        assert result["state"] == "skipped"
+        assert "not derivable" in capsys.readouterr().out
+
+    def test_admission_discloses_bad_and_failed_refreshes_before_bound(
+            self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def host(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"host": {"gates_slice": {
+                        "present": True}}}, None
+                raise RuntimeError("planted refresh crash")
+
+        now = [0.0]
+        client = Client()
+        result = run_gate.profile_admission(
+            client, "suite", {"request": 1 * 1024 ** 2}, "2s",
+            {"host": {"gates_slice": {
+                "present": True, "memory_current_bytes": 9 * 1024 ** 2,
+                "memory_max_bytes": 10 * 1024 ** 2}}},
+            clock=lambda: now[0],
+            sleeper=lambda seconds: now.__setitem__(0, now[0] + 0.5))
+        assert result["state"] == "proceeded-after-bound"
+        assert result["waited_seconds"] >= 2.0
+        assert "admission host probe failed unexpectedly" in result["warning"]
+        assert client.calls >= 2
 
     def test_host_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "host-v1.json").read_text()
@@ -14918,6 +15231,83 @@ class TestProfilingOrchestration:
         assert state["sampler"] is not None
         assert len(state["sampler"].accumulator._samples) == 1   # baseline taken
 
+    def test_unexpected_version_probe_exception_degrades_to_basic(
+            self, tmp_path, monkeypatch):
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                raise RuntimeError("planted version transport crash")
+
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        fake_docker(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR, str(tmp_path / "no-proc"))
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, docker, self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP, "container")
+        assert state["mode"] == "basic"
+        assert "failed unexpectedly" in state["warning"]
+
+    def test_preflight_supplies_host_placement_and_admission_to_start(
+            self, tmp_path):
+        class Client:
+            carrier = "exec"
+
+            def __init__(self):
+                self.calls = []
+
+            def start(self, *args, **kwargs):
+                self.calls.append(kwargs)
+                doc = json.loads((RG55_FIXTURES / "start-v1.json").read_text())
+                doc["placement"] = {"place": True}
+                return doc, None
+
+        client = Client()
+        start = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP,
+            "container-shared", preflight={
+                "client": client,
+                "version": json.loads((RG55_FIXTURES / "version-v1.json").read_text()),
+                "reason": None,
+                "host": {"host": {"gates_slice": {"present": True}}},
+                "placement": {"place": True, "memory_high": 10,
+                               "memory_max": 20, "cpu_weight": 100},
+                "admission": {"state": "admitted"},
+            })
+        assert start["mode"] == "daemon"
+        assert start["admission"] == {"state": "admitted"}
+        assert start["placement"]["place"] is True
+        assert client.calls[-1]["place"] is True
+        assert client.calls[-1]["memory_max"] == 20
+
+    def test_host_probe_exception_is_warning_but_start_can_succeed(
+            self, tmp_path, monkeypatch):
+        class Client:
+            carrier = "exec"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                return json.loads((RG55_FIXTURES / "version-v1.json").read_text()), None
+
+            def host(self):
+                raise RuntimeError("planted host probe crash")
+
+            def start(self, *args, **kwargs):
+                return json.loads((RG55_FIXTURES / "start-v1.json").read_text()), None
+
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        state = run_gate.start_lane_profiling(
+            self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
+            "container-name", RG55_CONTAINER_ID, RG55_CGROUP,
+            "container-shared")
+        assert state["mode"] == "daemon"
+        assert "host probe failed unexpectedly" in state["warning"]
+
     def test_start_failure_degrades_to_basic_but_keeps_the_version_status(
             self, tmp_path, monkeypatch):
         version = (RG55_FIXTURES / "version-v1.json").read_text()
@@ -15041,6 +15431,68 @@ class TestProfilingOrchestration:
         assert run_gate.PROFILE_TOKEN_ENV in out
         run_gate.print_profile_plan_dry_run(self._plan(enabled=False), "container")
         assert "profiling disabled" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("placement, phrase", [
+        ({"place": True, "request": 100, "source": "declared",
+          "memory_high": 100, "memory_max": 200,
+          "ceiling_source": "declared"}, "placement plan"),
+        ({"place": False}, "no request"),
+    ])
+    def test_dry_run_discloses_shared_placement_plan(self, capsys, placement,
+                                                     phrase):
+        run_gate.print_profile_plan_dry_run(self._plan(), "container-shared",
+                                            placement)
+        out = capsys.readouterr().out
+        assert phrase in out
+
+    def test_prepare_profile_start_disabled_returns_no_context(self, tmp_path):
+        assert run_gate.prepare_profile_start(
+            self._lane(), "suite", tmp_path, tmp_path, "docker",
+            self._plan(enabled=False), "container") is None
+
+    def test_prepare_profile_start_host_probe_exception_is_disclosed(
+            self, tmp_path, monkeypatch):
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                return {"ok": True, "contract": 1}, None
+
+            def host(self):
+                raise RuntimeError("planted host probe")
+
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        result = run_gate.prepare_profile_start(
+            self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
+            "container-shared")
+        assert result["host"] is None
+        assert "host probe failed unexpectedly" in result["reason"]
+
+    def test_prepare_profile_start_passes_host_to_placement_and_admission(
+            self, tmp_path, monkeypatch):
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                return {"ok": True, "contract": 1}, None
+
+            def host(self):
+                return {"host": {"gates_slice": {"present": True}}}, None
+
+        placement = {"place": True, "request": 1}
+        admission = {"state": "admitted"}
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        monkeypatch.setattr(run_gate, "profile_placement_plan",
+                            lambda *args: placement)
+        monkeypatch.setattr(run_gate, "profile_admission",
+                            lambda *args: admission)
+        result = run_gate.prepare_profile_start(
+            self._lane(), "suite", tmp_path, tmp_path, "docker", self._plan(),
+            "container-shared")
+        assert result["placement"] == placement
+        assert result["admission"] == admission
 
     def test_host_pressure_line_reads_a_real_fixture_and_is_silent_when_unreadable(
             self, tmp_path, monkeypatch, capsys):
@@ -15383,6 +15835,52 @@ class TestBareHostProfilingWiring:
             argv = ["true"]
             clean_tree = false
         """
+
+    def test_unexpected_version_probe_exception_falls_back_to_rusage(
+            self, tmp_path, monkeypatch):
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                raise RuntimeError("planted bare version crash")
+
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        state = run_gate.start_bare_host_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, "docker", {"enabled": True, "daemon": "d"})
+        assert state["mode"] == "rusage"
+        assert "version probe failed unexpectedly" in state["warning"]
+
+    def test_host_probe_exception_is_kept_while_start_is_attempted(
+            self, tmp_path, monkeypatch):
+        class Client:
+            carrier = "exec"
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def version(self):
+                return {"ok": True, "contract": 1,
+                        "cgprofile": "1.0.0", "daemon": {}}, None
+
+            def host(self):
+                raise RuntimeError("planted bare host crash")
+
+            def start(self, *args, **kwargs):
+                return None, "planted start refusal"
+
+        monkeypatch.setattr(run_gate, "resolve_self_container_id",
+                            lambda docker: (RG55_CONTAINER_ID, None))
+        monkeypatch.setattr(run_gate, "ProfilerClient", Client)
+        state = run_gate.start_bare_host_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, "docker", {"enabled": True, "daemon": "d",
+                                  "damon": True, "interval": "1s"})
+        assert state["mode"] == "rusage"
+        assert state["warning"] == "planted start refusal"
 
     def test_empty_inspect_falls_back_to_rusage_as_indeterminate(
             self, tmp_path, monkeypatch, capsys):
