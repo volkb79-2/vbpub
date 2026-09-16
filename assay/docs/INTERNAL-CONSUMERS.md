@@ -39,8 +39,9 @@ argv = ["bash", "-c",
   dependencies (confirmed: `pip show assay` → `Requires:` empty), so this is
   a local, network-free, dependency-resolution-free operation — fast enough
   to run at the start of every single lane invocation with no caching layer.
-  Each lane gets its own ephemeral container, so there is no cross-lane
-  state to worry about either.
+  Each container lane gets its own ephemeral environment; a bare-host lane
+  gets the same setup in the tester image's process instead. There is no
+  cross-lane state to rely on.
 - No zipapp. The zipapp's packaging (`gate/distribution/build_release.py`:
   stripped install metadata, a hand-written `__main__.py` so a verdict's
   exit code isn't swallowed, normalized mtimes for byte-reproducibility,
