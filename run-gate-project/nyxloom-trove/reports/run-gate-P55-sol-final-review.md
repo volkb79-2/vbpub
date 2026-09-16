@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "f4e304815fdbb284133fd46c8f29b9dbb7dfb89e"
+input_revision: "26e6f3440dfb43bdf7fe3d3c2d45a8f17039233b"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-233
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-243
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -182,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-225). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-243). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
@@ -206,7 +206,7 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 ### `P5`: run-gate v1.1 client, revision 43
 
 Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `f4e304815fdbb284133fd46c8f29b9dbb7dfb89e` (the packet is a
+implementation tip `26e6f3440dfb43bdf7fe3d3c2d45a8f17039233b` (the packet is a
 tracked report in the same worktree). Read:
 
 ```
@@ -226,8 +226,10 @@ This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
 transport seam, one-reader daemon watch with ended/failed retry and fallback,
 policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
 admission, schema-2 nullable watch/placement history, and synchronized
-adopter-facing documentation. The local `tests/test_run_gate.py` suite was
-1,116 passed and 3 skipped on this exact tip; that is not the release gate.
+adopter-facing documentation. The ended-watch repair and its four focused
+regressions are committed in `26e6f344`; the full selftest is being rerun from
+that quiet tree, and its result is the only valid full-suite evidence for this
+revision. The earlier local suite count is not release evidence.
 Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
 `assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
 running in their separate worktrees; do not edit, switch, or invalidate them.
