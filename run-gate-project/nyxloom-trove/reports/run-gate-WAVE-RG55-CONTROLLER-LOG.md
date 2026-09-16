@@ -3314,3 +3314,14 @@ advanced to `ea72f244` (`Merge latest main before release gate`). No
 `assay-v6.3.*` tag is present, so the branch still has no release receipt and
 P5 final integration remains pending. This independent read did not inspect
 or alter any mutation stream.
+
+### RW-272 — 2026-09-16 17:27:36Z — CMRU release-safety candidate awaits Assay source integration and Sol
+
+The isolated `cmru-release-dirty-sync` branch is clean at `b1150e6d` and
+contains the KI-28 dirty-main cleanup with focused/full local coverage and a
+prior Luna `ACCEPT`. Its final review explicitly deferred the registered
+Docker gate because the mutation slots were occupied, and the branch's CMRU
+gate still references the obsolete 6.1.1 artifact. It is therefore not a
+mergeable release candidate while the operator prepares source-backed Assay
+6.3; preserve it for reconciliation after that release, then run its real
+registered gates and the required fresh Sol review before any merge.
