@@ -138,6 +138,43 @@ docker buildx inspect mdt-managed
 Do not rely on a user's Buildx “current builder” state. The environment is the
 consumer contract and is re-applied by the template/finalizer.
 
+## VM-backed test runners
+
+The MDT cockpit has headless x86 QEMU, `qemu-img`, OVMF firmware, and
+`cloud-localds` available for disposable guest tests. This is an opt-in runner
+capability, not a host VM service. Package presence alone does not expose host
+virtualization devices.
+
+Use the existing privileged `debian-install-v2` container for tests of loop
+devices, partition tables, `partx`, `mkswap`, and systemd-as-PID1 behavior. Use
+a VM when the contract includes an actual guest boot/reboot, UEFI firmware, or
+kernel behavior. A minimal runner launched from the cockpit has to request the
+host devices explicitly and should be placed in the configured test slice:
+
+```bash
+docker run --rm -d --name debian-vm-test \
+  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --device=/dev/kvm \
+  --device=/dev/net/tun \
+  --tmpfs /run --tmpfs /tmp \
+  -v "$PWD/.vm-state:/vm:rw" \
+  <vm-runner-image>
+```
+
+Inside that runner, the MDT tools are used directly, for example:
+
+```bash
+qemu-img create -f qcow2 /vm/guest.qcow2 20G
+qemu-system-x86_64 -accel kvm -nographic -drive file=/vm/guest.qcow2,format=qcow2
+```
+
+The device arguments are intentionally absent from the standard devcontainer
+template: hosts without KVM or TAP support must still be able to create the
+cockpit, and exposing them by default would silently broaden its privilege. If
+KVM is unavailable, omit `-accel kvm` and expect software emulation to be
+substantially slower. Keep VM disks under disposable storage and never attach a
+production block device.
+
 ### Persistent AI CLI state
 
 The vendored template uses source-backed bind mounts under

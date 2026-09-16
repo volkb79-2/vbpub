@@ -63,6 +63,21 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("buildx rm", builder)
         self.assertNotIn("docker-container", builder)
 
+    def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
+        package_names = {
+            line.split("#", 1)[0].strip()
+            for line in (ROOT / "apt/packages.list").read_text().splitlines()
+            if line.split("#", 1)[0].strip()
+        }
+        self.assertTrue(
+            {"qemu-system-x86", "qemu-utils", "ovmf", "cloud-image-utils"}
+            <= package_names
+        )
+        self.assertNotIn("libvirt-daemon-system", package_names)
+        readme = " ".join((ROOT / "README.md").read_text().split())
+        self.assertIn("Package installation does not grant a container access to KVM", readme)
+        self.assertIn("does not install or start libvirt", readme)
+
     def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
         self.assertIn('git rev-parse --git-common-dir', wrapper)

@@ -25,6 +25,10 @@ sysstat            # pidstat / iostat / sar / mpstat
 iotop              # per-process I/O and swap-wait visibility
 iproute2           # ss / ip / tc - network and routing inspection
 util-linux         # ionice / findmnt / lsblk
+qemu-system-x86    # headless x86_64/i386 guest emulation and KVM acceleration
+qemu-utils         # qemu-img and disk-image inspection/conversion tools
+ovmf               # UEFI firmware for x86 virtual machines
+cloud-image-utils  # cloud-localds and disposable guest-image provisioning tools
 git                # version control
 git-lfs            # git large file storage
 gnupg              # GPG — verify apt repo keys, sign artifacts

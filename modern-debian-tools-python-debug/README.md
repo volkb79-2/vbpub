@@ -132,6 +132,27 @@ and `isort`, so neither is installed.
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
 (`ciu`, `cmru`) are staged from their GitHub releases into [`pip/`](pip/).
 
+### Headless VM tooling
+
+The cockpit includes the userland needed to provision and boot disposable x86
+test guests:
+
+- `qemu-system-x86` — headless x86 guest execution, with KVM acceleration when
+  the host exposes `/dev/kvm`;
+- `qemu-utils` — create and inspect disk images with `qemu-img`;
+- `ovmf` — UEFI firmware for x86 guests;
+- `cloud-image-utils` — create cloud-init seed media such as `cloud-localds`.
+
+These are command-line tools, not a VM service: MDT does not install or start
+libvirt, a system-wide QEMU daemon, or a guest agent. Package installation does
+not grant a container access to KVM or TAP networking. A VM runner must be
+created with the host's explicit `/dev/kvm` and networking devices (or use slow
+software emulation), and it must be placed in the host's governed slice. Keep
+the VM image and firmware scratch files on the runner's disposable storage.
+The existing `debian-install-v2` privileged container remains the right shape
+for loop-device/partition tests; use a VM only when the test contract includes
+boot, reboot, firmware, or kernel behavior.
+
 ### AI CLI tools
 
 Enabled by default, each controlled by an `INSTALL_*` build arg:
