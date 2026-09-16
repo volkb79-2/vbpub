@@ -3162,3 +3162,12 @@ On clean reconciliation tip `6c02e512`, `run-gate.py --base main assay-r1
 RG-55 profile/placement planning path without launching a container; observed
 host memory PSI `full avg10=0.57%`, below the launch threshold. This does not
 replace the tester-unified gate or final mutation evidence.
+
+### RW-256 — 2026-09-16 16:26:25Z — preserve P3 source-reconciliation checkpoint
+
+The isolated P3 close-out draft was appended (not rewritten) with the
+2026-09-16 source-backed P5 preparation evidence and committed as `488225be`
+on `rg55-closeout-prep`. It records the clean assay source tip, P5
+reconciliation commits, the `1184 passed, 3 skipped` local suite, and the
+successful rev-43 dry run while explicitly keeping tester-unified, assay 6.3,
+mutation, Sol, release, and live-probe evidence pending.
