@@ -889,6 +889,22 @@ class TestPhysicalPath:
 # ---------------------------------------------------------------------------
 
 class TestArgvConstruction:
+    def test_ephemeral_lane_uses_explicit_gates_slice_when_configured(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.CGROUP_GATES_ENV_VAR, "dev-gates.slice")
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        idx = lambda flag: run_call.index(flag)  # noqa: E731
+        assert run_call[idx("--cgroup-parent") + 1] == "dev-gates.slice"
+        assert (f"{run_gate.CGROUP_ENV_VAR}=dev-background.slice"
+                in run_call)
+        assert (f"{run_gate.CGROUP_GATES_ENV_VAR}=dev-gates.slice"
+                in run_call)
+
     def test_command_lane_full_docker_argv(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
