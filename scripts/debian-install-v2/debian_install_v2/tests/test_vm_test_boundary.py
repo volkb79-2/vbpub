@@ -37,7 +37,10 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     runner = (VM / "run-vm-harness.sh").read_text()
     assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"' in runner
     assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
+    assert 'VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"' in runner
+    assert 'MDT_VM_CACHE_DIR=$VM_CACHE_DIR' in runner
     assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
+    assert '"$HOST_TESTING_DIR:/work:ro"' in runner
     assert "--privileged" not in "\n".join(
         line for line in runner.splitlines() if not line.lstrip().startswith("#")
     )

@@ -4,10 +4,11 @@
 # like Netcup deploys, which is exactly the point: this is a REAL boot
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
-# hosts are provisioned from. Cached under testing/.cache/ so a second run
-# of testing/vm/vmctl prepare-base doesn't re-download; only refetches if
-# missing or the
-# checksum doesn't match what's currently published (Debian repoints
+# hosts are provisioned from. The wrapper puts the cache in its persistent
+# runner; direct invocations default to testing/.cache. A second run of
+# testing/vm/vmctl prepare-base doesn't re-download; it only refetches if
+# the file is missing or its checksum doesn't match what's currently
+# published (Debian repoints
 # "latest" at a new build periodically).
 #
 # Usage: testing/download-base-image.sh
@@ -15,7 +16,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CACHE_DIR="$HERE/.cache"
+CACHE_DIR="${MDT_VM_CACHE_DIR:-$HERE/.cache}"
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
 LOCAL_PATH="$CACHE_DIR/$IMAGE_NAME"

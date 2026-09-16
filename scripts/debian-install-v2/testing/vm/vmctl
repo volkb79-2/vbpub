@@ -52,11 +52,22 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="$HERE/.vm"
+LEGACY_STATE_DIR="$HERE/.vm"
+STATE_DIR="${MDT_VM_STATE_DIR:-$LEGACY_STATE_DIR}"
 IMAGES_DIR="$STATE_DIR/images"
 RUNS_DIR="$STATE_DIR/runs"
+LEGACY_RUNS_DIR="$LEGACY_STATE_DIR/runs"
 SSH_DIR="$STATE_DIR/ssh"
 SSH_KEY="$SSH_DIR/id_ed25519"
+# Preserve access to a runner created before state moved out of the worktree.
+# Once its legacy key is used for that in-flight run, later new runs can keep
+# using it until the operator removes the generated legacy directory.
+if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
+    && [ ! -f "$SSH_KEY" ] \
+    && [ -f "$LEGACY_STATE_DIR/ssh/id_ed25519" ]; then
+    SSH_DIR="$LEGACY_STATE_DIR/ssh"
+    SSH_KEY="$SSH_DIR/id_ed25519"
+fi
 
 DEFAULT_SSH_PORT=2222
 DEFAULT_MEM_MB=2048
@@ -193,7 +204,18 @@ EOF
     cloud-localds "$run_dir/seed.iso" "$run_dir/cloud-init/user-data" "$run_dir/cloud-init/meta-data"
 }
 
-run_dir_for() { echo "$RUNS_DIR/$1"; }
+run_dir_for() {
+    # The wrapper keeps state outside the mounted worktree. If a runner was
+    # upgraded while a VM was active under the former .vm location, continue
+    # to address that specific legacy run so wait/ssh/destroy can clean it up.
+    if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
+        && [ -d "$LEGACY_RUNS_DIR/$1" ] \
+        && [ ! -d "$RUNS_DIR/$1" ]; then
+        echo "$LEGACY_RUNS_DIR/$1"
+    else
+        echo "$RUNS_DIR/$1"
+    fi
+}
 
 cmd_start() {
     local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N] [--no-apt-cache]}"

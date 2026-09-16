@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build (if needed) the QEMU/TCG VM harness image and run a vmctl
-# subcommand inside it, with this directory bind-mounted so VM state
-# (.vm/) persists across invocations on the host filesystem.
+# subcommand inside it. The source directory is bind-mounted read-only;
+# VM state persists across invocations in the worktree-specific runner.
 #
 # Usage: scripts/debian-install-v2/testing/vm/run-vm-harness.sh <vmctl args...>
 # Examples:
@@ -29,6 +29,8 @@ TESTING_DIR="$(cd "$HERE/.." && pwd)"
 RUNNER_FINGERPRINT="$(printf '%s' "$TESTING_DIR" | sha256sum | cut -c1-12)"
 IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
+VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
+VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
 # normal host workload, not an escape from the estate's cgroup policy.  The
@@ -43,9 +45,10 @@ die() {
     exit 1
 }
 
-# Bind-mount the PARENT testing/ directory, not just vm/: vmctl's
+# Bind-mount the PARENT testing/ directory read-only, not just vm/: vmctl's
 # prepare-base reaches one level up for ../download-base-image.sh, which
-# only exists on the host at that path relative to vm/, not inside it.
+# only exists at that path relative to vm/. VM state and the image cache live
+# in the persistent runner container, never in the judged worktree.
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
@@ -130,7 +133,9 @@ ensure_runner() {
     docker run -d --name "$NAME" \
         --cgroup-parent="$VM_CGROUP_PARENT" \
         --label "mdt.vm.testing-dir=$HOST_TESTING_DIR" \
-        -v "$HOST_TESTING_DIR:/work:rw" \
+        -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
+        -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
+        -v "$HOST_TESTING_DIR:/work:ro" \
         -v "$HOST_PROJECT_DIR:/source:ro" \
         -w /work/vm \
         "$IMAGE" sleep infinity >/dev/null
@@ -150,4 +155,7 @@ case "${1:-}" in
 esac
 
 ensure_runner
-exec docker exec -i "$NAME" ./vmctl "$@"
+exec docker exec -i \
+    -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
+    -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
+    "$NAME" ./vmctl "$@"

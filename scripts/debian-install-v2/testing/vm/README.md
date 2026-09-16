@@ -133,10 +133,13 @@ container's own filesystem (not `.vm/`, not bind-mounted), so it persists
 across VM resets within one runner lifetime but is lost on
 `run-vm-harness.sh --stop-daemon`.
 
-State lives under `.vm/` (gitignored): `.vm/images/<case>-base.qcow2`
-(immutable, shared across runs), `.vm/runs/<run>/` (disk overlay, cloud-init
-seed, QMP socket, pidfile, serial console log — everything for one
-disposable VM), `.vm/ssh/` (one generated SSH keypair, shared across runs).
+When invoked through `run-vm-harness.sh`, state lives in the persistent,
+worktree-specific runner container under `/var/lib/mdt-debian-install-vm/`:
+the base image is immutable and shared across runs, while each run's qcow2
+overlay, cloud-init seed, QMP socket, pidfile, and serial log are disposable.
+The SSH key and download cache are kept there too, so no root-owned generated
+files are written into the judged worktree. Direct `vmctl` use without the
+wrapper falls back to a local `.vm/` directory for interactive debugging.
 
 ## Base images
 
