@@ -17407,6 +17407,9 @@ class TestExecLaneProfilingWiring:
             def drain(self):
                 return []
 
+            def ended(self):
+                return False
+
             def idle(self):
                 return True
 
@@ -17481,6 +17484,9 @@ class TestExecLaneProfilingWiring:
             def drain(self):
                 return []
 
+            def ended(self):
+                return True
+
             def idle(self):
                 return True
 
@@ -17545,6 +17551,9 @@ class TestExecLaneProfilingWiring:
                 self.drain_calls += 1
                 return []
 
+            def ended(self):
+                return False
+
             def idle(self):
                 return False
 
@@ -17596,6 +17605,9 @@ class TestExecLaneProfilingWiring:
             def drain(self):
                 return [("event", {"event": "verdict", "watch": {
                     "verdict": "killed", "reason": "planted stall"}})]
+
+            def ended(self):
+                return False
 
             def idle(self):
                 return False
