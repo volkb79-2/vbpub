@@ -3129,3 +3129,17 @@ distribution receipt as interim. The final RG-55 release evidence depends on
 the operator's assay 6.3 source-backed release, so the draft no longer
 silently presents 6.2 as the final assay state. The preparation commit is
 `fd345c38`; no mutation lane was queried or changed.
+
+### RW-253 — 2026-09-16 16:18:30Z — stage P5 source-backed Assay reconciliation
+
+While the operator's assay 6.3 source-backed worktree remains the dependency
+of record, a separate P5 reconciliation worktree was created from the judged
+P5 tip `8823dca820cf6ffc6520da57663f8b7424f1ce35`. The selected run-gate
+consumer and tester-unified changes from the operator's source branch were
+applied with P5's transport/watch/placement/admission behavior retained.
+Expected `run-gate.py` overlaps were resolved explicitly. The isolated local
+run-gate suite passed `1184 passed, 3 skipped` (wheel-toolchain skip only),
+exit 0, and the checkpoint is commit `f80608b9` on
+`rg55-p5-assay63-reconcile`. This is preparation only: the final assay 6.3
+tree, tester image gate, final P5 mutation run, and Sol review remain pending.
+No mutation lane was queried or changed.
