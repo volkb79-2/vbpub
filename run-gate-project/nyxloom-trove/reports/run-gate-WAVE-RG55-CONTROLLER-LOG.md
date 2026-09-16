@@ -3235,3 +3235,11 @@ a watcher-launch failure. A session-detached replacement is now confirmed:
 PID `2755430`, PPID `1`, started `16:54:02Z`, with child `sleep 1210`; it will
 write `/tmp/rg55-observe-20260916-1713.log` at approximately `17:14:12Z`.
 The P1/P5 mutation handles were not queried during this replacement.
+
+### RW-264 — 2026-09-16 16:55:25Z — assay source branch advances without release
+
+The operator-owned assay source-backed worktree remains clean but has advanced
+to `764cb368` (`test(nyxloom): integrate remaining mutation regressions`). No
+`assay-v6.3.0` tag is present; its `git describe` output is an unrelated
+run-gate tag and is not treated as an Assay release. The P5 final integration
+therefore remains pending, and no mutation progress was queried.
