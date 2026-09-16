@@ -3251,3 +3251,43 @@ to `24ac95df` (`Merge survivor coverage into source-backed Nyxloom branch`).
 No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
 yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
 mutation progress was queried.
+
+### RW-269 — 2026-09-16 17:15:07Z — scheduled observation confirms live lanes; watcher re-armed
+
+The marker written at `17:14:12Z` confirms P1 PID `2389540` and P5 PID
+`2275238` are still live. P1's exact container
+`run-gate-vbpub-r2-2389540-1789574615` is `running`; no exit or verdict was
+read. The first re-arm attempt exited at the shell boundary without leaving a
+watcher, so it was discarded as a watcher failure. A replacement is now
+session-detached with watcher PID `3012811`, PPID `1`, child `sleep 1210`, and
+marker `/tmp/rg55-observe-20260916-1734.log`; the mutation lanes were not
+restarted or otherwise changed.
+
+### RW-268 — 2026-09-16 17:10:11Z — Assay release-preparation merge observed
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `05efe06a` (`Merge current main before Assay source-backed release`). It has
+no `assay-v6.3.*` tag yet, so this is preparation rather than a release
+receipt. The P5 reconciliation remains clean at `37fe63aa`, and the active P1
+and P5 mutation supervisors were not queried before the scheduled observer.
+
+### RW-266 — 2026-09-16 17:05:08Z — source-backed Assay checkpoint and lane preservation
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `34f63c60` (`test(nyxloom): close follow mutation boundary gaps`), with no
+`assay-v6.3.*` tag yet. The P5 assay-6.3 reconciliation worktree remains clean
+at `37fe63aa`; its obsolete 6.1.1 artifact has been removed, but final
+integration, tester-unified evidence, and the final quiet-tree mutation run
+still await the operator's Assay 6.3 release. P1 PID `2389540` and P5 PID
+`2275238` remain live, and the exact P1 container remains running. No mutation
+progress or verdict was read before the scheduled observation.
+
+### RW-267 — 2026-09-16 17:08:14Z — latest Assay commit does not invalidate P5 selection
+
+The operator's latest source-backed Assay commit `34f63c60` changes only
+Nyxloom's session-follow implementation and its tests. A path-scoped diff for
+`run-gate-project`, `tester-unified`, `ciu`, `cmru`, and `assay` is empty, so
+it does not alter the consumer/configuration surface selected in P5's clean
+reconciliation `37fe63aa`. P5 still awaits the actual Assay 6.3 release and
+final quiet-tree gates; the mutation supervisors remain untouched and no
+mutation progress was queried.

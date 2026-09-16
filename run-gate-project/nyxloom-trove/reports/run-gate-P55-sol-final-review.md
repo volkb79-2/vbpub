@@ -10,7 +10,7 @@ depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-250
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-267
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -169,7 +169,7 @@ separately from the wrapper's status. Do not poll a long gate every minute;
 leave it detached with a watcher and inspect it at a meaningful completion or
 wakeup point.
 
-Assay 6.1.1/6.2 identity is per TREE. A commit in a judged worktree voids all
+Assay identity is per TREE. A commit in a judged worktree voids all
 mutation records for that worktree. Keep the HEAD quiet while judging. Resume
 only from the exact judged tree with `git switch --detach <tree>`, then switch
 back. Every assay mutation invocation must use `--resume --progress` as the
@@ -182,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-250). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-267). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
