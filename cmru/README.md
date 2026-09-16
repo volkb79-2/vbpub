@@ -61,7 +61,7 @@ cmru dependencies                 # show + preflight the project dependency grap
 cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
 cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
-cmru tool-deps --refresh assay    # explicit, deliberate re-vendor + pin/hash update (never automatic)
+  cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact re-vendor + pin/hash update
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions

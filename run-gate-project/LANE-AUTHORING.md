@@ -225,9 +225,12 @@ with sqlfluff in a command lane if the project wants it.
 
 - Run from a clean tree (`clean_tree = true` is the default and the refusal
   is a feature); a `false` needs a written reason in the lane.
-- Pin the judge by digest (`pins.assay`); never "latest". Staleness is the
-  cost and `cmru tool-deps --refresh assay` is the remedy at each assay
-  release.
+- Internal vbpub lanes use the shared source-backed judge: omit both
+  `assay_command` and `pins`, and run-gate installs the selected worktree's
+  `assay/` source while recording its runtime version and source commit. A
+  consumer outside this repository has no shared source tree, so it uses an
+  explicit immutable command plus `pins.assay` digest/version; refresh that
+  external/copy artifact deliberately when it adopts a new Assay release.
 - Environment facts (image, slice, mounts) come from the central
   `run-gate.toml` — DERIVE or READ or FAIL, never a silent default (`AGENTS
   §4.2a`).

@@ -1171,8 +1171,9 @@ monorepo's own dev environment) is equally broken today.
 
 ### KI-27 — `cmru tool-deps --refresh` re-vendors a declaring project's pin but never touches that project's OWN `run-gate.toml`, which pins the same artifact a second time
 
-**Status:** open (found 2026-09-08, live-hit re-pinning `cmru`'s own assay
-dependency 5.1.0 -> 5.2.0: `--refresh` deleted the vendored
+**Status:** FIXED 2026-09-16 by the source-backed internal-consumer migration.
+The original live hit re-pinning `cmru`'s own assay dependency 5.1.0 -> 5.2.0
+showed that `--refresh` deleted the vendored
 `tools/assay/assay-5.1.0.pyz` and rewrote `cmru/cmru.toml`'s declaration,
 but `cmru/run-gate.toml` — which independently names the exact same
 version three times, in `[lanes.assay].assay_command`, `[lanes.assay.
@@ -1204,7 +1205,16 @@ pattern `AGENTS.md` warns about: correct in every case anyone has
 actually re-run the gate right after a refresh, wrong the moment they
 don't.
 
-**Proposed fix:** either (a) teach `--refresh` to also rewrite a
+**Resolution:** internal vbpub consumers no longer declare an Assay
+`assay_command`, `pins.assay`, vendored zipapp, or S15 tool edge. Their
+`run-gate.toml` lane omits both fields, and run-gate installs Assay from the
+selected worktree, recording the runtime version and source commit in the
+verdict. The mutation campaign receives the same source tree directly. The
+explicit `--refresh` path remains for external/copy consumers, where it is
+still the correct operation. This removes the duplicated internal fact rather
+than teaching one update command to rewrite multiple independent copies.
+
+The previously proposed alternatives were either (a) teach `--refresh` to also rewrite a
 `[lanes.*.pins.assay]` table + the matching `assay_command`/inline
 zipapp-path occurrences in the declaring project's own `run-gate.toml`
 when one exists (mirroring what it already does for `cmru.toml`), or (b)
