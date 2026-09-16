@@ -61,7 +61,7 @@ attach it to something per-container:
    `SetUnitProperties` work on it exactly like any other unit; nothing needs
    to be pre-created. Applied synchronously, as the last step of CIU's own
    start sequence (not on a periodic timer), this closes the window a
-   sweep-based approach leaves open: `mdt-host-slices.timer` polls, so a
+   sweep-based approach leaves open: `mdt-dev-governance-reconcile.timer` polls, so a
    container can run unbounded for up to a full `SWEEP_INTERVAL` (tens of
    seconds) before its caps land — fine for the two cases that timer exists
    for (buildx workers, the devcontainer's own scope, both best-effort dev
@@ -160,7 +160,7 @@ several of which are NOT static.
 | Option | Mechanism | New host setup? | Survives `docker.sock` being withheld (DinD)? |
 |---|---|---|---|
 | **A. Throwaway helper container** | `docker run --cgroupns=host [+ /run/dbus mount] ...` over the *existing* `docker.sock` — the same pattern `privileged_rmtree` (`engine.py:379`) already uses for CIU-9 | No | **No** — this IS the trust `docker.sock` access already grants; removing that socket removes this option by design |
-| **B. Narrow companion daemon** | A small root-owned process, one bind-mounted UNIX socket, a tiny allowlisted verb set (e.g. "create/reconfigure a per-container slice under `dev-background.slice` with this `MemoryMin=`") — evolving `mdt-host-slices.service` from a periodic sweep into request/response, or reusing wings-cgroups' own slice-manager daemon design/protocol | Yes — new daemon + protocol + install step | **Yes**, if that one narrow socket is deliberately mounted in |
+| **B. Narrow companion daemon** | A small root-owned process, one bind-mounted UNIX socket, a tiny allowlisted verb set (e.g. "create/reconfigure a per-container slice under `dev-background.slice` with this `MemoryMin=`") — evolving `mdt-dev-governance-reconcile.service` from a periodic sweep into request/response, or reusing wings-cgroups' own slice-manager daemon design/protocol | Yes — new daemon + protocol + install step | **Yes**, if that one narrow socket is deliberately mounted in |
 | **C. sudo/polkit delegation to a wrapper script** | A `sudoers.d` rule scoped to one wrapper that validates the slice name against a strict pattern before calling `systemctl set-property`/`StartTransientUnit` | Yes — sudoers/polkit rule | Only when CIU can reach the host's own sudo directly (native host, or over SSH — CIU already has `transport_ssh.py`); not from an isolated container with no escape hatch |
 | **D. Verify-only, forever** | What's actually shipped (S15.16): CIU never writes, only checks a pre-provisioned floor and fails closed if it's missing/inadequate | No | Trivially yes — nothing to escape |
 
@@ -232,8 +232,8 @@ silent misconfiguration nobody would notice without deliberately checking.
 
 Detecting this is squarely **mdt's** job, not CIU's: mdt already owns the
 host-wide slice tree (it wrote the units in the first place) and already
-runs a periodic sweep for a related purpose (`mdt-host-slices.timer` →
-`mdt-apply-dev-caps.sh`, catching containers/scopes created after boot).
+runs a periodic sweep for a related purpose (`mdt-dev-governance-reconcile.timer` →
+`mdt-dev-governance-reconcile.sh`, catching containers/scopes created after boot).
 Extending that same sweep to walk the slice tree and `[WARN]`-log to the
 journal whenever a descendant requests `memory.min`/`memory.low` that no
 ancestor actually budgets is a natural fit — pure diagnostics, no new
@@ -567,7 +567,7 @@ this project's own devcontainer — `CgroupnsMode=private`, no D-Bus socket, a
 `systemctl` shim, cgroup2 mounted `ro`, exactly the environment D2 described
 — the write is a silent no-op that reports "not applied" at WARN. It is live
 only when CIU runs genuinely host-rooted, which is the same execution model
-`mdt-apply-dev-caps.sh` already has for its own `set-property` calls against
+`mdt-dev-governance-reconcile.sh` already has for its own `set-property` calls against
 this same kind of `docker-*.scope` unit. There is a second, mechanical reason
 the gate must come first: the PID the scope was derived from came from
 `docker inspect .State.Pid`, a host PID-namespace number, meaningless inside

@@ -80,7 +80,7 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 
 Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
 
-No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. The IO caps on them are applied by the mdt host-setup companion (`mdt-apply-dev-caps.sh`), not from this guide: one formula for all capped citizens — a percentage of every measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per container and 60% for the `besteffort.slice` tier as a whole. Protection leans on the weight ratios; the headroom keeps the device off saturation. M6 validates.
+No slice-level `memory.high` is imposed by this game guide — the devcontainer is also the VSCode workspace, and capping its whole interactive slice would kill the IDE. The IO caps are applied by the mdt host-setup companion (`mdt-dev-governance-reconcile.sh`), not from this guide: one formula for all capped citizens — a percentage of every current measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per governed container and 60% for the `dev.slice` tier as a whole. Protection leans on the weight ratios; the headroom keeps the device off saturation. M6 validates.
 
 The `io.max` hard caps are belt-and-suspenders on test-runner/buildkit: they cut the benchmark's 709 r/s burst (observed without caps) to a lower ceiling before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
 

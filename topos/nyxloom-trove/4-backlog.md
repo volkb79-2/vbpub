@@ -338,3 +338,4 @@ CGroup /:
 ```
 
 - add `https://github.com/facebookincubator/below` as hard competitor. solves several of our use cases, e.g. diffrent views as tabs, drilldown/collapse on tree
+- system thrashing/stalling analysis page (e.g. processes with D state, major page faults, PSI), allow to freeze

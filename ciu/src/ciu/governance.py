@@ -984,7 +984,7 @@ def check_memory_min_ancestor_chain(slice_name: str, required_bytes: int) -> tup
 # — no `systemctl` per child, no `docker` call. That is the mechanism
 # `CGROUP-NOTES.md` §"Per-container memory.min guarantees" itself names ("read
 # straight from cgroupfs ... no systemd interaction needed"), and
-# `host-setup/scripts/mdt-slice-audit.py` is working prior art for the exact
+# `host-setup/scripts/mdt-slice-memory-min-low-audit.py` is working prior art for the exact
 # walk. Only the WRITE in S15.23 (:func:`set_scope_memory_min`) needs
 # `systemctl`: systemd re-applies its own recorded properties to a scope on
 # every `daemon-reload`, silently wiping raw cgroupfs writes — reads have no
@@ -1028,7 +1028,7 @@ def _read_memory_min_bytes(cgroup_dir: Path) -> int:
 
     ``0`` for unset, the literal ``"max"``, an unreadable file, or a directory
     that is not a real cgroup at all — same semantics (and same reasoning) as
-    ``mdt-slice-audit.py``'s ``read_protection()``, scoped to ``memory.min``:
+    ``mdt-slice-memory-min-low-audit.py``'s ``read_protection()``, scoped to ``memory.min``:
     every caller here is only ever asking "does this claim protection", and
     "cannot tell" is the same answer as "no" for that question.
 
@@ -1071,7 +1071,7 @@ def enumerate_slice_children(
     - ``children == []`` — a definitive "zero occupants": the slice is
       inactive (no cgroup directory — systemd removes it when the last
       occupant exits) or active but genuinely empty. This matches
-      ``mdt-slice-audit.py``'s own "not a dir -> nothing found" treatment; it
+      ``mdt-slice-memory-min-low-audit.py``'s own "not a dir -> nothing found" treatment; it
       is an answer, not an abstention.
     - a non-empty list — ``(child_directory_name, its own memory.min bytes)``
       pairs, sorted by name so output and notes are stable across runs.
@@ -1284,7 +1284,7 @@ def check_mem_min_admission(
 def container_transient_scope(pid: int) -> tuple[str | None, str]:
     """Derive the systemd transient scope UNIT NAME owning *pid* (S15.23).
 
-    A Python port of ``mdt-apply-dev-caps.sh``'s own derivation: read
+    A Python port of ``mdt-dev-governance-reconcile.sh``'s own derivation: read
     ``/proc/<pid>/cgroup``, take the ``0::`` line (the unified cgroup-v2
     hierarchy — absent on a pure cgroup-v1 host), and trim to the FIRST
     ``.scope`` path component. buildkitd-style workloads nest their own
@@ -1332,7 +1332,7 @@ def set_scope_memory_min(scope_unit: str, required_bytes: int) -> tuple[bool, st
     to a scope on every ``daemon-reload``, so a routine ``apt install``
     elsewhere on the host would silently wipe a raw write; ``--runtime`` is
     the reload-safe mechanism `CGROUP-NOTES.md` establishes as doctrine and
-    ``mdt-apply-dev-caps.sh`` already uses against this same kind of
+    ``mdt-dev-governance-reconcile.sh`` already uses against this same kind of
     ``docker-*.scope`` unit for its IO caps.
 
     Gated FIRST by :func:`_systemd_is_pid1`: not host-rooted means no write is

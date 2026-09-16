@@ -206,7 +206,7 @@ systemctl set-property soulmask.slice MemoryMin="$SOULMASK_SLICE_MIN" 2>/dev/nul
   || log "WARN: set-property soulmask.slice MemoryMin failed"
 
 # Bench/buildkit/devcontainer IO caps used to live here. They are now
-# mdt-apply-dev-caps.sh's job (mdt host-setup, installed separately) — along
-# with the besteffort.slice tier caps, the interactive.slice zswap policy and
+# mdt-dev-governance-reconcile.sh's job (mdt host-setup, installed separately) — along
+# with the dev.slice tier caps, the interactive zswap policy and
 # the fio baseline that sizes all of them. Keeping a second implementation on
 # this host would mean two owners for the same cgroup attributes.

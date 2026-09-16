@@ -178,31 +178,33 @@ IO governance is not a game-side concern. The procedure and the reference
 numbers below still apply to this host.
 
 ```bash
-mdt-io-baseline.py        # caches RIOPS_MAX, WIOPS_MAX, RBW_MAX_BPS, WBW_MAX_BPS
-                          # sustained-v3: 4 fio passes × (10s ramp + 40s measure),
-                          # 4G span, incompressible buffers — ~4 min saturation
-systemctl start mdt-host-slices.service  # derives the caps: 60% of measured for
-                                         # the besteffort tier, 80% per container
+mdt-io-baseline.py        # writes identity-bound io.cost benchmark results:
+                          # six matrix runs against the persistent target file,
+                          # about 12 min at default settings; no raw-device writes
+systemctl start mdt-dev-governance-reconcile.service  # reconciles 60% of measured
+                                         # ceilings for dev.slice, 80% per governed container
 ```
 
-Reference (sustained-v3, 2026-07-08, game running): riops 90,173 / wiops 58,695 /
+Historical reference (sustained-v3, 2026-07-08, game running): riops 90,173 / wiops 58,695 /
 rbw 2,149 MB/s / wbw 516 MB/s; p99 4k-read 497µs, 4k-write 1,695µs, 128k-write
 7.1ms. The earlier burst numbers (rbw 4.3 GB/s, wbw 1.48 GB/s) were
 hypervisor-cache artifacts — ramp_time + 4G span + `buffer_compress_percentage=0`
-killed them. Notable: game `io.pressure full avg300` stayed at 0.05 % through the
-whole 4-minute saturation run — the BFQ/io.weight arbitration alone nearly fully
-shielded the game even WITHOUT caps on the aggressor (the benchmark ran uncapped
-in system.slice).
+killed them. These figures belong to that historical sustained-v3 run; the current
+MDT results file is the authoritative source after a fresh identity-bound benchmark.
+Notable: game `io.pressure full avg300` stayed at 0.05 % through the whole
+4-minute saturation run — the BFQ/io.weight arbitration alone nearly fully shielded
+the game even WITHOUT caps on the aggressor (the benchmark ran uncapped in
+system.slice).
 
 Validation that the cap protects the game: run a real build
 (`release-bake.sh` / docker-repack) and watch the game's `io.pressure`
 (`full avg10` < 2) and monitor `rf_d/s` ≈ 0 while `iostat -x 5` shows the
 build pinned at the cap.
 
-Why no system-wide IOPS cap: `io.max` cannot be set on the cgroup root, and
+Why no host-wide IOPS cap: `io.max` cannot be set on the cgroup root, and
 capping every slice would throttle the game's own DB backups too. The design
-is: **cap the aggressors** (bench/buildkit/besteffort via io.max) + **BFQ
-weight priority** for the game (io.bfq.weight 1000 vs 1). `io.cost.qos`
+is: **cap the dev aggressors** (dev.slice and its governed children via io.max)
++ **BFQ weight priority** for the game (io.bfq.weight 1000 vs 1). `io.cost.qos`
 (latency-target QoS on the whole device) is the real "system-wide fairness"
 mechanism if ever needed — complex to tune, revisit only if weights+caps
 prove insufficient.

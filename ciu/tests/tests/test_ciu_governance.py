@@ -1911,7 +1911,7 @@ class TestMemMinAdmissionExcludesOutgoingInstance:
 
 
 class TestContainerTransientScope:
-    """S15.23 — the mdt-apply-dev-caps.sh cgroup-derivation, ported."""
+    """S15.23 — the mdt-dev-governance-reconcile.sh cgroup-derivation, ported."""
 
     @staticmethod
     def _proc_cgroup(monkeypatch: pytest.MonkeyPatch, pid: int, content: str) -> None:

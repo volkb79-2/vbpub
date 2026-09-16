@@ -193,7 +193,7 @@ grep cgroup2 /proc/mounts        # verify both flags now listed
 ```
 
 A reboot restores the flags anyway (systemd default); the mdt host-setup
-companion's `mdt-apply-dev-caps.sh` re-checks periodically
+companion's `mdt-dev-governance-reconcile.sh` re-checks periodically
 (`CGROUP2_FLAGS=warn|fix`) and `mdt-host-check.sh` FAILs when it's missing.
 
 ## 1. Compose: image + D-Bus socket
@@ -346,12 +346,12 @@ now have real owners, so disabling it is safe:
 | Former responsibility | Owner now |
 |---|---|
 | game floors, `system.slice` MemoryMin | Wings per-server slices (this rollout) |
-| besteffort measured IO caps, per-container bench/buildkit/devcontainer caps, interactive zswap policy, the fio baseline | **mdt host-setup companion** — `modern-debian-tools-python-debug/host-setup/` (`install.sh` + `mdt-host-slices.service`/`.timer`). Install it in the same window: `sudo host-setup/install.sh --with-baseline`, then `mdt-host-check.sh` |
+| dev-tier measured IO caps, per-container bench/buildkit/devcontainer caps, interactive zswap policy, the io.cost benchmark results | **mdt host-setup companion** — `modern-debian-tools-python-debug/host-setup/` (`install.sh` + `mdt-dev-governance-reconcile.service`/`.timer`). Install it in the same window: `sudo host-setup/install.sh --with-baseline`, then `mdt-host-check.sh` |
 | pak-slice zswap bypass (`memory.zswap.max=0`) | still `setup-cgroups.sh`, and also declared in the `soulmask-paks.slice` unit itself (`MemoryZSwapMax=0`) — verify with `systemctl show soulmask-paks.slice -p MemoryZSwapMax` |
 
 `setup-cgroups.sh` in the repo is now **game-side only** (the dev logic was
 removed, not just superseded) — a host still running the pre-migration copy has
-two writers for `besteffort.slice`'s `io.max`, so re-run `scripts/install.sh`
+two writers for `dev.slice`'s `io.max`, so re-run `scripts/install.sh`
 to update it.
 
 Floor ledger after retirement: `wings.slice` 8G + `soulmask.slice` 1G = 9G of

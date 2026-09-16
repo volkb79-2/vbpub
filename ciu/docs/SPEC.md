@@ -3656,7 +3656,7 @@ bytes, reading straight from cgroupfs with `pathlib` (`governance.CGROUP_ROOT`,
 `governance.slice_cgroup_path` — a pure reversal of S15.16's
 `slice_ancestor_chain` into the cgroupfs's nested-directory layout). No
 `systemctl` per child, no `docker` call: that is the mechanism
-`CGROUP-NOTES.md` itself names, and `host-setup/scripts/mdt-slice-audit.py`
+`CGROUP-NOTES.md` itself names, and `host-setup/scripts/mdt-slice-memory-min-low-audit.py`
 is working prior art for the same walk.
 
 Its return contract distinguishes two things that must never be conflated:
@@ -3668,7 +3668,7 @@ Its return contract distinguishes two things that must never be conflated:
   as if it were the host's. No filesystem access is attempted in this case.
 - `[]` — **a definitive zero.** The slice is inactive (systemd removes the
   cgroup directory when the last occupant exits) or active but genuinely
-  empty. This is an answer, matching `mdt-slice-audit.py`'s own "not a dir →
+  empty. This is an answer, matching `mdt-slice-memory-min-low-audit.py`'s own "not a dir →
   nothing found" treatment.
 
 Every function in this section is gated by the same `_systemd_is_pid1()`
@@ -3803,14 +3803,14 @@ uses). For each non-exempt service: `docker inspect .State.Pid` →
 `governance.container_transient_scope(pid)` (reads `/proc/<pid>/cgroup`, takes
 the `0::` unified line, trims to the FIRST `.scope` component so buildkitd-style
 nested sub-cgroups resolve to the unit systemd actually knows about — a port of
-`mdt-apply-dev-caps.sh`'s own derivation) →
+`mdt-dev-governance-reconcile.sh`'s own derivation) →
 `governance.set_scope_memory_min(scope_unit, bytes)`, i.e. `systemctl
 set-property --runtime <scope> MemoryMin=<bytes>`.
 
 `--runtime`, never a raw cgroupfs write: systemd re-applies its own recorded
 properties to a scope on every `daemon-reload`, so an unrelated `apt install`
 elsewhere on the host would silently wipe a raw write. This is the same
-reload-safe mechanism `mdt-apply-dev-caps.sh` already uses against the same
+reload-safe mechanism `mdt-dev-governance-reconcile.sh` already uses against the same
 kind of `docker-*.scope` unit for its IO caps.
 
 The declared value goes onto every non-exempt service identically, matching
