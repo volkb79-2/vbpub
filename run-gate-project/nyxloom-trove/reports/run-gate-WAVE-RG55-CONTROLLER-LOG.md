@@ -3252,6 +3252,14 @@ No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
 yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
 mutation progress was queried.
 
+### RW-268 — 2026-09-16 17:10:11Z — Assay release-preparation merge observed
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `05efe06a` (`Merge current main before Assay source-backed release`). It has
+no `assay-v6.3.*` tag yet, so this is preparation rather than a release
+receipt. The P5 reconciliation remains clean at `37fe63aa`, and the active P1
+and P5 mutation supervisors were not queried before the scheduled observer.
+
 ### RW-266 — 2026-09-16 17:05:08Z — source-backed Assay checkpoint and lane preservation
 
 The operator-owned assay source-backed worktree remains clean and has advanced
