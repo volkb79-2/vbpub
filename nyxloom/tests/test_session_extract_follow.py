@@ -408,6 +408,36 @@ def test_jsonl_source_uses_codex_lossless_and_selected_record_paths(tmp_path):
     selected.close()
 
 
+def test_jsonl_source_skips_non_chat_reasonix_records(tmp_path):
+    path = tmp_path / "reasonix.jsonl"
+    _append(path, {"role": "developer", "content": "not chat"})
+    source = JsonlSource(path, "reasonix", 0, ExtractConfig(), lossless_mode=False)
+    assert source.poll() == []
+    source.close()
+
+
+def test_jsonl_source_ignores_an_unknown_format(tmp_path):
+    path = tmp_path / "unknown.jsonl"
+    _append(path, _user("u1", "ignored"))
+    source = JsonlSource(path, "future-format", 0, ExtractConfig(), lossless_mode=False)
+    assert source.poll() == []
+    source.close()
+
+
+def test_opencode_source_restores_tracked_fingerprints(tmp_path):
+    db = _opencode_db(tmp_path / "opencode.db")
+    sid = "ses_04bd4e9b4ffeBJm48T6v130DS6"
+    source = OpencodeSource(
+        db,
+        sid,
+        ExtractConfig(),
+        lossless_mode=False,
+        tracked_fingerprints=(((10, "m10"), ("fingerprint",)),),
+    )
+    assert source._tracked_rows[(10, "m10")] == ("fingerprint",)
+    source.close()
+
+
 # --------------------------------------------------------------------------
 # FollowSelector -- select()'s per-event rule, applied forward
 # --------------------------------------------------------------------------
@@ -747,6 +777,23 @@ def test_a_tool_result_in_a_non_user_record_does_not_answer_a_question():
     assert pending == {"tu1": "Ship it?"}
 
 
+def test_a_tool_result_in_a_non_assistant_record_does_not_answer_a_question():
+    # This reaches the structural guard itself: a system record can carry a
+    # malformed tool_result-shaped list, but only a user record is allowed to
+    # answer an AskUserQuestion.  The assistant case above returns earlier in
+    # update_interview_pending and therefore cannot distinguish `and` from
+    # `or` in that guard.
+    pending = {"tu1": "Ship it?"}
+    system = _rec(type="system", uuid="s1", timestamp=_TS, message={
+        "role": "system", "content": [
+            {"type": "tool_result", "tool_use_id": "tu1", "content": "not an answer"},
+        ],
+    })
+
+    assert claude_code.update_interview_pending(system, pending) is None
+    assert pending == {"tu1": "Ship it?"}
+
+
 def test_a_non_dict_user_content_block_does_not_answer_a_question():
     # Malformed/non-block content is not a tool_result. It must be ignored
     # while the actual unanswered AskUserQuestion remains pending.
@@ -965,6 +1012,23 @@ def test_opencode_source_ignores_a_defensive_none_tracked_fingerprint(tmp_path):
     source._tracked_rows[(10, "missing")] = None
 
     assert source._poll_anchor() == []
+    source.close()
+
+
+def test_opencode_source_ignores_an_incomplete_legacy_anchor(tmp_path):
+    # Older callers populated the private anchor fields directly. A partially
+    # populated anchor is not usable and must remain inert; in particular, it
+    # must not create a tracked row with a None key that the next poll cannot
+    # query.
+    db = _opencode_db(tmp_path / "opencode.db")
+    source = OpencodeSource(
+        db, "ses_04bd4e9b4ffeBJm48T6v130DS6", ExtractConfig(), False,
+    )
+    source._anchor_cursor = None
+    source._anchor_fingerprint = ("orphan", ())
+
+    assert source._poll_anchor() == []
+    assert not source._tracked_rows
     source.close()
 
 
@@ -1546,6 +1610,119 @@ def test_follower_handles_an_arrival_without_raw_record_and_a_source_without_clo
     assert follower.tick() == 1
     follower.close()
     assert "operator" in out.getvalue()
+
+
+def test_follower_does_not_run_claude_attention_logic_for_another_harness(monkeypatch):
+    # The raw-record branch is Claude-Code-specific. A non-Claude source may
+    # still expose a raw record for diagnostics, but it must not be handed to
+    # Claude's AskUserQuestion pairing helper.
+    class Source:
+        def poll(self):
+            return [Arrival(
+                events=[NormalizedEvent(0, "op", _TS, EventKind.OPERATOR_TEXT, "operator")],
+                raw={"type": "system"},
+            )]
+
+        def close(self):
+            pass
+
+    def unexpected_update(*_args, **_kwargs):
+        raise AssertionError("Claude interview detection ran for a non-Claude harness")
+
+    monkeypatch.setattr(claude_code, "update_interview_pending", unexpected_update)
+    out = io.StringIO()
+    follower = Follower(
+        Source(), harness="opencode", session_path="/tmp/db", config=ExtractConfig(),
+        follow_config=FollowConfig(), out=out, lossless_mode=False, printed_any=False,
+    )
+    assert follower.tick() == 1
+    assert "operator" in out.getvalue()
+
+
+def test_follow_configuration_defaults_to_no_bell():
+    assert FollowConfig().bell is False
+
+
+def test_attention_event_is_immutable():
+    from dataclasses import FrozenInstanceError
+
+    event = AttentionEvent("checkpoint_detected", "claude-code", "/tmp/session", "text")
+    with pytest.raises(FrozenInstanceError):
+        event.reason = "long_block"
+
+
+def test_opencode_anchor_is_immutable():
+    from dataclasses import FrozenInstanceError
+    from nyxloom.session_extract.follow import OpencodeAnchor
+
+    anchor = OpencodeAnchor((1, "m1"), ("data", ()))
+    with pytest.raises(FrozenInstanceError):
+        anchor.cursor = (2, "m2")
+
+
+def test_follower_default_printed_state_separates_live_content():
+    class Source:
+        def poll(self):
+            return [Arrival(events=[NormalizedEvent(
+                0, "op", _TS, EventKind.OPERATOR_TEXT, "operator"
+            )])]
+
+    out = io.StringIO()
+    follower = Follower(
+        Source(), harness="opencode", session_path="/tmp/db", config=ExtractConfig(),
+        follow_config=FollowConfig(), out=out, lossless_mode=False,
+    )
+    assert follower.tick() == 1
+    assert out.getvalue().startswith("\n\n---\n")
+
+
+def test_attention_hook_receives_text_mode_subprocess_output_without_corrupting_stdout(
+    monkeypatch, capsys,
+):
+    from types import SimpleNamespace
+    from nyxloom.session_extract import follow as follow_mod
+
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(stdout="hook stdout\n", stderr="hook stderr\n")
+
+    monkeypatch.setattr(follow_mod.subprocess, "run", fake_run)
+    deliver(
+        AttentionEvent("long_block", "codex", "/tmp/session", "excerpt"),
+        FollowConfig(on_attention="hook"),
+        io.StringIO(),
+    )
+    assert seen["text"] is True
+    assert "hook stdout" in capsys.readouterr().err
+
+
+def test_lossless_long_block_attention_is_strictly_above_the_threshold(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(
+        fp, out, lossless_mode=True,
+        follow_config=FollowConfig(bell=True, attention_min_chars=4), bell_out=bell,
+    )
+    _append(fp, _assistant("a1", "four"))
+    follower.tick()
+    assert bell.getvalue() == ""
+    follower.close()
+
+
+def test_normal_long_block_attention_is_strictly_above_the_threshold(tmp_path):
+    fp = tmp_path / "session.jsonl"
+    _append(fp, _user("u0", "start"))
+    out, bell = io.StringIO(), io.StringIO()
+    follower = _follower(
+        fp, out, follow_config=FollowConfig(bell=True, attention_min_chars=4), bell_out=bell,
+    )
+    _append(fp, _assistant("a1", "four"))
+    follower.tick()
+    assert bell.getvalue() == ""
+    follower.close()
 
 
 def test_opencode_lossless_follow_yields_the_dumps_own_blocks(tmp_path):

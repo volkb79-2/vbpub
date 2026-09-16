@@ -228,10 +228,10 @@ venv result is not a release signal.
 
 ### The implementation gate is Assay-backed
 
-The gate runs CIU's suite inside `tester-unified` and is **judged by the
-released Assay CLI** — a hash-pinned, vendored zipapp
-(`tools/assay/assay-6.1.1.pyz` + `.sha256`, verified by `sha256sum -c` before
-every run and invoked explicitly; Assay source is never imported). The lane
+The gate runs CIU's suite inside `tester-unified` and is **judged by Assay
+from the selected vbpub worktree**. run-gate installs `assay/` into the lane
+environment at run time with no dependency resolution; no consumer-owned
+zipapp or fixed version is copied. The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
 line+branch) inside Assay's isolated snapshot, and Assay itself judges the
 changed-line floor on `base..HEAD` plus the coverage artifact (R1). The

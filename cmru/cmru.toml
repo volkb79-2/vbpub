@@ -22,16 +22,9 @@ prefix = "cmru-v"
 artifacts = ["wheel"]
 scm_dist = "cmru"
 
-# S15: a first-party artifact cmru's OWN tests/tooling consume, distinct from
-# orchestration.project.<id>.depends_on (release ORDER). assay already depends_on
-# cmru, so declaring the reverse edge here would be a cycle -- resolved by vendoring
-# a pinned artifact instead of by ordering. `cmru tool-deps` verifies this pin at
-# release time and on demand; it never runs during `pytest` (see docs/SPEC.md S15).
-[[project.tool_dependencies]]
-project = "assay"
-version = "6.1.1"
-path    = "tools/assay/assay-6.1.1.pyz"
-sha256  = "3798a5f74908ec6c60d9089dd1a5015151314a07ce2f84379d117327fd519f6f"
+# Assay is an internal source dependency: cmru's run-gate lanes install the
+# assay package from the selected vbpub worktree and record its runtime
+# version/source in the verdict. It is intentionally not an S15 artifact pin.
 
 [project.version]
 strategy = "scm"
@@ -45,7 +38,7 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  # SSOT pointer (D-110/D-111): every test definition — pinned-assay verify,
+  # SSOT pointer (D-110/D-111): every test definition — source-backed assay,
   # 100% line+branch coverage, the changed-source mutation campaign (base =
   # nearest ancestor cmru-v* tag, KI-18), and the cause-sensitive coverage
   # canary — lives in cmru/run-gate.toml. This step owns no test logic; it

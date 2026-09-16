@@ -23,6 +23,13 @@ numeric group is read from the socket and added to the tester process rather
 than assumed. The image still supplies the complete uid 1003 passwd/group,
 HOME, and XDG identity.
 
+The tester image also carries Assay's build-system requirements and gives the
+test uid write access to its venv. Internal vbpub lanes install the selected
+worktree's Assay source with `--no-build-isolation`; baking only the backend
+closure keeps that install offline and deterministic while still recording the
+exact runtime Assay version in the verdict. The image does not install a
+copied Assay tree, because the judged worktree is the source of truth.
+
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more
 than two concurrent tester containers, and any mismatch in Docker's accepted

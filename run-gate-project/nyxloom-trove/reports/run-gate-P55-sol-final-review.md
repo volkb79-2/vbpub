@@ -5,12 +5,12 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "f4e304815fdbb284133fd46c8f29b9dbb7dfb89e"
+input_revision: "37fe63aa9a726acb57e58ded510b83c6e2fdec90"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-233
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-275
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -169,7 +169,7 @@ separately from the wrapper's status. Do not poll a long gate every minute;
 leave it detached with a watcher and inspect it at a meaningful completion or
 wakeup point.
 
-Assay 6.1.1/6.2 identity is per TREE. A commit in a judged worktree voids all
+Assay identity is per TREE. A commit in a judged worktree voids all
 mutation records for that worktree. Keep the HEAD quiet while judging. Resume
 only from the exact judged tree with `git switch --detach <tree>`, then switch
 back. Every assay mutation invocation must use `--resume --progress` as the
@@ -182,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-225). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-267). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
@@ -206,7 +206,7 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 ### `P5`: run-gate v1.1 client, revision 43
 
 Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `f4e304815fdbb284133fd46c8f29b9dbb7dfb89e` (the packet is a
+implementation tip `37fe63aa9a726acb57e58ded510b83c6e2fdec90` (the packet is a
 tracked report in the same worktree). Read:
 
 ```
@@ -226,8 +226,9 @@ This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
 transport seam, one-reader daemon watch with ended/failed retry and fallback,
 policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
 admission, schema-2 nullable watch/placement history, and synchronized
-adopter-facing documentation. The local `tests/test_run_gate.py` suite was
-1,116 passed and 3 skipped on this exact tip; that is not the release gate.
+adopter-facing documentation. This is the final source-backed reconciliation
+tree before the required quiet-tree gates; all prior P5 evidence is
+provisional because the Assay judge and mainline source integration changed.
 Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
 `assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
 running in their separate worktrees; do not edit, switch, or invalidate them.

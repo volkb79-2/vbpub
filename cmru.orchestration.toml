@@ -9,7 +9,6 @@ schema_version = 1
 #
 #   ciu <- none  (declared release order)
 #   cmru <- none  (declared release order)
-#     consumes first-party tools (excluded from release ordering): assay@5.1.0
 #   assay <- cmru  (declared release order)
 #   topos <- cmru  (declared release order)
 #   nyxloom <- cmru  (declared release order)

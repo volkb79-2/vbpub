@@ -59,6 +59,11 @@ daemon policy authoring, verified gates-slice placement, and bounded
 wait-then-proceed admission) — `R-43j`..`R-43l` and `R-45`; the in-process
 progress fallback is calibrated from the producer's plan and pauses its idle
 clock during high host memory PSI (`R-40g`).
+Internal vbpub assay lanes may omit `assay_command` and `pins`; the
+launcher installs Assay from the selected worktree and records the runtime
+judge identity, while explicit command-plus-pin mode remains for external
+consumers. The tester-unified image supplies the declared build backend and a
+writable runtime venv for that source install.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the

@@ -538,14 +538,16 @@ it never weakens project/service/network uniqueness.
 
 ## Why the implementation gate is Assay-backed (S18)
 
-**Why a vendored zipapp, not an ambient install.** The gate must prove it ran
-against the *released, immutable* Assay contract. Baking Assay into
-`tester-unified` would make a consumer's evidence depend on whichever image
-happened to be rebuilt, and would force a whole image rebuild to move between
-versions. Vendoring the verified `.pyz` + `.sha256` next to `assay.toml` (the
-cmru estate precedent, `cmru/tools/assay/`) makes the pin explicit, hash-verifiable,
-and moveable in one commit. The zipapp is built from the wheel (never
-`src/`), so its version metadata is trustworthy.
+**Why internal gates use selected-worktree source, while external gates use a
+vendored artifact.** CIU, cmru, and nyxloom live beside Assay in the same
+reviewed git tree. Their run-gate lanes therefore omit `assay_command` and
+`pins`; run-gate installs the selected worktree's `assay/` source with no
+dependency resolution, and the verdict records the runtime version and source
+commit. This removes the recurring stale-copy failure without consulting an
+ambient image install. A separate repository has no such source identity, so
+it retains the immutable `.pyz` + `.sha256` boundary and verifies it before
+the lane. Baking Assay into `tester-unified` remains wrong for both: an image
+rebuild would silently change every consumer at once.
 
 **Why R1 with `repository-minus-unsafe-symlinks`.** The gate's second half
 (the old `nyxloom.coverage_gate` changed-line floor) exists so a changed

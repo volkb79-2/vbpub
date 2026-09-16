@@ -3,10 +3,10 @@
 
 This is a consumer-side evidence runner, not an Assay rigor claim.  Assay's
 published R2 runner correctly refuses vbpub's full tree because Topos contains
-tracked hostile absolute-symlink fixtures.  The runner still reuses the
-consumer-pinned Assay release for its Python mutation vocabulary, diff parser,
-and byte-exact mutation sites; only the disposable execution directory is
-scoped to CMRU.
+tracked hostile absolute-symlink fixtures.  The runner reuses the Assay source
+selected for this worktree for its Python mutation vocabulary, diff parser, and
+byte-exact mutation sites; only the disposable execution directory is scoped
+to CMRU.  The evidence records the resolved Assay version and source commit.
 """
 
 from __future__ import annotations
@@ -53,7 +53,11 @@ class Result:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--assay-zipapp", type=Path, required=True)
+    parser.add_argument(
+        "--assay-source",
+        type=Path,
+        help="Assay source tree (default: <repo-root>/assay)",
+    )
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--base", required=True)
@@ -128,20 +132,26 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.max_mutants < 1:
         raise ValueError("--max-mutants must be positive")
 
-    zipapp = args.assay_zipapp.resolve()
-    if not zipapp.is_file() or zipapp.is_symlink():
-        raise ValueError(f"--assay-zipapp must be a real file: {args.assay_zipapp}")
     repo_root = _require_directory(args.repo_root, "--repo-root")
     project_root = _require_directory(args.project_root, "--project-root")
+    assay_source = _require_directory(
+        args.assay_source or repo_root / "assay", "--assay-source"
+    )
+    if not (assay_source / "pyproject.toml").is_file():
+        raise ValueError(f"--assay-source has no pyproject.toml: {assay_source}")
+    if not (assay_source / "src" / "assay").is_dir():
+        raise ValueError(f"--assay-source has no src/assay package: {assay_source}")
     try:
         project_prefix = project_root.relative_to(repo_root)
     except ValueError as exc:
         raise ValueError("--project-root must be inside --repo-root") from exc
 
-    sys.path.insert(0, str(zipapp))
+    sys.path.insert(0, str(assay_source / "src"))
+    from assay import __version__ as assay_version
     from assay import diff, git, mutation
     from assay.adapters.python import PythonAdapter
 
+    assay_source_commit = git.head_rev(assay_source)
     base = git.resolve_base(repo_root, args.base)
     head = git.head_rev(repo_root)
     diff_text = git.run(repo_root, "diff", "--unified=0", base, head)
@@ -158,7 +168,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         targets, adapter=adapter, operators=OPERATORS, limit=args.max_mutants + 1
     )
     if jobs == "UNSUPPORTED":
-        raise RuntimeError("the pinned Assay Python adapter does not support mutation")
+        raise RuntimeError("the selected Assay Python adapter does not support mutation")
     if len(jobs) > args.max_mutants:
         raise RuntimeError(
             f"observed {len(jobs)} mutation candidates, above declared maximum "
@@ -207,7 +217,10 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     document = {
         "schema_version": 1,
-        "tool": "cmru mutation campaign using pinned Assay mutation sites",
+        "tool": "cmru mutation campaign using worktree Assay mutation sites",
+        "assay_version": assay_version,
+        "assay_source": str(assay_source),
+        "assay_source_commit": assay_source_commit,
         "base": base,
         "head": head,
         "project_prefix": project_prefix.as_posix() or ".",

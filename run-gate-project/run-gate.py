@@ -16,7 +16,8 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 __revision__ = 43  # rev 43: RG-55 P5 profiler transport, streaming watch,
 # placement, gates-slice admission, and calibrated fallback, plus source-backed
 # Assay lanes accepted by tester-unified; explicit artifact+pin mode remains
-# for external consumers. Rev 42 P4 follow-ups remain included below.
+# for external consumers. Rev 42 P4 follow-ups and source-backed integration
+# remain included below.
 # third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
 # where rev 41 shipped them categorically unprofiled. Daemon path: the
 # target is run-gate's OWN process (self container id from /etc/hostname +

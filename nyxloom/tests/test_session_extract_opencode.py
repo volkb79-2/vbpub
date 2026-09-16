@@ -73,6 +73,23 @@ def test_parse_roles_and_text_only_parts(tmp_path):
     assert asst.text == "pong"
 
 
+def test_event_for_row_does_not_treat_text_on_a_non_text_part_as_prose(tmp_path):
+    db = _write_fixture(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO part VALUES ('p-tool-text', 'm2', 's1', 3, 3, ?)",
+        (json.dumps({"type": "tool-call", "text": "must stay machine noise"}),),
+    )
+    conn.commit()
+    event = opencode.event_for_row(
+        conn, 0, "m2", 2, json.dumps({"role": "assistant"})
+    )
+    conn.close()
+    assert event is not None
+    assert event.text == "pong"
+    assert "machine noise" not in event.text
+
+
 def test_since_marker(tmp_path):
     db = _write_fixture(tmp_path)
     events = opencode.parse(db, "s1", ExtractConfig(since_marker="m1"))

@@ -817,22 +817,23 @@ reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
 
 ## 12. The implementation gate (Assay-backed, S18)
 
-CIU's gate is judged by the **released Assay CLI**, pinned and vendored in the
-repository — not installed ambiently. You can reproduce the gate's evidence
-locally (the container part still needs the operator's four-traps recipe):
+CIU's gate is judged by Assay installed from the **selected vbpub worktree**.
+There is no consumer-owned pyz or fixed version to refresh. You can reproduce
+the judgment half locally (the container orchestration still belongs to
+`run-gate.py`):
 
 ```bash
-# 1. Verify the pinned Assay artifact (fails the gate if it ever drifts)
-sha256sum -c ciu/tools/assay/assay-6.1.1.pyz.sha256
+# 1. Install the selected worktree's source, with no dependency resolution.
+python3 -m pip install --no-deps --no-build-isolation --editable ./assay
 
-# 2. Inspect the declared lane (validates config, runs nothing)
-cd ciu && .venv/bin/python tools/assay/assay-6.1.1.pyz lanes --file assay.toml
+# 2. Inspect the declared lane (validates config, runs nothing).
+assay lanes --file ciu/assay.toml
 
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
 #    line+branch, and judges the changed-line floor on base..HEAD (R1).
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
-  .venv/bin/python tools/assay/assay-6.1.1.pyz run ciu \
+  assay run ciu \
     --file assay.toml --verdict-json .assay/verdict-ciu.json
 ```
 

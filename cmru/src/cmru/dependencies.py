@@ -176,15 +176,12 @@ def build_report(
                 )
         artifact_inputs[consumer] = tuple(resolved)
 
-    # Tool edges (S15): a first-party artifact a project's OWN tests/tooling consume
-    # (e.g. cmru's vendored assay zipapp). Reported like the two edge kinds above, but
-    # DELIBERATELY NEVER checked against `positions` / project_order: cmru's own tests
-    # run tools/assay/*.pyz while `assay` already `depends_on = ["cmru"]` for RELEASE
-    # ORDER. Routing this edge through the same ordering check as a "declared" edge
-    # would make cmru->assay a cycle against assay->cmru and break the estate -- this
-    # edge kind exists specifically because that ordering relationship is unwanted, not
-    # because it was left out by omission. Do not "fix" this by adding an ordering
-    # check here.
+    # Tool edges (S15): an explicitly vendored first-party artifact a project's
+    # OWN tests/tooling consume (for example, an external consumer's assay
+    # zipapp). Reported like the two edge kinds above, but DELIBERATELY NEVER
+    # checked against `positions` / project_order: routing this edge through
+    # the ordering check would turn a tool-consumption fact into a release-order
+    # cycle. Do not add an ordering check here.
     tool_dependencies: dict[str, tuple[ToolDependencyRef, ...]] = {}
     for consumer, project in projects.items():
         refs: list[ToolDependencyRef] = []

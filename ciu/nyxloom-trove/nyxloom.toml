@@ -21,10 +21,11 @@ configuration = "docs/CONFIG.md"
 docs_dir = "docs"
 
 # CIU's implementation gate is intentionally not the interactive cockpit.  It
-# runs inside tester-unified and is judged by the RELEASED Assay CLI — a
-# hash-pinned, vendored zipapp (tools/assay/assay-6.1.1.pyz + .sha256),
-# verified by sha256sum before use and invoked explicitly; Assay source is
-# never imported and no nyxloom evidence-judgment command remains.
+# runs inside tester-unified and is judged by the Assay source selected from
+# the same vbpub worktree. run-gate installs that source in the lane
+# environment and the verdict records the runtime version and source commit;
+# no separate consumer-side judge artifact is maintained here, and no
+# nyxloom evidence-judgment command remains.
 #
 # The lane (assay.toml) runs CIU's full suite under pytest-cov (whole-source
 # 100% line AND branch via run-ciu-tests.py) inside Assay's isolated snapshot,

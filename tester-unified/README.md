@@ -27,6 +27,12 @@ cap, workdir, environment, and all required mounts. Runs are detached and
 their inspect data, logs, Docker wait status, launch PSI, and job marker are
 kept below the judged worktree's ignored `.assay/tester-unified-runs/`.
 
+The image includes Assay's declared build backend and a writable
+`/opt/tester-venv`. Internal vbpub `run-gate.toml` lanes omit a versioned
+Assay artifact, and run-gate installs the selected worktree's `assay/` source
+there at lane runtime. Rebuild this image when Assay's `[build-system]`
+requirements change.
+
 The complete option vocabulary is `--workdir PATH`, `--evidence-dir PATH`,
 `-h`/`--help`, and the required `--` command separator. The image, uid, CPU
 cap, and cgroup environment variable are deliberately not per-run options.

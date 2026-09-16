@@ -12,14 +12,7 @@ schema_version = 1
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.1.pyz"]
 budget = "30m"
-
-# Re-pinned 6.1.0 -> 6.1.1 on 2026-09-11 via `cmru tool-deps --refresh assay`
-# (assay B088: --resume no longer replays a stale mutation verdict after a
-# test-only fix -- additive, no schema change, byte-identical for this
-# project's native R0/R1 lane). KI-27: --refresh does not itself rewrite
-# this file's own pin/argv -- manual follow-up here, same recurring gap.
-[lanes.ciu.pins.assay]
-version = "6.1.1"
-sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
+# Internal vbpub lanes omit assay_command and pins deliberately. run-gate
+# installs assay from the selected worktree in the lane environment; the
+# verdict records the exact runtime assay version and source commit.
