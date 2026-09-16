@@ -7,7 +7,7 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package (rev 42 -> 43); every entry below names its own RG id. -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself. This block covers the RG-55 P5 client package plus the source-backed Assay integration (rev 42 -> 43); every entry below names its own RG id. -->
 
 - **RG-63 / P5 transport and watch client.** Add the v1.1 `auto`/`exec`/
   `socket` profiler carriers with one shared request/response parser, a
