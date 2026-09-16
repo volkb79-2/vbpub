@@ -442,7 +442,7 @@ def test_entry_mode_reports_metadata_failure(tmp_path):
 def test_claude_match_scan_ignores_a_non_directory_non_file_entry(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
-    odd = project / "socket-like"
+    odd = project / f"{_UUID}.jsonl"
     odd.write_text("not a session", encoding="utf-8")
     original_entry_mode = locate._entry_mode
 
