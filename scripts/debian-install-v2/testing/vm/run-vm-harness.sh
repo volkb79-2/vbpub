@@ -112,8 +112,8 @@ verify_cgroup_parent() {
         --mount type=bind,src=/etc/systemd/system,dst=/hostunits,ro \
         "$IMAGE" bash -c '
             parent="$1"
-            test -f "/hostunits/$parent"
-            find /hostcg -type d -name "$parent" -print -quit | grep -q .
+            test -f "/hostunits/$parent" &&
+                find /hostcg -type d -name "$parent" -print -quit | grep -q .
         ' _ "$VM_CGROUP_PARENT" 2>/dev/null && echo verified || true)"
     [ "$probe" = verified ] || die \
         "cgroup parent '$VM_CGROUP_PARENT' is not an installed, live host slice; refusing to start the VM runner"

@@ -5,7 +5,8 @@
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
 # hosts are provisioned from. The wrapper puts the cache in its persistent
-# runner; direct invocations default to testing/.cache. A second run of
+# runner; direct invocations default to an external user cache, never the
+# source tree. A second run of
 # testing/vm/vmctl prepare-base doesn't re-download; it only refetches if
 # the file is missing or its checksum doesn't match what's currently
 # published (Debian repoints
@@ -16,7 +17,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CACHE_DIR="${MDT_VM_CACHE_DIR:-$HERE/.cache}"
+if [ -n "${MDT_VM_CACHE_DIR:-}" ]; then
+    CACHE_DIR="$MDT_VM_CACHE_DIR"
+else
+    CACHE_ROOT="${XDG_CACHE_HOME:-${TMPDIR:-/tmp}}"
+    CACHE_DIR="$CACHE_ROOT/mdt-debian-install-vm"
+fi
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
 LOCAL_PATH="$CACHE_DIR/$IMAGE_NAME"

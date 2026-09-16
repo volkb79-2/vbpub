@@ -448,7 +448,7 @@ confirmed, exit 0. [lanes.gate]: new aggregator, `--dry-run`-verified
 (not run live end-to-end as a single invocation — its three sub-lanes
 were each verified individually instead, since a live r2 sub-run inside
 it would re-run the same 190-candidate campaign). assay.toml added
-(rigor R0+R2 only). fake-integration/r1-privileged-commit stay as extra,
+(rigor R0+R2 only). fake-integration/r1-vm-real-commit stays as an extra,
 non-aggregate lanes exactly as before.
 
 ### damon-analysis: DONE, r0-r1/r3 LIVE-VERIFIED, r2 config-validated only

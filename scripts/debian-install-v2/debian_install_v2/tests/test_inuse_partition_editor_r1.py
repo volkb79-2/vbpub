@@ -30,7 +30,7 @@ import pytest
 MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse_partition_editor.py"
 SFDISK_TOOLS = ("sfdisk", "blockdev", "partx")
 
-pytestmark = pytest.mark.skipif(
+REAL_SFDISK_SKIP = pytest.mark.skipif(
     any(shutil.which(t) is None for t in SFDISK_TOOLS),
     reason="sfdisk/blockdev/partx not available in this environment",
 )
@@ -136,6 +136,7 @@ def gpt_image(tmp_path_factory):
 # --- real-sfdisk contract: parsing ---
 
 
+@REAL_SFDISK_SKIP
 def test_real_dump_list_matches_actual_partitions(dos_image):
     result = run_cli("--disk", str(dos_image), "list")
     assert result.returncode == 0
@@ -146,6 +147,7 @@ def test_real_dump_list_matches_actual_partitions(dos_image):
     assert "4.0 GiB" in result.stdout  # logical
 
 
+@REAL_SFDISK_SKIP
 def test_real_dump_free_reports_gaps_not_the_whole_disk(dos_image):
     result = run_cli("--disk", str(dos_image), "free")
     assert result.returncode == 0
@@ -156,6 +158,7 @@ def test_real_dump_free_reports_gaps_not_the_whole_disk(dos_image):
     assert any("primary" in l for l in lines)
 
 
+@REAL_SFDISK_SKIP
 def test_real_add_swap_dry_run_does_not_collide_with_existing_partition_numbers(dos_image):
     before = subprocess.run(["sfdisk", "--dump", str(dos_image)],
                              capture_output=True, text=True, check=True).stdout
@@ -172,6 +175,7 @@ def test_real_add_swap_dry_run_does_not_collide_with_existing_partition_numbers(
     assert before == after
 
 
+@REAL_SFDISK_SKIP
 def test_real_align_flag_changes_leading_boundary(tmp_path_factory):
     # An unpartitioned dos-labeled disk isolates align's effect: the whole
     # disk is one free primary region starting at `align`.
@@ -195,6 +199,7 @@ def test_real_align_flag_changes_leading_boundary(tmp_path_factory):
 # --- real-sfdisk contract: GPT is fully supported, not just refused ---
 
 
+@REAL_SFDISK_SKIP
 def test_real_gpt_list_shows_full_type_guids_not_truncated_hex(gpt_image):
     result = run_cli("--disk", str(gpt_image), "list")
     assert result.returncode == 0
@@ -202,6 +207,7 @@ def test_real_gpt_list_shows_full_type_guids_not_truncated_hex(gpt_image):
     assert "0FC63DAF-8483-4772-8E79-3D69D8477DE4" in result.stdout  # root
 
 
+@REAL_SFDISK_SKIP
 def test_real_gpt_free_is_bounded_by_backup_header_reservation(gpt_image):
     # last-lba is BELOW disk_sectors-1 (GPT reserves a backup header+array at
     # the tail) — free_regions must respect that or a later --commit would
@@ -214,6 +220,7 @@ def test_real_gpt_free_is_bounded_by_backup_header_reservation(gpt_image):
     assert hi < disk_sectors - 1
 
 
+@REAL_SFDISK_SKIP
 def test_real_gpt_add_swap_plan_is_accepted_by_real_sfdisk(gpt_image):
     """The generated plan text must be syntactically valid GPT sfdisk input —
     not just "didn't crash". Feed it back into real sfdisk directly (no
@@ -239,6 +246,7 @@ def test_real_gpt_add_swap_plan_is_accepted_by_real_sfdisk(gpt_image):
     assert 'name="gswap1"' in after and 'name="gswap2"' in after
 
 
+@REAL_SFDISK_SKIP
 def test_gpt_add_swap_fill_does_not_waste_ebr_gap_space(gpt_image):
     """Regression: the fill-size math used to reserve `--gap` sectors per
     partition unconditionally, even though GPT (and MBR --placement primary)
@@ -259,6 +267,7 @@ def test_gpt_add_swap_fill_does_not_waste_ebr_gap_space(gpt_image):
     assert sum(sizes) >= free_total - count * align
 
 
+@REAL_SFDISK_SKIP
 def test_real_unsupported_disklabel_is_refused_not_mis_parsed():
     d = Path("/dev/shm") / f"ipe-r1-unsup-{os.getpid()}"
     d.mkdir(exist_ok=True)
@@ -404,6 +413,11 @@ def test_real_commit_via_loop_device_materializes_partition_nodes(tmp_path):
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
         assert os.path.exists(part)
+        active = subprocess.run(
+            ["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert part in active
     finally:
         # The VM owns this swap state. Still deactivate before detaching so
         # an ordinary test failure does not leave a broken guest kernel state.
@@ -423,6 +437,11 @@ def test_real_gpt_commit_via_loop_device_materializes_partition_nodes(tmp_path):
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
         assert os.path.exists(part)
+        active = subprocess.run(
+            ["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert part in active
     finally:
         subprocess.run(["swapoff", part], check=False)
         subprocess.run(["losetup", "--detach", loop], check=False)

@@ -348,7 +348,7 @@ $ ./run-vm-harness.sh prepare-base case-b
 The copy (not a symlink) is deliberate: `.vm/images/case-b-base.qcow2` is
 the thing every overlay is backed by and must never move or change out
 from under a running test; the original download cache under
-`testing/.cache/` can be independently re-verified or refreshed later
+the wrapper's external cache can be independently re-verified or refreshed later
 without touching an in-use base.
 
 ```

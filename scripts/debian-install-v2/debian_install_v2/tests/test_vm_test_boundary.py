@@ -60,6 +60,24 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     )
 
 
+def test_vm_lane_fails_closed_and_proves_real_tests():
+    lane = (VM / "run-vm-tests.sh").read_text()
+    assert 'flock -n 9' in lane
+    assert 'run_with_timeout 10m' in lane
+    assert 'run_with_timeout 5m' in lane
+    assert 'run_with_timeout 15m' in lane
+    assert "systemd-detect-virt --container" in lane
+    assert "systemd-detect-virt --vm" in lane
+    assert "for tool in sfdisk blockdev partx losetup mkswap swapon swapoff" in lane
+    assert "--junitxml=/tmp/debian-install-v2-r1.xml" in lane
+    assert "VM lane did not prove both real tests" in lane
+
+
+def test_cgroup_probe_requires_both_unit_file_and_live_cgroup():
+    runner = (VM / "run-vm-harness.sh").read_text()
+    assert 'test -f "/hostunits/$parent" &&' in runner
+
+
 def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkeypatch):
     source = PROJECT / "debian_install_v2/tests/test_inuse_partition_editor_r1.py"
     spec = importlib.util.spec_from_file_location("r1_boundary_test", source)
