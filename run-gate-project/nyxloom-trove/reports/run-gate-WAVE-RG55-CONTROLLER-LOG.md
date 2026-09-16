@@ -3227,3 +3227,11 @@ remain live. P1 is Python PID `2389540`, with exact container
 `2275238` with its bare-host `run-gate.py --base main assay-r2` supervisor.
 Neither progress stream nor verdict was read because neither handle had
 terminated.
+
+### RW-263 — 2026-09-16 16:54:11Z — re-arm observer after launch failure
+
+The first post-observation re-arm left no child or marker and was treated as
+a watcher-launch failure. A session-detached replacement is now confirmed:
+PID `2755430`, PPID `1`, started `16:54:02Z`, with child `sleep 1210`; it will
+write `/tmp/rg55-observe-20260916-1713.log` at approximately `17:14:12Z`.
+The P1/P5 mutation handles were not queried during this replacement.
