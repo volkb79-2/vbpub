@@ -125,6 +125,25 @@ def test_since_marker_slices_forward(tmp_path):
     assert any(e.marker == "a5" for e in events)
 
 
+@pytest.mark.parametrize("flag", ["isMeta", "isVisibleInTranscriptOnly"])
+def test_assistant_text_with_each_transcript_visibility_flag_is_ignored(tmp_path, flag):
+    path = tmp_path / "flagged.jsonl"
+    path.write_text(
+        json.dumps({
+            "type": "user",
+            "uuid": "flagged",
+            "timestamp": "2026-01-01T00:00:00Z",
+            flag: True,
+            "message": {
+                "role": "user",
+                "content": "framing only",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert claude_code.parse(path, str(path), ExtractConfig()) == []
+
+
 def test_since_marker_unknown_raises(tmp_path):
     fp = _write_fixture(tmp_path)
     with pytest.raises(ValueError):

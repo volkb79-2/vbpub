@@ -113,6 +113,18 @@ def test_sniff_stops_after_its_bounded_scan_window(tmp_path):
     assert reasonix.sniff(path) is False
 
 
+def test_sniff_does_not_accept_a_chat_record_at_the_scan_boundary(tmp_path):
+    # The scan examines indexes 0..49 only.  A valid chat record at index 50
+    # must not turn a file with no earlier chat records into a Reasonix match.
+    path = tmp_path / "boundary.jsonl"
+    path.write_text(
+        "\n".join(["{}"] * 50 + [json.dumps({"role": "user", "content": "late"})])
+        + "\n",
+        encoding="utf-8",
+    )
+    assert reasonix.sniff(path) is False
+
+
 def test_sniff_treats_an_unreadable_file_as_not_a_match(tmp_path, monkeypatch):
     path = tmp_path / "unreadable.jsonl"
     path.write_text("{}\n", encoding="utf-8")
