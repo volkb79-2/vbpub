@@ -3143,3 +3143,12 @@ exit 0, and the checkpoint is commit `f80608b9` on
 `rg55-p5-assay63-reconcile`. This is preparation only: the final assay 6.3
 tree, tester image gate, final P5 mutation run, and Sol review remain pending.
 No mutation lane was queried or changed.
+
+### RW-254 — 2026-09-16 16:22:29Z — classify `cmru.release.log`
+
+The previously referenced `/workspaces/vbpub/cmru.release.log` was inspected.
+It contains only 59 lines of the `cmru release` usage screen, with no release
+transaction, subprocess, gate, or error record. It is therefore insufficient
+evidence for a release defect; no speculative cmru change is made. The
+authoritative RG-55 release checks remain the real project-specific release
+gates after assay 6.3 is integrated.
