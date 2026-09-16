@@ -3397,3 +3397,14 @@ In isolated P3 preparation, the report records the verified source-backed
 Assay 6.3.0 publication, installed wheel hash, and release commit as
 `984e9823`. This is preparation evidence only: mutation, Sol review, daemon
 releases, and live probes remain outstanding.
+
+### RW-278 — 2026-09-16 18:18:11Z — refresh isolated P3 close-out branch from current main
+
+The isolated `rg55-closeout-prep` worktree was clean and had only the P3
+report as its intended change relative to its old base, but its raw comparison
+to current main appeared broad because main had advanced through the Assay 6.3
+source-backed integration. The controller merged current main into that
+worktree with `--no-ff`, producing `4e3bb235`; the resulting diff against
+current main is only the 152-line close-out report, with the landed SPEC-V8
+D.6 note and current main package content preserved. No active gate or judged
+tree was changed.
