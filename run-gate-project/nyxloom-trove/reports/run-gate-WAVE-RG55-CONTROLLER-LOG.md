@@ -3262,3 +3262,13 @@ integration, tester-unified evidence, and the final quiet-tree mutation run
 still await the operator's Assay 6.3 release. P1 PID `2389540` and P5 PID
 `2275238` remain live, and the exact P1 container remains running. No mutation
 progress or verdict was read before the scheduled observation.
+
+### RW-267 — 2026-09-16 17:08:14Z — latest Assay commit does not invalidate P5 selection
+
+The operator's latest source-backed Assay commit `34f63c60` changes only
+Nyxloom's session-follow implementation and its tests. A path-scoped diff for
+`run-gate-project`, `tester-unified`, `ciu`, `cmru`, and `assay` is empty, so
+it does not alter the consumer/configuration surface selected in P5's clean
+reconciliation `37fe63aa`. P5 still awaits the actual Assay 6.3 release and
+final quiet-tree gates; the mutation supervisors remain untouched and no
+mutation progress was queried.
