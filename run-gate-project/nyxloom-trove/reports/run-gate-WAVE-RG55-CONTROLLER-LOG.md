@@ -3251,3 +3251,14 @@ to `24ac95df` (`Merge survivor coverage into source-backed Nyxloom branch`).
 No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
 yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
 mutation progress was queried.
+
+### RW-266 — 2026-09-16 17:05:08Z — source-backed Assay checkpoint and lane preservation
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `34f63c60` (`test(nyxloom): close follow mutation boundary gaps`), with no
+`assay-v6.3.*` tag yet. The P5 assay-6.3 reconciliation worktree remains clean
+at `37fe63aa`; its obsolete 6.1.1 artifact has been removed, but final
+integration, tester-unified evidence, and the final quiet-tree mutation run
+still await the operator's Assay 6.3 release. P1 PID `2389540` and P5 PID
+`2275238` remain live, and the exact P1 container remains running. No mutation
+progress or verdict was read before the scheduled observation.
