@@ -3336,3 +3336,11 @@ with Luna xhigh and no new subagents are dispatched. Before every pending
 merge, the operator must run the genuinely fresh Sol xhigh final review with
 exactly one `REVIEW_TARGET` selected and return its artifact; a Sol review is
 not claimed until that artifact is present and ACCEPTs the exact judged tree.
+
+### RW-273 — 2026-09-16 17:37:54Z — correct the takeover ruling number
+
+The log already contained `RW-59` (2026-09-13) when the new takeover entry
+was appended. To preserve the append-only record, the immediately preceding
+2026-09-16 17:33:46Z entry labeled `RW-59` is hereby identified as the
+current-controller takeover ruling for this wave and is to be read as
+`RW-273`; no state, constraint, or decision in that entry changes.
