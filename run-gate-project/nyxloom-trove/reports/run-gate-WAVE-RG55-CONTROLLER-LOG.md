@@ -3420,3 +3420,16 @@ container was removed and no judged tree was modified. P5 final evidence
 continues from the clean source-backed tree `8a879c52`; the freed slot is
 available for the required P6 same-tree resume once its 20-minute observation
 boundary and PSI gate are satisfied.
+
+### RW-280 — 2026-09-16 18:27:04Z — P6 fresh same-tree resume after orphan collection
+
+The first P6 retry only re-collected the already-exited exact container
+`run-gate-vbpub-r2-3263927-1789580561` and returned the existing
+`BUDGET_EXCEEDED/LANE_TIMEOUT` verdict with two placeholders; it did not
+execute new candidates. After that orphan was absent/terminal, the controller
+launched a genuine same-tree resume from detached clean tree `8076246c` as
+PID `3874052`, creating exact container
+`run-gate-vbpub-r2-3874052-1789583180`. The container is in
+`dev-background.slice` with `NanoCpus=3000000000`; memory PSI was
+`full avg10=0.23` at launch. A one-shot 20-minute observer PID `3880578` is
+armed. No commit or judged-tree mutation was made.
