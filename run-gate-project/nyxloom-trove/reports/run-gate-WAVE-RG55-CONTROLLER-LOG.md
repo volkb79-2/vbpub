@@ -3019,3 +3019,11 @@ merged wholesale by this controller. After assay 6.3.0 is published, reconcile
 the source-backed consumer commits into the final P5 tree, preserving the P5
 implementation and its evidence, then rerun all affected gates on the final
 quiet tree.
+
+### RW-244 — 2026-09-16 14:52:20Z — refresh P5 final-review packet
+
+The tracked Sol review packet now names P5 tree `26e6f344` and controller
+ruling RW-243, and records that the ended-watch repair's four focused tests are
+not a substitute for the pending fresh full selftest. This packet remains
+provisional until the assay 6.3 source-backed integration produces the final
+quiet review tree.
