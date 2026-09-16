@@ -233,7 +233,9 @@ the live/fallback branch matrix). The full selftest from that quiet tree passed
 changed branches covered. This is valid P5 evidence, but the packet remains
 provisional until the operator's assay 6.3 source-backed integration is
 reconciled into the final review tree; that reconciliation must rerun any
-affected gates.
+affected gates. The same quiet tree's R1 rerun with `--base main` passed, R3
+passed with both canaries rejected and zero survivors, and doctor exited 0
+with zero failures. R2 mutation evidence is not yet available for this tip.
 Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
 `assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
 running in their separate worktrees; do not edit, switch, or invalidate them.

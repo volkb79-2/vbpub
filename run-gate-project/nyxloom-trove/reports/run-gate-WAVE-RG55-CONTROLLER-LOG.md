@@ -3044,3 +3044,15 @@ complete candidate accounting but 2 `budget_exceeded` placeholders (467
 killed, 15 survived, 0 crashed/equivalent), exit 4. It remains incomplete;
 the next resume must use the future source-backed assay release rather than
 count these placeholders as judged. P1's exact container remains running.
+
+### RW-246 — 2026-09-16 15:38:03Z — P5 non-mutation gates green
+
+On quiet P5 tree `8823dca820cf6ffc6520da57663f8b7424f1ce35`, assay-r1 was
+first correctly refused without a comparison base because the linked worktree
+has no upstream; the explicit `--base main` rerun passed, with its verdict
+artifact recorded under the P5 worktree's `.assay/`. Assay-r3 passed with both
+canaries rejected and zero survivors. `doctor` exited 0 with 8 OK, 2 warnings,
+0 failures, 2 skips, and 2 informational checks. The warnings are the known
+linked-worktree host-lane git view and the not-running cockpit daemon; no
+socket-carrier live acceptance evidence exists yet. P5 R2 mutation evidence
+is still outstanding and must be run after source-backed assay integration.
