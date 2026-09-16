@@ -3444,3 +3444,15 @@ socket-carrier or gates-slice success. The isolated P3 report records that
 the eventual live probes must use the approved docker-exec carrier and must
 disclose any observed `place-refused:no-gates-slice` result until the
 devcontainer is rebuilt with the host mount.
+
+### RW-282 — 2026-09-16 18:36:22Z — relaunch P5 gate-full with captured child status
+
+At the scheduled P5 observation, the earlier gate-full attempt had ended with
+only partial selftest output and no authoritative child exit marker. Its
+watcher-derived `EXIT=1` was therefore discarded as inconclusive rather than
+treated as a product failure. From clean reconciled tree `8a879c52`, the
+controller relaunched `./run-gate.py --base main gate-full` using a direct
+detached wrapper that captures the child status as
+`P5_GATE_FULL_EXIT=<rc>`; wrapper PID `3982944` was live after launch and
+reported the expected rev-43 selftest start. The prior P5 final R2 was never
+launched. P1 and P6 mutation runs remain untouched.
