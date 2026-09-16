@@ -16,7 +16,7 @@ rigor = ["R0", "R2"]
 # -- the actual mechanism for "R2 runs and reports its real result without
 # blocking run-gate.toml's own [lanes.gate] aggregate" is excluding it
 # from that conjunction (see run-gate.toml's header comment, same
-# treatment fake-integration/r1-privileged-commit already get).
+# treatment fake-integration/r1-vm-real-commit already get).
 enforcement = "gate"
 # /opt/tester-venv/bin/python3, not bare "python3": assay spawns this argv
 # as its own subprocess, independent of whatever interpreter invoked

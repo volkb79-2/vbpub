@@ -5,7 +5,7 @@ without a real device or reboot) per CASE-B-ROOT-SHRINK-DESIGN.md. The
 initramfs hook scripts themselves are content-checked here (fixed paths,
 structural shape) and were separately verified with `dash -n` + `shellcheck`
 against realistic sfdisk/resize2fs fixture output -- a real end-to-end proof
-still needs the privileged-container harness in testing/ (design doc open
+still needs the isolated QEMU/TCG VM lane in `testing/vm/` (design doc open
 item 4), which this file does not attempt.
 """
 from __future__ import annotations

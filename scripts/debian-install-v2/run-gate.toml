@@ -3,14 +3,11 @@
 # r0-r1, r2 and r3 are the standard 3-tier lane matrix (see scripts/
 # LANE-MATRIX-PROGRESS.md) and are host-scoped because they exercise
 # dry-run and fake-command boundaries only; no disk/systemd mutation is
-# permitted in any of them. fake-integration and r1-privileged-commit are
-# extra, non-aggregate lanes predating the 3-tier scheme; r1-privileged-
-# commit is the one deliberate exception that mutates a disposable disk
-# image, but ONLY inside a throwaway --privileged systemd container of its
-# own (scripts/debian-install-v2/testing/), never on the host itself or a
-# host block device — see that directory's README for why the real
-# --commit/partx/mkswap path needs root + a container to test at all.
-# Neither fake-integration nor r1-privileged-commit is part of [lanes.gate];
+# permitted in any of them. fake-integration and r1-vm-real-commit are
+# extra, non-aggregate lanes alongside the 3-tier scheme; r1-vm-real-commit
+# is the one deliberate exception that mutates a disposable disk image, but
+# only inside the QEMU guest's separate kernel via testing/vm/.
+# Neither fake-integration nor r1-vm-real-commit is part of [lanes.gate];
 # run them by explicit name. r2 joined that list 2026-09-03: it's a NATIVE
 # assay mutation lane, which can only ever be 100%-or-FAIL by assay's own
 # design (no fail_under floor exists for a native lane, unlike an ingested
@@ -27,14 +24,14 @@
 # guidance: "adopt R2 deliberately... expand only after observing real
 # runs"). Fold it back into [lanes.gate] once real coverage closes the gap.
 #
-# environment = "tester-unified", deliberately, every lane (run-gate RG-43):
-# as of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE),
-# not bare execution, and that image has no pytest at all. tester-unified
-# (the shared [environments.tester-unified] in the repo-root run-gate.toml
-# — already built, already what every vbpub-internal project's own lanes
-# use) DOES carry test tooling, but in its own dedicated venv at
-# /opt/tester-venv/, not on the default PATH/python3 — every argv below
-# that needs pytest/pip/assay says so explicitly
+# Ordinary lanes use environment = "tester-unified", deliberately
+# (run-gate RG-43): as of rev 36, plain "host" is a CONTAINER default
+# (DEFAULT_HOST_IMAGE), not bare execution, and that image has no pytest at
+# all. tester-unified (the shared [environments.tester-unified] in the
+# repo-root run-gate.toml — already built, already what every vbpub-internal
+# project's ordinary lanes use) DOES carry test tooling, but in its own
+# dedicated venv at /opt/tester-venv/, not on the default PATH/python3 — every
+# argv below that needs pytest/pip/assay says so explicitly
 # (/opt/tester-venv/bin/python3, matching assay/docs/INTERNAL-CONSUMERS.md's
 # own documented mechanism for exactly this). A first pass at this fix
 # used environment = "bare-host" instead (running directly on the invoking
@@ -109,27 +106,28 @@ budget = "3m"
 
 # Requires a Docker daemon reachable from the host lane runner (this repo's
 # devcontainer talks to one via docker-outside-of-docker) and builds/boots a
-# --privileged container — see scripts/debian-install-v2/testing/README.md.
+# unprivileged QEMU/TCG runner — see scripts/debian-install-v2/testing/README.md.
 # Skip this lane in any environment without Docker access; it is not part
 # of any aggregate lane and nothing else here depends on it passing.
-# bare-host, not tester-unified: this script itself launches ANOTHER nested
-# --privileged docker container (its own Dockerfile under testing/) and
-# runs pytest INSIDE that one via `docker exec` -- the same docker-socket
-# access [lanes.gate] needs and tester-unified doesn't have wired up. No
-# python/pytest is needed in the OUTER lane at all, only docker itself.
-[lanes.r1-privileged-commit]
+# bare-host, not tester-unified: this script launches the unprivileged
+# persistent QEMU runner, then runs pytest INSIDE the VM over SSH. The same
+# docker-socket access [lanes.gate] needs and tester-unified does not have
+# wired up is required. No python/pytest is needed in the OUTER lane.
+[lanes.r1-vm-real-commit]
 kind = "command"
 environment = "bare-host"
+description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"
+required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE"]
 argv = [
-    "bash", "{worktree}/scripts/debian-install-v2/testing/run-privileged-tests.sh",
+    "bash", "{worktree}/scripts/debian-install-v2/testing/vm/run-vm-tests.sh",
 ]
 clean_tree = false
-budget = "10m"
+budget = "30m"
 
 # The implementation/release gate: every consumer (release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
 # sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
-# is the reference shape). fake-integration, r1-privileged-commit, and r2
+# is the reference shape). fake-integration, r1-vm-real-commit, and r2
 # are deliberately NOT part of this aggregate — see the file header.
 [lanes.gate]
 kind = "command"

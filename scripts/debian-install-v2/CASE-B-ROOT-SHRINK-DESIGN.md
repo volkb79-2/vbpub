@@ -208,10 +208,9 @@ First action in `_stage2()`, before the existing zswap/cgroup2-flags work:
    command sequence before it's wired into a hook that only gets exercised
    at real boot time.
 4. A real end-to-end proof needs an actual initramfs rebuild + reboot
-   cycle — almost certainly `scripts/debian-install-v2/testing/`'s existing
-   privileged-container harness (built for exactly this class of
-   real-`sfdisk`/`--commit` testing) rather than anything mockable in the
-   normal r0-r1 dry-run lane.
+   cycle. It belongs in the isolated QEMU/TCG VM harness under
+   `scripts/debian-install-v2/testing/vm/`, never in a Docker container that
+   shares the host kernel and never in the cockpit's ordinary r0-r1 lane.
 5. `dumpe2fs`/`resize2fs -P` output parsing (exact field names/units) needs
    verifying against the real tool versions this fleet's Debian release
    ships, not assumed from the old script's `awk` pattern.
