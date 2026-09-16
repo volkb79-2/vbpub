@@ -16068,6 +16068,67 @@ class TestAwaitContainerProfilingWiring:
             tmp_path, tmp_path, profiler=profiler) == 0
         assert client.watch_calls == 1
 
+    def test_second_ended_daemon_watch_without_any_fallback_discloses_warning(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        _log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+
+        class _Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class _Client:
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return _Watch()
+
+        class _Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 2:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                return 0
+
+            def terminate(self):
+                pass
+
+        client = _Client()
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: _Process())
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *args, **kwargs: subprocess.CompletedProcess(
+                                args[0], 0, stdout="0\n", stderr=""))
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+                    "session": "s-no-fallback", "warning": None,
+                    "session_line": None, "sampler": None,
+                    "profiler_status": None}
+        docker = shutil.which("docker")
+        assert run_gate.await_container(
+            docker, name, {"kind": "command"}, "suite", tmp_path,
+            tmp_path, tmp_path, profiler=profiler) == 0
+        assert client.watch_calls == 2
+        assert "continuing without daemon liveness" in capsys.readouterr().err
+
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait
         # loop -- the lane still completes and the container is still
