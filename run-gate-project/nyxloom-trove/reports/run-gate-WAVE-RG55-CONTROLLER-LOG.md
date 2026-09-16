@@ -3180,3 +3180,13 @@ distinguishes the RG-55 measurement baseline from the wave's separate
 admission/placement and bare-host packages. Historical backlog statuses and
 evidence were not changed. The correction is committed as `1a0a936d` on
 `rg55-closeout-prep`.
+
+### RW-258 — 2026-09-16 16:30:21Z — authoritative gate observation
+
+After the required observation interval, the P1 fresh R2 supervisor remains
+live: Python PID `2389540`, exact container
+`run-gate-vbpub-r2-2389540-1789574615`, status `running`, started
+`2026-09-16T16:03:35.437556815Z`. The P5 R2 supervisor remains live as Python
+PID `2275238` (started by its bare-host lane, so there is no P5 mutation
+container to inspect). No progress stream or verdict was read because both
+authoritative handles are still live; no mutation result is claimed.
