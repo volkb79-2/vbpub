@@ -2841,3 +2841,27 @@ because the operator-owned RG-45 backlog addendum remained dirty; that file
 was preserved and restored without staging or committing it. Local `main` was
 then fast-forwarded to the promoted release commit and remains equal to
 `origin/main`, with only that addendum dirty.
+
+### RW-230 — 2026-09-16 12:14:10Z — P1 oracle repair and exact-tree R2 relaunch
+
+The P1 mutation verdict at `5917d3628e750fe3cad613056e8eb4eccac3e949`
+contained three survivors and no budget placeholders. Source-call-path
+triage identified the pooled-session teardown survivor at `lib/damon.py:441`
+(`False -> True`) as a genuine missing behavioral oracle: the owned pooled
+kdamond must be powered off before the pool shrinks the registry, while a
+foreign pre-existing kdamond remains on. The two other current survivors
+(`lib/damon.py:325` and `:385`) remain candidates for explicit equivalence
+justification after the new run.
+
+Luna added the behavioral regression test and committed it as
+`8df62f628b20c6280574aef8f6e76a53f9d00e35`; the targeted P1 DAMON suite passed
+81 tests. Because assay identity is per tree, the prior R2 evidence is not
+used for closure. A fresh R2 was launched against that exact clean tip as
+`run-gate-vbpub-r2-1708962-1789560768`, immediately capped at 3 CPUs in
+`dev-background.slice`.
+
+P6's unchanged exact tree `8076246c3d365df04ecdd1d2f041ada75c081b40` had no
+active process, so its required resume was launched in the second permitted
+mutation slot as `run-gate-vbpub-r2-1710318-1789560817`, also immediately
+capped at 3 CPUs in `dev-background.slice`. Both detached jobs have terminal
+markers and are checked no more often than the operator's 20-minute interval.
