@@ -50,7 +50,8 @@ swap and loop devices belong to the guest kernel and cannot become host swap.
 The lane fails before pytest unless the guest identifies as QEMU/KVM and
 provides every required partition/swap tool; it also checks a JUnit report to
 prove that both real commit tests passed rather than merely being skipped.
-The apt setup, source copy, and pytest phases have finite timeouts, and a
+The image preparation, VM boot, apt setup, source copy, and pytest phases have
+finite timeouts, and a
 per-worktree lock prevents two runs from competing for the runner's forwarded
 SSH port.
 

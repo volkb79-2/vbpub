@@ -33,13 +33,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$HERE/run-vm-harness.sh" prepare-base case-b
+run_with_timeout 15m "$HERE/run-vm-harness.sh" prepare-base case-b
 # Debian's generic-cloud image uses HTTPS apt sources. The optional
 # apt-cacher-ng helper is deliberately HTTP-only, so do not install its
 # proxy configuration for this lane; otherwise apt treats the proxy as an
 # HTTPS CONNECT endpoint and fails before the guest test dependencies exist.
-"$HERE/run-vm-harness.sh" start "$RUN" --case case-b --no-apt-cache
-"$HERE/run-vm-harness.sh" wait "$RUN"
+run_with_timeout 2m "$HERE/run-vm-harness.sh" start "$RUN" --case case-b --no-apt-cache
+run_with_timeout 10m "$HERE/run-vm-harness.sh" wait "$RUN"
 
 # The guest is the only place where this opt-in is ever set. The test itself
 # also requires systemd-detect-virt --vm to report QEMU/KVM, so a copied test
