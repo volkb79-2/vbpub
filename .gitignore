@@ -45,6 +45,11 @@ scripts/debian-install/mem_write_bench
 scripts/debian-install/mem_read_bench
 scripts/debian-install/mem_mixed_bench
 
+# debian-install-v2 VM test state: downloaded base images, SSH keys, and
+# disposable qcow2 overlays are regenerable and must never enter the tree.
+scripts/debian-install-v2/testing/.cache/
+scripts/debian-install-v2/testing/vm/.vm/
+
 # Distribution / packaging
 .Python
 build/

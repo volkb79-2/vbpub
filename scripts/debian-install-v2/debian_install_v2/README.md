@@ -55,6 +55,16 @@ For rehearsal on an existing machine:
 Dry run records every privileged action and file write; it does not execute
 commands or create output files. State writes are also dry-run only.
 
+### Safety boundary for tests
+
+The ordinary gate runs safe tests in `tester-unified`: regular-file fixtures,
+mocked commands, and dry-run paths. It does not run real loop-device, swap,
+initramfs, reboot, or host-kernel tests in the cockpit or in a privileged
+Docker container. Docker shares the host kernel, so those operations can
+change host-global state. The explicit `r1-vm-real-commit` lane runs the real
+device tests through the unprivileged QEMU/TCG harness under
+[`testing/README.md`](../testing/README.md).
+
 ## Configuration
 
 ```json

@@ -8,10 +8,12 @@ loop/NVMe device-naming fix), the --count/--labels validation, the
 timestamped+checksummed backup, and the fill-size EBR-gap waste fix.
 
 sfdisk/blockdev/partx all work against a plain regular file — no loop
-device, no root, no VM needed for anything except the real-commit
-contract tests, which are skipped unless running as root with losetup
-available. That combination is exactly what the privileged systemd
-container at scripts/debian-install-v2/testing/ provides — see its README.
+device, no root, no VM needed for those tests. The two real-commit contract
+tests create loop devices and activate swap, so they run only inside the
+QEMU guest launched by testing/vm/run-vm-tests.sh. They are deliberately
+skipped both in tester-unified and in every Docker container, including a
+privileged one: containers share the host kernel and loop/swap are not
+namespaced.
 """
 from __future__ import annotations
 
@@ -53,6 +55,20 @@ def run_cli(*args):
         cwd=MODULE_PATH.parent, capture_output=True, text=True,
     )
     return result
+
+
+def _is_disposable_vm_guest():
+    """Return true only for a VM kernel, never for a Docker/cockpit kernel."""
+    if os.environ.get("VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST") != "1":
+        return False
+    try:
+        result = subprocess.run(
+            ["systemd-detect-virt", "--vm"],
+            capture_output=True, text=True, check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return result.returncode == 0 and result.stdout.strip().lower() in {"qemu", "kvm"}
 
 
 def make_dos_image(path):
@@ -345,42 +361,53 @@ def test_part_dev_naming_matches_loop_device_convention(mod, monkeypatch):
     assert p["dev"] == "/dev/loop7p3"
 
 
-# --- root+loop-device full commit contract (see docker/systemd note) ---
+# --- VM-only loop-device + real-swap commit contract -----------------------
 
-
-@pytest.mark.skipif(
-    os.geteuid() != 0 or shutil.which("losetup") is None,
-    reason="needs root + losetup for a real --commit contract test; "
-           "run inside the privileged systemd container described in the README",
+# `VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1` is an explicit guest-side opt-in, not
+# an authorization to run this in a privileged container. The virtualization
+# check is the second gate: a copied command on the host or in Docker remains
+# skipped even if an operator accidentally exports the variable there.
+REAL_VM_SWAP_TEST_SKIP = pytest.mark.skipif(
+    os.geteuid() != 0
+    or shutil.which("losetup") is None
+    or not _is_disposable_vm_guest(),
+    reason="needs root + losetup inside a QEMU/KVM guest with "
+           "VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1; Docker/cockpit containers "
+           "share host-global loop and swap state",
 )
+
+
+@REAL_VM_SWAP_TEST_SKIP
 def test_real_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     img = tmp_path / "commit.img"
     make_dos_image(img)
     loop = subprocess.run(["losetup", "--find", "--show", "--partscan", str(img)],
                            capture_output=True, text=True, check=True).stdout.strip()
+    part = f"{loop}p6"
     try:
         result = run_cli("--disk", loop, "add-swap", "--count", "1",
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
-        assert os.path.exists(f"{loop}p6")
+        assert os.path.exists(part)
     finally:
+        # The VM owns this swap state. Still deactivate before detaching so
+        # an ordinary test failure does not leave a broken guest kernel state.
+        subprocess.run(["swapoff", part], check=False)
         subprocess.run(["losetup", "--detach", loop], check=False)
 
 
-@pytest.mark.skipif(
-    os.geteuid() != 0 or shutil.which("losetup") is None,
-    reason="needs root + losetup for a real --commit contract test; "
-           "run inside the privileged systemd container described in the README",
-)
+@REAL_VM_SWAP_TEST_SKIP
 def test_real_gpt_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     img = tmp_path / "commit-gpt.img"
     make_gpt_image(img)
     loop = subprocess.run(["losetup", "--find", "--show", "--partscan", str(img)],
                            capture_output=True, text=True, check=True).stdout.strip()
+    part = f"{loop}p3"
     try:
         result = run_cli("--disk", loop, "add-swap", "--count", "1",
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
-        assert os.path.exists(f"{loop}p3")
+        assert os.path.exists(part)
     finally:
+        subprocess.run(["swapoff", part], check=False)
         subprocess.run(["losetup", "--detach", loop], check=False)

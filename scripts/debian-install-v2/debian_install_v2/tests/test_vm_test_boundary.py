@@ -1,0 +1,86 @@
+"""Structural tests for the VM-only boundary around real device tests.
+
+These tests run in the ordinary tester-unified lane and must remain safe there.
+They inspect the launch contract; they never invoke Docker, QEMU, losetup, or
+swap commands. The real-device behavior is exercised only by the explicit
+``r1-vm-real-commit`` lane.
+"""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+
+PROJECT = Path(__file__).resolve().parents[2]
+TESTING = PROJECT / "testing"
+VM = TESTING / "vm"
+
+
+def test_legacy_privileged_container_runner_is_gone():
+    assert not (TESTING / "Dockerfile").exists()
+    assert not (TESTING / "docker-entrypoint.sh").exists()
+    assert not (TESTING / "run-privileged-tests.sh").exists()
+
+
+def test_gate_routes_real_commit_lane_to_qemu_guest():
+    gate = (PROJECT / "run-gate.toml").read_text()
+    assert "[lanes.r1-vm-real-commit]" in gate
+    assert "testing/vm/run-vm-tests.sh" in gate
+    assert "[lanes.r1-privileged-commit]" not in gate
+    assert "run-privileged-tests.sh" not in gate
+
+
+def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
+    runner = (VM / "run-vm-harness.sh").read_text()
+    assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"' in runner
+    assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
+    assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
+    assert "--privileged" not in "\n".join(
+        line for line in runner.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "--device=" not in runner
+    assert "/dev/kvm" not in runner
+    assert "/dev/net/tun" not in runner
+
+    vmctl = (VM / "vmctl").read_text()
+    assert "-accel tcg" in vmctl
+    assert "-nic \"user," in vmctl
+    assert "--privileged" not in "\n".join(
+        line for line in vmctl.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkeypatch):
+    source = PROJECT / "debian_install_v2/tests/test_inuse_partition_editor_r1.py"
+    spec = importlib.util.spec_from_file_location("r1_boundary_test", source)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST", "1")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="qemu\n"),
+    )
+    assert module._is_disposable_vm_guest() is True
+
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="docker\n"),
+    )
+    assert module._is_disposable_vm_guest() is False
+
+    monkeypatch.delenv("VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST")
+    assert module._is_disposable_vm_guest() is False
+
+
+@pytest.mark.parametrize("path", [VM / "run-vm-harness.sh", VM / "run-vm-tests.sh", VM / "vmctl"])
+def test_vm_shell_entrypoints_parse(path):
+    import subprocess
+
+    subprocess.run(["bash", "-n", str(path)], check=True)
