@@ -716,6 +716,12 @@ without failing the lane. `judge_sha256` is the second half of a record's
 identity (above): a candidate id says *which mutation*, `judge_sha256` says
 *what judged it*, and a verdict is only replayed when both still hold.
 
+The decoded JSON root of a present resume record must be an object. A
+`null`, scalar, array, malformed, or otherwise identity-inconsistent record is
+reported as `ERROR`/`UNREADABLE_ARTIFACT` with a structured verdict; it is not
+treated as a candidate result and does not produce an uncaught parser
+traceback.
+
 A record whose `outcome_bucket` is `crashed` additionally carries
 `result_stdout_tail` and `result_stderr_tail`: the bounded final 64 KiB of
 each stream from that candidate's own subprocess, exactly as

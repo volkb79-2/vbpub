@@ -1273,6 +1273,8 @@ def _load_validated_state_record(
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MutationStateError(f"mutation-state record {identity} is not valid UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise MutationStateError(f"mutation-state record {identity} must be a JSON object")
     required = {
         "schema_version": MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": identity,

@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+### Fixed
+- fix(assay): reject non-object JSON mutation resume records as structured
+  `ERROR`/`UNREADABLE_ARTIFACT` instead of allowing a `TypeError` traceback
+  and a missing verdict (B099, RG-49 review B9)
+
 ## [6.3.0] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=51d6dec32d02189eaf098b1380d264e2d120b363 -->

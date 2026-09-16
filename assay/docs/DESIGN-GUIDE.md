@@ -965,6 +965,10 @@ deliberately not folded into the candidate digest — a record's filename must
 stay the mutation's identity so one shared `--state-dir` keeps working — and
 both its absence (a pre-B088 record) and a mismatch are cache misses, checked
 *after* every tamper check so a routine test edit cannot mask corruption.
+The decoded JSON root is validated before required fields are read: only an
+object can be a state record. A present `null`, scalar, or array is an
+`ERROR`/`UNREADABLE_ARTIFACT`, preserving a structured refusal instead of
+letting a type error escape without a verdict.
 Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.

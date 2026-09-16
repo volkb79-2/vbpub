@@ -28,6 +28,7 @@ all.
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,7 @@ from conftest import GitRepo, make_lane, make_plan
 
 from assay import isolation, mutation
 from assay.cli import main
+from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
 
 
@@ -508,6 +510,56 @@ def _store(tmp_path: Path, job, payload: dict) -> Path:
     name = mutation.mutation_state_record_name(mutation.candidate_id(job))
     (root / name).write_text(json.dumps(payload), encoding="utf-8")
     return root
+
+
+@pytest.mark.parametrize(
+    "payload", [None, False, 0, ["schema_version"], "schema_version"]
+)
+def test_non_object_resume_records_are_unreadable_artifacts(
+    tmp_path: Path, payload
+):
+    job = _job()
+    root = _store(tmp_path, job, payload)
+    with pytest.raises(MutationStateError) as refused:
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert refused.value.outcome is Outcome.ERROR
+    assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_cli_writes_structured_verdict_for_non_object_resume_record(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B099's edge-to-edge contract: corrupt JSON must reach the existing
+    CLI refusal boundary, not escape as a traceback with no verdict file."""
+    _seed(git_repo, _STRICT_JUDGE)
+    state_dir = tmp_path / "state"
+    progress = tmp_path / "progress.jsonl"
+    common = [
+        "run",
+        "unit",
+        "--file",
+        str(git_repo.path / "assay.toml"),
+        "--state-dir",
+        str(state_dir),
+        "--progress",
+        str(progress),
+        "--resume",
+    ]
+    assert main(common) == Outcome.PASS.exit_code
+    record, = state_dir.glob("*.json")
+    record.write_text("null\n", encoding="utf-8")
+    verdict = tmp_path / "verdict.json"
+    stdout, stderr = io.StringIO(), io.StringIO()
+    exit_code = main(
+        [*common, "--verdict-json", str(verdict)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == Outcome.ERROR.exit_code
+    document = json.loads(verdict.read_text(encoding="utf-8"))
+    assert document["outcome"] == Outcome.ERROR.value
+    assert document["reason_code"] == ReasonCode.UNREADABLE_ARTIFACT.value
+    assert "TypeError" not in stderr.getvalue()
 
 
 def test_a_matching_judge_resumes_the_record(tmp_path: Path):

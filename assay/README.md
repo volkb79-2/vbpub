@@ -640,6 +640,11 @@ assign candidates by deterministic digest, and require a manifest merge that
 proves every shard is present, shares one lane/commit, and contains no repeated
 candidate.
 
+During `--resume`, a present state file must decode to a JSON object before
+its identity fields are read. A `null`, scalar, array, or malformed record is
+reported as structured `ERROR`/`UNREADABLE_ARTIFACT`, never as an uncaught
+parser traceback.
+
 When a lane command fails or times out, its verdict can retain at most the last
 64 KiB of each output stream in `result_stdout_tail` and `result_stderr_tail`.
 Truncation is head-side and visible through the paired dropped-byte counts, so
