@@ -3252,25 +3252,6 @@ No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
 yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
 mutation progress was queried.
 
-### RW-269 — 2026-09-16 17:15:07Z — scheduled observation confirms live lanes; watcher re-armed
-
-The marker written at `17:14:12Z` confirms P1 PID `2389540` and P5 PID
-`2275238` are still live. P1's exact container
-`run-gate-vbpub-r2-2389540-1789574615` is `running`; no exit or verdict was
-read. The first re-arm attempt exited at the shell boundary without leaving a
-watcher, so it was discarded as a watcher failure. A replacement is now
-session-detached with watcher PID `3012811`, PPID `1`, child `sleep 1210`, and
-marker `/tmp/rg55-observe-20260916-1734.log`; the mutation lanes were not
-restarted or otherwise changed.
-
-### RW-268 — 2026-09-16 17:10:11Z — Assay release-preparation merge observed
-
-The operator-owned assay source-backed worktree remains clean and has advanced
-to `05efe06a` (`Merge current main before Assay source-backed release`). It has
-no `assay-v6.3.*` tag yet, so this is preparation rather than a release
-receipt. The P5 reconciliation remains clean at `37fe63aa`, and the active P1
-and P5 mutation supervisors were not queried before the scheduled observer.
-
 ### RW-266 — 2026-09-16 17:05:08Z — source-backed Assay checkpoint and lane preservation
 
 The operator-owned assay source-backed worktree remains clean and has advanced
@@ -3291,3 +3272,45 @@ it does not alter the consumer/configuration surface selected in P5's clean
 reconciliation `37fe63aa`. P5 still awaits the actual Assay 6.3 release and
 final quiet-tree gates; the mutation supervisors remain untouched and no
 mutation progress was queried.
+
+### RW-268 — 2026-09-16 17:10:11Z — Assay release-preparation merge observed
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `05efe06a` (`Merge current main before Assay source-backed release`). It has
+no `assay-v6.3.*` tag yet, so this is preparation rather than a release
+receipt. The P5 reconciliation remains clean at `37fe63aa`, and the active P1
+and P5 mutation supervisors were not queried before the scheduled observer.
+
+### RW-269 — 2026-09-16 17:15:07Z — scheduled observation confirms live lanes; watcher re-armed
+
+The marker written at `17:14:12Z` confirms P1 PID `2389540` and P5 PID
+`2275238` are still live. P1's exact container
+`run-gate-vbpub-r2-2389540-1789574615` is `running`; no exit or verdict was
+read. The first re-arm attempt exited at the shell boundary without leaving a
+watcher, so it was discarded as a watcher failure. A replacement is now
+session-detached with watcher PID `3012811`, PPID `1`, child `sleep 1210`, and
+marker `/tmp/rg55-observe-20260916-1734.log`; the mutation lanes were not
+restarted or otherwise changed.
+
+### RW-270 — 2026-09-16 17:19:53Z — resume P6 after lane-budget exhaustion
+
+P6's terminal verdict for judged tree `8076246c3d365df04ecdd1d2f041ada75c081b40`
+is `BUDGET_EXCEEDED/LANE_TIMEOUT`: 484 candidates, with two lane-level
+`budget_exceeded` placeholders and no candidate-level timeout. The first
+same-tree retry reattached to the stopped container and returned the existing
+verdict; that exact old container was already absent when inspected, so no
+container was removed by the controller. With memory PSI `full avg10=0.34%`,
+one P1 mutation container active, and the detached P6 tree still clean at the
+judged commit, the same-tree resume was relaunched successfully as wrapper PID
+`3080548`, exact container `run-gate-vbpub-r2-3080550-1789579136`, and capped
+at `NanoCpus=3000000000`. A session-detached P6-only observer is verified as
+watcher PID `3089418` (PPID 1), targeting
+`/tmp/rg55-observe-20260916-1739.log`; no new mutation progress was read.
+
+### RW-271 — 2026-09-16 17:21:44Z — Assay release branch advances without receipt
+
+The operator-owned assay source-backed worktree remains clean and has
+advanced to `ea72f244` (`Merge latest main before release gate`). No
+`assay-v6.3.*` tag is present, so the branch still has no release receipt and
+P5 final integration remains pending. This independent read did not inspect
+or alter any mutation stream.
