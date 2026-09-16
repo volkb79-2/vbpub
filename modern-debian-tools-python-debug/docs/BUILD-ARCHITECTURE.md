@@ -101,22 +101,24 @@ between OCI manifests, attestations and MDT's human manifest.
 
 ## Canonical release path
 
-`RELEASE_IMAGE_FLOW=load` is the shipped release mode. Despite the historical
-name, this is the source-first OCI-layout path: the governed BuildKit worker
-builds each target once to a local layout, and the later push phase publishes
-that exact layout with digest verification. It does not load the image into the
-Docker daemon image store and does not require `skopeo`. Set
-`RELEASE_IMAGE_FLOW=push` for the optional direct registry-export path, or
-`RELEASE_IMAGE_FLOW=repack` for the optional OCI repack path.
+`RELEASE_IMAGE_FLOW=load` is the configured source-first release path. Despite
+the historical name, the governed `mdt-managed` BuildKit worker builds each
+target once to an OCI layout without loading images into the Docker daemon
+image store. After the CMRU gate and source promotion, the post-gate push step
+invokes `build-push.py --push`, which copies those exact layouts to GHCR with
+`regctl` and verifies every remote digest with `crane`. It does not require
+`skopeo`. Set `RELEASE_IMAGE_FLOW=push` for the optional direct registry-export
+path, or `RELEASE_IMAGE_FLOW=repack` for the optional OCI repack path.
 
 ```mermaid
 flowchart LR
     A[build-push.py / CMRU] --> B[resolve upstream versions]
     B --> C[stage pinned artifacts and wheels]
     C --> D[Buildx Bake group: all]
-    D --> E[BuildKit OCI-layout export]
-    E --> F[Digest-verified crane push]
-    F --> H[GHCR immutable and floating tags]
+    D --> E[BuildKit OCI layouts]
+    E --> F[CMRU gate and source promotion]
+    F --> G[regctl copy + crane digest verification]
+    G --> H[GHCR immutable and floating tags]
     H --> I[visibility sync and release metadata]
 ```
 
@@ -129,12 +131,17 @@ The phases are:
 2. `docker-bake.hcl` defines the target graph. The `all` group is the release
    matrix; `everything` is a broader local-development matrix.
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
-   release matrix as one target at a time with an OCI-layout output. BuildKit
-   performs Dockerfile execution, cache lookup, layer compression, and local
-   layout export inside its limited worker.
-4. `build-push.py` extracts the canonical in-image manifests, records release
-   metadata, then pushes the same layouts with `crane` and verifies the
-   registry digest. No second image build is introduced.
+   release matrix with OCI output, one target at a time. BuildKit performs
+   Dockerfile execution, cache lookup, layer compression, and OCI export inside
+   its limited worker.
+4. `build-push.py` extracts the canonical in-image manifests and records release
+   metadata. CMRU then runs the gate and promotes the source commit before its
+   post-gate push step dispatches back to `build-push.py --push`. No second image
+   build is introduced.
+5. `_push_oci_layouts()` copies each tagged OCI descriptor with `regctl` and
+   compares the registry's `crane digest` with the local layout digest. A
+   missing layout, failed copy, missing remote manifest, or digest mismatch is
+   nonzero and therefore fails the CMRU transaction.
 
 ### Optional OCI-layout repack lane
 
@@ -174,8 +181,10 @@ rejected it during the validation import, before any tag was pushed. Until the
 repacker defect is fixed and covered by an automated structural regression
 test, the optional `repack` lane is expected to fail closed for the affected
 image. Do not bypass this check with a raw OCI-layout copy: that would upload
-the invalid layer rather than repair it. The shipped `load` lane is the safe
-unrepacked release path.
+the invalid layer rather than repair it. The default `load` lane is the safe
+unrepacked release path. The `push` lane is also unrepacked, but publishes during
+the build rather than after the gate; it is retained as an explicit alternate
+mode.
 
 The source and repacked layouts are temporary release scratch. Do not place
 `REPACK_WORK_DIR` on tmpfs: two large targets can require many GiB while source
@@ -494,10 +503,14 @@ lane.
 
 | `RELEASE_IMAGE_FLOW` | Behavior | Intended use |
 | --- | --- | --- |
-| `repack` | Bake to OCI layouts, repack, validate structurally and by importing, then publish; later push step is a no-op | Optional compression experiment; currently blocked for the affected image by the known repacker defect above |
-| `load` | Build once to OCI layouts; later push publishes those exact layouts with digest verification | Shipped/default source-first release lane |
-| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Optional direct-registry lane |
+| `repack` | Bake to OCI layouts, repack, validate structurally and by importing, then publish; later push step reports an already-published terminal state | Optional compression experiment; currently blocked for the affected image by the known repacker defect above |
+| `load` | Build unrepacked OCI layouts; after the gate, `build-push.py --push` copies them and verifies remote digests | Canonical source-first release lane |
+| `push` | Build and publish unrepacked BuildKit output directly; later push step reports an already-published terminal state | Explicit alternate lane when publication-before-gate is acceptable |
 
+`load` retains the original layer topology while making publication a distinct
+post-gate operation. `push` retains the same topology but publishes during the
+build. `repack` changes topology and is kept separate because its validation
+and publication semantics differ.
 `load` is the default because it leaves a reviewable local artifact between
 build and publication while preserving build-once identity. `push` retains the
 original BuildKit layer topology and is the simpler optional direct-export

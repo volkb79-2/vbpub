@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20260913`
-- Built at (UTC): `2026-09-13T03:34:58Z`
+- Built at (UTC): `2026-09-14T02:56:21Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20260913`
@@ -180,7 +180,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     annotated-types==0.7.0
     anyio==4.12.1
     asgiref==3.11.1
-    ast_serialize==0.11.1
+    ast_serialize==0.11.2
     asttokens==3.0.2
     asyncpg==0.31.0
     attrs==25.4.0
@@ -203,7 +203,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     cmru==5.2.1
     colorama==0.4.6
     ConfigArgParse==1.7.5
-    coverage==7.16.0
+    coverage==7.16.1
     cryptography==50.0.1
     cyclonedx-python-lib==11.12.0
     debugpy==1.8.21
@@ -335,7 +335,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     scipy==1.17.1
     SecretStorage==3.5.0
     setuptools==84.0.0
-    setuptools-scm==10.2.3
+    setuptools-scm==10.3.0
     shellingham==1.5.4
     shtab==1.8.0
     six==1.17.0
@@ -370,7 +370,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     typing-inspection==0.4.2
     urllib3==2.6.3
     uv==0.12.13
-    vcs-versioning==2.3.4
+    vcs-versioning==2.4.0
     virtualenv==21.7.9
     watchfiles==1.1.1
     wcwidth==0.6.0

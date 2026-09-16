@@ -362,15 +362,19 @@ is independent of release repack concurrency.
 ### Entry point
 
 ```bash
-./build-push.py --build      # resolve env + build locally
-./build-push.py --push       # push previously built images
-./build-push.py --rebuild    # build then push
+./build-push.py --build      # resolve env + build local OCI layouts (load flow)
+./build-push.py --push       # publish saved layouts with digest verification (load flow)
+./build-push.py --rebuild    # build then publish; bypasses the CMRU gate
 ```
 
 Step and environment configuration is [`cmru.toml`](cmru.toml); the build
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds require the
 host-managed remote selected by `BUILDX_BUILDER=mdt-managed`; `cmru.toml` also
-records its `BUILDKIT_HOST` endpoint. The host slice owns resource limits.
+records its `BUILDKIT_HOST` endpoint, and the host slice owns its resource
+limits. The configured CMRU release flow is `load`: build and manifest
+extraction run first, then the gate and source promotion, then the post-gate
+layout publication. The alternate `push` and `repack` flows publish during the
+build and therefore do not provide source-first publication ordering.
 
 ### Release caches
 
@@ -492,10 +496,12 @@ one reason flavors are tag variants rather than new package names: no new family
 new visibility state to sync.
 
 The shipped source-first `RELEASE_IMAGE_FLOW=load` path builds through the governed
-BuildKit remote and publishes the exact OCI layout with digest verification; it does
-**not** call `skopeo`. `RELEASE_IMAGE_FLOW=push` is an optional direct-push path. CMRU
-supplies the release identity and performs Docker login. Manual release
-commands must export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
+BuildKit remote. After the CMRU gate and source promotion, `build-push.py --push`
+copies the exact OCI layouts with `regctl` and verifies each remote digest with
+`crane`; it does **not** call `skopeo`. `RELEASE_IMAGE_FLOW=push` is an optional
+direct-push path that publishes through BuildKit during the build. CMRU supplies
+the release identity and performs Docker login. Manual release commands must
+export the same explicit `GITHUB_USERNAME`, `GITHUB_REPO`,
 `GITHUB_OWNER_TYPE`, and `GITHUB_PUSH_PAT` inputs; workspace-local credential-file
 fallbacks are not supported.
 

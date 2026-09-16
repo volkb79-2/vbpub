@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import subprocess
+import importlib.util
 import hashlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts import manifest_sections
 
@@ -226,6 +229,101 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("oci_layout_bake", load_branch)
         self.assertNotIn("registry_bake", load_branch)
         self.assertNotIn('[[ "${ACTION}" == "push" ]] &&', load_branch)
+
+    def _run_fake_release_push(
+        self, *, publisher_rc: int = 0, flow: str = "load"
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        wrapper = ROOT / "scripts/release-bake.sh"
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
+            events = temp_path / "events.log"
+            fake_bash = fake_bin / "bash"
+            fake_bash.write_text(
+                "#!/bin/sh\n"
+                "printf 'ensure %s\\n' \"$*\" >> \"$FAKE_EVENTS\"\n"
+                "exit \"${FAKE_ENSURE_RC:-0}\"\n",
+                encoding="utf-8",
+            )
+            fake_git = fake_bin / "git"
+            fake_git.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = rev-parse ] && [ \"$2\" = --git-common-dir ]; then\n"
+                "  printf '%s\\n' \"$FAKE_COMMON_GIT\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            fake_python = fake_bin / "python3"
+            fake_python.write_text(
+                "#!/bin/sh\n"
+                "printf 'python3 %s\\n' \"$*\" >> \"$FAKE_EVENTS\"\n"
+                "exit \"$FAKE_PUBLISHER_RC\"\n",
+                encoding="utf-8",
+            )
+            for executable in (fake_bash, fake_git, fake_python):
+                executable.chmod(0o755)
+
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "FAKE_EVENTS": str(events),
+                "FAKE_COMMON_GIT": str(temp_path / "common-git"),
+                "FAKE_PUBLISHER_RC": str(publisher_rc),
+                "RELEASE_IMAGE_FLOW": flow,
+                "MDT_BUILDKIT_CACHE_DIR": str(temp_path / "cache"),
+            }
+            result = subprocess.run(
+                ["/bin/bash", str(wrapper), "push"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            return result, events.read_text(encoding="utf-8") if events.exists() else ""
+
+    def test_load_push_invokes_digest_verified_publisher(self) -> None:
+        result, events = self._run_fake_release_push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ensure scripts/ensure-release-builder.sh", events)
+        self.assertIn("python3 build-push.py --push", events)
+
+    def test_load_push_propagates_publisher_failure(self) -> None:
+        result, events = self._run_fake_release_push(publisher_rc=17)
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertIn("python3 build-push.py --push", events)
+
+    def test_push_and_repack_later_steps_are_explicit_terminal_states(self) -> None:
+        for flow in ("push", "repack"):
+            result, events = self._run_fake_release_push(flow=flow)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("already-published-during-build", result.stdout)
+            self.assertNotIn("python3 build-push.py --push", events)
+
+    def test_alternate_push_dispatch_fails_closed_on_recursion(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "mdt_build_push_for_release_flow_test", ROOT / "build-push.py"
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        build_push = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_push)
+
+        with (
+            mock.patch.dict(os.environ, {build_push._PUSH_STEP_GUARD: "1"}),
+            mock.patch.object(
+                build_push,
+                "load_build_env",
+                return_value={"RELEASE_IMAGE_FLOW": "push"},
+            ),
+            mock.patch.object(build_push, "apply_env_to_os"),
+            mock.patch.object(build_push, "run_step") as run_step,
+        ):
+            with self.assertRaisesRegex(SystemExit, "recursively reached"):
+                build_push.do_push()
+        run_step.assert_not_called()
 
     def test_oci_validator_rejects_file_with_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
