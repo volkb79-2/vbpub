@@ -3252,6 +3252,17 @@ No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
 yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
 mutation progress was queried.
 
+### RW-269 — 2026-09-16 17:15:07Z — scheduled observation confirms live lanes; watcher re-armed
+
+The marker written at `17:14:12Z` confirms P1 PID `2389540` and P5 PID
+`2275238` are still live. P1's exact container
+`run-gate-vbpub-r2-2389540-1789574615` is `running`; no exit or verdict was
+read. The first re-arm attempt exited at the shell boundary without leaving a
+watcher, so it was discarded as a watcher failure. A replacement is now
+session-detached with watcher PID `3012811`, PPID `1`, child `sleep 1210`, and
+marker `/tmp/rg55-observe-20260916-1734.log`; the mutation lanes were not
+restarted or otherwise changed.
+
 ### RW-268 — 2026-09-16 17:10:11Z — Assay release-preparation merge observed
 
 The operator-owned assay source-backed worktree remains clean and has advanced
