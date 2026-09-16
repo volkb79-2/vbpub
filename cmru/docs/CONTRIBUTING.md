@@ -34,8 +34,9 @@ export CMRU_WHEEL_BUILDER_IMAGE=wheel-builder:local \
        CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
        CMRU_TESTER_MEMORY=3g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=1.5 \
        CMRU_TESTER_CGROUP_PROBE_IMAGE=debian:trixie-slim
-cmru tester-gate --cwd cmru -- /bin/sh -ec 'mkdir -p .assay && exec /opt/tester-venv/bin/python \
-  tools/mutation_campaign.py --assay-zipapp tools/assay/assay-1.0.0.pyz --repo-root .. \
+cmru tester-gate --cwd cmru -- /bin/sh -ec 'cd .. && /opt/tester-venv/bin/python -m pip install \
+  --no-deps --no-build-isolation --editable assay && cd cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python \
+  tools/mutation_campaign.py --assay-source ../assay --repo-root .. \
   --project-root . --base origin/main --max-mutants 10000 \
   --evidence .assay/mutation-cmru.json --require-candidates \
   -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch \

@@ -19,16 +19,22 @@ copied anywhere at all).
 
 No artifact, no pin, no cache:
 
+In a `run-gate.toml` lane this is selected simply by omitting both
+`assay_command` and `pins`; run-gate performs the editable install and invokes
+the resulting console script for every assay lane, including its inventory
+preflight. The command below is the equivalent lower-level shape.
+
 ```toml
 argv = ["bash", "-c",
-  "cd {worktree} && /opt/tester-venv/bin/pip install -q -e assay && " +
-  "cd {worktree}/<project> && /opt/tester-venv/bin/assay run --lane <lane> ..."]
+  "cd {worktree} && /opt/tester-venv/bin/python -m pip install " +
+  "--no-deps --no-build-isolation --editable assay && " +
+  "cd {worktree}/<project> && /opt/tester-venv/bin/assay run <lane> ..."]
 ```
 
 - `{worktree}` is already bind-mounted into every `tester-unified` lane —
   `run-gate.py`'s own `resolve_repo_and_worktree` / mountinfo-based host-path
   resolution does this for every project already; nothing new to configure.
-- `pip install -e assay` against that mount installs from whatever commit is
+- `pip install --editable assay` against that mount installs from whatever commit is
   currently checked out in *this* worktree. `assay` has zero third-party
   dependencies (confirmed: `pip show assay` → `Requires:` empty), so this is
   a local, network-free, dependency-resolution-free operation — fast enough

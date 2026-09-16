@@ -34,23 +34,23 @@ artifacts are collected. In this estate that orchestrator is `run-gate`, and
 its `run-gate.toml` references an assay-judged lane by name (`assay_lane`)
 rather than restating the judgment.
 
-### How consumers actually get the judge, as of 2026-09-02
+### How consumers actually get the judge, as of 2026-09-16
 
 Stated as MEASURED rather than as intended, because the two have differed:
 
 | consumer | how it gets assay |
 |---|---|
-| `ciu` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` + `.sha256`, invoked through `run-gate.toml`'s `assay_command` |
-| `cmru` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` (also its `[orchestration]` release-order pin) |
-| `nyxloom` | vendored pinned zipapp, `tools/assay/assay-6.1.1.pyz` |
+| `ciu` | internal source mode: its `run-gate.toml` omits `assay_command`/`pins`; run-gate installs the selected worktree's `assay/` and the verdict records the runtime version |
+| `cmru` | internal source mode: its run-gate lanes install the selected worktree's `assay/`; the mutation evidence records version and source commit |
+| `nyxloom` | internal source mode: its run-gate lanes install the selected worktree's `assay/` and record runtime provenance |
 | `dstdns` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
 | `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
 
-So **every consumer today vendors a pinned, sha256-verified `.pyz`.** Nothing
-is baked into a shared image, and no consumer resolves assay from `PATH`. If
-you are adopting assay now, that is the pattern to copy: it is fresh-clone
-safe, needs no network at gate time, and the pin is what makes a verdict
-attributable to a judge you verified (see `judge_provenance` below).
+Thus internal consumers resolve assay from the selected worktree, while
+external consumers still vendor a pinned, sha256-verified `.pyz`. Nothing is
+baked into the shared image. Source mode is fresh-clone safe and needs no
+network at gate time; the verdict's runtime version and source commit make the
+judge attributable without duplicating an artifact pin.
 
 A later estate direction — bake the judge into the shared gate image and keep
 only a version pin per repository — is recorded in the backlog (B009 item 2)
@@ -1906,8 +1906,11 @@ exists to refuse making.
 
 CMRU's project `cmru.toml` owns the exact gate command. `tester-unified` should **not** bake an
 ambient Assay version: that would make a consumer's evidence depend on whichever image happened
-to be rebuilt. Instead a consumer pins a wheel in its own gate setup, or vendors the verified
-zipapp as an explicit input. A CMRU project can run the latter through its existing gate:
+to be rebuilt. A project inside vbpub uses run-gate's source mode (omit
+`assay_command` and `pins`); run-gate installs the selected worktree's
+`assay/` package with `--no-deps`, and the verdict records the runtime
+version and judged commit. A project outside vbpub keeps the immutable
+artifact boundary and can run a verified zipapp through its existing gate:
 
 <!-- assay-doc-example:skip reason="run-gate.toml lane config, not an assay lane file -- has no schema_version/[lanes] table and is not parsed by assay's loader" -->
 ```toml
@@ -1923,8 +1926,9 @@ version = "<version>"
 sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
 
-The product owns the `assay.toml` lane and the pinned Assay artifact; `run-gate.py` owns the isolated
-execution boundary. A consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
+The product owns the `assay.toml` lane; an external consumer owns its pinned
+artifact, while `run-gate.py` owns the isolated execution boundary. A
+consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
 for orchestration mechanics.
 
 ### Preflighting a gate environment with `assay lanes --json` (B044)

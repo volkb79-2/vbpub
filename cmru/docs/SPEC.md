@@ -615,11 +615,9 @@ never reinterpret an empty destructive selector as a wildcard.
 **S2.6 — Tool dependencies** (`[[project.tool_dependencies]]`, S15). A project
 declares a first-party artifact its OWN tests/tooling consume (not a released
 product output — see S1). This is distinct from
-`[orchestration.project.<id>].depends_on`, which is release ORDER: cmru's own
-test steps run a vendored `assay` zipapp while `assay` itself
-`depends_on = ["cmru"]` for release order, so declaring the reverse edge there
-would be a cycle — resolved by vendoring a pinned artifact instead of by
-ordering (S15.2 covers the graph consequence).
+`[orchestration.project.<id>].depends_on`, which is release ORDER. Internal
+vbpub consumers of Assay use selected-worktree source mode and need no S15
+entry; this table is for an explicitly vendored external/copy artifact.
 
 ```toml
 [[project.tool_dependencies]]
@@ -1226,17 +1224,11 @@ not silently generalized as a CMRU profile.
 ## S15 — Tool Dependencies (declaration + verification)
 
 A cmru-managed project's OWN tests/tooling may consume a first-party artifact
-produced and released by ANOTHER project in the same estate — e.g. cmru's own
-`run-tests` step runs a pinned `tools/assay/assay-1.0.0.pyz` zipapp. `assay`
-independently `depends_on = ["cmru"]` for release ORDER (S2.2a): assay's own
-tests need a released `cmru` wheel before assay can build. Declaring the
-reverse edge (cmru depends_on assay) in `orchestration.project.<id>.depends_on`
-would therefore create a two-project cycle — exactly why this relationship was
-resolved by **vendoring a pinned artifact** instead of by ordering, and exactly
-why nothing anywhere previously expressed it: cmru could silently test against
-an assay release far behind what assay itself ships, with no signal to anyone.
-S15 makes that edge an explicit, first-class fact and adds three distinct
-verifications for it.
+produced and released by ANOTHER project in the same estate. Internal vbpub
+consumers use selected-worktree source mode for Assay, so their run-gate lane
+has no artifact to declare here. S15 remains the explicit, first-class fact
+and three-check verification for a consumer that deliberately vendors a copy
+at a release boundary.
 
 **S15.1 — Declaration** (`[[project.tool_dependencies]]`, S2.6). Each entry
 names the provider `project`, the pinned `version`, the vendored artifact's

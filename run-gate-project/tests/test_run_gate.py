@@ -562,12 +562,14 @@ BAD_CONFIGS = {
         environment = "host"
         assay_command = ["assay"]
     """,
-    "assay_missing_assay_command": """\
+    "assay_pins_without_assay_command": """\
         schema_version = 1
         [lanes.a]
         kind = "assay"
         environment = "host"
         assay_lane = "x"
+        [lanes.a.pins.assay]
+        sha256 = "x/assay.pyz.sha256"
     """,
     "pin_missing_sha256": """\
         schema_version = 1
@@ -636,6 +638,19 @@ class TestConfigValidation:
             run_gate.load_config(proj)
         assert str(proj / "run-gate.toml") in str(exc.value), \
             f"{case}: error must name the file"
+
+    def test_assay_without_command_or_pins_is_the_internal_source_mode(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.a]
+            kind = "assay"
+            environment = "host"
+            assay_lane = "x"
+        """)
+        cfg, _cfg_path, _central, _central_path = run_gate.load_config(proj)
+        assert cfg["lanes"]["a"]["assay_lane"] == "x"
+        assert "assay_command" not in cfg["lanes"]["a"]
 
     def test_unknown_environment_names_both_sources(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -1961,6 +1976,25 @@ def test_assay_inner_has_git_config_global():
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
         Path("/proj"), Path("/repo"))
     assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+
+
+def test_source_backed_assay_inner_installs_selected_worktree_source():
+    inner = run_gate.build_assay_inner(
+        {"assay_lane": "x", "pins": {}}, Path("/proj"), Path("/repo"),
+        worktree=Path("/tree"),
+    )
+    assert "pip install" in inner
+    assert "--editable /tree/assay" in inner
+    assert '"$RUN_GATE_ASSAY_BIN" run x' in inner
+    assert "assay-6." not in inner
+    assert "sha256sum" not in inner
+
+
+def test_source_and_external_assay_commands_have_distinct_probe_identity():
+    assert run_gate.assay_command_identity({}) == ("worktree-source",)
+    assert run_gate.assay_command_identity({"assay_command": ["assay"]}) == (
+        "assay",
+    )
 
 
 class TestPinVersionVerify:

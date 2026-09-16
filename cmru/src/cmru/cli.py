@@ -2477,7 +2477,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # This also runs identically whether or not --dry-run is set (KI-14):
         # the plan above is computed once, before the dry-run/real branch below.
 
-        # S15: declared tool dependencies (e.g. cmru's own vendored assay zipapp)
+        # S15: declared tool dependencies for external/copy consumers
         # are verified here, alongside the tag-preflight above -- same phase (no
         # project's cycle has started), same network-touching plan-computation
         # step, same typed refusal. This is deliberately scoped to `release_names`

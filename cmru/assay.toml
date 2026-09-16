@@ -1,5 +1,5 @@
 # CMRU's release-gate test claim.  The outer command in cmru.toml invokes the
-# pinned Assay zipapp in tester-unified; this lane's command is deliberately
+# selected-worktree Assay source installed by run-gate in tester-unified; this lane's command is deliberately
 # the existing project test command, rather than recursively invoking CMRU's
 # tester-gate wrapper.
 #

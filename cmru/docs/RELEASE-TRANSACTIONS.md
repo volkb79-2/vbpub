@@ -70,8 +70,9 @@ mid-release failure is retained for inspection.
 At the same point in the plan — for exactly the projects this run will actually
 release — cmru also verifies every declared `[[project.tool_dependencies]]` (SPEC
 S15): a first-party artifact a project's own tests consume that was vendored, rather
-than release-ordered, specifically to avoid a dependency cycle (cmru's own tests run a
-pinned `assay` zipapp while `assay` itself `depends_on = ["cmru"]`). Integrity (do the
+than release-ordered, specifically to avoid a dependency cycle. Internal vbpub
+Assay consumption is source-backed and has no S15 declaration; this check applies
+to an explicitly declared external/copy artifact. Integrity (do the
 vendored bytes match the recorded hash?), authenticity (does that hash match the
 PUBLISHED release asset's bytes — never just the filename or version string?), and
 freshness (is the pin the highest published version?) are three distinct checks; a

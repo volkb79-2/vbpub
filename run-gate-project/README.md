@@ -37,8 +37,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `docker run --cpus`, with an environment-level fallback
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
    refusals are the doctrine; nyxloom adopts `false` explicitly until
-   NL-1), `assay_command` REQUIRED and explicit (the tool never invents an
-   assay invocation), `budget` advisory-only, `stall_timeout` (rev 34,
+   NL-1), `assay_command` optional (omit it for the selected worktree's
+   `assay/` source; supply it for an external immutable artifact), `budget`
+   advisory-only, `stall_timeout` (rev 34,
    RG-36/`R-40c`: same `\d+[smh]` grammar as `budget` and read beside it,
    but it bounds SILENCE in the lane's liveness signal — an assay lane's
    progress file, or (RG-41, rev 36) a command lane's own log-stream
@@ -64,7 +65,7 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    since `main`, not a total-coverage floor (still ~47% total; that
    campaign is Phase 2).
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
-   judge: assay (pinned `tools/assay/assay-6.1.1.pyz`) running the same
+   judge: the selected worktree's assay source running the same
    test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
    — the whole project, not just `run-gate.py`. `tools/coverage_gate.py`
    itself is IN SCOPE here (a controller ruling, RW-8: "100% on every
@@ -167,7 +168,7 @@ surface, because exactly one program owns the schema (the
 ### Orchestration vs judgment — the assay split
 
 `run-gate.toml` owns **orchestration**: which environment (container image,
-cgroup slice, mounts), which pins to verify, clean-tree policy, budgets, and
+cgroup slice, mounts), optional external pins, clean-tree policy, budgets, and
 the command to run. It does NOT own quality **judgment**.
 
 For projects that adopt **assay**, judgment (coverage floors, R-levels,
@@ -176,7 +177,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 
 ```toml
 [lanes.ciu]
-kind = "assay"            # run-gate wraps: env setup + pin verify + `assay run ciu --resume --progress …`
+kind = "assay"            # install selected ../assay + run the judge
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
 environment = "tester-unified"
 ```
@@ -223,10 +224,12 @@ the tool's reason to exist and MUST be implemented + tested:
   `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
   `git config --global safe.directory '*'`
   inside the gate container.
-- **Artifact pins:** sha256 verification executed FROM the pin file's
-  directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
-  `version` is a claim the artifact must satisfy — the lane probes
-  `<assay_command> --version` and refuses mismatches (no provenance theater).
+- **Assay source or artifact:** internal lanes omit `assay_command` and
+  `pins`; run-gate installs `assay/` from the selected worktree in the lane
+  environment and the resulting verdict records the runtime version and
+  source commit. External consumers may supply `assay_command` plus sha256/
+  version pins; those are verified from the pin file's directory and the
+  declared version is checked in-lane.
 - **Env forwarding is declared, never implicit (RG-23):** a container/exec
   lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
   infrastructure) plus exactly the environment's `forward_env` list. The

@@ -121,25 +121,21 @@ internal projects (`[environments.<name>]`: `image`, optional
 `cgroup_slice`) and, since RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
-(whole table, no field merging — same rule for environments and lanes). A
-central lane's pin sidecars must exist in each consuming project — the gate
-refuses at load naming both files when a project doesn't vendor them; shadow
-the lane locally to opt out. Copied-script repos (dstdns) are self-contained
-unless they grow their own root file.
+(whole table, no field merging — same rule for environments and lanes).
+Internal assay lanes omit `assay_command` and `pins`; run-gate installs the
+selected worktree's `assay/` source in the lane environment, and the verdict
+records the runtime version and source commit. Explicit command + pin sidecars
+remain available for copied/external consumers. Copied-script repos (dstdns)
+are self-contained unless they grow their own root file.
 
 ```toml
-# repo-root run-gate.toml — one shared assay lane every package inherits;
-# paths are relative to EACH consuming project (which must vendor them):
+# repo-root run-gate.toml — one shared internal assay lane every package
+# inherits; the selected worktree's ../assay source is installed at run time:
 [lanes.assay-shared]
 kind = "assay"
 environment = "tester-unified"
 assay_lane = "gate"
-assay_command = ["./tools/assay/assay.pyz"]
 clean_tree = false
-
-[lanes.assay-shared.pins.assay]
-version = "2.1.0"
-sha256 = "tools/assay/assay.pyz.sha256"
 ```
 
 ## Lane schema (final — what run-gate.py actually validates)
@@ -183,12 +179,16 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
 # command kind:
 argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
 
-# assay kind (all required — the tool never invents an assay invocation):
+# assay kind: assay_lane is required. Internal source mode omits both
+# assay_command and pins; run-gate installs the selected worktree's assay/.
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+
+# External/copy-consumer mode may instead supply both an explicit command and
+# its immutable pin:
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
 [lanes.<name>.pins.assay]
-version = "2.1.0"                   # DECLARING it = a claim: the lane verifies <assay_command> --version reports it
-sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own directory
+version = "<version>"               # checked against the command's --version
+sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own directory
 # ...and NOTHING else. A pin table takes these two keys; any other is
 # refused at load (RG-32, rev 34). In particular `budget` here was never
 # enforced and is now a refusal: a kind = "assay" lane's real budget lives
@@ -283,30 +283,45 @@ exit 0 for drift); `required_env` is the mechanism that actually refuses.
 
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
-run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, pin verify,
-clean tree, detached run), then invokes the pinned assay CLI; **assay does the
-JUDGMENT** — its lane in `assay.toml` owns argv-under-test, coverage floors,
-R-levels, changed-line policy, snapshot isolation. Two files, two owners, no
-duplicated registry:
+run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, optional
+artifact verification, clean tree, detached run), then invokes assay; **assay
+does the JUDGMENT** — its lane in `assay.toml` owns argv-under-test, coverage
+floors, R-levels, changed-line policy, snapshot isolation. Two files, two
+owners, no duplicated registry. Internal vbpub projects use source mode:
 
 ```toml
 [lanes.ciu]
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
+# No assay_command or pins: run-gate installs <selected worktree>/assay.
+```
+
+For a consumer outside this monorepo, retain the explicit immutable boundary:
+
+```toml
+[lanes.ciu]
+kind = "assay"
+assay_lane = "ciu"
+environment = "tester-unified"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
 
 [lanes.ciu.pins.assay]
-version = "2.1.0"                   # verified against the judge the image carries
-sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+version = "<version>"
+sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
+
+The internal source mode is selected by omitting both fields. The source is
+installed with `--no-deps` from the selected tree, so no registry or ambient
+Assay installation is consulted. The resulting Assay verdict records its
+actual `assay_version`; the selected tree's commit is the source identity.
 
 Division of labor, spelled out:
 
 | concern | owner |
 |---|---|
 | container image, mounts, cgroup slice, env passthrough | run-gate.toml |
-| artifact pins (assay version/sha), clean-tree refusal | run-gate.toml / assay (S18.4) |
+| external artifact pins, clean-tree refusal | run-gate.toml / assay (S18.4) |
 | suite argv, coverage floors, R0/R1/R3, isolation snapshot | assay.toml |
 | verdict artifact + PASS/FAIL meaning | assay |
 | WHEN a lane must pass (release policy) | the project's release config (cmru) |
@@ -326,8 +341,9 @@ a volume to the runner's own stack; for an ephemeral environment,
 
 **Preflight the toolchain instead of discovering it mid-run (RG-25).**
 `./run-gate.py doctor` and `./run-gate.py --check-env` now ask the JUDGE what
-each `kind = "assay"` lane needs — `<assay_command> lanes --json --file
-assay.toml` (assay ≥ 3.2.0) run INSIDE the lane's own environment — and then
+each `kind = "assay"` lane needs — the resolved assay command's `lanes
+--json --file assay.toml` (assay ≥ 3.2.0) run INSIDE the lane's own
+environment — and then
 check that environment for it. run-gate still never parses `assay.toml`:
 
 ```
@@ -377,7 +393,7 @@ treated as "nothing needed".
 > shell builtin), they judge nothing and write nothing into your tree, and
 > ephemeral ones carry `--cgroup-parent` like every container run-gate
 > starts. The cost is bounded: **one inventory probe per (environment,
-> `assay_command`) plus one batched `command -v` probe per environment** —
+> judge identity) plus one batched `command -v` probe per environment** —
 > not per lane. A project with no `kind = "assay"` lane starts nothing at
 > all, and neither verb ever starts your judged lane. If you run `doctor` in
 > a context where starting a container is unacceptable, that is the check to
@@ -402,7 +418,7 @@ base_source = "request"        # the gate supplies the base; assay never guesses
 kind = "assay"
 environment = "tester-unified"
 assay_lane = "p129_enumeration_cursor"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
+   # Internal source mode: omit assay_command and pins.
 ```
 
 ```bash
@@ -572,18 +588,17 @@ Here is the whole seam on one page:
    budget = "20m"
    allow_argv_append = false
    ```
-3. **Declare the run-gate lane** in `run-gate.toml` — orchestration + pin:
+3. **Declare the run-gate lane** in `run-gate.toml`. For an internal vbpub
+   project, use source mode and omit `assay_command` and `pins`:
    ```toml
    [lanes.unit]
    kind = "assay"
    assay_lane = "unit"                 # -> assay.toml [lanes.unit]
    environment = "tester-unified"
-   assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
-
-   [lanes.unit.pins.assay]
-   version = "<version>"               # verified via <assay_command> --version
-   sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own dir
    ```
+   run-gate installs the selected worktree's `assay/` source and the verdict
+   records the actual version. For a consumer outside vbpub, use the explicit
+   command + pin form shown in the previous section.
 4. **Point the consumer** at it in the canonical, `validate-pointers`-certifiable
    form:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && exec ./run-gate.py --worktree {worktree} unit"]`
