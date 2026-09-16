@@ -3365,3 +3365,20 @@ consumer path and no longer declares the obsolete 6.1.1 pin; the worktree is
 clean. This preparation does not claim CMRU gates, mutation evidence, Sol
 acceptance, merge to main, or release; those remain after the operator's
 Assay release completes. No running mutation worktree was changed.
+
+### RW-276 — 2026-09-16 17:57:49Z — Assay 6.3 source release and final-tree reconciliation
+
+The operator's source-backed Assay release completed with
+`ASSAY_RELEASE_EXIT=0`: its registered self-hosted gate succeeded in 978.3s,
+the `assay-v6.3.0` tag and publication completed, and the published wheel
+checksum matched `dd80b5fd3287cb3b9ea02a098d26bdea6454b764ab7eaac6ad3a8b5fd5072b6d`.
+The wheel is installed in `/home/vscode/.venv` and reports Assay 6.3.0.
+The local controller main was merged with the release transaction's remote
+main commit as `d0b9d593`; the final P5 reconciliation worktree was merged
+with that main as `8a879c52`, with the P5/source-backed documentation and
+runner conflicts resolved together. P5's non-mutation `gate-full --base main`
+and CMRU's independent assay lane are running detached on quiet trees. P1
+and the stale provisional P5 mutation campaign remain live, so no new
+mutation lane was launched; P6's same-tree retry still ended with the same
+two `budget_exceeded` placeholders and remains incomplete. No Sol acceptance,
+merge, or release is claimed by this ruling.
