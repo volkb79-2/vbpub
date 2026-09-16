@@ -3218,3 +3218,12 @@ observer itself is still live as PID `2638622`, started at `16:32:39Z`, with a
 1210-second sleep; its actual marker target is therefore approximately
 `16:52:49Z`. The missing file is an observation timing discrepancy, not a
 mutation terminal state; no P1/P5 progress or verdict was read.
+
+### RW-262 — 2026-09-16 16:52:53Z — scheduled observation: both lanes live
+
+The one-shot marker written at `16:52:49Z` confirms both mutation supervisors
+remain live. P1 is Python PID `2389540`, with exact container
+`run-gate-vbpub-r2-2389540-1789574615` in `running` state; P5 is Python PID
+`2275238` with its bare-host `run-gate.py --base main assay-r2` supervisor.
+Neither progress stream nor verdict was read because neither handle had
+terminated.
