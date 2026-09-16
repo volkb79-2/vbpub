@@ -2937,3 +2937,12 @@ After the operator's assay 6.3 release is published, merge the source-backed
 consumer changes with P5, reconcile the revision/CHANGES and documentation,
 and rerun the full required gates and mutation evidence on that resulting
 tree. The controller will not edit or commit the operator's worktree.
+
+### RW-236 — 2026-09-16 14:09:53Z — land SPEC-V8 Appendix D.6
+
+Appendix D.6 in `ciu/docs/SPEC-V8.md` was changed from a pending note to a
+landed RG-55 forward-compatibility constraint. It records that a future v8
+gate must consume RG-55's profiler registry and contract, not invent a second
+profiling or admission vocabulary. This documentation close-out is separate
+from the later v8 implementation work and does not touch the protected CIU
+round-4 files.
