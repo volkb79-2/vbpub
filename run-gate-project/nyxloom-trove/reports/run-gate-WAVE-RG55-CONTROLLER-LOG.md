@@ -2912,3 +2912,16 @@ skipped; the ended-daemon-watch regression is included. P5 remains unmerged
 and unreleased pending the post-P6 ordering and the required fresh Sol xhigh
 review. The final-review packet must target P5 explicitly; the assay
 source-backed 6.3 worktree remains operator-owned and untouched.
+
+### RW-234 — 2026-09-16 13:56:49Z — mutation-lane wakeup check
+
+At the first post-checkpoint wakeup beyond the 20-minute interval, both
+mutation containers are still running and each is capped at 3 CPUs in
+`dev-background.slice`: P1 `run-gate-vbpub-r2-1754081-1789562243` (tree
+`8df62f628b20c6280574aef8f6e76a53f9d00e35`) and P6
+`run-gate-vbpub-r2-1710318-1789560817` (tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40`). `docker top` shows assay and
+pytest processes in both containers; neither current run has a terminal
+verdict yet. The visible `verdict-r2.json` files are the prior completed
+attempts and were not treated as evidence for these live runs. No progress
+stream was polled.
