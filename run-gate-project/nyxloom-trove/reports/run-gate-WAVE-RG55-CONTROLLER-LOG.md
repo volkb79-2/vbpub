@@ -3243,3 +3243,11 @@ to `764cb368` (`test(nyxloom): integrate remaining mutation regressions`). No
 `assay-v6.3.0` tag is present; its `git describe` output is an unrelated
 run-gate tag and is not treated as an Assay release. The P5 final integration
 therefore remains pending, and no mutation progress was queried.
+
+### RW-265 — 2026-09-16 16:57:46Z — assay source branch advances again
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `24ac95df` (`Merge survivor coverage into source-backed Nyxloom branch`).
+No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
+yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
+mutation progress was queried.
