@@ -2956,3 +2956,14 @@ that tree with an explicit terminal marker at
 `/tmp/rg55-p5-selftest-coverage2.log`; its result is not inferred from the
 launcher. No mutation lane was restarted or altered, and the operator-owned
 assay source-backed worktree remains untouched.
+
+### RW-238 — 2026-09-16 14:34:02Z — resume P6 after its budget boundary
+
+The P6 mutation attempt against tree `8076246c3d365df04ecdd1d2f041ada75c081b40`
+ended at `14:28:41Z` as `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4), so it is not
+complete evidence. The old exact container was collected by the first resume
+invocation; a second invocation with `--fresh` then started
+`run-gate-vbpub-r2-2020304-1789569221` at `14:33:41Z`. It was immediately
+capped at three CPUs and verified under `dev-background.slice`. Assay's
+persisted resume/progress state remains the source of truth; P1 remains the
+other active mutation lane.
