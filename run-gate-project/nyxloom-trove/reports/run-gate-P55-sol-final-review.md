@@ -5,7 +5,7 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "26e6f3440dfb43bdf7fe3d3c2d45a8f17039233b"
+input_revision: "8823dca820cf6ffc6520da57663f8b7424f1ce35"
 depends_on: []
 session: fresh
 source:
@@ -182,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-243). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-245). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
@@ -206,7 +206,7 @@ shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 ### `P5`: run-gate v1.1 client, revision 43
 
 Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
-implementation tip `26e6f3440dfb43bdf7fe3d3c2d45a8f17039233b` (the packet is a
+implementation tip `8823dca820cf6ffc6520da57663f8b7424f1ce35` (the packet is a
 tracked report in the same worktree). Read:
 
 ```
@@ -226,10 +226,14 @@ This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
 transport seam, one-reader daemon watch with ended/failed retry and fallback,
 policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
 admission, schema-2 nullable watch/placement history, and synchronized
-adopter-facing documentation. The ended-watch repair and its four focused
-regressions are committed in `26e6f344`; the full selftest is being rerun from
-that quiet tree, and its result is the only valid full-suite evidence for this
-revision. The earlier local suite count is not release evidence.
+adopter-facing documentation. The ended-reader repair and its behavioral
+regressions are committed through `8823dca8` (including the bare-host path and
+the live/fallback branch matrix). The full selftest from that quiet tree passed
+1,287 tests with 3 skips, with 642/642 changed executable lines and 276/276
+changed branches covered. This is valid P5 evidence, but the packet remains
+provisional until the operator's assay 6.3 source-backed integration is
+reconciled into the final review tree; that reconciliation must rerun any
+affected gates.
 Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
 `assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
 running in their separate worktrees; do not edit, switch, or invalidate them.

@@ -3027,3 +3027,20 @@ ruling RW-243, and records that the ended-watch repair's four focused tests are
 not a substitute for the pending fresh full selftest. This packet remains
 provisional until the assay 6.3 source-backed integration produces the final
 quiet review tree.
+
+### RW-245 — 2026-09-16 15:32:34Z — P5 ended-watch repair fully covered
+
+P5 added the bare-host ended-reader repair and behavioral coverage commits
+`8dcb3010`, `92cc8013`, `c3dba531`, `984985ae`, and `8823dca8`. From the final
+quiet P5 tip, `run-gate.py selftest` passed 1,287 tests with 3 skips; changed
+executable coverage is 642/642 lines and 276/276 branches, with explicit
+`SELFTEST_EXIT=0`. The daemon-unavailable warning is expected because this
+worktree's daemon is not deployed. P5 evidence is still provisional until the
+operator's assay 6.3 source-backed integration is reconciled.
+
+The P6 third resume on the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40` ended at `14:51:46Z` with the same
+complete candidate accounting but 2 `budget_exceeded` placeholders (467
+killed, 15 survived, 0 crashed/equivalent), exit 4. It remains incomplete;
+the next resume must use the future source-backed assay release rather than
+count these placeholders as judged. P1's exact container remains running.
