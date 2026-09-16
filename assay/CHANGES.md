@@ -6,6 +6,34 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.3.0] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=51d6dec32d02189eaf098b1380d264e2d120b363 -->
+
+### Added
+- feat(assay): filter native R2 resume identity (176a06a5)
+
+### Fixed
+- fix(assay): implement B097 per-process liveness identities (1daf6e62)
+- fix(assay): B096 derive rejudge outcome help from vocabulary (6f76e471)
+
+### Changed
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- review(assay): accept RG-55 merged sidecar (e8d7a79a)
+
+### Documentation
+- docs(assay): qualify source lane environment (4609bc34)
+- docs(assay): record B097 review verification status (0303a24d)
+- docs(assay): record B097 review fix verification (aa075851)
+- docs(assay): fix B097 brief EOF whitespace (23b75167)
+- docs(assay): freeze B097 adversarial review handoff (b83b9941)
+- docs(assay): add B096 implementation and review handoffs (ee41553d)
+- docs(assay): record B096 verification (de1ef799)
+- docs(assay): record B092 B098 adversarial review (49a0e51c)
+
+### Testing
+- test(assay): fix B097 regression import and record validation (a8ac0d5c)
+
 ### Added
 - feat(assay): B092 native-R2 `judge.mutation.identity_exclude` filters
   report-only paths from the tree-content half of `judge_sha256` while
