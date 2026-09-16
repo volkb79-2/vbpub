@@ -2865,3 +2865,26 @@ active process, so its required resume was launched in the second permitted
 mutation slot as `run-gate-vbpub-r2-1710318-1789560817`, also immediately
 capped at 3 CPUs in `dev-background.slice`. Both detached jobs have terminal
 markers and are checked no more often than the operator's 20-minute interval.
+
+### RW-231 — 2026-09-16 12:33:38Z — temporarily widen the background gate envelope
+
+The operator confirmed that this host is currently otherwise idle and
+authorized a temporary runtime widening while RG-55 completes. Through a
+short-lived root container using the host system bus (no host PID, network, or
+cgroup namespace), `dev-background.slice` was set to the already-loaded
+`dev.slice` envelope: `CPUQuota=700%`, `CPUWeight=100`,
+`MemoryHigh=12348030976`, `MemoryMax=16642998272`, and `IOWeight=100`.
+Read-back through systemd and the host cgroup filesystem agrees:
+`cpu.max=700000 100000`, `io.weight=default 100`, and empty `io.max`; there
+are no bandwidth/IOPS limits. This is runtime-only and does not widen the
+parent `dev.slice` or remove the required 3-CPU cap from an individual gate
+container. Restore the original child values after the wave:
+`CPUQuota=500% CPUWeight=20 IOWeight=10 MemoryHigh=5368709120
+MemoryMax=8589934592`.
+
+The P1 exact-tree retry container `run-gate-vbpub-r2-1708962-1789560768`
+exited `1` with `OOMKilled=false`; its R2 attempt failed in the R0 baseline
+on the nondeterministic `test_new_run_id_is_unique_even_for_the_same_instant`
+(49 unique IDs of 50), not in a mutation candidate. P6 remains the sole live
+mutation container, `run-gate-vbpub-r2-1710318-1789560817`; no progress poll
+is made before the 20-minute interval.
