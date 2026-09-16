@@ -794,9 +794,11 @@ all-in-one platform:
   judgment (HOW). They're deliberately not merged — see
   [§4 of the design guide](docs/DESIGN-GUIDE.md#4-the-boundary-with-ciu-and-why-they-are-not-one-tool)
   for why that boundary is topological, not just organizational.
-- **`cmru`** owns release transactions and project gates. A consumer's
-  `cmru.toml` can invoke a pinned Assay wheel or zipapp through `tester-gate`; CMRU does not
-  reinterpret the lane or bake an ambient Assay version into `tester-unified`. See the
+- **`cmru`** owns release transactions and project gates. Internal vbpub
+  consumers use run-gate's selected-worktree source mode; an external
+  consumer's `cmru.toml` may invoke a pinned Assay wheel or zipapp through
+  `tester-gate`. CMRU does not reinterpret the lane or bake an ambient Assay
+  version into `tester-unified`. See the
   [consumer guide](docs/CONSUMERS.md#cmru--tester-unified-integration).
 - **`nyxloom`** orchestrates the *development* of assay itself (and other
   estate projects) through a handoff/carve/review/gate/merge pipeline — see

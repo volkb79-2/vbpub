@@ -5187,16 +5187,17 @@ the other, and a project may adopt either alone.
 
 The implementation gate is the boundary between "green in the devcontainer
 venv" (never a ship signal) and a reviewable verdict. It runs inside
-`tester-unified` and is **judged by the released Assay CLI artifact**, never
-by imported Assay source and never by a nyxloom evidence-judgment command.
+`tester-unified` and is **judged by Assay installed from the selected vbpub
+worktree**, never by an ambient image installation and never by a nyxloom
+evidence-judgment command.
 
-- **S18.1** *Pinned, verified artifact.* The gate consumes the Assay CLI from
-  a hash-pinned, vendored zipapp (`tools/assay/assay-<version>.pyz` + a
-  `.sha256` sidecar in the same directory). Before every run the gate MUST
-  verify the pin (`sha256sum -c`); a failed verification fails the gate. The
-  artifact is the released, immutable `assay-v*` build (built from the wheel,
-  not `src/`). tester-unified deliberately does not bake an ambient Assay
-  version.
+- **S18.1** *Selected-worktree source.* The internal gate's `run-gate.toml`
+  omits `assay_command` and `pins`. run-gate installs `assay/` from the
+  selected worktree with no dependency resolution before asking it to run;
+  Assay records its actual runtime version in the verdict, alongside the
+  judged commit. A consumer outside vbpub may instead supply an explicit
+  command and hash/version pins, which run-gate verifies before every run.
+  tester-unified deliberately does not bake an ambient Assay version.
 - **S18.2** *Lane contract.* `assay.toml` declares the `ciu` lane: the full
   suite under pytest-cov with a 100% whole-source line AND branch fail-under
   (`run-ciu-tests.py`) as the lane command, inside Assay's isolated snapshot

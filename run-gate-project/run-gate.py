@@ -2,8 +2,9 @@
 """run-gate — the per-project gate entrypoint (one parser, argv for everyone).
 
 Owns ALL gate invocation mechanics that used to live scattered in consumer
-config strings: container image + mounts, cgroup slice placement, artifact-pin
-verification, clean-tree refusal, detached run form, exit-status passthrough.
+config strings: container image + mounts, cgroup slice placement, source-backed
+assay setup or external artifact-pin verification, clean-tree refusal,
+detached run form, exit-status passthrough.
 Lane declarations live in run-gate.toml next to this script (per project);
 shared environment facts may be declared once in an enclosing repo-root
 run-gate.toml (nearest ancestor wins; project tables shadow central by name).
@@ -12,7 +13,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+__revision__ = 43  # rev 43: source-backed Assay lanes are accepted by the
+# dedicated tester-unified image and record the selected worktree's runtime
+# judge; the explicit artifact+pin branch remains for external consumers.
+# rev 42: RG-55 wave, package P4 (run-gate follow-ups,
 # third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
 # where rev 41 shipped them categorically unprofiled. Daemon path: the
 # target is run-gate's OWN process (self container id from /etc/hostname +
@@ -578,13 +582,17 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             fail(f'{where} [lanes.{name}]: kind "assay" requires a non-empty '
                  f"string 'assay_lane' (the lane name in the project's assay.toml)")
         cmd = table.get("assay_command")
-        if not isinstance(cmd, list) or not cmd or not all(isinstance(a, str) for a in cmd):
-            fail(f'{where} [lanes.{name}]: kind "assay" requires a non-empty string list '
-                 f"'assay_command' (e.g. the pinned-pyz interpreter + script path); "
-                 f"run-gate never invents an assay invocation")
+        if cmd is not None and (not isinstance(cmd, list) or not cmd
+                                or not all(isinstance(a, str) for a in cmd)):
+            fail(f'{where} [lanes.{name}]: kind "assay" optional '
+                 f"'assay_command' must be a non-empty string list when supplied")
         pins = table.get("pins", {})
         if not isinstance(pins, dict):
             fail(f"{where} [lanes.{name}]: 'pins' must be a table")
+        if cmd is None and pins:
+            fail(f"{where} [lanes.{name}]: 'pins' requires an explicit "
+                 f"'assay_command'; omit both for the source-backed assay "
+                 f"provided by this worktree")
         for pin_name, pin in pins.items():
             if not isinstance(pin, dict) or not isinstance(pin.get("sha256"), str) \
                     or not pin["sha256"].strip():
@@ -4689,20 +4697,23 @@ def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
     "nothing is declared" (AGENTS "absence for emptiness"), so every failure
     path returns a reason a report can print verbatim.
     """
-    probe = shlex.join([*lane["assay_command"], "lanes", "--json",
-                        "--file", "assay.toml"])
+    command = assay_command_text(lane)
+    setup = assay_source_setup(lane, worktree)
+    probe = " && ".join([*setup,
+                          f"cd {shlex.quote(str(project_dir))} && "
+                          f"{command} lanes --json --file assay.toml"])
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source,
         _probe_slice(env, env_source),
-        f"cd {shlex.quote(str(project_dir))} && {probe}")
+        probe)
     out = subprocess.run(argv, capture_output=True, text=True)
     if out.returncode != 0:
         tail = (out.stderr.strip().splitlines() or ["(no stderr)"])[-1]
         return None, (f"`assay lanes --json` did not run in environment "
                       f"{env_name!r} (exit {out.returncode}: {tail}) — an assay "
-                      f"older than 3.2.0 has no inventory (B044). The pin "
-                      f"declares the version this lane needs; run-gate does "
-                      f"not impose a floor it never declared")
+                      f"older than 3.2.0 has no inventory (B044), or the "
+                      f"source-backed assay could not be installed. run-gate "
+                      f"does not guess at a document it could not obtain")
     try:
         doc = json.loads(out.stdout)
     except json.JSONDecodeError as exc:
@@ -4795,9 +4806,9 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
     inventories: dict[tuple, tuple[dict | None, str | None]] = {}
     probe_ctx: dict[str, tuple] = {}
     # Pass 1 — ask the JUDGE. One inventory probe per (environment,
-    # assay_command): two lanes sharing an environment AND a pinned judge ask
-    # once, two lanes with different judges ask once each (they are different
-    # judges, and caching across them would answer with the wrong one).
+    # assay command identity): lanes sharing an environment and source-backed
+    # judge ask once; different explicit external commands remain separate
+    # identities so their inventories cannot be confused.
     for name, lane in assay_lanes.items():
         topic = f"lane {name!r} toolchain"
         env_name = lane_environment_name(lane)
@@ -4828,7 +4839,7 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
             # a SKIP that names the tree, not a guess about assay's version.
             repo, worktree, probe_dir, _ = resolve_worktree_scope(
                 project_dir, worktree_override, "assay-lane toolchain fitness")
-            key = (env_name, tuple(lane["assay_command"]))
+            key = (env_name, assay_command_identity(lane))
             if key not in inventories:
                 inventories[key] = assay_inventory(
                     docker, lane, env, env_name, repo, worktree, env_source,
@@ -4902,6 +4913,68 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
 
 BASE_TOKEN = "{base}"
 ASSAY_INVENTORY_FLOOR = "3.2.0"  # the assay that first ships `lanes --json` (B044)
+
+# Internal vbpub consumers deliberately do not carry a versioned assay
+# artifact.  A missing `assay_command` means: install the assay package from
+# the SELECTED worktree and invoke the resulting console script.  The
+# explicit-command branch remains for external/copy-of-run-gate consumers,
+# where an immutable artifact is the correct boundary.
+ASSAY_SOURCE_PYTHON = "/opt/tester-venv/bin/python"
+ASSAY_SOURCE_BIN = "/opt/tester-venv/bin/assay"
+
+
+def assay_command_text(lane: dict) -> str:
+    """Return the shell command for the lane's assay judge.
+
+    Internal lanes omit `assay_command`; their command is bound by
+    `assay_source_setup`, not by a versioned filename in run-gate.toml.
+    Explicit commands are retained for consumers outside vbpub's shared
+    source tree, which may need an immutable wheel/zipapp boundary.
+    """
+    if lane.get("assay_command") is not None:
+        return shlex.join(lane["assay_command"])
+    return '"$RUN_GATE_ASSAY_BIN"'
+
+
+def assay_source_setup(lane: dict, worktree: Path) -> list[str]:
+    """Shell setup for the source-backed internal assay command.
+
+    The setup runs inside the actual lane environment, after the selected
+    worktree has been mounted.  It uses the tester-unified venv when present;
+    the python3 fallback keeps bare-host run-gate invocations honest.  No
+    network or dependency resolution is allowed: assay's runtime closure is
+    stdlib-only and the editable install is from the mounted worktree.
+    """
+    if lane.get("assay_command") is not None:
+        return []
+    source = shlex.quote(str(worktree / "assay"))
+    return [
+        'if [ -x /opt/tester-venv/bin/python ]; then '
+        f'ASSAY_PYTHON={ASSAY_SOURCE_PYTHON}; '
+        f'RUN_GATE_ASSAY_BIN={ASSAY_SOURCE_BIN}; '
+        'elif command -v python3 >/dev/null 2>&1; then '
+        'ASSAY_PYTHON=$(command -v python3); RUN_GATE_ASSAY_BIN=assay; '
+        'else echo "run-gate: source-backed assay needs python3 or '
+        '/opt/tester-venv/bin/python" >&2; exit 2; fi',
+        f'test -f {source}/pyproject.toml || '
+        f'{{ echo "run-gate: selected worktree has no assay/pyproject.toml" '
+        f'>&2; exit 2; }}',
+        'echo "run-gate: installing assay from the selected worktree source" >&2',
+        f'if ! "$ASSAY_PYTHON" -m pip install --quiet '
+        f'--disable-pip-version-check --no-input --no-deps '
+        f'--no-build-isolation --editable {source}; then '
+        'echo "run-gate: editable assay install failed" >&2; exit 2; fi',
+        'command -v "$RUN_GATE_ASSAY_BIN" >/dev/null 2>&1 || '
+        '{ echo "run-gate: editable assay install did not provide an assay '
+        'executable" >&2; exit 2; }',
+    ]
+
+
+def assay_command_identity(lane: dict) -> tuple[str, ...]:
+    """Identity used only for batching read-only inventory probes."""
+    if lane.get("assay_command") is None:
+        return ("worktree-source",)
+    return tuple(lane["assay_command"])
 # RG-51: the well-known filename `ciu worktree create|add|adopt` writes at the
 # CIU root of every worktree it manages. Consumed here as a FILE FORMAT, never
 # as a Python import: run-gate-project and ciu are separate projects, and a
@@ -5449,8 +5522,8 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
             fail(f"--base {base_flag!r} was given but run-gate cannot tell "
                  f"whether lane {lane_name!r} delegates its comparison base: "
                  f"{why}. The lane inventory arrived in assay "
-                 f"{ASSAY_INVENTORY_FLOOR} (B044) — upgrade the pinned judge, "
-                 f"or drop --base")
+                 f"{ASSAY_INVENTORY_FLOOR} (B044) — use a source or external "
+                 f"judge that supports inventory, or drop --base")
         # Without --base nothing changes: an older judge keeps working exactly
         # as it did, and assay refuses at run time if the lane needed one.
         return None, ""
@@ -6113,8 +6186,11 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path
 
 
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
-                      request_base: str | None = None) -> str:
+                      request_base: str | None = None,
+                      worktree: Path | None = None) -> str:
     verdict = assay_verdict_rel(lane["assay_lane"])
+    selected_worktree = worktree or repo
+    command = assay_command_text(lane)
     for pin_name, pin in lane.get("pins", {}).items():
         # R-38: a judge too old for the flags below refuses HERE, by name,
         # not inside the container under assay's own `unrecognized
@@ -6135,6 +6211,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
              shlex.join(["git", "config", "--global", "--replace-all",
                         "safe.directory", "*"]),
+             *assay_source_setup(lane, selected_worktree),
              f"cd {shlex.quote(str(project_dir))}"]
     for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
@@ -6151,7 +6228,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
             # The old substring glob let declared '2.1' pass for reported
             # '2.11.0', a claim the artifact never made.
             declared = shlex.quote(pin["version"])
-            probe = shlex.join([*lane["assay_command"], "--version"])
+            probe = f"{command} --version"
             parts.append(
                 f"{{ reported=$({probe}) || "
                 f"{{ echo \"run-gate: pin '{pin_name}': version probe failed: {probe}\" "
@@ -6206,15 +6283,14 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     state_dir = assay_state_dir(repo, project_dir)
     parts.append(f"mkdir -p {shlex.quote(str(state_dir))}")
     progress = assay_progress_rel(lane["assay_lane"])
-    run_argv = [*lane["assay_command"], "run", lane["assay_lane"],
-                "--file", "assay.toml", "--verdict-json", verdict,
-                "--resume", "--progress", progress,
-                "--state-dir", str(state_dir)]
+    run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
+                "--verdict-json", verdict, "--resume", "--progress",
+                progress, "--state-dir", str(state_dir)]
     if request_base:
         # RG-26: only ever appended for a lane the INVENTORY says delegates
         # its base (base_source == "request"); assay refuses it on any other.
         run_argv += ["--request-base", request_base]
-    parts.append(shlex.join(run_argv))
+    parts.append(f"{command} {shlex.join(run_argv)}")
     return " && ".join(parts)
 
 
@@ -7366,7 +7442,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
         mounts += ["-v", f"{source}:{target}"]
     verify_slice_loaded(slice_name)
-    inner = build_assay_inner(lane, project_dir, repo, request_base) \
+    inner = build_assay_inner(lane, project_dir, repo, request_base,
+                              worktree=worktree) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
@@ -7668,7 +7745,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if name not in names:
         fail(f"persistent runner '{name}' ({name_src}) is not running — "
              f"{start_remedy}")
-    inner = build_assay_inner(lane, project_dir, repo, request_base) \
+    inner = build_assay_inner(lane, project_dir, repo, request_base,
+                              worktree=worktree) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     argv = [docker, "exec", "--workdir", str(repo)]
@@ -7888,7 +7966,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # lane["argv"] unconditionally — a KeyError traceback for a legal
     # config, which R-04 calls a defect. The assay inner is built exactly
     # as it is for the two container runners.
-    argv = (["bash", "-c", build_assay_inner(lane, project_dir, repo, request_base)]
+    argv = (["bash", "-c", build_assay_inner(
+                lane, project_dir, repo, request_base, worktree=worktree)]
             if lane["kind"] == "assay"
             else substitute_worktree(lane["argv"], worktree, request_base))
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env built-in 'bare-host'",

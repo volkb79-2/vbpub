@@ -96,9 +96,7 @@ class ToolDependency:
     """A first-party artifact this project's OWN tests/tooling consume (S15).
 
     Distinct from ``[orchestration.project.<id>].depends_on``: that graph is release
-    ORDER (S2.2a) and cannot express this edge without creating a cycle (assay already
-    depends_on cmru; cmru's own test steps run a vendored assay zipapp -- the reverse
-    edge is resolved by vendoring a pinned artifact instead of by ordering). A tool
+    ORDER (S2.2a) and cannot express this edge without creating a cycle. A tool
     dependency is reported by ``cmru dependencies`` but explicitly EXCLUDED from
     ``project_order`` validation (dependencies.py) -- see S15.2.
     """

@@ -26,6 +26,7 @@ USER root
 # these baked copies only seed the dependency closure, not the code under test.
 COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
+COPY assay/       /src/assay/
 COPY topos/       /src/topos/
 COPY nyxloom/ /src/nyxloom/
 # scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
@@ -52,6 +53,7 @@ from pathlib import Path
 projects = (
     (Path("/src/ciu/pyproject.toml"), ("ssh", "test")),
     (Path("/src/cmru/pyproject.toml"), ("test",)),
+    (Path("/src/assay/pyproject.toml"), ("test",)),
     (Path("/src/topos/pyproject.toml"), ("dev",)),
     (Path("/src/nyxloom/pyproject.toml"), ("test",)),
     (Path("/src/cgroup-profiler/pyproject.toml"), ("test",)),
@@ -91,6 +93,12 @@ for pyproject, extras in projects:
         print(requirement)
     for requirement in own_extra_requirements(project, extras):
         print(requirement)
+    # Source-backed run-gate lanes install the selected Assay tree with
+    # --no-build-isolation. Derive its declared build backend closure here so
+    # that this install does not depend on accidental image contents.
+    if project["name"] == "assay":
+        for requirement in document.get("build-system", {}).get("requires", ()):
+            print(requirement)
 print("build")
 PY
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
@@ -110,7 +118,8 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
 RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && echo "docker:x:994:tester" >> /etc/group \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
- && chown -R 1003:994 /home/tester
+ && chown -R 1003:994 /home/tester \
+ && chown -R 1003:994 /opt/tester-venv
 
 USER 1003
 ENV HOME=/home/tester \

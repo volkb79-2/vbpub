@@ -13,7 +13,6 @@ schema_version = 1
 kind = "assay"
 assay_lane = "tester-unified"        # -> assay.toml [lanes.tester-unified]
 environment = "tester-unified"       # central [environments.tester-unified]
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.1.pyz"]
 # -n auto is the measured optimum on this 8-core host (~2m28s vs 4m56s
 # serial); pytest-cov (NOT `coverage run`) is load-bearing under xdist for
 # the same reason it always was -- coverage run traces only the parent,
@@ -21,14 +20,9 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.1.pyz"]
 # argv (the judged command), not here.
 budget = "30m"                       # advisory; consumers may enforce
 
-# Re-pinned 6.1.0 -> 6.1.1 on 2026-09-11 via `cmru tool-deps --refresh assay`
-# (assay B088: --resume no longer replays a stale mutation verdict after a
-# test-only fix -- additive, no schema change, byte-identical for this
-# project's native R0/R1 lane). KI-27: --refresh does not itself rewrite
-# this file's own pin/argv -- manual follow-up here, same recurring gap.
-[lanes.tester-unified.pins.assay]
-version = "6.1.1"
-sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
+# Internal vbpub lanes omit assay_command and pins deliberately. run-gate
+# installs assay from the selected worktree in the lane environment; the
+# verdict records the exact runtime assay version and source commit.
 
 # session-extract: a NARROW, package-scoped lane for src/nyxloom/session_extract
 # (+ its cli.py wiring and exact selector regression nodes), added 2026-09-10
@@ -43,9 +37,6 @@ sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
 kind = "assay"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.1.pyz"]
-budget = "30m"
-
-[lanes.session-extract.pins.assay]
-version = "6.1.1"
-sha256 = "tools/assay/assay-6.1.1.pyz.sha256"
+# session-extract's serial R2 campaign currently has 413 candidates; this is
+# the outer/advisory mirror of assay.toml's complete-campaign budget.
+budget = "8h"

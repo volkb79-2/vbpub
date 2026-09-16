@@ -534,7 +534,12 @@ class OpencodeSource:
         texts: list[str] = []
         for part_id, updated, part_json in new_fingerprint[1]:
             previous = old_parts.get(part_id)
-            if previous is not None and previous == (part_id, updated, part_json):
+            # A missing entry cannot equal the complete part tuple, so the
+            # explicit `is not None` half is redundant. Keeping the equality
+            # as the sole guard also makes this branch's actual invariant
+            # visible: an unchanged part is skipped; every changed/new part
+            # is considered below.
+            if previous == (part_id, updated, part_json):
                 continue
             try:
                 part = json.loads(part_json)
@@ -733,7 +738,7 @@ class FollowSelector:
             verdict = decide(pending, self._config)
             if verdict.keep and not self._pending_emitted:
                 result.emitted.append(pending)
-            if verdict.keep and verdict.is_checkpoint:
+            if verdict.is_checkpoint:
                 result.checkpoints.append(pending)
             self._pending = None
             self._pending_emitted = False

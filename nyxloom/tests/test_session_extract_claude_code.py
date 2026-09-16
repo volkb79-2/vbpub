@@ -125,6 +125,25 @@ def test_since_marker_slices_forward(tmp_path):
     assert any(e.marker == "a5" for e in events)
 
 
+@pytest.mark.parametrize("flag", ["isMeta", "isVisibleInTranscriptOnly"])
+def test_assistant_text_with_each_transcript_visibility_flag_is_ignored(tmp_path, flag):
+    path = tmp_path / "flagged.jsonl"
+    path.write_text(
+        json.dumps({
+            "type": "user",
+            "uuid": "flagged",
+            "timestamp": "2026-01-01T00:00:00Z",
+            flag: True,
+            "message": {
+                "role": "user",
+                "content": "framing only",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert claude_code.parse(path, str(path), ExtractConfig()) == []
+
+
 def test_since_marker_unknown_raises(tmp_path):
     fp = _write_fixture(tmp_path)
     with pytest.raises(ValueError):
@@ -1019,6 +1038,37 @@ def test_parse_record_registers_an_askuserquestion_before_its_answer_arrives():
     assert [e.kind for e in events] == [EventKind.QA_PAIR]
     assert "INTERVIEW: Ship it?" in events[0].text
     assert "OPERATOR: yes" in events[0].text
+
+
+def test_parse_record_ignores_an_askuserquestion_tool_without_an_id():
+    record = _rec(
+        type="assistant",
+        uuid="no-id",
+        message={"role": "assistant", "content": [{
+            "type": "tool_use",
+            "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "Unnamed?"}]},
+        }]},
+    )
+    assert claude_code.parse_record(
+        record, 0, "line0", ExtractConfig(), claude_code.StreamState()
+    ) == []
+
+
+def test_parse_ignores_an_askuserquestion_tool_without_an_id_in_whole_file_state(
+    tmp_path,
+):
+    fp = tmp_path / "session.jsonl"
+    fp.write_text(json.dumps(_rec(
+        type="assistant",
+        uuid="no-id",
+        message={"role": "assistant", "content": [{
+            "type": "tool_use",
+            "name": "AskUserQuestion",
+            "input": {"questions": [{"question": "Unnamed?"}]},
+        }]},
+    )) + "\n", encoding="utf-8")
+    assert claude_code.parse(fp, str(fp), ExtractConfig()) == []
 
 
 def test_parse_record_uses_the_fallback_marker_only_when_a_record_has_no_uuid():

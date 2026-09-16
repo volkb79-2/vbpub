@@ -14,6 +14,12 @@ For a linked worktree, invoke that worktree's launcher or give an absolute
 workdir. The launcher derives the enclosing workspace bind and records the
 exact commit, temp root, and container facts it used.
 
+The image must be rebuilt from the same checkout after changing Assay's
+`[build-system]` requirements. Internal vbpub lanes leave `assay_command` and
+`pins` out of `run-gate.toml`; run-gate installs the selected worktree's
+`assay/` source into the image's writable `/opt/tester-venv` and the verdict
+records the runtime version and source commit.
+
 To place evidence somewhere else, use an explicit path:
 
 ```bash

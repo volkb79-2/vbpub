@@ -5,6 +5,8 @@ windowing rules themselves are pinned down precisely.
 
 from __future__ import annotations
 
+import pytest
+
 from nyxloom.session_extract.config import ExtractConfig
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.select import select
@@ -352,6 +354,15 @@ def test_decide_drops_an_unknown_event_kind():
     assert not decide(malformed, ExtractConfig()).keep
 
 
+def test_event_decision_is_immutable():
+    from dataclasses import FrozenInstanceError
+    from nyxloom.session_extract.select import EventDecision
+
+    decision = EventDecision(keep=True)
+    with pytest.raises(FrozenInstanceError):
+        decision.keep = False
+
+
 def test_decide_drops_an_api_error_before_any_rescue_applies():
     from nyxloom.session_extract.select import decide
 
@@ -360,3 +371,13 @@ def test_decide_drops_an_api_error_before_any_rescue_applies():
     # long AND a finding signal AND above the checkpoint threshold -- still dropped
     assert not decide(api, ExtractConfig()).keep
     assert decide(api, ExtractConfig(hide_api_errors=False)).keep
+
+
+def test_decide_drops_text_at_the_exact_long_comment_boundary():
+    from nyxloom.session_extract.select import decide
+
+    config = ExtractConfig(long_comment_chars=4)
+    exact = NormalizedEvent(
+        0, "exact", _TS, EventKind.ASSISTANT_TEXT, "four", checkpoint_score=0.0
+    )
+    assert not decide(exact, config).keep

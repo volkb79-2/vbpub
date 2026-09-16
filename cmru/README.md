@@ -61,7 +61,7 @@ cmru dependencies                 # show + preflight the project dependency grap
 cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
 cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
-cmru tool-deps --refresh assay    # explicit, deliberate re-vendor + pin/hash update (never automatic)
+cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact re-vendor + pin/hash update
 cmru publish --project <name>     # low-level caller-worktree push step
 cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
@@ -232,12 +232,11 @@ project-author requirements, and the current gate-adoption audit.
 ## Tool dependencies
 
 A project's OWN tests/tooling may consume a first-party artifact released by ANOTHER
-project in the same estate — cmru's own `run-tests` step runs a pinned
-`tools/assay/assay-1.0.0.pyz` zipapp, for example. `assay` independently
-`depends_on = ["cmru"]` for release ORDER, so declaring the reverse edge there would be a
-cycle; that is exactly why the relationship is resolved by vendoring a pinned artifact
-instead, and exactly why nothing previously expressed it — cmru could silently test
-against a version of assay far behind what assay itself ships, with no signal to anyone.
+project in the same estate. Internal vbpub consumers such as cmru use the selected
+worktree's `assay/` source directly from their run-gate lane, so they need no
+`[[project.tool_dependencies]]` entry and cannot silently drift behind the source
+being reviewed. A genuinely external or copied consumer may still vendor an
+immutable artifact and declare it below.
 
 `[[project.tool_dependencies]]` in `cmru.toml` makes that edge explicit:
 

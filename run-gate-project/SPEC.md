@@ -54,6 +54,11 @@ amended (the "assay lanes ONLY"
 `stall_timeout` text was stale since RG-41 (rev 36) made it legal on
 `command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
 log-stream liveness mechanism the rule id it shipped without).
+Rev 11: internal vbpub assay lanes may omit `assay_command` and `pins`; the
+launcher installs Assay from the selected worktree and records the runtime
+judge identity, while explicit command-plus-pin mode remains for external
+consumers. The tester-unified image supplies the declared build backend and a
+writable runtime venv for that source install.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -152,16 +157,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `host` or `bare-host` → error.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
-  `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
-  is a non-empty string list — the tool NEVER invents an assay invocation),
-  `pins` (assay kind: table of `{sha256 = "<path>", version = "<str>"}` —
+  `assay_lane` (assay kind: required) and optional `assay_command` (a
+  non-empty string list when supplied). When omitted, run-gate installs the
+  `assay/` package from the selected worktree and invokes its `assay` console
+  script; this is the internal vbpub mode and the resulting verdict records
+  the runtime assay version. Supplying `assay_command` selects the explicit
+  external-consumer mode. `pins` is legal only with that explicit command;
+  source mode rejects a non-empty pin table. `pins` (assay kind: table of
+  `{sha256 = "<path>", version = "<str>"}` —
   **those TWO keys and no others: an unrecognized key under
   `[lanes.<name>.pins.<pin>]` is refused at load exactly as an unrecognized
   lane key is (RG-32, rev 34), and `budget` is refused with its own message
   naming the value's real owner** —
   `sha256` required, path relative to the project and existence-checked at
   load (project lanes and inherited central lanes alike); a declared
-  `version` is VERIFIED in-lane via `<assay_command> --version`, which must
+  `version` is VERIFIED in-lane via the resolved assay command, which must
   succeed and report it as a WHOLE punctuation-delimited token (declared
   `2.1` does NOT match reported `2.11.0`; one decorative leading `v` is
   tolerated; review fix) — declaring it asserts
@@ -339,11 +349,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `docker rm -f` in a finally).
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail && git
   config --global safe.directory '*' && ...`. Command kind: the lane argv
-  (`{worktree}`-substituted, shell-quoted) appended. Assay kind: `cd
-  <effective project dir>` first (R-21), then per pin `(cd <pin's parent dir>
-  && sha256sum -c <bare filename>)` — verification FROM the pin file's own
-  directory — then `mkdir -p .assay`, then `<assay_command> run <assay_lane>
-  --file assay.toml --verdict-json .assay/verdict-<assay_lane>.json --resume
+  (`{worktree}`-substituted, shell-quoted) appended. Assay kind: source mode
+  first installs the selected worktree's `assay/` package with no dependency
+  resolution; explicit mode instead verifies each pin. Then `cd <effective
+  project dir>` (R-21), per-pin `(cd <pin's parent dir> && sha256sum -c <bare
+  filename>)` — verification FROM the pin file's own directory — then `mkdir
+  -p .assay`, then the resolved assay command runs `<assay_lane> --file
+  assay.toml --verdict-json .assay/verdict-<assay_lane>.json --resume
   --progress .assay/progress-<assay_lane>.jsonl` (the two trailing flags
   unconditionally, `R-38`), then `--request-base REF` only for a delegating
   lane (`R-35`).
@@ -593,7 +605,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   footprint manifest yet"); exit 2
   iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
   it **does start containers**: short-lived read-only probes, bounded at ONE
-  inventory probe per (environment, `assay_command`) plus ONE batched
+  inventory probe per (environment, judge identity) plus ONE batched
   `command -v` probe per environment — never one per lane, and none at all
   for a project with no `kind = "assay"` lane. That count is a claim, so a
   test owns it (`test_probe_cost_is_one_inventory_plus_one_tool_probe_per_
@@ -607,7 +619,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
   lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE
-  what the lane needs — `<assay_command> lanes --json --file assay.toml`
+  what the lane needs — the resolved assay command's `lanes --json --file assay.toml`
   (assay ≥ 3.2.0, B044) executed INSIDE that environment — and then check the
   environment for it. run-gate never parses `assay.toml`; the `assay_lane`
   name stays a string it passes through, exactly as before.
@@ -622,8 +634,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     tool starts; where no slice is derivable the probe SKIPs rather than
     running unconfined.
   - **Probe count.** The inventory is asked once per (environment,
-    `assay_command`) — two lanes sharing an environment AND a pinned judge
-    ask once; different judges ask separately, since caching across them
+    judge identity) — source-backed lanes sharing an environment ask once;
+    different explicit commands ask separately, since caching across them
     would answer with the wrong one. The `command -v` check is asked once per
     ENVIRONMENT, over the UNION of every lane's tools: what is on a `PATH` is
     a property of the environment, not of the lane asking. Each lane is still

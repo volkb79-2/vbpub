@@ -6,9 +6,9 @@
 # of xdist workers, which would false-FAIL under `-n auto`). R1 makes Assay
 # JUDGE that coverage: the changed-line floor on base..HEAD (the role the
 # retired `nyxloom.coverage_gate` used to play) and a verifiable verdict
-# artifact. tester-unified supplies the environment; the pinned zipapp
-# (tools/assay/assay-6.1.1.pyz, sha256-verified) is the Assay CLI boundary --
-# Assay source is never imported, and `python -m nyxloom.coverage_gate` no
+# artifact. tester-unified supplies the environment; run-gate installs the
+# selected worktree's assay source as the Assay CLI boundary, and the verdict
+# records the runtime version/source. `python -m nyxloom.coverage_gate` no
 # longer runs from the gate.
 #
 # nyxloom-P98 (2026-09-02): coverage_gate.py, mutation_gate.py's gate-judgment
@@ -149,7 +149,10 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-budget = "30m"
+# The changed-line campaign currently has 413 candidates. 30m only reaches a
+# small prefix; keep the mutation jobs serial and give the complete campaign
+# enough wall time to finish on the shared production host.
+budget = "8h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -177,13 +180,13 @@ base = "3d27c67e"
 # (host-shared-with-production-load-rule: load hit 85 doing exactly this
 # kind of unthrottled concurrency on 2026-09-02) -- serial mutants keep
 # concurrency bounded to the single already-accounted-for xdist fan-out.
-# The authoritative assay 6.1.1 discovery with a temporary cap above the
-# max+1 sentinel found 358 candidates after the final source shape; 358 is the
-# exact finite cap without turning this into an open-ended campaign.
+# The authoritative source-backed Assay discovery found 413 candidates after
+# the final source shape; 413 is the exact finite cap without turning this
+# into an open-ended campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-max_mutants = 358
+max_mutants = 413
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 
