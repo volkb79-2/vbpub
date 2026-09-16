@@ -3325,3 +3325,14 @@ gate still references the obsolete 6.1.1 artifact. It is therefore not a
 mergeable release candidate while the operator prepares source-backed Assay
 6.3; preserve it for reconciliation after that release, then run its real
 registered gates and the required fresh Sol review before any merge.
+
+### RW-59 — 2026-09-16 17:33:46Z — controller takeover and review-route constraint
+
+The current Luna xhigh controller has taken over this wave. Existing
+checkpoints, detached mutation jobs, and their exact-tree identities remain
+authoritative; no mutation stream is restarted or polled ahead of its
+scheduled observation. Controller implementation and verification work stays
+with Luna xhigh and no new subagents are dispatched. Before every pending
+merge, the operator must run the genuinely fresh Sol xhigh final review with
+exactly one `REVIEW_TARGET` selected and return its artifact; a Sol review is
+not claimed until that artifact is present and ACCEPTs the exact judged tree.
