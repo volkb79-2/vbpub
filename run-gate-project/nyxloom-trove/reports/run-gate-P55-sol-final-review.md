@@ -5,16 +5,22 @@ project: run-gate
 component: release-review
 title: "RG-55 final adversarial review and repair packet"
 tier: frontier-review
-input_revision: "8247d917"
+input_revision: "8823dca820cf6ffc6520da57663f8b7424f1ce35"
 depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-221
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-250
 scope:
   touch:
     - run-gate-project/run-gate.py
     - run-gate-project/tests/
+    - run-gate-project/README.md
+    - run-gate-project/CONSUMERS.md
+    - run-gate-project/LANE-AUTHORING.md
+    - run-gate-project/SPEC.md
+    - run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
+    - run-gate-project/CHANGES.md
     - scripts/cgroup-profiler/
     - cmru/
     - run-gate-project/nyxloom-trove/reports/
@@ -70,25 +76,25 @@ its body. The first message to the fresh Sol xhigh session should therefore
 contain these literal instructions (change only the target when appropriate):
 
 ```
-REVIEW_TARGET=P4
+REVIEW_TARGET=P5
 Read /workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md in full before acting.
 Follow that packet as the review contract. Review exactly the selected target, make scoped repairs when needed, and return the required verdict and artifact. Do not merge or release.
 ```
 
-`REVIEW_TARGET=P4` is an explicit task parameter, not a shell variable that
+`REVIEW_TARGET=P5` is an explicit task parameter, not a shell variable that
 the reviewer is expected to discover. If the line is absent or names anything
-outside `P1`, `P4`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
+outside `P1`, `P4`, `P5`, `P6`, or `CMRU`, return `BLOCKED` before repository work.
 
 Before pasting this packet, select the actual model route in the client and
 put one literal target line at the top of your prompt. For the currently ready
-package, use:
+P5 package, use:
 
 ```
-REVIEW_TARGET=P4
+REVIEW_TARGET=P5
 ```
 
-For the other release-blocking packages, replace `P4` with exactly `P1`, `P6`,
-or `CMRU`. Do not leave the variable unset, and do not use a shell-style
+For the other release-blocking packages, replace `P5` with exactly `P1`, `P4`,
+`P6`, or `CMRU`. Do not leave the variable unset, and do not use a shell-style
 placeholder such as `$REVIEW_TARGET`; the reviewer must see the selected
 target in its input. `RG56` is an optional related review of future admission
 work and is not a release approval for RG-55.
@@ -176,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-225). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-250). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
@@ -196,6 +202,54 @@ names and equivalent decomposition remain free; public names, serialized
 shapes, refusal meanings, provenance, bounds, and carrier behavior do not.
 
 ## Target packets and current state
+
+### `P5`: run-gate v1.1 client, revision 43
+
+Worktree: `.worktrees/rg55-client-v11`, branch `rg55-client-v11`, product
+implementation tip `8823dca820cf6ffc6520da57663f8b7424f1ce35` (the packet is a
+tracked report in the same worktree). Read:
+
+```
+run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P5-HANDOFF.md
+run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md
+run-gate-project/run-gate.py
+run-gate-project/tests/test_run_gate.py
+run-gate-project/README.md
+run-gate-project/SPEC.md
+run-gate-project/CONSUMERS.md
+run-gate-project/LANE-AUTHORING.md
+run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md
+run-gate-project/CHANGES.md
+```
+
+This target implements C1–C9 of the P5 handoff: the v1.1 socket/exec
+transport seam, one-reader daemon watch with ended/failed retry and fallback,
+policy authoring, gates-slice parent and placement, wait-then-proceed RG-56
+admission, schema-2 nullable watch/placement history, and synchronized
+adopter-facing documentation. The ended-reader repair and its behavioral
+regressions are committed through `8823dca8` (including the bare-host path and
+the live/fallback branch matrix). The full selftest from that quiet tree passed
+1,287 tests with 3 skips, with 642/642 changed executable lines and 276/276
+changed branches covered. This is valid P5 evidence, but the packet remains
+provisional until the operator's assay 6.3 source-backed integration is
+reconciled into the final review tree; that reconciliation must rerun any
+affected gates. The same quiet tree's R1 rerun with `--base main` passed, R3
+passed with both canaries rejected and zero survivors, and doctor exited 0
+with zero failures. The package `gate-full --base main` wrapper also passed on
+ this tip, serially repeating selftest, R1, and R3. A fresh R2 mutation run was
+ launched asynchronously on this exact quiet tree at RW-248; its terminal
+ verdict is intentionally not claimed here until the explicit job marker and
+ assay verdict are read separately. Any source-backed assay integration commit
+ will invalidate this run and require a fresh run on the final tree.
+Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
+`assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
+running in their separate worktrees; do not edit, switch, or invalidate them.
+The P5 branch itself must be quiet while its mutation evidence is collected.
+Check the new request shape against both contract mirrors, run live acceptance
+probes for socket and Docker-exec carriers where the installed daemon permits,
+and disclose the cockpit's known `place-refused:no-gates-slice` condition if
+the unrebuilt devcontainer cannot expose the host gates slice. Do not merge,
+release, install, start the final daemon, or touch dstdns.
 
 ### `P1`: cgprofile 1.0.0 daemon
 
@@ -440,6 +494,13 @@ perform those operations after your ACCEPT and the required post-review gates.
    run against a 600-second budget. It is evidence for a future measurement /
    infrastructure follow-up only. Do not touch dstdns or rewrite RG-55's
    contention-agnostic principle from that observation.
+10. Assay 6.3 is being prepared in the operator-owned
+    `.worktrees/assay-source-backed-20260916` worktree to remove internal
+    hard pins before release. Do not edit that worktree or create another
+    re-vendoring cycle. If a P5 gate is refused solely because this checkout's
+    assay pin is stale, report the exact dependency and let the controller
+    rerun it after the source-backed 6.3 release; do not misclassify that
+    sequencing issue as a P5 product failure.
 
 ## Mechanical BLOCKED rule
 

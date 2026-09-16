@@ -2902,3 +2902,352 @@ against that exact exited name and launched
 `NanoCpus=3000000000` with `CgroupParent=dev-background.slice`. P1 and P6
 are now the two allowed mutation slots; neither will be polled before the
 20-minute interval.
+
+### RW-233 — 2026-09-16 13:50:48Z — P5 v1.1 client checkpoint
+
+Controller Luna xhigh completed the isolated P5 run-gate client implementation
+and documentation checkpoint at `4d12c430b421bd32f961112bd82e651b5a60c981`.
+The full local `tests/test_run_gate.py` suite passed 1,116 tests with 3
+skipped; the ended-daemon-watch regression is included. P5 remains unmerged
+and unreleased pending the post-P6 ordering and the required fresh Sol xhigh
+review. The final-review packet must target P5 explicitly; the assay
+source-backed 6.3 worktree remains operator-owned and untouched.
+
+### RW-234 — 2026-09-16 13:56:49Z — mutation-lane wakeup check
+
+At the first post-checkpoint wakeup beyond the 20-minute interval, both
+mutation containers are still running and each is capped at 3 CPUs in
+`dev-background.slice`: P1 `run-gate-vbpub-r2-1754081-1789562243` (tree
+`8df62f628b20c6280574aef8f6e76a53f9d00e35`) and P6
+`run-gate-vbpub-r2-1710318-1789560817` (tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40`). `docker top` shows assay and
+pytest processes in both containers; neither current run has a terminal
+verdict yet. The visible `verdict-r2.json` files are the prior completed
+attempts and were not treated as evidence for these live runs. No progress
+stream was polled.
+
+### RW-235 — 2026-09-16 14:07:40Z — sequence P5 after source-backed assay 6.3
+
+The operator-owned `assay-source-backed-20260916` worktree contains the
+committed removal of internal assay 6.1.1 artifact pins, including the
+run-gate-project consumer. This is the authoritative dependency path for the
+remaining RG-55 run-gate releases: do not release the P5 client from its
+stale-pyz branch and thereby create a second mandatory re-vendoring cycle.
+After the operator's assay 6.3 release is published, merge the source-backed
+consumer changes with P5, reconcile the revision/CHANGES and documentation,
+and rerun the full required gates and mutation evidence on that resulting
+tree. The controller will not edit or commit the operator's worktree.
+
+### RW-236 — 2026-09-16 14:09:53Z — land SPEC-V8 Appendix D.6
+
+Appendix D.6 in `ciu/docs/SPEC-V8.md` was changed from a pending note to a
+landed RG-55 forward-compatibility constraint. It records that a future v8
+gate must consume RG-55's profiler registry and contract, not invent a second
+profiling or admission vocabulary. This documentation close-out is separate
+from the later v8 implementation work and does not touch the protected CIU
+round-4 files.
+
+### RW-237 — 2026-09-16 14:31:23Z — P5 defensive coverage checkpoint
+
+The P5 worktree's changed-line coverage additions are committed as
+`0f40eca7` on the exact P5 branch. The focused placement/admission regression
+set passes 44 tests. A full P5 selftest was launched asynchronously against
+that tree with an explicit terminal marker at
+`/tmp/rg55-p5-selftest-coverage2.log`; its result is not inferred from the
+launcher. No mutation lane was restarted or altered, and the operator-owned
+assay source-backed worktree remains untouched.
+
+### RW-238 — 2026-09-16 14:34:02Z — resume P6 after its budget boundary
+
+The P6 mutation attempt against tree `8076246c3d365df04ecdd1d2f041ada75c081b40`
+ended at `14:28:41Z` as `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4), so it is not
+complete evidence. The old exact container was collected by the first resume
+invocation; a second invocation with `--fresh` then started
+`run-gate-vbpub-r2-2020304-1789569221` at `14:33:41Z`. It was immediately
+capped at three CPUs and verified under `dev-background.slice`. Assay's
+persisted resume/progress state remains the source of truth; P1 remains the
+other active mutation lane.
+
+### RW-239 — 2026-09-16 14:40:02Z — fresh P5 full selftest after watch coverage
+
+P5's in-process daemon-watch transition tests now pass four-for-four, and the
+fixture correction is committed as `aa9d4a20` on top of the earlier coverage
+commit `0f40eca7`. A fresh full `run-gate.py selftest` was launched from that
+quiet P5 tree with an explicit terminal marker at
+`/tmp/rg55-p5-selftest-coverage3.log`; no result will be inferred from its
+launcher. This is a non-mutation validation lane; P1 and P6 remain the only
+mutation slots in use.
+
+### RW-240 — 2026-09-16 14:44:38Z — P5 ended-watch repair checkpoint
+
+The P5 exec-carrier profiler watch had a substantive safety gap: the lane
+loop retried only an idle watch, so a watch whose reader thread had ended could
+be retained silently. The repair checks `ended()` as well as `idle()`, reports
+the distinct state, and reattaches once before using the progress fallback.
+Four focused regression tests pass, and the implementation plus tests are
+committed on P5 as `26e6f344`. Any earlier P5 selftest predating this commit is
+invalid evidence and must be rerun from the quiet new tree.
+
+### RW-241 — 2026-09-16 14:48:37Z — P6 second resume hits another budget boundary
+
+The resumed P6 R2 run on the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40` terminated with exit 4. Its
+verdict records all 484 candidates in the mutation set: 467 killed, 15
+survived, no crashed or equivalent candidates, and 2 `budget_exceeded`
+placeholders. The lane therefore remains incomplete; the two placeholders
+must be resumed from this same tree before survivor triage and final gates.
+
+### RW-242 — 2026-09-16 14:49:28Z — resume P6's two budget placeholders
+
+The P6 worktree was clean and detached at the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40`. A third detached `r2 --fresh`
+resume was launched as PID `2071035` with assay's persisted resume/progress
+state. Its exact container is `run-gate-vbpub-r2-2071035-1789570162`; it is
+running under `dev-background.slice` with `NanoCpus=3000000000`. P1 remains
+the other active mutation lane. No P6 tree mutation is permitted until this
+run reaches a terminal verdict.
+
+### RW-243 — 2026-09-16 14:50:56Z — source-backed assay integration preview
+
+A read-only `git merge-tree` preview of P5 `26e6f344` with the operator's
+assay-source-backed branch `37d7adcc` (common base
+`0c0d55e42f2589be6378706a7f29bf988f5f2bec`) reports real content conflicts in
+`run-gate-project/run-gate.py`, `SPEC.md`, and `CHANGES.md`; the other
+run-gate consumer documents merge mechanically. The source branch also owns
+protected `nyxloom/` and other estate-wide consumer changes, so it must not be
+merged wholesale by this controller. After assay 6.3.0 is published, reconcile
+the source-backed consumer commits into the final P5 tree, preserving the P5
+implementation and its evidence, then rerun all affected gates on the final
+quiet tree.
+
+### RW-244 — 2026-09-16 14:52:20Z — refresh P5 final-review packet
+
+The tracked Sol review packet now names P5 tree `26e6f344` and controller
+ruling RW-243, and records that the ended-watch repair's four focused tests are
+not a substitute for the pending fresh full selftest. This packet remains
+provisional until the assay 6.3 source-backed integration produces the final
+quiet review tree.
+
+### RW-245 — 2026-09-16 15:32:34Z — P5 ended-watch repair fully covered
+
+P5 added the bare-host ended-reader repair and behavioral coverage commits
+`8dcb3010`, `92cc8013`, `c3dba531`, `984985ae`, and `8823dca8`. From the final
+quiet P5 tip, `run-gate.py selftest` passed 1,287 tests with 3 skips; changed
+executable coverage is 642/642 lines and 276/276 branches, with explicit
+`SELFTEST_EXIT=0`. The daemon-unavailable warning is expected because this
+worktree's daemon is not deployed. P5 evidence is still provisional until the
+operator's assay 6.3 source-backed integration is reconciled.
+
+The P6 third resume on the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40` ended at `14:51:46Z` with the same
+complete candidate accounting but 2 `budget_exceeded` placeholders (467
+killed, 15 survived, 0 crashed/equivalent), exit 4. It remains incomplete;
+the next resume must use the future source-backed assay release rather than
+count these placeholders as judged. P1's exact container remains running.
+
+### RW-246 — 2026-09-16 15:38:03Z — P5 non-mutation gates green
+
+On quiet P5 tree `8823dca820cf6ffc6520da57663f8b7424f1ce35`, assay-r1 was
+first correctly refused without a comparison base because the linked worktree
+has no upstream; the explicit `--base main` rerun passed, with its verdict
+artifact recorded under the P5 worktree's `.assay/`. Assay-r3 passed with both
+canaries rejected and zero survivors. `doctor` exited 0 with 8 OK, 2 warnings,
+0 failures, 2 skips, and 2 informational checks. The warnings are the known
+linked-worktree host-lane git view and the not-running cockpit daemon; no
+socket-carrier live acceptance evidence exists yet. P5 R2 mutation evidence
+is still outstanding and must be run after source-backed assay integration.
+
+### RW-247 — 2026-09-16 15:46:06Z — P5 gate-full green
+
+The P5 `gate-full --base main` wrapper passed on the quiet tree
+`8823dca820cf6ffc6520da57663f8b7424f1ce35`: nested selftest passed 1,287 with
+3 skips and 642/642 changed lines plus 276/276 branches; nested R1 passed;
+R3 rejected both canaries with zero survivors; and the wrapper exited 0. The
+daemon-absent rusage warning remains disclosed. This does not replace the
+pending R2 mutation run or the fresh Sol review, and source-backed assay 6.3
+integration will require this gate again on the final tree.
+
+### RW-248 — 2026-09-16 15:49:38Z — P5 R2 asynchronous launch
+
+P5 R2 has been launched on quiet tree
+`8823dca820cf6ffc6520da57663f8b7424f1ce35` with `--base main`, low-priority
+execution, and the required resume/progress mechanics supplied by run-gate.
+The first shell-background attempt died before writing any output or marker;
+a 10-second foreground probe reached the assay command, and a second launch
+through a detached session leader is now running as Python PID `2275238`.
+Its explicit result marker is `/tmp/rg55-p5-assay-r2-current.log`.
+This run is intentionally provisional: integrating the operator's assay 6.3
+source-backed changes into P5 will invalidate its tree identity and require a
+fresh final R2 if the tree changes.
+
+### RW-249 — 2026-09-16 15:56:32Z — correct the canonical P5 handoff
+
+The canonical P5 handoff had retained two stale references: it named P4's
+RG-62 flaky-test row as P5's row, and it still described the superseded
+wait-then-proceed admission sketch. It now consistently reserves RG-63 for
+P5 and describes the corrected RG-56 atomic targetless reservation,
+target-bound start barrier, fail-closed facts/capacity checks, and placement
+refusal safety rule. The scoped documentation commit is `9c6a044c`; the
+canonical Sol packet was synchronized to RW-248 in `bf5217bc`. No judged tree,
+operator-owned assay-source worktree, running mutation process, or assay
+record was changed.
+
+### RW-250 — 2026-09-16 16:03:49Z — P1 survivor repair and fresh R2 launch
+
+P1's exact-tree R2 verdict for `8df62f628b20c6280574aef8f6e76a53f9d00e35`
+was terminal and complete: 250 candidates, 248 killed, 2 survived, 0
+equivalent, 0 budget-exceeded, and 0 crashed; outcome
+`FAIL/MUTANTS_SURVIVED`, exit 1. `damon.py:325` (`Gt->GtE`) is accepted as
+equivalent because `current == expected_end` implies `current > baseline` for
+every reachable pool release. `damon.py:385` (`False->True`) was a real
+oracle gap: failed second acquisition could release a first session's live
+constructor index. The red-first regression failed under that exact mutant
+and passed restored; `test_damon.py` then passed 82 tests.
+
+The regression is committed as `8cc740a2`; the P1 LOG/REPORT receipt and
+triage are committed as `4845a58a`. Those commits invalidate the old R2 for
+release, so a fresh R2 was launched on quiet tree `4845a58a` as Python PID
+`2389540`, exact container
+`run-gate-vbpub-r2-2389540-1789574615`, under `dev-background.slice` with
+`NanoCpus=3000000000`. P5 remains the other mutation lane. No P1 merge,
+release, or Sol review is authorized from the old result.
+
+### RW-251 — 2026-09-16 16:06:48Z — refresh P3 release evidence for P4
+
+The isolated P3 close-out preparation report now records the already-shipped
+run-gate 23.8.0 evidence: annotated tag object
+`b986a2fc8be585654f73ca0657b1528d656d88cd` peels to commit
+`409439c15132724d36ffc8db61a1324dac542585`, `/home/vscode/.venv` reports
+23.8.0, and `run-gate --help` prints rev 42. The preparation commits are
+`9deca699` and its tag-object correction `f6c51ab7`. No mutation lane was
+queried or changed.
+
+### RW-252 — 2026-09-16 16:07:49Z — mark assay 6.2 evidence as interim
+
+The isolated P3 close-out draft now labels its assay 6.2.0 tag and installed
+distribution receipt as interim. The final RG-55 release evidence depends on
+the operator's assay 6.3 source-backed release, so the draft no longer
+silently presents 6.2 as the final assay state. The preparation commit is
+`fd345c38`; no mutation lane was queried or changed.
+
+### RW-253 — 2026-09-16 16:18:30Z — stage P5 source-backed Assay reconciliation
+
+While the operator's assay 6.3 source-backed worktree remains the dependency
+of record, a separate P5 reconciliation worktree was created from the judged
+P5 tip `8823dca820cf6ffc6520da57663f8b7424f1ce35`. The selected run-gate
+consumer and tester-unified changes from the operator's source branch were
+applied with P5's transport/watch/placement/admission behavior retained.
+Expected `run-gate.py` overlaps were resolved explicitly. The isolated local
+run-gate suite passed `1184 passed, 3 skipped` (wheel-toolchain skip only),
+exit 0, and the checkpoint is commit `f80608b9` on
+`rg55-p5-assay63-reconcile`. This is preparation only: the final assay 6.3
+tree, tester image gate, final P5 mutation run, and Sol review remain pending.
+No mutation lane was queried or changed.
+
+### RW-254 — 2026-09-16 16:22:29Z — classify `cmru.release.log`
+
+The previously referenced `/workspaces/vbpub/cmru.release.log` was inspected.
+It contains only 59 lines of the `cmru release` usage screen, with no release
+transaction, subprocess, gate, or error record. It is therefore insufficient
+evidence for a release defect; no speculative cmru change is made. The
+authoritative RG-55 release checks remain the real project-specific release
+gates after assay 6.3 is integrated.
+
+### RW-255 — 2026-09-16 16:23:27Z — validate staged source-backed P5 dry run
+
+On clean reconciliation tip `6c02e512`, `run-gate.py --base main assay-r1
+--dry-run` exited 0 and printed rev 43's source-backed Assay installation
+(`pip install --editable <selected-worktree>/assay --no-deps
+--no-build-isolation`) with no 6.1.1 artifact or pin. It also exercised the
+RG-55 profile/placement planning path without launching a container; observed
+host memory PSI `full avg10=0.57%`, below the launch threshold. This does not
+replace the tester-unified gate or final mutation evidence.
+
+### RW-256 — 2026-09-16 16:26:25Z — preserve P3 source-reconciliation checkpoint
+
+The isolated P3 close-out draft was appended (not rewritten) with the
+2026-09-16 source-backed P5 preparation evidence and committed as `488225be`
+on `rg55-closeout-prep`. It records the clean assay source tip, P5
+reconciliation commits, the `1184 passed, 3 skipped` local suite, and the
+successful rev-43 dry run while explicitly keeping tester-unified, assay 6.3,
+mutation, Sol, release, and live-probe evidence pending.
+
+### RW-257 — 2026-09-16 16:27:44Z — correct P3 follow-up scope wording
+
+The P3 close-out draft's opening incorrectly described RG-56 and RG-57 as
+outside the wave even though P5 and P4 deliver those follow-ups. It now
+distinguishes the RG-55 measurement baseline from the wave's separate
+admission/placement and bare-host packages. Historical backlog statuses and
+evidence were not changed. The correction is committed as `1a0a936d` on
+`rg55-closeout-prep`.
+
+### RW-258 — 2026-09-16 16:30:21Z — authoritative gate observation
+
+After the required observation interval, the P1 fresh R2 supervisor remains
+live: Python PID `2389540`, exact container
+`run-gate-vbpub-r2-2389540-1789574615`, status `running`, started
+`2026-09-16T16:03:35.437556815Z`. The P5 R2 supervisor remains live as Python
+PID `2275238` (started by its bare-host lane, so there is no P5 mutation
+container to inspect). No progress stream or verdict was read because both
+authoritative handles are still live; no mutation result is claimed.
+
+### RW-259 — 2026-09-16 16:41:42Z — remove stale P5 vendored assay artifact
+
+The isolated P5 assay-6.3 reconciliation audit found that the selected
+source-backed consumer changes had left the old tracked
+`run-gate-project/tools/assay/assay-6.1.1.pyz` and checksum in place. These
+two exact files were removed in commit `37fe63aa` on
+`rg55-p5-assay63-reconcile`, matching the source-backed consumer contract.
+Historical RG-55 reports retain their 6.1.1 evidence references; no active
+configuration or mutation lane was changed, and no long-running mutation
+state was queried.
+
+### RW-260 — 2026-09-16 16:42:49Z — preserve delivered P5 backlog truth
+
+The operator's assay source-backed branch also changes the run-gate backlog by
+reopening the already-delivered P5 RG-56/RG-57 rows and deleting the RG-63
+implementation record. Those changes are unrelated to source-backed Assay
+consumption and would contradict the P5 implementation checkpoint, so they
+were not copied into `rg55-p5-assay63-reconcile`; its P5 FIXED statuses and
+RG-63 row remain authoritative pending final gates and release.
+
+### RW-261 — 2026-09-16 16:50:51Z — correct observer deadline
+
+The one-shot observer file was not present at the rough `16:50` label. The
+observer itself is still live as PID `2638622`, started at `16:32:39Z`, with a
+1210-second sleep; its actual marker target is therefore approximately
+`16:52:49Z`. The missing file is an observation timing discrepancy, not a
+mutation terminal state; no P1/P5 progress or verdict was read.
+
+### RW-262 — 2026-09-16 16:52:53Z — scheduled observation: both lanes live
+
+The one-shot marker written at `16:52:49Z` confirms both mutation supervisors
+remain live. P1 is Python PID `2389540`, with exact container
+`run-gate-vbpub-r2-2389540-1789574615` in `running` state; P5 is Python PID
+`2275238` with its bare-host `run-gate.py --base main assay-r2` supervisor.
+Neither progress stream nor verdict was read because neither handle had
+terminated.
+
+### RW-263 — 2026-09-16 16:54:11Z — re-arm observer after launch failure
+
+The first post-observation re-arm left no child or marker and was treated as
+a watcher-launch failure. A session-detached replacement is now confirmed:
+PID `2755430`, PPID `1`, started `16:54:02Z`, with child `sleep 1210`; it will
+write `/tmp/rg55-observe-20260916-1713.log` at approximately `17:14:12Z`.
+The P1/P5 mutation handles were not queried during this replacement.
+
+### RW-264 — 2026-09-16 16:55:25Z — assay source branch advances without release
+
+The operator-owned assay source-backed worktree remains clean but has advanced
+to `764cb368` (`test(nyxloom): integrate remaining mutation regressions`). No
+`assay-v6.3.0` tag is present; its `git describe` output is an unrelated
+run-gate tag and is not treated as an Assay release. The P5 final integration
+therefore remains pending, and no mutation progress was queried.
+
+### RW-265 — 2026-09-16 16:57:46Z — assay source branch advances again
+
+The operator-owned assay source-backed worktree remains clean and has advanced
+to `24ac95df` (`Merge survivor coverage into source-backed Nyxloom branch`).
+No `assay-v6.3.0` or other `assay-v6.3.*` tag is present, so the branch is not
+yet a releasable Assay 6.3 receipt and P5 integration remains pending. No
+mutation progress was queried.
