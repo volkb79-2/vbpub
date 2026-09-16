@@ -54,6 +54,11 @@ amended (the "assay lanes ONLY"
 `stall_timeout` text was stale since RG-41 (rev 36) made it legal on
 `command` lanes too — a NEW `R-40f`, backfilled, gives RG-41's own
 log-stream liveness mechanism the rule id it shipped without).
+Rev 11: internal vbpub assay lanes may omit `assay_command` and `pins`; the
+launcher installs Assay from the selected worktree and records the runtime
+judge identity, while explicit command-plus-pin mode remains for external
+consumers. The tester-unified image supplies the declared build backend and a
+writable runtime venv for that source install.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
