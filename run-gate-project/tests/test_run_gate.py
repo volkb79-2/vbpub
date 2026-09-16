@@ -15967,6 +15967,10 @@ class TestAwaitContainerProfilingWiring:
                 self.watch_calls += 1
                 return _Watch(self.watch_calls != 1, self.watch_calls == 1)
 
+        class _Fallback:
+            def poll(self):
+                return None
+
         class _Process:
             def __init__(self):
                 self.wait_calls = 0
@@ -15974,6 +15978,70 @@ class TestAwaitContainerProfilingWiring:
             def wait(self, timeout=None):
                 self.wait_calls += 1
                 if timeout is not None and self.wait_calls <= 2:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                return 0
+
+            def terminate(self):
+                pass
+
+        client = _Client()
+        fallback = _Fallback()
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: _Process())
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *args, **kwargs: subprocess.CompletedProcess(
+                                args[0], 0, stdout="0\n", stderr=""))
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+                    "session": "s-ended", "warning": None,
+                    "session_line": None, "sampler": None,
+                    "profiler_status": None}
+        docker = shutil.which("docker")
+        assert run_gate.await_container(
+            docker, name, {"kind": "command"}, "suite", tmp_path,
+            tmp_path, tmp_path, profiler=profiler, watch=fallback) == 0
+        assert client.watch_calls == 2
+        captured = capsys.readouterr()
+        assert "went idle" in captured.err
+        assert "in-process watch" in captured.out
+
+    def test_live_daemon_watch_does_not_trigger_fallback(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        _log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+
+        class _Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class _Client:
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return _Watch()
+
+        class _Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
                     raise subprocess.TimeoutExpired("docker logs", timeout)
                 return 0
 
@@ -15991,17 +16059,14 @@ class TestAwaitContainerProfilingWiring:
                                            "profile_error": None,
                                            "profile_ref": None})
         profiler = {"mode": "daemon", "client": client, "daemon": "d",
-                    "session": "s-ended", "warning": None,
+                    "session": "s-live", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
         docker = shutil.which("docker")
         assert run_gate.await_container(
             docker, name, {"kind": "command"}, "suite", tmp_path,
             tmp_path, tmp_path, profiler=profiler) == 0
-        assert client.watch_calls == 2
-        err = capsys.readouterr().err
-        assert "went idle" in err
-        assert "continuing without daemon liveness" in err
+        assert client.watch_calls == 1
 
     def test_tick_exception_never_breaks_the_wait_loop(self, tmp_path, monkeypatch):
         # B1d (round-1 review): a tick failure must not escape the wait
@@ -16934,6 +16999,64 @@ class TestBareHostProfilingWiring:
         err = capsys.readouterr().err
         assert "went idle" in err
         assert "continuing without daemon liveness" in err
+
+    def test_bare_host_live_daemon_watch_does_not_trigger_fallback(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return Watch()
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("bare lane", timeout)
+                return 0
+
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        client = Client()
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": "d", "session": "s-bare-live",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None})
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *args, **kwargs: Process())
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda *args, **kwargs: {"resources": None,
+                                                     "profile_error": None,
+                                                     "profile_ref": None})
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *args, **kwargs: None)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        assert run_gate.run_bare_host_lane(
+            {"kind": "command", "environment": "bare-host",
+             "argv": ["true"], "clean_tree": False},
+            "suite", repo, repo, repo, run_record={}, profile_plan=plan) == 0
+        assert client.watch_calls == 1
 
     def test_direct_call_with_no_run_record_still_profiles(
             self, tmp_path, monkeypatch):
@@ -18161,6 +18284,64 @@ class TestExecLaneProfilingWiring:
         assert client.watch_calls == 2
         err = capsys.readouterr().err
         assert "continuing without daemon liveness" in err
+
+    def test_exec_live_daemon_watch_does_not_trigger_fallback(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.watch_calls = 0
+
+            def watch(self, session):
+                self.watch_calls += 1
+                return Watch()
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        client = Client()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-live-exec", "session_line": None,
+                                "warning": None, "sampler": None,
+                                "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert client.watch_calls == 1
 
     def test_exec_daemon_watch_finally_drains_a_live_reader(
             self, tmp_path, monkeypatch):
