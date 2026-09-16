@@ -384,26 +384,73 @@ class TestEarlyMutationSentinels:
         assert run_gate.main(["doctor"]) == 0
         assert "1 entry older than 1 day" in capsys.readouterr().out
 
-    def test_foreign_record_dry_run_is_flushed_and_terminal(
+    def test_foreign_record_dry_run_is_terminal_before_fresh_preflight(
             self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
+        record = plant_inflight(proj, repo, None, runner="exec")
+        before = record.read_bytes()
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+
+        def fresh_preflight_must_not_run(*args, **kwargs):
+            raise AssertionError("foreign-record refusal fell through")
+
+        monkeypatch.setattr(run_gate, "physical_path",
+                            fresh_preflight_must_not_run)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        assert record.read_bytes() == before
+
+    def test_foreign_record_refusal_is_visible_before_the_process_exits(
+            self, tmp_path):
+        """The refusal is operational output, so it must reach a pipe before
+        the long-lived producer exits. A separate file is the synchronization
+        point: it is written only after `resolve_inflight` returns, while the
+        child deliberately remains alive until the parent releases it."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
         plant_inflight(proj, repo, None, runner="exec")
-        calls = []
-        real_print = print
+        returned = tmp_path / "returned"
+        release = tmp_path / "release"
+        probe = tmp_path / "flush-probe.py"
+        probe.write_text(textwrap.dedent(f"""\
+            import importlib.util
+            import sys
+            import time
+            from pathlib import Path
 
-        def spy(*args, **kwargs):
-            if args and "foreign record" in str(args[0]):
-                calls.append(kwargs)
-            return real_print(*args, **kwargs)
-
-        monkeypatch.setattr(run_gate, "print", spy, raising=False)
-        result = run_gate.resolve_inflight(
-            "docker", {}, "suite", proj, repo, repo,
-            fresh=False, dry_run=True, run_record=None)
-        assert result == 0
-        assert len(calls) == 1
-        assert calls[0]["flush"] is True
+            spec = importlib.util.spec_from_file_location(
+                "flush_probe_run_gate", {str(_TOOL)!r})
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            result = module.resolve_inflight(
+                "docker", {{}}, "suite", Path({str(proj)!r}),
+                Path({str(repo)!r}), Path({str(repo)!r}),
+                fresh=False, dry_run=True, run_record=None)
+            Path({str(returned)!r}).write_text(str(result))
+            while not Path({str(release)!r}).exists():
+                time.sleep(0.01)
+        """))
+        env = dict(os.environ)
+        env.pop("PYTHONUNBUFFERED", None)
+        proc = subprocess.Popen(
+            [sys.executable, str(probe)], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env)
+        try:
+            deadline = time.monotonic() + 60  # suite failsafe, not an oracle
+            while not returned.exists():
+                assert proc.poll() is None, proc.stderr.read()
+                if time.monotonic() >= deadline:
+                    pytest.fail("flush probe did not reach its synchronization point")
+                time.sleep(0.01)
+            os.set_blocking(proc.stdout.fileno(), False)
+            visible_while_alive = proc.stdout.read() or ""
+        finally:
+            release.write_text("")
+            proc.communicate(timeout=60)
+        assert proc.returncode == 0
+        assert "foreign record — refusing" in visible_while_alive
 
 
 # ---------------------------------------------------------------------------
