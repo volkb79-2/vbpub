@@ -360,3 +360,13 @@ def test_decide_drops_an_api_error_before_any_rescue_applies():
     # long AND a finding signal AND above the checkpoint threshold -- still dropped
     assert not decide(api, ExtractConfig()).keep
     assert decide(api, ExtractConfig(hide_api_errors=False)).keep
+
+
+def test_decide_drops_text_at_the_exact_long_comment_boundary():
+    from nyxloom.session_extract.select import decide
+
+    config = ExtractConfig(long_comment_chars=4)
+    exact = NormalizedEvent(
+        0, "exact", _TS, EventKind.ASSISTANT_TEXT, "four", checkpoint_score=0.0
+    )
+    assert not decide(exact, config).keep
