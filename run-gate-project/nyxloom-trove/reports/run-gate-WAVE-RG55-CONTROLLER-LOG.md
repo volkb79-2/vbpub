@@ -3210,3 +3210,11 @@ implementation record. Those changes are unrelated to source-backed Assay
 consumption and would contradict the P5 implementation checkpoint, so they
 were not copied into `rg55-p5-assay63-reconcile`; its P5 FIXED statuses and
 RG-63 row remain authoritative pending final gates and release.
+
+### RW-261 — 2026-09-16 16:50:51Z — correct observer deadline
+
+The one-shot observer file was not present at the rough `16:50` label. The
+observer itself is still live as PID `2638622`, started at `16:32:39Z`, with a
+1210-second sleep; its actual marker target is therefore approximately
+`16:52:49Z`. The missing file is an observation timing discrepancy, not a
+mutation terminal state; no P1/P5 progress or verdict was read.
