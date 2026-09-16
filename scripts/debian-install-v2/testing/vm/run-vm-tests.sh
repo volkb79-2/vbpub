@@ -28,7 +28,7 @@ trap cleanup EXIT
 "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       python3 python3-pytest python3-pytest-cov util-linux fdisk udev systemd'
+       python3 python3-pytest python3-pytest-cov util-linux fdisk udev systemd rsync'
 
 # run-vm-harness.sh executes vmctl inside the persistent runner container.
 # The project is mounted read-only at /source; do not pass the cockpit/
