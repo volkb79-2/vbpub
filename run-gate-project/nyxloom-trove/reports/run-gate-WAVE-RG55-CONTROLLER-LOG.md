@@ -3306,3 +3306,11 @@ judged commit, the same-tree resume was relaunched successfully as wrapper PID
 at `NanoCpus=3000000000`. A session-detached P6-only observer is verified as
 watcher PID `3089418` (PPID 1), targeting
 `/tmp/rg55-observe-20260916-1739.log`; no new mutation progress was read.
+
+### RW-271 — 2026-09-16 17:21:44Z — Assay release branch advances without receipt
+
+The operator-owned assay source-backed worktree remains clean and has
+advanced to `ea72f244` (`Merge latest main before release gate`). No
+`assay-v6.3.*` tag is present, so the branch still has no release receipt and
+P5 final integration remains pending. This independent read did not inspect
+or alter any mutation stream.
