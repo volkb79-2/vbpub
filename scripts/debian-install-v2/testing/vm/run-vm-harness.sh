@@ -18,6 +18,9 @@
 # comes back to it. Start one persistent runner with `run-vm-harness.sh
 # --daemon` first, or let the first non-daemon subcommand auto-start one
 # (it stays running; `run-vm-harness.sh --stop-daemon` tears it down).
+# Docker's init reaper is enabled on that runner because QEMU's `-daemonize`
+# deliberately detaches its process; a plain `sleep infinity` as PID 1 would
+# leave exited QEMU children as zombies after every disposable run.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,6 +141,7 @@ ensure_runner() {
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     echo "+ starting persistent VM-harness runner ($NAME)" >&2
     docker run -d --name "$NAME" \
+        --init \
         --cgroup-parent="$VM_CGROUP_PARENT" \
         --label "mdt.vm.testing-dir=$HOST_TESTING_DIR" \
         -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \

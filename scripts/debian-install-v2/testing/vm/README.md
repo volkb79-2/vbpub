@@ -60,8 +60,9 @@ of the raw stock image (see "Skipping repeated first-boot cost" below):
 `run-vm-harness.sh` builds (if needed) and reuses one persistent runner
 container (a worktree-specific `debian-install-vm-harness-*`) across invocations — a VM started
 by one call needs to still be reachable by a later `wait`/`ssh`/`destroy`
-call against the same container. `./run-vm-harness.sh --stop-daemon` tears
-that runner down; the next command auto-starts a fresh one. The standard
+call against the same container. The runner enables Docker's init reaper so
+QEMU's detached child does not accumulate as a zombie after a run.
+`./run-vm-harness.sh --stop-daemon` tears that runner down; the next command auto-starts a fresh one. The standard
 real-device test command is `./run-vm-tests.sh`; it copies the test package
 into the guest and sets the VM-only opt-in there.
 
