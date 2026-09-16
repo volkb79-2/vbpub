@@ -2987,3 +2987,12 @@ the distinct state, and reattaches once before using the progress fallback.
 Four focused regression tests pass, and the implementation plus tests are
 committed on P5 as `26e6f344`. Any earlier P5 selftest predating this commit is
 invalid evidence and must be rerun from the quiet new tree.
+
+### RW-241 — 2026-09-16 14:48:37Z — P6 second resume hits another budget boundary
+
+The resumed P6 R2 run on the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40` terminated with exit 4. Its
+verdict records all 484 candidates in the mutation set: 467 killed, 15
+survived, no crashed or equivalent candidates, and 2 `budget_exceeded`
+placeholders. The lane therefore remains incomplete; the two placeholders
+must be resumed from this same tree before survivor triage and final gates.
