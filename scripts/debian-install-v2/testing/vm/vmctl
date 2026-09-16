@@ -322,7 +322,7 @@ cmd_wait() {
         # loopback, exactly where ensure_apt_cache() listens.
         ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 \
-            "echo 'Acquire::http::Proxy \"http://10.0.2.2:$APT_CACHE_PORT\";' | sudo tee /etc/apt/apt.conf.d/02vbpub-test-proxy >/dev/null"
+            "printf '%s\\n' 'Acquire::http::Proxy \"http://10.0.2.2:$APT_CACHE_PORT\";' 'Acquire::https::Proxy \"DIRECT\";' | sudo tee /etc/apt/apt.conf.d/02vbpub-test-proxy >/dev/null"
     fi
     log "run '$run' ready"
 }

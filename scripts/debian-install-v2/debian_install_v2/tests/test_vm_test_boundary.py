@@ -53,6 +53,7 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     vmctl = (VM / "vmctl").read_text()
     assert "-accel tcg" in vmctl
     assert "-nic \"user," in vmctl
+    assert 'Acquire::https::Proxy \\\"DIRECT\\\"' in vmctl
     assert "--privileged" not in "\n".join(
         line for line in vmctl.splitlines() if not line.lstrip().startswith("#")
     )
