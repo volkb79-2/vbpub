@@ -64,17 +64,24 @@ def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkey
     spec.loader.exec_module(module)
 
     monkeypatch.setenv("VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST", "1")
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="qemu\n"),
-    )
+    monkeypatch.setattr(module, "_running_in_container", lambda: False)
+    def qemu_probe(argv, **kwargs):
+        if argv[-1] == "--container":
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout="qemu\n")
+
+    monkeypatch.setattr(module.subprocess, "run", qemu_probe)
     assert module._is_disposable_vm_guest() is True
+    monkeypatch.setattr(module, "_running_in_container", lambda: True)
+    assert module._is_disposable_vm_guest() is False
+    monkeypatch.setattr(module, "_running_in_container", lambda: False)
 
     monkeypatch.setattr(
         module.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="docker\n"),
+        lambda argv, **kwargs: SimpleNamespace(returncode=0, stdout="docker\n")
+        if argv[-1] == "--container"
+        else SimpleNamespace(returncode=0, stdout="qemu\n"),
     )
     assert module._is_disposable_vm_guest() is False
 

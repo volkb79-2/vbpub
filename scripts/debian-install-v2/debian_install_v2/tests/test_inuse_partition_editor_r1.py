@@ -57,11 +57,26 @@ def run_cli(*args):
     return result
 
 
+def _running_in_container():
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def _is_disposable_vm_guest():
     """Return true only for a VM kernel, never for a Docker/cockpit kernel."""
     if os.environ.get("VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST") != "1":
         return False
+    # `--vm` alone can report the hosting VM from inside a privileged Docker
+    # container. Reject a container explicitly before asking which VM it is;
+    # the separate kernel boundary is the point of this gate.
+    if _running_in_container():
+        return False
     try:
+        container = subprocess.run(
+            ["systemd-detect-virt", "--container"],
+            capture_output=True, text=True, check=False,
+        )
+        if container.returncode == 0:
+            return False
         result = subprocess.run(
             ["systemd-detect-virt", "--vm"],
             capture_output=True, text=True, check=False,
