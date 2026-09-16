@@ -107,8 +107,9 @@ and gates-slice PSI. `stall_timeout` is reinterpreted as the idle bound (N in
 D-17) and defaults to `auto` = max(300 s, 3 × the stream's own cadence hint);
 the clock pauses under pressure; the verdict vocabulary of D-17 replaces "no
 progress for N". Without a daemon: the basic sampler (RW-12, 5 s tick) gives
-CPU/memory deltas for container lanes, `getrusage` gives nothing live for
-bare-host lanes → cadence + derived ceiling only, disclosed.
+CPU/memory deltas for container lanes, `os.wait4()` gives only final
+lane-child accounting for bare-host lanes → cadence + derived ceiling only,
+disclosed.
 
 **D-23 — assay judges its own candidates the same way.** Default
 `budget_per_candidate = "auto"` (D-17 layer 3, printed in the plan line);

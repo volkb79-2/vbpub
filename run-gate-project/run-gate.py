@@ -12,7 +12,50 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 41  # rev 41: RG-55 wave, package P2 (the run-gate client side
+__revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+# third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
+# where rev 41 shipped them categorically unprofiled. Daemon path: the
+# target is run-gate's OWN process (self container id from /etc/hostname +
+# a direct `docker inspect`, never `container_state()` -- that one raises
+# on an ambiguous docker failure), scope ALWAYS `container-shared`,
+# disclosed as DEVCONTAINER-WIDE; daemon-absent path: `os.wait4(pid, 0)` on
+# the LANE'S OWN child (`method: "rusage"`, `memory.source:
+# "rusage-maxrss"` -- that child's own peak RSS, exact, never a number
+# borrowed from some other child run-gate happened to reap first; `scope:
+# null` since rusage measures via wait4(), not a cgroup read), NEVER a
+# `BasicSampler` fallback on this path (RW-27b: no cgroup here is safely
+# attributable to one lane's own child). Round-1 review (RW-43) found the
+# Historical rejected first cut of the daemon-absent path used
+# `getrusage(RUSAGE_CHILDREN)`
+# deltas instead -- a monotone high-water mark over every child this
+# process had EVER reaped, so a `["true"]` lane was credited with
+# run-gate's own docker/git subprocess RSS (~36 MiB) instead of its own;
+# repaired to the `wait4()`-on-the-lane's-own-pid shape described above,
+# which cannot mix in another child's number by construction. This
+# project's own five lanes are all bare-host, so its own `selftest` now
+# records a profile and `footprint --write` stops refusing for this
+# project. RG-60: an exec lane now writes the same inflight record a
+# container lane does (client-death recovery, RW-1's rule extended to the
+# second lane kind that lacked it) -- round-1 review (RW-43/B3) found the
+# record indistinguishable from a container-written one, so the container
+# path could `docker rm -f` a shared runner it never created; both writers
+# now stamp `runner` and the container path refuses a foreign one.
+# RG-59: a live run's daemon-not-running warning names the real cause
+# (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
+# RG-59) instead of reusing "produced unparsable stdout" for two
+# structurally different failures. RG-58: a bare-host lane declaring
+# `stall_timeout` (silently inert -- no watch of any kind exists on that
+# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
+# `R-30c` for the doctor profiler check, R-30's status count, the stale
+# 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,
+# [profile]/[footprint] CONSUMERS schema blocks, a real footprint
+# transcript, RUN_GATE_PROC_ROOT in usage(), two stale cross-references).
+# RW-28: assay.toml's r2 lane sets `budget_per_candidate = "900s"`
+# (mandatory for every R2 lane from now on -- a hung mutation candidate
+# blocks the whole run otherwise, nothing else bounds ONE candidate).
+# rev 41: RG-55 wave, package P2 (the run-gate client side
 # of the cgroup-profiler integration; contract-first against
 # RG55-INTERFACE-CONTRACT.md, alongside P1's daemon in a separate worktree)
 # -- per-lane resource profiling: peak memory (+baseline, p90, DAMON
@@ -123,7 +166,24 @@ PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 h
 # pre-existing suite by one autouse fixture; the RG-55 wiring tests that
 # mean to exercise the real default unset it, or set it to 'on', explicitly.
 PROFILE_AMBIENT_ENV_VAR = "RUN_GATE_PROFILE"
-SHARED_LOCK_DIR = "/tmp"  # RG-20 instance/service-scoped gate serialization
+SHARED_LOCK_DIR = "/tmp"  # RG-20/R-41 default: host-wide by design (see below)
+LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"  # tests / a namespaced lock directory
+
+
+def _lock_dir() -> Path:
+    """The RG-20 (`R-29`)/R-41 shared coordination directory. `SHARED_LOCK_DIR`
+    (`/tmp`) is the PRODUCTION default and stays host-wide on purpose — R-41's
+    exec mutex and R-29's shared-infra mutex both exist specifically to
+    coordinate SEPARATE run-gate invocations on one host, so scoping this
+    per-worktree/per-project would defeat their own purpose. `RUN_GATE_LOCK_DIR`
+    is the same override shape as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`
+    (an operator-facing namespacing knob, and this suite's own escape hatch —
+    RW-46a: the test suite must never write its locks into host /tmp, where
+    several concurrently-run copies of this same suite would otherwise
+    collide). Re-read on every call, never cached at import, so a test's
+    `monkeypatch.setenv` reaches every call site including a freshly spawned
+    subprocess."""
+    return Path(os.environ.get(LOCK_DIR_ENV_VAR, SHARED_LOCK_DIR))
 
 # RG-27 lane invocation history. The store is PER (judged worktree × project):
 # it lives under the EFFECTIVE project dir, which R-21 already relocates into
@@ -215,6 +275,9 @@ PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
 PROFILE_SAMPLE_SECONDS = 5
 PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
                         "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+# Self-target discovery is optional profiling preflight, so neither Docker
+# identity probe may hold a lane longer than the ctl status/version probes.
+PROFILE_IDENTITY_TIMEOUT_SECONDS = 5
 PROFILE_CONTRACT = 1                # contract Sec 1.4
 PROFILE_TOKEN_ENV = "RUN_GATE_PROFILE_SESSION"     # contract Sec 4.1
 PROFILE_ENABLED_DEFAULT = True
@@ -374,6 +437,21 @@ def _validate_cpus(value: object, where: str) -> None:
              f"or '1.5' (docker's own --cpus grammar; got {value!r})")
 
 
+def bare_host_stall_timeout_inert_reason(lane_name: str) -> str:
+    """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
+    both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
+    WARN use for a bare-host lane declaring `stall_timeout`:
+    `run_bare_host_lane` is a plain `subprocess.run` with no ProgressWatch,
+    no LogStreamWatch, no timer of any kind (R-40 applies to container/exec
+    lanes only, where `await_container` actually tails logs/polls
+    progress) — the key is accepted at load and then silently inert for
+    the lane's entire run, exactly the "copied a container lane's config
+    as a template" trap the backlog entry describes."""
+    return (f"lane {lane_name!r}: stall_timeout is inert on a bare-host "
+           f"lane (no watch, no timer; R-40 applies to container/exec "
+           f"lanes only)")
+
+
 def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
     kind = table.get("kind")
@@ -420,6 +498,17 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # container lane) rather than the assay progress file — the two
         # sources are disclosed by name at run time (print_lane_bounds), not
         # distinguished here. Nothing left to refuse by kind alone.
+        # RG-58 (RW-27a): a BARE-HOST lane is the one exception — there is
+        # no watch of any kind on that runner (run_bare_host_lane's own
+        # plain subprocess.run), so the key loads clean and then does
+        # nothing all run. Config-shape questions belong at load time
+        # (R-30a's own precedent for a cheap, load-time-computable
+        # warning); this is one load-time WARNING per declaring lane, never
+        # a refusal (D5's option 1 was explicitly NOT chosen).
+        if table.get("environment") == BARE_HOST_ENV:
+            print(f"{PROG}: WARNING "
+                 f"{bare_host_stall_timeout_inert_reason(name)}",
+                 file=sys.stderr, flush=True)
     if "memory" in table:
         _validate_memory(table["memory"], f"{where} [lanes.{name}]")
     if "resources" in table:
@@ -1014,6 +1103,82 @@ def _last_successful(values) -> object:
     return None
 
 
+# RG-59: docker's OWN stderr wording for "the target of `docker exec`
+# is not a live container" -- case-folded (RG-44's own precedent:
+# GONE_SIGNALS above learned the hard way that a docker version's exact
+# casing is not portable across hosts/versions). Matched against
+# ProfilerClient._ctl's `stderr_tail` to tell "the daemon container itself
+# is absent/stopped" apart from "a RUNNING daemon returned genuinely
+# malformed stdout" -- the two used to collapse into the SAME generic
+# "produced unparsable stdout" reason, naming the wrong cause in the far
+# more common case (no daemon deployed at all).
+#
+# S2 (round-1 review): the FIRST cut of this matched any stderr line
+# CONTAINING "is not running"/"no such container" (case-folded) -- which
+# also matches a daemon container that IS running and IS reachable, but
+# whose own `cgprofile` process crashed with an application-level
+# exception that happens to mention those same words (e.g.
+# `cgprofile.errors.TargetError: target container 9f01 is not running`,
+# with stdout carrying the traceback and an ordinary Python exit code of
+# 1) -- reporting "daemon not running, start it" for a daemon that is
+# demonstrably running is the opposite of RG-59's own goal. Narrowed to
+# docker's own exec failure signature specifically: `docker exec` itself
+# never reaching `cgprofile` returns one of docker's own reserved exit
+# wording that both belongs to Docker and specifically names absence or a
+# stopped container -- never an exit code alone, and never a bare substring
+# match against arbitrary stderr content a daemon's OWN application code
+# might have produced.
+#
+# S11 (round-2 review, RW-51): those reserved exit codes are NOT all the
+# same condition. 125 says only that the Docker CLI itself failed; permission,
+# transport, argument, and daemon failures all collapse into it, so it cannot
+# certify that a particular container is absent. 126/127 (container command not
+# found) mean `docker exec` DID reach a live container -- the container is
+# running, `cgprofile` itself could not be started inside it (a broken
+# image or PATH), and telling the operator to `ciu up` a container that is
+# already up is the wrong remedy for the wrong cause, reproduced live on
+# this host (an OCI runtime exec failure, exit 126). Split into two exit-
+# code set and a distinct reason instead of folding them into absence.
+_DAEMON_BROKEN_EXIT_CODES = (126, 127)
+_DOCKER_EXEC_FAILURE_STDERR_PREFIXES = ("docker:", "Error response from daemon:")
+_DOCKER_CONTAINER_ABSENCE_MARKERS = (
+    "no such container", "no such object", "is not running")
+
+
+def _stderr_names_daemon_not_running(stderr_tail: str,
+                                     returncode: int | None = None) -> bool:
+    del returncode  # absence is a statement about stderr content, not a code
+    text = stderr_tail.strip()
+    if not text.startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES):
+        return False
+    folded = text.casefold()
+    return any(marker in folded for marker in _DOCKER_CONTAINER_ABSENCE_MARKERS)
+
+
+def daemon_not_running_reason(daemon_name: str) -> str:
+    """RG-59: the ONE wording both `cmd_doctor`'s "profiler daemon" WARN
+    and `ProfilerClient._ctl`'s live-run warning use for "the daemon
+    container is not running" -- factored into one function so the two
+    surfaces can never drift apart (the whole point of this backlog entry:
+    doctor already named the real cause and the right remedy, the live-run
+    warning did not)."""
+    return (f"{daemon_name!r} not running (start it: cd "
+           f"scripts/cgroup-profiler && ciu up)")
+
+
+def daemon_broken_reason(daemon_name: str) -> str:
+    """S11 (round-2 review, RW-51): exit 126/127 means `docker exec`
+    reached the daemon container but could not start `cgprofile` inside it
+    (a broken image or PATH) -- the container IS running, so
+    `daemon_not_running_reason`'s "not running ... ciu up" wording names
+    the wrong condition and the wrong remedy. Named separately so a
+    caller never tells the operator to start a container that is already
+    up."""
+    return (f"{daemon_name!r} container is running but could not start "
+           f"`cgprofile` in it (exit 126/127 — broken image or PATH, not "
+           f"a stopped container)")
+
+
 class ProfilerClient:
     """RG55-INTERFACE-CONTRACT.md Sec 1-2. Every method returns
     `(parsed_json | None, failure_reason | None)` — NEVER raises, NEVER
@@ -1071,8 +1236,34 @@ class ProfilerClient:
         try:
             doc = json.loads(proc.stdout)
         except json.JSONDecodeError:
+            # RG-59: this `docker exec` can fail BEFORE `cgprofile` ever
+            # runs (the daemon container itself is absent/stopped) -- stdout
+            # is then empty, so this SAME exception fires for a completely
+            # different, far more common cause than "a running daemon
+            # returned garbage". `stderr_tail` is docker's own wording, not
+            # cgprofile's, and is the only place the two are told apart:
+            # named explicitly here rather than folded into the generic
+            # "unparsable stdout" reason, which stays reserved for an
+            # ACTUALLY malformed response from a daemon that IS running.
+            if _stderr_names_daemon_not_running(stderr_tail, proc.returncode):
+                return None, daemon_not_running_reason(self.daemon)
+            # S11 (round-2 review, RW-51): 126/127 reach a LIVE container
+            # that could not start `cgprofile` -- a distinct condition
+            # from "not running", checked after the not-running/stderr-
+            # prefix test above so a real docker "not running" stderr
+            # wording still wins even on one of these exit codes.
+            if proc.returncode in _DAEMON_BROKEN_EXIT_CODES:
+                return None, daemon_broken_reason(self.daemon)
+            if proc.returncode != 0 and not proc.stdout.strip():
+                return None, (f"`docker exec` for `cgprofile ctl {verb}` "
+                              f"failed before a valid cgprofile response "
+                              f"(exit {proc.returncode}); stderr: "
+                              f"{stderr_tail}")
             return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
                           f"(exit {proc.returncode}); stderr: {stderr_tail}")
+        except Exception as exc:
+            return None, (f"`cgprofile ctl {verb}` JSON parser failed "
+                          f"unexpectedly: {exc}")
         if not isinstance(doc, dict):
             return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
                           f"(exit {proc.returncode})")
@@ -1081,7 +1272,11 @@ class ProfilerClient:
                           f"{doc.get('contract')!r}, this client accepts "
                           f"{PROFILE_CONTRACT} only")
         if not doc.get("ok", False):
-            err = doc.get("error") or {}
+            err = doc.get("error")
+            if err is not None and not isinstance(err, dict):
+                return None, (f"`cgprofile ctl {verb}` response has a "
+                              "non-object 'error' value")
+            err = err or {}
             return None, (f"`cgprofile ctl {verb}` refused "
                           f"({err.get('code', 'unknown')}): "
                           f"{err.get('message', stderr_tail)}")
@@ -1095,6 +1290,14 @@ class ProfilerClient:
             return None, (f"`cgprofile ctl {verb}` response is missing the "
                           f"required {required!r} key (contract Sec 1.4 "
                           f"minor-version skew?)")
+        if verb == "start" and (
+                not isinstance(doc["session"], str)
+                or not doc["session"].strip()):
+            return None, ("`cgprofile ctl start` response has an unusable "
+                          "'session' value (expected a non-empty string)")
+        if verb == "stop" and not isinstance(doc["summary"], dict):
+            return None, ("`cgprofile ctl stop` response has an unusable "
+                          "'summary' value (expected an object)")
         return doc, None
 
     def version(self) -> tuple[dict | None, str | None]:
@@ -1566,8 +1769,9 @@ class BasicSampler:
 def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
                  ) -> dict:
     """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is the FROZEN
-    contract's four-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
-    `cpu_cores_avg`, `duration_median_s`) built from this LANE's entry in
+    contract's five-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
+    `cpu_cores_avg`, `duration_median_s`, `source` — B5, round-2 review
+    RW-51, contract Sec 3a) built from this LANE's entry in
     `run-gate.footprint.json` when a manifest exists next to the effective
     project's `run-gate.toml` and names this lane — `null` otherwise (no
     manifest yet, or a lane the manifest has never seen a profiled run for).
@@ -1629,6 +1833,93 @@ def print_host_pressure_line(profiler_status: str | None = None) -> None:
     print(line, flush=True)
 
 
+def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
+    """RG-57/RW-27b — the bare-host daemon path's own target resolution: is
+    THIS run-gate process itself running inside a container? Read
+    `/etc/hostname` only to locate a CANDIDATE Docker object, resolve its full
+    id with direct `docker inspect`, then require the candidate's mount-
+    namespace inode (read by `docker exec`) to equal this process's own. A
+    hostname/name match alone proves only that some object has that name; it
+    is never accepted as proof that the object contains this process. Never
+    call `container_state()` — that
+    one calls `fail_infra()` and raises on an AMBIGUOUS docker failure
+    (contract: leave the inflight record untouched, let a human fix
+    docker), which must never be allowed to abort a bare-host lane's own
+    run just because profiling could not resolve a target. Written in
+    `ProfilerClient._ctl`'s own never-raises style instead: neither a read
+    failure nor an inspect miss is fatal to the lane. A positive Docker
+    "no such object/container" answer is the ordinary "not running in a
+    container" case; inaccessible Docker, malformed output, and a namespace
+    mismatch are reported as indeterminate identity instead of being folded
+    into absence. The caller degrades to the rusage path with the precise
+    reason disclosed.
+
+    Returns `(container_id, skip_reason)` — exactly one is not `None`."""
+    try:
+        hostname = Path("/etc/hostname").read_text().strip()
+    except OSError as exc:
+        return None, f"not running in a container (could not read /etc/hostname: {exc})"
+    if not hostname:
+        return None, "not running in a container (/etc/hostname is empty)"
+    try:
+        self_mount_ns = os.readlink("/proc/self/ns/mnt")
+    except OSError as exc:
+        return None, ("could not verify current container identity "
+                      f"(could not read /proc/self/ns/mnt: {exc})")
+    if re.fullmatch(r"mnt:\[\d+\]", self_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(/proc/self/ns/mnt returned {self_mount_ns!r})")
+    try:
+        probe = subprocess.run([docker, "inspect", "-f", "{{.Id}}", hostname],
+                               capture_output=True, text=True,
+                               errors="replace",
+                               timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect failed: {exc})")
+    if probe.returncode != 0:
+        tail = (probe.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        if any(marker in tail.casefold()
+               for marker in ("no such object", "no such container")):
+            return None, (f"not running in a container (docker inspect "
+                          f"{hostname!r}: {tail})")
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} failed with exit "
+                      f"{probe.returncode}: {tail})")
+    container_id = probe.stdout.strip()
+    if not container_id:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} returned no id)")
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect returned malformed container id "
+                      f"{container_id!r})")
+    try:
+        namespace_probe = subprocess.run(
+            [docker, "exec", container_id, "/usr/bin/readlink",
+             "/proc/self/ns/mnt"], capture_output=True, text=True,
+            errors="replace", timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed: {exc})")
+    if namespace_probe.returncode != 0:
+        tail = (namespace_probe.stderr.strip().splitlines()
+                or ["(no stderr)"])[-1]
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed with exit "
+                      f"{namespace_probe.returncode}: {tail})")
+    candidate_mount_ns = namespace_probe.stdout.strip()
+    if re.fullmatch(r"mnt:\[\d+\]", candidate_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe returned "
+                      f"{candidate_mount_ns!r})")
+    if candidate_mount_ns != self_mount_ns:
+        return None, (f"hostname {hostname!r} resolves to container "
+                      f"{container_id}, but that object does not identify "
+                      f"this process's container (mount namespaces differ)")
+    return container_id, None
+
+
 def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          worktree: Path, docker: str, plan: dict,
                          container_name: str, container_id: str,
@@ -1680,7 +1971,9 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
             # the prescription that every remaining daemon-data access
             # becomes `.get()`.
             state["session"] = start_doc.get("session")
-            baseline = start_doc.get("target", {}).get("baseline_memory_bytes")
+            target = start_doc.get("target")
+            baseline = (target.get("baseline_memory_bytes")
+                        if isinstance(target, dict) else None)
             baseline_mib = (round(baseline / (1024 * 1024))
                             if isinstance(baseline, (int, float))
                             and not isinstance(baseline, bool) else "?")
@@ -1744,6 +2037,245 @@ def finish_lane_profiling(state: dict) -> dict:
            "profile_ref": None}
 
 
+def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
+                              worktree: Path, docker: str | None,
+                              plan: dict) -> dict:
+    """RG-57/RW-27b — the bare-host counterpart to `start_lane_profiling`.
+    A bare-host lane has no container/runner of run-gate's own to hand a
+    caller-supplied id: the TARGET is run-gate's own process
+    (`resolve_self_container_id`), and the scope is ALWAYS
+    `container-shared` (RG55-INTERFACE-CONTRACT.md Sec 3 — a bare-host
+    invocation shares its devcontainer's cgroup with everything else
+    running in it, the same relationship an exec lane's persistent runner
+    has). On ANY failure — docker missing, not running in a container,
+    `ctl version` failing, `ctl start` failing — this NEVER falls back to a
+    `BasicSampler` (RW-27b: explicit and deliberate — there is no cgroup
+    here safely attributable to just this lane's own child the way a fresh
+    ephemeral container's cgroup is; a basic-path sample would silently mix
+    in run-gate's own process and every OTHER bare-host lane running
+    concurrently in this devcontainer, which is worse than no sample, not
+    better). It degrades to `mode: "rusage"` instead, for the caller to
+    finish with `os.wait4(pid, 0)` on its own child, which hands back that
+    child's exact resource accounting directly (round-1 review B1/RW-43).
+
+    On `start` success this returns the SAME state shape `start_lane_
+    profiling` returns (mode "daemon", client/session/session_line/
+    profiler_status) so `finish_lane_profiling(state)` can be reused
+    VERBATIM for the daemon sub-case — only how the target id and the scope
+    were decided differs, not what happens afterward."""
+    state = {"mode": "rusage", "client": None, "daemon": plan.get("daemon"),
+             "session": None, "session_line": None, "warning": None,
+             "sampler": None, "profiler_status": None,
+             "disabled_reason": plan.get("disabled_reason", "disabled")}
+    if not docker:
+        state["warning"] = "docker not found on PATH"
+        return state
+    container_id, skip_reason = resolve_self_container_id(docker)
+    if container_id is None:
+        state["warning"] = skip_reason
+        return state
+    client = ProfilerClient(docker, plan["daemon"])
+    state["client"] = client
+    version_doc, reason = client.version()
+    if version_doc is None:
+        state["warning"] = reason
+        return state
+    cgprofile_ver = version_doc.get("cgprofile", "?")
+    daemon_damon = (version_doc.get("daemon") or {}).get("damon", "unavailable")
+    state["profiler_status"] = (f"{plan['daemon']} (cgprofile "
+                                f"{cgprofile_ver}, damon {daemon_damon})")
+    meta = profile_meta(lane, lane_name, project_dir, worktree)
+    interval = float(budget_seconds(plan["interval"]))
+    start_doc, start_reason = client.start(
+        container_id, "container-shared", token=plan.get("token"),
+        damon=plan["damon"], interval=interval, meta=meta)
+    if start_doc is None:
+        state["warning"] = start_reason
+        return state
+    state["mode"] = "daemon"
+    # B1c (round-1 review precedent, same defense in depth as
+    # `start_lane_profiling`): `.get()`, never a bare subscript.
+    state["session"] = start_doc.get("session")
+    target = start_doc.get("target")
+    baseline = (target.get("baseline_memory_bytes")
+                if isinstance(target, dict) else None)
+    baseline_mib = (round(baseline / (1024 * 1024))
+                    if isinstance(baseline, (int, float))
+                    and not isinstance(baseline, bool) else "?")
+    damon_state = start_doc.get("damon", "unavailable")
+    state["session_line"] = (
+        f"run-gate: profile session {state['session']} "
+        f"(scope container-shared, baseline {baseline_mib} MiB, "
+        f"damon {damon_state})")
+    return state
+
+
+def _self_rss_bytes() -> int | None:
+    """RW-46b. `os.wait4()`'s `ru_maxrss` is a fork+exec hiwater mark, and
+    COW page-table inheritance means a short-lived child's own high-water
+    RSS can never fall below the PARENT's (run-gate's own) resident size
+    at the moment of fork — proven directly against `Popen`/`posix_spawn`/
+    raw `fork()+exec()` (round-1 review B1 residual finding, RW-43's own
+    REPORT): an artificial small parent (~11 MiB resident) forking
+    `/bin/true` measured `ru_maxrss` ~11 MiB for the trivial child; the
+    SAME fork with a big parent (300 MiB allocated first) measured
+    ~311-318 MiB for the SAME trivial child, on all three mechanisms
+    identically. `run_bare_host_lane` reads this IMMEDIATELY BEFORE
+    spawning the lane's own child (the closest this process can get to
+    "resident size at fork time" without racing the fork itself) and
+    hands it to `finish_bare_host_profiling` as the rusage summary's
+    `memory.floor_bytes` — not a bug fix (there is nothing left in the
+    accounting itself to fix; `os.wait4` already reports the ONE child's
+    own exact numbers, RW-43/B1), but an honest disclosure that a peak at
+    or below this floor cannot be distinguished from "no measurable
+    footprint beyond run-gate's own", per contract Sec 1.7. Reads resident
+    pages (field index 1) from `/proc/self/statm`, honors `RUN_GATE_PROC_
+    ROOT` like `read_host_pressure_snapshot`/`cgroup_namespace_is_private`
+    so a test can drive it with a fake `<root>/self/statm`. `None` when
+    unreadable or malformed — absent is never zero, and a fabricated floor
+    would be worse than no floor at all."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        fields = (root / "self" / "statm").read_text().split()
+        resident_pages = int(fields[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, IndexError, ValueError):
+        return None
+    if resident_pages < 0 or page_size <= 0:
+        return None
+    return resident_pages * page_size
+
+
+# RG-57/RW-27b: the schema-1 Summary's non-rusage sections, built once so
+# `finish_bare_host_profiling`'s rusage branch does not hand-roll four
+# separate all-null dicts inline. Every leaf here is a fact wait4()
+# structurally cannot supply (contract Sec 1.7: absent means unknown, never
+# fabricated) -- `pressure`/`faults`/`events`/`host`/`pids`/`damon` are all
+# session- or cgroup-scoped facts a wait4()-based accounting call has no way
+# to read at all, not merely facts this run chose not to sample.
+_RUSAGE_NULL_SECTIONS = {
+    "pressure": {"memory_some_stall_seconds": None, "memory_full_stall_seconds": None,
+                "cpu_some_stall_seconds": None, "io_some_stall_seconds": None,
+                "io_full_stall_seconds": None},
+    "faults": {"pgmajfault": None, "workingset_refault_anon": None,
+              "workingset_refault_file": None},
+    "pids": {"peak": None},
+    "host": {"start": None, "end": None, "memory_full_stall_seconds": None,
+            "memory_some_stall_seconds": None, "slice": None},
+    "events": {"oom_kill": None, "limit_drift": None, "memory_high_breach": None},
+}
+
+
+def finish_bare_host_profiling(state: dict, ru,
+                               started_at: str, ended_at: str,
+                               measured_duration_seconds: float,
+                               floor_bytes: int | None = None) -> dict:
+    """RG-57/RW-27b's counterpart to `finish_lane_profiling` — same
+    three-field return shape (`{'resources', 'profile_error',
+    'profile_ref'}`), called from `run_bare_host_lane`'s own `finally`
+    around the child's own `os.wait4()`. `mode == 'daemon'` delegates
+    VERBATIM to `finish_lane_profiling` (the daemon-path Summary comes back
+    from `ctl stop` exactly like an exec lane's does — contract Sec 4
+    obligation 2 is unchanged by WHERE the target container id came from).
+
+    `mode == 'rusage'` builds the schema-1 Summary BY HAND from `ru`, the
+    `resource.struct_rusage` that `os.wait4(pid, 0)` hands back for the
+    LANE'S OWN child and ONLY that child (round-1 review B1/RW-43: the
+    historical rejected `getrusage(RUSAGE_CHILDREN)`-delta shape was a monotone
+    high-water mark over EVERY child this run-gate process had ever reaped
+    -- including its own `docker inspect`/`ctl version` subprocesses --
+    so a lane smaller than something already reaped was credited with the
+    larger number; a live `["true"]` probe recorded ~36 MiB of run-gate's
+    own tooling instead of a few hundred KiB of its own). `os.wait4`
+    returns the exact accounting of the one pid it waited on, so there is
+    no before/after bracket to get wrong and no honest case where the
+    number can be stale or borrowed from another child -- `ru` is always
+    exactly this lane's own child, never `None` once the wait succeeds.
+    `scope: None` is a deliberate design choice, not an oversight: the
+    contract's `scope` enum (`"container"|"container-shared"`) describes a
+    CGROUP relationship, and rusage measures via `wait4()`/process
+    accounting, never a cgroup read at all — no contract value is honest
+    here, and the handoff's own "everything wait4 cannot give is null"
+    rule extends naturally to a fact (cgroup scope) wait4 structurally
+    cannot supply. `memory.peak_bytes` is `ru.ru_maxrss * 1024` (Linux
+    reports KiB) — the lane's own child's peak RSS (`source:
+    "rusage-maxrss"` discloses exactly that caveat downstream, in
+    `footprint`/`doctor`/`history`).
+
+    `floor_bytes` (RW-46b) is run-gate's OWN resident memory, read by the
+    caller immediately before spawning the child (`_self_rss_bytes()`) —
+    fork+exec's COW inheritance means `peak_bytes` can never honestly fall
+    below it (see `_self_rss_bytes`'s own docstring for the proof).
+    `memory.peak_at_floor` is `True` when `peak_bytes <= floor_bytes`
+    (unmeasurable beyond that floor — not necessarily this lane's true
+    peak), `False` when it exceeds it (this child genuinely pushed the
+    high-water mark higher, a real measurement), and `None` only when
+    `floor_bytes` itself is `None` (unreadable `/proc/self/statm` —
+    contract Sec 1.7: absent is never fabricated as either True or
+    False). `measured_duration_seconds` is a monotonic-clock interval supplied
+    by the caller; the whole-second UTC stamps remain display metadata and are
+    never subtracted to derive a subsecond duration."""
+    if state["mode"] == "daemon":
+        return finish_lane_profiling(state)
+    if state["mode"] == "disabled":
+        return {"resources": None,
+               "profile_error": state.get("disabled_reason", "disabled"),
+               "profile_ref": None}
+    if state["mode"] != "rusage" or ru is None:
+        # Enabled and attempted, but `os.wait4()` never ran or raised —
+        # e.g. a state built for a lane whose child never started, or the
+        # R-36h containment around the wait4() bracket degrading a planted
+        # failure. Same shape `finish_lane_profiling`'s own "neither path
+        # ever got going" fallback returns.
+        return {"resources": None,
+               "profile_error": state.get("warning") or "no profile recorded",
+               "profile_ref": None}
+    duration_seconds = round(max(0.0, measured_duration_seconds), 3)
+    cpu_seconds = round(ru.ru_utime + ru.ru_stime, 3)
+    cores_avg = (round(cpu_seconds / duration_seconds, 3)
+                if duration_seconds else None)
+    peak_bytes = ru.ru_maxrss * 1024
+    peak_at_floor = (peak_bytes <= floor_bytes) if floor_bytes is not None \
+        else None
+    resources = {
+        "schema": 1,
+        "session": None,
+        "daemon": None,
+        "scope": None,
+        "method": "rusage",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": duration_seconds,
+        "interval_seconds": None,
+        "samples": None,
+        "target": {"container_id": None, "cgroup": None,
+                  "token": None, "targets_seen": None},
+        "memory": {
+            "peak_bytes": peak_bytes,
+            "source": "rusage-maxrss",
+            "floor_bytes": floor_bytes,
+            "peak_at_floor": peak_at_floor,
+            "baseline_bytes": None,
+            "peak_over_baseline_bytes": None,
+            "p90_bytes": None,
+            "median_bytes": None,
+            "swap_peak_bytes": None,
+            "anon_peak_bytes": None,
+            "file_peak_bytes": None,
+        },
+        "cpu": {
+            "seconds": cpu_seconds,
+            "cores_avg": cores_avg,
+            "cores_max": None,
+            "throttled_seconds": None,
+            "nr_throttled": None,
+        },
+        "damon": None,
+        **{k: dict(v) for k, v in _RUSAGE_NULL_SECTIONS.items()},
+    }
+    return {"resources": resources, "profile_error": None, "profile_ref": None}
+
+
 def print_profile_warning(state: dict) -> None:
     """Contract Sec 4.6, line 4 — ONE stderr warning per lane invocation
     (contract Sec 1.3), guarded by `state['_warned']` so a `stop` failure
@@ -1754,6 +2286,7 @@ def print_profile_warning(state: dict) -> None:
     if state.get("warning") and not state.get("_warned"):
         state["_warned"] = True
         suffix = ("basic in-lane sampling only" if state["mode"] == "basic"
+                 else "coarse rusage sampling only" if state["mode"] == "rusage"
                  else "no profile recorded")
         print(f"run-gate: WARNING profiling: {state['warning']} — {suffix}",
               file=sys.stderr, flush=True)
@@ -1824,13 +2357,19 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
         if isinstance(manifest_peak, (int, float)) \
         and not isinstance(manifest_peak, bool) else ""
+    # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
+    # already print, here on the LIVE per-run line — read far more often
+    # than `footprint --write`'s own table (round-1 review S1).
+    source_note = " [source: rusage-maxrss]" \
+        if mem.get("source") == "rusage-maxrss" else ""
+    floor_note = " (peak <= floor)" if mem.get("peak_at_floor") else ""
     print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
          f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
          f"s stalled on memory (full){hot_seg}; history median peak "
          f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
-         f"{manifest_seg}", flush=True)
+         f"{manifest_seg}{source_note}{floor_note}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2143,7 +2682,7 @@ def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]
     # diagnostic. A canonical GLOBAL order makes hold-and-wait cycles
     # impossible regardless of how each project lists its services.
     for svc in sorted(names):
-        path = Path(SHARED_LOCK_DIR) / f"run-gate-shared-{svc}.lock"
+        path = _lock_dir() / f"run-gate-shared-{svc}.lock"
         try:
             fd = _open_lockfile(path)
             try:
@@ -2183,7 +2722,7 @@ def acquire_exec_lock(container_name: str, lane_name: str,
     never take or block on it (RG-8's pattern, `acquire_shared_locks`'
     dry-run half). Returns the held fd (closing it releases the flock), or
     None for a dry run — there is nothing to close."""
-    path = Path(SHARED_LOCK_DIR) / f"run-gate-exec-{container_name}.lock"
+    path = _lock_dir() / f"run-gate-exec-{container_name}.lock"
     if dry_run:
         print(f"run-gate: DRY RUN — exec-mode serialization planned for "
               f"container {container_name!r} ({path})", flush=True)
@@ -2495,12 +3034,33 @@ def footprint_manifest_lane_peak_median(manifest: dict | None,
     return peak.get("median") if isinstance(peak, dict) else None
 
 
+# B5 (round-2 review, RW-51; contract Sec 3a): a manifest written before
+# this fix carries no per-lane `source` key at all -- `footprint_manifest_
+# lane_expected` still owes admission (RG-56) a best-effort provenance
+# rather than a bare `null` when `method`/`scope` alone already say it
+# (Sec 3's own `source = "memory.peak" | "sampled-max"` rule for the
+# daemon/basic paths, Sec 3a's `"rusage-maxrss"` for rusage). Never
+# GUESSED beyond what those two fields pin down -- an unrecognized
+# `(method, scope)` pair stays `None`, exactly like a manifest with no
+# `source` key and no derivable one.
+_METHOD_SCOPE_DERIVED_SOURCE = {
+    ("daemon", "container"): "memory.peak",
+    ("daemon", "container-shared"): "sampled-max",
+    ("basic", "container"): "memory.peak",
+    ("basic", "container-shared"): "sampled-max",
+    ("rusage", None): "rusage-maxrss",
+}
+
+
 def footprint_manifest_lane_expected(manifest: dict | None,
                                      lane_name: str) -> dict | None:
     """B2 (round-1 review): contract Sec 2.2's `--meta` `expected` field --
-    `null` or the four-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
-    cpu_cores_avg, duration_median_s}`. `profile_meta()` is the ONLY caller;
-    kept separate from `footprint_manifest_lane_peak_median` (which returns a
+    `null` or the five-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
+    cpu_cores_avg, duration_median_s, source}` (B5, round-2 review, RW-51:
+    contract Sec 3a requires `source` -- "the manifest's" -- so admission
+    (RG-56) knows the provenance of a rusage-derived number mixed in among
+    cgroup-measured ones). `profile_meta()` is the ONLY caller; kept
+    separate from `footprint_manifest_lane_peak_median` (which returns a
     bare scalar for the footprint disclosure line's `| manifest …` tail) so
     neither caller's contract-mandated shape leaks into the other's."""
     if manifest is None:
@@ -2512,10 +3072,15 @@ def footprint_manifest_lane_expected(manifest: dict | None,
     hot = lane.get("hot_set_bytes")
     cores = lane.get("cpu_cores")
     duration = lane.get("duration_s")
+    source = lane.get("source")
+    if source is None:
+        source = _METHOD_SCOPE_DERIVED_SOURCE.get(
+            (lane.get("method"), lane.get("scope")))
     return {
         "memory_peak_median_bytes": peak.get("median") if isinstance(peak, dict) else None,
         "hot_set_p90_bytes": hot.get("p90_median") if isinstance(hot, dict) else None,
         "cpu_cores_avg": cores.get("avg_median") if isinstance(cores, dict) else None,
+        "source": source,
         "duration_median_s": duration.get("median") if isinstance(duration, dict) else None,
     }
 
@@ -3173,6 +3738,15 @@ def _lane_stats(entries: list[dict]) -> dict:
         # two-on-even-count median `series_stats` always had.
         stats[key] = series_stats(entries, getter,
                                   byte_valued=key.endswith("_bytes"))
+    # RG-57/C4 + RW-46b: caveat flags for `_fmt_resource_stats` (the
+    # `history` verb has no manifest to read them from, unlike `footprint`)
+    # -- ANY contributing entry carrying the caveat is enough to print it,
+    # never a majority/all requirement, so a mixed-mode series (daemon
+    # became reachable partway through) never under-discloses.
+    mems = [(e.get("resources") or {}).get("memory") or {} for e in entries]
+    stats["memory_source_rusage"] = any(m.get("source") == "rusage-maxrss"
+                                        for m in mems)
+    stats["memory_peak_at_floor"] = any(m.get("peak_at_floor") for m in mems)
     return stats
 
 
@@ -3221,17 +3795,25 @@ def _fmt_resource_stats(stats: dict) -> str:
     series over the SAME entries `_fmt_stats`'s own line just described;
     `-` for any series with zero contributing entries (RG-27's dirty-run
     trap generalizes: an unprofiled or errored run contributes to NEITHER
-    series, the same way it never touched `duration_stats`)."""
+    series, the same way it never touched `duration_stats`). S1/RW-46b:
+    the SAME `[source: rusage-maxrss]`/`(peak <= floor)` caveats
+    `_fmt_footprint_row`/`doctor` print, here driven by `_lane_stats`'
+    own ANY-of-entries flags (no per-lane manifest to read them from at
+    this call site)."""
     peak = stats["memory_peak_bytes"]
     over = stats["memory_peak_over_baseline_bytes"]
     hot = stats["hot_set_p90_bytes"]
     cores = stats["cpu_cores_avg"]
     stall = stats["memory_full_stall_seconds"]
+    source_note = " [source: rusage-maxrss]" \
+        if stats.get("memory_source_rusage") else ""
+    floor_note = " (peak <= floor)" if stats.get("memory_peak_at_floor") else ""
     return (f"PEAK {_fmt_mib(peak['median'])} (max {_fmt_mib(peak['max'])})  "
             f"+BASE {_fmt_mib(over['median'])}  "
             f"HOT p90 {_fmt_mib(hot['median'])}  "
             f"CORES {_fmt_cores(cores['median'])}  "
-            f"STALL {_fmt_seconds(stall['median'])}")
+            f"STALL {_fmt_seconds(stall['median'])}"
+            f"{source_note}{floor_note}")
 
 
 def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
@@ -3360,6 +3942,20 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         profiled_res = next(e["resources"] for e in reversed(hist)
                             if e.get("resources") is not None)
         scope, method = profiled_res.get("scope"), profiled_res.get("method")
+        # RG-57/C4: same "most recent profiled entry" read as scope/method
+        # above, one field over -- a rusage-mode lane's memory.peak_bytes is
+        # that lane's own child's peak RSS (RW-43/B1: `os.wait4()` on the
+        # lane's own pid, never a cgroup read or another child's number),
+        # and `footprint`/`doctor` disclose that caveat next to the median
+        # it produced rather than let it look like every other lane's
+        # cgroup-measured peak.
+        source = (profiled_res.get("memory") or {}).get("source")
+        # RW-46b: same "most recent profiled entry" read, one field further
+        # -- whether THAT run's own peak was bounded by run-gate's own RSS
+        # at spawn (`floor_bytes`), not a per-lane aggregate across every
+        # historical run (a lane's floor-bound-ness can change run to run
+        # as run-gate's own resident size varies).
+        peak_at_floor = (profiled_res.get("memory") or {}).get("peak_at_floor")
         last = hist[-1]
         peak = stats["memory_peak_bytes"]
         over = stats["memory_peak_over_baseline_bytes"]
@@ -3371,6 +3967,8 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
             "completed_runs": len(hist),
             "scope": scope,
             "method": method,
+            "source": source,
+            "peak_at_floor": peak_at_floor,
             "duration_s": {"median": stats["median_seconds"],
                           "max": stats["max_seconds"]},
             "memory_peak_bytes": {"median": peak["median"], "max": peak["max"]},
@@ -3397,13 +3995,26 @@ def _fmt_footprint_row(name: str, lm: dict) -> str:
     peak, over = lm["memory_peak_bytes"], lm["memory_peak_over_baseline_bytes"]
     hot, cores = lm["hot_set_bytes"], lm["cpu_cores"]
     stall, dur = lm["memory_full_stall_s"], lm["duration_s"]
+    # RG-57/C4: the rusage-maxrss caveat rides right next to the median it
+    # qualifies — a reader comparing lanes across a table must not have to
+    # cross-reference a separate doctor line to learn this one's PEAK column
+    # is that lane's own child's peak RSS (`os.wait4()`, RW-43/B1), not a
+    # cgroup-measured number.
+    source_note = (" [source: rusage-maxrss]" if lm.get("source") == "rusage-maxrss"
+                   else "")
+    # RW-46b: this lane's most-recent profiled run could not distinguish
+    # its own peak from run-gate's own RSS at spawn -- the median/max MiB
+    # above are still the honest wait4() numbers, this only says they may
+    # UNDERSTATE the lane's true peak.
+    floor_note = " (peak <= floor)" if lm.get("peak_at_floor") else ""
     return (f"  {name:<20}{lm['runs']:>5}  "
            f"{_fmt_mib(peak['median']):>9}/{_fmt_mib(peak['max']):<9}  "
            f"{_fmt_mib(over['median']):>9}  "
            f"{_fmt_mib(hot['p90_median']):>9}  "
            f"{_fmt_cores(cores['avg_median']):>6}  "
            f"{_fmt_seconds(stall['median']):>7}  "
-           f"{_fmt_seconds(dur['median']):>9}")
+           f"{_fmt_seconds(dur['median']):>9}"
+           f"{source_note}{floor_note}")
 
 
 def print_footprint_report(manifest: dict, worktree_scope: str | None,
@@ -3461,9 +4072,8 @@ def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
         if not manifest["lanes"]:
             fail("footprint --write refused: no lane has a completed, "
                  "profiled run in its history yet — run a profiled lane "
-                 "first (bare-host lanes are never profiled, RG-57; "
-                 "profiling must be enabled — check RUN_GATE_PROFILE and "
-                 "[profile]/lane 'profile')")
+                 "first (profiling must be enabled — check RUN_GATE_PROFILE "
+                 "and [profile]/lane 'profile')")
         _write_json_atomic(manifest, manifest_path)
     if as_json:
         print(json.dumps(manifest, indent=2, sort_keys=True))
@@ -5043,6 +5653,17 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                f"{len(checked)} lane(s) spawning workers by name: every one "
                f"declares 'resources.cpus' (lane or environment)")
 
+    # 2d. RG-58 (RW-27a): a bare-host lane declaring `stall_timeout` — no
+    # watch, no timer on that runner — gets a matching doctor WARN alongside
+    # the load-time one `_validate_lane` already prints; SAME shared reason
+    # function, so the two can never drift apart.
+    stall_bare_host = [n for n in sorted(lanes)
+                       if lanes[n].get("stall_timeout")
+                       and lanes[n].get("environment") == BARE_HOST_ENV]
+    for name in stall_bare_host:
+        record("WARN", f"lane {name!r} stall_timeout (RG-58)",
+               bare_host_stall_timeout_inert_reason(name))
+
     # 3. physical-path derivability + git health
     try:
         repo, worktree, _, worktree_scope = resolve_worktree_scope(
@@ -5161,6 +5782,33 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             record("OK", "footprint drift",
                    f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
                    f"their live history median peak")
+        # RG-57/C4: one consolidated caveat for every lane whose manifest
+        # entry was distilled from the rusage-maxrss path (bare-host,
+        # daemon absent) — the drift/staleness numbers above are still
+        # meaningful (they compare the SAME method against itself over
+        # time), but the PEAK figure itself is that lane's own child's peak
+        # RSS (`os.wait4()` on the lane's own pid, RW-43/B1), never a
+        # cgroup-measured or summed number, and doctor is where an operator
+        # learns that before trusting it.
+        rusage_lanes = [name for name in sorted(manifest.get("lanes", {}))
+                        if manifest["lanes"][name].get("source") == "rusage-maxrss"]
+        if rusage_lanes:
+            record("INFO", "footprint source",
+                   f"{', '.join(rusage_lanes)}: memory peak is rusage-maxrss "
+                   f"(RG-57 bare-host daemon-absent path) — that lane's own "
+                   f"child's peak RSS (os.wait4), not a cgroup read and not "
+                   f"a sum across children")
+        # RW-46b: a further caveat, ORTHOGONAL to the one above -- a lane
+        # can be rusage-sourced without being floor-bound (its own child
+        # genuinely pushed the high-water mark past run-gate's own RSS).
+        floor_lanes = [name for name in sorted(manifest.get("lanes", {}))
+                       if manifest["lanes"][name].get("peak_at_floor")]
+        if floor_lanes:
+            record("INFO", "footprint peak-at-floor",
+                   f"{', '.join(floor_lanes)}: most recent profiled peak <= "
+                   f"run-gate's own RSS at spawn (memory.floor_bytes) — "
+                   f"unmeasurable beyond that floor, not necessarily this "
+                   f"lane's true peak")
         distilled_at = manifest.get("distilled_at")
         age_days = None
         if isinstance(distilled_at, str):
@@ -5205,15 +5853,35 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                "docker not found on PATH — cannot check")
     else:
         daemon_name = profile_settings["daemon"]
-        ps = subprocess.run([docker, "ps", "--filter",
-                             f"name=^{daemon_name}$", "--format", "{{.Names}}"],
-                            capture_output=True, text=True)
-        if ps.returncode != 0 or daemon_name not in ps.stdout.split():
+        try:
+            ps = subprocess.run(
+                [docker, "ps", "--filter", f"name=^{daemon_name}$",
+                 "--format", "{{.Names}}"], capture_output=True, text=True,
+                errors="replace")
+        except Exception as exc:
+            ps = None
             record("WARN", "profiler daemon",
-                   f"{daemon_name!r} not running — every lane falls back to "
-                   f"basic (in-lane) sampling ('cd scripts/cgroup-profiler "
-                   f"&& ciu up' starts it, vbpub estate infrastructure)")
-        else:
+                   f"state could not be determined: docker ps failed: {exc}")
+        if ps is not None and ps.returncode != 0:
+            tail = (ps.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+            record("WARN", "profiler daemon",
+                   f"state could not be determined: docker ps failed "
+                   f"(exit {ps.returncode}): {tail}")
+        elif ps is not None and daemon_name not in ps.stdout.split():
+            # RG-59: the SAME wording ProfilerClient._ctl's live-run warning
+            # now uses (daemon_not_running_reason) -- one function, so this
+            # site and that one can never drift apart again. B4 (round-1
+            # review, RW-43): RG-57 gave bare-host lanes a SECOND fallback
+            # (coarse rusage accounting, never a BasicSampler, RW-27b) --
+            # this project's own five lanes are all bare-host, so the old
+            # "every lane falls back to basic (in-lane) sampling" wording
+            # told the operator, on THIS project, the one thing guaranteed
+            # NOT to happen.
+            record("WARN", "profiler daemon",
+                   f"{daemon_not_running_reason(daemon_name)} — container/"
+                   f"exec lanes fall back to basic (in-lane) sampling, "
+                   f"bare-host lanes to coarse rusage accounting (R-43i)")
+        elif ps is not None:
             client = ProfilerClient(docker, daemon_name)
             version_doc, reason = client.version()
             if version_doc is None:
@@ -5252,6 +5920,43 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                                f"current {_fmt_mib(s.get('memory_current_bytes'))}"
                                f", memory PSI full avg10="
                                f"{s_mem_p.get('full_avg10')}%")
+
+    # 8. RG-55/RW-46a: stale RG-20 (`R-29`)/R-41 coordination-lock entries
+    # under the (possibly namespaced) lock dir — report only, doctor never
+    # deletes. A DIRECTORY at one of these paths is never legitimate
+    # (`_open_lockfile` only ever `os.open()`s a plain FILE) — 493 such
+    # directories, dated back to Sep 3, were found accumulated under
+    # production /tmp, traced to a test that `mkdir()`ed one with no
+    # cleanup (RW-46a, fixed at the two call sites + a suite-wide teardown
+    # guard). A stale plain FILE is not itself a defect (a lock file is
+    # never unlinked, only un-flocked — R-29/R-41's own design), but a
+    # large or growing count is worth an operator's attention on a
+    # long-lived shared host.
+    lock_root = _lock_dir()
+    stale_cutoff = time.time() - 86400
+    stale_total = 0
+    stale_dirs = 0
+    if lock_root.is_dir():
+        for pattern in ("run-gate-exec-*.lock", "run-gate-shared-*.lock"):
+            for entry in lock_root.glob(pattern):
+                try:
+                    mtime = entry.lstat().st_mtime
+                except OSError:
+                    continue
+                if mtime < stale_cutoff:
+                    stale_total += 1
+                    if entry.is_dir():
+                        stale_dirs += 1
+    if stale_total:
+        dir_note = (f", {stale_dirs} as a DIRECTORY (never legitimate — "
+                    f"corruption, see above)" if stale_dirs else "")
+        record("INFO", "stale coordination locks",
+               f"{stale_total} entr{'y' if stale_total == 1 else 'ies'} "
+               f"older than 1 day under {lock_root}{dir_note} — report "
+               f"only, doctor never deletes")
+    else:
+        record("OK", "stale coordination locks",
+               f"none older than 1 day under {lock_root}")
 
     ok_n = sum(1 for s, *_ in results if s == "OK")
     warn_n = sum(1 for s, *_ in results if s == "WARN")
@@ -6365,6 +7070,36 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         return None
     name = pending["container"]
     started = pending.get("started_at")
+    # B3 (round-1 review, RW-43; CIU-104 class): checked BEFORE any of
+    # RW-14's own questions and before any `docker` call at all -- a
+    # record whose `runner` names something other than this path
+    # ("container") was written by a DIFFERENT lane kind (RG-60's exec
+    # path stamps "exec") and may name a persistent CIU runner this
+    # invocation never created. A lane's `environment` can flip from exec
+    # to an ephemeral-container one between a crashed run and the next
+    # (an ordinary estate config move -- RG-43's own host/bare-host swap
+    # is precedent), and re-attaching to (or `--fresh`-removing) a
+    # container this lane never started is exactly the loss `R-39` exists
+    # to prevent, one level worse: a SHARED runner, not merely a
+    # duplicate. A record with no `runner` key at all predates this field
+    # (every record this run-gate revision itself ever wrote carries it)
+    # and is treated as "container" for backward compatibility -- the
+    # container path is the only writer that existed before RG-60.
+    runner = pending.get("runner")
+    if runner is not None and runner != "container":
+        message = (f"the inflight record for lane {lane_name!r} names "
+                   f"container {name!r}, written by runner {runner!r} — "
+                   f"foreign record — refusing to attach, follow, collect, "
+                   f"or remove it; refusing to overwrite it or start a "
+                   f"replacement. If this "
+                   f"lane's environment changed since that record was "
+                   f"written, delete {inflight_path(project_dir, lane_name)} "
+                   f"once you know the run it describes is over")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  f"(exit 2)", flush=True)
+            return 0
+        fail(message)
     # RW-14: the FIRST question, before any of RW-1's five, is whether the
     # client that started this container is still alive. If it is, this
     # invocation is a second terminal on someone else's run and may only
@@ -6714,6 +7449,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     inflight_payload = {
         "schema": INFLIGHT_SCHEMA,
         "lane": lane_name,
+        # B3 (round-1 review, RW-43): which lifecycle WROTE this record --
+        # `resolve_inflight` (the container path's own reconciliation)
+        # refuses to act on a record some OTHER runner wrote (CIU-104
+        # class: never `docker rm -f`/re-attach/follow/collect a container
+        # this invocation did not create).
+        "runner": "container",
         "container": name,
         "container_id": (started.stdout.strip().splitlines() or [""])[-1],
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -6968,8 +7709,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
               f"exec into {name} ({name_src}); no command was run", flush=True)
         return 0
     # RG-55: disabled means no daemon call and no sampler — built directly,
-    # without the extra `docker inspect` a real attempt needs.
+    # without the extra profiling attempt a real one needs. Unchanged from
+    # before RG-60: `container_state()` (a real `docker inspect`) is still
+    # called ONLY when profiling is enabled — the inflight record below
+    # degrades to an empty `container_id` rather than force every exec lane
+    # invocation, profiled or not, to depend on inspect answering (RG-60's
+    # record is a recovery AID, never a reason to fail a lane that was
+    # never going to be profiled in the first place).
     if not profiling:
+        container_id = ""
         profiler_state = {"mode": "disabled", "client": None, "daemon": None,
                           "session": None, "session_line": None,
                           "warning": None, "sampler": None,
@@ -6999,6 +7747,54 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         print_profile_warning(profiler_state)
         print_host_pressure_line(profiler_state.get("profiler_status"))
         print_profile_session_line(profiler_state)
+    # RG-60: the same inflight record `run_container_lane` writes on a
+    # successful `docker run -d` (R-39a), written here at the equivalent
+    # point in an exec lane's own lifecycle — after the profiling session
+    # (if any) is established, before the exec begins — so a client that
+    # dies mid-run leaves a recovery record naming the profiling session
+    # exactly as a container lane's client would. Unlike run_container_lane
+    # this is NOT wired into `resolve_inflight`/re-attach (RG-60's own
+    # scope: the record exists to be found, reconciliation is a separate
+    # follow-up); written unconditionally — whether or not profiling is
+    # enabled, a client can die mid-run either way (RW-1's own rule).
+    verdict_path, progress_path, _state_dir = assay_artifact_paths(
+        lane, project_dir, repo)
+    inflight_payload = {
+        "schema": INFLIGHT_SCHEMA,
+        "lane": lane_name,
+        # B3 (round-1 review, RW-43): `name` here is the PERSISTENT
+        # runner's own name, not a container this invocation created --
+        # stamping the writer lets the container path's `resolve_inflight`
+        # refuse to touch a record this lane kind wrote (CIU-104 class: a
+        # lane's `environment` can flip from exec to an ephemeral-
+        # container one between a crashed run and the next one, and the
+        # container an exec-written record names may be a live, shared
+        # CIU runner the container path never created).
+        "runner": "exec",
+        "container": name,
+        "container_id": container_id,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "started_epoch": time.time(),
+        "owner_pid": os.getpid(),
+        "owner_start": process_start_ticks(os.getpid()),
+        "boot_id": boot_id(),
+        "pid_ns": pid_ns_inode(),
+        "commit": head_commit(worktree),
+        "worktree": str(worktree),
+        "project_dir": str(project_dir),
+        "verdict": verdict_path,
+        "progress": progress_path,
+        "revision": __revision__,
+        "profile_token": profile_plan["token"] if profiling else None,
+        "profile_daemon": profile_plan["daemon"] if profiling else None,
+        # RW-14/RG-35's own pattern, one field over (matches
+        # run_container_lane): recorded directly here (a single write is
+        # enough — unlike run_container_lane, this write happens AFTER
+        # `start` already answered, so there is no "second write" step).
+        "profile_session": (profiler_state["session"]
+                           if profiler_state["mode"] == "daemon" else None),
+    }
+    write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
     # RG-55: rewritten from a blocking `subprocess.run` to `Popen` +
     # `proc.wait(timeout=…)` so a BASIC-path sampler can tick mid-run
     # (contract Sec 4, exec flow) — stdout/stderr stay inherited (Popen's
@@ -7007,10 +7803,17 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # daemon path does no per-tick work (RW-12) and profiling-off ticks
     # never, so both simply block until the process exits, exactly as
     # `subprocess.run(argv).returncode` did before this rewrite.
-    basic_active = profiler_state["mode"] == "basic"
-    tick = PROFILE_SAMPLE_SECONDS if basic_active else None
-    proc = subprocess.Popen(argv)
+    # RG-60: the cleanup boundary MUST include Popen itself. A synchronous
+    # spawn failure is a lane-execution failure, but the record written above
+    # still belongs to this invocation and must be cleared. If Popen succeeds
+    # and this client is killed externally, Python never reaches this finally
+    # and the record survives for reconciliation (the required client-death
+    # behavior).
+    proc = None
     try:
+        basic_active = profiler_state["mode"] == "basic"
+        tick = PROFILE_SAMPLE_SECONDS if basic_active else None
+        proc = subprocess.Popen(argv)
         while True:
             try:
                 code = proc.wait(timeout=tick)
@@ -7049,15 +7852,23 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 run_record["profile_error"] = \
                     f"profiling cleanup crashed unexpectedly: {exc}"
                 run_record.setdefault("profile_ref", None)
-        # S10 (round-1 review): Ctrl-C on an exec lane left the `docker exec`
-        # CLIENT process (this `proc`) running after the base's plain
-        # `subprocess.run(argv)` would have killed and reaped it on
-        # interrupt — the inner container process is unaffected either way
-        # (this only cleans up run-gate's own client-side handle). A no-op
-        # when `proc` already exited normally (`Popen.kill()`/`.wait()` on an
-        # already-reaped process are no-ops in stdlib).
-        proc.kill()
-        proc.wait()
+        try:
+            if proc is not None:
+                # S10 (round-1 review): Ctrl-C on an exec lane left the
+                # `docker exec` CLIENT process (this `proc`) running after
+                # the base's plain `subprocess.run(argv)` would have killed
+                # and reaped it on interrupt — the inner container process is
+                # unaffected either way. A no-op when `proc` already exited
+                # normally (`Popen.kill()`/`.wait()` on an already-reaped
+                # process are no-ops in stdlib).
+                proc.kill()
+                proc.wait()
+        finally:
+            # RG-60/RW-1: clear in the OUTERMOST finally, even when Popen
+            # raises synchronously or profiling cleanup itself fails. When a
+            # child exists and this client is killed externally, this finally
+            # is never entered, so the record remains for reconciliation.
+            clear_inflight_record(project_dir, lane_name)
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 
@@ -7084,22 +7895,174 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           flush=True)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
-    # RG-55/RG-57: a bare-host lane is NEVER profiled — there is no
-    # container/cgroup of run-gate's own to sample — but the host-PSI line
-    # is still cheap disclosure while profiling is switched on at all
-    # (gated exactly like every other new disclosure line, so the ~800
-    # pre-existing tests that run with the test kill switch see nothing new).
-    if profile_plan and profile_plan["enabled"]:
-        print_host_pressure_line()
-    if run_record is not None:
-        run_record["resources"] = None
-        run_record["profile_error"] = "bare-host lanes are not profiled (RG-57)"
-        run_record["profile_ref"] = None
     if dry_run:
+        # RG-8/RW-17: the plan is REHEARSED, never attempted for real —
+        # `start_bare_host_profiling` is not even called on this branch,
+        # mirroring run_container_lane/run_exec_lane's own dry-run rule. The
+        # host-PSI line is still cheap disclosure while profiling is
+        # switched on at all (unchanged pre-C4 behavior, gated exactly like
+        # every other disclosure line here); `print_profile_plan_dry_run`
+        # already branches on `plan["enabled"]` itself, so its call is
+        # unconditional.
+        if profile_plan and profile_plan["enabled"]:
+            print_host_pressure_line()
+        print_profile_plan_dry_run(profile_plan, "container-shared")
         print(f"run-gate: DRY RUN — would run in {project_dir}: "
               f"{shlex.join(argv)}", flush=True)
         return 0
-    code = subprocess.run(argv, cwd=str(project_dir)).returncode
+    # RG-55/RG-57 (RW-27b): a bare-host lane IS profiled once profiling is
+    # enabled — there is no fresh container/cgroup of run-gate's own to
+    # sample, so the daemon path (when reachable) targets run-gate's OWN
+    # container and the daemon-absent fallback is coarse rusage accounting
+    # rather than a BasicSampler (RW-27b: no cgroup here is safely
+    # attributable to just this lane's own child).
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    docker = shutil.which("docker") if profiling else None
+    if not profiling:
+        # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
+        # daemon call and NO sampler -- same shape run_container_lane/
+        # run_exec_lane build directly for their own disabled case.
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
+    else:
+        try:
+            profiler_state = start_bare_host_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan)
+        except Exception as exc:
+            # B1d (round-1 review precedent, same call-site defense in
+            # depth as run_container_lane/run_exec_lane): the whole point
+            # of start_bare_host_profiling is to never raise -- this guards
+            # against anything unanticipated reaching the lane's own run.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "rusage", "client": None,
+                              "daemon": profile_plan.get("daemon"),
+                              "session": None, "session_line": None,
+                              "warning": msg, "sampler": None,
+                              "profiler_status": None,
+                              "disabled_reason": msg}
+        # Gated on `profiling` (matching run_container_lane/run_exec_lane:
+        # a DISABLED lane prints none of this) -- only reached inside this
+        # `else:` branch.
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+        if profiler_state["mode"] == "daemon":
+            # RG-57: the devcontainer-wide caveat. `print_profile_session_
+            # line`'s own contract-exact shape (Sec 4.6) stays untouched
+            # for every OTHER lane kind, so this is a bare-host-only
+            # follow-up line.
+            print(f"run-gate: profile session {profiler_state['session']} is "
+                  f"DEVCONTAINER-WIDE (RG-57 bare-host daemon path): cgroup "
+                  f"numbers reflect the whole devcontainer, not lane "
+                  f"{lane_name!r} exclusively", flush=True)
+    # RG-57/contract Sec 4.1: the SAME per-invocation token the container/
+    # exec paths inject via `-e RUN_GATE_PROFILE_SESSION=...` -- here it is
+    # the bare-host CHILD's own environment, and ONLY on the daemon path:
+    # the rusage path starts no session for the token to identify, and
+    # nothing would ever read it there.
+    run_env = None
+    if profiler_state["mode"] == "daemon":
+        run_env = dict(os.environ)
+        run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+    # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
+    # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
+    # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
+    # plain `subprocess.run`
+    # -- `wait4` hands back the exact accounting of the ONE pid it waits
+    # on, so the recorded numbers are always this lane's own child, never a
+    # high-water mark borrowed from some other child run-gate happened to
+    # reap first (the bug the fix replaces). `Popen()` itself is NOT
+    # guarded here -- a bad argv[0]/permission error must propagate exactly
+    # as a plain `subprocess.run(argv)` raising would (a lane-execution
+    # failure, not a profiling one, out of R-36h's scope). Only the
+    # `wait4()` bracket AFTER the child is already running is guarded
+    # (R-36h's resource-accounting guard extends to wait4 now): an ordinary
+    # `Exception` there (unreachable in practice -- fixed, valid arguments
+    # -- but this promise is "never", not "almost never") degrades to `ru`
+    # staying `None`, which `finish_bare_host_profiling`'s own "attempted
+    # but never got going" fallback already handles, while the child is
+    # still reaped via a plain `wait()` so the lane's own exit code is
+    # unaffected and the argv is never launched a second time. A
+    # `KeyboardInterrupt`/`SystemExit` (or anything else that is not an
+    # ordinary `Exception`) instead mirrors `subprocess.run`'s own Ctrl-C
+    # handling -- kill the child, reap it, re-raise -- so an interrupt
+    # never leaves the lane's child running detached.
+    started_monotonic = time.monotonic()
+    started_at = _iso_utc(time.time())
+    ru = None
+    # RW-46b: run-gate's own resident memory, read as close to the fork as
+    # this process can get -- immediately before Popen(), rusage mode only
+    # (the daemon path measures via a real cgroup, no floor to disclose).
+    # See `_self_rss_bytes`'s own docstring for why this is a real floor on
+    # `ru_maxrss`, not an approximation.
+    floor_bytes = (_self_rss_bytes()
+                  if profiler_state["mode"] == "rusage" else None)
+    try:
+        if profiler_state["mode"] == "rusage":
+            proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env)
+            try:
+                _, status, ru = os.wait4(proc.pid, 0)
+            except Exception as exc:
+                wait_reason = ("wait4 on the lane's own child failed "
+                               f"unexpectedly: {exc}")
+                prior_reason = profiler_state.get("warning")
+                profiler_state["warning"] = (
+                    f"{prior_reason}; {wait_reason}"
+                    if prior_reason else wait_reason)
+                profiler_state["mode"] = None
+                code = proc.wait()
+                ru = None
+            except BaseException:
+                proc.kill()
+                proc.wait()
+                raise
+            else:
+                code = os.waitstatus_to_exitcode(status)
+                # S10 (round-2 review, RW-51): `os.wait4()` reaps the
+                # child directly, bypassing `Popen.wait()` -- the ONE
+                # place that would otherwise set `proc.returncode` itself.
+                # Left `None`, `Popen.__del__` logs a spurious
+                # `ResourceWarning: subprocess <pid> is still running` (the
+                # object still thinks its child is unreaped) and the
+                # instance sits on `subprocess._active` for a `waitpid`
+                # that can never succeed a second time. Harmless in
+                # practice (`ResourceWarning` is off by default, and the
+                # eventual internal `waitpid` failure is swallowed), but
+                # pure noise for any consumer running with warnings
+                # enabled -- telling `proc` what its own child already
+                # exited with costs one line.
+                proc.returncode = code
+        else:
+            code = subprocess.run(argv, cwd=str(project_dir),
+                                  env=run_env).returncode
+    finally:
+        measured_duration_seconds = time.monotonic() - started_monotonic
+        ended_at = _iso_utc(time.time())
+        try:
+            profile_result = finish_bare_host_profiling(
+                profiler_state, ru, started_at, ended_at,
+                measured_duration_seconds, floor_bytes)
+            print_profile_warning(profiler_state)
+            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            if run_record is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+        except Exception as exc:
+            # B1d: profiling must NEVER pre-empt the lane's own exit code --
+            # `code` was already captured above; see the matching comment in
+            # run_exec_lane's own finally.
+            print(f"run-gate: WARNING profiling: cleanup crashed "
+                  f"unexpectedly: {exc} — no profile recorded",
+                  file=sys.stderr, flush=True)
+            if run_record is not None:
+                run_record.setdefault("resources", None)
+                run_record["profile_error"] = \
+                    f"profiling cleanup crashed unexpectedly: {exc}"
+                run_record.setdefault("profile_ref", None)
     print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
     return code
 
@@ -7293,6 +8256,15 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
         "                                (default /sys/fs/cgroup; override in namespaces",
         "                                that hide the host cgroup or in tests)",
+        f"  {PROC_ROOT_ENV_VAR}                 /proc root for the host-PSI disclosure line",
+        "                                and the private-cgroup-namespace check (RG-55)",
+        "                                (default /proc; override in namespaces that hide",
+        "                                the host /proc or in tests)",
+        f"  {LOCK_DIR_ENV_VAR}                directory for the RG-20/R-41 coordination",
+        "                                locks (default /tmp, HOST-WIDE by design — two",
+        "                                gates on the same host serialize there on",
+        "                                purpose); override in namespaces that hide the",
+        "                                host /tmp or in tests (RW-46a)",
         f"  {PROFILE_AMBIENT_ENV_VAR}                 ambient override for [profile] enabled",
         "                                ('on'|'off', RG-55/SPEC R-43g); absent = config",
         "                                decides. 'off' disables profiling for EVERY lane",
@@ -7619,9 +8591,13 @@ def main(argv: list[str] | None = None) -> int:
         # is generated regardless of `--dry-run` (RG-8: a dry run's argv IS
         # what the live run would execute, token included) but is `None`
         # when profiling is not enabled — contract Sec 4 obligation 8's "no
-        # token" — and this same plan is handed to `run_bare_host_lane` too,
-        # even though a bare-host lane never uses the token: RG-57 makes
-        # bare-host categorically unprofiled regardless of `[profile]`.
+        # token" — and this same plan is handed to `run_bare_host_lane` too
+        # (S4, round-1 review): a bare-host lane IS profiled since RG-57
+        # (RW-27b), including using this SAME token on its own daemon path
+        # (injected into the child's environment, not a docker `-e` argv —
+        # there is no `docker run`/`docker exec` for a bare-host lane to
+        # pass it through) — it is only the rusage (daemon-absent)
+        # sub-path that starts no session for the token to identify.
         profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
                                                 central_path)
         profile_plan["token"] = (generate_profile_token()

@@ -54,10 +54,13 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    checklist. Only the last of these is self-enforcing — run-gate refuses
    to write an un-ignored history store and names the remedy ("What each
    lane costs" below).
-6. **Profiling (RG-55) needs nothing from a consumer to be SAFE, but one
-   thing to be PRECISE.** run-gate profiles a lane's peak memory (and CPU,
-   hot-set, stall) with no consumer action at all — a coarse in-lane
-   cgroup sample when no daemon answers, every time, unless
+6. **Profiling (RG-55/RG-57) needs nothing from a consumer to be SAFE, but
+   one thing to be PRECISE.** run-gate profiles EVERY lane kind — container,
+   exec, AND bare-host (RG-57) — with no consumer action at all: a coarse
+   in-lane sample (cgroup-based for container/exec lanes; for bare-host,
+   `os.wait4()` reaps the lane's own child and records `ru_maxrss * 1024`
+   in bytes, with no cgroup/pressure/DAMON/events data, RG-57) when no daemon
+   answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
    path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
    is host infrastructure, started once from the vbpub checkout** — `cd
@@ -66,12 +69,50 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    without `docker exec` rights to that daemon (a locked-down CI box, a
    sandboxed agent) should set `RUN_GATE_PROFILE=off` rather than eat one
    `docker exec`-per-tick failure per profiled lane; `doctor`'s "profiler"
-   check reports the daemon's reachability either way. `run-gate.footprint.json`
+   check reports the daemon's reachability either way. A Docker permission,
+   transport, or `docker ps` failure is reported as **state unknown**, never
+   as “daemon absent” with a start-it remedy. On the bare-host daemon path,
+   run-gate resolves `/etc/hostname` only as a candidate and compares that
+   Docker object's mount namespace with its own; a mismatch or unverifiable
+   identity safely takes the `wait4()` fallback. `run-gate.footprint.json`
    (written by `./run-gate.py footprint --write`, once a lane's history has
    at least one profiled PASS run) is **TRACKED — commit it**, unlike
    `.run-gate/` itself (still gitignored, per-instance telemetry): the
    manifest is a distilled, portable BUDGET meant to travel with the
    config it describes, not a fact about this one checkout.
+
+   `RUN_GATE_PROFILE` (`"on"|"off"`, checked BEFORE any config table) is
+   the ambient override: `off` disables profiling for EVERY lane
+   unconditionally — no token, no daemon call, no sampler, regardless of
+   `[profile]`/a lane's own `profile =` — and `on` FORCE-ENABLES it even
+   over a lane's own `profile = false` (checked LAST, after config and the
+   lane override, so it always wins). Any other value refuses at load, by
+   name — a mistyped override is a refusal, never a silent no-op.
+
+   ```toml
+   # run-gate.toml — [profile]: central/project, whole-table shadowing
+   # (the SAME rule [history] uses — a project's own [profile] REPLACES a
+   # central one entirely, never a per-key merge)
+   [profile]
+   enabled = true                # default true; false disables every lane
+                                  # (a lane's own `profile = false` disables
+                                  # just that one; RUN_GATE_PROFILE=on/off
+                                  # overrides both, see above)
+   daemon = "cgprofile-host-daemon"  # the daemon CONTAINER NAME (default shown)
+   interval = "1s"                # the `budget` grammar; basic/daemon sample tick
+   damon = true                   # default true; DAMON hot-set classification
+                                  # when the daemon supports it (basic-path
+                                  # sampling never has DAMON data either way)
+
+   # run-gate.toml — [footprint]: same whole-table shadowing rule; consumed
+   # by `doctor`'s staleness/drift check and by `footprint --write`
+   [footprint]
+   tolerance_pct = 25             # default 25; doctor WARNs when the live
+                                  # history median peak differs from the
+                                  # committed manifest by more than this
+   max_age_days = 30              # default 30; doctor WARNs when the
+                                  # manifest's distilled_at is older than this
+   ```
 
 ## Central defaults (vbpub monorepo)
 
@@ -642,6 +683,13 @@ sub-lane always fresh writes `--fresh` into that sub-invocation's own static
 argv inside the conjunction — and thereby forfeits re-attach for it, which
 is a deliberate trade, not a default.
 
+If a lane changed from an exec environment to an ephemeral-container
+environment while an exec-written inflight record remains, the new runner
+refuses with exit 2 and starts nothing — `--fresh` does not override ownership.
+Confirm the recorded exec run is over, then remove the record path named by
+the refusal and retry. This is intentionally different from an ordinary
+same-runner stale container, where `--fresh` owns the cleanup.
+
 ### Consumer examples
 
 **nyxloom `[gates.<name>]` — thin pointer only:**
@@ -949,14 +997,41 @@ into `run-gate.footprint.json`, next to `run-gate.toml`, and that file is
 answers to "does this belong in git" for a reason: one is this checkout's
 raw log, the other is the distilled number everyone downstream should see).
 
+Captured from a real, clean-tree, profiled `selftest` PASS on this project
+itself (RG-55's own "consequence to exploit": run-gate-project's own lanes
+are all bare-host, so RG-57 makes this project self-hosting for RG-61's
+own transcript) — a `rusage`-sourced entry, since no `cgprofile-host-daemon`
+was reachable in this environment. Verbatim (including the `.run-gate/`
+store path, which is checkout-relative — this capture ran from the RG-55
+wave's own `rg55-followups-run-gate` worktree, not `run-gate-project/`
+directly; the table's own shape is the part that generalizes):
+
 ```console
 $ ./run-gate.py footprint --write
-run-gate rev 41 — lane resource footprint
-store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
-manifest written: /workspaces/vbpub/run-gate-project/run-gate.footprint.json
-  LANE                RUNS  PEAK(med/max)         +BASE      HOT p90    CORES   STALL  DURATION
-  selftest               8   746 MiB/812 MiB    200 MiB     181 MiB     1.30    4.8s      316.2s
+run-gate rev 42 — lane resource footprint
+store: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/.run-gate/history.json
+manifest written: /workspaces/vbpub/.worktrees/rg55-followups-run-gate/run-gate-project/run-gate.footprint.json
+  LANE                 RUNS  PEAK(med/max)            +BASE    HOT p90   CORES    STALL   DURATION
+  assay-r1                4    266 MiB/289 MiB            -          -    0.61        -     179.5s [source: rusage-maxrss]
+  assay-r3                5    198 MiB/201 MiB            -          -    0.74        -      15.9s [source: rusage-maxrss]
+  selftest                5    285 MiB/286 MiB            -          -    0.56        -     172.3s [source: rusage-maxrss]
 ```
+
+(Recaptured RW-51/session 6, round-2 review's own S6 finding: the PRIOR
+capture above was one generation stale — its `assay-r1`/`assay-r3` rows
+were distilled partly from PRE-repair, pre-`wait4` runs, so they carried
+`"peak_at_floor": null` (unknown, because those older records predate the
+`floor_bytes` field entirely) even though the surrounding prose claimed
+every row was known not to be floor-bound. This capture's `--write` ran
+after a fresh, clean-tree `selftest` PASS on the CURRENT tip, so every
+contributing entry for all three lanes is `wait4`-era (RW-43/B1) with a
+REAL, non-null `peak_at_floor`: all three medians above are honest
+`os.wait4()` numbers and none of the three is floor-bound
+(`"peak_at_floor": false` for `assay-r1`, `assay-r3`, and `selftest`
+alike — `LANE-AUTHORING.md`'s own footprint-budgeting section shows what
+a floor-bound entry looks like instead). The manifest's `meta.expected`
+consumers get from this also now carries `"source": "rusage-maxrss"`
+alongside the medians, per contract Sec 3a (B5, round-2 review).)
 
 A lane with no profiled PASS run yet is simply OMITTED (absent means
 unknown, never zero) — `--write` REFUSES outright (exit 2, naming why) when

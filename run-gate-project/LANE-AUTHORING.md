@@ -252,6 +252,13 @@ with sqlfluff in a command lane if the project wants it.
   when the container is still running AND the progress file has been silent
   that long, never on elapsed time. That plus a generous `budget` plus
   `budget_per_candidate` is the whole bounding story for R2 (RW-6).
+  **Every R2 (mutation) lane sets `judge.mutation.budget_per_candidate`
+  in `assay.toml` (RW-28) — this is MANDATORY, not merely advisory:**
+  a mutant that hangs the test process at interpreter exit (a
+  `threading.Thread(daemon=True)` flipped to non-daemon by the mutation
+  itself, seen live in this wave) is not a slow candidate `budget`/
+  `stall_timeout` will ever catch — nothing else bounds a single candidate,
+  and assay waits on it forever with no default.
 - One gate container at a time across every agent on the host; cap it
   (`docker update --cpus=3`) right after launch while the host is shared.
 - Declare `resources.cpus` (RG-48) on any container lane whose argv spawns
@@ -260,6 +267,20 @@ with sqlfluff in a command lane if the project wants it.
   capped) while the actual budget is decided by whatever else is running
   on the shared host; `doctor` names the gap when it sees one.
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
+  Every lane kind is profiled now, bare-host included (RG-57) — a
+  bare-host lane without the cgroup-profiler daemon reachable gets a
+  coarser `os.wait4()`-based number (`method: "rusage"`, peak memory is
+  that lane's own child's peak RSS, not a cgroup read, not a sum across
+  children, and never borrowed from another child; `footprint`/`doctor`
+  disclose that caveat next to the number). A very light lane's reported
+  peak also has a FLOOR: it can never read below run-gate's own resident
+  memory at the moment it forked the lane's child (fork/COW accounting —
+  RW-46b). When `memory.peak_bytes <= memory.floor_bytes`,
+  `memory.peak_at_floor` is `true` and every surface above prints
+  "(peak <= floor)" next to it — that lane's true footprint is smaller
+  than or comparable to run-gate's own process, not necessarily the exact
+  number shown; budget it as SMALL rather than reading the number
+  literally.
   Once a lane has a handful of profiled runs, `./run-gate.py footprint
   --write` distills a COMMITTED peak-memory/CPU/stall number for it —
   size `resources.memory`/`resources.cpus` off THAT (with headroom for the

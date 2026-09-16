@@ -111,12 +111,25 @@ echo "run-gate-project assay-r1 canary"
 # asserts exactly 10.0 and must fail.
 #
 # S9b (round-1 review): the median-computing block below is BYTE-IDENTICAL
-# in duration_stats and series_stats (run-gate.py), so `find` is widened to
-# include each function's own distinct empty-input `return` line as an
-# anchor -- `text.replace(find, replace, 1)` would otherwise silently
-# target whichever copy appears FIRST in the file (duration_stats,
-# correct today only by position), leaving series_stats' own median
-# un-canaried. Two canaries now, one per function, each unambiguous.
+# in duration_stats and series_stats's own non-byte-valued arm (run-gate.py),
+# so `find` is widened to include each function's own distinct empty-input
+# `return` line as an anchor -- `text.replace(find, replace, 1)` would
+# otherwise silently target whichever copy appears FIRST in the file
+# (duration_stats, correct today only by position), leaving series_stats'
+# own median un-canaried. Two canaries now, one per function, each
+# unambiguous.
+#
+# RG-55/C4 (RW-24/R-36k) update, session 3 of the RG-55-follow-ups
+# package: series_stats grew a `byte_valued` branch (nearest-rank p50 for
+# byte series -- contract Sec 7 -- vs. this SAME arithmetic-median block,
+# now nested one level deeper, for every other series). assay-r3 caught
+# this canary's own literal `find` text going stale the moment the branch
+# landed ("BROKEN CANARY (target text not found -- the code moved)",
+# scored as a SURVIVED mutant, correctly failing the gate) -- `find`/
+# `replace` below are re-anchored to the CURRENT text, still only
+# breaking the non-byte `else` arm, still caught by the SAME test
+# (its own `cpu_cores_avg`/`memory_full_stall_seconds` assertions never
+# touch the byte-valued path).
 # R-36k later split series_stats' byte-valued path from its non-byte path;
 # the second canary anchors the else branch so its existing non-byte outlier
 # assertion remains the oracle rather than mutating an intentionally
@@ -132,11 +145,17 @@ canary median-not-mean run-gate.py \
   tests/test_run_gate.py::TestHistoryRollingSeries::test_one_slow_outlier_does_not_become_the_typical_cost
 
 canary median-not-mean-series-stats run-gate.py \
-  '    else:
+  '        return {"count": 0, "min": None, "median": None, "max": None}
+    if byte_valued:
+        median = _nearest_rank_value(values, 50)
+    else:
         mid = len(values) // 2
         median = values[mid] if len(values) % 2 else \
             round((values[mid - 1] + values[mid]) / 2, 3)' \
-  '    else:
+  '        return {"count": 0, "min": None, "median": None, "max": None}
+    if byte_valued:
+        median = _nearest_rank_value(values, 50)
+    else:
         mid = len(values) // 2
         median = round(sum(values) / len(values), 3)' \
   tests/test_run_gate.py::TestHistoryResourceSeries::test_median_resists_a_10x_outlier_and_absent_entries_are_excluded

@@ -7,13 +7,105 @@ moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
-<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release. -->
+<!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time. Fold into the dated section BY HAND the moment that release is cut -- cmru's generator never clears this block itself, and this file's own 2026-09-09 comment records one past instance of that being written down but not carried out. Verified empty as of 2026-09-11's release; NOT empty as of this note (RG-61, 2026-09-12) -- 100+ lines accumulated since, all of it the RG-55 wave's own P1/P2 base package (rev 41) plus this P4 follow-up package (rev 42, RG-57/58/59/60/61 below). `__revision__` 41 -> 42 in this same revision bump; every entry below names its own RG id. -->
 
 - fix(run-gate): make `gate-full` propagate an explicit comparison base to
   its delegating `assay-r1` sub-lane, so linked worktrees can run the complete
   gate with `--base REF`.
+- **P4 final-review hardening (2026-09-15).** A foreign-runner inflight
+  record is now a terminal exit-2 refusal (including `--fresh`), so the
+  container runner cannot start a replacement and overwrite the protected
+  record. Bare-host self targeting now treats `/etc/hostname` as candidate
+  discovery only and proves the full Docker object by mount-namespace
+  equality before starting a session. Daemon absence now requires specific
+  Docker-owned absent/stopped text: exit 125, permission failures, and a
+  failed `docker ps` remain explicitly indeterminate. Rusage duration comes
+  from a monotonic interval rather than whole-second display stamps, and a
+  `wait4()` failure appends to (rather than masks) an earlier degradation
+  reason before reporting no profile. Finally, successful daemon responses
+  validate usable `session`/object `summary` values, while an optional
+  non-object `target` is accepted without leaking the valid session; parser
+  failures and non-object refusal `error` values also honor the client's
+  never-raises degradation contract.
 
 ### Added
+- **RG-57 — bare-host lanes are profiled (RW-27b).** Bare-host lanes used
+  to be categorically UNPROFILED (no container/cgroup of run-gate's own
+  to sample); now every lane kind is profiled once `[profile]` is
+  enabled. Daemon path: the target is run-gate's OWN process (self
+  container id resolved from `/etc/hostname` + a direct `docker
+  inspect` and proved against this process's mount namespace), scope ALWAYS
+  `container-shared` (a bare-host invocation
+  shares its devcontainer's cgroup with everything else in it),
+  disclosed as DEVCONTAINER-WIDE. Daemon-absent path: `os.wait4(pid, 0)`
+  on the LANE'S OWN child (`Popen` + `wait4`) — `method: "rusage"`,
+  `memory.peak_bytes = ru.ru_maxrss * 1024` is that child's own peak RSS
+  (`memory.source: "rusage-maxrss"`, never a sum, never borrowed from
+  another child), `scope: null` (rusage measures via `wait4()`, not a
+  cgroup read — no contract `scope` value is honest), everything else
+  `wait4()` cannot supply left `null`. NEVER a `BasicSampler` fallback on
+  this path (RW-27b, deliberate: no cgroup here is safely attributable to
+  just one lane's own child). `run-gate.footprint.json`/`doctor` disclose
+  the `rusage-maxrss` caveat next to the median it qualifies. SPEC
+  `R-43i`. **Round-1 review (RW-43/B1):** the first cut of this path used
+  `resource.getrusage(RUSAGE_CHILDREN)` deltas instead, which is a
+  monotone high-water mark over EVERY child this process has ever reaped
+  — a `["true"]` lane was credited with run-gate's own already-reaped
+  docker/git subprocess RSS (~36 MiB) rather than its own; repaired to
+  `os.wait4()` on the specific child pid, which cannot mix in another
+  child's number by construction. **Consequence:** this project's own
+  five lanes are all bare-host, so
+  `./run-gate.py selftest` now itself records a profile and `footprint
+  --write` stops refusing for this project (see "The footprint manifest"
+  in `CONSUMERS.md` for a real transcript). **Round-2 review (RW-46b):**
+  `os.wait4()`'s `ru_maxrss` is still an honest fix (nothing left to
+  correct in the arithmetic itself), but fork+exec's COW page-table
+  inheritance means a short-lived child's own high-water RSS can never
+  fall below run-gate's OWN resident size at the moment it forked the
+  child — proven directly against `Popen`/`posix_spawn`/raw
+  `fork()+exec()`. `memory.floor_bytes` (run-gate's own RSS,
+  `/proc/self/statm`, read immediately before spawning) and
+  `memory.peak_at_floor` (`true` when `peak_bytes <= floor_bytes` —
+  unmeasurable beyond that floor, not necessarily the lane's true peak)
+  now ride alongside `peak_bytes`; `footprint`/`history`/`doctor` print
+  "(peak <= floor)" for such a run, and the footprint manifest's per-lane
+  entry carries `peak_at_floor` from its most-recently-profiled run. SPEC
+  `R-43i`/`R-44a` amended, LANE-AUTHORING.md's own footprint-budgeting
+  guidance updated. **Round-2 review (RW-51/B5):** contract Sec 3a
+  requires `meta.expected` (the object `--meta`'s `start` carries) to
+  name `source` — the manifest lane's own, so admission (RG-56) knows a
+  rusage-derived expectation from a cgroup-measured one — and the shipped
+  `footprint_manifest_lane_expected()` still returned the four-key object
+  contract Sec 2.2 originally specified. Now a five-key object; a
+  manifest entry written before this fix (no `source` key of its own)
+  derives it from that entry's own `method`/`scope` pair instead of
+  falling back to `null` outright. SPEC `R-44d` amended. **S10 (round-2
+  review, RW-51):** the rusage path's `os.wait4()` reaps the lane's child
+  directly, which never set `Popen.returncode` on the `proc` object
+  itself (only `Popen.wait()` does that) — harmless in practice, but a
+  spurious `ResourceWarning: subprocess <pid> is still running` under
+  `python3 -W error::ResourceWarning`. `proc.returncode` is now set from
+  `os.waitstatus_to_exitcode()`'s own result right after computing it.
+- **RG-60 — exec-lane inflight record.** `run_exec_lane` now writes the
+  same inflight record `run_container_lane` writes (after the profiling
+  session, if any, is established and before the exec begins; cleared in
+  the same `finally` that finishes profiling), so a client that dies
+  mid-run leaves a recovery record naming the profiling session, exactly
+  as a container lane's client would. Written unconditionally, profiled
+  or not. Not wired into a re-attach of its own — RG-60's own scope is the
+  record existing to be FOUND, not a new re-attach design. SPEC
+  `R-43a`/`R-43f` amended (dropped the "an exec lane writes no inflight
+  record" caveat). **Round-1 review (RW-43/B3):** both writers now stamp
+  `runner` (`"container"`/`"exec"`) into the record, and the container
+  path's `resolve_inflight` refuses to attach, follow, collect, or
+  `docker rm -f` a record some OTHER runner wrote, and refuses to start a
+  replacement that would overwrite it (SPEC `R-39f`) — the
+  gap RG-60 opened: an exec-written record sitting at the SAME path a
+  container lane reads, indistinguishable from one of its own, so a
+  lane's `environment` flipping from exec to an ephemeral-container one
+  between a crashed run and the next could otherwise re-attach to, or
+  `--fresh`-remove, a persistent CIU runner this project never created
+  (the CIU-104 incident class).
 - **RG-55 — per-lane resource profiling, against the cgroup-profiler daemon
   contract (`RG55-INTERFACE-CONTRACT.md`).** Every lane invocation gets a
   resource profile — peak memory (+baseline, p90, DAMON hot-set), CPU
@@ -69,9 +161,85 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   WHY when the cause is a PRIVATE cgroup namespace (the devcontainer/CI
   default: `/proc/self/cgroup` reads exactly `0::/`) rather than a
   misconfigured `$RUN_GATE_CGROUPFS_ROOT` — host-side slice truth is then
-  reachable only through this same "profiler" check.
+  reachable only through this same "profiler" check. SPEC `R-30c` (RG-61:
+  this check had no rule id of its own until now).
 
 ### Fixed (detail)
+- **RW-46a — the test suite no longer writes its RG-20/R-41 coordination
+  locks into host `/tmp`.** `SHARED_LOCK_DIR` stays `/tmp` in production
+  (both mutexes coordinate SEPARATE run-gate invocations on one host, by
+  design); a new `RUN_GATE_LOCK_DIR` override (re-read on every call, same
+  shape as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`) plus an autouse
+  `tests/conftest.py` fixture now points every test at a throwaway
+  per-test directory. Root cause of 493 stale
+  `run-gate-exec-*-runner.lock` DIRECTORIES found accumulated under
+  production `/tmp` (never a legitimate shape — the code only ever
+  `os.open()`s a plain FILE at that path): two existing tests deliberately
+  `mkdir()`ed a directory there, with no cleanup, to prove the
+  OSError-not-traceback path; fixed at both call sites plus a permanent,
+  suite-wide teardown assertion against the defect class recurring
+  anywhere. `doctor` gains an INFO check counting stale lock entries older
+  than 1 day (naming how many are directories) — report only, never
+  deletes.
+- **RG-59 — live-run daemon-absent warning names the real cause.**
+  `ProfilerClient._ctl`'s `json.JSONDecodeError` branch used to report
+  "produced unparsable stdout" for two structurally different causes: a
+  daemon container absent/stopped (`docker exec` itself fails before
+  `cgprofile` ever runs, stdout is empty) and a RUNNING daemon returning
+  genuinely malformed stdout. Matches docker's own exec failure via
+  `daemon_not_running_reason()` — the ONE place both `doctor`'s "profiler
+  daemon" WARN and this live-run reason get their text from, so the two
+  surfaces cannot drift apart again. The genuinely-malformed-response case
+  keeps "produced unparsable stdout". **Round-1 review (S2):** the first
+  cut matched any stderr line CONTAINING "no such container"/"is not
+  running" (case-folded) — which also matched a RUNNING, reachable daemon
+  whose own `cgprofile` process crashed with an application-level
+  exception mentioning those same words
+  (`cgprofile.errors.TargetError: ... is not running`), misreporting a
+  crashing daemon as "not deployed at all". Narrowed to docker's own exec
+  failure signature specifically: a stderr line PREFIXED (not merely
+  containing) with `docker:`/`Error response from daemon:` that also names
+  a missing/stopped container — never a bare substring match against text a
+  daemon's own application code might have produced, and never an exit code
+  alone.
+  **Round-2 review (S11):** those three exit codes are not one condition.
+  125 says only that Docker itself could not complete the request; permission,
+  transport, and argument failures collapse into it too, so it is explicitly
+  indeterminate unless stderr positively names absence. 126 (command not
+  executable) and 127 (not found) mean `docker exec` REACHED a live
+  container and `cgprofile` itself could not be started inside it — a
+  broken image or PATH, reproduced live on this host. Folding all three
+  into "not running ... ciu up" told the operator to start a container
+  that was already up. 126/127 now get their own `daemon_broken_reason()`
+  wording naming the real condition.
+- **RG-58 — bare-host `stall_timeout` gets a load-time WARNING + a
+  matching `doctor` WARN, never a refusal (RW-27a).** A `stall_timeout`
+  declared on a `bare-host` lane was silently inert (`run_bare_host_lane`
+  is a plain `subprocess.run` — no `ProgressWatch`/`LogStreamWatch`/timer
+  of any kind watches it). Now: ONE load-time `run-gate: WARNING lane
+  <name>: stall_timeout is inert on a bare-host lane` at config load
+  (`_validate_lane`) and a matching `doctor` WARN, both from the SAME
+  shared `bare_host_stall_timeout_inert_reason()` so the two surfaces
+  cannot drift apart. Config still loads; exit code unchanged;
+  container/exec lanes untouched. SPEC `R-30c`.
+- **RG-61 — SPEC/CONSUMERS/LANE-AUTHORING/backlog/`usage()` documentation
+  drift, eight items (S14 remainder).** New `R-30c` (the doctor profiler
+  check's own rule id); `R-30`'s status-line count corrected (`INFO` is a
+  fifth class, not a fourth); the RG-51 narrative's stale `0/0 -> 100%`
+  wording corrected to describe RW-5's actual SKIPPED-verdict design;
+  `CONSUMERS.md` gains full `[profile]`/`[footprint]` schema blocks and
+  the `RUN_GATE_PROFILE` `on`-override + by-name-refusal behavior, plus a
+  REAL `footprint --write` transcript replacing a fabricated one;
+  `usage()` gains `RUN_GATE_PROC_ROOT`; a stale `R-43g`/`R-43h`
+  cross-reference and an inaccurate "both had shipped in code" claim
+  (`resources.cpus` is new this rev, not a backfill) both corrected.
+- **RW-28 — every R2 (mutation) lane sets `judge.mutation.
+  budget_per_candidate` (mandatory, not advisory).** A hung mutation
+  candidate (a mutant flipping a `threading.Thread(daemon=True)` to
+  non-daemon, blocking the process at interpreter exit) blocks the WHOLE
+  R2 run when this key is unset — `stall_timeout`/`budget` bound the
+  LANE, never one candidate. `assay.toml`'s `r2` lane now sets
+  `budget_per_candidate = "900s"`.
 - **The R3 `median-not-mean-series-stats` canary tracked the pre-RG-55
   `series_stats` block and became a false "broken canary" after byte-valued
   series moved to nearest-rank p50 (R-36k).** Its target now anchors the

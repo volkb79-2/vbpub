@@ -4386,12 +4386,11 @@ mechanism exec-mode already relies on. The reported cgroup numbers
 `container-shared` scope already carries for exec lanes, not a new one.
 
 **Alternative for hosts with no daemon reachable at all:**
-`resource.getrusage(RUSAGE_CHILDREN)` read immediately after `wait()`,
-recorded as `method: "rusage"` in the summary (`maxrss` = the largest
-single child's peak, not a sum; `ru_utime`/`ru_stime` = exact CPU seconds
-for that child) — coarser than the daemon path (no PSI, no DAMON, no
-sampling series) but requires nothing beyond the stdlib and works even
-with the daemon down.
+`os.wait4()` on the lane's own child, recorded as `method: "rusage"` in the
+summary (`ru_maxrss * 1024` converts Linux KiB to bytes; `ru_utime` and
+`ru_stime` are that child's exact CPU seconds) — coarser than the daemon path
+(no cgroup, PSI, DAMON, or sampling series) but requires nothing beyond the
+stdlib and works even with the daemon down.
 
 Conjunction lanes stay unprofiled by design either way (RG-55 plan §3.1:
 "members record their own"); this entry is about the leaf `bare-host`
@@ -4403,12 +4402,42 @@ lane, not the conjunction wrapping it.
   assert `ctl start` is called with `--target containerid:<devcontainer id>
   --scope container-shared --token <the exported token>` and the returned
   summary is stored exactly as `container-shared` numbers are today.
-- The daemon-absent path: assert `getrusage(RUSAGE_CHILDREN)` deltas
-  (before/after wait) become a `method: "rusage"` summary with the correct
-  key subset (no `damon`, no `host.slice`, no `pressure` beyond what
-  `getrusage` cannot provide — i.e. `null`, never fabricated).
+- The daemon-absent path: assert `os.wait4()` on the lane's own child becomes a
+  `method: "rusage"` summary with `ru_maxrss * 1024` bytes and the correct
+  key subset (no `damon`, `host.slice`, cgroup, or pressure data — i.e.
+  `null`, never fabricated).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `c37b6e94`), SPEC
+`R-43i`
+
+Both halves shipped as filed (RW-27b): daemon path via self container id +
+token, scope always `container-shared`, disclosed DEVCONTAINER-WIDE;
+daemon-absent path is `os.wait4()` on the lane's own child,
+`method: "rusage"`, `memory.source: "rusage-maxrss"`,
+`memory.peak_bytes = ru_maxrss * 1024`, `scope: null` (a design decision —
+rusage measures via `wait4()`, not a cgroup read, so no contract `scope` value
+is honest), everything else `wait4()` cannot supply left `null`, NEVER falls
+back to a `BasicSampler` on this path.
+`RESOURCE_SERIES_GETTERS`/`series_stats`/`_lane_stats`/
+`build_footprint_manifest` needed zero code changes; `build_footprint_
+manifest` gained one new `source` key, disclosed by `footprint`/`doctor`
+only when it is `"rusage-maxrss"`. Live acceptance: this project's own
+`footprint --write` (all five lanes bare-host) stopped refusing after one
+real profiled run (see `CONSUMERS.md` "The footprint manifest" for the
+transcript). Tests: `tests/test_run_gate.py` `TestBareHostProfilingWiring`
+(rewritten, incl. both R-36h exception plants; recounted at the RW-46/S5
+tip: 17 — B1/RW-43's rusage rewrite and RW-46b's floor_bytes wiring each
+added more since RG-61's own "actually 7" correction) +
+`TestFootprintVerbCLI.test_bare_host_rusage_run_makes_write_stop_refusing`.
+
+**P4 final review repair (2026-09-15):** self-container discovery no longer
+certifies a Docker object merely because `/etc/hostname` resolves as its
+name. It requires a full 64-hex id and equality between this process's mount
+namespace and the candidate's namespace read through bounded `docker exec`;
+failure is disclosed as indeterminate and takes the rusage path. Rusage
+duration now uses a monotonic interval instead of subtracting whole-second UTC
+display stamps, and a `wait4()` failure preserves the earlier fallback reason,
+adds its own reason, and truthfully reports that no profile was recorded.
 
 ## RG-58 — a bare-host lane declaring `stall_timeout` gets no warning at config-load time
 
@@ -4456,7 +4485,18 @@ explicitly did not rule on.
   time WARN naming both; option 3 needs no new oracle beyond the existing
   comment).
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `e698835f`), SPEC
+`R-30c`
+
+RW-27a: option 2 (warn, never refuse). A bare-host lane declaring
+`stall_timeout` now gets ONE load-time `run-gate: WARNING lane <name>:
+stall_timeout is inert on a bare-host lane` (`_validate_lane`) and a
+matching `doctor` WARN (new "2d" per-lane check), both from the SAME
+shared `bare_host_stall_timeout_inert_reason()` so the two surfaces cannot
+drift apart. Config still loads; exit code unchanged; container/exec
+lanes untouched. Tests: `tests/test_run_gate.py`
+`TestBareHostStallTimeoutWarning` (3 tests — recounted at the RW-46/S5
+tip; unchanged since RG-61's own "actually 3" correction).
 
 ## RG-59 — the live-run daemon-absent warning names the wrong cause ("produced unparsable stdout" instead of "container ... is not running")
 
@@ -4501,7 +4541,19 @@ for an ACTUALLY malformed daemon response from a daemon that IS running.
   RUNNING daemon → assert the existing "produced unparsable stdout"
   wording is preserved for that case.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `b5e4a9c6`)
+
+`ProfilerClient._ctl`'s `json.JSONDecodeError` branch initially matched
+docker-owned stderr to tell a daemon-absent `docker exec` failure apart from
+a running daemon's genuinely malformed response. **P4 final review repair
+(2026-09-15):** the FIXED implementation now requires both a Docker-owned
+prefix and specific missing/stopped-container wording. Exit 125 alone and a
+prefixed permission/transport failure are indeterminate and never receive the
+"not running ... ciu up" remedy; 126/127 retain their distinct broken-image/
+PATH reason. `doctor` likewise distinguishes a failed `docker ps` from an
+empty successful result. `daemon_not_running_reason()` remains the shared
+wording only for positively established absence; "produced unparsable
+stdout" remains the running-daemon malformed-output case.
 
 ## RG-60 — an exec lane's profiling session has no inflight/recovery record if the client dies mid-run
 
@@ -4541,7 +4593,36 @@ new design.
   survives on disk, matching the container-lane recovery path's existing
   behavior.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, `a6716422`), SPEC
+`R-43a`/`R-43f` amended
+
+`run_exec_lane` now writes the same inflight record `run_container_lane`
+writes (schema/lane/container/container_id/owner/commit/worktree/
+profile_token/profile_daemon/profile_session), written after the
+profiling session (if any) is established and before the `docker exec`
+begins, cleared in the same `finally` that finishes profiling —
+unconditionally, profiled or not (RW-1's own rule: a client can die
+mid-run either way). Not wired into `resolve_inflight`/re-attach — RG-60's
+own scope is the record existing to be FOUND, not a new re-attach design.
+Tests: `tests/test_run_gate.py` `TestExecLaneInflightRecord` (4 tests as
+of the RW-46/S5 tip: record-exists-at-exec-time via a `Popen` spy, the
+daemon-path-only `profile_session` compare (added by B2/RW-43), killed-
+client survival, and profiling-disabled coverage). **S3 (round-1
+review):** the killed-client test originally hand-wrote a payload with
+`write_inflight_record()` and read it straight back — it never called
+`run_exec_lane` at all, so it stayed green with this whole feature fully
+reverted. Rewritten to mirror the container lane's own precedent
+(`TestReattachAcrossADeadClient`): a REAL client subprocess against a
+real (shimmed) exec-mode project, killed mid-`docker exec`, the record
+read back from OUTSIDE that process — proven to fail when the write is
+reverted.
+
+**P4 final review repair (2026-09-15):** the container runner's foreign-record
+branch originally printed “refusing” but returned the same `None` sentinel as
+“no record,” so the caller immediately started a fresh container and overwrote
+the record. It is now a terminal exit-2 refusal for live and `--fresh`
+invocations; dry-run names that exact outcome and also stops there. Regression
+tests assert no lane launch and byte-identical preservation of the record.
 
 ## RG-61 — SPEC/README/CONSUMERS/CHANGES/backlog documentation drift left over from the RG-55 wave (S14 remainder)
 
@@ -4607,4 +4688,83 @@ None needed beyond the existing prose-consistency review this class of
 fix always gets — no behavior changes, so no new pytest coverage is
 implied by fixing any of the eight items.
 
-### Status — OPEN
+### Status — FIXED 2026-09-12 (RG-55 wave, package P4, this commit)
+
+All eight items fixed in place: (1) new SPEC `R-30c` for `doctor`'s
+profiler check; (2) `R-30`'s status-line count corrected to five
+(`INFO`); (3) the RG-51 narrative's stale `0/0 -> 100%` text corrected to
+describe RW-5's actual SKIPPED-verdict design (two spots); (4)
+`CONSUMERS.md` gained full `[profile]`/`[footprint]` schema blocks and the
+`RUN_GATE_PROFILE` `on`-override + by-name-refusal behavior; (5)
+`CONSUMERS.md`'s fabricated `footprint --write` transcript replaced with a
+real one from this project's own profiled run (RG-57 makes this possible
+for the first time — see "The footprint manifest"); (6) the `[Unreleased]`
+header comment corrected and every entry under it now names its own RG id
+and the rev-42 bump; (7) `usage()` gained `RUN_GATE_PROC_ROOT`, the stale
+`R-43g`/`R-43h` lane-schema cross-reference fixed, the "both had shipped
+in code" claim corrected for `resources.cpus`; (8) this package's own five
+FIXED entries (RG-57/58/59/60/61) got commit hashes above, and its own
+LOG file's test-count claims were audited and TWO real mismatches were
+found and corrected (`TestBareHostStallTimeoutWarning`: claimed 4,
+actually 3; `TestBareHostProfilingWiring`: claimed 9, actually 7) — this
+entry's own "physician heal thyself" invitation, taken literally. **These
+two counts were true AT `c37b6e94`, not at any later tip** — round-1
+review's own S5 caught this drift again (B2/RW-43's rusage rewrite and
+RW-46b's floor_bytes wiring each added more `TestBareHostProfilingWiring`
+tests after this correction was written); see the RG-57/RG-58/RG-60
+entries above for the counts recounted at the RW-46/S5 tip. A test count
+in prose rots the moment the next commit touches that class — treat every
+number above as "true when written," not a live invariant.
+
+## RG-62 — two pre-existing order-/timing-sensitive test flakes found live while gating P4 (RW-46)
+
+**Provenance:** found live during RW-46/session 5's `assay-r1` gate
+verification (3 attempts, 2 distinct failures, neither touching any file
+this package's own diff modified). Filed here (this package's own
+backlog) per this session's own dispatch instructions and the estate
+convention that a tool's own defects, found while working in it, are
+recorded in the tool's backlog — never worked around locally without a
+record.
+
+**1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`
+is order-dependent.** `PAIRINGS_SEEN` (a class-level `list`) is populated
+incrementally by the class's OTHER, parametrized test
+(`test_consumer_timeouts_never_cut_lanes_short`, one instance per sibling
+`nyxloom-trove/nyxloom.toml` found under `RUN_GATE_DIR.parent`) as each
+instance runs; the aggregate test then asserts `len(PAIRINGS_SEEN) >= 3`.
+This implicitly assumes ALL parametrized instances run to completion
+BEFORE the aggregate check — true only under pytest's default
+definition-order collection. `pytest-randomly` 5.0.0 is installed and
+active for this project's own `tests -q` invocation (no `-p no:randomly`
+anywhere in this repo's pytest config or in the `selftest`/`assay-r*`
+lane argv), so EVERY invocation gets a fresh random seed and CAN place
+the aggregate test before enough of its sibling instances have run,
+under-counting `PAIRINGS_SEEN` and failing an otherwise-healthy estate.
+Reproduced directly: `python3 -m pytest tests/test_run_gate.py -k
+TestEstateBudgetTimeoutPairing -q` run 3 times in immediate succession —
+PASS, PASS, FAIL (`estate-wide pairing collapsed to
+[('nyxloom', 'tester-unified'), ('ciu', 'tester-unified')]`) — same code,
+same tree, different random seed each time. **Prescription:** either
+(a) make the aggregate a `pytest.fixture(scope="class", autouse=True)`
+teardown (runs after every test in the class regardless of order), or
+(b) mark the parametrized test and the aggregate with an explicit
+`@pytest.mark.order` (pytest-order) / a session-scoped fixture ensuring
+collection order, or (c) simplest: pin `-p no:randomly` for this one test
+module/class via a local `pytestmark`. Not fixed by this session
+(out of P4's RG-57..61 scope; not touched by this package's diff).
+
+**2. `TestHistoryEligibilityGuard.test_tree_state_is_sampled_before_the_
+lane_not_after` is a floating-point timing flake under host load.**
+`rec["_started_monotonic"] = time.monotonic() - 4.0` then asserts
+`duration_seconds == 4.0` exactly — observed failing as `4.001 == 4.0`
+during a loaded moment on this shared host (this session's own gate
+attempts + sibling RG-55 packages' concurrent pytest/gate runs).
+**Prescription:** `pytest.approx(4.0, abs=0.05)` or similar tolerance,
+matching this suite's OWN `pytest.approx` precedent used elsewhere for
+timing-derived assertions. Not fixed by this session (same reasoning as
+above).
+
+Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
+neither touches code this package's diff modified, and both were
+confirmed non-deterministic (pass on a retry) before being recorded here
+rather than "fixed" by silently retrying past them without a trace.
