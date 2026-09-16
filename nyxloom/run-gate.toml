@@ -37,4 +37,6 @@ budget = "30m"                       # advisory; consumers may enforce
 kind = "assay"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-budget = "30m"
+# session-extract's serial R2 campaign currently has 413 candidates; this is
+# the outer/advisory mirror of assay.toml's complete-campaign budget.
+budget = "8h"
