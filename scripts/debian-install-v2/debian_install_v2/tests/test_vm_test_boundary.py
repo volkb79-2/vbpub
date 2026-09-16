@@ -79,6 +79,8 @@ def test_vm_lane_fails_closed_and_proves_real_tests():
 def test_cgroup_probe_requires_both_unit_file_and_live_cgroup():
     runner = (VM / "run-vm-harness.sh").read_text()
     assert 'test -f "/hostunits/$parent" &&' in runner
+    assert 'inside_container=0' in runner
+    assert 'refusing a namespace-wrong bind mount' in runner
 
 
 def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkeypatch):

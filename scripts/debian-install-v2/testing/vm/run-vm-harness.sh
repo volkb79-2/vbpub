@@ -59,6 +59,10 @@ mount_dest="/workspaces/vbpub"
 HOST_TESTING_DIR="$TESTING_DIR"
 HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 self_id="$(cat /etc/hostname 2>/dev/null || true)"
+inside_container=0
+if [ -e /.dockerenv ] || [ -e /run/.containerenv ]; then
+    inside_container=1
+fi
 if [ -n "$self_id" ]; then
     host_mount_src="$(docker inspect "$self_id" --format \
         "{{range .Mounts}}{{if eq .Destination \"$mount_dest\"}}{{.Source}}{{end}}{{end}}" \
@@ -67,6 +71,9 @@ if [ -n "$self_id" ]; then
         HOST_TESTING_DIR="$host_mount_src${TESTING_DIR#"$mount_dest"}"
         HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
     fi
+fi
+if [ "$inside_container" = "1" ] && [ -z "${host_mount_src:-}" ]; then
+    die "cannot resolve the Docker host path for $TESTING_DIR from this cockpit; refusing a namespace-wrong bind mount"
 fi
 
 verify_cgroup_parent() {
