@@ -998,6 +998,23 @@ def test_opencode_source_ignores_a_defensive_none_tracked_fingerprint(tmp_path):
     source.close()
 
 
+def test_opencode_source_ignores_an_incomplete_legacy_anchor(tmp_path):
+    # Older callers populated the private anchor fields directly. A partially
+    # populated anchor is not usable and must remain inert; in particular, it
+    # must not create a tracked row with a None key that the next poll cannot
+    # query.
+    db = _opencode_db(tmp_path / "opencode.db")
+    source = OpencodeSource(
+        db, "ses_04bd4e9b4ffeBJm48T6v130DS6", ExtractConfig(), False,
+    )
+    source._anchor_cursor = None
+    source._anchor_fingerprint = ("orphan", ())
+
+    assert source._poll_anchor() == []
+    assert not source._tracked_rows
+    source.close()
+
+
 def test_live_attention_hook_and_notification_payloads_are_redacted(tmp_path, monkeypatch):
     # The side channels receive excerpts independently of stdout. Both the
     # long-block path and the structural interview path must apply extract's
