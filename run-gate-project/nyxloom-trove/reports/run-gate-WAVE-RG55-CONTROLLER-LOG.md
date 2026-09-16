@@ -3079,3 +3079,15 @@ Its explicit result marker is `/tmp/rg55-p5-assay-r2-current.log`.
 This run is intentionally provisional: integrating the operator's assay 6.3
 source-backed changes into P5 will invalidate its tree identity and require a
 fresh final R2 if the tree changes.
+
+### RW-249 — 2026-09-16 15:56:32Z — correct the canonical P5 handoff
+
+The canonical P5 handoff had retained two stale references: it named P4's
+RG-62 flaky-test row as P5's row, and it still described the superseded
+wait-then-proceed admission sketch. It now consistently reserves RG-63 for
+P5 and describes the corrected RG-56 atomic targetless reservation,
+target-bound start barrier, fail-closed facts/capacity checks, and placement
+refusal safety rule. The scoped documentation commit is `9c6a044c`; the
+canonical Sol packet was synchronized to RW-248 in `bf5217bc`. No judged tree,
+operator-owned assay-source worktree, running mutation process, or assay
+record was changed.
