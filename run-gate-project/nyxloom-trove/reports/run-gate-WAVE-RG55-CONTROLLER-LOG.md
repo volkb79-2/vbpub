@@ -3408,3 +3408,15 @@ worktree with `--no-ff`, producing `4e3bb235`; the resulting diff against
 current main is only the 152-line close-out report, with the landed SPEC-V8
 D.6 note and current main package content preserved. No active gate or judged
 tree was changed.
+
+### RW-279 — 2026-09-16 18:23:00Z — terminate obsolete provisional P5 mutation run
+
+The pre-Assay-6.3 P5 mutation process in `rg55-client-v11` was not a valid
+release candidate and could not contribute final evidence; its exact wrapper
+and child (`2275237`, `2275238`) had remained live and occupied a mutation
+slot. After validating both command lines, the controller sent `TERM` to
+those two exact processes; both were terminal two seconds later. No Docker
+container was removed and no judged tree was modified. P5 final evidence
+continues from the clean source-backed tree `8a879c52`; the freed slot is
+available for the required P6 same-tree resume once its 20-minute observation
+boundary and PSI gate are satisfied.
