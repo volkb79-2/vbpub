@@ -3456,3 +3456,14 @@ detached wrapper that captures the child status as
 `P5_GATE_FULL_EXIT=<rc>`; wrapper PID `3982944` was live after launch and
 reported the expected rev-43 selftest start. The prior P5 final R2 was never
 launched. P1 and P6 mutation runs remain untouched.
+
+### RW-283 — 2026-09-16 18:38:35Z — audit RG-55 follow-up backlog scope
+
+The current run-gate backlog audit finds RG-55 and the wave's RG-57 through
+RG-61 rows marked FIXED, with RG-56 explicitly OPEN as the subsequent
+admission-control wave. RG-45, RG-49, and RG-54 are also OPEN, but each
+predates this wave and is an independent issue (Assay/Vitest contention,
+state-dir placement, and merge-base selection respectively); none was
+introduced by the current RG-55 work. They remain filed for their own scope
+and are not silently folded into this release. No active gate was queried or
+changed by this audit.
