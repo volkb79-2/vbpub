@@ -4,7 +4,7 @@
 # LANE-MATRIX-PROGRESS.md) and are host-scoped because they exercise
 # dry-run and fake-command boundaries only; no disk/systemd mutation is
 # permitted in any of them. fake-integration and r1-vm-real-commit are
-# extra, non-aggregate lanes predating the 3-tier scheme; r1-vm-real-commit
+# extra, non-aggregate lanes alongside the 3-tier scheme; r1-vm-real-commit
 # is the one deliberate exception that mutates a disposable disk image, but
 # only inside the QEMU guest's separate kernel via testing/vm/.
 # Neither fake-integration nor r1-vm-real-commit is part of [lanes.gate];

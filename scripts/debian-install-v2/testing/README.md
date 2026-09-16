@@ -47,6 +47,17 @@ image, creates a disposable qcow2 overlay, boots the guest, installs only the
 test dependencies, copies the current test package into the guest, runs the
 real loop/swap tests there, and destroys the overlay on exit. The guest's
 swap and loop devices belong to the guest kernel and cannot become host swap.
+The lane fails before pytest unless the guest identifies as QEMU/KVM and
+provides every required partition/swap tool; it also checks a JUnit report to
+prove that both real commit tests passed rather than merely being skipped.
+The apt setup, source copy, and pytest phases have finite timeouts, and a
+per-worktree lock prevents two runs from competing for the runner's forwarded
+SSH port.
+
+The ordinary `r0-r1` tester-unified lane still exercises the mocked tests in
+`test_inuse_partition_editor_r1.py`. Only tests that invoke real `sfdisk` on a
+regular-file image skip when util-linux is absent; loop-device and swap tests
+remain exclusive to this VM lane.
 
 For interactive work, the lower-level controls are documented in
 [`vm/README.md`](vm/README.md):

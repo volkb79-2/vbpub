@@ -64,7 +64,10 @@ call against the same container. The runner enables Docker's init reaper so
 QEMU's detached child does not accumulate as a zombie after a run.
 `./run-vm-harness.sh --stop-daemon` tears that runner down; the next command auto-starts a fresh one. The standard
 real-device test command is `./run-vm-tests.sh`; it copies the test package
-into the guest and sets the VM-only opt-in there.
+into the guest and sets the VM-only opt-in there. That lane requires the
+guest to report QEMU/KVM and all partition/swap tools, and verifies by JUnit
+that both real commit tests actually passed. Its remote setup, copy, and test
+phases are bounded; one run per worktree is admitted at a time.
 
 The outer runner is placed in `$CGROUP_PARENT_DEV_BACKGROUND`; the wrapper
 fails closed if that variable or the known interactive probe tier is absent or
