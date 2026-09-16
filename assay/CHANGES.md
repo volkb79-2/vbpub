@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.3.1] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=f07cc6c55dc784b7b03141b58a331f4dd300947c -->
+
+### Testing
+- test(debian-install-v2): harden isolated VM lane (d472d58d)
+
 ## [6.3.0] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=51d6dec32d02189eaf098b1380d264e2d120b363 -->
