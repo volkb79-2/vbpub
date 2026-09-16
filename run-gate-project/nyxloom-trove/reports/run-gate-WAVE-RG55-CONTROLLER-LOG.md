@@ -2805,3 +2805,23 @@ literal target line, explicitly read
 `/workspaces/vbpub/run-gate-project/nyxloom-trove/reports/run-gate-P55-sol-final-review.md`
 in full, and follow it. Missing or invalid targets remain a mechanical
 `BLOCKED`; no package tree was changed.
+
+### RW-228 — 2026-09-16 11:15:35Z — P4 Sol acceptance and no-ff landing
+
+The fresh Sol xhigh P4 review artifact
+`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P4-REVIEW-round7.md`
+is `ACCEPT` for reviewed product/test/docs tree
+`b2eb633e7ed2574d4752e6b3e406446bf03a8321`; its administrative review record
+is `d8434fe503377f0de4d0857ef9bee0b61e435499`. The reviewed tree had
+1,201 passed and 3 skipped, 274/274 changed lines, 96/96 changed branches,
+R1 PASS, R2 85/85 killed with no other buckets, R3 canaries rejected,
+gate-full PASS, and doctor zero failures. No additional review was required
+because no product bytes changed after that acceptance.
+
+P4 was merged onto the then-current `main` with `--no-ff` as merge commit
+`3baffc7493a63722697c5afb06fd0f5df0d65868`. The remaining
+`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` RG-45 addendum is unchanged,
+operator-owned evidence (as ruled in RW-60/RW-97/RW-170/RW-189/RW-210): it
+was preserved with a path-scoped stash across the merge and restored
+byte-for-byte, and remains dirty and uncommitted. No operator-owned file was
+committed.
