@@ -10,7 +10,7 @@ depends_on: []
 session: fresh
 source:
   kind: review
-  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-243
+  ref: run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md#RW-248
 scope:
   touch:
     - run-gate-project/run-gate.py
@@ -182,7 +182,7 @@ Read the controller materials in this order:
 
 1. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-HANDOFF-2026-09-12.md`.
 2. `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`,
-   through the latest ruling (currently RW-245). The log, current git state, assay JSON, process state, and
+   through the latest ruling (currently RW-248). The log, current git state, assay JSON, process state, and
    Docker state outrank prose in an old brief.
 3. `run-gate-project/nyxloom-trove/WAVE-PLAN-2026-09-12-rg55-profiling.md`,
    all settled D-1..D-16 decisions.
@@ -236,8 +236,11 @@ reconciled into the final review tree; that reconciliation must rerun any
 affected gates. The same quiet tree's R1 rerun with `--base main` passed, R3
 passed with both canaries rejected and zero survivors, and doctor exited 0
 with zero failures. The package `gate-full --base main` wrapper also passed on
-this tip, serially repeating selftest, R1, and R3. R2 mutation evidence is not
-yet available for this tip.
+ this tip, serially repeating selftest, R1, and R3. A fresh R2 mutation run was
+ launched asynchronously on this exact quiet tree at RW-248; its terminal
+ verdict is intentionally not claimed here until the explicit job marker and
+ assay verdict are read separately. Any source-backed assay integration commit
+ will invalidate this run and require a fresh run on the final tree.
 Review the full diff and run the real `selftest`, `assay-r1`, `assay-r2`,
 `assay-r3`, and `gate-full` gates as appropriate. P1/P6 mutation jobs may be
 running in their separate worktrees; do not edit, switch, or invalidate them.
