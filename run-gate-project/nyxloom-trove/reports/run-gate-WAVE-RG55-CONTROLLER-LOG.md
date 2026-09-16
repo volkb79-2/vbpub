@@ -2996,3 +2996,13 @@ verdict records all 484 candidates in the mutation set: 467 killed, 15
 survived, no crashed or equivalent candidates, and 2 `budget_exceeded`
 placeholders. The lane therefore remains incomplete; the two placeholders
 must be resumed from this same tree before survivor triage and final gates.
+
+### RW-242 — 2026-09-16 14:49:28Z — resume P6's two budget placeholders
+
+The P6 worktree was clean and detached at the unchanged judged tree
+`8076246c3d365df04ecdd1d2f041ada75c081b40`. A third detached `r2 --fresh`
+resume was launched as PID `2071035` with assay's persisted resume/progress
+state. Its exact container is `run-gate-vbpub-r2-2071035-1789570162`; it is
+running under `dev-background.slice` with `NanoCpus=3000000000`. P1 remains
+the other active mutation lane. No P6 tree mutation is permitted until this
+run reaches a terminal verdict.
