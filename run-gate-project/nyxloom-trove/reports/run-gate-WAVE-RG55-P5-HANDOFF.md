@@ -113,23 +113,38 @@ else the footprint manifest's `memory_peak_bytes.median × 1.5` (disclosed
 "derived") else no placement (disclosed "no request"); ceiling =
 `resources.memory_max` else `min(2 × request, host.gates_slice.
 memory_max_bytes)`. `placement.applied` (read back by the daemon) lands in
-the record; `place-refused:*` is a WARNING, the lane runs unplaced;
+the record. A placement refusal is a warning, but the blocked wrapper is
+terminated before the lane body runs and any admission reservation is
+released; the lane is never allowed to run as an unaccounted workload.
 `throttled` readings → ONE WARNING ("lane throttled at memory.high —
 raise resources.memory or the gates slice"). R-43 gains sub-rules;
 LANE-AUTHORING documents `resources.memory`/`memory_max`; `--dry-run`
 prints the placement plan.
 
-**C7 — RG-56 admission (D-6 → decided here: wait-then-proceed, never
-refuse).** Before starting a lane with a daemon: `ctl host`; if
-`gates_slice.present` and `memory_current_bytes + request >
-0.9 × memory_max_bytes` (request per C6; ephemeral lanes use the manifest
-median or `resources.memory`), wait up to `[profile] admission_wait`
-(duration grammar, default `"10m"`) polling every 30 s with one stdout line
-per minute (`run-gate: admission: gates slice {cur} MiB of {max} MiB used,
-lane needs {req} MiB — waiting ({elapsed})`); after the wait proceed with
-ONE WARNING. No daemon or no gates slice → admission skipped, one INFO
-line. Exit codes unchanged. Tests drive it with a fake `ctl host` and a
-fake clock.
+**C7 — RG-56 admission (D-6; corrected contract, dependency-gated).** The
+earlier "wait-then-proceed, never refuse" sketch is superseded by the
+corrected RG-56 design at
+`run-gate-RG56-ADMISSION-DESIGN-REPAIR-HANDOFF.md` (checkpoint
+`92a2c097`). P5 must implement that contract, not the old status-then-start
+approximation: a targetless, atomic daemon `admit` reserves the normalized
+positive `reservation_bytes` before any ephemeral container, exec/bare-host
+child, profiler session, or mutation worker starts; a later target-bound
+`start --reservation-token` binds the existing target and performs the
+placement/read-back barrier. The daemon is authoritative for the loaded
+`CGROUP_PARENT_DEV_GATES` unit, both memory-PSI readings, finite memory
+limits, complete pending/live registry, generation, and checked aggregate
+capacity. Missing or stale facts, unknown live demand, invalid demand, a
+conflict, or projected demand over either limit is an admission refusal,
+never an empty-set/zero fallback and never a product or mutation result.
+`--allow-pressure` can bypass only a valid PSI block; it cannot bypass
+capacity, provenance, registry, generation, placement, or identity errors.
+`admission_wait` is an explicit configuration value with no code fallback;
+expiry is infrastructure refusal and resumable. `--dry-run` is
+side-effect-free. The current two-container RG-55 cap remains binding until
+the producer/consumer acceptance gates pass; `additional_slots` is a
+capacity reading, never a literal slot authorization. The implementing
+packet must use the corrected handoff's exact request/response fields,
+reason codes, lifecycle, and focused acceptance oracles.
 
 **C8 — records.** Inflight and history entries gain `watch` and
 `placement` (nullable); history schema STAYS 2 (additive — re-prove RG-27's
