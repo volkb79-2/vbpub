@@ -14,6 +14,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   worktree and leaves the runtime Assay version in the verdict. Explicit
   command + pin mode remains for external consumers.
 
+- **tester-unified source install.** The gate image now carries Assay's
+  declared build backend closure and gives its run user a writable venv, so
+  source-backed lanes work from the selected worktree rather than relying on
+  an accidentally preinstalled judge.
+
 - fix(run-gate): make `gate-full` propagate an explicit comparison base to
   its delegating `assay-r1` sub-lane, so linked worktrees can run the complete
   gate with `--base REF`.

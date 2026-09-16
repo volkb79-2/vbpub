@@ -571,6 +571,14 @@ BAD_CONFIGS = {
         [lanes.a.pins.assay]
         sha256 = "x/assay.pyz.sha256"
     """,
+    "assay_missing_assay_command": """\
+        schema_version = 1
+        [lanes.a]
+        kind = "assay"
+        environment = "host"
+        assay_lane = "x"
+        assay_command = []
+    """,
     "pin_missing_sha256": """\
         schema_version = 1
         [lanes.a]

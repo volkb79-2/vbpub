@@ -13,7 +13,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 42  # rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+__revision__ = 43  # rev 43: source-backed Assay lanes are accepted by the
+# dedicated tester-unified image and record the selected worktree's runtime
+# judge; the explicit artifact+pin branch remains for external consumers.
+# rev 42: RG-55 wave, package P4 (run-gate follow-ups,
 # third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
 # where rev 41 shipped them categorically unprofiled. Daemon path: the
 # target is run-gate's OWN process (self container id from /etc/hostname +
