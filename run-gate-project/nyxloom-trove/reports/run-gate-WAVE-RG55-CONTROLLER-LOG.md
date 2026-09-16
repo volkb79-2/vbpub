@@ -3121,3 +3121,11 @@ run-gate 23.8.0 evidence: annotated tag object
 23.8.0, and `run-gate --help` prints rev 42. The preparation commits are
 `9deca699` and its tag-object correction `f6c51ab7`. No mutation lane was
 queried or changed.
+
+### RW-252 — 2026-09-16 16:07:49Z — mark assay 6.2 evidence as interim
+
+The isolated P3 close-out draft now labels its assay 6.2.0 tag and installed
+distribution receipt as interim. The final RG-55 release evidence depends on
+the operator's assay 6.3 source-backed release, so the draft no longer
+silently presents 6.2 as the final assay state. The preparation commit is
+`fd345c38`; no mutation lane was queried or changed.
