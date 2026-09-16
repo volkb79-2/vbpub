@@ -149,7 +149,10 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-budget = "30m"
+# The changed-line campaign currently has 413 candidates. 30m only reaches a
+# small prefix; keep the mutation jobs serial and give the complete campaign
+# enough wall time to finish on the shared production host.
+budget = "8h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
