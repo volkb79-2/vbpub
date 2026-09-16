@@ -132,6 +132,33 @@ and `isort`, so neither is installed.
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
 (`ciu`, `cmru`) are staged from their GitHub releases into [`pip/`](pip/).
 
+### Headless VM tooling
+
+The cockpit includes the userland needed to provision and boot disposable x86
+test guests:
+
+- `qemu-system-x86` — headless x86 guest execution, with KVM acceleration when
+  the host exposes `/dev/kvm`;
+- `qemu-utils` — create and inspect disk images with `qemu-img`;
+- `ovmf` — UEFI firmware for x86 guests;
+- `cloud-image-utils` — create cloud-init seed media such as `cloud-localds`.
+
+These are command-line tools, not a VM service: MDT does not install or start
+libvirt, a system-wide QEMU daemon, or a guest agent. Package installation does
+not grant a container access to KVM or TAP networking. The default test shape is
+an unprivileged runner using QEMU's TCG software emulation and user-mode
+networking; it needs neither `/dev/kvm` nor `/dev/net/tun`. If a runner opts in
+to KVM or TAP, it must request those host devices explicitly and remain in the
+host's governed slice. Keep VM images and firmware scratch files on disposable
+storage.
+
+Do not use a privileged container as the isolation boundary for loop devices,
+partition devices, `mkswap`, `swapon`, `swapoff`, initramfs, reboot, or other
+host-kernel state. Docker containers share the host kernel; loop and swap are
+not container-namespaced. Put those tests in a QEMU guest, whose own kernel
+owns its loop devices and swap. A privileged container is suitable only for
+tests that do not create/access such devices or mutate global kernel state.
+
 ### AI CLI tools
 
 Enabled by default, each controlled by an `INSTALL_*` build arg:
