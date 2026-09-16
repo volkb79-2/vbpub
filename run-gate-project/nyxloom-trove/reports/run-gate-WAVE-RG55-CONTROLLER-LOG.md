@@ -3066,3 +3066,16 @@ R3 rejected both canaries with zero survivors; and the wrapper exited 0. The
 daemon-absent rusage warning remains disclosed. This does not replace the
 pending R2 mutation run or the fresh Sol review, and source-backed assay 6.3
 integration will require this gate again on the final tree.
+
+### RW-248 — 2026-09-16 15:49:38Z — P5 R2 asynchronous launch
+
+P5 R2 has been launched on quiet tree
+`8823dca820cf6ffc6520da57663f8b7424f1ce35` with `--base main`, low-priority
+execution, and the required resume/progress mechanics supplied by run-gate.
+The first shell-background attempt died before writing any output or marker;
+a 10-second foreground probe reached the assay command, and a second launch
+through a detached session leader is now running as Python PID `2275238`.
+Its explicit result marker is `/tmp/rg55-p5-assay-r2-current.log`.
+This run is intentionally provisional: integrating the operator's assay 6.3
+source-backed changes into P5 will invalidate its tree identity and require a
+fresh final R2 if the tree changes.
