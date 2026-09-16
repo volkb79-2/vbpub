@@ -3201,3 +3201,12 @@ two exact files were removed in commit `37fe63aa` on
 Historical RG-55 reports retain their 6.1.1 evidence references; no active
 configuration or mutation lane was changed, and no long-running mutation
 state was queried.
+
+### RW-260 — 2026-09-16 16:42:49Z — preserve delivered P5 backlog truth
+
+The operator's assay source-backed branch also changes the run-gate backlog by
+reopening the already-delivered P5 RG-56/RG-57 rows and deleting the RG-63
+implementation record. Those changes are unrelated to source-backed Assay
+consumption and would contradict the P5 implementation checkpoint, so they
+were not copied into `rg55-p5-assay63-reconcile`; its P5 FIXED statuses and
+RG-63 row remain authoritative pending final gates and release.
