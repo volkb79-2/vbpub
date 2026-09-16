@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.3.1] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=54dfca2f0d6e075f23941afbcfe7836fca4bdda0 -->
+
+### Documentation
+- docs: propagate MDT governance ownership and names (2e5f6463)
+
 ## [0.3.0] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=94917b55f7274f8c3665f706fd2550cdbfb9435f -->
