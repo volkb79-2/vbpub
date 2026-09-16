@@ -71,6 +71,7 @@ def test_vm_lane_fails_closed_and_proves_real_tests():
     assert 'run_with_timeout 10m "$HERE/run-vm-harness.sh" wait' in lane
     assert "systemd-detect-virt --container" in lane
     assert "systemd-detect-virt --vm" in lane
+    assert "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" in lane
     assert "for tool in sfdisk blockdev partx losetup mkswap swapon swapoff" in lane
     assert "--junitxml=/tmp/debian-install-v2-r1.xml" in lane
     assert "VM lane did not prove both real tests" in lane

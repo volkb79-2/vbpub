@@ -56,6 +56,7 @@ run_with_timeout 5m "$HERE/run-vm-harness.sh" copy "$RUN" "$RUNNER_SRC" "$GUEST_
 
 run_with_timeout 15m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     "set -eu
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\$PATH
      if systemd-detect-virt --container >/dev/null 2>&1; then
          echo 'VM precondition failed: guest is running in a container' >&2
          exit 1
