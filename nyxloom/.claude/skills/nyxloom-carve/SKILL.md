@@ -3,10 +3,10 @@ name: nyxloom-carve
 description: Author a nyxloom package handoff (AUTHORING-compliant) — contract shape, oracle rules, scope/forbid discipline, lint+freeze loop. Use when carving a new package or repairing a carve after review, in ANY nyxloom-registered project.
 ---
 
-> **Tool versions as of last verified update (2026-09-03):** nyxloom
-> `0.3.1.dev1263+gf3b89f46`, run-gate `23.5.0` (pip-installed), ciu `7.11.0`.
-> `assay` pip package is `5.0.0` (v9→v10 verdict schema, a hard cut — see
-> `assay/docs/CONSUMERS.md` "Migration notes (v9 → v10)"). A consuming
+> **Tool versions as of last verified update (2026-09-17):** nyxloom `0.6.0`,
+> run-gate `23.8.0` (pip-installed), ciu `7.13.2`.
+> `assay` pip package is `6.3.0` (verdict schema v11, current — see
+> `assay/docs/CONSUMERS.md` "Migration notes (v10 → v11)"). A consuming
 > project's own gate lanes may still pin an older frozen `assay-*.pyz`
 > artifact in `run-gate.toml`'s `[lanes.*.pins.assay]` blocks — that pinned
 > artifact, not the installed pip package, is what a lane actually runs, so

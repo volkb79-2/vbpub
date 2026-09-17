@@ -5,7 +5,8 @@ description: The cmru (Configurable Multi Release Utility) CLI — status/releas
 
 > **Tool versions as of last verified update (2026-09-17):** cmru
 > `5.2.2`/`5.2.3.dev` series (`cmru --help` prints the exact dev build in its
-> banner; there is no `--version` verb — use the banner or `pip show cmru`).
+> banner; `--version` is not a flag, but `cmru version` IS a real verb —
+> use that, the banner, or `pip show cmru`).
 > Re-verify against `cmru --help` if a flag below drifts.
 
 > **MANDATE.** cmru is the canonical release tool for CIU-family monorepos —
@@ -78,6 +79,7 @@ cmru tool-deps [--config C] [--project P ...] [--json]        # verify declared 
 cmru resolve [--config C] [--project P|--prefix PREFIX] [--format env|json|url]
 cmru get|get-py --config C --project P [--output FILE]        # emit a standalone get.py installer
 cmru init [--layout single|monorepo] [--project ID] [--owner O] [--repo R]
+cmru version                                                  # print the installed cmru version
 ```
 
 `cmru init` never overwrites an existing `cmru.toml`/`cmru.orchestration.toml`

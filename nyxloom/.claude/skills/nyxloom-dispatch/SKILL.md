@@ -3,22 +3,25 @@ name: nyxloom-dispatch
 description: Dispatch-prompt templates for nyxloom pipeline roles (implementer, adversarial code reviewer, fix-verification) — fresh-session rules, checkpoint clause, LOG/REPORT contract. Use when spawning any pipeline agent, in any nyxloom-registered project.
 ---
 
-> **Tool versions as of last verified update (2026-09-03):** nyxloom
-> `0.3.1.dev1263+gf3b89f46`, run-gate `23.5.0` (pip-installed), ciu `7.11.0`.
-> `assay` pip package is `5.0.0` (v9→v10 verdict schema hard cut — see
-> `assay/docs/CONSUMERS.md` "Migration notes (v9 → v10)"); a consuming
-> project's own gate lanes may still pin an older frozen `.pyz`, not yet
-> migrated. This skill is mostly role/prompt-shape guidance (not tied to
-> specific CLI argv), so it drifts slower than nyxloom-carve/nyxloom-merge-p —
-> but the checkpoint sizing tracks each project's own CLAUDE.md-equivalent
+> **Tool versions as of last verified update (2026-09-17):** nyxloom `0.6.0`,
+> run-gate `23.8.0` (pip-installed), ciu `7.13.2`. `assay` pip package is
+> `6.3.0` (verdict schema v11, current — see `assay/docs/CONSUMERS.md`
+> "Migration notes (v10 → v11)"); a consuming project's own gate lanes may
+> still pin an older frozen `.pyz`, check both before assuming they match.
+> This skill is mostly role/prompt-shape guidance (not tied to specific CLI
+> argv), so it drifts slower than nyxloom-carve/nyxloom-merge-p — but the
+> checkpoint sizing tracks each project's own CLAUDE.md-equivalent
 > "long-running agent context discipline" figure, which is explicitly subject
 > to re-measurement; check that hasn't moved past what's quoted below before
 > trusting the numbers verbatim.
 >
-> **A per-project concurrency directive may override the defaults below** —
-> e.g. dstdns's 2026-09-03 "single agent, single gate only, until reversed"
-> (see its own standing-directives memory). Check the target project's own
-> operating contract before assuming full parallel fan-out is authorized.
+> **A per-project concurrency directive may override the defaults below, and
+> may itself be time-boxed rather than a standing rule** — check the target
+> project's OWN current state (its dispatch memory/CONTROLLER-BRIEF-
+> equivalent, `ListAgents`, host load) rather than trusting a directive text
+> that could be stale in either direction; a project may have tightened to
+> serial, loosened to parallel, or be mid-way through a time-boxed exception
+> to either.
 
 > **Canonical, repo-agnostic skill.** The pipeline SHAPE is universal to any
 > nyxloom-registered project; substitute the target repo's own trove paths

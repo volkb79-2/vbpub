@@ -27,11 +27,11 @@ A Playwright-as-a-service container (`ghcr.io/volkb79-2/pwmcp`) bundling a
 real headless Chromium behind an MCP HTTP/SSE server (`@playwright/mcp`,
 port 8931). Full docs: `pwmcp/README.md` in this repo. In a consuming
 project it is almost certainly already running as `<project>-<env>-pwmcp`
-(e.g. `dstdns-98535c-pwmcp`) — check `docker ps --filter name=pwmcp` before
-starting a new one.
+(dstdns example: `dstdns-98535c-pwmcp`) — check `docker ps --filter
+name=pwmcp` before starting a new one.
 
-**Connectivity**: the container joins a project docker network (e.g.
-`dstdns-98535c-network`) under the hostname `pwmcp`. From a devcontainer's
+**Connectivity**: the container joins a project docker network (dstdns
+example: `dstdns-98535c-network`) under the hostname `pwmcp`. From a devcontainer's
 own shell on that network, that hostname resolves directly —
 `getent hosts pwmcp` returns a real IP with no extra network wiring needed.
 If it doesn't resolve in your environment, get the IP with `docker inspect

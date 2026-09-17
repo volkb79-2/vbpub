@@ -4,12 +4,14 @@ description: The assay judge CLI itself (lanes/run/plan/verify) — declared lan
 ---
 
 > **Tool versions as of last verified update (2026-09-17):** assay `6.3.0`
-> (`assay --version`). v9→v10 verdict-schema was a hard cut (see
-> `assay/docs/CONSUMERS.md` "Migration notes (v9 → v10)") — a consuming
-> project's gate lanes may still pin an older frozen `assay-*.pyz` artifact
-> rather than this installed pip version; check both before assuming a given
-> schema applies to what actually ran. Re-verify against `assay --help` /
-> `assay <verb> --help` if a flag below drifts.
+> (`pip show assay` — **not** `assay --version`, which prints a placeholder
+> `0.0.0` regardless of the real installed version). Current verdict schema
+> is v11; v10→v11 was a hard cut (see `assay/docs/CONSUMERS.md` "Migration
+> notes (v10 → v11)") — a consuming project's gate lanes may still pin an
+> older frozen `assay-*.pyz` artifact rather than this installed pip
+> version; check both before assuming a given schema applies to what
+> actually ran. Re-verify against `assay --help` / `assay <verb> --help` if
+> a flag below drifts.
 
 > **MANDATE.** assay is the ONLY judge for a declared coverage/mutation
 > lane. Never hand-run `coverage.py`/`pytest --cov` outside a declared lane

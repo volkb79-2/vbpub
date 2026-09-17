@@ -3,17 +3,17 @@ name: nyxloom-merge-p
 description: The nyxloom package merge pipeline — run after a fix-verification ACCEPT. Ledger record, --no-ff merge, post-merge gates with separate verdict reads, progress row, memory, teardown. Use in any nyxloom-registered project.
 ---
 
-> **Tool versions as of last verified update (2026-09-03):** nyxloom
-> `0.3.1.dev1263+gf3b89f46`, run-gate `23.5.0` (pip-installed), ciu `7.11.0`.
-> `assay` pip package is `5.0.0` (v9→v10 verdict schema, a hard cut — see
-> `assay/docs/CONSUMERS.md` "Migration notes (v9 → v10)"). A consuming
-> project's own gate lanes may still pin an older frozen `.pyz` artifact in
-> `run-gate.toml`'s `[lanes.*.pins.assay]` blocks — check both before assuming
-> the newer schema applies. If any CLI verb/flag below errors, check
-> `nyxloom --version` / `pip show run-gate` / `python3 -c "import ciu; print(
-> ciu.__version__)"` against these before assuming the skill text is still
-> right — re-verify and bump this line rather than patching around a mismatch
-> silently.
+> **Tool versions as of last verified update (2026-09-17):** nyxloom `0.6.0`,
+> run-gate `23.8.0` (pip-installed), ciu `7.13.2`. `assay` pip package is
+> `6.3.0` (verdict schema v11, current — see `assay/docs/CONSUMERS.md`
+> "Migration notes (v10 → v11)"). A consuming project's own gate lanes may
+> still pin an older frozen `.pyz` artifact in `run-gate.toml`'s
+> `[lanes.*.pins.assay]` blocks — check both before assuming the newer
+> schema applies. If any CLI verb/flag below errors, check `nyxloom
+> --version` / `pip show run-gate` / `pip show assay` / `python3 -c "import
+> ciu; print(ciu.__version__)"` against these before assuming the skill
+> text is still right — re-verify and bump this line rather than patching
+> around a mismatch silently.
 
 > **Canonical, repo-agnostic skill.** The pipeline SHAPE is universal to any
 > nyxloom-registered project; substitute the target repo's own trove paths and
@@ -41,7 +41,7 @@ ACCEPT unambiguously. Never merge on the implementer's self-report.
    longer load-bearing for correctness — keep using it anyway (cheap outer
    lock, lets you skip a busy container rather than block inside run-gate):
    - `eval "$(ciu env print)" && flock "/tmp/${REPO_NAME}-${INSTANCE_ID}-testrunner.lock" run-gate gate > <scratch>/pNNN-postmerge-gate.log 2>&1; echo exit=$?`
-     — the full composite (dstdns example: `schema && test-runner && assay && assay-dlq && ui_unit`,
+     — the full composite (dstdns example: `schema && test-runner && assay && assay-dlq && frontend-unit && ui_unit`,
      check `[lanes.gate]`'s argv in `run-gate.toml` for the current chain, it can change). Omit
      `--worktree` when running from the main checkout itself; pass
      `--worktree <repo-root>/.worktrees/<branch>` only when judging a worktree.
@@ -60,7 +60,12 @@ ACCEPT unambiguously. Never merge on the implementer's self-report.
      to track per-project, and check the composite's actual argv, running
      `run-gate <lane>` for anything the package's own review/oracles depend on
      that isn't in it explicitly; the composite going green is not evidence an
-     unwired lane did.
+     unwired lane did. **Default: run it here, synchronously, before treating
+     the merge as done.** A project MAY declare an explicit async-after-merge
+     policy scoped to R2/mutation lanes specifically (dstdns:
+     `docs/testing/RIGOR-COVERAGE-POLICY.md` "Merge timing") — check for one
+     before assuming every unwired lane must block this step; absent such a
+     declared policy, this step still runs it synchronously.
    - `run-gate --list` to discover current lane names if unsure; never hardcode a
      lane name from memory without checking it still exists in `run-gate.toml`.
 4. **Progress row** in the program's current plan doc; commit.

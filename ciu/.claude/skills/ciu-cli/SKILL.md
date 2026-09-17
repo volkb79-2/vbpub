@@ -12,7 +12,8 @@ description: Core ciu (Container Infrastructure Utility) verbs beyond worktree l
 > it as the source of truth.
 
 > **MANDATE.** ciu is THE orchestration interface for any ciu-managed repo
-> (dstdns AGENTS.md §4.4). Never use these manual alternatives:
+> (a consuming project's own AGENTS.md may state this explicitly too —
+> dstdns's does, at §4.4). Never use these manual alternatives:
 > - **Never** `docker compose up --build` / `docker compose build` / a bare
 >   `docker build` — use `docker buildx bake <target> --load` then `ciu up
 >   --deploy --healthcheck`. `--healthcheck` is not optional: a bare `ciu up`
@@ -47,7 +48,8 @@ shell. It exports `REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `REPO_NAME`,
 `INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`, and more — this is the ONLY
 correct source for a container/network name; a value that has an
 authoritative source here and gets hardcoded anyway is exactly the
-"shadowing default" hazard (dstdns AGENTS.md §4.2a). `ciu.env` itself is a
+"shadowing default" hazard (a project's own defaults-and-fallbacks policy,
+if it has one — dstdns's is AGENTS.md §4.2a). `ciu.env` itself is a
 legacy write-only export as of ciu 7.7.0 — a `source ciu.env` still works
 this release (identical key set) but is deprecated; prefer `eval "$(ciu env
 print)"` in anything new.
@@ -87,8 +89,10 @@ ciu provenance [--ignore-mismatch | --no-preflight] [--json]
 Verifies RUNNING containers were actually built from the commit under test —
 run this before trusting a live/e2e lane's result, so a stale image is
 caught as "provenance mismatch" rather than silently judged as if it were
-current (dstdns AGENTS.md §4.1a: a stale image is never a blocker, but a
-live-test claim that doesn't name its artifact is a defect).
+current (a stale image is never itself a blocker, but a live-test claim
+that doesn't name its artifact is — dstdns's AGENTS.md §4.1a states this
+explicitly, but the principle applies to any project trusting a live
+result).
 
 ## Dev-loop builds
 

@@ -3,8 +3,8 @@ name: ciu-stack
 description: Ad-hoc parallel or verification ciu stack lifecycle — Mode-B worktree bring-up, CPU-governance capping (CIU-90), host-load check before spinning up, teardown. Use when you need a throwaway or parallel stack instance beyond a project's primary Mode-A shared one — e.g. post-merge verification running alongside another gate, or a time-boxed multi-stack authorization. Applies to any ciu-managed project.
 ---
 
-> **Tool versions as of last verified update (2026-09-03):** ciu `7.11.0`,
-> run-gate `23.5.0` (pip-installed; shipped RG-39 — an internal exec-mode
+> **Tool versions as of last verified update (2026-09-17):** ciu `7.13.2`,
+> run-gate `23.8.0` (pip-installed; RG-39 shipped in run-gate 23.5.0 — an internal exec-mode
 > mutex keyed by the resolved container name, so two consumers of the SAME
 > container now serialize automatically without caller coordination; the
 > `flock` convention below stays valid as a cheap outer/pre-emptive lock,

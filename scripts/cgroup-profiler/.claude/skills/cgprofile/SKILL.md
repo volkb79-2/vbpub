@@ -25,9 +25,12 @@ description: Profile a container/cgroup/slice's real resource use over time (CPU
 Not "how much memory does my gate use" alone — **"when my gate runs, does
 [some other thing sharing this host] lose its anonymous pages?"** Profiling
 a subject while simultaneously observing a victim/neighbour is a first-class
-mode, not a workaround. This is the tool for host-contention diagnosis on a
-shared host (dstdns's own host shares production game-server load — see its
-`dstdns-host-shared-with-prod-game-server` memory/decisions D-338/D-373).
+mode, not a workaround. This is the tool for host-contention diagnosis on
+ANY host shared between a gate/build workload and something else that
+matters (a production service, another team's CI) — e.g. dstdns's own host
+shares production game-server load (see its `dstdns-host-shared-with-prod-
+game-server` memory/decisions D-338/D-373), which is the concrete scenario
+that motivated this tool's `--observe` mode in the first place.
 
 ## Quick start
 
@@ -64,6 +67,26 @@ cd scripts/cgroup-profiler
   `--log-match-file`) — turn matching log lines into phase marks
   automatically, for a gate that emits its own phase boundaries in its logs
   but knows nothing about cgprofile itself.
+
+## Profile something already running (no command to wrap)
+
+```bash
+./cgprofile attach --target container:<name> --duration 300
+# or: --until-file <path>  -- stop when that file appears, for an external
+# process to signal "done" without cgprofile needing to know its lifecycle
+```
+
+Same target/observe/cap flags as `run`, but there is no wrapped command —
+use this to profile a long-lived service instead of a one-shot command.
+
+## Re-render a report from a finished run
+
+```bash
+./cgprofile report --run-dir <path> [--html-only|--md-only]
+```
+
+Useful after a `run`/`attach` invoked with `--no-report` (defer rendering),
+or to regenerate in a different format without re-collecting samples.
 
 ## Just resolve limits, no profiling run
 
