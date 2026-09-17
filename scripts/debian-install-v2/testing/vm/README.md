@@ -94,6 +94,15 @@ run's disk into a new runner-local `<new-case>-base.qcow2`), `console <run>`,
 `status <run>`, `stop <run>` (graceful QMP `system_powerdown`, falling
 back to SIGTERM then SIGKILL), `destroy <run>` (stop + remove all state).
 
+`ssh` uses OpenSSH's remote-shell semantics. A simple command can use separate
+arguments, for example `./run-vm-harness.sh ssh shell1 -- uname -a`. For a
+command containing pipelines, assignments, quotes, or newlines, pass the
+complete remote shell program as one quoted argument, for example
+`./run-vm-harness.sh ssh shell1 -- 'set -eu; printf "%s\\n" "$HOME"'`.
+The wrapper quotes multiple simple arguments before sending them, while the
+one-argument form is intentionally preserved as shell syntax for the test
+lane.
+
 ## Skipping repeated first-boot cost: "ready" base images
 
 `vmctl prepare-ready-base <case>` builds on `prepare-base`: boots the stock
