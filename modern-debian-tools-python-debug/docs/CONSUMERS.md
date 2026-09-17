@@ -242,4 +242,9 @@ builder is unavailable, the release stops; it cannot silently create an
 ungoverned replacement. `load` is the shipped source-first OCI-layout flow:
 the build phase creates the artifact once and the push phase publishes that
 same artifact with digest verification. Set `push` for direct registry export,
-or `repack` for the optional validated OCI-layout compression path.
+or `repack` for the optional validated OCI-layout compression path. Release
+builds keep their cache beside the shared Git directory in a name such as
+`mdt-buildkit-cache-zstd-true-3`; the cache export uses the same compression
+policy as the image. If you set `MDT_BUILDKIT_CACHE_DIR` yourself, dedicate it
+to one compression policy rather than sharing it between gzip and forced-zstd
+builds.
