@@ -88,6 +88,7 @@ import shutil
 import signal
 import stat as stat_module
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,7 +244,7 @@ def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
             pass
 
 
-def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tuple[int, bytes, bytes]:
+def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=None) -> tuple[int, bytes, bytes]:
     """Run *argv* with the sanitized environment and return
     ``(returncode, stdout, stderr)`` with BOTH streams bounded.
 
@@ -275,6 +276,7 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None) -> tupl
         proc = subprocess.Popen(
             argv,
             env=dict(_REPLACEMENT_ENV),
+            **({"stdin": stdin} if stdin is not None else {}),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -581,6 +583,7 @@ def _run_raw(
     *args: str,
     remaining: Remaining | None = None,
     literal_pathspecs: bool = True,
+    input_bytes: bytes | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Resolve *repo* and run *args* against it, returning the RAW
     ``(returncode, stdout, stderr)`` without interpreting a non-zero exit.
@@ -614,7 +617,16 @@ def _run_raw(
         str(resolved.repo_top),
         *_prepare_subcommand_args(args),
     ]
-    return _run_bounded(argv, remaining=remaining)
+    if input_bytes is None:
+        return _run_bounded(argv, remaining=remaining)
+    if len(input_bytes) > MAX_GIT_OUTPUT_BYTES:
+        raise _git_failed("git input exceeds the bounded input limit")
+    # A bounded regular-file input needs no blocking pipe writer and keeps the
+    # existing concurrent output pump, deadline and process-group ownership.
+    with tempfile.TemporaryFile() as stream:
+        stream.write(input_bytes)
+        stream.seek(0)
+        return _run_bounded(argv, remaining=remaining, stdin=stream)
 
 
 def _run_bytes(repo: Path, *args: str, remaining: Remaining | None = None) -> bytes:
@@ -879,27 +891,26 @@ def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
     Like path_is_ignored, check-ignore needs the sanitized boundary without
     Git's unsupported --literal-pathspecs option. Fail on unknown job statuses.
     """
+    try:
+        payload = relative_path.encode("utf-8") + b"\0"
+    except UnicodeEncodeError as exc:
+        raise _git_failed("ignore path is not representable as UTF-8") from exc
+    if "\0" in relative_path:
+        raise _git_failed("ignore path contains a NUL byte")
     returncode, stdout, stderr = _run_raw(
-        repo, "check-ignore", "-v", "--", relative_path, literal_pathspecs=False,
+        repo, "check-ignore", "-v", "-z", "--stdin", literal_pathspecs=False,
+        input_bytes=payload,
     )
     if returncode == 1:
         return None
     if returncode != 0:
         raise _git_failed(f"git check-ignore failed ({returncode}): "
                           f"{stderr.decode('utf-8', errors='replace').strip()[:200]}")
-    metadata = _decode_or_reject(stdout, "ignore rule metadata").split("\t", 1)[0]
-    fields = re.fullmatch(r"(.+?):(\d+):(.*)", metadata)
-    if fields is None:
+    fields = _decode_or_reject(stdout, "ignore rule metadata").split("\0")
+    if (len(fields) != 5 or fields[-1] != "" or not fields[0]
+            or re.fullmatch(r"[1-9][0-9]*", fields[1]) is None or fields[3] != relative_path):
         raise _git_failed("malformed git check-ignore rule metadata")
-    if fields.group(3).startswith("!"):
-        return None
-    # Even core.quotePath=false leaves control characters C-quoted. Reuse the
-    # existing decoder; the local import avoids git/diff's import cycle.
-    from .diff import _unquote_git_path
-    try:
-        return _unquote_git_path(fields.group(1))
-    except ValueError as exc:
-        raise _git_failed(f"malformed git check-ignore source path: {exc}") from exc
+    return None if fields[2].startswith("!") else fields[0]
 
 
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:
