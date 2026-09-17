@@ -891,7 +891,15 @@ def ignore_rule_source(repo: Path, relative_path: str) -> str | None:
     fields = re.fullmatch(r"(.+?):(\d+):(.*)", metadata)
     if fields is None:
         raise _git_failed("malformed git check-ignore rule metadata")
-    return None if fields.group(3).startswith("!") else fields.group(1)
+    if fields.group(3).startswith("!"):
+        return None
+    # Even core.quotePath=false leaves control characters C-quoted. Reuse the
+    # existing decoder; the local import avoids git/diff's import cycle.
+    from .diff import _unquote_git_path
+    try:
+        return _unquote_git_path(fields.group(1))
+    except ValueError as exc:
+        raise _git_failed(f"malformed git check-ignore source path: {exc}") from exc
 
 
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:

@@ -319,6 +319,23 @@ def test_json_parser_recursion_failure_is_translated_at_the_parse_site(monkeypat
     assert isinstance(refusal.value.__cause__, RecursionError)
 
 
+@pytest.mark.parametrize("directory", ["directory\tname", "directory\nname", 'directory"name', "directory\\name"])
+def test_repository_ignore_origin_uses_real_path_instead_of_git_display_spelling(repository, tmp_path, directory):
+    root, _, _ = repository
+    nested = root / directory
+    nested.mkdir()
+    (nested / ".gitignore").write_text(".evidence/\n")
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "nested ignore policy"], check=True)
+    head, tree = analysis._git(root, "rev-parse", "HEAD", "HEAD^{tree}").splitlines()
+    relative = directory + "/.evidence/receipt.json"
+    assert analysis.git.ignore_rule_source(root, relative) == directory + "/.gitignore"
+    prefix = recorded(tmp_path, head, tree)
+    code, out, err = cli("receipt", "--worktree", root, "--expected-head", head,
+                         "--recorded", "job", prefix, "JOB_EXIT", "--output", root / relative)
+    assert (code, err) == (0, "") and json.loads(out)["head"] == head
+
+
 def test_receipt_collection_uses_one_file_graph_and_detects_stale_bytes(repository, tmp_path):
     root, head, tree = repository
     prefix = recorded(tmp_path, head, tree, 2)
