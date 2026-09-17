@@ -20,7 +20,7 @@ file, a specific sub-agent's own file (either way, the whole family it
 belongs to is shown, rooted at the top-level session), OR a DIRECTORY
 holding many top-level sessions -- a Claude Code project directory
 (~/.claude/projects/<project>/) or a Codex sessions root
-(~/.codex/sessions/) -- in which case every family found is combined into
+(the Codex ``$CODEX_HOME/sessions/`` root, default ``~/.codex/sessions/``) -- in which case every family found is combined into
 one forest (see `_list_agents_in_directory`, added 2026-09-11 after an
 operator hit exactly this: the natural "what's in this project" invocation
 failing outright). For opencode, `path` is always the whole SQLite store
@@ -106,7 +106,8 @@ def _list_agents_in_directory(path: Path, fmt: str | None) -> list[SessionNode]:
                 nodes.extend(claude_code.list_agents(f))
 
     if not nodes and fmt in (None, "codex"):
-        # A Codex sessions root (~/.codex/sessions/) nests rollout files
+        # A Codex sessions root ($CODEX_HOME/sessions/, default ~/.codex/sessions/)
+        # nests rollout files
         # under YYYY/MM/DD/ -- list_agents() per file already walks every
         # sibling sharing that file's own root session_id, so calling it
         # once per already-seen root (not once per file) avoids re-

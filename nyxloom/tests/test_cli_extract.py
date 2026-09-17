@@ -61,6 +61,71 @@ def _write_codex_fixture(tmp_path: Path) -> Path:
     return fp
 
 
+def _write_current_codex_fixture(tmp_path: Path) -> Path:
+    """A small cli_version >= 0.147 rollout, matching real Codex records."""
+    lines = [
+        {
+            "timestamp": "2026-09-17T00:00:00Z",
+            "ordinal": 0,
+            "type": "session_meta",
+            "payload": {
+                "session_id": "current-codex-session",
+                "id": "current-codex-session",
+                "cli_version": "0.154.0",
+                "thread_source": "user",
+            },
+        },
+        {
+            "timestamp": "2026-09-17T00:00:01Z",
+            "ordinal": 1,
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "UserMessage",
+                    "content": [{"type": "text", "text": "current Codex request"}],
+                },
+            },
+        },
+        {
+            "timestamp": "2026-09-17T00:00:02Z",
+            "ordinal": 2,
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "content": [{
+                        "type": "Text",
+                        "text": "current Codex response with a verified checkpoint",
+                    }],
+                },
+            },
+        },
+        {
+            "timestamp": "2026-09-17T00:00:03Z",
+            "ordinal": 3,
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "Reasoning",
+                    "raw_content": ["current Codex reasoning"],
+                },
+            },
+        },
+        {
+            "timestamp": "2026-09-17T00:00:04Z",
+            "ordinal": 4,
+            "type": "compacted",
+            "payload": {"message": "current Codex compaction"},
+        },
+    ]
+    fp = tmp_path / "rollout-current.jsonl"
+    fp.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    return fp
+
+
 def _write_opencode_fixture(tmp_path: Path, n_sessions: int = 1) -> Path:
     import sqlite3
 
@@ -125,6 +190,23 @@ def test_extract_lossless_works_for_codex_too(tmp_path, capsys):
 
     assert exit_code == 0
     assert "hi" in out
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["extract", "extract-lossless", "extract-debug", "extract-report", "extract-sessions"],
+)
+def test_cli_extract_family_accepts_current_codex_schema(tmp_path, capsys, command):
+    fp = _write_current_codex_fixture(tmp_path)
+
+    exit_code = cli.main([command, str(fp), "--format", "codex"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    if command == "extract-sessions":
+        assert "current-codex-session" in out
+    else:
+        assert "current Codex" in out
 
 
 def test_extract_lossless_since_file_resumes_from_its_marker(tmp_path, capsys):
@@ -1177,6 +1259,48 @@ def test_extract_accepts_a_bare_claude_code_session_uuid(tmp_path, capsys, monke
     exit_code = cli.main(["extract", uuid])
     assert exit_code == 0
     assert "please look into this" in capsys.readouterr().out
+
+
+def test_extract_accepts_a_bare_codex_uuid_from_codex_home(
+    tmp_path, capsys, monkeypatch,
+):
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    codex_home = home / ".codex2"
+    rollout = codex_home / "sessions" / "2026" / "09" / "12" / f"rollout-2026-09-12T10-11-40-{uuid}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(_write_codex_fixture(tmp_path).read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract", uuid, "--format", "codex"])
+    assert exit_code == 0
+    assert "hi" in capsys.readouterr().out
+
+
+def test_extract_bare_codex_uuid_refuses_duplicate_codex_homes(
+    tmp_path, capsys, monkeypatch,
+):
+    uuid = "03b58ae4-5a21-4667-bf22-7eb364115ba3"
+    home = tmp_path / "home"
+    fixture = _write_codex_fixture(tmp_path).read_text(encoding="utf-8")
+    paths = [
+        home / ".codex" / "sessions" / "2026" / "09" / "12" / f"rollout-2026-09-12T10-11-40-{uuid}.jsonl",
+        home / ".codex2" / "sessions" / "2026" / "09" / "12" / f"rollout-2026-09-12T10-11-40-{uuid}.jsonl",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(fixture, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = cli.main(["extract", uuid])
+    error = capsys.readouterr().err
+    assert exit_code == 1
+    assert "matches 2 sessions" in error
+    assert all(str(path) in error for path in paths)
 
 
 def test_extract_reports_an_unresolvable_session_ref(tmp_path, capsys, monkeypatch):

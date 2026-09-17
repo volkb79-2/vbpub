@@ -385,7 +385,7 @@ checking the real corpus:
 
 | Shape | Pattern | Where it's searched |
 | --- | --- | --- |
-| Claude Code / Codex session uuid | `8-4-4-4-12` hex, case-insensitive | `~/.claude/projects/*/` (as `<uuid>.jsonl`) and `~/.codex/sessions/**/rollout-*.jsonl` (as a filename **suffix**, which covers Codex sub-agent rollouts for free) |
+| Claude Code / Codex session uuid | `8-4-4-4-12` hex, case-insensitive | `~/.claude/projects/*/` (as `<uuid>.jsonl`) and Codex homes' `sessions/**/rollout-*.jsonl` (as a filename **suffix**, which covers Codex sub-agent rollouts for free; the active home is `$CODEX_HOME`, default `~/.codex`, and local `~/.codex*` profiles are checked for duplicate IDs) |
 | Claude Code sub-agent `agentId` | **17 hex chars, not a uuid** | `~/.claude/projects/*/*/subagents/agent-<id>.jsonl` |
 | opencode session id | `ses_` + **mixed-case alphanumerics** | `$XDG_DATA_HOME/opencode/opencode.db` (when set) and `~/.local/share/opencode/opencode.db` |
 
@@ -406,6 +406,12 @@ matches error; more than one match errors **listing every candidate** so you
 can re-run with the path (or `--opencode-session`) you meant. Silently
 picking "the newest" or "the first found" is precisely how a resume lands in
 the wrong session.
+
+Codex keeps sessions below its home directory. The CLI's `CODEX_HOME` value
+selects the active home; when it is absent, the default is `~/.codex`. Bare
+ID lookup checks that active/default home, the default home, and sibling
+`~/.codex*` profiles. If the same UUID exists in more than one home, lookup
+fails with every path so the operator can pass the intended rollout file.
 
 Claude Code project directories are keyed by an escaped cwd
 (`/workspaces/vbpub` → `-workspaces-vbpub`, `.` and `/` both becoming `-`),

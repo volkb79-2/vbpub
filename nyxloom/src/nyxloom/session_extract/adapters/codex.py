@@ -1,4 +1,5 @@
-"""OpenAI Codex CLI adapter -- ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
+"""OpenAI Codex CLI adapter -- $CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl
+(default ``~/.codex/sessions``).
 
 Schema facts verified directly against 400+ real local rollout files
 spanning cli_version 0.142.2 through 0.151.0 (this machine has genuine
