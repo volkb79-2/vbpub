@@ -298,7 +298,11 @@ incident history and will otherwise reproduce these by default.
 - ✗ `datetime.now()` / `time.time()` where the assertion depends on the value.
 - ✓ Inject or mock the boundary; make offline the default path.
 
-**F. No predicted measurements.** (dstdns D-496, 2026-09-17)
+**F. No predicted measurements.** (distilled 2026-09-17 from an incident in a
+consuming project's own decision ledger — the specific entry isn't cited here
+since a canonical doc shouldn't hard-reference a consumer's private,
+renumberable ledger; see that project's own decisions.md around the same
+date for the full incident writeup if useful.)
 - ✗ A carve or oracle asserting a specific coverage/mutation number, a "missing
   lines" list, or a "this branch is permanently uncoverable" claim computed by
   reasoning about a tool's rendered report instead of running the tool.
