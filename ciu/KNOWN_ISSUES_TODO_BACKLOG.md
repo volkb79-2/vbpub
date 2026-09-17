@@ -4192,3 +4192,50 @@ Either way this is a worktree-lifecycle decision with its own blast
 radius (`ensure` is on the resume path of every managed worktree), not
 something to fold into a consumer-driven provenance change, which is why
 CIU-106 shipped the wrapper and filed the rest.
+
+## CIU-108 — `[deployment.resources]` covers cgroup CPU shares and OOM-kill preference, not OS-scheduler nice value, so a consumer on a shared host reinvented it as a local script cluster
+
+Found 2026-09-17 auditing a consumer (dstdns) for scripts that should be
+tool features rather than local reinventions.
+
+dstdns runs on a host shared with a production workload (its own
+decisions.md D-338 program) and carries an 8-script cluster
+(`apply-resource-constraints.sh`, `boost-production-priority.sh`,
+`boost-from-devcontainer.sh`, `cpu-priority-comparison.sh`,
+`docker-nice-wrapper.sh`, `priority-management-workflow.sh`,
+`set-container-nice.sh`, `resource-constraints-quickref.sh`) whose entire
+job is Linux `nice`/`renice` management of container processes: lower test
+containers' scheduling priority, optionally raise production's, with an
+entrypoint-wrapper variant (`docker-nice-wrapper.sh`) that sets nice value
+at container start rather than after the fact.
+
+This sits directly alongside ciu's OWN `[deployment.resources]`
+(`cpu_shares`, `oom_score_adj`) — the consumer's own
+`priority-management-workflow.sh` documents `[deployment.resources]` as
+"STEP 1" of its workflow and this script cluster as the necessary STEPS 2-3
+ciu doesn't cover. `cpu_shares` is a cgroup-level *contested-time-slice*
+allocation; OS nice value is a *scheduler-preference-ordering* concern —
+genuinely different axes, and a host running production alongside dev/test
+work cares about both. `oom_score_adj` is already declarative in ciu; nice
+value is not, so it drifts back to 0 on every container restart under the
+current manual-script approach, unlike everything else in
+`[deployment.resources]`.
+
+**Proposed fix:** extend `[deployment.resources]` with a declarative `nice`
+key, applied via an entrypoint-wrapper mechanism (the consumer's own
+`docker-nice-wrapper.sh` is a working reference implementation of the
+approach) so a stack's "run at nice N" becomes render-input config exactly
+like `cpu_shares` already is, rather than a `sudo` script an operator runs
+once and which silently stops applying on the next restart.
+
+**Oracles:** (1) a stack declaring `nice = N` starts its main process(es) at
+that nice value, verified via `ps -o ni=`, no manual step required; (2) a
+stack declaring no `nice` key is unaffected (nice 0, purely additive); (3) a
+wrong implementation that sets nice on a container's PID 1 (often a
+supervisor/tini) rather than the actual worker process is the discriminating
+negative — the check must confirm the process doing the work, not just PID
+1; (4) restarting the container preserves the declared value, which a
+one-shot post-deploy `renice` cannot do by construction.
+
+Not yet started; filed as a proposal, not claimed to be scoped for a
+specific release.
