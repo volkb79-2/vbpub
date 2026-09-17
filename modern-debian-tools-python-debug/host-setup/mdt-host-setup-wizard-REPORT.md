@@ -390,7 +390,7 @@ config) and declare its own claim (governance.mem_min). Setting this
 ceiling alone protects NOTHING by itself; it only raises the total a
 stack COULD claim. (ciu's own admission control enforcing this
 ceiling against live claims is a separate, in-flight piece of work --
-see ../../ciu/nyxloom-trove/handoffs/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md)
+see ../../ciu/nyxloom-trove/archive/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md)
 
 This host: MemAvailable (4.5G) - step d's three MemoryHigh figures (4G combined) = 300M left over; 5% of that leftover = 0.
 A conservative suggestion, IF you want a nonzero ceiling at all: 0

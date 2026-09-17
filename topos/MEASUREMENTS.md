@@ -807,7 +807,7 @@ concurrency evidence, not a live systemd-daemon performance certification.
 ## P91 Persistent Capped History — 24h Synthetic Workload (O10, 2026-07-15)
 
 Measured against the `groop/` tree before the 2026-07-16 groop->topos rename;
-ported forward unchanged (`nyxloom-trove/reports/P91-LOG.md` port-forward
+ported forward unchanged (`nyxloom-trove/archive/P91-LOG.md` port-forward
 addendum, 2026-09-08) since `PersistentHistoryStore`'s design, defaults and
 workload are byte-identical across the rename — only paths and module names
 changed. The `cd`/script paths below are updated to the current `topos/` tree;
@@ -838,8 +838,8 @@ Two frame scales were measured:
 
 ```bash
 cd topos
-python3 nyxloom-trove/reports/P91-measure-history.py
-python3 nyxloom-trove/reports/P91-measure-history-scaled.py
+python3 nyxloom-trove/archive/P91-measure-history.py
+python3 nyxloom-trove/archive/P91-measure-history-scaled.py
 ```
 
 ### Fixture scale (8 entities, ~42.7 KB/frame raw)

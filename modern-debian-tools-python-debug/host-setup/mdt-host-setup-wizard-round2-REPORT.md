@@ -608,7 +608,7 @@ failure. Every over-width line was enumerated:
   3 [96] `…/scratchpad/example.env`
   5 [94] `…/scratchpad/w-out.env`
  56 [124] /workspaces/vbpub/.worktrees/…/host-setup/scripts/mdt-io-baseline.py
-176 [84] ../../ciu/nyxloom-trove/handoffs/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md)
+176 [84] ../../ciu/nyxloom-trove/archive/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md)
 --- COLUMNS=100 over-width lines ---
  43 [124] /workspaces/vbpub/.worktrees/…/host-setup/scripts/mdt-io-baseline.py
 --- COLUMNS=200 over-width lines ---
@@ -737,7 +737,7 @@ HOST_SETUP_DIR               …/modern-debian-tools-python-debug/host-setup    
 DEFAULT_EXAMPLE              …/host-setup/host-setup.env.example                                 exists=True
 DEFAULT_IO_BASELINE_SCRIPT   …/host-setup/scripts/mdt-io-baseline.py                             exists=True
 DEFAULT_INSTALL_SCRIPT       …/host-setup/install.sh                                             exists=True
-CIU_P50 (resolved)           /workspaces/vbpub/.worktrees/…/ciu/nyxloom-trove/handoffs/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md   exists=True
+CIU_P50 (resolved)           /workspaces/vbpub/.worktrees/…/ciu/nyxloom-trove/archive/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md   exists=True
 ```
 
 `CIU_P50_RELATIVE_PATH` needed no change — **verified, not assumed**: it is

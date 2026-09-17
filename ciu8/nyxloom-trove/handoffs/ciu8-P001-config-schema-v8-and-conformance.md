@@ -157,8 +157,8 @@ forbidden path to make a gate pass.
    pytest under nice/ionice, ONE gate container at a time, `docker update
    --cpus=3` right after launch, no builds concurrent with suites — the host
    runs a production game server alongside these agents).
-9. `/workspaces/vbpub/ciu/nyxloom-trove/handoffs/ciu-P07-assay-qualification.md`
-   and `/workspaces/vbpub/ciu/nyxloom-trove/handoffs/ciu-P49-ciu89-probe-container-override-ciu90-governance-cpu-quota.md`
+9. `/workspaces/vbpub/ciu/nyxloom-trove/archive/ciu-P07-assay-qualification.md`
+   and `/workspaces/vbpub/ciu/nyxloom-trove/archive/ciu-P49-ciu89-probe-container-override-ciu90-governance-cpu-quota.md`
    — two examples of this project family's own handoff/process conventions
    (LOG/REPORT split, checkpoint clause, "real gate required" discipline).
 

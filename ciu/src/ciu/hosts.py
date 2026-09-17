@@ -179,7 +179,7 @@ def get_host_secrets(repo_root: Path, name: str) -> dict[str, SecretSpec]:
 # ─────────────────────────────────────────────────────────────────────────────
 # S14.7c — the round-trip inventory writer (CIU-93)
 #
-# Design decision (see nyxloom-trove/reports/ciu-P52-REPORT.md): this is
+# Design decision (see nyxloom-trove/archive/ciu-P52-REPORT.md): this is
 # STDLIB-ONLY targeted text surgery, not `tomlkit`. tomlkit is the purpose-built
 # tool for round-trip TOML, but it is absent from ciu's dependency closure AND
 # from the gate's own `tester-unified:local` image, whose venv is built
