@@ -236,14 +236,15 @@ def test_human_failure_diagnosis_uses_existing_capture_without_inventing_counts(
         document.pop(f"result_{stream}_dropped_bytes", None)
     if captured:
         document.update(result_stdout_tail="FAILED tests/test_contract.py: real assertion",
-                        result_stderr_tail="diagnostic stderr", result_stdout_dropped_bytes=17)
+                        result_stderr_tail="diagnostic stderr", result_stdout_dropped_bytes=17,
+                        result_stderr_dropped_bytes=0)
     path.write_text(json.dumps(document))
     code, out, err = cli("verdict", path, "--expected-commit", head, "--format", "text")
     assert (code, err) == (0, "") and "FAIL" in out
     assert ("real assertion" in out) == captured
     assert ("diagnostic stderr" in out) == captured
     assert ("stdout dropped bytes: 17" in out) == captured
-    assert "stderr dropped bytes" not in out
+    assert ("stderr dropped bytes: 0" in out) == captured
     assert ("captured stdout tail:" in out) == captured
 
 
@@ -277,7 +278,8 @@ def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, ki
             (archive / "manifest.json").write_text(json.dumps({"schema_version": 1, "artifacts": {
                 "artifact": {"source": "historical", "sha256": "0" * 64, "bytes": 0}}}))
         arguments = ["check", str(archive)]
-    result = subprocess.run([str(standalone.venv / "bin/python"), "-I", "-m", "assay", "analyze", *arguments],
+    result = subprocess.run([str(standalone.venv / "bin/python"), "-I",
+                             str(standalone.venv / "bin/assay"), "analyze", *arguments],
                             capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 1 and result.stdout == ""
     assert "not a regular file" in result.stderr and "Traceback" not in result.stderr
