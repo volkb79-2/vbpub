@@ -3710,6 +3710,8 @@ Each command emits JSON on stdout on success, except `verdict --format text`.
 For an adverse verdict, the text view includes captured stdout/stderr tails and
 recorded dropped-byte counts when those fields exist. Read that diagnosis before
 rerunning the judged command; absent capture fields are not invented.
+Assay's self-hosting gate prints this view on failure and keeps the gate red
+without repeating the failed suite.
 The inspection/check/receipt commands exit 0 when their stated validation
 succeeds, including for a valid FAIL or ERROR verdict or recorded failed job.
 Read the preserved outcome and exits to decide whether the job passed. Exit 1

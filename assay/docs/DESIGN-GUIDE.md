@@ -3085,6 +3085,8 @@ JSON output is for machine consumption; `verdict --format text` is the concise
 human view. For adverse outcomes it also displays existing captured stdout/stderr
 tails and dropped-byte counts, so an already captured test failure need not be
 rerun to see its diagnosis. Absent capture fields remain absent.
+Assay's own gate consumes this view on failure and preserves its red status;
+it no longer executes the failed suite a second time for diagnostic output.
 Unknown archive schema versions refuse. Analysis validation errors
 exit 1 with an explanation on stderr and no success JSON. `record` returns the
 job's exit (a signal becomes 128 plus its number at the CLI boundary; the

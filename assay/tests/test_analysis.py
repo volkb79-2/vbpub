@@ -243,6 +243,18 @@ def test_human_failure_diagnosis_uses_existing_capture_without_inventing_counts(
     assert ("captured stdout tail:" in out) == captured
 
 
+def test_record_and_receipt_preserve_a_legitimate_empty_argument(repository):
+    root, head, _ = repository
+    output = root / ".evidence" / "empty-argument"
+    command = [sys.executable, "-c", "import sys; assert sys.argv[1] == ''", ""]
+    code, out, err = cli("record", "--worktree", root, "--expected-head", head,
+                         "--output", output, "--", *command)
+    assert (code, err) == (0, "")
+    result = analysis.receipt(root, head, [("job", output / "job", analysis.JOB_MARKER)])
+    assert result["jobs"]["job"]["command"] == command
+    assert json.loads(out)["command"] == command
+
+
 @pytest.mark.parametrize("command", ["verdict", "progress", "check", "collect", "receipt"])
 def test_deep_untrusted_json_refuses_without_publishing_success(repository, tmp_path, command):
     root, head, tree = repository

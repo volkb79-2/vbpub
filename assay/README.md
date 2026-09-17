@@ -37,6 +37,7 @@ and `assay verify`, and adds no runtime dependencies:
 - `verdict` uses the existing Assay verifier and an explicitly expected commit;
   `--format text` shows the outcome, claims, coverage and mutant buckets,
   plus captured output tails and recorded dropped-byte counts for adverse outcomes.
+  Assay's own gate uses this diagnosis when its self-hosted suite fails.
 - `progress` separates appended JSONL runs at the expected commit, showing
   resume/candidate facts and terminal events without folding retries together.
 - `receipt` binds selected recorded jobs, `tester-unified/run` evidence,

@@ -296,8 +296,8 @@ PYEOF
 
 # Runs the self-hosted lane against the ORIGINAL reviewed worktree (never the
 # private clone) with $scratch/run-venv first on PATH. On failure, prints a
-# diagnostic rerun for visible logs and returns 1 unconditionally -- the
-# diagnostic's own `|| true` must never launder a red lane into a zero exit,
+# captured verdict diagnosis and returns 1 unconditionally -- inspection
+# success must never launder a red lane into a zero exit,
 # and no phase marker is printed on this path.
 run_self_hosted_lane() {
   local worktree="$1" scratch="$2" version="$3" wheel="$4"
@@ -313,22 +313,23 @@ run_self_hosted_lane() {
   # operator directive of 2026-09-02, now estate policy (vbpub AGENTS.md,
   # run-gate SPEC R-38 / RG-33, run-gate rev 33). run-gate appends both to
   # every assay-kind lane it drives; this gate calls `assay run` itself, so it
-  # mirrors the policy rather than being the one exception to it. Both are
-  # no-ops on THIS lane by assay's own contract -- `--progress` is ignored
-  # without R2 and resume state is touched only by the mutation sweep -- which
-  # is the point: the invocation shape is uniform across the estate whether or
-  # not a given lane has anything to checkpoint. The progress file lives in
+  # mirrors the policy rather than being the one exception to it. Resume state
+  # is touched only by the mutation sweep, while B064 records R0 progress too.
+  # The invocation shape is uniform whether or not a lane checkpoints mutants.
+  # The progress file lives in
   # `$scratch` like the verdict, never in the worktree, where an untracked
   # file would read as DIRTY_TREE.
   if ! assay run tester-unified --require-judge-provenance \
       --resume --progress "$scratch/progress-tester-unified.jsonl" \
       --verdict-json "$scratch/verdict.json"; then
-    echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
-    # A red lane has two very different shapes and the rerun below only shows
-    # one of them. `NO_MEASUREMENT/DIRTY_TREE` is assay's POST-run whole-tree
+    echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; inspecting its captured verdict' >&2
+    assay analyze verdict "$scratch/verdict.json" \
+      --expected-commit "$(git -C "$worktree" rev-parse HEAD)" --format text >&2 \
+      || echo 'ASSAY_GATE_DIAGNOSTIC=captured-verdict-unavailable-or-invalid' >&2
+    # NO_MEASUREMENT/DIRTY_TREE is assay's POST-run whole-tree
     # check (`runner.py`'s `post_reason`), which carries no path list, so a
     # lane whose own command passed but left a file behind reports a green
-    # pytest here and an unexplained red lane above. Naming the paths costs
+    # command and a red lane above. Naming the paths costs
     # one git call and is the difference between a five-minute answer and a
     # rebuild-the-container investigation.
     # Both halves, and the second is the one that matters. `git.dirty_paths`
@@ -353,8 +354,6 @@ run_self_hosted_lane() {
     git -C "$worktree" status --porcelain >&2 || true
     echo 'ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query' >&2
     git -C "$worktree" ls-files --others --exclude-per-directory=.gitignore >&2 || true
-    python -m pytest tests -q --ignore=tests/test_self_hosting.py \
-      --override-ini=pythonpath= || true
     return 1
   fi
   require_emitted_version_matches "$scratch" "$scratch/verdict.json" "$version"

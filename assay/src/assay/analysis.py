@@ -241,9 +241,9 @@ def _recorded(prefix: Path, marker: str, head: str, tree: str) -> dict:
     if not first.startswith("COMMAND="):
         raise ValueError("recorded log must begin with COMMAND=<JSON argv>")
     command = _json(first.removeprefix("COMMAND="))
-    if not isinstance(command, list) or not command or any(
-            not isinstance(arg, str) or not arg for arg in command):
-        raise ValueError("COMMAND must be a nonempty JSON argv of nonempty strings")
+    if (not isinstance(command, list) or not command or not command[0]
+            or any(not isinstance(arg, str) for arg in command)):
+        raise ValueError("COMMAND must be a JSON string argv with a nonempty executable")
     return {"kind": "recorded", "command": command,
             "job_exit": _marker(log, marker),
             "files": {suffix: data[1] for suffix, data in contents.items()}}
@@ -341,7 +341,7 @@ def record(worktree: Path, expected: str, output: Path, command: list[str]) -> t
     root = git.repo_top(worktree)
     head, tree = _identity(root, expected)
     _output_location(root, output, directory=True)
-    if not command or any(not arg for arg in command):
+    if not command or not command[0] or any(not isinstance(arg, str) for arg in command):
         raise ValueError("record requires a command after --")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()
