@@ -318,8 +318,11 @@ scripts/*.key
 # writeable and visible to the agents and test-runner 
 .worktrees/
 
-# Claude Code local config
-.claude/
+# Claude Code local config -- runtime/session state stays ignored, but
+# .claude/skills/ is checked-in, shared, cross-machine content (never
+# session-local), so it gets an explicit exception (2026-09-17).
+.claude/*
+!.claude/skills/
 /claude/
 CLAUDE.md
 
