@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.3.2] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=fba1be96e9ec571e6567800869e0c6cd740e2f02 -->
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+
 ## [0.3.1] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=54dfca2f0d6e075f23941afbcfe7836fca4bdda0 -->
