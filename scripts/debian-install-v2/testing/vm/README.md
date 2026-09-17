@@ -62,7 +62,9 @@ container (a worktree-specific `debian-install-vm-harness-*`) across invocations
 by one call needs to still be reachable by a later `wait`/`ssh`/`destroy`
 call against the same container. The runner enables Docker's init reaper so
 QEMU's detached child does not accumulate as a zombie after a run.
-`./run-vm-harness.sh --stop-daemon` tears that runner down; the next command auto-starts a fresh one. The standard
+`./run-vm-harness.sh --stop-daemon` tears that runner down; the next command auto-starts a fresh one. If the
+Dockerfile changes while a runner is live, the wrapper refuses to reuse the stale image; stop the daemon once and
+retry. The standard
 real-device test command is `./run-vm-tests.sh`; it copies the test package
 into the guest and sets the VM-only opt-in there. That lane requires the
 guest to report QEMU/KVM and all partition/swap tools, and verifies by JUnit
@@ -71,7 +73,11 @@ phases are bounded; one run per worktree is admitted at a time.
 
 The outer runner is placed in `$CGROUP_PARENT_DEV_BACKGROUND`; the wrapper
 fails closed if that variable or the known interactive probe tier is absent or
-not installed on the Docker host.
+not installed on the Docker host. Before building the runner image it also
+requires `BUILDX_BUILDER` and invokes `docker buildx build --builder
+"$BUILDX_BUILDER" --load`, so the image build uses the host-managed builder
+instead of Docker's default daemon path. The configured builder must already
+be available in the caller's Buildx configuration.
 
 ## `vmctl` directly (inside the runner container)
 

@@ -34,6 +34,7 @@ IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
+DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
 # normal host workload, not an escape from the estate's cgroup policy.  The
@@ -42,6 +43,8 @@ VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 # Docker's unbounded default or to an implicitly-created transient slice.
 VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"
 VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
+BUILD_BUILDER="${BUILDX_BUILDER:-}"
+CGROUP_PROBE_IMAGE="${MDT_VM_CGROUP_PROBE_IMAGE:-debian:trixie-slim}"
 
 die() {
     echo "run-vm-harness: $*" >&2
@@ -113,11 +116,15 @@ verify_cgroup_parent() {
     # directory and the unit file catches both a stale name and an uninstalled
     #/auto-created transient slice.  The probe itself is placed in the already
     # verified interactive tier.
-    probe="$(docker run --rm --cgroupns=host --network=none \
+    probe_image="$IMAGE"
+    if ! docker image inspect "$probe_image" >/dev/null 2>&1; then
+        probe_image="$CGROUP_PROBE_IMAGE"
+    fi
+    probe="$(docker run --rm --pull=missing --cgroupns=host --network=none \
         --cgroup-parent="$VM_PROBE_CGROUP_PARENT" \
         --mount type=bind,src=/sys/fs/cgroup,dst=/hostcg,ro \
         --mount type=bind,src=/etc/systemd/system,dst=/hostunits,ro \
-        "$IMAGE" bash -c '
+        "$probe_image" bash -c '
             parent="$1"
             test -f "/hostunits/$parent" &&
                 find /hostcg -type d -name "$parent" -print -quit | grep -q .
@@ -126,9 +133,21 @@ verify_cgroup_parent() {
         "cgroup parent '$VM_CGROUP_PARENT' is not an installed, live host slice; refusing to start the VM runner"
 }
 
+verify_build_environment() {
+    [ -n "$BUILD_BUILDER" ] || die \
+        'BUILDX_BUILDER is not set; refusing to build the VM runner through Docker default'
+    docker buildx inspect --builder="$BUILD_BUILDER" >/dev/null 2>&1 || die \
+        "Buildx builder '$BUILD_BUILDER' is not available; refusing an ungoverned runner build"
+}
+
 ensure_runner() {
-    docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$HERE" >/dev/null
+    # Verify both the host tier and the named BuildKit backend before doing any
+    # image build work. `docker build` without an explicit builder can silently
+    # use Docker's default daemon path, which defeats the host's BuildKit cgroup
+    # governance for this otherwise unprivileged VM harness.
+    verify_build_environment
     verify_cgroup_parent
+
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
         mounted_testing="$(docker inspect "$NAME" --format \
             '{{range .Mounts}}{{if eq .Destination "/work"}}{{.Source}}{{end}}{{end}}' \
@@ -138,8 +157,27 @@ ensure_runner() {
             echo "refusing to reuse a runner from another worktree" >&2
             return 1
         fi
-        return 0
+        runner_image="$(docker inspect "$NAME" --format '{{.Image}}' 2>/dev/null || true)"
+        local_image="$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
+        local_dockerfile_sha="$(docker image inspect "$IMAGE" --format \
+            '{{index .Config.Labels "mdt.vm.dockerfile-sha"}}' 2>/dev/null || true)"
+        if [ -n "$runner_image" ] && [ "$runner_image" = "$local_image" ] \
+            && [ "$local_dockerfile_sha" = "$DOCKERFILE_SHA" ]; then
+            return 0
+        fi
+        echo "runner $NAME uses image ${runner_image:-<unknown>} / Dockerfile ${local_dockerfile_sha:-<unknown>}, but the current $IMAGE is ${local_image:-<missing>} / Dockerfile $DOCKERFILE_SHA" >&2
+        echo "refusing to reuse a stale runner; run '$0 --stop-daemon' before retrying" >&2
+        return 1
     fi
+
+    docker buildx build \
+        --builder="$BUILD_BUILDER" \
+        --load \
+        --progress=plain \
+        --label="mdt.vm.dockerfile-sha=$DOCKERFILE_SHA" \
+        -f "$HERE/Dockerfile" \
+        -t "$IMAGE" \
+        "$HERE"
     # A stopped-but-present container with this name (e.g. OOM-killed, or
     # the host itself restarted) would otherwise make the docker run below
     # fail with "name already in use" instead of self-healing -- remove

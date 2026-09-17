@@ -63,6 +63,17 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("buildx rm", builder)
         self.assertNotIn("docker-container", builder)
 
+    def test_offline_first_party_wheels_have_runtime_dependency_floors(self) -> None:
+        """The no-index wheel layer must be closed by the toolkit layer first."""
+        requirements = (ROOT / "requirements/toolkit.txt").read_text()
+        self.assertIn("rich>=15.0.0", requirements)
+        self.assertIn("pygments>=2.21.0", requirements)
+        wheels = (ROOT / "pip/wheels.list").read_text()
+        self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("rich/pygments", dockerfile)
+        self.assertIn("--no-index", dockerfile)
+
     def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
         package_names = {
             line.split("#", 1)[0].strip()
