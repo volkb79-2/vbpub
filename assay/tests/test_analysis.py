@@ -6,6 +6,7 @@ import hashlib
 from importlib.resources import files
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -253,6 +254,30 @@ def test_record_and_receipt_preserve_a_legitimate_empty_argument(repository):
     result = analysis.receipt(root, head, [("job", output / "job", analysis.JOB_MARKER)])
     assert result["jobs"]["job"]["command"] == command
     assert json.loads(out)["command"] == command
+    schema = json.loads(files("assay").joinpath("schemas/analysis-receipt.schema.json").read_text())
+    Draft202012Validator(schema).validate(result)
+
+
+@pytest.mark.parametrize("kind", ["verdict", "progress", "manifest", "archive-artifact"])
+def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, kind):
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    if kind in ("verdict", "progress"):
+        arguments = [kind, str(fifo), "--expected-commit", "a" * 40]
+    else:
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        if kind == "manifest":
+            fifo.rename(archive / "manifest.json")
+        else:
+            fifo.rename(archive / "artifact")
+            (archive / "manifest.json").write_text(json.dumps({"schema_version": 1, "artifacts": {
+                "artifact": {"source": "historical", "sha256": "0" * 64, "bytes": 0}}}))
+        arguments = ["check", str(archive)]
+    result = subprocess.run([sys.executable, "-m", "assay", "analyze", *arguments],
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 1 and result.stdout == ""
+    assert "not a regular file" in result.stderr and "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("command", ["verdict", "progress", "check", "collect", "receipt"])

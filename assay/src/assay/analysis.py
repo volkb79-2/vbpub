@@ -41,6 +41,8 @@ def _json(text: str):
 
 
 def _digest(path: Path) -> dict:
+    if not path.is_file():
+        raise ValueError(f"artifact is not a regular file: {path}")
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
@@ -51,6 +53,8 @@ def _digest(path: Path) -> dict:
 
 
 def _read(path: Path, *, errors: str = "strict") -> tuple[str, dict]:
+    if not path.is_file():
+        raise ValueError(f"artifact is not a regular file: {path}")
     data = path.read_bytes()
     return data.decode("utf-8", errors=errors), {"path": str(path.resolve()),
                                  "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
