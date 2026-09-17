@@ -231,6 +231,9 @@ def test_human_failure_diagnosis_uses_existing_capture_without_inventing_counts(
     head = "a" * 40
     path = verdict(tmp_path, head, "r0_fail_command_failed")
     document = json.loads(path.read_text())
+    for stream in ("stdout", "stderr"):
+        document.pop(f"result_{stream}_tail", None)
+        document.pop(f"result_{stream}_dropped_bytes", None)
     if captured:
         document.update(result_stdout_tail="FAILED tests/test_contract.py: real assertion",
                         result_stderr_tail="diagnostic stderr", result_stdout_dropped_bytes=17)
@@ -251,7 +254,7 @@ def test_record_and_receipt_preserve_a_legitimate_empty_argument(repository):
     code, out, err = cli("record", "--worktree", root, "--expected-head", head,
                          "--output", output, "--", *command)
     assert (code, err) == (0, "")
-    result = analysis.receipt(root, head, [("job", output / "job", analysis.JOB_MARKER)])
+    result = analysis.receipt(root, head, [("job", output / "job", analysis.JOB_MARKER)], [], [])
     assert result["jobs"]["job"]["command"] == command
     assert json.loads(out)["command"] == command
     schema = json.loads(files("assay").joinpath("schemas/analysis-receipt.schema.json").read_text())
@@ -259,7 +262,7 @@ def test_record_and_receipt_preserve_a_legitimate_empty_argument(repository):
 
 
 @pytest.mark.parametrize("kind", ["verdict", "progress", "manifest", "archive-artifact"])
-def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, kind):
+def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, kind, standalone):
     fifo = tmp_path / "fifo"
     os.mkfifo(fifo)
     if kind in ("verdict", "progress"):
@@ -274,7 +277,7 @@ def test_nonregular_inputs_refuse_without_waiting_for_a_fifo_writer(tmp_path, ki
             (archive / "manifest.json").write_text(json.dumps({"schema_version": 1, "artifacts": {
                 "artifact": {"source": "historical", "sha256": "0" * 64, "bytes": 0}}}))
         arguments = ["check", str(archive)]
-    result = subprocess.run([sys.executable, "-m", "assay", "analyze", *arguments],
+    result = subprocess.run([str(standalone.venv / "bin/python"), "-I", "-m", "assay", "analyze", *arguments],
                             capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 1 and result.stdout == ""
     assert "not a regular file" in result.stderr and "Traceback" not in result.stderr
@@ -301,8 +304,17 @@ def test_deep_untrusted_json_refuses_without_publishing_success(repository, tmp_
         args = (command, "--worktree", root, "--expected-head", head,
                 "--recorded", "gate", prefix, "JOB_EXIT", "--output", output)
     code, out, err = cli(*args)
-    assert code == 1 and out == "" and "JSON nesting exceeds decoder limit" in err
+    assert code == 1 and out == "" and err.startswith("assay analyze:")
     assert "Traceback" not in err and not output.exists()
+
+
+def test_json_parser_recursion_failure_is_translated_at_the_parse_site(monkeypatch):
+    def decoder_exhausted(*args, **kwargs):
+        raise RecursionError("decoder exhausted its stack")
+    monkeypatch.setattr(analysis.json, "loads", decoder_exhausted)
+    with pytest.raises(ValueError, match="JSON nesting exceeds decoder limit") as refusal:
+        analysis._json("[]")
+    assert isinstance(refusal.value.__cause__, RecursionError)
 
 
 def test_receipt_collection_uses_one_file_graph_and_detects_stale_bytes(repository, tmp_path):
