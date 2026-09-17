@@ -320,9 +320,13 @@ scripts/*.key
 
 # Claude Code local config -- runtime/session state stays ignored, but
 # .claude/skills/ is checked-in, shared, cross-machine content (never
-# session-local), so it gets an explicit exception (2026-09-17).
-.claude/*
-!.claude/skills/
+# session-local), so it gets an explicit exception (2026-09-17, corrected
+# same day: `.claude/*` contains a mid-pattern slash, which anchors it to
+# THIS .gitignore's own directory per git's own rules -- it silently
+# stopped matching every nested .claude/ in this monorepo, e.g.
+# ciu/.claude/, tls-edge/.claude/. `**/.claude/*` matches at any depth.)
+**/.claude/*
+!**/.claude/skills/
 /claude/
 CLAUDE.md
 
