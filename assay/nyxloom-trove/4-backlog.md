@@ -9710,3 +9710,8 @@ before reaching the new object guard. Decoder `ValueError` (including
 refusal. Loader and CLI oracles use a controlled conversion limit restored
 after each test, prove the real unguarded decoder refusal, preserve the
 corrupt record, and cover valid replay/cache-miss behavior separately.
+
+**Gate follow-up 2026-09-17 (RG-49 B12):** the now-guarded resume decoder's
+obsolete trusted-site exemption is removed. The derived JSON-parse audit
+also pins this guarded site by name, retaining both the stale-exemption
+refusal and protection against silent guard removal.
