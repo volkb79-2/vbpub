@@ -13,6 +13,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.4.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=8512408c83c37759bb317d5023c94e554f708013 -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+- feat(assay): consume captured gate failures without replaying tests (d3bacd31)
+- feat(assay): share review evidence capture and analysis (fde9527a)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+- fix(assay): preserve verdicts for resume decoder resource errors (a84581fc)
+- fix(assay): read ignore provenance as bounded NUL-delimited Git records (0320a160)
+- fix(assay): decode quoted Git ignore origins with shared path parser (3a7f6f3e)
+- fix(assay): keep receipt argv schema consistent and refuse special files (da0c3a58)
+- fix(assay): refuse deeply nested analysis JSON and expose captured failures (b48e873d)
+- fix(assay): refuse non-object mutation resume records (12e061b1)
+
+### Changed
+- Merge accepted Assay RG-49 B9 provider repair (fb24a852)
+
+### Documentation
+- docs(assay): record completed review evidence tooling qualification (0ae3c56c)
+- docs(assay): record evidence extraction and blocked final gate admission (9cb98651)
+
+### Testing
+- test(assay): retire guarded resume decoder exemption (e6ac4730)
+- test(assay): invoke shipped CLI and use valid capture metadata (f55bfba8)
+- test(assay): qualify failure and refusal oracles across gate interpreters (25269e30)
+
 ### Fixed
 - fix(assay): reject non-object JSON mutation resume records as structured
   `ERROR`/`UNREADABLE_ARTIFACT` instead of allowing a `TypeError` traceback
