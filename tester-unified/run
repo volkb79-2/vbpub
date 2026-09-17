@@ -7,7 +7,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: tester-unified/run [--workdir PATH] [--evidence-dir PATH] -- COMMAND [ARG...]
+usage: tester-unified/run [--workdir PATH] [--evidence-dir PATH] [--network none] -- COMMAND [ARG...]
 
 CGROUP_PARENT_DEV_BACKGROUND must name the configured gate/build slice.
 EOF
@@ -20,6 +20,7 @@ die() {
 
 workdir=$PWD
 evidence_root=
+network_args=()
 while (($#)); do
     case "$1" in
         --workdir)
@@ -30,6 +31,12 @@ while (($#)); do
         --evidence-dir)
             (($# >= 2)) || die "--evidence-dir requires a path"
             evidence_root=$2
+            shift 2
+            ;;
+        --network)
+            (($# >= 2)) || die "--network requires none"
+            [[ $2 == none ]] || die "--network accepts only none"
+            network_args=(--network none)
             shift 2
             ;;
         --)
@@ -208,6 +215,7 @@ container_id=$("$docker_bin" run -d \
     --name "$name" \
     --cgroup-parent "$cgroup_parent" \
     --cpus=3 \
+    "${network_args[@]}" \
     --group-add "$socket_gid" \
     -e "CGROUP_PARENT_DEV_BACKGROUND=$cgroup_parent" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
@@ -220,7 +228,7 @@ container_id=$("$docker_bin" run -d \
     -v "$docker_socket:$docker_socket" \
     -w "$workdir" \
     "$image" \
-    bash -c 'git config --global --replace-all safe.directory "*"; setup_rc=$?; if ((setup_rc)); then printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$setup_rc"; exit "$setup_rc"; fi; "$@"; job_rc=$?; printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$job_rc"; exit "$job_rc"' \
+    bash -c 'git config --global --replace-all safe.directory "*"; setup_rc=$?; if ((setup_rc)); then printf "\nTESTER_UNIFIED_JOB_EXIT=%s\n" "$setup_rc"; exit "$setup_rc"; fi; "$@"; job_rc=$?; printf "\nTESTER_UNIFIED_JOB_EXIT=%s\n" "$job_rc"; exit "$job_rc"' \
     tester-unified-job "$@")
 container_started=1
 flock -u 9
@@ -236,6 +244,12 @@ actual=$("$docker_bin" inspect "$name" --format '{{.Config.User}}|{{.HostConfig.
 expected="1003|$cgroup_parent|3000000000|$workdir"
 if [[ $actual != "$expected" ]]; then
     abort_started "launch verification mismatch: expected $expected, got $actual"
+fi
+if ((${#network_args[@]})); then
+    accepted_network=$("$docker_bin" inspect "$name" --format '{{.HostConfig.NetworkMode}}') \
+        || abort_started "could not inspect the accepted network mode"
+    [[ $accepted_network == none ]] \
+        || abort_started "Docker did not accept network mode none"
 fi
 
 mounts=$("$docker_bin" inspect "$name" --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}') \
@@ -278,6 +292,7 @@ done
     printf 'nano_cpus=3000000000\n'
     printf 'workdir=%s\n' "$workdir"
     printf 'git_head=%s\n' "$(git -C "$git_root" rev-parse HEAD)"
+    if ((${#network_args[@]})); then printf 'network_mode=%s\n' "$accepted_network"; fi
     printf 'workspace_target=%s\n' "$workspace_root"
     printf 'workspace_host_fsroot=%s\n' "$host_workspace"
     printf 'temp_container_path=%s\n' "$container_tmp"

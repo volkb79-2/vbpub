@@ -23,6 +23,44 @@ linking against assay itself.
 
 ---
 
+## Review evidence analysis
+
+`assay analyze` reduces the scripts needed to create and consume review
+evidence. It ships in the wheel and standalone zipapp alongside `assay run`
+and `assay verify`, and adds no runtime dependencies:
+
+- `record` captures an explicit command, before/after Git identities and
+  cleanliness, merged job output, and the actual job exit.
+- `collect` copies explicitly named files into a fresh archive with SHA256
+  and byte counts, or collects a receipt and all its referenced inputs with
+  `--receipt`; `check` verifies that archive after relocation.
+- `verdict` uses the existing Assay verifier and an explicitly expected commit;
+  `--format text` shows the outcome, claims, coverage and mutant buckets,
+  plus captured output tails and recorded dropped-byte counts for adverse outcomes.
+  Assay's own gate uses this diagnosis when its self-hosted suite fails.
+- `progress` separates appended JSONL runs at the expected commit, showing
+  resume/candidate facts and terminal events without folding retries together.
+- `receipt` binds selected recorded jobs, `tester-unified/run` evidence,
+  verdicts and progress to the current clean worktree's exact HEAD and tree.
+- `launcher` inspects an existing `tester-unified/run` evidence directory,
+  including historical runs, at its explicitly expected commit.
+
+<!-- assay-analysis-example -->
+```bash
+assay analyze verdict .assay/verdict-r2.json --expected-commit "$REVIEW_HEAD" --format text
+assay analyze progress .assay/progress-r2.jsonl --expected-commit "$REVIEW_HEAD"
+```
+
+Set `REVIEW_HEAD` to the full Git commit agreed with the controller. Analysis
+success means its stated checks succeeded; a valid FAIL or ERROR verdict
+remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
+[worked review workflow](docs/CONSUMERS.md#review-evidence-analysis) and
+[design and limits](docs/DESIGN-GUIDE.md#review-evidence-analysis).
+
+Machine consumers can validate manifests and receipts against the packaged
+`schemas/analysis-archive.schema.json` and `schemas/analysis-receipt.schema.json`.
+The existing verdict schema remains unchanged.
+
 ## Why use it
 
 Test suites lie in a specific, boring, recurring way: CI is green, coverage

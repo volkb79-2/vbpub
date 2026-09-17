@@ -39,3 +39,15 @@ lock. These are infrastructure outcomes, not functional test verdicts.
 
 See [the user-facing overview](../README.md) and
 [consumer commands](CONSUMERS.md#running-a-project-gate).
+
+## Offline gates
+
+`--network none` lets exact-OID wheel/self-hosting gates reuse this launcher
+while retaining their existing offline container boundary. Reimplementing the
+P4 namespace, identity, admission and transport recipe just to disable network
+access would recreate the duplication the canonical launcher removed. Docker
+must accept `NetworkMode=none`, and this fact is recorded with the launch
+metadata; a mismatch aborts only the owned container. The only explicit network
+value is `none`. Omitting the option preserves existing Docker selection;
+the launcher does not invent a network name. The Docker socket remains mounted
+for product boundary tests, so this is network isolation, not a security sandbox.

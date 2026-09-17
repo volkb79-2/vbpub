@@ -33,7 +33,12 @@ Assay artifact, and run-gate installs the selected worktree's `assay/` source
 there at lane runtime. Rebuild this image when Assay's `[build-system]`
 requirements change.
 
-The complete option vocabulary is `--workdir PATH`, `--evidence-dir PATH`,
+Pass `--network none` for an offline gate. The launcher verifies Docker's
+accepted network mode and records it in `launch.txt`; without this option it
+preserves Docker's existing network selection. See the
+[offline gate rationale](docs/DESIGN-GUIDE.md#offline-gates).
+
+The complete option vocabulary is `--workdir PATH`, `--evidence-dir PATH`, `--network none`,
 `-h`/`--help`, and the required `--` command separator. The image, uid, CPU
 cap, and cgroup environment variable are deliberately not per-run options.
 
