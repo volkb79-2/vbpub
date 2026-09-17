@@ -668,6 +668,16 @@ RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=
 RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     python3 /tmp/install_ai_cli_tools.py venv
+# Aider is installed after toolkit.txt and may change packages shared with the
+# first-party wheels. Reconcile the primary venv from the single requirements
+# source now, before the offline wheel layer; otherwise a successful Aider
+# install can silently leave (for example) rich/Pygments below Nyxloom's
+# declared runtime floors.
+RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
+    set -euo pipefail; \
+    /home/vscode/.venv/bin/python -m pip install \
+        --disable-pip-version-check --upgrade --quiet \
+        -r /tmp/requirements/toolkit.txt
 # ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
 # Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
 # Each version gets /home/vscode/.venv-py{nodot} (e.g. .venv-py311, .venv-py39).
@@ -688,12 +698,17 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (ciu + cmru, from ciu-v* / cmru-v* GitHub Releases).
+# pip/wheels/ holds the .whl files (ciu, cmru, topos, and nyxloom from their
+# GitHub Releases).
 # Installed with --no-index --find-links (no build-time network): each wheel's
-# runtime deps must already be in the venv — cmru has none; ciu's Jinja2 / PyYAML /
-# tomli_w come from requirements/toolkit.txt (installed above).
+# runtime deps must already be in the venv. requirements/toolkit.txt is the
+# source of those floors: Jinja2/PyYAML/tomli_w for ciu, textual for topos, and
+# rich/pygments plus the shared validation libraries for nyxloom. Keeping the
+# floors here makes a missing offline dependency fail during the final venv
+# reconciliation, before the first-party wheel layer, rather than being
+# discovered there.
 # Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
-# Source: https://github.com/volkb79-2/vbpub/releases — ciu-v* / cmru-v* releases.
+# Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
 RUN set -euo pipefail; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \

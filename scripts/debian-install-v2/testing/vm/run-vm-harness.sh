@@ -34,6 +34,7 @@ IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
+DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
 # normal host workload, not an escape from the estate's cgroup policy.  The
@@ -42,6 +43,8 @@ VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 # Docker's unbounded default or to an implicitly-created transient slice.
 VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"
 VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
+BUILD_BUILDER="${BUILDX_BUILDER:-}"
+CGROUP_PROBE_IMAGE="${MDT_VM_CGROUP_PROBE_IMAGE:-debian:trixie-slim}"
 
 die() {
     echo "run-vm-harness: $*" >&2
@@ -55,25 +58,73 @@ die() {
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
-mount_dest="/workspaces/vbpub"
 HOST_TESTING_DIR="$TESTING_DIR"
 HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
-self_id="$(cat /etc/hostname 2>/dev/null || true)"
+SELF_HOSTNAME="$(cat /etc/hostname 2>/dev/null || true)"
+SELF_CONTAINER_ID=""
 inside_container=0
 if [ -e /.dockerenv ] || [ -e /run/.containerenv ]; then
     inside_container=1
 fi
-if [ -n "$self_id" ]; then
-    host_mount_src="$(docker inspect "$self_id" --format \
-        "{{range .Mounts}}{{if eq .Destination \"$mount_dest\"}}{{.Source}}{{end}}{{end}}" \
-        2>/dev/null || true)"
-    if [ -n "$host_mount_src" ]; then
-        HOST_TESTING_DIR="$host_mount_src${TESTING_DIR#"$mount_dest"}"
-        HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
+if [ "$inside_container" = "1" ]; then
+    [ -n "$SELF_HOSTNAME" ] || die \
+        "cannot identify this Docker cockpit (no /etc/hostname); refusing a namespace-wrong bind mount"
+
+    # /etc/hostname is the container's configured hostname, not necessarily
+    # its Docker name.  Looking up that string as a container name worked for
+    # the original devcontainer only because both happened to match.  Walk
+    # Docker's live containers and match Config.Hostname instead; require one
+    # exact match so a duplicate hostname cannot make us mount another
+    # worktree's source.
+    container_ids="$(docker ps -q --no-trunc 2>/dev/null)" || die \
+        "cannot query Docker to identify this cockpit; refusing a namespace-wrong bind mount"
+    while IFS= read -r candidate_id; do
+        [ -n "$candidate_id" ] || continue
+        candidate_hostname="$(docker inspect "$candidate_id" --format '{{.Config.Hostname}}' 2>/dev/null || true)"
+        if [ "$candidate_hostname" = "$SELF_HOSTNAME" ]; then
+            if [ -n "$SELF_CONTAINER_ID" ]; then
+                die "multiple Docker containers have hostname '$SELF_HOSTNAME'; refusing ambiguous host-path resolution"
+            fi
+            SELF_CONTAINER_ID="$candidate_id"
+        fi
+    done <<EOF
+$container_ids
+EOF
+    [ -n "$SELF_CONTAINER_ID" ] || die \
+        "cannot map cockpit hostname '$SELF_HOSTNAME' to a live Docker container; refusing a namespace-wrong bind mount"
+
+    # Find the longest Docker bind/volume mount prefix containing this
+    # namespace path.  This removes the repo-layout assumption that the
+    # cockpit mount must be exactly /workspaces/vbpub while still deriving the
+    # physical host path from Docker's authoritative mount table.
+    host_mount_src=""
+    mount_dest=""
+    while IFS=$'\t' read -r candidate_dest candidate_src; do
+        [ -n "$candidate_dest" ] || continue
+        case "$TESTING_DIR/" in
+            "$candidate_dest"/*|"$candidate_dest")
+                if [ "${#candidate_dest}" -gt "${#mount_dest}" ]; then
+                    mount_dest="$candidate_dest"
+                    host_mount_src="$candidate_src"
+                fi
+                ;;
+        esac
+    done < <(docker inspect "$SELF_CONTAINER_ID" --format \
+        '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null) || die \
+        "cannot inspect Docker mounts for cockpit '$SELF_CONTAINER_ID'; refusing a namespace-wrong bind mount"
+    [ -n "$mount_dest" ] && [ -n "$host_mount_src" ] || die \
+        "no Docker mount contains $TESTING_DIR; refusing a namespace-wrong bind mount"
+    case "$host_mount_src" in
+        /*) ;;
+        *) die "Docker mount for $mount_dest is not a physical host path ('$host_mount_src'); refusing a namespace-wrong bind mount" ;;
+    esac
+    if [ "$mount_dest" = "/" ]; then
+        host_suffix="$TESTING_DIR"
+    else
+        host_suffix="${TESTING_DIR#"$mount_dest"}"
     fi
-fi
-if [ "$inside_container" = "1" ] && [ -z "${host_mount_src:-}" ]; then
-    die "cannot resolve the Docker host path for $TESTING_DIR from this cockpit; refusing a namespace-wrong bind mount"
+    HOST_TESTING_DIR="$host_mount_src$host_suffix"
+    HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 fi
 
 verify_cgroup_parent() {
@@ -97,8 +148,8 @@ verify_cgroup_parent() {
     # an unlimited transient slice (fail-open). A genuine host-shell caller
     # has no container identity to compare, so the host-cgroupfs/unit probe
     # below remains the authority.
-    if [ -n "$self_id" ]; then
-        current_parent="$(docker inspect "$self_id" --format '{{.HostConfig.CgroupParent}}' 2>/dev/null || true)"
+    if [ -n "$SELF_CONTAINER_ID" ]; then
+        current_parent="$(docker inspect "$SELF_CONTAINER_ID" --format '{{.HostConfig.CgroupParent}}' 2>/dev/null || true)"
     else
         current_parent=""
     fi
@@ -113,11 +164,15 @@ verify_cgroup_parent() {
     # directory and the unit file catches both a stale name and an uninstalled
     #/auto-created transient slice.  The probe itself is placed in the already
     # verified interactive tier.
-    probe="$(docker run --rm --cgroupns=host --network=none \
+    probe_image="$IMAGE"
+    if ! docker image inspect "$probe_image" >/dev/null 2>&1; then
+        probe_image="$CGROUP_PROBE_IMAGE"
+    fi
+    probe="$(docker run --rm --pull=missing --cgroupns=host --network=none \
         --cgroup-parent="$VM_PROBE_CGROUP_PARENT" \
         --mount type=bind,src=/sys/fs/cgroup,dst=/hostcg,ro \
         --mount type=bind,src=/etc/systemd/system,dst=/hostunits,ro \
-        "$IMAGE" bash -c '
+        "$probe_image" bash -c '
             parent="$1"
             test -f "/hostunits/$parent" &&
                 find /hostcg -type d -name "$parent" -print -quit | grep -q .
@@ -126,9 +181,21 @@ verify_cgroup_parent() {
         "cgroup parent '$VM_CGROUP_PARENT' is not an installed, live host slice; refusing to start the VM runner"
 }
 
+verify_build_environment() {
+    [ -n "$BUILD_BUILDER" ] || die \
+        'BUILDX_BUILDER is not set; refusing to build the VM runner through Docker default'
+    docker buildx inspect --builder="$BUILD_BUILDER" >/dev/null 2>&1 || die \
+        "Buildx builder '$BUILD_BUILDER' is not available; refusing an ungoverned runner build"
+}
+
 ensure_runner() {
-    docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$HERE" >/dev/null
+    # Verify both the host tier and the named BuildKit backend before doing any
+    # image build work. `docker build` without an explicit builder can silently
+    # use Docker's default daemon path, which defeats the host's BuildKit cgroup
+    # governance for this otherwise unprivileged VM harness.
+    verify_build_environment
     verify_cgroup_parent
+
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
         mounted_testing="$(docker inspect "$NAME" --format \
             '{{range .Mounts}}{{if eq .Destination "/work"}}{{.Source}}{{end}}{{end}}' \
@@ -138,8 +205,27 @@ ensure_runner() {
             echo "refusing to reuse a runner from another worktree" >&2
             return 1
         fi
-        return 0
+        runner_image="$(docker inspect "$NAME" --format '{{.Image}}' 2>/dev/null || true)"
+        local_image="$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null || true)"
+        local_dockerfile_sha="$(docker image inspect "$IMAGE" --format \
+            '{{index .Config.Labels "mdt.vm.dockerfile-sha"}}' 2>/dev/null || true)"
+        if [ -n "$runner_image" ] && [ "$runner_image" = "$local_image" ] \
+            && [ "$local_dockerfile_sha" = "$DOCKERFILE_SHA" ]; then
+            return 0
+        fi
+        echo "runner $NAME uses image ${runner_image:-<unknown>} / Dockerfile ${local_dockerfile_sha:-<unknown>}, but the current $IMAGE is ${local_image:-<missing>} / Dockerfile $DOCKERFILE_SHA" >&2
+        echo "refusing to reuse a stale runner; run '$0 --stop-daemon' before retrying" >&2
+        return 1
     fi
+
+    docker buildx build \
+        --builder="$BUILD_BUILDER" \
+        --load \
+        --progress=plain \
+        --label="mdt.vm.dockerfile-sha=$DOCKERFILE_SHA" \
+        -f "$HERE/Dockerfile" \
+        -t "$IMAGE" \
+        "$HERE"
     # A stopped-but-present container with this name (e.g. OOM-killed, or
     # the host itself restarted) would otherwise make the docker run below
     # fail with "name already in use" instead of self-healing -- remove

@@ -21,6 +21,21 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.13.2] - 2026-09-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=3693a9aea02aa746293ba28ed3b52f4bf6e6a014 -->
+
+### Changed
+- Merge current main before Assay source-backed release (05efe06a)
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- Merge nyxloom Reasonix session extraction (fd966376)
+
+### Documentation
+- docs(ciu): land RG-55 profiling note in SPEC-V8 (c2edde35)
+- docs(gates): describe source-backed assay image (82bd569a)
+- docs: propagate MDT governance ownership and names (2e5f6463)
+- docs(ciu): clarify managed worktree CLI help (54d105df)
+
 ## [7.13.1] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=13ecbc71a4274dca7e23043f3e08ec7d138a706c -->

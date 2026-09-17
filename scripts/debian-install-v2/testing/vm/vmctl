@@ -334,6 +334,19 @@ cmd_ssh() {
     local run_dir; run_dir="$(run_dir_for "$run")"
     [ -f "$run_dir/ssh_port" ] || die "no such run: $run"
     local ssh_port; ssh_port="$(cat "$run_dir/ssh_port")"
+    # OpenSSH sends all arguments after the host as one remote shell command;
+    # it does not preserve local argv boundaries. Preserve the existing,
+    # useful one-argument form for the lane's multi-line shell scripts. When
+    # a caller supplies multiple simple arguments, quote each one first so
+    # spaces and shell metacharacters cannot be reinterpreted by that remote
+    # shell. A caller who wants remote shell syntax should pass it as one
+    # explicitly quoted argument.
+    if [ "$#" -gt 1 ]; then
+        local remote_command
+        printf -v remote_command '%q ' "$@"
+        remote_command="${remote_command% }"
+        set -- "$remote_command"
+    fi
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 "$@"
 }

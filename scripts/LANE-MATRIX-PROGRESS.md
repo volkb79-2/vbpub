@@ -14,12 +14,13 @@ What happened:
   `mv` was used instead (git mv refuses untracked sources), then `git add -A`
   at the new location — git status now shows clean `A` (add), not add+delete,
   confirming git's own rename detection is happy.
-- Fixed stale path references in: docs/CONSUMERS.md (2 refs),
+- Fixed stale path references in the historical migration snapshot (the
+  privileged harness named below was later removed): docs/CONSUMERS.md (2 refs),
   scripts/debian-install-v2/testing/README.md (4 refs),
   scripts/debian-install-v2/run-gate.toml (5 refs, worktree-relative argv),
   scripts/debian-install-v2/debian_install_v2/tests/test_inuse_partition_editor_r1.py
-  (1 docstring ref), scripts/debian-install-v2/testing/run-privileged-tests.sh
-  (1 usage-comment ref).
+  (1 docstring ref), and the then-existing
+  scripts/debian-install-v2/testing/run-privileged-tests.sh (1 usage-comment ref).
 - Found and fixed a REAL bug the move exposed: test_r1_coverage.py:105 and
   test_r1_remaining.py:79 had `cwd="scripts/debian-install"` hardcoded
   (subprocess invocation of `python3 -m debian_install_v2.bootstrap --help`/
@@ -29,10 +30,12 @@ What happened:
   `-m debian_install_v2.x` needs as cwd regardless of where pytest itself
   was invoked from). Verified both from within scripts/debian-install-v2 AND
   from the repo root (`pytest scripts/debian-install-v2 -q`).
-- Dockerfile/docker-entrypoint.sh/run-privileged-tests.sh needed NO path
-  fixes beyond the one comment above — they all resolve relative to
-  `$HERE/..` or use docker build context args already passed at the call
-  site (run-gate.toml, now fixed).
+- At the time of this migration, Dockerfile/docker-entrypoint.sh and the
+  privileged runner needed NO path fixes beyond the one comment above — they
+  all resolved relative to `$HERE/..` or used Docker build-context arguments
+  already passed at the call site (run-gate.toml, now fixed). The privileged
+  runner was subsequently removed; the current VM-only boundary is documented
+  in `scripts/debian-install-v2/testing/README.md`.
 - Confirmed no v2 remnants left in scripts/debian-install/ (grep clean,
   ls clean, __pycache__ swept).
 - DEBIAN-INSTALL-REVIEW.md / DEBIAN-INSTALLv2-REVIEW.md left at repo root

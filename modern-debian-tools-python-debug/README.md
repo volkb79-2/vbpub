@@ -130,7 +130,11 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`ciu`, `cmru`) are staged from their GitHub releases into [`pip/`](pip/).
+(`ciu`, `cmru`, `topos`, and `nyxloom`) are staged from their GitHub releases into
+[`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
+toolkit before the wheel layer, because that layer uses `pip --no-index`; the
+`rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
+that offline closure for Nyxloom.
 
 ### Headless VM tooling
 

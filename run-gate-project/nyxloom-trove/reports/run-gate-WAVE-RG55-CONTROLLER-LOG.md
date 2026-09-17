@@ -3467,3 +3467,26 @@ state-dir placement, and merge-base selection respectively); none was
 introduced by the current RG-55 work. They remain filed for their own scope
 and are not silently folded into this release. No active gate was queried or
 changed by this audit.
+
+### RW-284 — 2026-09-16 23:21:15Z — repair RG-49 provider blocker B9
+
+The received final review artifact
+`run-gate-RG49-SOL-FINAL-REVIEW.md` is preserved as **REJECT**: B9 remains a
+release blocker because Assay crashes on a JSON `null` mutation resume record
+before writing a verdict. Its linked
+`.run-gate/rg49-review-evidence/postrecord-gates.json` is preserved unchanged
+and remains bound to candidate HEAD
+`32a8f97c8ef6fe0c602288e112f2e77ece779d1e`.
+
+The narrow provider repair is implemented in isolated worktree
+`.worktrees/rg49-assay-b9`, commit
+`12e061b1856e919e1dc3bedb36bf808cecfabec`, adding object-root validation via
+the existing `MutationStateError` structured `ERROR` /
+`UNREADABLE_ARTIFACT` path, with synchronized adopter documentation and a
+backlog row. The focused identity/record suite passes 57 tests and all
+mutation-focused tests pass 267 tests. The whole Assay suite has one unrelated
+pre-existing dstdns witness-qualification failure (4,750 passed, 20 skipped);
+no dstdns path was touched. No merge, release, or RG-49 gate evidence is
+claimed for this repair. A genuinely fresh, route-verified Sol xhigh review is
+required before merging or releasing it; the supplied review disclosed that
+its Sol route metadata was unavailable.
