@@ -1,7 +1,7 @@
 """Tests for topos.daemon.persist — P91 recoverable age-and-byte-capped
 persistent daemon history.
 
-Numbered acceptance oracles (nyxloom-trove/handoffs/topos-P91-persistent-capped-history.md):
+Numbered acceptance oracles (nyxloom-trove/archive/topos-P91-persistent-capped-history.md):
   O1  age-cap eviction (negative: an over-age frame remains queryable)
   O2  byte-cap eviction, least-recent-eligible-first
   O3  age and byte caps enforced simultaneously
@@ -13,7 +13,7 @@ Numbered acceptance oracles (nyxloom-trove/handoffs/topos-P91-persistent-capped-
   O8  query results report gaps/evictions truthfully
   O9  recovered frames are byte-deterministic against what was persisted
   O10 24h synthetic workload measurement — see MEASUREMENTS.md /
-      nyxloom-trove/reports/P91-REPORT.md (not exercised as a per-test oracle here;
+      nyxloom-trove/archive/P91-REPORT.md (not exercised as a per-test oracle here;
       it is a one-shot recorded measurement, not a regression gate).
 """
 

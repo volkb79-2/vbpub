@@ -12,7 +12,7 @@ is the section this wizard's step 5 walks an operator through), `README.md`
 `host-setup.env.example` (the file this wizard replaces hand-editing of).
 
 Sibling package, different repo/subproject:
-`ciu/nyxloom-trove/handoffs/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`
+`ciu/nyxloom-trove/archive/ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`
 builds the consumer-side (ciu governance) half of the same memory.min design
 — **forbidden territory for this package**, see Scope/forbid below.
 

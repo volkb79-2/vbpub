@@ -557,7 +557,7 @@ at the default 5s interval), reconciling the prior four-hour default per D-005.
 P91 (`topos.daemon.persist.PersistentHistoryStore`) adds an on-disk,
 age-and-byte-capped persistent tier, configured under `[history.daemon]`
 (`PersistConfig`) and disabled by default pending the O10 resource-cost
-measurement (`nyxloom-trove/reports/P91-REPORT.md`, `MEASUREMENTS.md`). When enabled,
+measurement (`nyxloom-trove/archive/P91-REPORT.md`, `MEASUREMENTS.md`). When enabled,
 canonical frames are batched into small segment files (JSON-lines, optionally
 zstd-compressed) and published atomically: written to a temp path, fsynced,
 then renamed into `<dir>/segments/`, so a crash mid-write can never leave a
