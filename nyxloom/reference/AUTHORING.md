@@ -298,6 +298,25 @@ incident history and will otherwise reproduce these by default.
 - ✗ `datetime.now()` / `time.time()` where the assertion depends on the value.
 - ✓ Inject or mock the boundary; make offline the default path.
 
+**F. No predicted measurements.** (dstdns D-496, 2026-09-17)
+- ✗ A carve or oracle asserting a specific coverage/mutation number, a "missing
+  lines" list, or a "this branch is permanently uncoverable" claim computed by
+  reasoning about a tool's rendered report instead of running the tool.
+- ✗ Trusting `coverage.py`'s rendered "Missing" column as a complete branch-arc
+  list — it silently suppresses an arc whose destination line is already
+  reported missing elsewhere, so a hand-derived read of the report undercounts
+  by exactly that arc. This exact mistake recurred three times independently
+  in one wave before being traced to this display artifact.
+- ✓ Assert the POLICY requirement instead — the project's coverage target, its
+  R0-R3 (or equivalent) testing tier, the design decision — as the oracle.
+  Never a predicted number; the number does not exist until the implementer's
+  own gate run produces it.
+- ✓ If a carve must justify "this is achievable" or "this line is
+  unreachable" before dispatch, PROVE it by executing the tool
+  (`coverage.py`/`runpy.run_module(mod, run_name="__main__")`, or the
+  project's own judge) against real or synthetic stand-in code — never by
+  reading a report and reasoning about what it would show.
+
 **Author's check:** for every test you specify, ask *"could this flip its verdict
 on a slower machine, in a different worker, or in a different order?"* If yes,
 it is not an oracle yet.
