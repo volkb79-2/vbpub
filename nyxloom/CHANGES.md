@@ -4,6 +4,27 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.7.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=9ac429ec6f92d366949943af4672a5d280206177 -->
+
+### Added
+- feat(skills): add canonical estate skills; promote D-496 measurement rule to AUTHORING.md (99edfbe6)
+
+### Fixed
+- fix(nyxloom): refuse duplicate Codex home session IDs (79ff1a23)
+- fix(docs): stop citing a consumer's private decision ledger ID from canonical doctrine (8cb213bd)
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+- backlog(NL-18): status/resync/digest have no on-ramp for manual-controller tasks (521c1139)
+
+### Documentation
+- docs(nyxloom): keep Codex session example generic (642d9e83)
+- docs(authoring): document input_revision's two-step freeze explicitly (23164f07)
+- docs(testing-methodology): promote coverage-exclusion/prefer-deletion principle from dstdns delta (b40900b1)
+
 ## [0.6.0] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=5b693da907f37018a813e2d7993950036b26c71b -->
