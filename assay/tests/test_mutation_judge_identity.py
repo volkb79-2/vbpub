@@ -28,8 +28,10 @@ all.
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -37,6 +39,7 @@ from conftest import GitRepo, make_lane, make_plan
 
 from assay import isolation, mutation
 from assay.cli import main
+from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
 
 
@@ -508,6 +511,106 @@ def _store(tmp_path: Path, job, payload: dict) -> Path:
     name = mutation.mutation_state_record_name(mutation.candidate_id(job))
     (root / name).write_text(json.dumps(payload), encoding="utf-8")
     return root
+
+
+@pytest.mark.parametrize(
+    "payload", [None, False, 0, ["schema_version"], "schema_version"]
+)
+def test_non_object_resume_records_are_unreadable_artifacts(
+    tmp_path: Path, payload
+):
+    job = _job()
+    root = _store(tmp_path, job, payload)
+    with pytest.raises(MutationStateError) as refused:
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert refused.value.outcome is Outcome.ERROR
+    assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+@pytest.fixture
+def bounded_integer_decoder():
+    """Control and restore the interpreter's decimal conversion limit."""
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(sys.int_info.str_digits_check_threshold)
+    try:
+        yield sys.int_info.str_digits_check_threshold
+    finally:
+        sys.set_int_max_str_digits(previous)
+
+
+def test_numeric_resume_record_exceeding_decoder_limit_is_unreadable(
+    tmp_path: Path, bounded_integer_decoder: int
+):
+    job = _job()
+    root = _store(tmp_path, job, None)
+    record, = root.glob("*.json")
+    raw = "1" * (bounded_integer_decoder + 1)
+    assert len(raw) < mutation.MUTATION_STATE_RECORD_LIMIT
+    record.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="integer string conversion"):
+        json.loads(raw)
+    with pytest.raises(MutationStateError) as refused:
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert refused.value.outcome is Outcome.ERROR
+    assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert record.read_text(encoding="utf-8") == raw
+
+
+def test_decoder_recursion_refusal_is_an_unreadable_artifact(tmp_path: Path, monkeypatch):
+    job = _job()
+    root = _store(tmp_path, job, None)
+
+    def recursion_refusal(raw):
+        raise RecursionError("JSON decoder nesting limit")
+
+    monkeypatch.setattr(mutation.json, "loads", recursion_refusal)
+    with pytest.raises(MutationStateError) as refused:
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert refused.value.outcome is Outcome.ERROR
+    assert refused.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+@pytest.mark.parametrize(
+    "record_text",
+    ["null", "true", "false", "0", "1.5", '"schema_version"', "[]", '["schema_version"]',
+     "1" * (sys.int_info.str_digits_check_threshold + 1)],
+)
+def test_cli_writes_structured_verdict_for_non_object_resume_record(
+    git_repo: GitRepo, tmp_path: Path, record_text: str, bounded_integer_decoder: int
+):
+    """B099's edge-to-edge contract: corrupt JSON must reach the existing
+    CLI refusal boundary, not escape as a traceback with no verdict file."""
+    _seed(git_repo, _STRICT_JUDGE)
+    state_dir = tmp_path / "state"
+    progress = tmp_path / "progress.jsonl"
+    common = [
+        "run",
+        "unit",
+        "--file",
+        str(git_repo.path / "assay.toml"),
+        "--state-dir",
+        str(state_dir),
+        "--progress",
+        str(progress),
+        "--resume",
+    ]
+    assert main(common) == Outcome.PASS.exit_code
+    record, = state_dir.glob("*.json")
+    record.write_text(record_text, encoding="utf-8")
+    verdict = tmp_path / "verdict.json"
+    stdout, stderr = io.StringIO(), io.StringIO()
+    exit_code = main(
+        [*common, "--verdict-json", str(verdict)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == Outcome.ERROR.exit_code
+    document = json.loads(verdict.read_text(encoding="utf-8"))
+    assert document["outcome"] == Outcome.ERROR.value
+    assert document["reason_code"] == ReasonCode.UNREADABLE_ARTIFACT.value
+    assert "TypeError" not in stderr.getvalue()
+    assert "Traceback" not in stdout.getvalue() + stderr.getvalue()
+    assert record.read_text(encoding="utf-8") == record_text
 
 
 def test_a_matching_judge_resumes_the_record(tmp_path: Path):

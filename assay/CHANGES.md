@@ -13,6 +13,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+### Fixed
+- fix(assay): reject non-object JSON mutation resume records as structured
+  `ERROR`/`UNREADABLE_ARTIFACT` instead of allowing a `TypeError` traceback
+  and a missing verdict (B099, RG-49 review B9)
+- fix(assay): preserve that structured refusal when bounded JSON exceeds
+  the decoder's integer-conversion or nesting limits (RG-49 review B11)
+
 ## [6.3.1] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=f07cc6c55dc784b7b03141b58a331f4dd300947c -->

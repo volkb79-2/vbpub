@@ -9680,3 +9680,38 @@ derives the excluded set from `MUTATION_BUCKETS`.
 Oracle: enumerate every excluded bucket, including `crashed`, against
 `MUTATION_BUCKETS`; keep the existing killed/(killed+survived) score and
 empty-denominator behavior unchanged.
+
+## B099 — a JSON `null` mutation resume record crashes the native R2 lane before it can write a verdict
+
+**Found:** RG-49 final adversarial review B9, 2026-09-16. A present,
+bounded state file containing valid JSON `null` passed JSON decoding and was
+then indexed as though it were a mapping. The resulting `TypeError` exited
+the lane with no structured verdict, turning corrupt resume state into an
+ambiguous tool crash.
+
+**Status: FIXED 2026-09-16.** `_load_validated_state_record` now checks the
+decoded root before reading required fields and raises the existing
+`MutationStateError` for every non-object JSON value. The normal CLI boundary
+already converts that exception to `ERROR`/`UNREADABLE_ARTIFACT`; the lane
+therefore refuses the corrupt record with a verdict and never treats it as a
+candidate result. Parameterized tests cover `null`, booleans, numbers, arrays,
+and strings, alongside the existing malformed, stale, and matching-record
+cases. No schema bump is needed: this narrows an uncaught failure inside the
+existing record format and does not change valid record shape.
+
+Oracle: each non-object root reaches the real loader and asserts the existing
+error/reason pair; the bounded CLI reproduction writes a structured error
+verdict and emits no traceback.
+
+**Review follow-up 2026-09-17 (RG-49 B11):** an ordinary numeric root above
+Python's configured decimal conversion limit still raised `ValueError`
+before reaching the new object guard. Decoder `ValueError` (including
+`JSONDecodeError`) and `RecursionError` now reach the same existing structured
+refusal. Loader and CLI oracles use a controlled conversion limit restored
+after each test, prove the real unguarded decoder refusal, preserve the
+corrupt record, and cover valid replay/cache-miss behavior separately.
+
+**Gate follow-up 2026-09-17 (RG-49 B12):** the now-guarded resume decoder's
+obsolete trusted-site exemption is removed. The derived JSON-parse audit
+also pins this guarded site by name, retaining both the stale-exemption
+refusal and protection against silent guard removal.

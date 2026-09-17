@@ -95,14 +95,6 @@ TRUSTED_SITES: dict[tuple[str, str], str] = {
         "RecursionError here would mean a broken install rather than a bad "
         "artifact. (B074 affirmed this judgment rather than reversing it.)"
     ),
-    ("mutation.py", "_load_validated_state_record"): (
-        "assay's OWN mutation-state record, written by assay itself earlier "
-        "in the same run (or an earlier shard of it) through "
-        "`_write_mutation_state_record`, and read back bounded by "
-        "MUTATION_STATE_RECORD_LIMIT. Not consumer input: a malformed one "
-        "already raises MutationStateError by design, and its own depth is "
-        "assay's to control."
-    ),
 }
 
 
@@ -251,12 +243,16 @@ def test_no_trusted_entry_is_stale():
         # assay did not write" site, and the derived sweep is what caught it
         # unguarded in the first place.
         ("result_reports/vitest_json.py", "read"),
+        # Resume records can be corrupted independently of their writer;
+        # RG-49 B9/B11 now guard this decoder and retire its exemption.
+        ("mutation.py", "_load_validated_state_record"),
     ],
 )
 def test_each_known_untrusted_site_is_still_present_and_guarded(identity):
     """The derived sweep above cannot notice a site that DISAPPEARS -- delete
-    a parser and its assertion silently stops applying. These nine are the
-    ones known to read bytes assay did not write, so each is pinned by name:
+    a parser and its assertion silently stops applying. These sites read
+    artifacts that can be externally produced or corrupted, so each is
+    pinned by name:
     a rename is fine and shows up here as a clear failure, a silent deletion
     of a guard is not."""
     sites = {site.identity: site for site in _collect_sites()}
