@@ -8,7 +8,9 @@ swap commands. The real-device behavior is exercised only by the explicit
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -94,6 +96,7 @@ def test_cgroup_probe_requires_both_unit_file_and_live_cgroup():
     assert 'test -f "/hostunits/$parent" &&' in runner
     assert 'inside_container=0' in runner
     assert 'refusing a namespace-wrong bind mount' in runner
+    assert 'printf "%s\\t%s\\n" .Destination .Source' in runner
 
 
 def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkeypatch):
@@ -131,6 +134,121 @@ def test_real_swap_tests_require_guest_virtualization_and_explicit_opt_in(monkey
 
 @pytest.mark.parametrize("path", [VM / "run-vm-harness.sh", VM / "run-vm-tests.sh", VM / "vmctl"])
 def test_vm_shell_entrypoints_parse(path):
-    import subprocess
-
     subprocess.run(["bash", "-n", str(path)], check=True)
+
+
+def test_vm_wrapper_maps_custom_hostname_to_physical_mount(tmp_path):
+    """The cockpit hostname need not be its Docker name.
+
+    This is a fake-Docker structural acceptance test: it exercises the
+    wrapper's namespace-to-host mapping without starting Docker, QEMU, or a
+    real-device operation.
+    """
+    fake_log = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    hostname = Path("/etc/hostname").read_text().strip()
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "${1:-}" in
+  ps)
+    case " $* " in
+      *' -q '*) printf '%s\\n' physical-id unrelated-id ;;
+      *) : ;;
+    esac
+    ;;
+  inspect)
+    case "$*" in
+      *Config.Hostname*)
+        case "${2:-}" in
+          physical-id) printf '%s\\n' "$FAKE_HOSTNAME" ;;
+          *) printf '%s\\n' another-hostname ;;
+        esac
+        ;;
+      *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
+      *Mounts*) printf '/workspaces/vbpub\\t/home/vb/physical\\n' ;;
+      *) printf '%s\\n' image-id ;;
+    esac
+    ;;
+  image) exit 1 ;;
+  buildx) exit 0 ;;
+  run)
+    case " $* " in
+      *' -d '*) printf '%s\\n' runner-id ;;
+      *) : ;;
+    esac
+    ;;
+  rm) : ;;
+  *) : ;;
+esac
+"""
+    )
+    fake_docker.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        FAKE_DOCKER_LOG=str(fake_log),
+        FAKE_HOSTNAME=hostname,
+        CGROUP_PARENT_DEV_BACKGROUND="dev-background.slice",
+        CGROUP_PARENT_DEV_INTERACTIVE="dev-interactive.slice",
+        BUILDX_BUILDER="fake-builder",
+    )
+    result = subprocess.run(
+        [str(VM / "run-vm-harness.sh"), "--daemon"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + "\nDocker calls:\n" + fake_log.read_text()
+    calls = fake_log.read_text()
+    assert "inspect physical-id" in calls
+    assert "inspect unrelated-id" in calls
+    expected_testing = "/home/vb/physical" + str(TESTING).split("/workspaces/vbpub", 1)[1]
+    expected_project = expected_testing.removesuffix("/testing")
+    assert f"{expected_testing}:/work:ro" in calls
+    assert f"{expected_project}:/source:ro" in calls
+
+
+def test_vmctl_quotes_multiple_ssh_arguments_but_preserves_one_script(tmp_path):
+    state = tmp_path / "state"
+    run_dir = state / "runs" / "one"
+    run_dir.mkdir(parents=True)
+    (run_dir / "ssh_port").write_text("2222\n")
+    fake_log = tmp_path / "ssh.log"
+    fake_ssh = tmp_path / "ssh"
+    fake_ssh.write_text(
+        """#!/bin/sh
+set -eu
+for arg in "$@"; do printf '<%s>\\n' "$arg" >> "$FAKE_SSH_LOG"; done
+"""
+    )
+    fake_ssh.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        MDT_VM_STATE_DIR=str(state),
+        FAKE_SSH_LOG=str(fake_log),
+    )
+    multiple = subprocess.run(
+        [str(VM / "vmctl"), "ssh", "one", "--", "printf", "%s", "a b"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert multiple.returncode == 0, multiple.stderr
+    assert "<printf %s a\\ b>" in fake_log.read_text()
+
+    fake_log.write_text("")
+    script = 'set -eu; printf "%s\\n" "$HOME"'
+    single = subprocess.run(
+        [str(VM / "vmctl"), "ssh", "one", "--", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert single.returncode == 0, single.stderr
+    assert f"<{script}>" in fake_log.read_text()

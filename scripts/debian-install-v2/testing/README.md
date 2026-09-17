@@ -75,3 +75,10 @@ The host can still be affected by QEMU CPU and qcow2-file I/O. The runner
 must therefore remain in the configured governed cgroup tier, and test state
 must stay on disposable files. Never attach a production block device or
 bind-mount the host's `/dev`.
+
+The wrapper resolves the cockpit's physical source directory from Docker's
+live mount table. It matches the container's configured hostname rather than
+assuming that the Docker container name is the same, selects the most
+specific containing mount, and refuses ambiguous, missing, or named-volume
+results. This prevents a Docker-outside-Docker invocation from silently
+binding an empty directory from the wrong namespace.
