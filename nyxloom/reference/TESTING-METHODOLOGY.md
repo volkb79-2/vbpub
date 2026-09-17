@@ -527,6 +527,32 @@ gate's own artifacts, not from memory.
 This checklist is deliberately not a gate: it is a reviewer's/author's own
 pass, the kind of thing that goes in a PR description or review comment.
 
+## Coverage exclusions: prefer deletion (2026-09-17, promoted from a project delta)
+
+A project's own R1 floor (100%, or some other declared number — that choice
+is per-project policy, not this document's to set) is not the interesting
+part; what recurs across projects is the temptation to reach for an
+exclusion pragma instead of asking a sharper question first: **can the
+uncovered line be deleted instead of excused?**
+
+Code that exists only to handle a case that provably cannot occur — an
+`except` clause for an error the calling convention already rules out, a
+branch guarding a state the type system or an upstream invariant already
+forbids — is usually dead code wearing a defensive-programming costume.
+Under a greenfield policy (no compatibility shims, no dead paths) the
+correct fix is deletion, not a permanent coverage exclusion that has to be
+re-justified forever every time someone re-reads the file. Reserve an
+exclusion for code that is genuinely necessary but genuinely untestable in
+the current environment (a real OS-level fallback for a platform the suite
+doesn't run on, say) — and name that reason explicitly, next to the
+exclusion, not in a separate doc that will drift from it.
+
+This does not contradict the "coverage is not quality" caution elsewhere in
+this document: coverage is the REACH floor, not the only rigor axis. Setting
+that floor high and preferring deletion over exclusion when it's missed is
+about keeping the floor honest, not about claiming the floor alone proves
+correctness.
+
 ## Do tests test the right thing?
 
 Not fully mechanically. The strongest practical approach is independent,
