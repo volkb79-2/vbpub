@@ -32,6 +32,7 @@ oci_layout_bake() {
         return 2
     }
 
+    configure_cache_args
     rm -rf "${OCI_LAYOUT_DIR}"
     mkdir -p "${OCI_LAYOUT_DIR}"
 
@@ -88,6 +89,7 @@ registry_bake() {
         return 2
     }
 
+    configure_cache_args
     local bake_json target output
     local -a targets bake_args
     bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
@@ -123,13 +125,32 @@ COMMON_GIT_DIR="$(git rev-parse --git-common-dir)"
 if [[ "${COMMON_GIT_DIR}" != /* ]]; then
     COMMON_GIT_DIR="$(pwd)/${COMMON_GIT_DIR}"
 fi
-CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache}"
-mkdir -p "${CACHE_DIR}"
-CACHE_ARGS=(
-    --set "*.cache-from=type=local,src=${CACHE_DIR}"
-    --set "*.cache-to=type=local,dest=${CACHE_DIR},mode=max"
-)
 OCI_LAYOUT_DIR="${MDT_OCI_LAYOUT_DIR:-build/oci-layouts}"
+
+configure_cache_args() {
+    # BuildKit's cache graph records the compression available for every
+    # layer.  Reusing one local cache for gzip and forced-zstd image exports
+    # makes the graph grow combinatorially (and can cancel the solve while
+    # exporting).  Keep the default cache namespace tied to the image policy,
+    # and make the cache exporter use that same policy instead of its gzip
+    # default.  An explicit MDT_BUILDKIT_CACHE_DIR remains an operator-owned
+    # override and must likewise be dedicated to one compression policy.
+    : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
+    : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
+    : "${IMAGE_FORCE_COMPRESSION:?IMAGE_FORCE_COMPRESSION must be configured}"
+    : "${IMAGE_OCI_MEDIA_TYPES:?IMAGE_OCI_MEDIA_TYPES must be configured}"
+
+    local policy_key
+    policy_key="${IMAGE_COMPRESSION}-${IMAGE_FORCE_COMPRESSION}-${IMAGE_COMPRESSION_LEVEL}"
+    policy_key="${policy_key//[^A-Za-z0-9._-]/_}"
+    CACHE_DIR="${MDT_BUILDKIT_CACHE_DIR:-${COMMON_GIT_DIR}/mdt-buildkit-cache-${policy_key}}"
+    mkdir -p "${CACHE_DIR}"
+    CACHE_ARGS=(
+        --set "*.cache-from=type=local,src=${CACHE_DIR}"
+        --set "*.cache-to=type=local,dest=${CACHE_DIR},mode=max,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
+    )
+    echo "[INFO] BuildKit cache namespace=${CACHE_DIR} compression=${IMAGE_COMPRESSION} force=${IMAGE_FORCE_COMPRESSION}"
+}
 
 case "${FLOW}" in
     load)
@@ -163,6 +184,7 @@ case "${FLOW}" in
         fi
 
         : "${REPACK_WORK_DIR:?REPACK_WORK_DIR must be configured}"
+        configure_cache_args
         rm -rf "${REPACK_WORK_DIR}"
         mkdir -p "${REPACK_WORK_DIR}"
 

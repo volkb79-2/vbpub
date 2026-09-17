@@ -548,8 +548,10 @@ docker image inspect <image> \
 
 BuildKit's generic registry exporter defaults to gzip. `cmru.toml` overrides that:
 release publication uses OCI media types, forced **zstd level 3**, and the original layer
-topology. The level is deliberately modest — cold time-to-connect and governed export cost
-matter more than the last few compressed bytes.
+topology. Its persistent BuildKit cache is separate from other compression policies and is
+exported with the same zstd policy; do not point different compression policies at one
+`MDT_BUILDKIT_CACHE_DIR`. The level is deliberately modest — cold time-to-connect and
+governed export cost matter more than the last few compressed bytes.
 
 Cold tests on both Docker stores showed native zstd level 3 faster than gzip, while a
 three-layer 2 GB repack was substantially slower despite the smaller download. Methodology,

@@ -93,8 +93,11 @@ are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are
 walked inside each slice's flow.
 
 Current registry publication uses OCI media types and forced native zstd level
-3 compression. BuildKit preserves the normal layer topology and attaches max
-provenance plus an SPDX SBOM. These settings live in `cmru.toml`. See
+3 compression. The release cache is namespaced by compression policy and its
+cache exporter uses the same compression settings as the image; this avoids
+mixing gzip and forced-zstd layer graphs in one local cache. BuildKit preserves
+the normal layer topology and attaches max provenance plus an SPDX SBOM. These
+settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
 between OCI manifests, attestations and MDT's human manifest.
@@ -133,7 +136,14 @@ The phases are:
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
    release matrix with OCI output, one target at a time. BuildKit performs
    Dockerfile execution, cache lookup, layer compression, and OCI export inside
-   its limited worker. The toolkit requirements are installed before the
+   its limited worker. The default local cache is kept beside the shared Git
+   directory under a compression-policy-specific name (for example,
+   `mdt-buildkit-cache-zstd-true-3`); an explicit `MDT_BUILDKIT_CACHE_DIR` is an
+   operator-owned single-policy override. The cache exporter is explicitly
+   configured with the same compression, level, forced-compression, and OCI
+   media-type settings as the image. This matters because BuildKit can build a
+   combinatorial graph when one cache mixes gzip and forced-zstd forms of many
+   layers. The toolkit requirements are installed before the
    offline first-party-wheel layer; their minimums therefore form the explicit
    runtime-dependency closure for every staged wheel (including Nyxloom's
    `rich>=15.0.0` and `pygments>=2.21.0`).

@@ -104,8 +104,23 @@ class ReleaseFlowTests(unittest.TestCase):
     def test_release_build_persists_cache_outside_disposable_worktrees(self) -> None:
         wrapper = (ROOT / "scripts/release-bake.sh").read_text()
         self.assertIn('git rev-parse --git-common-dir', wrapper)
+        self.assertIn('mdt-buildkit-cache-${policy_key}', wrapper)
         self.assertIn('*.cache-from=type=local,src=${CACHE_DIR}', wrapper)
-        self.assertIn('*.cache-to=type=local,dest=${CACHE_DIR},mode=max', wrapper)
+        self.assertIn(
+            '*.cache-to=type=local,dest=${CACHE_DIR},mode=max,compression=${IMAGE_COMPRESSION},'
+            'compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},'
+            'oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}',
+            wrapper,
+        )
+
+    def test_release_cache_policy_matches_forced_image_compression(self) -> None:
+        wrapper = (ROOT / "scripts/release-bake.sh").read_text()
+        self.assertIn("policy_key=\"${IMAGE_COMPRESSION}-${IMAGE_FORCE_COMPRESSION}-${IMAGE_COMPRESSION_LEVEL}\"", wrapper)
+        self.assertIn("configure_cache_args", wrapper)
+        self.assertIn(
+            "Reusing one local cache for gzip and forced-zstd image exports",
+            wrapper,
+        )
 
     def test_volatile_staging_metadata_does_not_invalidate_tool_install_layers(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text()
