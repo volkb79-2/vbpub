@@ -126,7 +126,7 @@ present in more than one home:
 
 ```bash
 CODEX_HOME="$HOME/.codex2" nyxloom extract \
-  "$HOME/.codex2/sessions/2026/09/12/rollout-2026-09-12T23-26-32-01a097f1-a854-7741-95d3-1b468c9f4df2.jsonl"
+  "$HOME/.codex2/sessions/2026/09/12/rollout-2026-09-12T23-26-32-019f0890-43a2-75c2-9143-3f8d10ad4484.jsonl"
 ```
 
 For humans, `extract --render-markdown` renders the selected brief. For

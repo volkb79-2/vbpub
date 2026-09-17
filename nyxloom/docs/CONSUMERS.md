@@ -58,7 +58,7 @@ Use the full rollout path to disambiguate the one you want:
 
 ```bash
 codex_home="${CODEX_HOME:-$HOME/.codex}"
-session_id=01a097f1-a854-7741-95d3-1b468c9f4df2
+session_id=019f0890-43a2-75c2-9143-3f8d10ad4484
 session_file=$(find "$codex_home/sessions" -type f \
   -name "rollout-*-$session_id.jsonl" -print -quit)
 test -n "$session_file" || {
