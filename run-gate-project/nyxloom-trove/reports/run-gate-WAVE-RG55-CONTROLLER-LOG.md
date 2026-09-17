@@ -3490,3 +3490,20 @@ no dstdns path was touched. No merge, release, or RG-49 gate evidence is
 claimed for this repair. A genuinely fresh, route-verified Sol xhigh review is
 required before merging or releasing it; the supplied review disclosed that
 its Sol route metadata was unavailable.
+
+### RW-285 — 2026-09-17 22:22:14Z — defer Assay 6.3.2 launch at PSI gate
+
+The accepted fresh Sol xhigh provider review is recorded at
+`assay/nyxloom-trove/reports/.run-gate/run-gate-RG49-B9-SOL-FINAL-REVIEW.md`
+on final HEAD `e6ac473082aab158f598772a6039f11a6f2d5f39`; its B9, B11 and B12
+repairs were merged into main as `fb24a852`. The installed cockpit still
+reports Assay 6.3.0; `cmru status --project assay --set-version 6.3.2`
+selects 6.3.2 because 6.3.1 is already tagged.
+
+The first detached release wrapper produced no child-exit marker and no
+release worktree, so it is not evidence of success or failure and is not
+counted. A retry was refused before launch because host memory PSI was
+`full avg10=5.42`, above the mandatory `<=5` threshold. No release, gate, or
+container was launched under that pressure. The next controller must perform
+one fresh PSI check at a meaningful wake point, then launch CMRU with a
+detached child-exit marker only if the gate is satisfied.
