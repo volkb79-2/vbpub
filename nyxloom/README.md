@@ -115,7 +115,19 @@ without an LLM call. `extract` produces a compact resumable brief;
 `extract-lossless` preserves all prose and thinking blocks;
 `extract-sessions` discovers related sessions; and `extract-report` reports
 cost/timeline data. The `SESSION_LOG` argument accepts either a full path or a
-session ID when nyxloom can resolve exactly one matching file/store.
+session ID when nyxloom can resolve exactly one matching file/store. Codex
+rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
+`~/.codex*` profiles for duplicate UUIDs; a repeated UUID fails with all
+candidate paths so the intended rollout can be selected explicitly.
+
+For example, when a session was created in a separate Codex home, pass the
+same home while locating it, or pass the full rollout path if the UUID is
+present in more than one home:
+
+```bash
+CODEX_HOME="$HOME/.codex2" nyxloom extract \
+  "$HOME/.codex2/sessions/2026/09/12/rollout-2026-09-12T23-26-32-01a097f1-a854-7741-95d3-1b468c9f4df2.jsonl"
+```
 
 For humans, `extract --render-markdown` renders the selected brief. For
 copy-pasteable markdown, `extract` and `extract-lossless` support

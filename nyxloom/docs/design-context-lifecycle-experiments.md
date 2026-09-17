@@ -2661,6 +2661,13 @@ optimization, but a unique result is the correctness condition. A guessed
 "nearest" session would be especially dangerous for a resume brief, where a
 valid-looking extraction from the wrong conversation is worse than a refusal.
 
+Codex homes are separate namespaces. Bare lookup follows the active
+`CODEX_HOME` (or the default `~/.codex`), includes the default and discoverable
+local `~/.codex*` profiles, and treats every matching rollout as a candidate.
+Therefore a UUID present in both `~/.codex` and `~/.codex2` is ambiguous and
+must be disambiguated with the full rollout path. `CODEX_HOME` identifies the
+home to inspect; it does not weaken the exactly-one-match rule.
+
 **Decision: keep reading and copying as opposite render modes.**
 `--render-markdown` uses Rich per prose block, leaving nyxloom's separators,
 gap notes, stop notes, and machine-readable marker footer untouched. It is for

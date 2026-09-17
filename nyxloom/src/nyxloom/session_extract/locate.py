@@ -58,6 +58,13 @@ Resolution rules, deliberately strict:
     picking (newest, first found, ...) is exactly the failure mode that
     makes a resume land in the wrong session.
 
+Codex homes are namespaces. The default is ``~/.codex``; ``CODEX_HOME`` can
+point Codex at another home, and this resolver also checks sibling
+``~/.codex*`` homes so a UUID copied between local profiles cannot silently
+select whichever profile happens to be the default. Every matching rollout
+is a candidate, and more than one candidate is an error. A full path remains
+the disambiguation mechanism.
+
 Claude Code's project directories are keyed by an escaped form of the cwd
 the session ran in (`/workspaces/vbpub` -> `-workspaces-vbpub`), so the
 directory matching the CURRENT cwd is searched first. That ordering is a
@@ -116,7 +123,42 @@ def _claude_projects_root() -> Path:
 
 
 def _codex_sessions_root() -> Path:
-    return Path.home() / ".codex" / "sessions"
+    configured = os.environ.get("CODEX_HOME")
+    home = Path(configured).expanduser() if configured else Path.home() / ".codex"
+    return home / "sessions"
+
+
+def _codex_sessions_roots() -> list[Path]:
+    """Return every locally discoverable Codex session namespace.
+
+    ``CODEX_HOME`` is the active Codex home, while ``~/.codex`` is the
+    default home. Both remain relevant to a bare UUID lookup: the same UUID
+    can exist in two profiles, and choosing one would violate the resolver's
+    strict exactly-one-match contract. Sibling hidden directories named
+    ``.codex*`` cover locally named profiles such as ``.codex2`` when the
+    lookup itself is launched without the one-shot ``CODEX_HOME=...``
+    assignment that created the session.
+
+    The public test seam is ``_codex_sessions_root``; retain it as the first
+    root so callers and older tests that replace that function continue to
+    exercise the same scan.
+    """
+    roots: list[Path] = []
+
+    def add(root: Path) -> None:
+        if root not in roots:
+            roots.append(root)
+
+    add(_codex_sessions_root())
+    add(Path.home() / ".codex" / "sessions")
+
+    # Do not use Path.glob here: on Python versions where directory
+    # enumeration errors are softened by glob, an inaccessible profile could
+    # disappear from the ambiguity check and make a wrong answer look valid.
+    for candidate in _scan_directory(Path.home(), missing_ok=True):
+        if candidate.name.startswith(".codex") and stat.S_ISDIR(_entry_mode(candidate)):
+            add(candidate / "sessions")
+    return roots
 
 
 def _reasonix_projects_root() -> Path:
@@ -218,7 +260,6 @@ def _claude_matches_in(project_dir: Path, ref: str) -> list[Path]:
 
 
 def _codex_matches(ref: str) -> list[Path]:
-    root = _codex_sessions_root()
     suffix = f"-{ref.lower()}"
     matches: list[Path] = []
 
@@ -235,7 +276,8 @@ def _codex_matches(ref: str) -> list[Path]:
             ):
                 matches.append(path)
 
-    visit(root, missing_ok=True)
+    for root in _codex_sessions_roots():
+        visit(root, missing_ok=True)
     return sorted(matches)
 
 
@@ -430,9 +472,10 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
         if len(unique) == 1:
             return SessionRef(path=unique[0])
         if not unique:
+            codex_roots = ", ".join(str(root) for root in _codex_sessions_roots())
             raise LocateError(
                 f"session {ref!r} not found under {projects_root} or "
-                f"{_codex_sessions_root()} -- pass the session log's full path, or see "
+                f"{codex_roots} -- pass the session log's full path, or see "
                 f"`nyxloom extract-sessions <directory>` to list what exists"
             )
         raise _ambiguous(ref, [str(c) for c in unique])

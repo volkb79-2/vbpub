@@ -51,6 +51,23 @@ nyxloom extract 019f0890-43a2-75c2-9143-3f8d10ad4484
 nyxloom extract ses_04bd4e9b4ffeBJm48T6v130DS6
 ```
 
+Codex stores rollouts under `CODEX_HOME` (`~/.codex` by default). Bare UUID
+lookup also checks local `~/.codex*` profiles, so a UUID copied between
+profiles fails closed instead of selecting the default profile's transcript.
+Use the full rollout path to disambiguate the one you want:
+
+```bash
+codex_home="${CODEX_HOME:-$HOME/.codex}"
+session_id=01a097f1-a854-7741-95d3-1b468c9f4df2
+session_file=$(find "$codex_home/sessions" -type f \
+  -name "rollout-*-$session_id.jsonl" -print -quit)
+test -n "$session_file" || {
+  printf 'Codex rollout not found for %s\n' "$session_id" >&2
+  exit 1
+}
+nyxloom extract "$session_file"
+```
+
 For an opencode database containing more than one session, use the store path
 and select the row explicitly:
 
