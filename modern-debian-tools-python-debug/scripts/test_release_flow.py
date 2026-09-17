@@ -64,7 +64,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("docker-container", builder)
 
     def test_offline_first_party_wheels_have_runtime_dependency_floors(self) -> None:
-        """The no-index wheel layer must be closed by the toolkit layer first."""
+        """The final venv closure must happen after Aider and before wheels."""
         requirements = (ROOT / "requirements/toolkit.txt").read_text()
         self.assertIn("rich>=15.0.0", requirements)
         self.assertIn("pygments>=2.21.0", requirements)
@@ -73,6 +73,12 @@ class ReleaseFlowTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("rich/pygments", dockerfile)
         self.assertIn("--no-index", dockerfile)
+        aider = dockerfile.index("python3 /tmp/install_ai_cli_tools.py venv")
+        reconcile = dockerfile.index("-r /tmp/requirements/toolkit.txt", aider)
+        wheels_layer = dockerfile.index("# ── First-party wheels")
+        self.assertGreater(reconcile, aider)
+        self.assertLess(reconcile, wheels_layer)
+        self.assertIn("--upgrade", dockerfile[aider:wheels_layer])
 
     def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
         package_names = {
