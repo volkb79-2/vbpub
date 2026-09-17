@@ -9702,3 +9702,11 @@ existing record format and does not change valid record shape.
 Oracle: each non-object root reaches the real loader and asserts the existing
 error/reason pair; the bounded CLI reproduction writes a structured error
 verdict and emits no traceback.
+
+**Review follow-up 2026-09-17 (RG-49 B11):** an ordinary numeric root above
+Python's configured decimal conversion limit still raised `ValueError`
+before reaching the new object guard. Decoder `ValueError` (including
+`JSONDecodeError`) and `RecursionError` now reach the same existing structured
+refusal. Loader and CLI oracles use a controlled conversion limit restored
+after each test, prove the real unguarded decoder refusal, preserve the
+corrupt record, and cover valid replay/cache-miss behavior separately.

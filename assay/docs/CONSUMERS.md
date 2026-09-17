@@ -721,6 +721,10 @@ The decoded JSON root of a present resume record must be an object. A
 reported as `ERROR`/`UNREADABLE_ARTIFACT` with a structured verdict; it is not
 treated as a candidate result and does not produce an uncaught parser
 traceback.
+The same verdict covers decoder resource limits, including an over-limit
+decimal integer or nesting depth; a file being within the byte limit does
+not make it decodable. Preserve the corrupt file for diagnosis and repair
+the owned record before retrying the existing `--resume --progress` recipe.
 
 A record whose `outcome_bucket` is `crashed` additionally carries
 `result_stdout_tail` and `result_stderr_tail`: the bounded final 64 KiB of
