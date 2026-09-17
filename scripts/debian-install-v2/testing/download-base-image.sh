@@ -16,7 +16,6 @@
 # Prints the path to the verified local qcow2 on success.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${MDT_VM_CACHE_DIR:-}" ]; then
     CACHE_DIR="$MDT_VM_CACHE_DIR"
 else

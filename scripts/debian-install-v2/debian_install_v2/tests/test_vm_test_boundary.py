@@ -55,6 +55,10 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert 'docker buildx build \\' in runner
     assert '--builder="$BUILD_BUILDER"' in runner
     assert '--load' in runner
+    assert 'DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile"' in runner
+    assert 'mdt.vm.dockerfile-sha=$DOCKERFILE_SHA' in runner
+    assert "runner_image=\"$(docker inspect \"$NAME\" --format '{{.Image}}'" in runner
+    assert "refusing to reuse a stale runner" in runner
     ensure = runner[runner.index("ensure_runner() {"):]
     assert ensure.index("verify_build_environment") < ensure.index("verify_cgroup_parent")
     assert ensure.index("verify_cgroup_parent") < ensure.index("docker buildx build")
