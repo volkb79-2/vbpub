@@ -42,6 +42,8 @@ VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
 # Docker's unbounded default or to an implicitly-created transient slice.
 VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"
 VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
+BUILD_BUILDER="${BUILDX_BUILDER:-}"
+CGROUP_PROBE_IMAGE="${MDT_VM_CGROUP_PROBE_IMAGE:-debian:trixie-slim}"
 
 die() {
     echo "run-vm-harness: $*" >&2
@@ -113,11 +115,15 @@ verify_cgroup_parent() {
     # directory and the unit file catches both a stale name and an uninstalled
     #/auto-created transient slice.  The probe itself is placed in the already
     # verified interactive tier.
-    probe="$(docker run --rm --cgroupns=host --network=none \
+    probe_image="$IMAGE"
+    if ! docker image inspect "$probe_image" >/dev/null 2>&1; then
+        probe_image="$CGROUP_PROBE_IMAGE"
+    fi
+    probe="$(docker run --rm --pull=missing --cgroupns=host --network=none \
         --cgroup-parent="$VM_PROBE_CGROUP_PARENT" \
         --mount type=bind,src=/sys/fs/cgroup,dst=/hostcg,ro \
         --mount type=bind,src=/etc/systemd/system,dst=/hostunits,ro \
-        "$IMAGE" bash -c '
+        "$probe_image" bash -c '
             parent="$1"
             test -f "/hostunits/$parent" &&
                 find /hostcg -type d -name "$parent" -print -quit | grep -q .
@@ -126,9 +132,27 @@ verify_cgroup_parent() {
         "cgroup parent '$VM_CGROUP_PARENT' is not an installed, live host slice; refusing to start the VM runner"
 }
 
+verify_build_environment() {
+    [ -n "$BUILD_BUILDER" ] || die \
+        'BUILDX_BUILDER is not set; refusing to build the VM runner through Docker default'
+    docker buildx inspect --builder="$BUILD_BUILDER" >/dev/null 2>&1 || die \
+        "Buildx builder '$BUILD_BUILDER' is not available; refusing an ungoverned runner build"
+}
+
 ensure_runner() {
-    docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$HERE" >/dev/null
+    # Verify both the host tier and the named BuildKit backend before doing any
+    # image build work. `docker build` without an explicit builder can silently
+    # use Docker's default daemon path, which defeats the host's BuildKit cgroup
+    # governance for this otherwise unprivileged VM harness.
+    verify_build_environment
     verify_cgroup_parent
+    docker buildx build \
+        --builder="$BUILD_BUILDER" \
+        --load \
+        --progress=plain \
+        -f "$HERE/Dockerfile" \
+        -t "$IMAGE" \
+        "$HERE"
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
         mounted_testing="$(docker inspect "$NAME" --format \
             '{{range .Mounts}}{{if eq .Destination "/work"}}{{.Source}}{{end}}{{end}}' \

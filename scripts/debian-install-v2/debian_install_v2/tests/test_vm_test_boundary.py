@@ -29,7 +29,7 @@ def test_gate_routes_real_commit_lane_to_qemu_guest():
     gate = (PROJECT / "run-gate.toml").read_text()
     assert "[lanes.r1-vm-real-commit]" in gate
     assert 'description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"' in gate
-    assert 'required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE"]' in gate
+    assert 'required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]' in gate
     assert "testing/vm/run-vm-tests.sh" in gate
     assert "[lanes.r1-privileged-commit]" not in gate
     assert "run-privileged-tests.sh" not in gate
@@ -39,6 +39,7 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     runner = (VM / "run-vm-harness.sh").read_text()
     assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"' in runner
     assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
+    assert 'BUILD_BUILDER="${BUILDX_BUILDER:-}"' in runner
     assert 'VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"' in runner
     assert 'MDT_VM_CACHE_DIR=$VM_CACHE_DIR' in runner
     assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
@@ -50,6 +51,13 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert "--device=" not in runner
     assert "/dev/kvm" not in runner
     assert "/dev/net/tun" not in runner
+    assert 'docker buildx inspect --builder="$BUILD_BUILDER"' in runner
+    assert 'docker buildx build \\' in runner
+    assert '--builder="$BUILD_BUILDER"' in runner
+    assert '--load' in runner
+    ensure = runner[runner.index("ensure_runner():"):]
+    assert ensure.index("verify_build_environment") < ensure.index("verify_cgroup_parent")
+    assert ensure.index("verify_cgroup_parent") < ensure.index("docker buildx build")
 
     vmctl = (VM / "vmctl").read_text()
     assert "-accel tcg" in vmctl

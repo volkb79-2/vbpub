@@ -688,12 +688,16 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (ciu + cmru, from ciu-v* / cmru-v* GitHub Releases).
+# pip/wheels/ holds the .whl files (ciu, cmru, topos, and nyxloom from their
+# GitHub Releases).
 # Installed with --no-index --find-links (no build-time network): each wheel's
-# runtime deps must already be in the venv — cmru has none; ciu's Jinja2 / PyYAML /
-# tomli_w come from requirements/toolkit.txt (installed above).
+# runtime deps must already be in the venv. requirements/toolkit.txt is the
+# source of those floors: Jinja2/PyYAML/tomli_w for ciu, textual for topos, and
+# rich/pygments plus the shared validation libraries for nyxloom. Keeping the
+# floors here makes a missing offline dependency fail during toolkit setup,
+# before the first-party wheel layer, rather than being discovered there.
 # Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
-# Source: https://github.com/volkb79-2/vbpub/releases — ciu-v* / cmru-v* releases.
+# Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
 RUN set -euo pipefail; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \

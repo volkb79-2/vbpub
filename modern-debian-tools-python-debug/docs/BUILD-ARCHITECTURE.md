@@ -133,7 +133,10 @@ The phases are:
 3. `scripts/release-bake.sh` selects the governed named builder and runs the
    release matrix with OCI output, one target at a time. BuildKit performs
    Dockerfile execution, cache lookup, layer compression, and OCI export inside
-   its limited worker.
+   its limited worker. The toolkit requirements are installed before the
+   offline first-party-wheel layer; their minimums therefore form the explicit
+   runtime-dependency closure for every staged wheel (including Nyxloom's
+   `rich>=15.0.0` and `pygments>=2.21.0`).
 4. `build-push.py` extracts the canonical in-image manifests and records release
    metadata. CMRU then runs the gate and promotes the source commit before its
    post-gate push step dispatches back to `build-push.py --push`. No second image
