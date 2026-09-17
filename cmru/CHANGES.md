@@ -11,6 +11,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.3.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=32511a4273f266bb202030da18056b461f79c2e6 -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
 ## [5.2.2] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=2bc07098c881d10ecbb6cdc522d3c20a39a9abdb -->
