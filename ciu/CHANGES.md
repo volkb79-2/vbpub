@@ -21,6 +21,21 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.14.0] - 2026-09-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=8ff62e94efef00b5d15514d9cfd17a1476df5f1a -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+- feat(skills): add canonical estate skills; promote D-496 measurement rule to AUTHORING.md (99edfbe6)
+
+### Fixed
+- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
+
+### Changed
+- chore(nyxloom): archive historical handoffs and reports (28801a95)
+- backlog(CIU-108): [deployment.resources] has no declarative nice-value key (a8296804)
+
 ## [7.13.2] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=3693a9aea02aa746293ba28ed3b52f4bf6e6a014 -->
