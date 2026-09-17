@@ -438,6 +438,16 @@ escalate_if:
   daemon holds the task until they resolve.
 - `gate` on each oracle + top-level `gates` must reference a `[gates.*]` id
   declared in the project's `nyxloom.toml`.
+- **`input_revision` is a TWO-STEP freeze, not a value chosen up front**
+  (2026-09-17, distilled from a lesson that recurred across an entire wave
+  of packages): commit the carve first, THEN a second commit that sets
+  `input_revision` to the FIRST commit's own hash — the pin cannot be
+  correct any earlier, because the commit it names does not exist yet while
+  you are still writing it. The same two-step applies after every repair
+  round: land the repair, then re-freeze `input_revision` to the repair's
+  own hash in a follow-up commit. A carve whose `input_revision` matches its
+  OWN commit (rather than the one before it) got this backwards; a reviewer
+  should check this explicitly, not assume it self-evidently worked.
 
 Naming + lifecycle live in `STANDARD.md`; this file goes to
 `nyxloom-trove/handoffs/<id>.md` — the filename stem MUST equal the frontmatter
