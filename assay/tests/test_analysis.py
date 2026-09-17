@@ -225,6 +225,49 @@ def test_human_summary_retains_claim_and_measurements(tmp_path, name):
     assert ("lines " if name.startswith("r1") else "mutants ") in out
 
 
+@pytest.mark.parametrize("captured", [False, True])
+def test_human_failure_diagnosis_uses_existing_capture_without_inventing_counts(tmp_path, captured):
+    head = "a" * 40
+    path = verdict(tmp_path, head, "r0_fail_command_failed")
+    document = json.loads(path.read_text())
+    if captured:
+        document.update(result_stdout_tail="FAILED tests/test_contract.py: real assertion",
+                        result_stderr_tail="diagnostic stderr", result_stdout_dropped_bytes=17)
+    path.write_text(json.dumps(document))
+    code, out, err = cli("verdict", path, "--expected-commit", head, "--format", "text")
+    assert (code, err) == (0, "") and "FAIL" in out
+    assert ("real assertion" in out) == captured
+    assert ("diagnostic stderr" in out) == captured
+    assert ("stdout dropped bytes: 17" in out) == captured
+    assert "stderr dropped bytes" not in out
+    assert ("captured stdout tail:" in out) == captured
+
+
+@pytest.mark.parametrize("command", ["verdict", "progress", "check", "collect", "receipt"])
+def test_deep_untrusted_json_refuses_without_publishing_success(repository, tmp_path, command):
+    root, head, tree = repository
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 10000 + "0" + "]" * 10000)
+    output = tmp_path / "unpublished"
+    if command in ("verdict", "progress"):
+        args = (command, path, "--expected-commit", head)
+    elif command == "check":
+        directory = tmp_path / "archive"
+        directory.mkdir()
+        path.rename(directory / "manifest.json")
+        args = (command, directory)
+    elif command == "collect":
+        args = (command, "--receipt", path, "--output", output)
+    else:
+        prefix = recorded(tmp_path, head, tree)
+        Path(str(prefix) + ".log").write_text("COMMAND=" + path.read_text() + "\nJOB_EXIT=0\n")
+        args = (command, "--worktree", root, "--expected-head", head,
+                "--recorded", "gate", prefix, "JOB_EXIT", "--output", output)
+    code, out, err = cli(*args)
+    assert code == 1 and out == "" and "JSON nesting exceeds decoder limit" in err
+    assert "Traceback" not in err and not output.exists()
+
+
 def test_receipt_collection_uses_one_file_graph_and_detects_stale_bytes(repository, tmp_path):
     root, head, tree = repository
     prefix = recorded(tmp_path, head, tree, 2)

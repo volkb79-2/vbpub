@@ -34,7 +34,10 @@ def _json(text: str):
             result[key] = value
         return result
 
-    return json.loads(text, object_pairs_hook=unique, parse_constant=finite)
+    try:
+        return json.loads(text, object_pairs_hook=unique, parse_constant=finite)
+    except RecursionError as exc:
+        raise ValueError("JSON nesting exceeds decoder limit") from exc
 
 
 def _digest(path: Path) -> dict:
@@ -473,6 +476,16 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
                         buckets = ", ".join(f"{key}={len(value)}" for key, value in mutation.items()
                                             if isinstance(value, list))
                         print(f"    mutants {mutation['total']}; {buckets}", file=stdout)
+                if fact["outcome"] != "PASS":
+                    for stream in ("stdout", "stderr"):
+                        tail_key = f"result_{stream}_tail"
+                        dropped_key = f"result_{stream}_dropped_bytes"
+                        document = result["verdict"]
+                        if tail_key in document:
+                            print(f"  captured {stream} tail:", file=stdout)
+                            print(document[tail_key], file=stdout)
+                        if dropped_key in document:
+                            print(f"  {stream} dropped bytes: {document[dropped_key]}", file=stdout)
                 return 0
         elif args.analysis_command == "progress":
             result = inspect_progress(args.path, args.expected_commit)

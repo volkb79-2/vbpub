@@ -3082,7 +3082,10 @@ did for P5's malformed resume record.
 Analysis archives, receipts and progress summaries use their own
 `schema_version = 1`; lane and verdict schema versions are unchanged. Default
 JSON output is for machine consumption; `verdict --format text` is the concise
-human view. Unknown archive schema versions refuse. Analysis validation errors
+human view. For adverse outcomes it also displays existing captured stdout/stderr
+tails and dropped-byte counts, so an already captured test failure need not be
+rerun to see its diagnosis. Absent capture fields remain absent.
+Unknown archive schema versions refuse. Analysis validation errors
 exit 1 with an explanation on stderr and no success JSON. `record` returns the
 job's exit (a signal becomes 128 plus its number at the CLI boundary; the
 negative subprocess status is preserved in `record.json`). If the command

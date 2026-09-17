@@ -3707,6 +3707,9 @@ Archive names must be normalized relative POSIX paths without traversal;
 extra unmanifested files and fingerprint mismatches refuse.
 
 Each command emits JSON on stdout on success, except `verdict --format text`.
+For an adverse verdict, the text view includes captured stdout/stderr tails and
+recorded dropped-byte counts when those fields exist. Read that diagnosis before
+rerunning the judged command; absent capture fields are not invented.
 The inspection/check/receipt commands exit 0 when their stated validation
 succeeds, including for a valid FAIL or ERROR verdict or recorded failed job.
 Read the preserved outcome and exits to decide whether the job passed. Exit 1

@@ -228,7 +228,7 @@ container_id=$("$docker_bin" run -d \
     -v "$docker_socket:$docker_socket" \
     -w "$workdir" \
     "$image" \
-    bash -c 'git config --global --replace-all safe.directory "*"; setup_rc=$?; if ((setup_rc)); then printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$setup_rc"; exit "$setup_rc"; fi; "$@"; job_rc=$?; printf "TESTER_UNIFIED_JOB_EXIT=%s\n" "$job_rc"; exit "$job_rc"' \
+    bash -c 'git config --global --replace-all safe.directory "*"; setup_rc=$?; if ((setup_rc)); then printf "\nTESTER_UNIFIED_JOB_EXIT=%s\n" "$setup_rc"; exit "$setup_rc"; fi; "$@"; job_rc=$?; printf "\nTESTER_UNIFIED_JOB_EXIT=%s\n" "$job_rc"; exit "$job_rc"' \
     tester-unified-job "$@")
 container_started=1
 flock -u 9

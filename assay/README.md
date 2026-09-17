@@ -35,7 +35,8 @@ and `assay verify`, and adds no runtime dependencies:
   and byte counts, or collects a receipt and all its referenced inputs with
   `--receipt`; `check` verifies that archive after relocation.
 - `verdict` uses the existing Assay verifier and an explicitly expected commit;
-  `--format text` shows the outcome, claims, coverage and mutant buckets.
+  `--format text` shows the outcome, claims, coverage and mutant buckets,
+  plus captured output tails and recorded dropped-byte counts for adverse outcomes.
 - `progress` separates appended JSONL runs at the expected commit, showing
   resume/candidate facts and terminal events without folding retries together.
 - `receipt` binds selected recorded jobs, `tester-unified/run` evidence,

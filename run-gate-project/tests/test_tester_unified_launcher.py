@@ -67,6 +67,17 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
                   printf '%s' "$2" > "$state/workdir"
                   shift 2
                   ;;
+                bash)
+                  if [[ ${FAKE_DOCKER_EXECUTE_JOB:-0} == 1 ]]; then
+                    mkdir -p "$state/home"
+                    set +e
+                    HOME="$state/home" "$@" > "$state/job.log" 2>&1
+                    printf '%s\\n' "$?" > "$state/job.exit"
+                    set -e
+                    break
+                  fi
+                  shift
+                  ;;
                 *) shift ;;
               esac
             done
@@ -92,10 +103,10 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
             fi
             ;;
           wait)
-            printf '0\\n'
+            if [[ -f $state/job.exit ]]; then cat "$state/job.exit"; else printf '0\\n'; fi
             ;;
           logs)
-            printf 'fake gate ran\\nTESTER_UNIFIED_JOB_EXIT=0\\n'
+            if [[ -f $state/job.log ]]; then cat "$state/job.log"; else printf 'fake gate ran\\nTESTER_UNIFIED_JOB_EXIT=0\\n'; fi
             ;;
           stop|rm)
             exit 0
@@ -113,7 +124,7 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
 def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
                   cgroup: str | None = "dev-background.slice",
                   update_fails: bool = False, network: str | None = None,
-                  accepted_network: str | None = None):
+                  accepted_network: str | None = None, execute_job: bool = False):
     bin_dir, log = _fake_docker(tmp_path)
     pressure_file = tmp_path / "pressure"
     pressure_file.write_text(
@@ -128,6 +139,7 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     env["_TESTER_UNIFIED_LAUNCH_LOCK"] = str(tmp_path / "launch.lock")
     env["TESTER_UNIFIED_RUN_NAME"] = "tester-unified-contract-test"
     env["FAKE_DOCKER_UPDATE_FAIL"] = "1" if update_fails else "0"
+    env["FAKE_DOCKER_EXECUTE_JOB"] = "1" if execute_job else "0"
     if accepted_network is not None:
         env["FAKE_DOCKER_NETWORK"] = accepted_network
     if cgroup is None:
@@ -243,6 +255,18 @@ def test_launcher_refuses_network_argument_or_failed_acceptance(tmp_path):
     proc, log, _ = _run_launcher(rejected, "true", network="none", accepted_network="bridge")
     assert proc.returncode == 125 and "did not accept network mode none" in proc.stderr
     assert "stop -t 10 tester-unified-contract-test" in log.read_text()
+    assert "rm tester-unified-contract-test" in log.read_text()
+
+
+@pytest.mark.parametrize("job_exit", [0, 7])
+def test_real_job_wrapper_preserves_exit_when_stdout_has_no_final_newline(tmp_path, job_exit):
+    proc, log, evidence = _run_launcher(
+        tmp_path, "bash", "-c", f"printf no-newline; exit {job_exit}", execute_job=True)
+    assert proc.returncode == job_exit, proc.stderr
+    run = evidence / "tester-unified-contract-test"
+    assert (run / "container.log").read_bytes() == (
+        f"no-newline\nTESTER_UNIFIED_JOB_EXIT={job_exit}\n".encode())
+    assert (run / "docker-wait.exit").read_text() == f"{job_exit}\n"
     assert "rm tester-unified-contract-test" in log.read_text()
 
 
