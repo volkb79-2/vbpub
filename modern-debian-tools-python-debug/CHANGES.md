@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-3bdb473105fe] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=3bdb473105febf0a995610b7b085b7b4134d1a97 -->
+
+### Fixed
+- fix(mdt): keep release cache on managed BuildKit remote (98015f29)
+- fix(mdt): avoid forced recompression during large OCI exports (0c338a87)
+
+### Documentation
+- docs(mdt): align cache example with non-forced compression policy (2063f1a1)
+
 ## [source-32e006235d05] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=32e006235d051df3e865a73c827dfc40840e4ed9 -->
