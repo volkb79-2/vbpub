@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20260918`
-- Built at (UTC): `2026-09-18T14:31:16Z`
+- Built at (UTC): `2026-09-18T13:37:25Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20260918`
