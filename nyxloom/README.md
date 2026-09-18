@@ -119,6 +119,12 @@ session ID when nyxloom can resolve exactly one matching file/store. Codex
 rollout lookup follows `CODEX_HOME` (default `~/.codex`) and checks local
 `~/.codex*` profiles for duplicate UUIDs; a repeated UUID fails with all
 candidate paths so the intended rollout can be selected explicitly.
+Codex generates UUIDv7 thread/session identities: the UUID carries timestamp
+and randomized material, while the rollout filename and first `session_meta`
+record repeat that identity. An existing rollout path is opened for append,
+not assigned a replacement ID, so live shared `sessions` symlinks can merge
+streams. See the [design rationale](docs/design-context-lifecycle-experiments.md#e-017--2026-09-12--session-log-location-presentation-and-live-following)
+for the source-level verification and process-inspection method.
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is

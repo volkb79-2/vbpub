@@ -68,6 +68,18 @@ test -n "$session_file" || {
 nyxloom extract "$session_file"
 ```
 
+Codex does not reserve IDs separately for each `CODEX_HOME`. New thread IDs
+are UUIDv7 values, and the same identity is repeated in the rollout filename
+and its first `session_meta` record. A pre-existing filename is opened for
+append, so do not symlink live `sessions` directories between independently
+authenticated profiles. To identify a live instance, inspect its process
+argument (`codex resume <SESSION_ID>` when resumed) and its `CODEX_HOME`, then
+corroborate the currently active ID from the first metadata record of the
+rollout path held open by `/proc/<pid>/fd`; the command-line ID can be only the
+launch target if the interactive process later switches to a new thread.
+If the UUID is present in multiple homes, use the full path; renaming the file
+alone does not rewrite its embedded identity.
+
 For an opencode database containing more than one session, use the store path
 and select the row explicitly:
 
