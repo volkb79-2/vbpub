@@ -28,7 +28,7 @@
 # (run-gate RG-43): as of rev 36, plain "host" is a CONTAINER default
 # (DEFAULT_HOST_IMAGE), not bare execution, and that image has no pytest at
 # all. tester-unified (the shared [environments.tester-unified] in the
-# repo-root run-gate.toml — already built, already what every vbpub-internal
+# repo-root run-gate.root.toml — already built, already what every vbpub-internal
 # project's ordinary lanes use) DOES carry test tooling, but in its own
 # dedicated venv at /opt/tester-venv/, not on the default PATH/python3 — every
 # argv below that needs pytest/pip/assay says so explicitly
@@ -117,7 +117,7 @@ budget = "3m"
 kind = "command"
 environment = "bare-host"
 description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"
-required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
 argv = [
     "bash", "{worktree}/scripts/debian-install-v2/testing/vm/run-vm-tests.sh",
 ]

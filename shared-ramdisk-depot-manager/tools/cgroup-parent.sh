@@ -4,7 +4,7 @@
 #
 # Why this exists. This host runs production game servers and edge infra
 # beside dev/test/build work, so nothing may land at Docker's unconfined
-# default. AGENTS.md names the tier in $CGROUP_PARENT_DEV_BACKGROUND and
+# default. AGENTS.md names the gate tier in $CGROUP_PARENT_DEV_GATES and
 # forbids a hardcoded fallback.
 #
 # And the failure mode is nasty: a typo'd or nonexistent slice name does NOT
@@ -26,7 +26,7 @@
 #   1. the slice named as $1 — how nyxloom.toml declares srdm's tier. An
 #      EXPLICIT per-project override is sanctioned by AGENTS.md; what is
 #      forbidden is falling back to a hardcoded name when nothing is set.
-#   2. $CGROUP_PARENT_DEV_BACKGROUND, the ambient devcontainer tier.
+#   2. $CGROUP_PARENT_DEV_GATES, the ambient gate/lane tier.
 #   3. nothing — refuse.
 #
 # Usage:  tools/cgroup-parent.sh [slice-name]
@@ -38,13 +38,13 @@ PROBE_IMAGE="${SRDM_PROBE_IMAGE:-alpine:latest}"
 
 die() { printf 'cgroup-parent: %s\n' "$*" >&2; exit 1; }
 
-slice="${1:-${CGROUP_PARENT_DEV_BACKGROUND:-}}"
+slice="${1:-${CGROUP_PARENT_DEV_GATES:-}}"
 if [ -z "$slice" ]; then
-  die 'no slice given and $CGROUP_PARENT_DEV_BACKGROUND is unset.
+  die 'no slice given and $CGROUP_PARENT_DEV_GATES is unset.
   This is a configuration error, not something to guess around: falling back
   to Docker'"'"'s default would place this container beside production.
   Fix it by exporting the tier, e.g.
-      export CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice
+      export CGROUP_PARENT_DEV_GATES=dev-gates.slice
   or by passing the slice explicitly as the first argument.'
 fi
 
@@ -53,9 +53,9 @@ case "$slice" in
   *) die "\"$slice\" does not name a systemd slice unit (expected a .slice suffix)" ;;
 esac
 
-# systemd derives nesting from the dash-separated name: dev-background.slice
-# lives at /sys/fs/cgroup/dev.slice/dev-background.slice. Rebuild that path
-# rather than guessing at a flat layout.
+# systemd derives nesting from the dash-separated name: a value such as
+# dev-gates.slice lives at /sys/fs/cgroup/dev.slice/dev-gates.slice. Rebuild
+# that path from the selected slice rather than guessing at a flat layout.
 stem="${slice%.slice}"
 case "$stem" in
   -*|*-) die "\"$slice\" has an empty hierarchy component" ;;

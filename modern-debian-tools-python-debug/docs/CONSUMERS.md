@@ -159,7 +159,7 @@ slice and keep its guest disks on disposable storage:
 
 ```bash
 docker run --rm -d --name debian-vm-test \
-  --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+  --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   --tmpfs /run --tmpfs /tmp \
   -v "$PWD/.vm-state:/vm:rw" \
   <vm-runner-image>

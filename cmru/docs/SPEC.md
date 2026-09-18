@@ -453,6 +453,7 @@ CMRU_TESTER_MEMORY = "3g"                                         # required by 
 CMRU_TESTER_MEMORY_SWAP = "16g"                                   # required by tester-gate
 CMRU_TESTER_CPUS = "1.5"                                          # required by tester-gate
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian@sha256:<digest>"         # required by tester-gate
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"          # required host gates slice
 # CMRU_TESTER_DIND_IMAGE = "docker@sha256:<digest>"               # required with --enable-docker
 
 [project]
@@ -597,13 +598,14 @@ set in the project's own `cmru.toml [env]`. So a step copied out of `cmru.toml` 
 time, each costing a container spin-up, and each message would send the reader to the wrong
 file. `tester-gate` MUST therefore, before any resolver with a side effect (the slice-existence
 probe, the container launch): (1) validate the full required set at once — image, memory,
-memory/swap, CPU, probe image, and the nested-Docker image when `--enable-docker` — resolving
+memory/swap, CPU, probe image, gates slice, and the nested-Docker image when `--enable-docker` — resolving
 each at `explicit flag > environment` precedence, and abort naming EVERY still-missing variable
 together; and (2) in that report and in each individual resolver's message, name
 `cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source. This is
 the same required set `cmru standards` validates statically against a project's declared config
-(one shared constant, `REQUIRED_TESTER_ENV`); `cgroup_parent` is deliberately excluded from the
-preflight because it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback.
+(one shared constant, `REQUIRED_TESTER_ENV`), including the required
+`CMRU_TESTER_CGROUP_PARENT` gates binding. Direct CLI use must pass that binding
+or an explicit `--cgroup-parent`; an unscoped launch is refused.
 
 If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 

@@ -47,20 +47,16 @@ CMRU_TESTER_CPUS = "1.5"
 #     --device-* cap below).
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
-# GOVERNANCE SLICE for gate containers — declared, never ambient. References
-# the devcontainer-injected var with a bare-host default; resolves ONCE at
-# load. Empty result = NO slice tier ON PURPOSE (announced unscoped launch;
-# per-container caps still apply). A project overrides via its own cmru.toml
-# [env]. Whatever resolves is verified against the host systemd before launch.
-CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# GOVERNANCE SLICE for gate containers — the dedicated admission tier. The
+# value is declared, resolves once at load, and must be supplied by the host
+# setup/devcontainer; no fallback may place a gate beside production.
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
 
-# Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
-# consumers whose own governance reads it there (e.g. ciu's resolver tests).
-# Same floor as placement — bare-host consumers must learn the tier that
-# actually governs the gate container.
-# Same floor as placement: bare-host consumers (ciu governance inside the
-# gate) must learn the tier that actually governs the container.
-CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# Forward both facts: the gate itself is in dev-gates.slice, while an in-gate
+# test that starts a long-running application stack may still need the
+# background tier explicitly.
+CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 
 # ---------------------------------------------------------------------------
 # Per-container IO caps (docker --device-read/write-bps / -iops). OPTIONAL —

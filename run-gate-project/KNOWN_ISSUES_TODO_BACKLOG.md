@@ -361,7 +361,7 @@ asserts the lifecycle AND `ciu.global.toml` are named.
 `name/kind/environment` only; the flags section documents neither semantics
 nor caveats; the environment contract is invisible until first failure:
 
-- `$CGROUP_PARENT_DEV_BACKGROUND` required for container lanes (absent = hard
+- `$CGROUP_PARENT_DEV_GATES` required for container lanes (absent = hard
   error at runtime);
 - `RUN_GATE_EXTRA_MOUNTS` colon-separated `host=container` pairs (ephemeral
   lanes only) — documented only in SPEC R-14b;
@@ -380,7 +380,7 @@ Schema change additive; one parser owns it.
 **FIXED 2026-08-24:** `usage()` gains FLAGS (`--worktree`; `--allow-dirty`
 with the explicit two-layer caveat that assay still enforces its own
 clean-tree rule) and ENVIRONMENT CONTRACT sections naming all three
-variables the tool reads — `CGROUP_PARENT_DEV_BACKGROUND`,
+variables the tool reads — `CGROUP_PARENT_DEV_GATES`,
 `RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS` — with failure semantics.
 The human lane table now shows `clean_tree`, advisory `budget`, `memory`,
 and a new validated optional `description` key (one line, `--help` only).
@@ -534,7 +534,7 @@ they share the same fix surface:
    adopted project has any (verified by ls). Retro-execute during the next
    touch of each project.
 4. **No root-level discovery affordance:** repo-root has central
-   `run-gate.toml` but no pointer down to "cd <project> && ./run-gate.py
+   `run-gate.root.toml` but no pointer down to "cd <project> && ./run-gate.py
    --list"; add one line to the root README.
 5. **Budget↔timeout drift unguarded:** every project pairs run-gate `budget`
    with a consumer `timeout_seconds` by manual sync; assay pioneered the
@@ -709,7 +709,7 @@ CONSUMERS central-defaults section rewritten with a real shared-lane recipe.
 
 ### The observation
 
-dstdns' central `run-gate.toml` declared
+dstdns' central `run-gate.root.toml` declared
 `forward_env = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]` but omitted `SCHEMA_GATE_PW`.
 The schema lane's `as_role` fixture reads `os.environ["SCHEMA_GATE_PW"]`; when absent, the
 privilege oracles could not connect as service roles. The mutation helper's equivalence run
@@ -1178,7 +1178,7 @@ after: present once `forward_env` is corrected, refused loudly by
 in its own repo (cross-repo pointer, deliberately not owned here).**
 
 1. *Breaking change documented, with the migration.* SPEC `R-24a` (forwarding
-   is DECLARED, never implicit — `CGROUP_PARENT_DEV_BACKGROUND` is the sole
+   is DECLARED, never implicit — `CGROUP_PARENT_DEV_GATES` is the sole
    exception, being infrastructure the tool itself owns), CONSUMERS "BREAKING
    CHANGE — migrate if you use `mode = "exec"`" (a pasteable two-half
    migration: `forward_env` restores the old behaviour, `required_env` is
@@ -3358,10 +3358,10 @@ workaround-only lesson.
 
 **Found by:** nyxloom-P109 gate runs, 2026-09-09.
 
-`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+`[environments.tester-unified]` in the monorepo-root `run-gate.root.toml` declares
 `image` only — no `resources.cpus`. The gate container therefore starts
-**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_BACKGROUND`
-(`dev-background.slice`), which deprioritises but does not bound it. Because
+**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_GATES`
+(`dev-gates.slice`), which deprioritises but does not bound it. Because
 this host is shared with a live production game server, every agent prompt
 carries a standing rule to run `docker update --cpus=3` on any container it
 launches, immediately after launch. Meanwhile the lane's judged argv is

@@ -9,7 +9,7 @@ usage() {
     cat >&2 <<'EOF'
 usage: tester-unified/run [--workdir PATH] [--evidence-dir PATH] [--network none] -- COMMAND [ARG...]
 
-CGROUP_PARENT_DEV_BACKGROUND must name the configured gate/build slice.
+CGROUP_PARENT_DEV_GATES must name the configured gate admission slice.
 EOF
 }
 
@@ -54,11 +54,16 @@ while (($#)); do
 done
 (($#)) || die "a command is required after --"
 
-[[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]] \
-    || die "CGROUP_PARENT_DEV_BACKGROUND is required; recreate the cockpit from its declared devcontainer configuration"
-cgroup_parent=$CGROUP_PARENT_DEV_BACKGROUND
+[[ -n ${CGROUP_PARENT_DEV_GATES:-} ]] \
+    || die "CGROUP_PARENT_DEV_GATES is required; recreate the cockpit from its declared devcontainer configuration"
+cgroup_parent=$CGROUP_PARENT_DEV_GATES
 [[ $cgroup_parent =~ ^[A-Za-z0-9_.@-]+\.slice$ ]] \
-    || die "CGROUP_PARENT_DEV_BACKGROUND is not a valid slice name: '$cgroup_parent'"
+    || die "CGROUP_PARENT_DEV_GATES is not a valid slice name: '$cgroup_parent'"
+
+forwarded_env=()
+if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
+    forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
+fi
 
 for tool in docker findmnt flock git realpath stat; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool '$tool' is unavailable"
@@ -217,7 +222,8 @@ container_id=$("$docker_bin" run -d \
     --cpus=3 \
     "${network_args[@]}" \
     --group-add "$socket_gid" \
-    -e "CGROUP_PARENT_DEV_BACKGROUND=$cgroup_parent" \
+    -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
     -e "TMPDIR=$container_tmp" \
     -e "TMP=$container_tmp" \

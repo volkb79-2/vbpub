@@ -14,6 +14,20 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   worktree and leaves the runtime Assay version in the verdict. Explicit
   command + pin mode remains for external consumers.
 
+- **Dedicated gate placement.** Container lanes now require and forward
+  `CGROUP_PARENT_DEV_GATES`; the background tier is reserved for a stack a
+  gate starts deliberately.
+
+- **Central slice binding.** The repository-root tester environment now uses
+  `cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"`, so inherited projects share
+  one placement policy while the host remains the source of the actual slice
+  value.
+
+- **Root config naming.** The shared ancestor configuration is now
+  `run-gate.root.toml`. Project-local lane files remain `run-gate.toml`; only
+  the root-named file is considered during ancestor lookup, so a nested
+  project's local config cannot accidentally become shared configuration.
+
 - **tester-unified source install.** The gate image now carries Assay's
   declared build backend closure and gives its run user a writable venv, so
   source-backed lanes work from the selected worktree rather than relying on

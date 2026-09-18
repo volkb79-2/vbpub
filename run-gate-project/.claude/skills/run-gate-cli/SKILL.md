@@ -29,7 +29,7 @@ run-gate --list                    # machine-readable: name<TAB>kind<TAB>environ
 run-gate <lane-name-from-list> --help   # not a real per-lane help; use --list + run-gate.toml instead
 ```
 There is no per-lane `--help`; lane definitions live in `run-gate.toml`
-(and any shared repo-root `run-gate.toml`) — never hardcode a lane name from
+(and any shared repo-root `run-gate.root.toml`) — never hardcode a lane name from
 memory without checking it still exists there (lane sets change).
 
 ## Run a lane
@@ -112,7 +112,7 @@ hard failure unless the lane also hit `stall_timeout`.
 
 ## Environment contract (fail-fast, no silent defaults)
 
-`CGROUP_PARENT_DEV_BACKGROUND` (required for container lanes' cgroup slice),
+`CGROUP_PARENT_DEV_GATES` (required for container lanes' cgroup slice),
 `RUN_GATE_EXTRA_MOUNTS`, `RUN_GATE_MOUNT_ALIAS`, `RUN_GATE_EVIDENCE_DIR`,
 `RUN_GATE_CGROUPFS_ROOT`, `RUN_GATE_PROC_ROOT`, `RUN_GATE_LOCK_DIR`,
 `RUN_GATE_PROFILE`. Every one of these DERIVEs, READs, or FAILs — never a

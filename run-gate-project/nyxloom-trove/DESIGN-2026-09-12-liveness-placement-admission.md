@@ -121,14 +121,15 @@ from `/proc`) marks a candidate `hung` — distinct from `budget_exceeded`,
 never `killed`; `run --resume --rejudge <id>,…` / `--rejudge-outcome
 hung,budget_exceeded,error` re-judges without hand-deleting state files.
 
-**D-24 — Host slices are mdt host-setup's; every consumer degrades to today's
-placement when the new env is unset.** *(amended by A1/D-29: only `dev-gates.slice` is mdt's; `dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are withdrawn.)* `dev-infra.slice` and `dev-gates.slice`
-are rendered/installed by `modern-debian-tools-python-debug/host-setup/`
-(operator-installed, as every other slice). The daemon's compose template
-uses `$CGROUP_PARENT_DEV_INFRA` when set, else `$CGROUP_PARENT_DEV_INTERACTIVE`
-(today); run-gate uses `$CGROUP_PARENT_DEV_GATES` when set, else
-`$CGROUP_PARENT_DEV_BACKGROUND` (today). Nothing breaks before the host is
-updated; `doctor` says which slice is in effect and why.
+**D-24 — Host slices are mdt host-setup's; gate consumers fail closed when the
+gates binding is unset.** *(amended by A1/D-29: only `dev-gates.slice` is mdt's;
+`dev-infra.slice` and `CGROUP_PARENT_DEV_INFRA` are withdrawn.)* `dev-gates.slice`
+is rendered/installed by
+`modern-debian-tools-python-debug/host-setup/` (operator-installed, as every
+other dev slice). The daemon's compose template authors `cgprofile.slice`
+outright; run-gate and the other gate launchers require
+`$CGROUP_PARENT_DEV_GATES`. Nothing may silently fall back to Docker's
+unbounded default; `doctor` says which slice is in effect and why.
 
 **D-25 — D-15 daemon safety is extended by whitelist, not relaxed.** Writable
 paths: the sessions volume, DAMON sysfs, the daemon's own cgroup directory

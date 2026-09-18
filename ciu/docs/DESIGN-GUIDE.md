@@ -572,7 +572,7 @@ poison every gate run.
 
 **Why the cgroup slice comes only from the environment.** A literal slice in
 the gate config is a shadowing default for a fact that has an authoritative
-source (`$CGROUP_PARENT_DEV_BACKGROUND`, injected by the devcontainer).
+source (`$CGROUP_PARENT_DEV_GATES`, injected by the devcontainer).
 Systemd silently auto-creates a typo'd slice as an unlimited transient
 slice, so the gate both refuses an absent variable (`${VAR:?}`) and verifies
 the named unit is `LoadState=loaded` before launching Docker — fail-closed on

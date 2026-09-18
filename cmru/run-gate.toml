@@ -1,6 +1,6 @@
 # =============================================================================
 # cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
-# Environment facts come from the CENTRAL vbpub-root run-gate.toml; judgment
+# Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
 # policy lives in assay.toml [lanes.cmru] (R0 — see that file for why higher
 # rigor is not yet declared here). The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
@@ -79,7 +79,7 @@ memory_swap = "16g"
 # bare-host, same reasoning as [lanes.gate] below: real docker access, on
 # this invoking shell's own python/pytest -- no /opt/tester-venv/ path
 # here, that venv exists only inside the tester-unified image. The fixture
-# chain self-skips (not errors) when docker or CGROUP_PARENT_DEV_BACKGROUND
+# chain self-skips (not errors) when docker or CGROUP_PARENT_DEV_GATES
 # are genuinely unavailable (_docker_unavailable_reason); on the real
 # bare-host gate environment both are present, so this lane actually
 # EXERCISES O2/O3 instead of skipping past them -- closing the gap the

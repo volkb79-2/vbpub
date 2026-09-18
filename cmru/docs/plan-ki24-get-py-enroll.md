@@ -59,7 +59,7 @@ already spec'd and operator-accepted, waiting on this piece.
    inside it, assert on real system state" test pattern that this plan's
    author could find — you may be building the first one. Look at how
    `run-gate.toml`'s own `tester-unified`/gate-container conventions work
-   (host cgroup placement via `$CGROUP_PARENT_DEV_BACKGROUND`, see the
+   (host cgroup placement via `$CGROUP_PARENT_DEV_GATES`, see the
    root vbpub `AGENTS.md` "Host cgroup placement for spawned containers")
    before reaching for a raw `docker run` inside a test.
 5. `docs/SPEC.md` — skim for how existing subcommands are documented (this

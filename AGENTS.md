@@ -79,28 +79,20 @@ slice name:
 - `$CGROUP_PARENT_DEV_INTERACTIVE` — this devcontainer's own tier (already
   applied via `runArgs`; you don't need to pass this yourself).
 - `$CGROUP_PARENT_DEV_BACKGROUND` — the shared tier for a long-running dev
-  stack or (until a spawner adopts `$CGROUP_PARENT_DEV_GATES` below) a
-  test/gate/build container you spawn (`docker run
-  --cgroup-parent=$CGROUP_PARENT_DEV_BACKGROUND ...`). `ciu`'s governance
-  mechanism (`ciu/src/ciu/governance.py`) resolves this automatically.
-  **cmru's `tester-gate` is DECLARED-CONFIG instead** (2026-08-22): it reads
-  only `CMRU_TESTER_CGROUP_PARENT`, normally set once in
-  `cmru.orchestration.toml [env]` via a `${CGROUP_PARENT_DEV_BACKGROUND:-
-  dev-background.slice}` reference — cmru expands `${NAME:-default}` at load
-  time; an EMPTY result means "no slice tier" on purpose (unscoped launch,
-  announced; per-container memory/CPU/IO caps still apply). Per-project
-  override through the project's own cmru.toml [env]. Whatever non-empty
-  value resolves is verified against the HOST systemd (LoadState=loaded AND
-  FragmentPath) before launch.
+  stack. `ciu`'s governance mechanism
+  (`ciu/src/ciu/governance.py`) resolves this for those stacks. Gate tests
+  that start a long-running stack receive this value separately from their
+  own gate placement.
 - `$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24, 2026-09-12) — the admission
   capacity object for gate/lane containers and placed lane leaves
   `rg-<token>` specifically, a SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s
   tier rather than a child of it; see `modern-debian-tools-python-debug/
-  host-setup/README.md` "dev-gates: why". No spawner reads it yet as of
-  this entry — `run-gate`'s own default, cmru's `tester-gate`, and srdm's
-  gate script all still resolve only `$CGROUP_PARENT_DEV_BACKGROUND`, so
-  every gate/lane container keeps landing there (today's placement) until
-  each adopts the new variable; adoption is tracked per-tool, not here.
+  host-setup/README.md` "dev-gates: why". Gate spawners resolve this
+  variable: `run-gate`, cmru's `tester-gate`, assay's gate driver,
+  tester-unified, srdm's gate scripts, and the debian-install-v2 VM runner.
+  `$CGROUP_PARENT_DEV_BACKGROUND` remains the explicit tier for long-running
+  application stacks and is forwarded separately where a gate test starts
+  one.
 
 **No hardcoded fallbacks.** If neither variable nor an explicit override is
 set where a resolver REQUIRES one, that is a configuration error — refuse to
@@ -126,8 +118,8 @@ reproducing a trove gate at review) needs ALL four, or it fails in misleading
 ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
 `ciu/nyxloom-trove/reports/checkpoint-A-review-2026-08-19.md`):
 
-1. **Pass `-e CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND`** —
-   governance tests read it ambiently (S15.2 by design) and fail without it;
+1. **Pass `-e CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES`** —
+   gate placement and governance tests read it ambiently (S15.2 by design) and fail without it;
    the failures look like product bugs, not a missing variable.
 2. **Dual-mount the repo** at BOTH its physical host path and its devcontainer
    path (`-v /home/.../vbpub:/home/.../vbpub -v /home/.../vbpub:/workspaces/vbpub`):
@@ -136,7 +128,7 @@ ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
 3. **`git config --global safe.directory '*'`** inside the container (uid
    mismatch between the mount's owner and the container user).
 4. **Detached form** — `docker run -d` → `docker wait` → `docker logs`, with
-   `--cgroup-parent=nyxloom-gates.slice` (see the cgroup section above; the
+   `--cgroup-parent="$CGROUP_PARENT_DEV_GATES"` (see the cgroup section above; the
    attached form can forge exit codes over a lying transport — LESSONS L18).
 
 Related, from the same review wave: an argv **pinned against a fake docker

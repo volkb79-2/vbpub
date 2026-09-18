@@ -237,7 +237,7 @@ line+branch) inside Assay's isolated snapshot, and Assay itself judges the
 changed-line floor on `base..HEAD` plus the coverage artifact (R1). The
 verdict is retained at `.assay/verdict-ciu.json` (gitignored) as review
 evidence. The gate resolves the container slice ONLY from
-`$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback), verifies the named
+`$CGROUP_PARENT_DEV_GATES` (no literal, no fallback), verifies the named
 slice is `LoadState=loaded` before `docker run` (fail-closed), and its final
 status is the Assay job's own exit status. See [SPEC S18](docs/SPEC.md#s18--implementation-gate-assay-backed) and
 [CONSUMERS §10](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18).

@@ -74,7 +74,7 @@ example_profile = "examples/soulmask.profile.json"
 # transient slice rather than erroring.
 
 [gates.unit]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} unit"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-}\" exec tools/gate.sh {worktree} unit"]
 phase = "implementation"
 # gofmt, build, vet and the O1-O5 oracles. The changed-line floor is its own
 # gate below, because it needs a committed tree and a base ref while this one
@@ -94,7 +94,7 @@ environment = "srdm-gate"
 # NO MEASUREMENT (exit 3) for a dirty tree or a base that resolves to HEAD,
 # both of which otherwise render as an indistinguishable "0/0 (100.0%)".
 [gates.coverage]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} coverage"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-}\" exec tools/gate.sh {worktree} coverage"]
 phase = "review"
 asserts = ["tests-pass", "changed-line-coverage"]
 timeout_seconds = 1800
@@ -114,7 +114,7 @@ environment = "srdm-gate"
 # a Docker daemon that refuses privileged containers cannot run this harness,
 # which is a property of the host and not a failing change.
 [gates.privileged-e2e]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/gate.sh {worktree} e2e"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-}\" exec tools/gate.sh {worktree} e2e"]
 phase = "pre-merge"
 asserts = ["tests-pass"]
 # RG-13 estate sweep pairing rule: consumer timeout must never be TIGHTER
@@ -127,7 +127,7 @@ environment = "srdm-gate-e2e"
 # contract an oracle claims to assert, and the named test must go red. A
 # canary that survives is a hollow oracle. Run it whenever an oracle changes.
 [gates.canary]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-dev-background.slice}\" exec tools/canary-run.sh"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-}\" exec tools/canary-run.sh"]
 phase = "review"
 asserts = ["canary-verified"]
 timeout_seconds = 2400

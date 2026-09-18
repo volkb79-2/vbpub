@@ -33,6 +33,12 @@ def git_repo(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def ambient_gate_slice(monkeypatch):
+    """The generated orchestration contract requires a real gate-tier fact."""
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+
+
 def test_monorepo_init_generates_loader_valid_contracts(git_repo):
     plan = scaffold.collect_plan(
         ["--layout", "monorepo", "--project", "alpha", "--project", "beta",
@@ -52,9 +58,9 @@ def test_monorepo_init_generates_loader_valid_contracts(git_repo):
     cfg = load_forge_config(git_repo / "cmru.orchestration.toml",
                             require_orchestration=True)
     assert set(cfg.projects) == {"alpha", "beta"}
-    # ${NAME:-default} reference survives into the declared env verbatim;
-    # expansion is a LOAD-time concern tested separately.
-    assert "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}" in (
+    # The gate tier is a required host fact; it survives into the declared env
+    # verbatim and is expanded at load time.
+    assert '${CGROUP_PARENT_DEV_GATES}' in (
         git_repo / "cmru.orchestration.toml"
     ).read_text(encoding="utf-8")
 

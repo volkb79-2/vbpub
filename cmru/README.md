@@ -141,7 +141,8 @@ execution setting fails before it can alter a release. `cmru.build.toml`, shell 
 configuration aliases are retired; there is no compatibility parser.
 
 The stock `tester-gate` command additionally requires an explicit tester image, memory,
-combined memory/swap, CPU ceiling, and host-systemd probe image in `[env]`. A gate that
+combined memory/swap, CPU ceiling, host-systemd probe image, and the host gates slice
+(`CMRU_TESTER_CGROUP_PARENT`, normally `${CGROUP_PARENT_DEV_GATES}`) in `[env]`. A gate that
 uses `--enable-docker` must also declare its nested-Docker image. The stock `wheel-build`
 handler requires an explicit wheel-builder image. These are release inputs, not CMRU
 defaults; pin immutable digests in a production contract.

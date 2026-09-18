@@ -241,20 +241,23 @@ flowchart TD
     R --> V[dev.slice]
     V --> I[dev-interactive.slice]
     V --> B[dev-background.slice]
+    V --> G[dev-gates.slice]
     V --> K[dev-buildkitd.slice]
     S --> D[docker.service / dockerd]
     K --> W[mdt-buildkitd.service<br/>mdt-managed remote]
     I --> V[MDT devcontainer]
     V --> C[build-push / docker-buildx / tar]
     V --> P[docker-repack<br/>one target, concurrency 2]
-    B --> T[dstdns stacks and test-runner]
+    B --> T[dstdns and long-running stacks]
+    G --> Q[run-gate / tester-unified / VM lanes]
 ```
 
 The managed service container is intentionally in `dev-buildkitd.slice`, while
 `dockerd` remains in `system.slice`. The `mdt-managed` remote endpoint is a
 Unix socket mounted into the devcontainer; no generated Buildx worker scope is
-part of the normal path. `dev-background.slice` is shown for context: dstdns
-uses it, while release orchestration runs in the invoking devcontainer's
+part of the normal path. `dev-background.slice` holds dstdns and other
+long-running stacks, while disposable gate and VM lanes use the sibling
+`dev-gates.slice`. Release orchestration runs in the invoking devcontainer's
 `dev-interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
@@ -271,7 +274,8 @@ mismatched instance fails before work starts. The important distinction is:
 
 - A systemd **slice** controls an aggregate workload tier. The shipped
   devcontainer template requests `dev-interactive.slice`; dstdns stack containers
-  normally request `dev-background.slice`. Slice policy is installed and owned by
+  normally request `dev-background.slice`, while run-gate and other disposable
+  gate lanes request `dev-gates.slice`. Slice policy is installed and owned by
   the host.
 - The managed service's Docker container is placed directly in
   `dev-buildkitd.slice`; `dockerd` itself remains in `system.slice`.

@@ -620,8 +620,9 @@ precedence and, if anything is missing, aborts **once, naming every missing vari
 `cmru.orchestration.toml [env]` (inherited through `cmru release`) as the real source, and say
 it is NOT usually the project's own `cmru.toml [env]` (b). The required set is one shared
 constant, `REQUIRED_TESTER_ENV`, that `cmru standards` imports for its static config check — so
-the runtime preflight and the static validator can never drift. `cgroup_parent` is deliberately
-excluded (it has the ambient `CGROUP_PARENT_DEV_BACKGROUND` fallback). The workaround formerly
+the runtime preflight and the static validator can never drift. `cgroup_parent` is required as
+`CMRU_TESTER_CGROUP_PARENT`, normally bound to `$CGROUP_PARENT_DEV_GATES`; there is no ambient
+fallback. The workaround formerly
 in `docs/CONTRIBUTING.md §3` now records the fix.
 
 **Original report (kept for the record).** The `argv` entries in a project's `[steps.*]` depend on environment injected by the
@@ -997,7 +998,7 @@ UNCONFIRMED); `do_enroll` at L1373; parser at L1540; dispatch at L1572. Tests:
 `TestEnrollAgainstRealSystem` at L2097 — the repo's first container-backed
 "run the installer for real and assert on real system state" oracle; its fixture
 image is built and torn down by the test file itself and the group SKIPS where
-docker or `$CGROUP_PARENT_DEV_BACKGROUND` is absent, which is the case inside
+docker or `$CGROUP_PARENT_DEV_GATES` is absent, which is the case inside
 the gate's own tester-unified container). `src/cmru/getpy.py` needed no change:
 the template is placeholder-substituted, not parsed.
 

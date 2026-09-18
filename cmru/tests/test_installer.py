@@ -2011,10 +2011,10 @@ def _docker_unavailable_reason() -> Optional[str]:
     if probe.returncode != 0:
         return f"docker daemon unreachable: {probe.stderr.strip()[:200]}"
     # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
-    # container we cannot place on the host's dev-background tier is one we do
-    # not start next to production.
-    if not os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", "").strip():
-        return "CGROUP_PARENT_DEV_BACKGROUND unset — refusing an unplaced container"
+    # gate fixture we cannot place on the host's dedicated gates tier is one
+    # we do not start next to production.
+    if not os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip():
+        return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
     return None
 
 
@@ -2059,11 +2059,11 @@ def rendered_get_py(tmp_path) -> Path:
 def _enroll_container(image: str, script: Path, *, network: str = "bridge") -> Iterator[str]:
     """A short-lived fixture container carrying the rendered installer.
 
-    Placed on the estate's dev-background cgroup tier and capped, per the shared
+    Placed on the estate's dev-gates cgroup tier and capped, per the shared
     production host's rules; removed in a finally so a failing assertion never
     leaves one running.
     """
-    slice_name = os.environ["CGROUP_PARENT_DEV_BACKGROUND"]
+    slice_name = os.environ["CGROUP_PARENT_DEV_GATES"]
     started = subprocess.run(
         ["docker", "run", "-d",
          f"--cgroup-parent={slice_name}",

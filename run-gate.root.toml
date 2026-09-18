@@ -1,0 +1,21 @@
+# =============================================================================
+# run-gate ROOT config — vbpub monorepo root.
+# Parsed ONLY by run-gate.py (one parser, D-110). Project configs remain named
+# run-gate.toml next to each project's run-gate.py symlink/copy; they inherit
+# THESE tables unless they shadow a name. Since RG-16 (SPEC R-22) central
+# [lanes.*] are LEGAL
+# here: shared lanes inherited by every consuming project by name.
+# See run-gate-project/SPEC.md (normative) and README.md (design authority).
+# =============================================================================
+schema_version = 1
+
+[environments.tester-unified]
+image = "tester-unified:local"
+# The repository-wide gate policy binds to the host-injected value once here;
+# every project inheriting this environment uses the same gates tier. The
+# value itself remains host-owned so host setup can verify the installed unit;
+# long-running stacks continue to use $CGROUP_PARENT_DEV_BACKGROUND.
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+
+# [environments.test-runner] belongs to dstdns's own root config when that
+# repo adopts run-gate (timed per dstdns D-111) — not declared speculatively.

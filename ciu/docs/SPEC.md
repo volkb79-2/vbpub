@@ -5209,7 +5209,7 @@ evidence-judgment command.
   symlink anywhere in the repository reds the lane until its owner declares
   or untracks it (fail-closed).
 - **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice
-  ONLY from `$CGROUP_PARENT_DEV_BACKGROUND` — no literal slice, no fallback;
+  ONLY from `$CGROUP_PARENT_DEV_GATES` — no literal slice, no fallback;
   an absent variable is a hard error. Before `docker run` it verifies the
   named systemd slice is `LoadState=loaded` on the host; an unloaded or
   missing slice fails the gate. A typo'd slice name that systemd silently

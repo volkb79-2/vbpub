@@ -132,7 +132,7 @@ def _host_path_for(path: Path) -> str:
 
 def _docker_run(*, mounts: list[tuple[str, str, bool]], workdir: str, argv: list[str]):
     command = ["docker", "run", "--rm", "--network=none"]
-    slice_name = os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
+    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES")
     if slice_name:
         # A-334's placement half: a gate container is placed on the host
         # tier by its caller, never left to a fail-open transient slice.

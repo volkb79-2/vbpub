@@ -105,8 +105,9 @@ devcontainer should land in its own tier instead of the host's default (usually 
 `templates/devcontainer.json` ships a `--cgroup-parent=dev-interactive.slice` runArg for this
 (plus `containerEnv` vars naming three dev-tier slices — `CGROUP_PARENT_DEV_INTERACTIVE`,
 `CGROUP_PARENT_DEV_BACKGROUND`, and, for gate/lane containers, `CGROUP_PARENT_DEV_GATES` — see
-below — for any in-container tool that spawns its own containers, each falling back to today's
-placement when unset, [host-setup/README.md](host-setup/README.md) "dev-gates: why"); this section
+below — for any in-container tool that spawns its own containers. Gate launchers fail closed when
+the gates value is absent; long-running stacks use the background value. See
+[host-setup/README.md](host-setup/README.md) "dev-gates: why"); this section
 explains the mechanism so you can reason about safety on hosts
 that do **not** opt in.
 See also [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) for how this fits the doctrine's
@@ -126,11 +127,12 @@ list, and the BFQ caveats that come with IO weights, are in
 
 `--cgroup-parent=dev-interactive.slice` only produces a governed container if the host has
 installed a systemd slice unit at `/etc/systemd/system/dev-interactive.slice` with real limits.
-**The [`host-setup/`](host-setup/README.md) companion installs and maintains exactly this** — both
-dev tiers (`dev-interactive.slice` for devcontainers, `dev-background.slice` for test/build/gate
-stacks — also the Docker daemon-wide fallback via `/etc/docker/daemon.json`, which host-setup owns
-fully), nested under one shared `dev.slice` IOPS/bandwidth ceiling, rendered from a per-host env
-file, plus a measured-baseline IO-cap service and a health check (`mdt-host-check.sh`). Hand-rolled
+**The [`host-setup/`](host-setup/README.md) companion installs and maintains exactly this** — the
+interactive tier for devcontainers, the dedicated `dev-gates.slice` for gate/lane containers, and
+`dev-background.slice` for long-running stacks and the Docker daemon-wide fallback via
+`/etc/docker/daemon.json`, all nested under one shared `dev.slice` IOPS/bandwidth ceiling and
+rendered from a per-host env file, plus a measured-baseline IO-cap service and a health check
+(`mdt-host-check.sh`). Hand-rolled
 minimal equivalent:
 
 ```ini

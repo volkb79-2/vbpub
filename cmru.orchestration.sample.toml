@@ -22,16 +22,16 @@ CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
-# GOVERNANCE SLICE for gate containers — declared, never ambient.
-# ${NAME:-default} expands at load time (unset NAME without :-default = load
-# error naming the key). Empty result = NO slice tier ON PURPOSE (announced
-# unscoped launch; per-container caps still apply). Whatever resolves is
-# verified against the host systemd before launch.
-CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# GOVERNANCE SLICE for gate containers — declared, never ambient. The gates
+# tier is required; an unset reference is a load error rather than an
+# unscoped launch. Whatever resolves is verified against the host systemd
+# before launch.
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
 
 # Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
 # consumers whose own governance reads it there.
 CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 
 # Per-container IO caps (optional, device-specific "<device>:<rate>"):
 #   CMRU_TESTER_DEVICE_READ_BPS / _WRITE_BPS / _READ_IOPS / _WRITE_IOPS

@@ -263,15 +263,18 @@ def test_tester_gate_resolvers_fail_closed_and_prefer_explicit(monkeypatch):
 
 
 def test_tester_gate_cgroup_parent_declared_only(monkeypatch):
-    """No ambient reads, no hardcoded default: the resolver returns the
-    DECLARED value only — unset/empty means None (launch unscoped, announced
-    by main), and whatever resolves is slice-probed before launch."""
-    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_BACKGROUND"):
+    """No ambient reads, no hardcoded default: the resolver requires the
+    declared gates value and whatever resolves is slice-probed before launch."""
+    for name in ("CMRU_TESTER_CGROUP_PARENT", "CGROUP_PARENT_DEV_GATES",
+                 "CGROUP_PARENT_DEV_BACKGROUND"):
         monkeypatch.delenv(name, raising=False)
-    # Ambient var deliberately set to prove it is NO LONGER read.
+    # Ambient vars deliberately set to prove the resolver reads only its
+    # declared configuration binding.
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "ambient.slice")
-    assert tester_gate.resolve_cgroup_parent(None) is None
-    assert tester_gate.resolve_cgroup_parent("") is None
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent(None)
+    with pytest.raises(SystemExit, match="cgroup_parent"):
+        tester_gate.resolve_cgroup_parent("")
 
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", "declared.slice")
     assert tester_gate.resolve_cgroup_parent(None) == "declared.slice"

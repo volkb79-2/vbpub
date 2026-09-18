@@ -15,7 +15,7 @@ while observing a victim is a first-class mode, not a workaround.
 ./cgprofile doctor              # what can I reach?
 
 ./cgprofile run \
-  --target  slice:dev-background.slice@follow \
+  --target  slice:dev-gates.slice@follow \
   --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
   -- ./gate.sh
 ```
@@ -71,7 +71,8 @@ profiling — that would add exactly the load the tool exists to measure.
   `SysfsInterface` and `Classifier` to add a hot/warm/cold breakdown alongside
   the counters.
 - `modern-debian-tools-python-debug/host-setup/` — owns the host's dev-tier
-  slice governance (`dev-interactive`, `dev-background`, `dev-buildkitd`). This
+  slice governance (`dev-interactive`, `dev-background`, `dev-gates`,
+  `dev-buildkitd`). This
   tool measures those tiers; it does not manage them. Proposals in the report
   are phrased as changes to *that* configuration.
 - `/usr/local/sbin/soulmask-zswap-monitor.sh` — live production health. The

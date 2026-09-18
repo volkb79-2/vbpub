@@ -709,8 +709,15 @@ fi
 [[ -n "$host_repo_root" ]] || die 'the host repository bind source is empty'
 [[ "$host_repo_root" != *$'\n'* ]] || die 'multiple host repository bind sources were returned'
 
+forwarded_env=()
+if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
+  forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
+fi
+
 docker run --rm \
   --cgroup-parent="$cgroup_parent" \
+  -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+  "${forwarded_env[@]}" \
   --network=none \
   --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
   tester-unified:local \

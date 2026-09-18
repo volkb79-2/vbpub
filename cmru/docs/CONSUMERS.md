@@ -106,6 +106,7 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_MEMORY_SWAP` | combined mem+swap total (Docker semantics) |
 | `CMRU_TESTER_CPUS` | gate container CPU ceiling |
 | `CMRU_TESTER_CGROUP_PROBE_IMAGE` | host-systemd slice probe image |
+| `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
 | `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon) |
 | `CMRU_WHEEL_BUILDER_IMAGE` | required by `wheel-build` |
 

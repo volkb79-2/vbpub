@@ -73,24 +73,20 @@ CMRU_TESTER_CPUS = "2.5"
 #     any --device-* cap is passed).
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
-# GOVERNANCE SLICE for gate containers. Declared, never ambient: the value
-# may reference the devcontainer-injected var, and resolves ONCE at load.
-#   devcontainer host -> CGROUP_PARENT_DEV_BACKGROUND (e.g.
-#                        dev-background.slice, injected by devcontainer.json)
-#   bare host         -> the :-default below (the tier host-setup installs)
-# Empty result means NO slice tier ON PURPOSE: gates launch unscoped (with an
-# announcement) while per-container caps above still apply. A project may
-# override per-project (its own cmru.toml [env]), including to "".
-# Whatever non-empty value resolves is verified against the host systemd
-# before launch — a typo'd or fail-open transient slice REFUSES the gate.
-CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# GOVERNANCE SLICE for gate containers. Gate/lane containers belong to the
+# dedicated admission tier, not the long-running background tier. The value
+# is declared and resolved once at load time; an absent variable is an error
+# rather than a silent fall-through to Docker's unconfined default.
+CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
 
-# Forwarded INTO the gate container as $CGROUP_PARENT_DEV_BACKGROUND for
-# ciu's own in-container governance resolver (Docker never passes host env
-# through on its own). Same reference, same resolution rules.
-# Same floor as placement: bare-host consumers (ciu governance inside the
-# gate) must learn the tier that actually governs the container.
-CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
+# Forward both host-tier facts into the gate container. CMRU's tester-gate
+# itself is placed in dev-gates.slice, while tests that start a long-running
+# application stack still need to see the background tier explicitly.
+# Optional: only needed when a gate test starts a long-running application
+# stack. An absent background tier must not prevent the gate itself from
+# launching in its required gates tier.
+CMRU_TESTER_CGROUP_FORWARD_VAR = "${CGROUP_PARENT_DEV_BACKGROUND:-}"
+CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 
 # ---------------------------------------------------------------------------
 # Per-container IO caps (docker --device-read/write-bps / -iops). OPTIONAL —

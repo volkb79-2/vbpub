@@ -64,7 +64,7 @@ docs_dir          = "docs"
 [gates.topos-suite]
 # SSOT pointer (D-110/D-111): the lane lives in topos/run-gate.toml with the
 # exact pre-adoption mechanics, minus the hardcoded `nyxloom-gates.slice`
-# literal — run-gate resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND
+# literal — run-gate resolves the slice from $CGROUP_PARENT_DEV_GATES
 # (SPEC A3) and dual-mounts the repo. Gate containers do not inherit the
 # cockpit's cgroup; the ambient var names the host-managed low-priority gate
 # tier whose IOPS budget is deliberately below the production game-server

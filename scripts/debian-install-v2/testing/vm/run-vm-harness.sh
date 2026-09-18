@@ -38,10 +38,10 @@ DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
 # normal host workload, not an escape from the estate's cgroup policy.  The
-# caller must supply the already-loaded dev tier injected by devcontainer.json
+# caller must supply the already-loaded gate tier injected by devcontainer.json
 # (or by the gate launcher); an omitted value must never fall through to
 # Docker's unbounded default or to an implicitly-created transient slice.
-VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"
+VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:-}"
 VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"
 BUILD_BUILDER="${BUILDX_BUILDER:-}"
 CGROUP_PROBE_IMAGE="${MDT_VM_CGROUP_PROBE_IMAGE:-debian:trixie-slim}"
@@ -129,7 +129,7 @@ fi
 
 verify_cgroup_parent() {
     [ -n "$VM_CGROUP_PARENT" ] || die \
-        'CGROUP_PARENT_DEV_BACKGROUND is not set; refusing to start the VM runner unplaced'
+        'CGROUP_PARENT_DEV_GATES is not set; refusing to start the VM runner unplaced'
     [ -n "$VM_PROBE_CGROUP_PARENT" ] || die \
         'CGROUP_PARENT_DEV_INTERACTIVE is not set; cannot safely verify the VM cgroup parent'
     case "$VM_CGROUP_PARENT" in

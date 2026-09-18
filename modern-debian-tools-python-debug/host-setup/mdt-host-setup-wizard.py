@@ -2070,7 +2070,7 @@ def step_slice_first_resources(
     for line in (
         "dev.slice (parent: whole dev estate)",
         "+-- dev-interactive.slice (child: IDE/devcontainers)",
-        "+-- dev-background.slice (child: stacks/tests)",
+        "+-- dev-background.slice (child: long-running stacks)",
         "+-- dev-gates.slice (child: disposable lanes)",
         "+-- dev-buildkitd.slice (child: shared builder)",
         "+-- dev-memory_min_guaranteed.slice (sibling: admitted floor)",
@@ -2535,7 +2535,7 @@ def explain_install_map() -> None:
     out("What each part does:")
     for bullet in (
         "`dev*.slice` units — static CPU, memory, swap, weights, and tight IO fallback.",
-        "`dev-gates.slice` is ready for gate consumers; run-gate, cmru tester-gate, and srdm still use `dev-background.slice` until they adopt `CGROUP_PARENT_DEV_GATES`.",
+        "`dev-gates.slice` is the validated placement for run-gate, cmru tester-gate, assay, tester-unified, srdm, and debian-install-v2 VM lanes; long-running stacks remain in `dev-background.slice`.",
         "`mdt-dev-governance-reconcile.service` + timer — measured root IO caps, zswap fallback, sweep, and audit.",
         "`mdt-container-io-events-watcher.service` — Docker start events -> immediate IO caps on governed scopes and named out-of-tree Buildx workers.",
         "Transient scopes and unreliable Buildx placement are why the container events watcher exists; reconciliation is its backstop.",

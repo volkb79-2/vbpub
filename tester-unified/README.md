@@ -16,7 +16,7 @@ tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
 ```
 
 The launcher requires the cockpit-provided
-`CGROUP_PARENT_DEV_BACKGROUND`; it never invents a slice. It derives the
+`CGROUP_PARENT_DEV_GATES`; it never invents a slice. It derives the
 Docker host's workspace path from mountinfo, dual-mounts that workspace,
 creates a disposable host-backed temp root, mounts it at `/tmp`, and exports
 that path as `TMPDIR`/`TMP`/`TEMP` (when the workspace itself is rooted at

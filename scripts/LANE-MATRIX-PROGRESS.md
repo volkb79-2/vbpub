@@ -380,7 +380,7 @@ debian-install-v2's.
 `run-gate-project/SPEC.md`** (read in full this session): `kind =
 "command"|"assay"` (this task only ever uses `"command"`, per the
 zipapp-drop above), `environment = "host"|"tester-unified"` (declared
-centrally in the root `run-gate.toml`'s `[environments.tester-unified]`,
+centrally in the root `run-gate.root.toml`'s `[environments.tester-unified]`,
 inherited by every project unless shadowed). `environment = "host"` for a
 lane means run-gate.py execs the argv directly with no container, no
 placement, no dual-mount — appropriate for anything that does no real

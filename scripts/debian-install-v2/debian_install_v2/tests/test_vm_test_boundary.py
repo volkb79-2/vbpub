@@ -31,7 +31,7 @@ def test_gate_routes_real_commit_lane_to_qemu_guest():
     gate = (PROJECT / "run-gate.toml").read_text()
     assert "[lanes.r1-vm-real-commit]" in gate
     assert 'description = "Real loop/swap commit tests inside an isolated QEMU/TCG guest"' in gate
-    assert 'required_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]' in gate
+    assert 'required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]' in gate
     assert "testing/vm/run-vm-tests.sh" in gate
     assert "[lanes.r1-privileged-commit]" not in gate
     assert "run-privileged-tests.sh" not in gate
@@ -39,7 +39,7 @@ def test_gate_routes_real_commit_lane_to_qemu_guest():
 
 def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     runner = (VM / "run-vm-harness.sh").read_text()
-    assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_BACKGROUND:-}"' in runner
+    assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:-}"' in runner
     assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
     assert 'BUILD_BUILDER="${BUILDX_BUILDER:-}"' in runner
     assert 'VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"' in runner
@@ -190,7 +190,7 @@ esac
         PATH=f"{tmp_path}:{env['PATH']}",
         FAKE_DOCKER_LOG=str(fake_log),
         FAKE_HOSTNAME=hostname,
-        CGROUP_PARENT_DEV_BACKGROUND="dev-background.slice",
+        CGROUP_PARENT_DEV_GATES="dev-gates.slice",
         CGROUP_PARENT_DEV_INTERACTIVE="dev-interactive.slice",
         BUILDX_BUILDER="fake-builder",
     )

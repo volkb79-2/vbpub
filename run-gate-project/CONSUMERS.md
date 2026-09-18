@@ -22,7 +22,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
      sweeps compare it; update by re-copying.
 2. **Declare lanes** in `run-gate.toml` next to it (final schema below —
    parsed by run-gate.py ONLY; no other tool may read this file). Shared
-   environment facts do NOT belong here if a repo-root central config
+   environment facts do NOT belong here if a repo-root `run-gate.root.toml`
    already defines them (see below).
 3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && ./run-gate.py --worktree {worktree} <lane>"]`.
@@ -90,7 +90,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    name — a mistyped override is a refusal, never a silent no-op.
 
    ```toml
-   # run-gate.toml — [profile]: central/project, whole-table shadowing
+   # run-gate.toml or run-gate.root.toml — [profile]: central/project,
+   # whole-table shadowing
    # (the SAME rule [history] uses — a project's own [profile] REPLACES a
    # central one entirely, never a per-key merge)
    [profile]
@@ -104,7 +105,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
 
-   # run-gate.toml — [footprint]: same whole-table shadowing rule; consumed
+   # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
+   # shadowing rule; consumed
    # by `doctor`'s staleness/drift check and by `footprint --write`
    [footprint]
    tolerance_pct = 25             # default 25; doctor WARNs when the live
@@ -116,9 +118,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
 ## Central defaults (vbpub monorepo)
 
-`run-gate.toml` at the REPO ROOT holds environment facts once for all
-internal projects (`[environments.<name>]`: `image`, optional
-`cgroup_slice`) and, since RG-16, SHARED LANES too: every package can use
+`run-gate.root.toml` at the REPO ROOT holds environment facts once for all
+internal projects (`[environments.<name>]`: `image`, optional `cgroup_slice`
+or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
 (whole table, no field merging — same rule for environments and lanes).
@@ -126,10 +128,10 @@ Internal assay lanes omit `assay_command` and `pins`; run-gate installs the
 selected worktree's `assay/` source in the lane environment, and the verdict
 records the runtime version and source commit. Explicit command + pin sidecars
 remain available for copied/external consumers. Copied-script repos (dstdns)
-are self-contained unless they grow their own root file.
+are self-contained unless they grow their own `run-gate.root.toml`.
 
 ```toml
-# repo-root run-gate.toml — one shared internal assay lane every package
+# repo-root run-gate.root.toml — one shared internal assay lane every package
 # inherits; the selected worktree's ../assay source is installed at run time:
 [lanes.assay-shared]
 kind = "assay"
@@ -203,8 +205,9 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own dire
 ```
 
 Environment facts resolution order (no silent fallbacks anywhere):
-`cgroup_slice` declared on the environment → `$CGROUP_PARENT_DEV_BACKGROUND`
-(hard error if absent); physical repo root DERIVED from `/proc/self/mountinfo`;
+`cgroup_slice` declared on the environment → the variable named by
+`cgroup_slice_env` → `$CGROUP_PARENT_DEV_GATES` (hard error if the selected
+source is absent); physical repo root DERIVED from `/proc/self/mountinfo`;
 LoadState pre-check only where systemd is reachable. Container lanes
 dual-mount the repo (physical + namespace views) for worktree gitfiles;
 outside the devcontainer namespace — where no second view is derivable — the
@@ -712,7 +715,7 @@ same-runner stale container, where `--fresh` owns the cleanup.
 ```toml
 [gates.test-runner]
 argv = ["bash", "-lc", '''cd /workspaces/dstdns &&
-    CGROUP_PARENT_DEV_BACKGROUND="${CGROUP_PARENT_DEV_BACKGROUND:?...}" &&
+    CGROUP_PARENT_DEV_GATES="${CGROUP_PARENT_DEV_GATES:?...}" &&
     ./run-gate.py gate --worktree {worktree}''']
 phase = "implementation"
 timeout_seconds = 4500
@@ -849,7 +852,7 @@ a note in the margin, never the product. The vbpub root `.gitignore` already
 carries the entry for internal projects; a **copied-script repo must add it**.
 
 Optionally declare how much trend to keep (default 10 commits per lane; a
-central `run-gate.toml` may declare it once and a project shadows it whole,
+central `run-gate.root.toml` may declare it once and a project shadows it whole,
 the R-09 rule):
 
 ```toml

@@ -71,18 +71,20 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - **project config** — `run-gate.toml` in the directory of the *invoked script
   path* (symlink's parent, never the symlink target's dir), CWD as fallback.
   Defines lanes; may also define environments.
-- **central config** — the nearest `run-gate.toml` in a STRICT ancestor
+- **central config** — the nearest `run-gate.root.toml` in a STRICT ancestor
   directory of the project dir. Optional. Defines shared environment facts
-  and (since Rev 3, RG-16) shared lanes inherited by every consumer.
+  and (since Rev 3, RG-16) shared lanes inherited by every consumer. An
+  ancestor `run-gate.toml` is always a project-local file and is ignored by
+  this lookup.
 - **environment** — a named container/host execution fact set: `image`
-  (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
+  (required), `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode` (optional, `"ephemeral"`
   or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
   environment-variable names). `host` and `bare-host` are both built-in
   names (never definable), and swapped roles in the host/bare-host flip
   (RG-43): `host` (the
   default) resolves to a synthetic environment — `image` is
   `DEFAULT_HOST_IMAGE` unless `$RUN_GATE_HOST_IMAGE` overrides it, no
-  `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_BACKGROUND`,
+  `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_GATES`,
   same as any named environment with no declared slice) — and runs through
   the normal container lane. `bare-host` means "no container": the literal
   pre-rev-24 `host` behavior, for the rare lane that must observe the real
@@ -103,7 +105,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `--allow-dirty` with the caveat that assay lanes still enforce assay's own
   clean-tree rule) and an ENVIRONMENT CONTRACT section naming every
   environment variable the tool reads and when it fails
-  (`CGROUP_PARENT_DEV_BACKGROUND`, `RUN_GATE_EXTRA_MOUNTS`,
+  (`CGROUP_PARENT_DEV_GATES`, `RUN_GATE_EXTRA_MOUNTS`,
   `RUN_GATE_MOUNT_ALIAS`) plus `--check-env` (R-24 drift sweep) (RG-7);
   unknown lane exits non-zero naming the
   known lanes and the config path. `--check-env` also runs the assay-lane
@@ -144,7 +146,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   not silently read as 1); a project `[history]` shadows the central one
   entirely, per R-09's rule.
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
-  `cgroup_slice` (optional non-empty string), `mode` (`"ephemeral"`
+  `cgroup_slice` (optional non-empty string) or `cgroup_slice_env` (optional
+  valid environment-variable name; the two are mutually exclusive), `mode` (`"ephemeral"`
   (default) | `"exec"` — RG-39/RG-43: ephemeral starts a fresh container
   per invocation, exec runs inside a PERSISTENT runner this tool never
   starts or stops), `container_name` (optional non-empty string — an
@@ -282,9 +285,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 ## 4. Environment-fact resolution (DERIVE / READ / FAIL — never invent)
 
 - `R-10` **Slice:** the environment's declared `cgroup_slice` wins (source
-  printed as declared policy); otherwise `$CGROUP_PARENT_DEV_BACKGROUND`
-  (required — absent is a hard error naming the var and the declared-slice
-  alternative). No literal, no fallback anywhere in the source.
+  printed as declared policy); otherwise the value of its declared
+  `cgroup_slice_env` variable is used; otherwise `$CGROUP_PARENT_DEV_GATES`
+  is used. A missing selected variable is a hard error naming that variable.
+  The repository-root tester environment declares
+  `cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"`, so consuming projects inherit
+  one policy while the host remains the authority for the value. No literal
+  slice fallback exists in the source.
 - `R-11` **LoadState pre-check** runs ONLY where systemd is reachable
   (`[ -d /run/systemd/system ]` equivalent); elsewhere skipped (containerized
   contexts ship a shim). Not-loaded → hard error warning about fail-open
@@ -342,7 +349,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
   run-gate-<repo>-<lane>-<pid>-<epoch> --cgroup-parent <slice> -e
-  CGROUP_PARENT_DEV_BACKGROUND=<slice> <mounts per R-23>
+  CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
   namespace paths — worktree gitfiles), `--rm` never used (explicit
@@ -391,7 +398,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   mutual exclusion): a lane declaring `environment = "host"` (or omitting it, where
   `host` is the schema default) resolves to `image = DEFAULT_HOST_IMAGE`
   (or `$RUN_GATE_HOST_IMAGE` if set), no `cgroup_slice` (resolves from
-  `$CGROUP_PARENT_DEV_BACKGROUND`, R-19's exec-mode "no fallbacks" rule
+  `$CGROUP_PARENT_DEV_GATES`, R-19's exec-mode "no fallbacks" rule
   applies identically), and runs through the exact same code path as any
   named `[environments.*]` entry — dual-mount, `--cgroup-parent`, budget,
   evidence-on-failure. A lane that genuinely needs the literal host (not a
@@ -449,7 +456,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - `R-24a` **Forwarding is DECLARED, never implicit (RG-23).** The ONLY
   variable an exec- or container-mode lane forwards without a declaration is
-  `CGROUP_PARENT_DEV_BACKGROUND` (infrastructure the tool itself owns).
+  `CGROUP_PARENT_DEV_GATES` (infrastructure the tool itself owns).
   Everything else must be named in the environment's `forward_env`.
   **Breaking change, and the migration it requires:** revisions before this
   one hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
@@ -559,7 +566,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   account against their slice's cgroupfs truth at admission time —
   `memory.current + declared <= memory.max` read from
   `$RUN_GATE_CGROUPFS_ROOT` (default `/sys/fs/cgroup`; systemd dash-nesting:
-  `dev-background.slice` → `dev.slice/dev-background.slice`). Over budget →
+  `dev-gates.slice` → `dev.slice/dev-gates.slice`). Over budget →
   refusal naming current usage, budget, declared need, and the overage. No
   derivable ceiling (`max`, hidden cgroupfs) → loud WARNING, admission by
   shared-infra rules only — naming WHY when the cause is a PRIVATE cgroup
@@ -1948,10 +1955,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
-No second parser of `run-gate.toml`; no judgment policy here (assay owns
-floors/R-levels/verdict meaning); no non-stdlib imports; no silent defaults
-for environment facts; no test definitions in consumer configs — the SSOT
-is `run-gate.toml`; release policy stays with the consumer (cmru/nyxloom).
+No second parser of run-gate documents (`run-gate.toml` and
+`run-gate.root.toml`); no judgment policy here (assay owns floors/R-levels/
+verdict meaning); no non-stdlib imports; no silent defaults for environment
+facts; no test definitions in consumer configs — the SSOT is the applicable
+run-gate document; release policy stays with the consumer (cmru/nyxloom).
 
 ## 7. Distribution — script first, wheel second (`R-31`)
 
@@ -1976,14 +1984,14 @@ independent and can legitimately disagree at any moment (`R-31`).
   off-limits this package). The assay-kind path ships construction-tested
   (fake-docker pins) with live proof deferred to ciu's adoption.
 - **A2 — central defaults:** shared environment facts live ONCE in a
-  repo-root `run-gate.toml` (vbpub root); projects inherit by the §1
-  discovery rule; lanes override per-lane (`memory`, declared
-  `cgroup_slice`). No per-project hardcoded slice names.
-- **A3 — slice policy:** `$CGROUP_PARENT_DEV_BACKGROUND` is the correct
-  ambient default for dev gates. `nyxloom-gates.slice` was intended for a
-  FUTURE prod instance outside this repo — nyxloom's dev gate migrates OFF
-  the hardcoded literal onto ambient resolution (a declared `cgroup_slice`
-  remains available for genuine per-environment policy).
+  repo-root `run-gate.root.toml` (vbpub root); projects inherit by the §1
+  discovery rule; lanes override per-lane (`memory`). The root tester
+  environment binds `cgroup_slice_env` to the host-provided gates variable;
+  no per-project hardcoded slice names.
+- **A3 — slice policy:** `$CGROUP_PARENT_DEV_GATES` is the repository's
+  central host binding for dev gates. `nyxloom-gates.slice` was intended for a
+  FUTURE prod instance outside this repo. A literal `cgroup_slice` remains
+  available only for a genuine per-environment policy override.
 
 ## 9. Open items (explicitly OUT of this package)
 

@@ -1524,7 +1524,7 @@ documented here because a consumer adopts the gate, not the keys):
 - **`.assay/verdict-ciu.json`** (gitignored) — the retained Assay verdict from
   the last gate run, used as review evidence.
 
-The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_BACKGROUND`
+The container slice for a gate run is resolved from `$CGROUP_PARENT_DEV_GATES`
 (no literal, no fallback) and verified `LoadState=loaded` before `docker run` where systemd is
 reachable (`[ -d /run/systemd/system ]`; containerized contexts skip the
 check — S18.3, P07 review fix).

@@ -15,7 +15,7 @@ The build stayed faithful to the intent; four things crystallized differently
 than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 
 1. **Central defaults (controller A2):** shared environment facts live in a
-   repo-root `run-gate.toml` — the NEAREST STRICT ANCESTOR of the project
+   repo-root `run-gate.root.toml` — the NEAREST STRICT ANCESTOR of the project
    dir. At P01 build time environments only (`[lanes.*]` there was
    rejected) — **superseded by RG-16 (`R-22`)**: central `[lanes.*]` are
    legal shared lanes every consuming project inherits BY NAME. Project
@@ -25,10 +25,13 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    script path WITHOUT resolving symlinks (a symlink's parent is the
    project), CWD as fallback. CWD-first (the handoff's wording) breaks
    `nyxloom/run-gate.py --list` from the repo root.
-3. **Slice policy (controller A3):** `$CGROUP_PARENT_DEV_BACKGROUND`
-   ambient resolution is the default; `cgroup_slice` may be DECLARED on an
-   environment as explicit policy (LoadState-verified where systemd is
-   reachable). nyxloom's dev gate migrated OFF its hardcoded
+3. **Slice policy (controller A3):** the repository root's central
+   `[environments.tester-unified]` binds `cgroup_slice_env` to
+   `$CGROUP_PARENT_DEV_GATES`, so every inheriting project uses the same
+   host-provided gates tier. `cgroup_slice` remains available for an explicit
+   per-environment override, and a project may use `cgroup_slice_env` when it
+   needs a different host variable; each resolved value is LoadState-verified
+   where systemd is reachable. nyxloom's dev gate migrated OFF its hardcoded
    `nyxloom-gates.slice` literal (prod-instance intent).
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
@@ -108,7 +111,7 @@ ciu checkpoint P07):
 1. The committed gate argv had **never executed end-to-end** — it was validated
    with a substitute interpreter — and carried **three defects**, each invisible
    to a green 100%-coverage suite:
-   - a missing `-e CGROUP_PARENT_DEV_BACKGROUND` (the image doesn't bake the
+   - a missing `-e CGROUP_PARENT_DEV_GATES` (the image doesn't bake the
      var; env-passthrough cannot pass what does not exist),
    - an unconditional `systemctl` LoadState check that can never pass in a
      containerized context (the devcontainer ships a *shim* systemctl that
@@ -210,7 +213,7 @@ These are the exact behaviors whose absence caused measured failures; they are
 the tool's reason to exist and MUST be implemented + tested:
 
 - **Cgroup placement:** resolve the slice ONLY from
-  `$CGROUP_PARENT_DEV_BACKGROUND` (no literal, no fallback — absent is a hard
+  `$CGROUP_PARENT_DEV_GATES` (no literal, no fallback — absent is a hard
   error, AGENTS §4.2a), pass it BOTH as `--cgroup-parent` AND `-e` into the
   container (suites read it ambiently). LoadState pre-check ONLY where systemd
   is reachable (`[ -d /run/systemd/system ]`) — containerized contexts skip it.
@@ -231,7 +234,7 @@ the tool's reason to exist and MUST be implemented + tested:
   version pins; those are verified from the pin file's directory and the
   declared version is checked in-lane.
 - **Env forwarding is declared, never implicit (RG-23):** a container/exec
-  lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
+  lane forwards `$CGROUP_PARENT_DEV_GATES` (the tool's own
   infrastructure) plus exactly the environment's `forward_env` list. The
   early hardcoded `MOCK_MODE`/`RUN_LIVE_TESTS` pair is GONE — consumers
   relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its

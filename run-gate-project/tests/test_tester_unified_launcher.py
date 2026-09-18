@@ -122,7 +122,7 @@ def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
-                  cgroup: str | None = "dev-background.slice",
+                  cgroup: str | None = "dev-gates.slice",
                   update_fails: bool = False, network: str | None = None,
                   accepted_network: str | None = None, execute_job: bool = False):
     bin_dir, log = _fake_docker(tmp_path)
@@ -143,9 +143,9 @@ def _run_launcher(tmp_path: Path, *args: str, pressure: float = 0.0,
     if accepted_network is not None:
         env["FAKE_DOCKER_NETWORK"] = accepted_network
     if cgroup is None:
-        env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+        env.pop("CGROUP_PARENT_DEV_GATES", None)
     else:
-        env["CGROUP_PARENT_DEV_BACKGROUND"] = cgroup
+        env["CGROUP_PARENT_DEV_GATES"] = cgroup
     proc = subprocess.run(
         [str(LAUNCHER), "--workdir", str(REPO / "run-gate-project"),
          "--evidence-dir", str(evidence),
@@ -173,7 +173,7 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     socket_gid = os.stat("/var/run/docker.sock").st_gid
 
     assert "run -d" in calls
-    assert "--cgroup-parent dev-background.slice" in calls
+    assert "--cgroup-parent dev-gates.slice" in calls
     assert "--cpus=3" in calls
     assert f"--group-add {socket_gid}" in calls
     assert f"-v {host_workspace}:{host_workspace}" in calls
@@ -211,9 +211,9 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
 @pytest.mark.parametrize(
     ("cgroup", "pressure", "message"),
     [
-        (None, 0.0, "CGROUP_PARENT_DEV_BACKGROUND is required"),
+        (None, 0.0, "CGROUP_PARENT_DEV_GATES is required"),
         ("not-a-slice", 0.0, "not a valid slice name"),
-        ("dev-background.slice", 5.01, "exceeds the launch ceiling 5.0"),
+        ("dev-gates.slice", 5.01, "exceeds the launch ceiling 5.0"),
     ],
 )
 def test_launcher_refuses_missing_or_unsafe_launch_facts(

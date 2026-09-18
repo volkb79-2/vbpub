@@ -1,6 +1,6 @@
 # mdt host-setup — dev-tier resource governance (cgroup v2 slices)
 
-Prepares a Docker host so devcontainers and the test/build/gate containers
+Prepares a Docker host so devcontainers, gate/lane containers, and long-running stacks
 they spawn run in **bounded systemd slices** instead of the host's default
 (unlimited) cgroup — the host-side counterpart of the
 `"--cgroup-parent=dev-interactive.slice"` runArg shipped in
@@ -124,7 +124,7 @@ available.
 |---|---:|---:|---:|---|---|
 | `dev.slice` (root estate) | `12G / 16G` | `700%` | `80% of host swap` | `60% of measured device` | One aggregate shield for production. |
 | ├─ `dev-interactive.slice` (IDE) | `3G / 5G` | `500%` | `80% of parent` | parent + per-container leaf | Keep the IDE/devcontainer responsive. |
-| ├─ `dev-background.slice` (stacks/tests) | `5G / 8G` | `500%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack and test load. |
+| ├─ `dev-background.slice` (long-running stacks) | `5G / 8G` | `500%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack load. |
 | ├─ `dev-gates.slice` (short lanes) | `800M / 1.5G` | `500%` | `80% of parent` | `60% of parent IOPS` | Bound disposable lanes without starving them. |
 | ├─ `dev-buildkitd.slice` (shared builder) | `1.5G / 2G` | `500%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
 | └─ `dev-memory_min_guaranteed.slice` (admitted floor) | optional | inherited | inherited | inherited | Share `MemoryMin` only when explicitly admitted. |
@@ -227,10 +227,10 @@ background have separate `WATCHER_INTERACTIVE_MEMORY_HIGH/MAX` and
 `WATCHER_BACKGROUND_MEMORY_HIGH/MAX` pairs, so one workload's setting is not
 silently reused for another. Today's run-gate lane containers pass no
 `--memory` of their own
-and are exactly the containers this watcher exists for — the moment any
-consumer honours `CGROUP_PARENT_DEV_GATES`, they land here instead of
+and are exactly the containers this watcher exists for — current gate
+consumers honour `CGROUP_PARENT_DEV_GATES`, so they land here instead of
 `dev-background.slice`, unlabelled, and this is what keeps one runaway
-lane from silently consuming the whole 6 G tier. This is the COARSE,
+lane from silently consuming the whole gates tier. This is the COARSE,
 tier-wide backstop — it COMPOSES with, and is not withdrawn by, a future
 daemon's per-lane placement caps (D-20/D-25): placement gives an exact
 ceiling to a lane that asks for one, this watcher still catches whatever a
@@ -271,14 +271,14 @@ Env keys (`host-setup.env.example`): `DEV_GATES_MEMORY_HIGH`/`_MAX`/
 real admission-usage data (design doc §7: "measure first"); also gets a
 runtime IOPS sub-ceiling from `DEV_SUBSLICE_IOPS_PCT` (dev.slice section, no
 separate gates-specific key). The three `WATCHER_*_MEMORY_HIGH/MAX` pairs are
-the reactive watcher's own per-slice knobs. `CGROUP_PARENT_DEV_GATES=dev-gates.slice` travels the same
-export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
-`templates/devcontainer.json`'s `containerEnv` — with the same consumer
-fallback rule (D-24), precisely stated: it protects a **devcontainer that
-was not rebuilt** (the variable is simply absent from its environment until
-recreated), **not** a **host that was not upgraded** (the slice unit
-missing). That case is **NOT self-announcing**: a `--cgroup-parent` naming
-a slice with no unit file fails **open** — systemd auto-creates an
+the reactive watcher's own per-slice knobs. `CGROUP_PARENT_DEV_GATES=dev-gates.slice`
+travels the same export path as `CGROUP_PARENT_DEV_INTERACTIVE`/`_BACKGROUND` —
+`templates/devcontainer.json`'s `containerEnv` — and gate consumers require it
+before launch. A devcontainer that was not rebuilt simply lacks the variable,
+so its gate tools fail before creating a container; it is not allowed to fall
+back to the background tier. A host that was not upgraded still needs the
+slice unit installed; a `--cgroup-parent` naming a slice with no unit file
+fails **open** — systemd auto-creates an
 unlimited transient slice and the container starts normally
 (`units/docker-scope-default-limits.conf.in`, `AGENTS.md`), which is
 exactly why the `docker-.scope.d` backstop exists. It is caught by
@@ -296,23 +296,17 @@ fully upgraded. Both operator sequences below end at `mdt-host-check.sh`;
 after that, rebuild/recreate the devcontainer too so the new variable
 actually reaches whatever tool inside it reads it (round-1 review S10).
 
-**Onward propagation — declared here, not yet read anywhere (round-1
-review S4, RW-32/D4).** `CGROUP_PARENT_DEV_GATES` is exported by this
-package; no downstream consumer reads it yet — each is its own future work,
-filed to the controller's backlog after this package merges, not part of
-this package:
-- `run-gate`'s own default `--cgroup-parent` (`run-gate-project/{SPEC.md,
-  CONSUMERS.md}`) — still documents only the interactive/background pair;
-- `cmru`'s tester-gate (`cmru/src/cmru/tester_gate.py`) — forwards only
-  `CGROUP_PARENT_DEV_BACKGROUND` into spawned gate containers;
-- `srdm`'s gate script (`shared-ramdisk-depot-manager/tools/
-  cgroup-parent.sh`) — exports only the background-tier variable.
-
-Until one of these adopts it, every gate/lane container keeps landing in
-`dev-background.slice` (today's placement, per D-24) regardless of whether
-a host has `dev-gates.slice` installed — which is exactly what this
-session's own `run-gate.py smoke` gate run shows in its argv (`--cgroup-
-parent dev-background.slice`).
+**Onward propagation is now wired.** The host setup exports
+`CGROUP_PARENT_DEV_GATES`, and the gate consumers resolve and validate it
+before launch: `run-gate`, CMRU's `tester-gate`, Assay's tester-unified gate
+driver, the `tester-unified/run` launcher, SRDM's gate helper, and the
+debian-install-v2 VM runner. Their container argv carries the same value as
+both `--cgroup-parent` and the in-container `CGROUP_PARENT_DEV_GATES` fact.
+CMRU and tester-unified also forward `CGROUP_PARENT_DEV_BACKGROUND` only when
+a gate test deliberately starts a long-running application stack; that stack
+then remains in its background tier. Missing gate placement is a hard error,
+so no consumer silently returns to `dev-background.slice` or Docker's
+unbounded default.
 
 **The socket carrier's mount (RW-31/A2, D-30, M5).** `templates/
 devcontainer.json` bind-mounts `/run/cgprofile` (the profiler daemon's
@@ -690,7 +684,8 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 ## Verification
 
 `mdt-host-check.sh` checks: `memory_recursiveprot` mount flag, unit presence +
-activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`),
+activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`,
+`dev-gates.slice`, `dev-buildkitd.slice`),
 effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
 `dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's

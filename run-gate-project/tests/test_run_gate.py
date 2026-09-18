@@ -55,7 +55,7 @@ run_gate = importlib.util.module_from_spec(_spec)
 sys.modules["run_gate"] = run_gate
 _spec.loader.exec_module(run_gate)
 
-CGROUP_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+CGROUP_VAR = "CGROUP_PARENT_DEV_GATES"
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def _shared_lock_dir() -> Path:
 @pytest.fixture(autouse=True)
 def ambient_cgroup(monkeypatch):
     """Tests declare slices explicitly or set the var themselves."""
-    monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+    monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
 
 
 @pytest.fixture(autouse=True)
@@ -464,6 +464,7 @@ class TestUxSurface:
         proc = run_tool(proj, "--help")
         assert proc.returncode == 0
         assert f"rev {run_gate.__revision__}" in proc.stdout
+        assert "run-gate.root.toml" in proc.stdout
         assert "suite" in proc.stdout and "environment=tester-unified" in proc.stdout
 
     def test_no_args_prints_usage(self, tmp_path):
@@ -674,12 +675,13 @@ class TestConfigValidation:
             run_gate.resolve_environment(cfg["lanes"]["a"], "a", cfg, central,
                                          cfg_path, cpath)
         assert "missing-env" in str(exc.value)
+        assert run_gate.ROOT_CONFIG_NAME in str(exc.value)
 
     def test_central_lanes_inherited_and_shadowed(self, tmp_path):
         """RG-16: central configs may define shared lanes; the project
         shadows by name WHOLESALE (no field merging)."""
         repo = make_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
             schema_version = 1
             [lanes.shared]
             kind = "command"
@@ -712,7 +714,7 @@ class TestConfigValidation:
 
     def test_central_lane_missing_pin_sidecar_refuses_for_consumer(self, tmp_path):
         repo = make_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
             schema_version = 1
             [lanes.assay-shared]
             kind = "assay"
@@ -772,7 +774,7 @@ class TestConfigValidation:
 
     def test_central_lane_malformed_still_fails_loudly(self, tmp_path):
         repo = make_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(
             "schema_version = 1\n[lanes.bad]\nkind = 'makefile'\n")
         proj = make_project(repo, SIMPLE_LANE)
         with pytest.raises(run_gate.GateError) as exc:
@@ -781,7 +783,7 @@ class TestConfigValidation:
 
     def test_invoking_a_shared_central_lane_end_to_end(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(textwrap.dedent("""\
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
             schema_version = 1
             [lanes.shared]
             kind = "command"
@@ -841,6 +843,67 @@ class TestNoSilentDefaults:
         run_call = docker_runs(log)[0]
         assert run_call[run_call.index("--cgroup-parent") + 1] == "declared.slice"
 
+    def test_declared_slice_env_is_central_binding(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        monkeypatch.setenv("TEST_GATE_SLICE", "declared-by-env.slice")
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice_env = "TEST_GATE_SLICE"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "echo hi"]
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        run_call = docker_runs(log)[0]
+        assert run_call[run_call.index("--cgroup-parent") + 1] == \
+            "declared-by-env.slice"
+
+    def test_declared_slice_env_missing_fails_naming_it(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TEST_GATE_SLICE", raising=False)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice_env = "TEST_GATE_SLICE"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        cfg, cfg_path, central, cpath = run_gate.load_config(proj)
+        env, src = run_gate.resolve_environment(cfg["lanes"]["suite"], "suite",
+                                                cfg, central, cfg_path, cpath)
+        with pytest.raises(run_gate.GateError, match="TEST_GATE_SLICE"):
+            run_gate.resolve_slice(env, src)
+
+    def test_slice_name_and_slice_env_cannot_both_be_declared(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice = "declared.slice"
+            cgroup_slice_env = "TEST_GATE_SLICE"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        with pytest.raises(run_gate.GateError, match="only one of"):
+            run_gate.load_config(proj)
+
     def test_loadstate_checked_only_where_systemd_reachable(self, tmp_path, monkeypatch):
         """systemd reachable + probe says not-loaded -> loud failure."""
         real_run = subprocess.run
@@ -854,7 +917,7 @@ class TestNoSilentDefaults:
         monkeypatch.setattr(run_gate.os.path, "isdir", lambda p: True)
         monkeypatch.setattr(run_gate.subprocess, "run", spy)
         with pytest.raises(run_gate.GateError) as exc:
-            run_gate.verify_slice_loaded("dev-background.slice")
+            run_gate.verify_slice_loaded("dev-gates.slice")
         assert "not LoadState=loaded" in str(exc.value)
 
     def test_loadstate_probe_output_must_be_loaded(self, tmp_path, monkeypatch):
@@ -922,8 +985,8 @@ class TestArgvConstruction:
         idx = lambda flag: run_call.index(flag)  # noqa: E731
         assert run_call[0:3] == ["run", "-d", "--name"]
         assert run_call[idx("--name") + 1].startswith("run-gate-repo-suite-")
-        assert run_call[idx("--cgroup-parent") + 1] == "dev-background.slice"
-        assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-background.slice"
+        assert run_call[idx("--cgroup-parent") + 1] == "dev-gates.slice"
+        assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-gates.slice"
         # REAL derivation (subprocess can't see module monkeypatches): /tmp is
         # bind-mounted here, so physical_path must resolve it via mountinfo.
         phys = str(run_gate.physical_path(repo))
@@ -1335,7 +1398,7 @@ class TestCentralDefaults:
     """
 
     def _central(self, repo: Path):
-        (repo / "run-gate.toml").write_text(self.CENTRAL)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(self.CENTRAL)
         commit_all(repo, "central env facts")
 
     def test_ancestor_provides_environment(self, tmp_path, monkeypatch):
@@ -1356,6 +1419,7 @@ class TestCentralDefaults:
         assert proc.returncode == 0, proc.stderr
         assert "tester-unified:local" in docker_runs(log)[0]
         assert "central" in proc.stdout  # source named transparently
+        assert run_gate.ROOT_CONFIG_NAME in proc.stdout
 
     def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -1380,10 +1444,10 @@ class TestCentralDefaults:
 
     def test_nearest_ancestor_wins(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(self.CENTRAL)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(self.CENTRAL)
         nested = repo / "group"
         nested.mkdir()
-        (nested / "run-gate.toml").write_text("""\
+        (nested / run_gate.ROOT_CONFIG_NAME).write_text("""\
             schema_version = 1
             [environments.tester-unified]
             image = "nearest:9"
@@ -1403,6 +1467,44 @@ class TestCentralDefaults:
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
         assert "nearest:9" in docker_runs(Path(tmp_path / "docker-calls.log"))[0]
+
+        _cfg, _cfg_path, _central, central_path = run_gate.load_config(proj)
+        assert central_path == nested / run_gate.ROOT_CONFIG_NAME
+
+    def test_ancestor_project_config_is_not_shared(self, tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / run_gate.CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "wrong-project-config:1"
+        """))
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """)
+
+        cfg, _cfg_path, central, central_path = run_gate.load_config(proj)
+        assert cfg["lanes"]["suite"]["environment"] == "tester-unified"
+        assert central == {"environments": {}}
+        assert central_path is None
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(cfg["lanes"]["suite"], "suite", cfg,
+                                         central, proj / run_gate.CONFIG_NAME,
+                                         central_path)
+        assert run_gate.ROOT_CONFIG_NAME in str(exc.value)
+
+    def test_project_only_copy_works_without_root_config(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        assert not (repo / run_gate.ROOT_CONFIG_NAME).exists()
+        cfg, cfg_path, central, central_path = run_gate.load_config(proj)
+        assert cfg_path == proj / run_gate.CONFIG_NAME
+        assert central_path is None
+        assert central == {"environments": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -1853,7 +1955,7 @@ class TestExecDisclosure:
     def test_live_run_discloses_slice_and_redacted_argv(
             self, tmp_path, monkeypatch):
         repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
-        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
         monkeypatch.setenv("SECRET_TOKEN", "hunter2")
         cfg = proj / "run-gate.toml"
         cfg.write_text(cfg.read_text().replace(
@@ -1861,8 +1963,8 @@ class TestExecDisclosure:
             'mode = "exec"\n    forward_env = ["SECRET_TOKEN"]'))
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
-        assert ("slice dev-background.slice "
-                "($CGROUP_PARENT_DEV_BACKGROUND, naming-only)") in proc.stdout
+        assert ("slice dev-gates.slice "
+                "($CGROUP_PARENT_DEV_GATES, naming-only)") in proc.stdout
         assert "docker argv:" in proc.stdout
         assert "SECRET_TOKEN=<redacted>" in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
@@ -1870,7 +1972,7 @@ class TestExecDisclosure:
     def test_dry_run_prints_same_argv_and_execs_nothing(
             self, tmp_path, monkeypatch):
         repo, proj, log = self._runner_up(tmp_path, monkeypatch)
-        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
         monkeypatch.setenv("SECRET_TOKEN", "hunter2")
         cfg = proj / "run-gate.toml"
         cfg.write_text(cfg.read_text().replace(
@@ -1892,17 +1994,17 @@ class TestExecDisclosure:
         cfg = proj / "run-gate.toml"
         cfg.write_text(cfg.read_text().replace(
             'mode = "exec"',
-            'mode = "exec"\n    cgroup_slice = "dev-background.slice"'))
+            'mode = "exec"\n    cgroup_slice = "dev-gates.slice"'))
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
         assert "WARNING: cgroup_slice on exec environment" in proc.stdout
         assert "naming-only" in proc.stdout
-        assert "slice dev-background.slice (declared" in proc.stdout
+        assert "slice dev-gates.slice (declared" in proc.stdout
 
     def test_resources_on_exec_lane_warned_not_enforced(
             self, tmp_path, monkeypatch):
         repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
-        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
         cfg = proj / "run-gate.toml"
         cfg.write_text(cfg.read_text().replace(
             "clean_tree = false",
@@ -2228,7 +2330,7 @@ class TestUsageEnvironmentContract:
         proj = make_project(repo, SIMPLE_LANE)
         proc = run_tool(proj, "--help")
         assert proc.returncode == 0, proc.stderr
-        for var in ("CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_EXTRA_MOUNTS",
+        for var in ("CGROUP_PARENT_DEV_GATES", "RUN_GATE_EXTRA_MOUNTS",
                     "RUN_GATE_MOUNT_ALIAS"):
             assert var in proc.stdout
         assert "still enforce assay's own clean-tree rule" in proc.stdout
@@ -2805,7 +2907,7 @@ class TestFailingContainerEvidence:
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
     """Reviewer's cgroup-placement probe: exec-mode must forward
-    CGROUP_PARENT_DEV_BACKGROUND into the persistent runner so nested
+    CGROUP_PARENT_DEV_GATES into the persistent runner so nested
     docker run calls inherit the bounded slice."""
     repo = make_repo(tmp_path)
     proj = make_project(repo, EXEC_LANE)
@@ -3399,8 +3501,8 @@ class TestDryRun:
 # ---------------------------------------------------------------------------
 
 def _fake_cgroupfs(tmp_path: Path, *, max_raw: str, current: str) -> Path:
-    """A cgroupfs root exposing dev.slice/dev-background.slice numbers."""
-    sl = tmp_path / "cgfs" / "dev.slice" / "dev-background.slice"
+    """A cgroupfs root exposing dev.slice/dev-gates.slice numbers."""
+    sl = tmp_path / "cgfs" / "dev.slice" / "dev-gates.slice"
     sl.mkdir(parents=True, exist_ok=True)
     (sl / "memory.max").write_text(max_raw + "\n")
     (sl / "memory.current").write_text(current + "\n")
@@ -4360,7 +4462,7 @@ class TestDoctor:
         proc = run_tool(proj, "doctor")
         assert proc.returncode == 0, proc.stdout
         assert "[OK] docker:" in proc.stdout
-        assert f"[OK] slice for env tester-unified: dev-background.slice" \
+        assert f"[OK] slice for env tester-unified: dev-gates.slice" \
             in proc.stdout
         assert "[OK] git: " in proc.stdout
         assert "check(s):" in proc.stdout and ", 0 failure(s)" in proc.stdout
@@ -4430,7 +4532,7 @@ class TestDoctor:
         """
         proj = make_project(repo, cfg)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
+        monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
         proc = run_tool(proj, "doctor")
         assert "slice for env host" in proc.stdout
         monkeypatch.delenv(CGROUP_VAR, raising=False)
@@ -4478,12 +4580,12 @@ class TestDoctor:
         cfg = EXEC_LANE.replace(
             'mode = "exec"',
             'mode = "exec"\n    container_name = "ext-runner"\n'
-            '    cgroup_slice = "dev-background.slice"')
+            '    cgroup_slice = "dev-gates.slice"')
         proj = make_project(repo, cfg)
         fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "doctor")
         assert proc.returncode == 0, proc.stdout
-        assert ("[OK] slice for env runner (exec): dev-background.slice "
+        assert ("[OK] slice for env runner (exec): dev-gates.slice "
                 "(declared") in proc.stdout
 
     def test_verify_slice_loaded_survives_missing_systemctl(self, monkeypatch,
@@ -4497,8 +4599,8 @@ class TestDoctor:
             raise FileNotFoundError(2, "No such file or directory", "systemctl")
 
         monkeypatch.setattr(run_gate.subprocess, "run", boom)
-        run_gate.verify_slice_loaded("dev-background.slice")  # must not raise
-        assert "cannot LoadState-check dev-background.slice" in capsys.readouterr().err
+        run_gate.verify_slice_loaded("dev-gates.slice")  # must not raise
+        assert "cannot LoadState-check dev-gates.slice" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -7032,7 +7134,7 @@ class TestHistoryConfigPolicy:
     def test_project_history_shadows_central(self, tmp_path):
         repo, proj = make_history_repo(
             tmp_path, HISTORY_LANE + "\n[history]\nkeep = 3\n")
-        (repo / "run-gate.toml").write_text(
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(
             "schema_version = 1\n[history]\nkeep = 99\n")
         commit_all(repo, "central history policy")
         cfg, cfg_path, central, central_path = run_gate.load_config(proj)
@@ -7041,7 +7143,7 @@ class TestHistoryConfigPolicy:
 
     def test_central_history_is_inherited_when_project_is_silent(self, tmp_path):
         repo, proj = make_history_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(
             "schema_version = 1\n[history]\nkeep = 4\n")
         commit_all(repo, "central history policy")
         cfg, cfg_path, central, central_path = run_gate.load_config(proj)
@@ -7499,7 +7601,7 @@ class TestFootprintConfigPolicy:
     def test_central_footprint_table_is_inherited_when_project_is_silent(
             self, tmp_path):
         repo, proj = make_history_repo(tmp_path)
-        (repo / "run-gate.toml").write_text(
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(
             "schema_version = 1\n[footprint]\nmax_age_days = 7\n")
         commit_all(repo, "central footprint policy")
         cfg, cfg_path, central, central_path = run_gate.load_config(proj)

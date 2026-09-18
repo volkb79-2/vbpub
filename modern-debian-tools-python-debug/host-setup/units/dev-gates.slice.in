@@ -13,7 +13,7 @@ Before=slices.target
 # D-19/D-20/D-25, and memory `soulmask-memory-pressure-findings.md` (the
 # 2026-08-04 finding this slice fixes: "gates share dev-background.slice
 # with the ~4 GiB dstdns stack ... the user's own instinct was a separate
-# dev-gates.slice; that remains unbuilt").
+# dev-gates.slice; this shipped sibling is the resulting capacity object").
 #
 # All lane containers AND every placed lane leaf rg-<token> (D-20 — exec and
 # bare-host lanes whose pids the daemon migrates out of a container scope
@@ -81,8 +81,8 @@ MemoryZSwapWriteback=@DEV_GATES_ZSWAP_WRITEBACK@
 # Containers join via an explicit `docker run --cgroup-parent=dev-gates.slice`
 # / compose `cgroup_parent: dev-gates.slice` (run-gate's ephemeral-lane create
 # path — see run-gate-project/, out of this project's scope), or
-# $CGROUP_PARENT_DEV_GATES exported into whatever creates the lane container
-# (D-24: unset → falls back to dev-background.slice, today's placement). No
-# Docker daemon-wide fallback into this tier, same reasoning as
+# $CGROUP_PARENT_DEV_GATES exported into whatever creates the lane container.
+# Consumers must fail closed when it is absent; there is no fallback to
+# dev-background.slice and no Docker daemon-wide fallback into this tier, same reasoning as
 # dev-memory_min_guaranteed.slice: landing here is always a deliberate
 # per-lane choice, never an accident of an unconfigured default.
