@@ -4,16 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
-## [1.63.0-r1] - 2026-09-18
-<!-- cmru: generated -->
-<!-- cmru: source-end=17640a6b8cb1b42aeeb7a16aa5f4fd1e393173e4 -->
-
-### Added
-- feat(skills): add canonical estate skills; promote D-496 measurement rule to AUTHORING.md (99edfbe6)
-
-### Fixed
-- fix(skills): repair defects found by independent review of new canonical skills (abcb6e27)
-
 ## [1.62.0-r3] - 2026-09-13
 <!-- cmru: generated -->
 <!-- cmru: source-end=c92b522d30b98cad4813f0c1c119e3e7d18498fd -->

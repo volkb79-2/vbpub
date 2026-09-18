@@ -8,7 +8,7 @@ variable "NAMESPACE" {
 
 // One version is released only when npm, PyPI, and MCR all provide it.
 variable "PLAYWRIGHT_VERSION" {
-  default = "1.63.0"
+  default = "1.62.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -38,7 +38,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.63.0-r1"
+  default = "1.62.0-r3"
 }
 
 variable "OCI_SOURCE" {
