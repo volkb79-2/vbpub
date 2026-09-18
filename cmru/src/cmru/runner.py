@@ -572,12 +572,21 @@ def main(argv: Optional[list[str]] = None) -> None:
     config_path = _resolve_config(args.config)
     loaded = load_config(config_path)
     projects, project_order = loaded[1], loaded[2]
-    context = resolve_invocation_context(config_path)
+    if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
+        context_project = next(iter(projects))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(config_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
     try:
         names = select_target_names(
             args.target, projects, project_order,
-            context_project=context.project_name,
-            estate_scope=context.scope == "estate",
+            context_project=context_project,
+            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         parser.error(str(exc))

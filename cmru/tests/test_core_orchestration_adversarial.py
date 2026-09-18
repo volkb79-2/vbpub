@@ -42,7 +42,7 @@ def test_config_scalar_env_rejects_nested_value_instead_of_stringifying_it(capsy
     with pytest.raises(SystemExit) as exc:
         config._scalar_env({"CMRU_MEMORY": {"value": "3g"}}, "env")
     assert exc.value.code == 2
-    assert "scalar values" in capsys.readouterr().out
+    assert "scalar values" in capsys.readouterr().err
 
 
 def test_config_release_policy_rejects_unknown_artifacts_and_invalid_tag_policy():
@@ -64,6 +64,13 @@ def test_config_project_override_wins_over_estate_default(tmp_path):
     orchestration = tmp_path / "cmru.orchestration.toml"
     orchestration.write_text(
         """schema_version = 1
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
 [orchestration]
 project_order = [\"alpha\"]
 default_projects = [\"alpha\"]
@@ -83,13 +90,6 @@ ghcr_delete_packages = []
     project_dir.mkdir()
     (project_dir / "cmru.toml").write_text(
         """schema_version = 1
-[github]
-owner = \"octocat\"
-repo = \"demo\"
-owner_type = \"user\"
-[targets]
-host = \"github\"
-registry = []
 [env]
 CMRU_TESTER_CPUS = \"2\"
 [project]
@@ -118,7 +118,7 @@ commands = [{ label = \"push\", argv = [\"true\"], cwd = \".\" }]
         orchestration.read_text(encoding="utf-8").replace(
             'execution_mode = "project-first"\n',
             'execution_mode = "project-first"\n[orchestration.defaults.env]\nCMRU_TESTER_CPUS = "1"\n',
-        ),
+    ),
         encoding="utf-8",
     )
     _root, projects, *_ = cli.load_config(orchestration)
@@ -245,7 +245,7 @@ def test_transaction_run_child_propagates_child_exit_and_transaction_identity(mo
         seen["env"] = kwargs["env"]
         return SimpleNamespace(returncode=17)
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
-    assert transaction.run_child(workspace, ["--project", "alpha"], verb="build") == 17
-    assert seen["argv"] == ["/opt/cmru", "build", "--_transaction-child", "--project", "alpha"]
+    assert transaction.run_child(workspace, ["alpha"], verb="build") == 17
+    assert seen["argv"] == ["/opt/cmru", "build", "--_transaction-child", "alpha"]
     assert seen["env"][transaction.CHILD_ENV] == "1"
     assert seen["env"][transaction.BRANCH_ENV] == workspace.branch

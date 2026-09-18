@@ -90,10 +90,10 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
 def test_child_release_args_removes_caller_paths_and_adds_snapshot_relative_config(tmp_path):
     config = tmp_path / "cmru.toml"; config.write_text("x")
     args = cli._child_release_args(
-        ["--config", "/caller/cmru.toml", "--resume", "/tmp/w", "--abandon=all-previous", "--project", "demo"],
+        ["--config", "/caller/cmru.toml", "--resume", "/tmp/w", "--abandon=all-previous", "demo"],
         config, tmp_path,
     )
-    assert args == ["--project", "demo", "--config", "cmru.toml"]
+    assert args == ["demo", "--config", "cmru.toml"]
     with pytest.raises(ValueError, match="tracked inside"):
         cli._child_release_args([], tmp_path.parent / "outside.toml", tmp_path)
 

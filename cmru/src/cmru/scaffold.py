@@ -15,9 +15,51 @@ import sys
 from importlib import resources
 from pathlib import Path
 
+from cmru import exit_codes
+from cmru.cli_support import write_config_diagnostic
+
 _ID_RE = re.compile(r"[a-z][a-z0-9-]*")
 _GIT_OWNER_REPO_RE = re.compile(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$")
 _TEMPLATE_DIR = "templates"
+_ARTIFACT_TYPES = ("wheel", "tarball", "bundle", "oci-image")
+
+
+def _init_error(message: str) -> "NoReturn":
+    write_config_diagnostic(message)
+    raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _required_prompt(message: str, default: str = "") -> str:
+    value = _prompt(message, default).strip()
+    if not value:
+        _init_error(f"init: {message.rstrip(':')} is required")
+    return value
+
+
+def _yes_no(value: str, message: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized not in {"y", "yes", "n", "no"}:
+        _init_error(f"init: {message} must be yes or no")
+    return normalized in {"y", "yes"}
+
+
+def _artifact_selection(value: str) -> list[str]:
+    raw = value.strip().lower()
+    if raw == "all":
+        return list(_ARTIFACT_TYPES)
+    parts = [part.strip() for part in raw.split(",")]
+    if any(not part for part in parts):
+        _init_error("init: artifact types cannot contain an empty item")
+    if len(set(parts)) != len(parts):
+        _init_error("init: artifact types cannot contain duplicates")
+    unknown = [part for part in parts if part not in _ARTIFACT_TYPES]
+    if unknown:
+        _init_error(
+            "init: artifact types must be comma-separated values from "
+            + ", ".join(_ARTIFACT_TYPES)
+            + " or all"
+        )
+    return parts
 
 
 def _template(name: str) -> str:
@@ -59,56 +101,53 @@ def _ask_project(root: Path, interactive: bool) -> dict:
     else:
         project_id = default_id
     if not _ID_RE.fullmatch(project_id):
-        raise SystemExit(f"init: project id {project_id!r} must match {_ID_RE.pattern}")
+        _init_error(f"init: project id {project_id!r} must match {_ID_RE.pattern}")
     description = (
         _prompt(f"Description for {project_id}", f"The {project_id} project.")
         if interactive
         else f"The {project_id} project."
     )
-    artifact_type = "wheel"
     if interactive:
-        artifact_type = _prompt(
-            "Artifact template (wheel|tarball|bundle|oci-image|generic)", "wheel"
-        ).strip().lower()
-    if artifact_type == "generic":
-        artifact_type = _prompt(
-            "Generic artifact inventory (comma-separated wheel|tarball|bundle|oci-image)",
-            "bundle",
-        ).strip().lower()
-    if artifact_type not in {"wheel", "tarball", "bundle", "oci-image"}:
-        raise SystemExit(
-            "init: artifact template must be wheel, tarball, bundle, oci-image, or generic"
+        project_type = _required_prompt("Project type (python|generic)").lower()
+    else:
+        project_type = "python"
+    if project_type not in {"python", "generic"}:
+        _init_error("init: project type must be python or generic")
+    artifact_selection = _prompt(
+        "Artifact types (comma-separated wheel|tarball|bundle|oci-image, all, or generic)", ""
+    ) if interactive else "wheel"
+    generic_commands = project_type == "generic"
+    if artifact_selection.strip().lower() == "generic":
+        artifact_selection = _required_prompt(
+            "Generic artifact types (comma-separated wheel|tarball|bundle|oci-image or all)"
         )
+        generic_commands = True
+    artifacts = _artifact_selection(artifact_selection)
+    if not artifacts:
+        _init_error("init: at least one artifact type is required")
+    if any(item != "wheel" for item in artifacts):
+        generic_commands = True
     if interactive:
-        git_tag = _prompt("CMRU creates release tags? (yes/no)", "yes").lower() in {
-            "y", "yes"
-        }
-        if artifact_type == "wheel":
+        git_tag = _yes_no(
+            _required_prompt("CMRU creates release tags? (yes/no)"),
+            "release tag policy",
+        )
+        if not generic_commands:
             build_argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]
             push_argv = [
                 "python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", project_id,
                 "--cwd", ".", "--notes-env", f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES",
             ]
         else:
-            build_text = _prompt(
-                "Build command (shell words; required for this template)", ""
-            )
-            push_text = _prompt(
-                "Publish command (shell words; required for this template)", ""
-            )
-            if not build_text or not push_text:
-                raise SystemExit("init: non-wheel templates require explicit build and publish commands")
-            build_argv = shlex.split(build_text)
-            push_argv = shlex.split(push_text)
+            build_argv = shlex.split(_required_prompt("Build command (shell words; required)"))
+            push_argv = shlex.split(_required_prompt("Publish command (shell words; required)"))
     else:
-        git_tag = True
-        build_argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."]
-        push_argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", project_id, "--cwd", "."]
+        _init_error("init: adoption decisions must be collected interactively")
     return {
         "id": project_id,
         "description": description,
         "config": f"{project_id}/cmru.toml",
-        "artifact_type": artifact_type,
+        "artifacts": artifacts,
         "git_tag": git_tag,
         "build_argv": build_argv,
         "push_argv": push_argv,
@@ -124,7 +163,8 @@ def _expected_template_revision() -> int:
 
 def render_project_toml(
     *, project_id: str, description: str, owner: str, repo: str, owner_type: str,
-    generated_by: str, centralized: bool = False, artifact_type: str = "wheel",
+    generated_by: str, centralized: bool = False, artifacts: list[str] | None = None,
+    artifact_type: str | None = None,
     build_argv: list[str] | None = None, push_argv: list[str] | None = None,
     git_tag: bool = True,
 ) -> str:
@@ -140,6 +180,7 @@ def render_project_toml(
     text = text.replace("template_revision = 4",
                         f"template_revision = {_expected_template_revision()}")
     notes_key = f"{project_id.upper().replace('-', '_')}_RELEASE_NOTES"
+    selected_artifacts = artifacts or ([artifact_type] if artifact_type else ["wheel"])
     for token, value in (
         ("@@OWNER@@", owner),
         ("@@REPO@@", repo),
@@ -149,7 +190,7 @@ def render_project_toml(
         ("@@SCM_DIST@@", project_id),
         ("@@NOTES_ENV_KEY@@", notes_key),
         ("@@GENERATED_BY@@", generated_by),
-        ("artifacts = [\"wheel\"]", f'artifacts = ["{artifact_type}"]'),
+        ("artifacts = [\"wheel\"]", "artifacts = " + json.dumps(selected_artifacts)),
         ("git_tag = true", f"git_tag = {'true' if git_tag else 'false'}"),
     ):
         text = text.replace(token, value)
@@ -195,7 +236,7 @@ def render_orchestration_toml(
 def collect_plan(argv: list[str], root: Path) -> dict:
     """Parse `cmru init` options and collect the complete adoption plan."""
     if any(a == "--project" or a.startswith("--project=") for a in argv):
-        raise SystemExit("init: --project was removed; run `cmru init` and use the adoption wizard")
+        _init_error("init: --project was removed; run `cmru init` and use the adoption wizard")
     interactive = True
 
     def flag(name: str) -> str | None:
@@ -212,13 +253,24 @@ def collect_plan(argv: list[str], root: Path) -> dict:
 
     root = Path(path_flag or root).expanduser().resolve()
     if not root.exists() or not root.is_dir():
-        raise SystemExit(f"init: adoption path is not an existing directory: {root}")
+        _init_error(f"init: adoption path is not an existing directory: {root}")
     git_owner, git_repo = _git_owner_repo(root)
-    repo = repo_flag or git_repo or root.name
-    owner = owner_flag or git_owner
-    if interactive and not owner:
-        owner = _prompt("GitHub owner", owner or "your-github-owner")
-    owner_type = "user"
+    if owner_flag is None:
+        owner = _required_prompt("GitHub owner", git_owner)
+    else:
+        owner = owner_flag.strip()
+        if not owner:
+            _init_error("init: GitHub owner is required")
+    if repo_flag is None:
+        repo = _required_prompt("GitHub repository", git_repo)
+    else:
+        repo = repo_flag.strip()
+        if not repo:
+            _init_error("init: GitHub repository is required")
+    owner_type_flag = flag("--owner-type")
+    owner_type = owner_type_flag or _required_prompt("GitHub owner type (user|org)")
+    if owner_type not in {"user", "org"}:
+        _init_error("init: GitHub owner type must be user or org")
 
     if layout is None and interactive:
         print("Layout:\n  1) single project (one cmru.toml, no orchestration file)\n"
@@ -226,7 +278,7 @@ def collect_plan(argv: list[str], root: Path) -> dict:
         layout = _prompt("Choose", "1")
     layout = {"1": "single", "2": "monorepo"}.get(str(layout), str(layout))
     if layout not in ("single", "monorepo"):
-        raise SystemExit(f"init: unknown layout {layout!r} (single|monorepo)")
+        _init_error(f"init: unknown layout {layout!r} (single|monorepo)")
 
     projects: list[dict] = []
     if layout == "single":
@@ -235,11 +287,11 @@ def collect_plan(argv: list[str], root: Path) -> dict:
             project_path = (root / project_path).resolve()
         project_path = project_path.expanduser().resolve()
         if not project_path.is_dir():
-            raise SystemExit(f"init: project folder is not an existing directory: {project_path}")
+            _init_error(f"init: project folder is not an existing directory: {project_path}")
         try:
             project_path.relative_to(root)
         except ValueError:
-            raise SystemExit(f"init: project folder escapes CMRU root: {project_path}")
+            _init_error(f"init: project folder escapes CMRU root: {project_path}")
         project = _ask_project(project_path, interactive)
         root = project_path
         project["folder"] = project_path
@@ -252,13 +304,13 @@ def collect_plan(argv: list[str], root: Path) -> dict:
             if not folder.is_absolute():
                 folder = (root / folder).resolve()
             if not folder.is_dir():
-                raise SystemExit(f"init: project folder is not an existing directory: {folder}")
+                _init_error(f"init: project folder is not an existing directory: {folder}")
             project = _ask_project(folder, interactive)
             project["folder"] = folder
             try:
                 project["config"] = folder.relative_to(root).joinpath("cmru.toml").as_posix()
             except ValueError:
-                raise SystemExit(f"init: project folder escapes CMRU root: {folder}")
+                _init_error(f"init: project folder escapes CMRU root: {folder}")
             if project["config"] == "cmru.toml":
                 project["config"] = "cmru.toml"
             projects.append(project)
@@ -266,12 +318,12 @@ def collect_plan(argv: list[str], root: Path) -> dict:
     for p in projects:
         p.setdefault("description", f"The {p['id']} project.")
         p.setdefault("config", f"{p['id']}/cmru.toml")
-        p.setdefault("artifact_type", "wheel")
+        p.setdefault("artifacts", ["wheel"])
         p.setdefault("build_argv", ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."])
         p.setdefault("push_argv", ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", p["id"], "--cwd", ".", "--notes-env", f"{p['id'].upper().replace('-', '_')}_RELEASE_NOTES"])
     return {
         "layout": layout, "root": root, "projects": projects,
-        "owner": owner or "your-github-owner", "repo": repo, "owner_type": owner_type,
+        "owner": owner, "repo": repo, "owner_type": owner_type,
     }
 
 
@@ -294,7 +346,7 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 owner=plan["owner"], repo=plan["repo"],
                 owner_type=plan["owner_type"], generated_by=generated_by,
                 centralized=plan["layout"] == "monorepo",
-                artifact_type=p.get("artifact_type", "wheel"),
+                artifacts=p.get("artifacts", ["wheel"]),
                 build_argv=p.get("build_argv"), push_argv=p.get("push_argv"),
                 git_tag=p.get("git_tag", True),
             ),
@@ -307,7 +359,7 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                                                 owner_type=plan["owner_type"])))
     existing = [str(path.relative_to(root)) for path, _ in files if path.exists()]
     if existing:
-        raise SystemExit(
+        _init_error(
             "init: refusing to overwrite existing file(s): " + ", ".join(existing)
             + " — delete them first or pick different paths."
         )
@@ -347,7 +399,7 @@ def validate(files: list[tuple[Path, str]], root: Path) -> None:
                 capture_output=True, text=True, cwd=str(Path(__file__).parent.parent),
             )
             if res.returncode != 0:
-                raise SystemExit(
+                _init_error(
                     "init: generated contracts fail `cmru standards`:\n"
                     + (res.stdout + res.stderr)[-2000:]
                 )
@@ -357,7 +409,16 @@ def init_main(argv: list[str]) -> int:
     plan = collect_plan(list(argv), Path.cwd())
     root = Path(plan["root"])
     files = build_files(plan, root)
+    print("\nCMRU init preview:")
+    for path, content in files:
+        print(f"--- {path.relative_to(root)} ---")
+        print(content, end="" if content.endswith("\n") else "\n")
     validate(files, root)
+    if not _yes_no(
+        _required_prompt("Write these validated files? (yes/no)"),
+        "write confirmation",
+    ):
+        _init_error("init: adoption cancelled before writing")
     for path, content in files:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")

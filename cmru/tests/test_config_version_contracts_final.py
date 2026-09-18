@@ -60,8 +60,19 @@ commands = [{label = "push", argv = ["echo", "ok"], cwd = "."}]
 '''
 
 
+def central_project_toml() -> str:
+    return "schema_version = 1\n[project]\n" + project_toml().split("[project]\n", 1)[1]
+
+
 def orch_toml(entry: str = 'config = "demo/cmru.toml"', order: str = '["demo"]') -> str:
     return f'''schema_version = 1
+[github]
+owner = "acme"
+repo = "vbpub"
+owner_type = "org"
+[targets]
+host = "github"
+registry = []
 [orchestration]
 project_order = {order}
 default_projects = ["demo"]
@@ -84,7 +95,7 @@ def test_config_secret_and_runner_shapes_fail_with_policy_diagnostics(tmp_path, 
     scalar.write_text("[github]\ntoken = \"x\"\nother = \"y\"\n")
     with pytest.raises(SystemExit):
         config._read_secret_document(scalar)
-    assert "unknown" in capsys.readouterr().out
+    assert "unknown" in capsys.readouterr().err
 
     for raw in (
         {"build": {"commands": ["bad"], "quiet": True}},
@@ -107,12 +118,12 @@ def test_config_project_shape_errors_are_reached_from_complete_documents(tmp_pat
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_config_orchestration_resolution_refuses_ambiguity_and_accepts_shared_facts(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
-    (project / "cmru.toml").write_text(project_toml(), encoding="utf-8")
+    (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")
     path = tmp_path / "cmru.orchestration.toml"
     for raw in (
         orch_toml(entry='config = "demo/cmru.toml"\ndepends_on = ["missing"]'),

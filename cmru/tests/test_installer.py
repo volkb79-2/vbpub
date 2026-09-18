@@ -1219,7 +1219,7 @@ class TestGetPyCLI:
     def test_getpy_main_no_config_exits_2(self, capsys):
         from cmru.getpy import getpy_main
         with pytest.raises(SystemExit) as exc:
-            getpy_main(["--project", "demo"])
+            getpy_main(["demo"])
         assert exc.value.code == 2
 
     def test_getpy_main_missing_project_exits(self, tmp_path):
@@ -1227,7 +1227,7 @@ class TestGetPyCLI:
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
         with pytest.raises((ValueError, SystemExit)):
-            getpy_main(["--project", "nonexistent", "--config", str(cfg_path)])
+            getpy_main(["nonexistent", "--config", str(cfg_path)])
 
     def test_getpy_main_to_stdout(self, tmp_path):
         toml = _minimal_toml("""
@@ -1241,7 +1241,7 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         buf = io.StringIO()
         with redirect_stdout(buf):
-            getpy_main(["--project", "demo", "--config", str(cfg_path)])
+            getpy_main(["demo", "--config", str(cfg_path)])
         output = buf.getvalue()
         remaining = re.findall(r"\[\[[A-Z_]+\]\]", output)
         assert remaining == [], f"Unreplaced placeholders in stdout: {remaining}"
@@ -1257,7 +1257,7 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         out_file = tmp_path / "get.py"
         getpy_main([
-            "--project", "demo",
+            "demo",
             "--config", str(cfg_path),
             "--output", str(out_file),
         ])
@@ -1277,7 +1277,7 @@ install_dir = "/opt/demo"
         cfg_path = _write(tmp_path, toml)
         from cmru.getpy import getpy_main
         with pytest.raises(SystemExit) as exc:
-            getpy_main(["--project", "demo", "--config", str(cfg_path)])
+            getpy_main(["demo", "--config", str(cfg_path)])
         assert exc.value.code == 2
 
 
@@ -1501,7 +1501,7 @@ class TestEnrollCLIShape:
         assert args.docker is False and args.no_install is False
 
     def test_get_py_cli_render_carries_enroll(self, tmp_path):
-        """The `cmru get-py --project <name>` path (O6's own entry point)."""
+        """The `cmru get-py <name>` path (O6's own entry point)."""
         toml = _minimal_toml("""
 [project.installer]
 install_dir_system = "/opt/demo"
@@ -1511,7 +1511,7 @@ install_dir_user   = "demo"
         from cmru.getpy import getpy_main
         out_file = tmp_path / "rendered-get.py"
         getpy_main([
-            "--project", "demo", "--config", str(cfg_path),
+            "demo", "--config", str(cfg_path),
             "--output", str(out_file),
         ])
         text = self._help(out_file, "enroll", "--help")
@@ -1529,7 +1529,8 @@ install_dir_user   = "demo"
         if not real.exists():
             pytest.skip(f"no real installer config at {real}")
         from cmru.getpy import render_from_config
-        src = render_from_config("tls-edge", real)
+        central = Path(__file__).resolve().parents[2] / "cmru.orchestration.toml"
+        src = render_from_config("tls-edge", central)
         ns: dict = {}
         exec(compile(src, "<tls-edge-get.py>", "exec"), ns)
         ns["check_prerequisites"] = lambda: None

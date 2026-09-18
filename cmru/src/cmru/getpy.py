@@ -184,12 +184,21 @@ def getpy_main(argv: Optional[list] = None) -> None:
     cfg_path = _resolve_config(args.config)
     loaded = load_config(cfg_path)
     configs, project_order = loaded[1], loaded[2]
-    context = resolve_invocation_context(cfg_path)
+    if args.target is None and cfg_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
+        context_project = next(iter(configs))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(cfg_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
     try:
         names = select_target_names(
             args.target, configs, project_order,
-            context_project=context.project_name,
-            estate_scope=context.scope == "estate",
+            context_project=context_project,
+            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         parser.error(str(exc))

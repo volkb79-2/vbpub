@@ -1,7 +1,8 @@
 # =============================================================================
 # run-gate-project release contract — parsed ONLY by cmru (one parser per
-# format, D-110). Adopted 2026-08-24 from the ciu/cmru pattern: same [github]/
-# [targets]/[project]/[steps] shape, wheel artifact, scm versioning.
+# format, D-110). Adopted 2026-08-24 from the ciu/cmru pattern: the central
+# orchestration file supplies [github]/[targets], while this file carries the
+# [project]/[steps] release contract, wheel artifact, and scm versioning.
 #
 # Naming has ONE deliberate quirk: `project.id` below MUST equal the key this
 # project is registered under in the root cmru.orchestration.toml
@@ -33,15 +34,6 @@
 # auto-bump has something parseable to work from.
 # =============================================================================
 schema_version = 1
-
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
 
 [env]
 RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"

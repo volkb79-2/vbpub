@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from cmru.cli_support import CMRUArgumentParser
+
 
 log = logging.getLogger("cmru.agent")
 
@@ -205,7 +207,7 @@ def cmd_status(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CMRUArgumentParser(
         prog="cmru-agent",
         description="CMRU reconciler agent — converges host to declared desired state",
     )
@@ -226,7 +228,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Consul ACL token (prefer $CONSUL_HTTP_TOKEN in production)",
     )
 
-    sub = parser.add_subparsers(dest="verb", required=True)
+    sub = parser.add_subparsers(
+        dest="verb", required=True, parser_class=CMRUArgumentParser,
+    )
 
     # enroll
     p_enroll = sub.add_parser("enroll", help="Register this node with the backend")

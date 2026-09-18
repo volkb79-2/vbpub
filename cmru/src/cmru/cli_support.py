@@ -86,7 +86,7 @@ def select_target_names(
     return [name for name in ordered if name in wanted]
 
 
-def write_config_diagnostic(message: str) -> None:
-    """Print a version-headed configuration diagnostic."""
+def write_config_diagnostic(message: str, *, level: str = "ERROR") -> None:
+    """Print a version-headed CMRU diagnostic."""
     print(cmru_headline(), file=sys.stderr, flush=True)
-    print(f"[ERROR] {message}", file=sys.stderr, flush=True)
+    print(f"[{level}] {message}", file=sys.stderr, flush=True)

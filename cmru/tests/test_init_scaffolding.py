@@ -33,9 +33,9 @@ def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, 
     _feed_input(
         monkeypatch,
         [
-            "acme", "2", "alpha,beta",
-            "alpha", "Alpha", "wheel", "yes",
-            "beta", "Beta", "bundle", "no", "make bundle", "make publish",
+            "acme", "vbpub", "org", "2", "alpha,beta",
+            "alpha", "Alpha", "python", "wheel", "yes",
+            "beta", "Beta", "generic", "bundle", "no", "make bundle", "make publish",
         ],
     )
     plan = scaffold.collect_plan([], git_repo)
@@ -54,7 +54,7 @@ def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, 
 
 
 def test_single_project_wizard_allows_same_folder_and_keeps_standalone_facts(monkeypatch, git_repo):
-    _feed_input(monkeypatch, ["acme", "1", "", "repo", "Repo", "tarball", "yes", "make", "make publish"])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "tarball", "yes", "make", "make publish"])
     plan = scaffold.collect_plan([], git_repo)
     assert plan["root"] == git_repo
     files = scaffold.build_files(plan, git_repo)
@@ -64,39 +64,61 @@ def test_single_project_wizard_allows_same_folder_and_keeps_standalone_facts(mon
     assert "[github]" in content and 'artifacts = ["tarball"]' in content
 
 
-def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo):
+def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo, capsys):
     project = git_repo / "alpha"
     project.mkdir()
     existing = project / "cmru.toml"
     existing.write_text("# operator content\n", encoding="utf-8")
-    _feed_input(monkeypatch, ["acme", "2", "alpha", "alpha", "Alpha", "wheel", "yes"])
+    _feed_input(monkeypatch, ["acme", "repo", "user", "2", "alpha", "alpha", "Alpha", "python", "wheel", "yes"])
     plan = scaffold.collect_plan([], git_repo)
-    with pytest.raises(SystemExit, match="refusing to overwrite"):
+    with pytest.raises(SystemExit):
         scaffold.build_files(plan, git_repo)
+    assert "refusing to overwrite" in capsys.readouterr().err
     assert existing.read_text(encoding="utf-8") == "# operator content\n"
 
 
-def test_wizard_refuses_project_path_escape(monkeypatch, git_repo, tmp_path):
+def test_wizard_refuses_project_path_escape(monkeypatch, git_repo, tmp_path, capsys):
     outside = tmp_path / "outside"
     outside.mkdir()
-    _feed_input(monkeypatch, ["acme", "1", str(outside)])
-    with pytest.raises(SystemExit, match="escapes CMRU root"):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", str(outside)])
+    with pytest.raises(SystemExit):
         scaffold.collect_plan([], git_repo)
+    assert "escapes CMRU root" in capsys.readouterr().err
 
 
-def test_wizard_refuses_invalid_artifact_and_missing_generic_commands(monkeypatch, git_repo):
-    _feed_input(monkeypatch, ["acme", "1", "", "repo", "Repo", "unknown"])
-    with pytest.raises(SystemExit, match="artifact template"):
+def test_wizard_refuses_invalid_artifact_and_missing_generic_commands(monkeypatch, git_repo, capsys):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "unknown"])
+    with pytest.raises(SystemExit):
         scaffold.collect_plan([], git_repo)
+    assert "artifact types" in capsys.readouterr().err
 
-    _feed_input(monkeypatch, ["acme", "1", "", "repo", "Repo", "oci-image", "yes", "", ""])
-    with pytest.raises(SystemExit, match="require explicit build and publish"):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "oci-image", "yes", "", ""])
+    with pytest.raises(SystemExit):
         scaffold.collect_plan([], git_repo)
+    assert "Build command" in capsys.readouterr().err
 
 
-def test_old_init_project_option_is_rejected(git_repo):
-    with pytest.raises(SystemExit, match="--project was removed"):
+def test_old_init_project_option_is_rejected(git_repo, capsys):
+    with pytest.raises(SystemExit):
         scaffold.collect_plan(["--project", "old"], git_repo)
+    diagnostic = capsys.readouterr().err
+    from cmru.cli_support import cmru_headline
+    assert diagnostic.splitlines()[0] == cmru_headline()
+    assert "--project was removed" in diagnostic
+
+
+def test_wizard_accepts_all_artifact_types_and_requires_generic_commands(monkeypatch, git_repo):
+    (git_repo / "alpha").mkdir()
+    _feed_input(
+        monkeypatch,
+        ["acme", "repo", "org", "2", "alpha", "alpha", "Alpha", "generic", "all", "yes", "build all", "publish all"],
+    )
+    plan = scaffold.collect_plan([], git_repo)
+    assert plan["projects"][0]["artifacts"] == ["wheel", "tarball", "bundle", "oci-image"]
+    content = scaffold.build_files(plan, git_repo)[0][1]
+    assert 'artifacts = ["wheel", "tarball", "bundle", "oci-image"]' in content
+    assert 'argv = ["build", "all"]' in content
+    assert 'argv = ["publish", "all"]' in content
 
 
 def test_cli_init_help_has_version_headline(capsys):
@@ -112,6 +134,20 @@ def test_cli_init_runs_interactive_adoption(monkeypatch, git_repo):
     from cmru.cli import main
 
     monkeypatch.chdir(git_repo)
-    _feed_input(monkeypatch, ["", "repo", "Repo", "wheel", "yes"])
+    _feed_input(monkeypatch, ["repo", "user", "", "repo", "Repo", "python", "wheel", "yes", "yes"])
     assert main(["init", "--root", str(git_repo), "--owner", "acme", "--layout", "single"]) == 0
     assert (git_repo / "cmru.toml").is_file()
+
+
+def test_cli_init_preview_can_be_refused_before_writing(monkeypatch, git_repo, capsys):
+    monkeypatch.chdir(git_repo)
+    _feed_input(monkeypatch, ["repo", "user", "", "repo", "Repo", "python", "wheel", "yes", "no"])
+
+    with pytest.raises(SystemExit):
+        from cmru.cli import main
+        main(["init", "--root", str(git_repo), "--owner", "acme", "--layout", "single"])
+
+    captured = capsys.readouterr()
+    assert "CMRU init preview:" in captured.out
+    assert "adoption cancelled" in captured.err
+    assert not (git_repo / "cmru.toml").exists()

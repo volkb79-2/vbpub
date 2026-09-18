@@ -30,7 +30,8 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     # Exercise the strict dependency-order policy through the parsed document.
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text(
-        "schema_version=1\n[orchestration]\nproject_order=['consumer','provider']\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['consumer','provider']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.consumer]\nconfig='consumer/cmru.toml'\ndepends_on=['provider']\n"
         "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"
@@ -39,14 +40,15 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     )
     (tmp_path / "consumer").mkdir(); (tmp_path / "provider").mkdir()
     for name in ("consumer", "provider"):
-        (tmp_path / name / "cmru.toml").write_text(
+        document = (
             "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
             "[targets]\nhost='github'\nregistry=[]\n[project]\nid='" + name + "'\n"
             "description='demo'\nprefix='" + name + "-v'\nartifacts=['bundle']\n"
             "[project.version]\nstrategy='scm'\nbump='patch'\n[project.release]\n"
-            "git_tag=false\nbuild_step='build'\nartifact_dirs=['dist']\n",
-            encoding="utf-8",
+            "git_tag=false\nbuild_step='build'\nartifact_dirs=['dist']\n"
         )
+        document = "schema_version=1\n[project]\n" + document.split("[project]\n", 1)[1]
+        (tmp_path / name / "cmru.toml").write_text(document, encoding="utf-8")
     with pytest.raises(SystemExit) as error:
         config.load_forge_config(path, require_orchestration=True)
     assert error.value.code == exit_codes.CONFIG_ERROR
@@ -77,7 +79,7 @@ def test_config_project_and_orchestration_tables_fail_closed(tmp_path, capsys):
         with pytest.raises(SystemExit) as error:
             config._parse_project_document(project)
         assert error.value.code == exit_codes.CONFIG_ERROR
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
         project.write_text(raw, encoding="utf-8")
 
 
@@ -85,7 +87,7 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
     github = config.GitHubS2Config("o", "r", "org", None)
     targets = config.TargetsConfig("github", [])
 
-    def fake_project(path):
+    def fake_project(path, **_kwargs):
         name = "demo" if path.parent.name.endswith("outside-demo") else path.parent.name
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
@@ -95,14 +97,15 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
 
     def run(order, entries):
         path.write_text(
-            "schema_version=1\n[orchestration]\nproject_order=" + repr(order) + "\n"
+            "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+            "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=" + repr(order) + "\n"
             "default_projects=" + repr(order[:1]) + "\ndefault_steps=[]\nexecution_mode='project-first'\n" + entries,
             encoding="utf-8",
         )
         with pytest.raises(SystemExit) as error:
             config._load_orchestration_config(path)
         assert error.value.code == exit_codes.CONFIG_ERROR
-        return capsys.readouterr().out
+        return capsys.readouterr().err
 
     assert "must include declared project" in run(
         ["provider"], "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"
@@ -121,10 +124,13 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
 def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
-        ("schema_version=1\n", "[orchestration] is required"),
-        ("schema_version=1\n[orchestration]\nproject_order=[]\ndefault_projects=[]\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+         "[targets]\nhost='github'\nregistry=[]\n", "[orchestration] is required"),
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=[]\ndefault_projects=[]\n"
          "default_steps=[]\nexecution_mode='project-first'\n", "entries are required"),
-        ("schema_version=1\n[orchestration]\nproject_order=['demo']\ndefault_projects=['demo']\n"
+        ("schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+         "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\ndefault_projects=['demo']\n"
          "default_steps=[]\nexecution_mode='project-first'\n[orchestration.project]\ndemo='bad'\n", "must be a table"),
     ]
     for raw, diagnostic in cases:
@@ -132,7 +138,7 @@ def test_config_orchestration_missing_tables_are_rejected(tmp_path, capsys):
         with pytest.raises(SystemExit) as error:
             config.load_forge_config(path, require_orchestration=True)
         assert error.value.code == exit_codes.CONFIG_ERROR
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_path, capsys):
@@ -145,11 +151,12 @@ def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_pat
     with pytest.raises(SystemExit) as error:
         config._parse_project_document(project)
     assert error.value.code == exit_codes.CONFIG_ERROR
-    assert "[project] is required" in capsys.readouterr().out
+    assert "[project] is required" in capsys.readouterr().err
 
     orchestration = tmp_path / "cmru.orchestration.toml"
     orchestration.write_text(
-        "schema_version=1\n[orchestration]\nproject_order=['demo']\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig=''\n",
         encoding="utf-8",
@@ -157,7 +164,7 @@ def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_pat
     with pytest.raises(SystemExit) as error:
         config._load_orchestration_config(orchestration)
     assert error.value.code == exit_codes.CONFIG_ERROR
-    assert "non-empty project-relative path" in capsys.readouterr().out
+    assert "non-empty project-relative path" in capsys.readouterr().err
 
 
 def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlier_dependency(
@@ -166,7 +173,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
     github = config.GitHubS2Config("o", "r", "org", None)
     targets = config.TargetsConfig("github", [])
 
-    def fake_project(path):
+    def fake_project(path, **_kwargs):
         name = "demo" if path.parent.name.endswith("outside-demo") else path.parent.name
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
@@ -179,7 +186,8 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
     link.symlink_to(outside, target_is_directory=True)
     escaped = tmp_path / "cmru.orchestration.toml"
     escaped.write_text(
-        "schema_version=1\n[orchestration]\nproject_order=['demo']\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['demo']\n"
         "default_projects=['demo']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.demo]\nconfig='link/cmru.toml'\n"
         "[cleanup]\nrelease_tag_prefixes=[]\nkeep_release_tags=[]\nghcr_packages=[]\nghcr_delete_packages=[]\n",
@@ -188,11 +196,12 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
     with pytest.raises(SystemExit) as error:
         config._load_orchestration_config(escaped)
     assert error.value.code == exit_codes.CONFIG_ERROR
-    assert "resolves outside" in capsys.readouterr().out
+    assert "resolves outside" in capsys.readouterr().err
 
     ordered = tmp_path / "cmru.orchestration.toml"
     ordered.write_text(
-        "schema_version=1\n[orchestration]\nproject_order=['provider','consumer']\n"
+        "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
+        "[targets]\nhost='github'\nregistry=[]\n[orchestration]\nproject_order=['provider','consumer']\n"
         "default_projects=['consumer']\ndefault_steps=[]\nexecution_mode='project-first'\n"
         "[orchestration.project.provider]\nconfig='provider/cmru.toml'\n"
         "[orchestration.project.consumer]\nconfig='consumer/cmru.toml'\ndepends_on=['provider']\n"

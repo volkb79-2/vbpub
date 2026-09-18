@@ -64,8 +64,19 @@ commands = [{{label = "push", argv = ["echo", "ok"], cwd = "."}}]
 '''
 
 
+def central_project_toml(name: str = "demo") -> str:
+    return "schema_version = 1\n[project]\n" + project_toml(name).split("[project]\n", 1)[1]
+
+
 def orchestration(entry: str = 'config = "demo/cmru.toml"', order: str = '["demo"]') -> str:
     return f'''schema_version = 1
+[github]
+owner = "acme"
+repo = "vbpub"
+owner_type = "org"
+[targets]
+host = "github"
+registry = []
 [orchestration]
 project_order = {order}
 default_projects = ["demo"]
@@ -99,12 +110,12 @@ def test_config_rejects_project_metadata_and_runner_schema_shapes(tmp_path, caps
         project.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit) as error:
             config.load_forge_config(project)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_config_orchestration_refuses_unknown_and_misordered_dependencies(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
-    (project / "cmru.toml").write_text(project_toml(), encoding="utf-8")
+    (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
         orchestration(entry='config = "demo/cmru.toml"\ndepends_on = ["missing"]'),

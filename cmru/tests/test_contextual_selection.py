@@ -131,3 +131,21 @@ def test_symlink_project_escape_is_refused(tmp_path):
     )
     with pytest.raises(SystemExit):
         load_forge_config(root / "cmru.orchestration.toml")
+
+
+def test_nested_unregistered_project_is_not_routed_to_outer_project(tmp_path, capsys):
+    root = tmp_path / "root"
+    outer = root / "outer"
+    nested = outer / "nested" / "src"
+    nested.mkdir(parents=True)
+    (outer / "cmru.toml").write_text(_project("outer"), encoding="utf-8")
+    (outer / "nested" / "cmru.toml").write_text(_project("nested"), encoding="utf-8")
+    (root / "cmru.orchestration.toml").write_text(
+        _root_config(["outer"]).replace(
+            'config = "outer/cmru.toml"', 'config = "outer/cmru.toml"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolve_invocation_context(cwd=nested)
+    assert "not registered" in capsys.readouterr().err

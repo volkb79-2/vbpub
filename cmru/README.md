@@ -340,6 +340,7 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 ## More
 
 - Adopting cmru (the HOW): [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
+- Design rationale (the WHY): [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md).
 - Full contract & rationale: [`docs/SPEC.md`](docs/SPEC.md) — start at *S-CLI* and *S-REL*.
 - Monorepo tooling overview: [`../docs/RELEASE-TOOLING.md`](../docs/RELEASE-TOOLING.md).
 - Release-modes design/plan: [`../docs/plan-cmru-release-modes.md`](../docs/plan-cmru-release-modes.md).

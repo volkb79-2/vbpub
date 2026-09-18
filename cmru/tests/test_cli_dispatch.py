@@ -30,6 +30,13 @@ def test_source_dev_version_is_derived_from_the_nearest_cmru_tag():
 
 
 MINIMAL_S2 = """schema_version = 1
+[github]
+owner = "octocat"
+repo = "demo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
 [orchestration]
 project_order = ["alpha"]
 default_projects = ["alpha"]
@@ -78,6 +85,12 @@ quiet = true
 commands = [ { label = "push", argv = ["true"], cwd = "." } ]
 """
 
+PROJECT_CENTRAL = PROJECT.replace(
+    '[github]\nowner = "octocat"\nrepo = "demo"\nowner_type = "user"\n'
+    '[targets]\nhost = "github"\nregistry = ["ghcr.io"]\n',
+    "",
+)
+
 
 def _write(tmp_path: Path, body: str, name: str = "cmru.toml") -> Path:
     p = tmp_path / name
@@ -92,7 +105,7 @@ def _valid_config(
     project = tmp_path / "alpha" / "cmru.toml"
     project.parent.mkdir()
     project.write_text(
-        PROJECT.replace("git_tag = true", f"git_tag = true{release_append}") + project_append,
+        PROJECT_CENTRAL.replace("git_tag = true", f"git_tag = true{release_append}") + project_append,
         encoding="utf-8",
     )
     return config
@@ -172,12 +185,12 @@ def test_release_history_opt_out_must_be_explicit(tmp_path):
 
 def test_changelog_backfill_dispatches_to_the_migration_helper(tmp_path, monkeypatch):
     config = _valid_config(tmp_path)
-    project = SimpleNamespace(name="alpha", changelog="CHANGES.md")
+    project = SimpleNamespace(name="alpha", changelog="CHANGES.md", prefix="alpha-v")
     calls: list[tuple] = []
     monkeypatch.setattr(
         cli,
         "load_config",
-        lambda _path: (tmp_path, {"alpha": project}),
+        lambda _path: (tmp_path, {"alpha": project}, ["alpha"]),
     )
     import cmru.changelog
     monkeypatch.setattr(
@@ -187,7 +200,7 @@ def test_changelog_backfill_dispatches_to_the_migration_helper(tmp_path, monkeyp
     )
 
     cli.main([
-        "changelog", "--config", str(config), "--project", "alpha", "--backfill-tag", "alpha-v1.0.0",
+        "changelog", "alpha", "--config", str(config), "--backfill-tag", "alpha-v1.0.0",
     ])
 
     assert calls == [(tmp_path, project, "alpha-v1.0.0")]
@@ -340,36 +353,36 @@ def test_help_lists_verbs_and_ordering():
 def test_help_lists_every_public_option():
     text = cli.usage()
     for option in (
-        "--config", "--project", "--minor", "--major", "--set-version", "--dry-run",
+        "--config", "--minor", "--major", "--set-version", "--dry-run",
         "--no-build", "--resume", "--abandon", "--allow-uncommitted",
         "--show-run-details", "--log-append", "--discard-logs-on-release",
         "--discard-artifacts-on-release", "--backfill-tag", "--update", "--json",
         "--run-tests", "--build", "--push", "--validate", "--remove-assets",
-        "--format", "--prefix", "--output", "--delete-unmanaged-release-tag",
+        "--format", "--output", "--delete-unmanaged-release-tag",
         "--delete-build-output", "--discard-build-worktree", "--yes", "--step", "--write",
         "--log-prefix-time-short", "--help",
         "--allow-stale-tool-deps", "--refresh", "--timeout", "--ref",
     ):
         assert option in text, f"{option} missing from usage()"
+    assert "--project" not in text
+    assert "--prefix" not in text
 
 
-def test_default_config_prefers_project_then_current_directory_orchestration(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    orchestration = tmp_path / "cmru.orchestration.toml"
-    orchestration.write_text("", encoding="utf-8")
-    assert cli._default_config_path() == orchestration
-
-    project = tmp_path / "cmru.toml"
-    project.write_text("", encoding="utf-8")
-    assert cli._default_config_path() == project
-
-
-def test_default_config_never_searches_a_parent_directory(tmp_path, monkeypatch):
-    (tmp_path / "cmru.orchestration.toml").write_text("", encoding="utf-8")
+def test_default_config_discovers_the_nearest_central_root(tmp_path, monkeypatch):
+    _valid_config(tmp_path)
     child = tmp_path / "project"
     child.mkdir()
     monkeypatch.chdir(child)
-    assert cli._default_config_path() == child / "cmru.toml"
+    assert cli._default_config_path() == tmp_path / "cmru.orchestration.toml"
+
+
+def test_default_config_discovers_a_standalone_project_without_a_root(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    project_config = project / "cmru.toml"
+    project_config.write_text(PROJECT, encoding="utf-8")
+    monkeypatch.chdir(project)
+    assert cli._default_config_path() == project_config
 
 
 def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, monkeypatch):
@@ -384,7 +397,7 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
         lambda root, projects, **kwargs: calls.append((root, list(projects), kwargs)),
     )
 
-    cli.main(["status", "--project", "alpha"])
+    cli.main(["status", "alpha"])
 
     assert calls == [(tmp_path, ["alpha"], {"minor": False, "major": False, "set_version": None, "ref": "HEAD"})]
 
@@ -393,6 +406,14 @@ def test_unknown_verb_exits_2():
     with pytest.raises(SystemExit) as exc:
         cli.main(["frobnicate"])
     assert exc.value.code == 2
+
+
+def test_unknown_verb_diagnostic_is_version_headed(capsys):
+    from cmru.cli_support import cmru_headline
+
+    with pytest.raises(SystemExit):
+        cli.main(["frobnicate"])
+    assert capsys.readouterr().err.splitlines()[0] == cmru_headline()
 
 
 def test_version_is_a_verb_not_a_flag(monkeypatch):
@@ -556,7 +577,7 @@ def test_cleanup_delete_unmanaged_release_requires_confirmation(tmp_path):
     cfg_path = _valid_config(tmp_path)
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "cleanup", "--config", str(cfg_path), "--project", "alpha",
+            "cleanup", "alpha", "--config", str(cfg_path),
             "--delete-unmanaged-release-tag", "alpha-wheel-latest",
         ])
     assert exc.value.code == 2
@@ -578,7 +599,7 @@ def test_cleanup_delete_unmanaged_release_is_project_scoped_and_dry_runnable(tmp
     )
 
     cli.main([
-        "cleanup", "--config", str(cfg_path), "--project", "alpha",
+        "cleanup", "alpha", "--config", str(cfg_path),
         "--delete-unmanaged-release-tag", "alpha-wheel-latest", "--dry-run",
     ])
     assert calls == [("octocat", "demo", "test-token", "alpha-wheel-latest", True)]
@@ -588,7 +609,7 @@ def test_cleanup_delete_unmanaged_release_rejects_a_managed_tag(tmp_path):
     cfg_path = _valid_config(tmp_path)
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "cleanup", "--config", str(cfg_path), "--project", "alpha",
+            "cleanup", "alpha", "--config", str(cfg_path),
             "--delete-unmanaged-release-tag", "alpha-v1.0.0", "--dry-run",
         ])
     assert exc.value.code == 2
@@ -607,7 +628,7 @@ def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path
     )
 
     cli.main([
-        "cleanup", "--config", str(cfg_path), "--project", "alpha",
+        "cleanup", "alpha", "--config", str(cfg_path),
         "--delete-build-output", expected_id, "--dry-run",
     ])
 
@@ -616,7 +637,7 @@ def test_cleanup_delete_build_output_is_project_scoped_and_dry_runnable(tmp_path
     assert calls[0][2:] == ("alpha", expected_id, True)
 
 
-def test_invalid_config_missing_github(tmp_path):
+def test_invalid_config_missing_github_is_version_headed(tmp_path, capsys):
     bad = """
 [orchestration]
 project_order = ["a"]
@@ -629,3 +650,15 @@ commands = [ { label = "b", argv = ["true"], cwd = "a" } ]
     with pytest.raises(SystemExit) as exc:
         cli.load_config(cfg)
     assert exc.value.code == 2
+    from cmru.cli_support import cmru_headline
+    diagnostic = capsys.readouterr().err
+    assert diagnostic.splitlines()[0] == cmru_headline()
+
+
+def test_config_required_field_diagnostic_is_version_headed(tmp_path, capsys):
+    cfg = _valid_config(tmp_path)
+    cfg.write_text(cfg.read_text(encoding="utf-8").replace('owner = "octocat"\n', ""), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.load_config(cfg)
+    from cmru.cli_support import cmru_headline
+    assert capsys.readouterr().err.splitlines()[0] == cmru_headline()

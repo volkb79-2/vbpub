@@ -58,11 +58,62 @@ def test_source_version_uses_exact_and_dev_git_describe_shapes(tmp_path, monkeyp
     assert cli._dev_version_from_describe("other-v1.2.3-4-gabc") is None
 
 
-def test_default_and_explicit_config_resolution_are_current_directory_only(tmp_path, monkeypatch):
+def test_default_and_explicit_config_resolution_uses_nearest_central_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "cmru.orchestration.toml").write_text("", encoding="utf-8")
+    (tmp_path / "cmru.orchestration.toml").write_text(
+        '''schema_version = 1
+[github]
+owner = "owner"
+repo = "repo"
+owner_type = "user"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+[orchestration]
+project_order = ["demo"]
+default_projects = ["demo"]
+default_steps = []
+execution_mode = "project-first"
+[orchestration.project.demo]
+config = "demo/cmru.toml"
+depends_on = []
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = []
+ghcr_packages = ["*"]
+ghcr_delete_packages = []
+''', encoding="utf-8",
+    )
+    demo = tmp_path / "demo"
+    demo.mkdir()
+    (demo / "cmru.toml").write_text(
+        '''schema_version = 1
+[project]
+id = "demo"
+description = "demo"
+template_revision = 2
+prefix = "demo-v"
+artifacts = ["wheel"]
+[project.version]
+strategy = "scm"
+bump = "conventional"
+paths = ["."]
+[project.release]
+git_tag = true
+build_step = "build"
+[steps.build]
+quiet = true
+commands = [{ label = "build", argv = ["true"], cwd = "." }]
+[steps.run-tests]
+quiet = true
+commands = [{ label = "test", argv = ["true"], cwd = "." }]
+[steps.push]
+quiet = true
+commands = [{ label = "push", argv = ["true"], cwd = "." }]
+''', encoding="utf-8",
+    )
     assert cli._default_config_path().name == "cmru.orchestration.toml"
-    assert cli._resolve_config("~/not-a-real-cmru.toml").is_absolute()
+    assert cli._resolve_config(str(tmp_path / "cmru.orchestration.toml")).is_absolute()
 
 
 def test_prepare_release_commits_only_declared_generated_output(tmp_path, monkeypatch):
@@ -123,10 +174,10 @@ def test_transaction_child_args_strip_parent_only_options_and_reject_external_co
     config = tmp_path / "cmru.toml"
     config.write_text("", encoding="utf-8")
     args = cli._child_release_args(
-        ["--resume", "/tmp/w", "--abandon=all-previous", "--config=/old", "--project", "demo"],
+        ["--resume", "/tmp/w", "--abandon=all-previous", "--config=/old", "demo"],
         config, tmp_path,
     )
-    assert args == ["--project", "demo", "--config", "cmru.toml"]
+    assert args == ["demo", "--config", "cmru.toml"]
     outside = tmp_path.parent / "outside-cmru.toml"
     outside.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="tracked inside"):
@@ -175,7 +226,7 @@ def test_orchestrate_step_first_respects_project_order_and_selected_subset(monke
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     calls = []
     monkeypatch.setattr(cli, "run_project_step", lambda project, step, *_: calls.append((project.name, step)))
-    monkeypatch.setattr(cli.sys, "argv", ["cmru", "--project", "demo"])
+    monkeypatch.setattr(cli.sys, "argv", ["cmru", "demo"])
     # _orchestrate parses argv itself; selecting demo must suppress beta.
     cli._orchestrate()
     assert calls == [("demo", "run-tests")]

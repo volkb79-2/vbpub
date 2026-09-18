@@ -191,6 +191,6 @@ def test_scalar_env_unset_reference_without_default_errors(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         config_mod._scalar_env({"X": "${MISSING_VAR}"}, "t")
     # the load error names the key AND both remedies (estate error-message rule)
-    err = capsys.readouterr().out
+    err = capsys.readouterr().err
     assert "MISSING_VAR" in err
     assert ":-default" in err

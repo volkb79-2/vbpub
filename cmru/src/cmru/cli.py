@@ -28,6 +28,7 @@ from cmru.cli_support import (
     CMRUArgumentParser,
     TargetSelectionError,
     select_target_names,
+    write_config_diagnostic,
 )
 from cmru.dependencies import build_report, render_text as render_dependency_report
 from cmru.output import consume_cli_flags
@@ -400,7 +401,7 @@ def load_config(
         )
         if report.errors:
             for error in report.errors:
-                print(f"[ERROR] dependency preflight: {error}", flush=True)
+                write_config_diagnostic(f"dependency preflight: {error}")
             raise SystemExit(exit_codes.CONFIG_ERROR)
     orchestration = forge.orchestration
     if orchestration is None:  # defensive: both strict loaders always supply one
@@ -1206,7 +1207,9 @@ def _orchestrate() -> None:
         env_config,
     ) = load_config(config_path)
 
-    selected_names = _select_projects(config_path, args.target, configs, project_order)
+    selected_names = _select_projects(
+        config_path, getattr(args, "target", None), configs, project_order,
+    )
 
     selected = [configs[name] for name in selected_names]
 
@@ -1335,14 +1338,26 @@ def _select_projects(
     config_path: Path, raw_target: Optional[str], configs: Mapping[str, "ProjectConfig"],
     project_order: List[str],
 ) -> List[str]:
-    context = resolve_invocation_context(config_path)
+    # An explicit target is already authoritative and does not need a second
+    # filesystem discovery pass.  A standalone project config also establishes
+    # project context by definition; this keeps child dispatches deterministic
+    # when they are given the snapshot's project-local config path.
+    context_project: str | None = None
+    estate_scope = False
+    if raw_target is None:
+        if config_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
+            context_project = next(iter(configs))
+        else:
+            context = resolve_invocation_context(config_path)
+            context_project = context.project_name
+            estate_scope = context.scope == "estate"
     try:
         return select_target_names(
             raw_target,
             configs,
             project_order,
-            context_project=context.project_name,
-            estate_scope=context.scope == "estate",
+            context_project=context_project,
+            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         from cmru.cli_support import write_config_diagnostic
@@ -1873,6 +1888,7 @@ def usage() -> str:
         "    changelog [all|P[,P...]] --config C --backfill-tag TAG (repeat for all)\n"
         "                                                  catalog an already-published tagged release\n"
         "    init [--root PATH] [--layout single|monorepo] [--owner O] [--repo R]\n"
+        "         [--owner-type user|org]\n"
         "                                                  guided scaffolding: writes cmru.toml (and, for a\n"
         "                                                  monorepo, cmru.orchestration.toml) after validating\n"
         "                                                  them with the real loaders; never overwrites\n"
@@ -1953,7 +1969,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(
                 f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
                 "cmru init [--root PATH] [--layout single|monorepo] "
-                "[--owner O] [--repo R]\n"
+                "[--owner O] [--repo R] [--owner-type user|org]\n"
                 "  Guided scaffolding. Prompts when flags are absent; every\n"
                 "  generated contract is validated with the real loaders before\n"
                 "  anything is written; existing files are never overwritten."
@@ -2739,7 +2755,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             )
 
     else:
-        log_error(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
+        write_config_diagnostic(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
         _sys.exit(2)
 
 

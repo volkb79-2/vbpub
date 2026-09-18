@@ -171,12 +171,21 @@ def standards_main(argv: list[str] | None = None) -> None:
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_ = load_config(config_path)
     from cmru.config import resolve_invocation_context
-    context = resolve_invocation_context(config_path)
+    if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
+        context_project = next(iter(projects))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(config_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
     try:
         selected = select_target_names(
             args.target, projects, project_order,
-            context_project=context.project_name,
-            estate_scope=context.scope == "estate",
+            context_project=context_project,
+            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         parser.error(str(exc))

@@ -179,8 +179,7 @@ class InvocationContext:
 def _require(d: dict, key: str, section: str) -> object:
     val = d.get(key)
     if val is None:
-        print(f"[ERROR] {section}.{key} is required", flush=True)
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"{section}.{key} is required")
     return val
 
 
@@ -264,8 +263,7 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     }
     unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
     if unknown:
-        print(f"[ERROR] project.{name}.installer: unknown keys {sorted(unknown)} (V09)")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.installer: unknown keys {sorted(unknown)} (V09)")
 
     install_dir_system = str(
         _require(raw, "install_dir_system", f"project.{name}.installer")
@@ -280,14 +278,12 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
 
     required_commands_raw = raw.get("required_commands") or []
     if not isinstance(required_commands_raw, list):
-        print(f"[ERROR] project.{name}.installer.required_commands must be a list")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.installer.required_commands must be a list")
     required_commands = [str(c) for c in required_commands_raw]
 
     preserve_raw = raw.get("preserve") or []
     if not isinstance(preserve_raw, list):
-        print(f"[ERROR] project.{name}.installer.preserve must be a list")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.installer.preserve must be a list")
     preserve = [str(p) for p in preserve_raw]
 
     manifest_name = str(raw.get("manifest_name") or "manifest.json")
@@ -295,21 +291,18 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
 
     wheels_raw = raw.get("wheels") or []
     if not isinstance(wheels_raw, list):
-        print(f"[ERROR] project.{name}.installer.wheels must be an array of tables")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.installer.wheels must be an array of tables")
     wheels: List[InstallerWheel] = []
     _KNOWN_WHEEL_KEYS = {"path", "distribution"}
     for i, w in enumerate(wheels_raw):
         if not isinstance(w, dict):
-            print(f"[ERROR] project.{name}.installer.wheels[{i}] must be a table")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"project.{name}.installer.wheels[{i}] must be a table")
         unknown_w = [k for k in w if k not in _KNOWN_WHEEL_KEYS]
         if unknown_w:
-            print(
-                f"[ERROR] project.{name}.installer.wheels[{i}]: "
+            _error(
+                f"project.{name}.installer.wheels[{i}]: "
                 f"unknown keys {sorted(unknown_w)} (V09)"
             )
-            raise SystemExit(exit_codes.CONFIG_ERROR)
         wpath = str(_require(w, "path", f"project.{name}.installer.wheels[{i}]"))
         wdist = str(_require(w, "distribution", f"project.{name}.installer.wheels[{i}]"))
         wheels.append(InstallerWheel(path=wpath, distribution=wdist))
@@ -342,30 +335,25 @@ def _parse_variants(name: str, raw: dict) -> List[VariantConfig]:
     if items is None:
         return []
     if not isinstance(items, list):
-        print(f"[ERROR] project.{name}.variants must be an array of tables")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.variants must be an array of tables")
 
     _KNOWN_VARIANT_KEYS = {"name", "build_arg", "label"}
     variants: List[VariantConfig] = []
     seen: set[str] = set()
     for i, v in enumerate(items):
         if not isinstance(v, dict):
-            print(f"[ERROR] project.{name}.variants[{i}] must be a table")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"project.{name}.variants[{i}] must be a table")
         unknown = [k for k in v if k not in _KNOWN_VARIANT_KEYS]
         if unknown:
-            print(f"[ERROR] project.{name}.variants[{i}]: unknown keys {sorted(unknown)} (V09)")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"project.{name}.variants[{i}]: unknown keys {sorted(unknown)} (V09)")
         vname = str(_require(v, "name", f"project.{name}.variants[{i}]"))
         if not _VARIANT_NAME_RE.match(vname):
-            print(
-                f"[ERROR] project.{name}.variants[{i}].name {vname!r} is invalid (V22): "
+            _error(
+                f"project.{name}.variants[{i}].name {vname!r} is invalid (V22): "
                 "use only letters, digits, '.', '-', '_' (it goes into the asset filename)"
             )
-            raise SystemExit(exit_codes.CONFIG_ERROR)
         if vname in seen:
-            print(f"[ERROR] project.{name}.variants: duplicate name {vname!r} (V22)")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"project.{name}.variants: duplicate name {vname!r} (V22)")
         seen.add(vname)
         build_arg = v.get("build_arg")
         label = v.get("label")
@@ -397,20 +385,17 @@ def _parse_tool_dependencies(name: str, raw: dict) -> List[ToolDependency]:
     if items is None:
         return []
     if not isinstance(items, list):
-        print(f"[ERROR] project.{name}.tool_dependencies must be an array of tables")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+        _error(f"project.{name}.tool_dependencies must be an array of tables")
 
     dependencies: List[ToolDependency] = []
     seen: set[str] = set()
     for index, item in enumerate(items):
         where = f"project.{name}.tool_dependencies[{index}]"
         if not isinstance(item, dict):
-            print(f"[ERROR] {where} must be a table")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"{where} must be a table")
         unknown = sorted(set(item) - _KNOWN_TOOL_DEPENDENCY_KEYS)
         if unknown:
-            print(f"[ERROR] {where}: unknown keys {unknown} (V09)")
-            raise SystemExit(exit_codes.CONFIG_ERROR)
+            _error(f"{where}: unknown keys {unknown} (V09)")
 
         dep_project = _require(item, "project", where)
         version = _require(item, "version", where)
@@ -463,8 +448,13 @@ def _read_toml(path: Path, expected_name: str) -> dict:
         _error(f"expected {expected_name}, got {path.name}")
     if not path.is_file():
         _error(f"config file not found: {path}")
-    with path.open("rb") as handle:
-        raw = tomllib.load(handle)
+    try:
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        _error(f"{path}: invalid TOML ({exc})")
+    except OSError as exc:
+        _error(f"{path}: cannot read configuration ({exc})")
     if not isinstance(raw, dict):
         _error(f"{path}: TOML document must be a table")
     return raw
@@ -491,10 +481,13 @@ def _expand_env_reference(value: str, where: str, key: str) -> str:
             # A silent literal here ships a wrong value into every step env
             # with no error anywhere (estate rule: never a silent wrong
             # answer) — say what the rule is instead.
-            print(
-                f"[WARN] {where}.{key}: contains ${{...}} but is not a "
+            from cmru.cli_support import write_config_diagnostic
+
+            write_config_diagnostic(
+                f"{where}.{key}: contains ${{...}} but is not a "
                 "whole-value ${NAME} / ${NAME:-default} reference — left "
-                "LITERAL. Whole-value references only.", flush=True,
+                "LITERAL. Whole-value references only.",
+                level="WARN",
             )
         return value
     name, default = match.group(1), match.group(2)
@@ -691,7 +684,6 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
 
 def _parse_project_document(
     config_path: Path, *, require_repository_facts: bool = True,
-    allow_repository_facts: bool = False,
 ) -> tuple[ProjectS2Config, Optional[GitHubS2Config], Optional[TargetsConfig]]:
     raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
@@ -705,17 +697,13 @@ def _parse_project_document(
         github = _github(raw.get("github"))
         targets = _targets(raw.get("targets"))
     else:
-        if ("github" in raw or "targets" in raw) and not allow_repository_facts:
+        if "github" in raw or "targets" in raw:
             _error(
                 f"{config_path}: [github] and [targets] are central orchestration facts; "
                 "remove the project-local duplicate"
             )
-        if allow_repository_facts:
-            github = _github(raw.get("github"))
-            targets = _targets(raw.get("targets"))
-        else:
-            github = None
-            targets = None
+        github = None
+        targets = None
     env = _scalar_env(raw.get("env", {}), "env")
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
     if set(metadata) - {"date_env", "date_format"}:
@@ -919,18 +907,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
             )
         dependencies[project_id] = _string_list(entry.get("depends_on", []), f"{where}.depends_on")
         project_path = (config_path.parent / config_rel).resolve()
-        project, project_github, project_targets = _parse_project_document(
+        project, _project_github, _project_targets = _parse_project_document(
             project_path, require_repository_facts=False,
-            # run-gate-project is intentionally frozen outside this CMRU change;
-            # its project contract retains the legacy facts until its own migration.
-            allow_repository_facts=(project_id == "run-gate-project"),
         )
-        if project_github is not None and (
-            project_github.owner, project_github.repo, project_github.owner_type
-        ) != (github.owner, github.repo, github.owner_type):
-            _error(f"{where}: frozen project repository facts differ from central facts")
-        if project_targets is not None and project_targets != targets:
-            _error(f"{where}: frozen project targets differ from central targets")
         if project.name != project_id:
             _error(f"{where}.config declares project.id={project.name!r}, expected {project_id!r}")
         try:
@@ -1089,9 +1068,8 @@ def resolve_invocation_context(
             selected = current / PROJECT_CONFIG_FILENAME
     if selected.name == ORCHESTRATION_CONFIG_FILENAME:
         forge = load_forge_config(selected, require_orchestration=True)
+        _refuse_unregistered_project(forge, current)
         project_name = _project_for_directory(forge, current)
-        if project_name is None:
-            _refuse_unregistered_project(forge, current)
         return InvocationContext(
             config_path=selected,
             config_kind="orchestration",

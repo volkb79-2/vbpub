@@ -72,7 +72,7 @@ def test_config_remaining_project_and_secret_policies(tmp_path, capsys):
     for raw, diagnostic in cases:
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit): config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_transaction_result_write_and_build_discard_refuse_invalid_state(tmp_path):
@@ -128,12 +128,14 @@ def test_runner_validates_and_scopes_runtime_environment(tmp_path, capsys, monke
     assert os.getenv("C") == "ambient"
 
 
-def test_runner_docker_login_uses_stdin_and_main_flags(monkeypatch):
+def test_runner_docker_login_uses_stdin_and_main_flags(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
     runner._docker_login("registry", "user", "secret")
     assert calls[0][0][0] == ["docker", "login", "registry", "-u", "user", "--password-stdin"]
     assert calls[0][1]["input"] == "secret\n"
+    config = tmp_path / "cmru.toml"
+    config.write_text(project_doc(), encoding="utf-8")
     with patch.object(runner, "run_step") as run:
-        runner.main(["--config", "cmru.toml", "--step", "build", "--show-run-details", "--log-append"])
+        runner.main(["--config", str(config), "--step", "build", "--show-run-details", "--log-append"])
     run.assert_called_once()

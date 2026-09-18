@@ -19,19 +19,16 @@ explicitly.
 A product is releasable when two files exist. Nothing is auto-discovered beyond them.
 
 **`<project>/cmru.toml`** — travels with the product; its complete release/build/test/publish
-contract. Secrets never live here. Minimal wheel example (see
+contract. In an orchestrated estate, repository and registry facts live in the central file
+below. Secrets never live here. Minimal wheel example (see
 [`../../cmru.project.sample.toml`](../../cmru.project.sample.toml) for the annotated original):
 
 ```toml
 schema_version = 1
 
-[github]
-owner = "your-github-owner"
-repo  = "your-repository"
-owner_type = "user"
-
 [project]
 id = "example-wheel"
+description = "Example wheel project"
 prefix = "example-wheel-v"        # the tag prefix cmru owns; SemVer follows it
 artifacts = ["wheel"]             # an output INVENTORY, not a behaviour switch
 template_revision = 4
@@ -86,11 +83,24 @@ registry = ["ghcr.io"]
 project_order    = ["example-wheel"]
 default_projects = ["example-wheel"]
 default_steps    = ["run-tests", "build", "push"]
+execution_mode   = "project-first"
 
 [orchestration.project.example-wheel]
 config = "example-wheel/cmru.toml"
 depends_on = []
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags = ["example-wheel-latest"]
+ghcr_packages = ["*"]
+ghcr_delete_packages = []
 ```
+
+The two snippets above are a complete loadable pair: save the project snippet as
+`example-wheel/cmru.toml` and the central snippet as `cmru.orchestration.toml`, then run
+`cmru standards`. For a standalone project that has no central file, use the annotated
+[`cmru.project.sample.toml`](../../cmru.project.sample.toml), which keeps its own
+`[github]` and `[targets]` facts.
 
 `cmru.toml` is one grammar for every verb (`S-CLI`/`S2`, KI-03/KI-05). Unknown fields, a
 committed `[github].token`, retired central `[projects]`/`[registry]` tables, or an omitted
@@ -237,6 +247,7 @@ Adopt with these boundaries in mind — each is a deliberate, fail-closed gap, t
 ## See also
 
 - [`../README.md`](../README.md) — the model, verbs, and templates (WHAT).
+- [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md) — why contextual roots, central facts, selection, and native release logging work this way.
 - [`SPEC.md`](SPEC.md) — the normative contract (WHY); start at *S-CLI*, *S-REL*, *S2*.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — running cmru against the estate during development.
 - [`../../docs/ciu-vs-cmru.md`](../../docs/ciu-vs-cmru.md) — which tool owns an artifact.
