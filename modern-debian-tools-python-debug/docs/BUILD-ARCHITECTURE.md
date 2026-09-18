@@ -140,11 +140,11 @@ The phases are:
    Dockerfile execution, cache lookup, layer compression, and OCI export inside
    its limited worker. The default local cache is kept beside the shared Git
    directory under a compression-policy-specific name (for example,
-   `mdt-buildkit-cache-zstd-true-3`); an explicit `MDT_BUILDKIT_CACHE_DIR` is an
+   `mdt-buildkit-cache-zstd-false-3`); an explicit `MDT_BUILDKIT_CACHE_DIR` is an
    operator-owned single-policy override. The cache exporter is explicitly
    configured with the same compression, level, forced-compression, and OCI
    media-type settings as the image. This matters because BuildKit can build a
-   combinatorial graph when one cache mixes gzip and forced-zstd forms of many
+   combinatorial graph when one cache mixes gzip and zstd forms of many
    layers. The toolkit requirements are installed before the
    offline first-party-wheel layer; their minimums therefore form the explicit
    runtime-dependency closure for every staged wheel (including Nyxloom's
