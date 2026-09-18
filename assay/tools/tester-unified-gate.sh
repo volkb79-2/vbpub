@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Registered Assay gate driver. The outer mode derives the host bind source,
-# verifies the configured background cgroup through cgroup-parent.sh, launches
+# verifies the configured gates cgroup through cgroup-parent.sh, launches
 # tester-unified with the network disabled, and emits the final receipt marker
 # only after Docker returns zero. The inner mode is invoked only inside that
 # container.

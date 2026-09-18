@@ -53,8 +53,10 @@ bootstrap process. After installation, the `cmru` console script is the canonica
 interface for this repository and for each individual project.
 
 Before running a release gate, ensure the dedicated gate image is built from
-[`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep Docker work under the
-configured `$CGROUP_PARENT_DEV_BACKGROUND` slice.
+[`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep gate
+containers under the configured `$CGROUP_PARENT_DEV_GATES` slice. A gate that
+starts a long-running application stack receives `$CGROUP_PARENT_DEV_BACKGROUND`
+separately for that nested stack.
 
 ## Releasing (cmru)
 

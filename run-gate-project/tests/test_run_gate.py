@@ -1421,6 +1421,35 @@ class TestCentralDefaults:
         assert "central" in proc.stdout  # source named transparently
         assert run_gate.ROOT_CONFIG_NAME in proc.stdout
 
+    def test_central_environment_forwards_nested_stack_tier(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+            forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+        """))
+        commit_all(repo, "central gate forwarding")
+        proj = make_project(repo, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv(CGROUP_VAR, "dev-gates.slice")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        proc = run_tool(proj, "suite")
+        assert proc.returncode == 0, proc.stderr
+        assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in \
+            docker_runs(log)[0]
+
     def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         self._central(repo)

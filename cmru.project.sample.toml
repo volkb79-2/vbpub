@@ -24,11 +24,10 @@ CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:trixie-slim"
 
 # GOVERNANCE SLICE for gate containers — declared, never ambient:
-#   CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}"
-# ${NAME:-default} expands at load time (unset NAME without :-default is a
-# load error). Empty result = NO slice tier on purpose (announced unscoped
-# launch; per-container caps still apply). Whatever resolves is verified
-# against the host systemd before launch.
+#   CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"
+# The required host-injected gates tier expands at load time and is verified
+# against host systemd before launch. An unset value is a configuration error;
+# gates never fall through to Docker's unscoped default.
 #
 # Per-container IO caps (optional, device-specific "<device>:<rate>"):
 #   CMRU_TESTER_DEVICE_READ_BPS / _WRITE_BPS / _READ_IOPS / _WRITE_IOPS

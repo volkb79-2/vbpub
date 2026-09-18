@@ -132,11 +132,15 @@ def _host_path_for(path: Path) -> str:
 
 def _docker_run(*, mounts: list[tuple[str, str, bool]], workdir: str, argv: list[str]):
     command = ["docker", "run", "--rm", "--network=none"]
-    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES")
-    if slice_name:
-        # A-334's placement half: a gate container is placed on the host
-        # tier by its caller, never left to a fail-open transient slice.
-        command.append(f"--cgroup-parent={slice_name}")
+    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip()
+    if not slice_name:
+        raise RuntimeError(
+            "real-Go qualification requires CGROUP_PARENT_DEV_GATES; "
+            "refusing an unscoped Docker launch"
+        )
+    # A-334's placement half: a gate container is placed on the host tier by
+    # its caller, never left to a fail-open transient slice.
+    command.append(f"--cgroup-parent={slice_name}")
     for source, destination, readonly in mounts:
         spec = f"type=bind,src={source},dst={destination}"
         command.extend(["--mount", spec + (",readonly" if readonly else "")])

@@ -16,6 +16,10 @@ image = "tester-unified:local"
 # value itself remains host-owned so host setup can verify the installed unit;
 # long-running stacks continue to use $CGROUP_PARENT_DEV_BACKGROUND.
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+# CIU's nested-stack governance tests read the application-stack tier inside
+# the gate container. This is a forwarded fact only; the gate container itself
+# remains placed in the sibling gates tier above.
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
 
 # [environments.test-runner] belongs to dstdns's own root config when that
 # repo adopts run-gate (timed per dstdns D-111) — not declared speculatively.
