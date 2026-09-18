@@ -163,6 +163,17 @@ class ForgeConfig:
     project_tokens: Mapping[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class InvocationContext:
+    """The selected config and the implicit scope for one CLI invocation."""
+
+    config_path: Path
+    config_kind: str
+    cmru_root: Path
+    project_name: Optional[str]
+    scope: str
+
+
 # ─── Parsing ─────────────────────────────────────────────────────────────────
 
 def _require(d: dict, key: str, section: str) -> object:
@@ -174,7 +185,9 @@ def _require(d: dict, key: str, section: str) -> object:
 
 
 def _error(message: str) -> "None":
-    print(f"[ERROR] {message}", flush=True)
+    from cmru.cli_support import write_config_diagnostic
+
+    write_config_diagnostic(message)
     raise SystemExit(exit_codes.CONFIG_ERROR)
 
 
@@ -676,7 +689,10 @@ def _validate_runner_steps(raw_steps: object) -> dict[str, dict]:
     return result
 
 
-def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS2Config, TargetsConfig]:
+def _parse_project_document(
+    config_path: Path, *, require_repository_facts: bool = True,
+    allow_repository_facts: bool = False,
+) -> tuple[ProjectS2Config, Optional[GitHubS2Config], Optional[TargetsConfig]]:
     raw = _read_toml(config_path, PROJECT_CONFIG_FILENAME)
     _reject_unknown(
         raw,
@@ -685,8 +701,21 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
     )
     if raw.get("schema_version") != 1:
         _error(f"{PROJECT_CONFIG_FILENAME}.schema_version must be exactly 1")
-    github = _github(raw.get("github"))
-    targets = _targets(raw.get("targets"))
+    if require_repository_facts:
+        github = _github(raw.get("github"))
+        targets = _targets(raw.get("targets"))
+    else:
+        if ("github" in raw or "targets" in raw) and not allow_repository_facts:
+            _error(
+                f"{config_path}: [github] and [targets] are central orchestration facts; "
+                "remove the project-local duplicate"
+            )
+        if allow_repository_facts:
+            github = _github(raw.get("github"))
+            targets = _targets(raw.get("targets"))
+        else:
+            github = None
+            targets = None
     env = _scalar_env(raw.get("env", {}), "env")
     metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
     if set(metadata) - {"date_env", "date_format"}:
@@ -706,6 +735,8 @@ def _parse_project_document(config_path: Path) -> tuple[ProjectS2Config, GitHubS
     description = _require(project_raw, "description", "project")
     if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name):
         _error("project.id must be a lowercase project identifier")
+    if name == "all":
+        _error("project.id='all' is reserved for estate-wide selection")
     if not isinstance(description, str) or not description.strip():
         _error("project.description must be a non-empty string")
 
@@ -816,6 +847,7 @@ def _parse_cleanup(raw: object) -> CleanupS2Config:
 
 def _load_project_config(config_path: Path) -> ForgeConfig:
     project, github, targets = _parse_project_document(config_path)
+    assert github is not None and targets is not None
     root_token, project_tokens = _load_repository_secrets(
         config_path.parent, {project.name: config_path},
     )
@@ -837,9 +869,14 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
 
 def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     raw = _read_toml(config_path, ORCHESTRATION_CONFIG_FILENAME)
-    _reject_unknown(raw, {"schema_version", "orchestration", "cleanup"}, ORCHESTRATION_CONFIG_FILENAME)
+    _reject_unknown(
+        raw, {"schema_version", "github", "targets", "orchestration", "cleanup"},
+        ORCHESTRATION_CONFIG_FILENAME,
+    )
     if raw.get("schema_version") != 1:
         _error(f"{ORCHESTRATION_CONFIG_FILENAME}.schema_version must be exactly 1")
+    github = _github(raw.get("github"))
+    targets = _targets(raw.get("targets"))
     orch_raw = raw.get("orchestration")
     if not isinstance(orch_raw, dict):
         _error("[orchestration] is required")
@@ -859,8 +896,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     docs: dict[str, ProjectS2Config] = {}
     paths: dict[str, Path] = {}
     dependencies: dict[str, List[str]] = {}
-    github: Optional[GitHubS2Config] = None
-    targets: Optional[TargetsConfig] = None
     defaults_raw = orch_raw.get("defaults", {})
     if not isinstance(defaults_raw, dict):
         _error("orchestration.defaults must be a table")
@@ -868,6 +903,8 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     shared_env = _scalar_env(defaults_raw.get("env"), "orchestration.defaults.env")
     for project_id, entry in entries.items():
         where = f"orchestration.project.{project_id}"
+        if project_id == "all":
+            _error("orchestration.project.all is reserved for estate-wide selection")
         if not isinstance(entry, dict):
             _error(f"[{where}] must be a table")
         _reject_unknown(entry, {"config", "depends_on"}, where)
@@ -882,7 +919,18 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
             )
         dependencies[project_id] = _string_list(entry.get("depends_on", []), f"{where}.depends_on")
         project_path = (config_path.parent / config_rel).resolve()
-        project, project_github, project_targets = _parse_project_document(project_path)
+        project, project_github, project_targets = _parse_project_document(
+            project_path, require_repository_facts=False,
+            # run-gate-project is intentionally frozen outside this CMRU change;
+            # its project contract retains the legacy facts until its own migration.
+            allow_repository_facts=(project_id == "run-gate-project"),
+        )
+        if project_github is not None and (
+            project_github.owner, project_github.repo, project_github.owner_type
+        ) != (github.owner, github.repo, github.owner_type):
+            _error(f"{where}: frozen project repository facts differ from central facts")
+        if project_targets is not None and project_targets != targets:
+            _error(f"{where}: frozen project targets differ from central targets")
         if project.name != project_id:
             _error(f"{where}.config declares project.id={project.name!r}, expected {project_id!r}")
         try:
@@ -891,13 +939,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
             _error(f"{where}.config resolves outside the orchestration root")
         docs[project_id] = project
         paths[project_id] = project_path
-        if github is None:
-            github = project_github
-            targets = project_targets
-        elif (project_github.owner, project_github.repo, project_github.owner_type) != (github.owner, github.repo, github.owner_type):
-            _error("one orchestration run currently requires every project cmru.toml to name the same GitHub release repository")
-        elif project_targets != targets:
-            _error("one orchestration run currently requires every project cmru.toml to name identical [targets]")
     # This is an explicit estate policy, not a consumer-side fallback: project
     # values deliberately override a key only when the project owns a distinct
     # fact, and every runner receives the resolved effective environment.
@@ -936,7 +977,6 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
                     f"orchestration.project.{project_id}.depends_on requires {dependency!r} "
                     "to appear earlier in orchestration.project_order"
                 )
-    assert github is not None and targets is not None
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
         token=root_token or None,
@@ -967,3 +1007,112 @@ def load_forge_config(config_path: Path, *, require_orchestration: bool = False)
     if require_orchestration and config_path.name != ORCHESTRATION_CONFIG_FILENAME:
         _error(f"this estate-level verb requires {ORCHESTRATION_CONFIG_FILENAME}")
     return config
+
+
+def _ancestors(path: Path) -> list[Path]:
+    current = path.resolve()
+    return [current, *current.parents]
+
+
+def _contains(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _nearest_file(cwd: Path, filename: str) -> Optional[Path]:
+    for directory in _ancestors(cwd):
+        candidate = directory / filename
+        if candidate.exists():
+            if not candidate.is_file():
+                _error(f"{candidate}: expected a regular file")
+            return candidate.resolve()
+    return None
+
+
+def _project_for_directory(forge: ForgeConfig, cwd: Path) -> Optional[str]:
+    """Return the deepest registered project containing *cwd*."""
+    if forge.orchestration is None:
+        return None
+    matches = [
+        (name, path.parent.resolve())
+        for name, path in forge.orchestration.project_configs.items()
+        if _contains(path.parent, cwd)
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: len(item[1].parts))[0]
+
+
+def _refuse_unregistered_project(forge: ForgeConfig, cwd: Path) -> None:
+    """Refuse a local project contract hidden by a central registry."""
+    if forge.orchestration is None:
+        return
+    root = forge.repo_root
+    registered = {
+        path.resolve()
+        for path in forge.orchestration.project_configs.values()
+    }
+    for directory in _ancestors(cwd):
+        candidate = directory / PROJECT_CONFIG_FILENAME
+        if not _contains(root, candidate):
+            continue
+        if candidate.exists() and candidate.resolve() not in registered:
+            _error(
+                f"{candidate}: project config is not registered by the nearest "
+                f"{ORCHESTRATION_CONFIG_FILENAME} at {root / ORCHESTRATION_CONFIG_FILENAME}"
+            )
+        if directory == root:
+            break
+
+
+def resolve_invocation_context(
+    config_path: Optional[Path] = None, *, cwd: Optional[Path] = None,
+) -> InvocationContext:
+    """Find the nearest CMRU root and resolve the implicit project scope.
+
+    Discovery deliberately follows filesystem ancestors to ``/``. Git is a
+    project fact, not a boundary for a user-owned CMRU root serving multiple
+    repositories.
+    """
+    current = (cwd or Path.cwd()).resolve()
+    explicit = config_path is not None
+    if config_path is not None:
+        selected = config_path.expanduser().resolve()
+    else:
+        selected = _nearest_file(current, ORCHESTRATION_CONFIG_FILENAME)
+        if selected is None:
+            selected = _nearest_file(current, PROJECT_CONFIG_FILENAME)
+        if selected is None:
+            selected = current / PROJECT_CONFIG_FILENAME
+    if selected.name == ORCHESTRATION_CONFIG_FILENAME:
+        forge = load_forge_config(selected, require_orchestration=True)
+        project_name = _project_for_directory(forge, current)
+        if project_name is None:
+            _refuse_unregistered_project(forge, current)
+        return InvocationContext(
+            config_path=selected,
+            config_kind="orchestration",
+            cmru_root=selected.parent.resolve(),
+            project_name=project_name,
+            scope="project" if project_name else "estate",
+        )
+    if selected.name == PROJECT_CONFIG_FILENAME:
+        forge = load_forge_config(selected)
+        project_name = next(iter(forge.projects))
+        if not explicit and not _contains(selected.parent, current):
+            _error(f"{selected}: current directory is outside the selected project root")
+        return InvocationContext(
+            config_path=selected,
+            config_kind="project",
+            cmru_root=selected.parent.resolve(),
+            project_name=project_name,
+            scope="project",
+        )
+    _error(
+        f"CMRU configuration must be named {PROJECT_CONFIG_FILENAME} or "
+        f"{ORCHESTRATION_CONFIG_FILENAME}"
+    )
+    raise AssertionError("unreachable")

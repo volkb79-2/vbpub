@@ -17,7 +17,6 @@ ROOT_CMRU_ARTIFACTS = (
     "cmru.orchestration.sample.toml",
     "cmru.orchestration.toml",
     "cmru.project.sample.toml",
-    "cmru.release.sh",
 )
 EXPECTED_REASON = "Required test coverage of 100% not reached"
 

@@ -1,14 +1,5 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 CMRU_TESTER_DIND_IMAGE = "docker:dind"
 RELEASE_IMAGE_FLOW = "load"

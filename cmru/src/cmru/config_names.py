@@ -1,10 +1,8 @@
 """The two CMRU configuration filenames.
 
-They are deliberately names, not discovery rules: a reusable ``cmru`` process
-selects the project document in its current directory, or the orchestration
-document when that is the only config present there. It never searches parent
-directories. The vbpub repository may pass the orchestration document explicitly
-with ``--config`` or through its release convenience wrapper.
+The installed ``cmru`` process searches ancestors for the nearest
+``cmru.orchestration.toml``. That file establishes the CMRU root and may serve
+several repositories below it; an explicit ``--config`` always wins.
 """
 from __future__ import annotations
 

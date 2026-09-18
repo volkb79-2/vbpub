@@ -554,7 +554,8 @@ def _rewrite_tool_dependency_toml(
 # --- CLI verb ------------------------------------------------------------------
 
 def tool_deps_main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(
+    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
+    parser = CMRUArgumentParser(
         description=(
             "Verify declared first-party tool dependencies (S15): integrity (bytes match "
             "the recorded hash), authenticity (that hash matches the PUBLISHED release "
@@ -567,8 +568,8 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
         "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
     )
     parser.add_argument(
-        "--project", action="append",
-        help="Check only this project's declarations (repeatable; default: every orchestrated project)",
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="Project target; omitted uses the current project or estate default",
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable per-dependency records")
     parser.add_argument(
@@ -600,10 +601,16 @@ def tool_deps_main(argv: Optional[list[str]] = None) -> None:
     repo_root, projects, project_order, *_rest = load_config(config_path)
     github_config = _rest[-2]
 
-    selected = args.project or list(projects)
-    unknown = sorted(set(selected) - set(projects))
-    if unknown:
-        parser.error(f"unknown project(s): {', '.join(unknown)}")
+    from cmru.config import resolve_invocation_context
+    context = resolve_invocation_context(config_path)
+    try:
+        selected = select_target_names(
+            args.target, projects, project_order,
+            context_project=context.project_name,
+            estate_scope=context.scope == "estate",
+        )
+    except TargetSelectionError as exc:
+        parser.error(str(exc))
 
     # S15.6/B2: a single-project load (`cmru.toml`, e.g. run from a project
     # directory, or `--config <project>/cmru.toml`) only EVER sees its own

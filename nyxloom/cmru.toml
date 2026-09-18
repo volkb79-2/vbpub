@@ -1,14 +1,5 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 NYXLOOM_RELEASE_NOTES = "## nyxloom wheel\n\nFiles-first, daemon-supervised control plane for role-separated AI-assisted development.\n\n**Install**\n```bash\npipx install nyxloom-*.whl\n```"
 

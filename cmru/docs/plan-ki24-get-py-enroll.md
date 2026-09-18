@@ -15,7 +15,7 @@ KI-24's own ordering requirements).
 ## Why
 
 `get.py.tmpl` (the transactional installer every project renders via `cmru
-get-py --project <name>`) has `install|update|status|rollback` today, all
+get-py <name>`) has `install|update|status|rollback` today, all
 for a host that already trusts the control side. Nothing lets a fresh,
 untrusted host bootstrap itself so a controller CAN start trusting it —
 that gap is what blocks ciu's own host-enrollment feature (CIU-93),
@@ -41,9 +41,9 @@ already spec'd and operator-accepted, waiting on this piece.
    subcommand uses for output — match that style exactly, don't invent a
    new one.
 3. `src/cmru/getpy.py` — the Python-side driver that renders
-   `get.py.tmpl` via `cmru get-py --project <name>` (Jinja or string
+   `get.py.tmpl` via `cmru get-py <name>` (Jinja or string
    templating — check which). This is what O6 exercises
-   (`cmru get-py --project ciu` must render a script whose `enroll --help`
+   (`cmru get-py ciu` must render a script whose `enroll --help`
    lists exactly KI-24's flags).
 4. `tests/test_installer.py` — the existing test file for
    `get.py.tmpl`-rendered behavior (`TestGenerator`, `TestPrerequisites`,
@@ -156,7 +156,7 @@ already spec'd and operator-accepted, waiting on this piece.
   `EXIT_PREREQ`, names `openssh-server` in its message, and performs ZERO
   network I/O (assert this the same way `check_prerequisites()`'s existing
   tests already do — no `urllib`/`socket` call reached).
-- **O6**: `cmru get-py --project ciu` renders a script whose
+- **O6**: `cmru get-py ciu` renders a script whose
   `enroll --help` output lists exactly the flags in this plan's Work
   item 1 CLI line — byte-comparable to what actually ships as `ciu/get.py`
   and its release asset (this repo's existing `TestGetPyCLI`/`TestGenerator`

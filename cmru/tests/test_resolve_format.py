@@ -90,7 +90,7 @@ class TestFormatResultEnv(unittest.TestCase):
 def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(monkeypatch):
     project = SimpleNamespace(prefix="alpha-v", github_token="project-token")
     loaded = (
-        Path("/repo"), {"alpha": project}, [], [], [], "project-first", {},
+        Path("/repo"), {"alpha": project}, ["alpha"], [], [], "project-first", {},
         SimpleNamespace(), cli.GitHubConfig("owner", "repo", "root-token", "user"),
         cli.ReleaseEnvConfig({}, None),
     )
@@ -105,8 +105,12 @@ def test_resolve_uses_selected_project_secret_overlay_even_with_prefix_override(
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", FakeHost)
     monkeypatch.setattr(resolve_module, "resolve", lambda *_args, **_kwargs: _RESULT)
 
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda _path: SimpleNamespace(project_name="alpha", scope="project"),
+    )
     with redirect_stdout(io.StringIO()):
-        resolve_module.resolve_main(["--project", "alpha", "--prefix", "custom-v"])
+        resolve_module.resolve_main(["alpha"])
 
     assert captured == {"owner": "owner", "repo": "repo", "token": "project-token"}
 

@@ -8,7 +8,7 @@ external consumption? yes → cmru; no → ciu.*
 
 cmru versions, tags, builds, and publishes **independently-versioned products that share one
 GitHub Releases page**. You make a product releasable by giving it a portable `cmru.toml` and
-one entry in the estate's `cmru.orchestration.toml`. cmru owns the generic source mechanics
+one entry in the nearest CMRU root's `cmru.orchestration.toml`. cmru owns the generic source mechanics
 (isolated worktrees, generated history, tags); your project owns every release *phase* command
 explicitly.
 
@@ -65,12 +65,22 @@ commands = [
 ]
 ```
 
-**`<repository-root>/cmru.orchestration.toml`** — estate coordination only; **project commands
-and release facts are forbidden here**. Each entry points at a portable project-local
+**`<cmru-root>/cmru.orchestration.toml`** — central coordination; project commands remain in
+project files. The nearest file found while walking ancestors establishes the CMRU root and may
+serve several repositories below it. Each entry points at a portable project-local
 `cmru.toml` (see [`../../cmru.orchestration.sample.toml`](../../cmru.orchestration.sample.toml)):
 
 ```toml
 schema_version = 1
+
+[github]
+owner = "your-github-owner"
+repo = "your-repository"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
 
 [orchestration]
 project_order    = ["example-wheel"]
@@ -136,7 +146,7 @@ export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
 
 ```
 cmru status                       # what would release, and at what version bump
-cmru release --project <name>     # one source-first transaction: gate → tag → build → publish
+cmru release <name>     # one source-first transaction: gate → tag → build → publish
 cmru release                      # every changed project on one branch (S-CLI.5a)
 ```
 
@@ -158,7 +168,7 @@ cmru worktrees                                   # every retained failed build/r
 cmru cleanup --discard-build-worktree <PATH> --yes
 ```
 
-`cmru build --project X` is the local-inspection sibling: it runs prepare/gate/build in a
+`cmru build X` is the local-inspection sibling: it runs prepare/gate/build in a
 retained `cmru-build-…` worktree and **never publishes** (KI-10). Do not expect
 `cmru build` then `cmru publish` to ship the reviewed artifact — use `cmru release` for that.
 

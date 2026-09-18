@@ -1,6 +1,6 @@
 """Resolver — pick highest-semver release for a project prefix (S5).
 
-CLI: cmru resolve --project <name> [--format json|env|url]
+CLI: cmru resolve [all|project[,project...]] [--format json|env|url]
 
 The resolver is differentiator #2: monorepo-safe per-project "latest",
 replacing GitHub's single repo-global "Latest" badge.
@@ -90,24 +90,34 @@ def resolve_main(argv: Optional[list] = None) -> None:
     Tokens retain S2.4's explicit secret-source precedence; owner/repo are not
     guessed from an incomplete environment.
     """
-    import argparse
-    parser = argparse.ArgumentParser(description="Resolve latest release for a project (S5)")
-    parser.add_argument("--project", help="Project name (maps to prefix via config)")
-    parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
+    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
+    parser = CMRUArgumentParser(description="Resolve latest release for registered projects (S5)")
+    parser.add_argument(
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="Project target; omitted uses the current project or estate default",
+    )
     parser.add_argument("--format", choices=["json", "env", "url"], default="json")
     parser.add_argument(
         "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
     )
     args = parser.parse_args(argv)
 
-    if not args.project and not args.prefix:
-        parser.error("one of --project or --prefix is required")
-
     from cmru.cli import load_config, _resolve_config
     cfg_path = _resolve_config(args.config)
     result_tuple = load_config(cfg_path)
     configs = result_tuple[1]
+    project_order = result_tuple[2]
     github_cfg = result_tuple[8]
+    from cmru.config import resolve_invocation_context
+    context = resolve_invocation_context(cfg_path)
+    try:
+        names = select_target_names(
+            args.target, configs, project_order,
+            context_project=context.project_name,
+            estate_scope=context.scope == "estate",
+        )
+    except TargetSelectionError as exc:
+        parser.error(str(exc))
 
     # Owner/repo are source facts in the strict config. ``load_config`` has
     # already resolved the one S2.4 credential contract, including a selected
@@ -116,31 +126,36 @@ def resolve_main(argv: Optional[list] = None) -> None:
     owner = github_cfg.owner
     repo = github_cfg.repo
 
-    proj = configs.get(args.project) if args.project else None
-    if args.project and proj is None:
-        parser.error(f"unknown project: {args.project}")
-
-    prefix = args.prefix
-    project_token = proj.github_token if proj is not None else ""
-    if not prefix:
-        assert proj is not None  # enforced by the one-of --project/--prefix check above
-        prefix = proj.prefix
-    token = project_token or github_cfg.token
-
     if not owner or not repo:
-        print("[ERROR] GitHub owner/repo unknown in the selected CMRU config", file=sys.stderr)
-        sys.exit(2)
+        parser.error("GitHub owner/repo unknown in the selected CMRU config")
 
     from cmru.hosts.github import GitHubReleaseHost
-
-    host = GitHubReleaseHost(owner=owner, repo=repo, token=token)
 
     # Build the Releases base URL so resolve() can try the fast latest.json path
     # (single request) before falling back to scanning the releases list (S5.3/S5.4).
     gh_releases_url = f"https://github.com/{owner}/{repo}/releases"
 
-    result = resolve(host, prefix, gh_releases_url=gh_releases_url)
-    if not result:
-        print(f"[ERROR] No releases found for prefix '{prefix}'", file=sys.stderr)
-        sys.exit(1)
-    print(format_result(result, args.format))
+    results = {}
+    for name in names:
+        proj = configs[name]
+        token = proj.github_token or github_cfg.token
+        host = GitHubReleaseHost(owner=owner, repo=repo, token=token)
+        result = resolve(host, proj.prefix, gh_releases_url=gh_releases_url)
+        if not result:
+            print(f"[ERROR] No releases found for project {name!r} (prefix {proj.prefix!r})", file=sys.stderr)
+            sys.exit(1)
+        results[name] = result
+    if len(results) == 1:
+        print(format_result(next(iter(results.values())), args.format))
+    elif args.format == "json":
+        print(json.dumps(results, indent=2, sort_keys=True))
+    elif args.format == "env":
+        print("\n\n".join(
+            f"# Project: {name}\n{format_result(result, 'env')}"
+            for name, result in results.items()
+        ))
+    else:
+        print("\n".join(
+            f"===== Resolve Project: {name.upper()} =====\n{format_result(result, 'url')}"
+            for name, result in results.items()
+        ))
