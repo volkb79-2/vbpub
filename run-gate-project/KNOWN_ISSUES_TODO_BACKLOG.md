@@ -4726,6 +4726,69 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
+## RG-64 — a caller-side "instance flock" convention does not compose with run-gate's own internal exec lock; checking only the convention's lock cannot detect a real holder that bypassed it
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
+six-package concurrent-container wave as RG-63), by a package (`p194-b2-io-fault`)
+diagnosing why its own backgrounded gate run never produced a verdict.
+
+### What's wrong
+
+dstdns's own dispatch convention has each package take a caller-side
+per-instance lock file (`/tmp/<repo>-<instance>-testrunner.lock`) before
+running a gate, intended to serialize concurrent packages' access to a
+shared `test-runner` container. Separately, `run-gate` itself always takes
+its own internal exec lock (`/tmp/run-gate-exec-<container>.lock`,
+referenced elsewhere in this file as the RG-63 mechanism) before actually
+touching the container. These are two independent locks with no relationship
+enforced between them:
+
+- A package holding the CONVENTIONAL lock is not guaranteed exclusive
+  container access — a sibling package that never took the convention's
+  lock (e.g. dispatched without that instruction, or simply not following
+  it) can still be mid-execution via run-gate's own internal lock alone,
+  and the first package's gate will queue invisibly behind it.
+- Checking `fuser`/liveness on the CONVENTIONAL lock alone is therefore not
+  a reliable way to distinguish "queued behind a real holder" from "never
+  acquired, actually stuck" — it will only correctly diagnose contention
+  when the actual occupier happens to also be using the same convention.
+  The reporting package got a correct diagnosis once this way purely
+  because that specific sibling used the convention too; it does not
+  generalize, and the package's own BRIEF nearly propagated the false
+  confidence forward to its successor before self-correcting.
+
+The package's own concrete incident: a backgrounded `run-gate` invocation
+held its conventional instance lock the entire time but produced ZERO
+executed tests for 30+ minutes; the actual blocker was a sibling package
+mid-run in the shared container holding run-gate's own internal exec lock
+(`/tmp/run-gate-exec-dstdns-98535c-test-runner.lock`), which the
+conventional-lock check never surfaced.
+
+### Why it matters
+
+`run-gate`'s own internal exec lock is the only universally-taken,
+authoritative signal of real container occupancy (it is architecturally
+guaranteed by `run-gate` itself, not opt-in). Any dispatch convention, doc,
+or agent guidance that tells a caller to check its OWN convention's lock as
+a proxy for "is the container free" is checking the wrong thing — it can
+report false negatives (looks free, isn't) whenever a sibling invocation
+does not participate in that same convention.
+
+### Proposed fix
+
+- Document explicitly (in `run-gate`'s own docs, and in any consumer's
+  dispatch guidance) that `/tmp/run-gate-exec-<container>.lock` is the ONLY
+  authoritative liveness signal for a shared container, and that a
+  caller-side convention lock is a scheduling nicety, never a substitute.
+- Consider whether `run-gate` should expose a documented, first-class way
+  to query current exec-lock holder/queue depth directly (rather than a
+  caller having to `fuser` a raw lock file path and interpret PIDs itself),
+  so consumers don't need to reason about lock internals at all.
+- Not fixed by this session; dstdns's own dispatch prompts/BRIEFs should be
+  corrected to check the internal exec lock, not the convention lock, when
+  diagnosing "is my gate actually queued or stuck" — a dstdns-side action
+  item, tracked in that project's own controller record.
+
 ## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
 
 **Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, six
