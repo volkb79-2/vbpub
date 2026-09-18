@@ -306,6 +306,99 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.9.0] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=e49ec776fdf8f487b01d83237161dacbd2dfde17 -->
+
+### Added
+- feat(skills): add canonical single-tool skills for ciu, run-gate, assay, cmru, cgprofile (33c0b0c2)
+- feat(assay): share review evidence capture and analysis (fde9527a)
+
+### Fixed
+- fix(assay): preserve verdicts for resume decoder resource errors (a84581fc)
+- fix(assay): refuse deeply nested analysis JSON and expose captured failures (b48e873d)
+
+### Changed
+- controller: record Assay release PSI deferral (d7e83030)
+- Merge accepted Assay RG-49 B9 provider repair (fb24a852)
+- Merge current main before review evidence qualification (5a212412)
+- controller: record RG-49 B9 repair handoff (54dfca2f)
+- Merge latest main before release gate (aa27e79f)
+- Merge latest main before release gate (ea72f244)
+- Merge current main before Assay source-backed release (05efe06a)
+- controller(rg55): record authoritative mutation observation (f3c1490b)
+- controller(rg55): record P3 scope wording correction (c75443a3)
+- controller(rg55): record P3 checkpoint evidence (b4c0df76)
+- controller(rg55): record source-backed dry-run evidence (078dc8d8)
+- controller(rg55): classify release log evidence (73b67271)
+- controller(rg55): record P5 assay-source reconciliation checkpoint (23c57ba8)
+- controller(rg55): record interim assay closeout status (f82e9b43)
+- controller(rg55): record P4 closeout evidence refresh (3f234652)
+- controller(rg55): point P5 review packet at RW-250 (b0d0c054)
+- controller(rg55): record P1 survivor repair and R2 relaunch (c6245c19)
+- controller(rg55): record P5 handoff contract correction (96720b29)
+- controller(rg55): synchronize P5 review packet with RW-248 (bf5217bc)
+- controller(rg55): record asynchronous P5 mutation launch (c73ba05f)
+- controller(rg55): record P5 gate-full green (f8f2c8c3)
+- controller(rg55): record P5 r1 r3 and doctor gates (ee60418d)
+- controller(rg55): record P5 final selftest checkpoint (bf2108db)
+- controller(rg55): record P5 review packet refresh (4534bb43)
+- controller(rg55): refresh P5 Sol review packet (52e7f6ec)
+- controller(rg55): record source integration preview (f8d78921)
+- controller(rg55): record P6 resume3 launch (34fa9420)
+- controller(rg55): record P6 second budget boundary (ee8de92a)
+- controller(rg55): record P5 ended-watch repair (4962cc81)
+- controller(rg55): record fresh P5 selftest launch (0abbe42d)
+- controller(rg55): record P6 mutation resume (44e0e154)
+- controller(rg55): record P5 coverage checkpoint (3878c4dc)
+- controller(rg55): land SPEC-V8 Appendix D.6 (88d734d7)
+- controller(rg55): sequence P5 after source-backed assay (8ca0096b)
+- controller(rg55): disclose the assay 6.3 sequencing dependency (9264bd92)
+- controller(rg55): record mutation lane wakeup state (4f5fa2c7)
+- controller(rg55): checkpoint P5 and refresh Sol review packet (e9b21397)
+- Merge branch 'main' into assay-source-backed-20260916 (afb36cd3)
+- controller(rg55): record clean P1 mutation relaunch (0c0d55e4)
+- controller(rg55): record temporary gate resource envelope (6109bafa)
+- refactor(gates): consume assay from selected worktree source (cd4d19b0)
+- controller(rg55): relaunch exact-tree P1 and P6 mutation gates (3933fdfd)
+- controller(rg55): record run-gate 23.8.0 release and install (a11e4b14)
+
+### Documentation
+- docs(rg55): audit follow-up backlog scope (04abc3b7)
+- docs(rg55): record gate-full relaunch (530955b0)
+- docs(rg55): record cockpit carrier limitation (974c3ce4)
+- docs(rg55): record P6 same-tree rejudge launch (6fc6529d)
+- docs(rg55): record obsolete gate cleanup (da6d912e)
+- docs(rg55): record close-out branch refresh (ee9a1fe1)
+- docs(rg55): record resumed gate observation (e98bfed8)
+- docs(rg55): record Assay 6.3 release reconciliation (460b4690)
+- docs(rg55): record CMRU source integration (d62dd98f)
+- docs(rg55): record P6 same-tree resume (0e2c6dd9)
+- docs(rg55): correct takeover ruling sequence (da431d6a)
+- docs(rg55): record Luna controller takeover (abc30b94)
+- docs(rg55): defer cmru release fix to assay source integration (8ce7d8dd)
+- docs(rg55): record assay release branch checkpoint (842ef1d9)
+- docs(rg55): resume P6 mutation lane after budget exhaustion (7dd928af)
+- docs(rg55): record live lane observation and watcher rearm (00bbfc3c)
+- docs(rg55): record assay release preparation merge (1e2f55b9)
+- docs(rg55): refresh final review packet references (28c8688a)
+- docs(rg55): validate latest assay source against P5 (c0a694a5)
+- docs(rg55): record assay source checkpoint and lane preservation (a1bc6ad9)
+- docs(rg55): record latest assay source checkpoint (381d7838)
+- docs(rg55): record assay source checkpoint (591d6b4e)
+- docs(rg55): record detached observer re-arm (102247b6)
+- docs(rg55): record scheduled live-lane observation (da232818)
+- docs(rg55): correct asynchronous observer deadline (b862a73f)
+- docs(rg55): preserve P5 backlog status during assay reconciliation (edc79150)
+- docs(rg55): record P5 source-backed artifact cleanup (c7a00461)
+- docs(rg55): align P5 handoff with fail-closed admission contract (9c6a044c)
+- docs(run-gate): record source judge revision (e18102bc)
+- docs(gates): close stale assay pin guidance (a8f04686)
+
+### Testing
+- test(assay): retire guarded resume decoder exemption (e6ac4730)
+- test(gates): make source-backed assay runnable in tester (ed7884d7)
+
 ## [23.8.0] - 2026-09-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=dee4226bf570cc9f32b3ea9c3a3f0da404fde90d -->
