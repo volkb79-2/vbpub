@@ -4788,6 +4788,14 @@ ambiguous verdict rather than a real judgment.
   forensics.
 - Not fixed by this session; not touched by any Wave B2 package's own diff.
 
+### Update 2026-09-18 (same day, later) — a THIRD attempt on a genuinely quiet host also timed out; the pure-contention explanation is likely wrong, or at least incomplete
+
+The same package (`p195-b2-ctl`) retried this lane a third time, deliberately timed against a host with `some avg10=0.14` memory PSI (confirmed quiet, no other package's docker exec active at launch) — and it **still** hit `BUDGET_EXCEEDED/LANE_TIMEOUT`, this time recording only **0.36 cores avg** (i.e. genuinely NOT CPU-bound this run, unlike attempt 1's 1.19 cores avg). The package's own corrected diagnosis, arrived at by abandoning its own earlier (more convenient) contention explanation once the evidence stopped fitting it: `test-runner` runs a *superset* of the paths this lane covers in 535s, while `assay` covers *fewer* paths and still exceeds 1800s — and the lane's own ~450-470s historical baseline predates roughly a week of six Wave B2 packages each adding tests to the very suite this lane instruments. The working hypothesis is that the instrumented suite has organically outgrown its 30-minute budget over the course of the wave, independent of any single package's diff (the reporting package's own statement coverage in the measured modules has zero delta, confirmed via AST comparison) and independent of concurrent-exec-lock contention (this attempt's low core-average argues against CPU contention specifically, though it doesn't rule out I/O-level contention the controller's own host-wide PSI checks that same day did still show elevated).
+
+**The decisive experiment — running this exact lane against `main` (no package's diff applied) on an equally quiet host — is named but was deliberately NOT run**, correctly left to whoever owns the shared config (the controller, or this backlog's resolver) rather than a package agent altering shared infrastructure to explain away its own gate. Recorded here rather than left only in the dstdns session record so the next person to hit this (in this project or another consumer) has both data points (contended AND quiet-host timeouts) rather than re-deriving the contention half of the story from scratch.
+
+**Sharpened proposed fix**: in addition to the exec-lock-wait disclosure above, a `budget` that hasn't been re-measured against a growing instrumented suite is exactly the "unbounded budget by convention" shape RG-36 was partly written to close — worth checking on this project's own next assay-lane budget review whether `[lanes.assay]`-shaped budgets anywhere in this estate are still sized against a stale baseline. Not fixed by this session.
+
 **1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`
 is order-dependent.** `PAIRINGS_SEEN` (a class-level `list`) is populated
 incrementally by the class's OTHER, parametrized test
