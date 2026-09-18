@@ -120,7 +120,10 @@ ways (first measured at the ciu checkpoint-A review, 2026-08-19 — record:
 
 1. **Pass `-e CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES`** —
    gate placement and governance tests read it ambiently (S15.2 by design) and fail without it;
-   the failures look like product bugs, not a missing variable.
+   the failures look like product bugs, not a missing variable. If the gate
+   starts a long-running application stack, also pass
+   `-e CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND` so that
+   nested stack governance receives its separate tier fact.
 2. **Dual-mount the repo** at BOTH its physical host path and its devcontainer
    path (`-v /home/.../vbpub:/home/.../vbpub -v /home/.../vbpub:/workspaces/vbpub`):
    a git WORKTREE's `.git` gitfile records the path of whichever namespace
