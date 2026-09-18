@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-0d47dcaa7ab5] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=0d47dcaa7ab5e81f2c3180e8e4d7c50a3ff113d6 -->
+
+### Changed
+- Release metadata prepared by CMRU.
+
 ## [source-3bdb473105fe] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=3bdb473105febf0a995610b7b085b7b4134d1a97 -->
