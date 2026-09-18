@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.7.1] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=6f680f185d3091989077b616b53ad5426eae8208 -->
+
+### Documentation
+- docs(nyxloom): design doc for session self-introspection + a process/resource registry (fd67aece)
+
 ## [0.7.0] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=9ac429ec6f92d366949943af4672a5d280206177 -->
