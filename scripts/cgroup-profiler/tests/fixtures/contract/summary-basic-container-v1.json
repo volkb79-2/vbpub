@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "session": null,
+  "daemon": null,
+  "scope": "container",
+  "method": "basic",
+  "started_at": "2026-09-12T10:15:00Z",
+  "ended_at": "2026-09-12T10:15:04Z",
+  "duration_seconds": 4.0,
+  "interval_seconds": 1.0,
+  "samples": 5,
+  "target": {
+    "container_id": "deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233",
+    "cgroup": "/dev.slice/dev-background.slice/docker-deadbeefcafebabefeedfacefeedbeadf00dbabe1234567890abcdef00112233.scope",
+    "token": null,
+    "targets_seen": null
+  },
+  "memory": {
+    "peak_bytes": 796917760,
+    "source": "memory.peak",
+    "baseline_bytes": 524288000,
+    "peak_over_baseline_bytes": null,
+    "p90_bytes": 734003200,
+    "median_bytes": 629145600,
+    "swap_peak_bytes": 0,
+    "anon_peak_bytes": 576716800,
+    "file_peak_bytes": 125829120
+  },
+  "cpu": {
+    "seconds": 4.0,
+    "cores_avg": 1.0,
+    "cores_max": 2.0,
+    "throttled_seconds": 0.3,
+    "nr_throttled": 3
+  },
+  "pressure": {
+    "memory_some_stall_seconds": 7.1,
+    "memory_full_stall_seconds": 5.3,
+    "cpu_some_stall_seconds": 14.0,
+    "io_some_stall_seconds": 1.5,
+    "io_full_stall_seconds": 1.0
+  },
+  "faults": {
+    "pgmajfault": 1032,
+    "workingset_refault_anon": 0,
+    "workingset_refault_file": 2210
+  },
+  "pids": {"peak": 5},
+  "damon": null,
+  "host": {
+    "start": {
+      "memory_pressure": {"some_avg10": 0.50, "full_avg10": 0.10, "some_avg60": 0.60, "full_avg60": 0.12},
+      "cpu_pressure": {"some_avg10": 0.80, "full_avg10": 0.00, "some_avg60": 0.70, "full_avg60": 0.00},
+      "loadavg1": 3.00
+    },
+    "end": {
+      "memory_pressure": {"some_avg10": 0.60, "full_avg10": 0.15, "some_avg60": 0.65, "full_avg60": 0.16},
+      "cpu_pressure": {"some_avg10": 0.95, "full_avg10": 0.00, "some_avg60": 0.82, "full_avg60": 0.00},
+      "loadavg1": 3.40
+    },
+    "memory_full_stall_seconds": 1.8,
+    "memory_some_stall_seconds": 3.0,
+    "slice": null
+  },
+  "events": {"oom_kill": 0, "limit_drift": 1, "memory_high_breach": 11}
+}

@@ -1,0 +1,68 @@
+# ==========================================================================
+# cgprofile — the RG-55 profiling daemon, ciu stack defaults
+# ==========================================================================
+#
+# One service, `daemon`: `cgprofile serve` as PID 1 inside
+# `cgprofile-host-daemon` (RG55-INTERFACE-CONTRACT.md §1.8). It is
+# `--privileged --pid=host --cgroupns=host --network=none` — a HOST
+# SINGLETON (see ciu.global.defaults.toml.j2's own comment on
+# `deploy.environment_tag = "host"`), never a per-instance/per-worktree
+# stack. `ciu up` from this directory (or `tools/daemon-run.sh` if ciu
+# refuses one of these three flags — see the P1 REPORT for which, if any).
+
+[cgprofile]
+# The image this stack deploys. `local` for dev (`build-push.py --build`
+# tags `cgprofile:local`); a real release overrides `tag` to the resolved
+# ghcr.io coordinate (C8, scm versioning) in an override.
+[cgprofile.image]
+registry = "" # empty = local dev image, no registry prefix
+namespace = ""
+name = "cgprofile"
+tag = "local"
+
+[cgprofile.daemon]
+name = "daemon"
+# Contract §1.8 defaults, restated here as the single place an operator
+# tunes them without touching the compose template. `serve`'s own CLI
+# flags (cgprofile.py build_parser()) share these exact names.
+socket_path = "/run/cgprofile/ctl.sock"
+sessions_dir = "/var/lib/cgprofile/sessions"
+damon_default = "on"
+interval = "1.0"
+keep_sessions = 200
+keep_days = 14
+observe_slices = ""
+max_sessions = 16
+# mdt's admission-capacity slice (RG55-INTERFACE-CONTRACT.md §8.3/§8.5,
+# D-25) — C8's placed leaves (`rg-<token>`) live under it; this package
+# only READS it (`ctl host`'s `gates_slice` block), never installs or
+# writes its unit (that is mdt host-setup P8's own infra/, not this one).
+gates_slice = "dev-gates.slice"
+# Socket carrier (contract §8.1, D-30). The daemon's listener is bind-
+# mounted to the SAME host path so a consumer outside this container can
+# reach it; who may use it is decided by the host directory's group (mdt
+# host-setup's `mdt-cgprofile.conf` tmpfiles.d entry: `d /run/cgprofile
+# 0770 root docker -`), i.e. the same principals who can `docker exec`.
+# `socket_dir` is the host path that is mounted — always the directory the
+# socket lives in, never the socket file itself (the daemon unlinks and
+# re-creates that file at every start; a file bind-mount would pin the
+# deleted inode and the carrier would silently stop working).
+socket_dir = "/run/cgprofile"
+# OPTIONAL extra narrowing (§8.1): a comma-separated uid allowlist checked
+# with SO_PEERCRED on every connection. Empty = no uid restriction beyond
+# the socket's group mode. uid 0 is always allowed (that is how the exec
+# carrier arrives). A malformed value refuses to start the daemon.
+allow_uids = ""
+
+# Explicit, not governance-injected (C7): the daemon samples memory across
+# every profiled session concurrently and must never itself be the thing
+# that gets OOM-killed mid-run — an ample, hand-picked ceiling rather than
+# whatever governance's own default happens to be. memswap_limit = 2x
+# mem_limit (a swap cushion, not a second independent cap — compose/Docker
+# semantics: memswap_limit is the COMBINED mem+swap ceiling).
+[cgprofile.hardening]
+mem_limit = "1g"
+memswap_limit = "2g"
+
+[state]
+initialized = false

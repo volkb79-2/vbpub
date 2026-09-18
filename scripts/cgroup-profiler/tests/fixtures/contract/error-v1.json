@@ -1,0 +1,8 @@
+{
+  "ok": false,
+  "contract": 1,
+  "error": {
+    "code": "unknown-session",
+    "message": "no session s-20260912T090000Z-0000 is live or on record"
+  }
+}

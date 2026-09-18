@@ -17,7 +17,7 @@ import pytest
 
 from lib import store
 
-RUN_ID_RE = re.compile(r"^run-\d{8}-\d{6}-[0-9a-f]{4}$")
+RUN_ID_RE = re.compile(r"^run-\d{8}-\d{6}-[0-9a-f]{8}$")
 
 
 # ── new_run_id ───────────────────────────────────────────────────────────────
@@ -33,6 +33,18 @@ def test_new_run_id_uses_given_prefix():
 
 
 def test_new_run_id_is_unique_even_for_the_same_instant():
+    """RG-55 CP-4: this was a genuine, measured flake before the suffix was
+    widened 4 -> 8 hex chars. With a 4-char suffix (16**4 = 65536 values),
+    the birthday-paradox collision probability across 50 draws in the same
+    fixed instant was ``1 - exp(-50*49 / (2*65536)) ~= 1.8%`` -- comfortably
+    likely to fire in a large test-suite history, and it did (CP-4 backlog
+    row). With the current 8-char suffix (16**8 = 4294967296 values) that
+    same exact-birthday-paradox formula gives
+    ``50*49 / (2*16**8) ~= 2.85e-7``, i.e. under 1e-6 -- the width this test
+    asserts uniqueness at is chosen so a flake here is no longer a plausible
+    outcome of running this suite for years, not because exact uniqueness
+    across 50 draws stopped being probabilistic in principle.
+    """
     when = 1_754_325_600.0
     ids = {store.new_run_id(when=when) for _ in range(50)}
     assert len(ids) == 50

@@ -1,0 +1,173 @@
+{
+  "ok": true,
+  "contract": 1,
+  "at": "2026-09-12T10:15:00Z",
+  "sessions": [
+    {
+      "session": "s-20260912T101500Z-9f01",
+      "started_at": "2026-09-12T10:15:00Z",
+      "scope": "container-shared",
+      "elapsed_seconds": 0.0,
+      "target": {
+        "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cgroup": "/dev.slice/dev-background.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope",
+        "token": "rg55-parity-token-a",
+        "targets_seen": 0
+      },
+      "meta": {
+        "lane": "rg55-fixture-lane",
+        "project": "run-gate-project",
+        "worktree": "/workspaces/vbpub",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "run_gate_revision": 41,
+        "kind": "command",
+        "expected": null
+      },
+      "live": {
+        "memory_current_bytes": 524288000,
+        "memory_peak_bytes": 524288000,
+        "cpu_cores_recent": null,
+        "samples": 1,
+        "damon": null
+      },
+      "liveness": {
+        "last_activity_at": "2026-09-12T10:15:00Z",
+        "idle_for_seconds": 0.0,
+        "cpu_seconds": 0.0,
+        "cpu_seconds_recent": 0.0,
+        "io_bytes": 3145728,
+        "stream": null,
+        "paused_for_seconds": 0.0,
+        "pause_reason": null
+      },
+      "watch": {
+        "state": "ok",
+        "verdict": "none",
+        "reason": null,
+        "readings": 1,
+        "policy": {
+          "idle_bound_s": 300.0,
+          "ceiling_s": null,
+          "on_stall": "report",
+          "progress_stream": null
+        }
+      },
+      "placement": null
+    }
+  ],
+  "host": {
+    "at": "2026-09-12T10:15:00Z",
+    "loadavg": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "meminfo": {
+      "total_bytes": 1024000,
+      "available_bytes": 512000,
+      "swap_total_bytes": null,
+      "swap_free_bytes": null
+    },
+    "pressure": {
+      "memory": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      },
+      "cpu": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      },
+      "io": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      }
+    },
+    "slices": {
+      "dev.slice": {
+        "cgroup": "/dev.slice",
+        "memory_current_bytes": 1073741824,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": 0,
+        "pressure": {
+          "memory": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          },
+          "cpu": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          }
+        }
+      },
+      "dev-background.slice": {
+        "cgroup": "/dev.slice/dev-background.slice",
+        "memory_current_bytes": 1073741824,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": 0,
+        "pressure": {
+          "memory": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          },
+          "cpu": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          }
+        }
+      }
+    },
+    "gates_slice": {
+      "name": "dev-gates.slice",
+      "present": false
+    },
+    "daemon_slice": {
+      "cgroup": "/cgprofile.slice",
+      "memory_min_bytes": null,
+      "memory_high_bytes": null
+    }
+  }
+}

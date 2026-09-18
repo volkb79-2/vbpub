@@ -32,10 +32,11 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
@@ -46,6 +47,21 @@ READY_FILE = "collector.ready"
 STOP_FILE = "collector.stop"
 DONE_FILE = "collector.done"
 DEFAULT_OUT = os.path.join(HERE, "runs")
+
+# RG55-INTERFACE-CONTRACT.md §1.8 — kept as literals here (rather than
+# imported from lib.serve) so `build_parser()` never has to import that
+# module just to read a default; `lib.serve.DEFAULT_SOCKET_PATH` /
+# `DEFAULT_SESSIONS_DIR` are the same two values (a test asserts the two
+# stay in sync, the same "drift guard, not a second source of truth" shape
+# `pyproject.toml`'s own header comment already uses for its lock file).
+DEFAULT_CTL_SOCKET = "/run/cgprofile/ctl.sock"
+DEFAULT_CGPROFILE_SESSIONS = "/var/lib/cgprofile/sessions"
+# The contract major this client speaks, on the wire of every request
+# (RG55-INTERFACE-CONTRACT.md §8.1). Same drift-guard shape as the socket
+# path above: `lib/serve.py`'s `CONTRACT_VERSION` is the daemon-side copy
+# and a test asserts the two never diverge (importing lib.serve here would
+# drag the whole daemon module into every collector-tier invocation).
+CONTRACT_VERSION = 1
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -682,7 +698,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
     if mode == "helper":
         _note("resolving through a helper container (no host cgroup view here)")
         specs = _tag_role(_predigest_specs(args.target), "subject")
-        spec = access.build_helper_spec(HERE, HERE, args.helper_image,
+        spec = access.build_helper_spec(HERE, DEFAULT_OUT, args.helper_image,
                                        getattr(args, "helper_cgroup_parent", None))
         command = [access.docker_bin(), *spec.docker_args(), "python3",
                    os.path.join(HERE, "cgprofile.py"), "targets", "--mode", "direct"]
@@ -750,6 +766,207 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"  helper unavailable   {exc}")
             return 1
     return 0
+
+
+# ── daemon side: `serve` / `ctl` (RG55-INTERFACE-CONTRACT.md) ───────────────
+#
+# Both verbs are COLLECTOR tier (DESIGN.md §1: stdlib only) — `lib.serve`
+# imports nothing beyond this package's own stdlib-only modules, so both
+# `cmd_serve` and `cmd_ctl` run on the bare system python3, exactly the
+# split the `cgprofile` bash shim's own header comment already draws
+# between `_collect`/`mark` (system python) and everything else (the venv).
+# `ctl report` is the one exception threaded through: `lib.serve.
+# SessionServer.handle_report` itself shells out to the venv (RW-14) so this
+# CLI layer needs no special-casing for it at all — it is just another verb.
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the profiling daemon. Refuses `--cap` structurally (this parser
+    defines no such flag — see build_parser()'s `serve_parser`) and refuses
+    to start at all without the host's own cgroup v2 view, since a
+    namespaced view cannot see the containers run-gate wants profiled
+    (RG55-INTERFACE-CONTRACT.md §5).
+    """
+    if not access.have_host_cgroup_view(access.CGROUP_ROOT):
+        _err(
+            "serve needs the host's cgroup v2 view, not a namespaced subtree — "
+            "run this container with --privileged --cgroupns=host --pid=host "
+            "(RG55-INTERFACE-CONTRACT.md §5)"
+        )
+    from lib import serve as serve_mod
+
+    observe_slices = tuple(
+        name for name in (s.strip() for s in args.observe_slices.split(",")) if name
+    ) if args.observe_slices else ()
+    # §8.1's socket-carrier uid allowlist. Deliberately environment-only
+    # (the compose template passes it through): it is a DEPLOYMENT trust
+    # decision, not a per-invocation one, and an operator who narrows access
+    # must not have it silently ignored — a malformed value refuses to start
+    # rather than falling back to "everyone the socket mode allows".
+    try:
+        allow_uids = serve_mod.parse_allow_uids(os.environ.get(serve_mod.ALLOW_UIDS_ENV))
+    except ValueError as exc:
+        _err(str(exc))
+    server = serve_mod.SessionServer(
+        sessions_dir=args.sessions,
+        socket_path=args.socket,
+        damon_default=args.damon_default,
+        interval=args.interval,
+        keep_sessions=args.keep_sessions,
+        keep_days=args.keep_days,
+        observe_slices=observe_slices,
+        max_sessions=args.max_sessions,
+        gates_slice_name=args.gates_slice,
+        allow_uids=allow_uids,
+    )
+    server.serve_forever()
+    return 0
+
+
+def _ctl_wire(verb: str, **wire_args: Any) -> Dict[str, Any]:
+    """The one request shape both carriers use: RG55-INTERFACE-CONTRACT.md
+    §8.1's `{"verb": …, "args": {…}, "contract": 1}`. Keys inside `args` are
+    the long-option names with the dashes stripped (`--memory-high` →
+    `memory_high`), `--meta` as a JSON OBJECT rather than the string the CLI
+    takes. `docs/PROTOCOL.md` documents them per verb and is generated from
+    nothing — it is checked against these goldens
+    (`tests/fixtures/rg55/socket/<verb>-request.json`) by the test suite.
+    """
+    return {"verb": verb, "args": dict(wire_args), "contract": CONTRACT_VERSION}
+
+
+def _ctl_request(args: argparse.Namespace) -> Dict[str, Any]:
+    """Build the §8.1 wire request for `args.verb`.
+
+    This function IS the contract's "reference translator" (§8.1 rule 2):
+    a socket-carrier consumer that cannot run `ctl` reproduces exactly what
+    this builds. A malformed `--meta` is a client-side argument error (never
+    reaches the socket), handled the same way every other bad argument in
+    this file is: `_err()`, stderr + exit 2. Optional options the caller did
+    not give travel as explicit `null`s rather than absent keys, so one
+    verb always has ONE request shape (the daemon reads absent and null
+    identically — see `handle_start`).
+    """
+    if args.verb == "start":
+        try:
+            meta = json.loads(args.meta)
+        except json.JSONDecodeError as exc:
+            _err(f"--meta must be valid JSON: {exc}")
+        if not isinstance(meta, dict):
+            _err("--meta must be a JSON object")
+        return _ctl_wire(
+            "start", target=args.target, scope=args.scope, token=args.token,
+            damon=args.damon, interval=args.interval, meta=meta,
+            # §8.4's policy options travel VERBATIM: `--idle-bound`/
+            # `--ceiling` take `auto` or a number, so the client cannot type
+            # them without deciding what is parsable — and that decision is
+            # the daemon's, so both carriers get the identical `bad-policy`
+            # refusal (see `lib.liveness._parse_bound`).
+            progress_stream=args.progress_stream, idle_bound=args.idle_bound,
+            ceiling=args.ceiling, on_stall=args.on_stall,
+            # §8.3: `place` is a BOOLEAN on the wire (the CLI's own
+            # `store_true`), not the presence of a key — one request shape
+            # per verb is the rule this whole translator exists to keep, and
+            # a socket consumer that cannot run `ctl` sends `false` the same
+            # way it sends `null` for an option it did not author.
+            place=args.place, memory_high=args.memory_high,
+            memory_max=args.memory_max, cpu_weight=args.cpu_weight,
+        )
+    if args.verb == "watch":
+        return _ctl_wire("watch", session=args.session, watch_interval=args.watch_interval)
+    if args.verb in ("status", "stop", "report"):
+        return _ctl_wire(args.verb, session=args.session)
+    # "version", "host", "gc" — every other verb takes no arguments at all.
+    return _ctl_wire(args.verb)
+
+
+def _ctl_roundtrip(socket_path: str, req: Dict[str, Any], timeout: float = 25.0) -> Dict[str, Any]:
+    """One request, one line in, one line out, over `socket_path`
+    (RG55-INTERFACE-CONTRACT.md §1.1/§1.5's own 25 s client-side budget,
+    distinct from run-gate's own `subprocess.run(timeout=)` on the `ctl`
+    process itself). Raises `OSError` (connect refused, timeout) or
+    `ValueError` (empty/unparsable response) — `cmd_ctl` treats both the
+    same way: a daemon fault, contract exit code 3.
+    """
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(timeout)
+        client.connect(socket_path)
+        client.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    if not data.strip():
+        raise ValueError("empty response from daemon")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"malformed response: {exc}") from exc
+
+
+def _ctl_stream(socket_path: str, req: Dict[str, Any]) -> int:
+    """The §8.2 streaming carrier over exec: hold the connection open and
+    forward every line the daemon writes, flushing each one.
+
+    The flush is the whole point — run-gate reads this process's stdout line
+    by line with its own idle timeout (`3 x watch-interval`, §8.2), so a
+    buffered `reading` is indistinguishable from a dead daemon. No socket
+    timeout either: silence for a whole watch interval is the NORMAL case.
+
+    Exit code: 0 after the stream ends (contract §8.2 "then exits 0"), 2
+    when the daemon refused the request (one `{"ok": false}` line, e.g.
+    `unknown-session`), 3 for a transport failure — the same three codes
+    `cmd_ctl` uses for the non-streaming verbs.
+    """
+    rc = 0
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(None)
+        client.connect(socket_path)
+        client.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        buffer = b""
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                if not raw.strip():
+                    continue
+                line = raw.decode("utf-8", errors="replace")
+                print(line, flush=True)
+                try:
+                    doc = json.loads(line)
+                except json.JSONDecodeError:  # pragma: no cover - daemon fault
+                    rc = 3
+                    continue
+                if isinstance(doc, dict) and doc.get("ok") is False:
+                    rc = 2
+    return rc
+
+
+def cmd_ctl(args: argparse.Namespace) -> int:
+    """Thin socket client. Always prints exactly one JSON document to
+    stdout on success (RG55-INTERFACE-CONTRACT.md §1.2); a connection
+    failure or a malformed response prints ONE line to stderr instead and
+    exits 3 (daemon fault, §1.3) — never a JSON document nobody asked for
+    and never a traceback.
+    """
+    req = _ctl_request(args)
+    if args.verb == "watch":
+        try:
+            return _ctl_stream(args.socket, req)
+        except OSError as exc:
+            _note(f"ctl watch could not reach the daemon at {args.socket}: {exc}")
+            return 3
+    try:
+        resp = _ctl_roundtrip(args.socket, req)
+    except (OSError, ValueError) as exc:
+        _note(f"ctl {args.verb} could not reach the daemon at {args.socket}: {exc}")
+        return 3
+    print(json.dumps(resp))
+    return 0 if resp.get("ok") else 2
 
 
 # ── argument parsing ────────────────────────────────────────────────────────
@@ -879,6 +1096,127 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--damon", action="store_true")
     collect_parser.add_argument("--caps", default=None)
     collect_parser.set_defaults(func=cmd_collect)
+
+    serve_parser = sub.add_parser(
+        "serve", help="run the profiling daemon (RG55-INTERFACE-CONTRACT.md)"
+    )
+    # Deliberately NOT `_add_common(serve_parser)` — that is what "refuses
+    # --cap" means structurally: this parser has no such flag to refuse at
+    # runtime, argparse itself rejects it.
+    serve_parser.add_argument("--sessions", default=DEFAULT_CGPROFILE_SESSIONS,
+                              help=f"sessions directory (default {DEFAULT_CGPROFILE_SESSIONS})")
+    serve_parser.add_argument("--socket", default=DEFAULT_CTL_SOCKET,
+                              help=f"control socket path (default {DEFAULT_CTL_SOCKET})")
+    serve_parser.add_argument("--damon-default", choices=("on", "off"), default="on",
+                              help="DAMON state a `start` with no --damon inherits")
+    serve_parser.add_argument("--interval", type=float, default=1.0,
+                              help="sampling cadence in seconds, fixed for a session's "
+                                   "whole lifetime (default 1.0)")
+    serve_parser.add_argument("--keep-sessions", type=int, default=200)
+    serve_parser.add_argument("--keep-days", type=int, default=14)
+    serve_parser.add_argument("--observe-slices", default="",
+                              help="comma-separated extra *.slice names for `ctl host`")
+    serve_parser.add_argument("--max-sessions", type=int, default=16)
+    serve_parser.add_argument("--gates-slice", default="dev-gates.slice",
+                              help="mdt's admission-capacity slice C8 places leaves under "
+                                   "(RG55-INTERFACE-CONTRACT.md §8.3/§8.5; default "
+                                   "dev-gates.slice)")
+    serve_parser.set_defaults(func=cmd_serve)
+
+    # RG55-INTERFACE-CONTRACT.md's own examples always place `--json` AFTER
+    # the verb (`cgprofile ctl version --json`, `cgprofile ctl host --json`,
+    # …) — argparse subparsers only recognize what the SELECTED subparser
+    # itself defines once dispatch has happened, so `--json` (and `--socket`,
+    # for the same "works wherever you'd expect it" reason) has to be
+    # declared on every verb subparser too, not just the parent `ctl`
+    # parser. `default=SUPPRESS` on this shared child mixin is load-bearing,
+    # not decoration: without it, EVERY verb subparser re-applies its own
+    # (identical-looking) default over whatever the parent `ctl` parser's
+    # own `--socket`/`--json` already set from a LEADING flag
+    # (`ctl --socket X version`), silently discarding it — verified live
+    # (parses to the DEFAULT socket, not `X`) before this fix. SUPPRESS
+    # means "only touch the namespace if the user actually typed this flag
+    # at the child (trailing) position," which is exactly the fallback
+    # order wanted: trailing beats leading beats the real default.
+    _ctl_common = argparse.ArgumentParser(add_help=False)
+    _ctl_common.add_argument("--socket", default=argparse.SUPPRESS)
+    _ctl_common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                             help="accepted for run-gate's benefit; ctl always emits "
+                                  "exactly one JSON document on stdout regardless")
+
+    ctl_parser = sub.add_parser(
+        "ctl", help="talk to a running `serve` daemon over its control socket",
+    )
+    ctl_parser.add_argument("--socket", default=DEFAULT_CTL_SOCKET)
+    ctl_parser.add_argument("--json", action="store_true",
+                            help="accepted for run-gate's benefit; ctl always emits "
+                                 "exactly one JSON document on stdout regardless")
+    ctl_parser.set_defaults(func=cmd_ctl)
+    ctl_sub = ctl_parser.add_subparsers(dest="verb", required=True)
+
+    ctl_sub.add_parser("version", help="daemon self-description", parents=[_ctl_common])
+
+    ctl_start = ctl_sub.add_parser(
+        "start", help="begin profiling a target", parents=[_ctl_common]
+    )
+    ctl_start.add_argument("--target", required=True, metavar="containerid:<64 hex>")
+    ctl_start.add_argument("--scope", required=True, choices=("container", "container-shared"))
+    ctl_start.add_argument("--token", default=None)
+    ctl_start.add_argument("--damon", choices=("on", "off"), default=None)
+    ctl_start.add_argument("--interval", type=float, default=None)
+    ctl_start.add_argument("--meta", required=True, help="JSON object, RG55 contract §2.2")
+    # §8.4 stall policy. All four are forwarded verbatim (see `_ctl_request`)
+    # — `auto` is a legal value for two of them, so they cannot be typed
+    # `float` here, and the daemon owns the `bad-policy` refusal.
+    ctl_start.add_argument("--progress-stream", default=None,
+                           help="the lane's own progress NDJSON path AS THE LANE SEES IT")
+    ctl_start.add_argument("--idle-bound", default=None,
+                           help="auto|<seconds>; auto = max(300, 3 x the stream's cadence hint)")
+    ctl_start.add_argument("--ceiling", default=None,
+                           help="auto|<seconds>; auto = 3 x meta.expected.duration_s when known")
+    ctl_start.add_argument("--on-stall", choices=("kill", "report"), default=None,
+                           help="what to do when the watch verdict is actionable (default report)")
+    # §8.3 placement. The three caps are BYTES/weight as integers (the
+    # contract's own units) and are ignored without `--place`; the daemon
+    # owns every refusal, so nothing here validates a host condition.
+    ctl_start.add_argument("--place", action="store_true",
+                           help="create <gates slice>/rg-<token> and migrate the token's pid "
+                                "subtree into it (requires --token)")
+    ctl_start.add_argument("--memory-high", type=int, default=None,
+                           help="memory.high on the leaf, in bytes (the throttle point)")
+    ctl_start.add_argument("--memory-max", type=int, default=None,
+                           help="memory.max on the leaf, in bytes (the hard ceiling)")
+    ctl_start.add_argument("--cpu-weight", type=int, default=None,
+                           help="cpu.weight on the leaf, 1..10000")
+
+    ctl_watch = ctl_sub.add_parser(
+        "watch", help="stream liveness readings and verdicts until the session ends",
+        parents=[_ctl_common],
+    )
+    ctl_watch.add_argument("session")
+    # Default 30 (an INT, which is what the frozen §8.2 request golden
+    # carries); an explicit value is a float and the daemon clamps it to
+    # [5, 300].
+    ctl_watch.add_argument("--watch-interval", type=float, default=30)
+
+    ctl_status = ctl_sub.add_parser(
+        "status", help="registry + host snapshot", parents=[_ctl_common]
+    )
+    ctl_status.add_argument("session", nargs="?", default=None)
+
+    ctl_sub.add_parser("host", help="host + slices snapshot", parents=[_ctl_common])
+
+    ctl_stop = ctl_sub.add_parser(
+        "stop", help="end a session, return its summary", parents=[_ctl_common]
+    )
+    ctl_stop.add_argument("session")
+
+    ctl_report = ctl_sub.add_parser(
+        "report", help="render the interactive HTML report", parents=[_ctl_common]
+    )
+    ctl_report.add_argument("session")
+
+    ctl_sub.add_parser("gc", help="run retention now", parents=[_ctl_common])
 
     return parser
 

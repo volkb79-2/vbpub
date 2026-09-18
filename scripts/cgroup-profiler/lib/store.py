@@ -51,20 +51,30 @@ DEFAULT_COMPRESSED = ("samples",)
 
 
 def new_run_id(prefix: str = "run", when: Optional[float] = None) -> str:
-    """``run-YYYYmmdd-HHMMSS-xxxx`` — sortable by name (``latest`` below
+    """``run-YYYYmmdd-HHMMSS-xxxxxxxx`` — sortable by name (``latest`` below
     relies on that), and unique enough for one host.
 
-    The trailing 4 hex chars only matter when two runs start in the same
+    The trailing 8 hex chars only matter when two runs start in the same
     wall-clock second (a ``run`` immediately followed by an ``attach``, or a
     test suite creating several); ``os.urandom`` rather than ``random`` so
     there is no seeding/reseeding to reason about.  The timestamp is local
     time, deliberately: this name is read by a human on the host it was
     captured on far more often than it is parsed by code (the machine-usable
     timestamp is ``manifest.json``'s epoch-second ``started`` field).
+
+    Widened from 4 to 8 hex chars (RG-55 CP-4, cgprofile 1.1.0): a 4-char
+    suffix (16**4 = 65536 values) gave a ~1.8% birthday-paradox collision
+    chance across 50 draws in the same second — genuinely probabilistic, and
+    it fired once in the wild (see the CP-4 backlog row). 8 chars
+    (16**8 = 4294967296 values) puts that same 50-draw collision chance at
+    50*49/(2*16**8) ≈ 2.85e-7, comfortably under 1e-6. This is the
+    ``run``/``attach`` collector's id only; session ids (``s-<stamp>-<4
+    hex>``, ``lib/serve.py``) are a separate format and stay 4 hex — nothing
+    here changes them.
     """
     ts = time.time() if when is None else when
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
-    return f"{prefix}-{stamp}-{os.urandom(2).hex()}"
+    return f"{prefix}-{stamp}-{os.urandom(4).hex()}"
 
 
 class RunDir:
@@ -190,17 +200,23 @@ class RunDir:
                     continue
 
     def write_manifest(self, obj: Dict) -> None:
-        """Write ``manifest.json`` atomically: tmp file + ``os.replace``.
+        """Write ``manifest.json`` atomically — see :meth:`write_json`, which
+        this is a thin, name-fixed wrapper around."""
+        self.write_json("manifest.json", obj)
 
-        Unlike the streams, the manifest is rewritten wholesale a handful of
-        times per run (not appended once per sample), so there is no reason
-        to accept a partially-written read of it the way ``read()`` tolerates
-        a torn line — instead a reader (``analyze.py`` running concurrently,
-        a human ``cat``) only ever observes the previous complete manifest or
-        the new complete one, because ``os.replace`` is a single rename on
-        the same filesystem.
+    def write_json(self, name: str, obj: Dict) -> None:
+        """Write ``name`` (e.g. ``manifest.json``, ``summary.json``)
+        atomically: tmp file + ``os.replace``.
+
+        Unlike the streams, a whole-object file like this is rewritten
+        wholesale a handful of times per run (not appended once per sample),
+        so there is no reason to accept a partially-written read of it the
+        way ``read()`` tolerates a torn line — instead a reader
+        (``analyze.py`` running concurrently, a human ``cat``) only ever
+        observes the previous complete file or the new complete one, because
+        ``os.replace`` is a single rename on the same filesystem.
         """
-        path = self.stream_path("manifest.json")
+        path = self.stream_path(name)
         tmp = f"{path}.tmp-{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(obj, fh, indent=2, sort_keys=True)

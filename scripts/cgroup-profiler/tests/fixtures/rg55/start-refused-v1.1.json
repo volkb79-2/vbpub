@@ -1,0 +1,41 @@
+{
+  "no-token": {
+    "requested": true,
+    "leaf": null,
+    "applied": {},
+    "pids_moved": 0,
+    "error": "place-refused:no-token"
+  },
+  "no-gates-slice": {
+    "requested": true,
+    "leaf": null,
+    "applied": {},
+    "pids_moved": 0,
+    "error": "place-refused:no-gates-slice"
+  },
+  "over-slice": {
+    "requested": true,
+    "leaf": null,
+    "applied": {},
+    "pids_moved": 0,
+    "error": "place-refused:over-slice"
+  },
+  "parent-not-gates-slice": {
+    "requested": true,
+    "leaf": null,
+    "applied": {},
+    "pids_moved": 0,
+    "error": "place-refused:parent-not-gates-slice"
+  },
+  "write-failed": {
+    "requested": true,
+    "leaf": "/dev.slice/dev-gates.slice/rg-rg55-place-token-01",
+    "applied": {
+      "memory.high": 805306368,
+      "memory.max": 1073741824,
+      "cpu.weight": 100
+    },
+    "pids_moved": 1,
+    "error": "place-refused:write-failed:dev.slice/dev-gates.slice/rg-rg55-place-token-01"
+  }
+}

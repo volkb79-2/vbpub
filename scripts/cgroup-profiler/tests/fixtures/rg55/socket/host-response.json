@@ -1,0 +1,119 @@
+{
+  "ok": true,
+  "contract": 1,
+  "host": {
+    "at": "2026-09-12T10:15:00Z",
+    "loadavg": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "meminfo": {
+      "total_bytes": 1024000,
+      "available_bytes": 512000,
+      "swap_total_bytes": null,
+      "swap_free_bytes": null
+    },
+    "pressure": {
+      "memory": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      },
+      "cpu": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      },
+      "io": {
+        "some_avg10": 0.0,
+        "some_avg60": 0.0,
+        "some_avg300": 0.0,
+        "some_total_seconds": 0.0,
+        "full_avg10": 0.0,
+        "full_avg60": 0.0,
+        "full_avg300": 0.0,
+        "full_total_seconds": 0.0
+      }
+    },
+    "slices": {
+      "dev.slice": {
+        "cgroup": "/dev.slice",
+        "memory_current_bytes": 1073741824,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": 0,
+        "pressure": {
+          "memory": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          },
+          "cpu": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          }
+        }
+      },
+      "dev-background.slice": {
+        "cgroup": "/dev.slice/dev-background.slice",
+        "memory_current_bytes": 1073741824,
+        "memory_max_bytes": null,
+        "memory_high_bytes": null,
+        "memory_swap_current_bytes": 0,
+        "pressure": {
+          "memory": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          },
+          "cpu": {
+            "some_avg10": 0.0,
+            "some_avg60": 0.0,
+            "some_avg300": 0.0,
+            "some_total_seconds": 0.0,
+            "full_avg10": 0.0,
+            "full_avg60": 0.0,
+            "full_avg300": 0.0,
+            "full_total_seconds": 0.0
+          }
+        }
+      }
+    },
+    "gates_slice": {
+      "name": "dev-gates.slice",
+      "present": false
+    },
+    "daemon_slice": {
+      "cgroup": "/cgprofile.slice",
+      "memory_min_bytes": null,
+      "memory_high_bytes": null
+    }
+  }
+}

@@ -126,7 +126,7 @@ at once interleave cleanly rather than corrupting each other.
 ## 4. Reading the report
 
 ```
-runs/run-YYYYmmdd-HHMMSS-xxxx/
+runs/run-YYYYmmdd-HHMMSS-xxxxxxxx/
   report.html    interactive — zoom, pan, hover; open it in a browser
   report.md      static twin with PNGs, for pasting into a ledger or PR
   samples.jsonl  raw data, if you want to do your own analysis
@@ -205,3 +205,93 @@ its own footprint is part of the design:
 - Analysis and rendering happen **after** the run, never during it.
 - Nothing is installed, downloaded, or built at run time. If `setup.sh` has not
   been run, collection still works and only the report step complains.
+
+---
+
+## 8. Profiling a run-gate lane
+
+This is the OTHER mode RG-55 added: a long-lived, privileged daemon
+(`cgprofile-host-daemon`, see the README's "Running the daemon") that
+run-gate talks to over a Unix socket, per lane invocation, instead of
+spawning a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full
+wire contract; this section is the short version of how a lane gets found.
+
+**By container id + token (the normal case).** Before starting a lane
+container/exec, run-gate generates `token = secrets.token_hex(16)` and
+exports it as `RUN_GATE_PROFILE_SESSION=<token>` into the lane process,
+then resolves the container id with `docker inspect --format '{{.Id}}'`
+and calls:
+
+```bash
+docker exec cgprofile-host-daemon cgprofile ctl start \
+  --target "containerid:$CONTAINER_ID" \
+  --scope container            `# an ephemeral lane container: the cgroup IS the lane` \
+  --token "$TOKEN" \
+  --damon on \
+  --meta '{"lane":"gate","project":"...","worktree":"...","commit":null,"run_gate_revision":0,"kind":"command","expected":null}' \
+  --json
+```
+
+`--scope container-shared` is the exec-mode twin: a long-lived container
+where the cgroup is shared and only the token-attributed pid subtree
+(walked from `/proc/<pid>/environ`, re-discovered every 2 s) counts toward
+the lane's numbers — `memory.current` is baseline-subtracted since
+`memory.peak` there is lifetime, not per-lane. `start` is idempotent by
+`(container id, token)`: a retried/duplicate call returns the same live
+session (`"reused": true`) rather than starting a second one.
+
+**By session id.** The `start` response's `"session"` field
+(`s-<timestamp>-<4 hex>`) is what every later call names —
+`ctl status <session>`, `ctl stop <session>` (run in the same `finally` as
+container teardown, before `docker rm -f`), `ctl report <session>` for a
+human afterwards. `stop` is idempotent too: a second call on an
+already-finished session returns the same stored summary with
+`"already_stopped": true`, never an error.
+
+**When the daemon is unavailable.** Any nonzero exit, timeout, or
+unparsable stdout from `ctl` means "profiling unavailable for this call" —
+run-gate's own basic fallback (`method: "basic"`, sampling the lane
+container's own cgroup directly, no daemon involved) takes over silently;
+see the contract §4.3. This guide's `--target`/`--observe` collector mode
+(sections 1–7 above) is unaffected either way — it never talks to the
+daemon at all.
+
+## 9. Liveness watch and placement, from a consumer's view (D-20/D-27, §8.2-§8.4)
+
+Two OPTIONAL, independent `start` upgrades sit on top of section 8's basic
+attach — neither is required to get a Summary, and neither changes what
+`stop`/`report` return when unused.
+
+**Liveness policy** replaces a consumer's own in-process stall watcher (the
+motivation RG-55 exists for — see CP-8): pass `--progress-stream`,
+`--idle-bound`, `--ceiling` and/or `--on-stall kill|report` on `start` and
+the DAEMON judges the lane, not the caller. The daemon outlives the
+caller's own process, so the judgement survives a caller crash — the one
+thing an in-process watcher cannot do. A consumer that wants to observe the
+judgement live (rather than poll `ctl status`) holds ONE `ctl watch
+<session>` open per lane — the one verb that streams more than one
+response per connection (`docs/PROTOCOL.md` §1's documented exception to
+"one request per connection, then close"). Three line shapes only:
+`reading` (informational, every `--watch-interval` seconds), `verdict`
+(only on a state change — this is what a consumer acts on:
+`verdict == "killed"` means the daemon already signalled the lane, so the
+caller's own stall-exit path runs as if it had detected the stall itself;
+`verdict == "reported"` is a warning line, nothing was killed, the lane is
+still the caller's to manage), `end` (exactly one, last). An unparsable
+policy value is `bad-policy` — `start` refuses and no session exists, so a
+typo here is caught before the lane runs, not after.
+
+**Placement** (`--place [--memory-high] [--memory-max] [--cpu-weight]`)
+puts the lane's pid subtree under its OWN cgroup leaf
+(`<gates slice>/rg-<token>`) instead of sharing whatever cgroup the lane
+container/exec session already had — the prerequisite for `--on-stall
+kill` to use `cgroup.kill` (atomic, cannot miss a pid that forked after
+the last discovery tick) instead of walking the resolved pid list one
+SIGKILL at a time. From a consumer's view this is purely additive: `start`
+NEVER fails because of a placement refusal (`place-refused:*` in the
+response's `placement.error`, `leaf: null`) — a consumer that asked for
+`--place` and got refused still has a normal, unplaced session; the only
+thing it loses is the atomicity guarantee on a kill. `applied` in the
+response is what the KERNEL reports back after the write, never an echo
+of what was asked for — if a consumer needs to know whether a cap actually
+took, that is the field to read, not its own `--memory-high` argument.

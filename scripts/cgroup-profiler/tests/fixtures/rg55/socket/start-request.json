@@ -1,0 +1,28 @@
+{
+  "verb": "start",
+  "args": {
+    "target": "containerid:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scope": "container-shared",
+    "token": "rg55-parity-token-a",
+    "damon": "off",
+    "interval": 1.0,
+    "meta": {
+      "lane": "rg55-fixture-lane",
+      "project": "run-gate-project",
+      "worktree": "/workspaces/vbpub",
+      "commit": "0123456789abcdef0123456789abcdef01234567",
+      "run_gate_revision": 41,
+      "kind": "command",
+      "expected": null
+    },
+    "progress_stream": null,
+    "idle_bound": null,
+    "ceiling": null,
+    "on_stall": null,
+    "place": false,
+    "memory_high": null,
+    "memory_max": null,
+    "cpu_weight": null
+  },
+  "contract": 1
+}
