@@ -92,11 +92,13 @@ MemoryMin key and is mirrored on the guaranteed sibling; `DEV_MEMORY_LOW/HIGH/MA
 are the other root controls. CPUWeight, CPUQuota, IOWeight, swap, and zswap are
 walked inside each slice's flow.
 
-Current registry publication uses OCI media types and forced native zstd level
-3 compression. The release cache is namespaced by compression policy and its
-cache exporter uses the same compression settings as the image; this avoids
-mixing gzip and forced-zstd layer graphs in one local cache. BuildKit preserves
-the normal layer topology and attaches max provenance plus an SPDX SBOM. These
+Current registry publication uses OCI media types and native zstd level 3
+compression with forced recompression disabled. The release cache is namespaced
+by compression policy and its cache exporter uses the same compression settings
+as the image; this avoids mixing gzip and zstd layer graphs in one local cache.
+Disabling forced recompression avoids an unnecessary second compression pass for
+large layers that already have a suitable encoding. BuildKit preserves the
+normal layer topology and attaches max provenance plus an SPDX SBOM. These
 settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction

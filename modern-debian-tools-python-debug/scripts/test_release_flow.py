@@ -36,7 +36,7 @@ class ReleaseFlowTests(unittest.TestCase):
     def test_registry_release_uses_native_zstd_and_standard_attestations(self) -> None:
         self.assertEqual(self.env["IMAGE_COMPRESSION"], "zstd")
         self.assertEqual(self.env["IMAGE_COMPRESSION_LEVEL"], "3")
-        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "true")
+        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "false")
         self.assertEqual(self.env["IMAGE_OCI_MEDIA_TYPES"], "true")
         self.assertEqual(self.env["IMAGE_PROVENANCE_MODE"], "max")
         self.assertEqual(self.env["IMAGE_SBOM"], "true")

@@ -244,7 +244,8 @@ the build phase creates the artifact once and the push phase publishes that
 same artifact with digest verification. Set `push` for direct registry export,
 or `repack` for the optional validated OCI-layout compression path. Release
 builds keep their cache beside the shared Git directory in a name such as
-`mdt-buildkit-cache-zstd-true-3`; the cache export uses the same compression
-policy as the image. If you set `MDT_BUILDKIT_CACHE_DIR` yourself, dedicate it
-to one compression policy rather than sharing it between gzip and forced-zstd
-builds.
+`mdt-buildkit-cache-zstd-false-3`; the cache export uses the same compression
+policy as the image. Forced recompression is disabled so large layers that already
+have a suitable encoding do not take a second compression pass. If you set
+`MDT_BUILDKIT_CACHE_DIR` yourself, dedicate it to one compression policy rather
+than sharing it between gzip and zstd builds.
