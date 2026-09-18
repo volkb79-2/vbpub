@@ -4726,6 +4726,68 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
+## RG-63 — an assay lane's `LANE_TIMEOUT` budget appears to include exec-lock queue-wait time under multi-package contention, not just execution time
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, six
+concurrent T1 implementer packages sharing ONE `test-runner` container
+(`dstdns-98535c-test-runner`). Filed here per the standing convention (a
+tool defect found while working in it goes in the tool's own backlog, not
+worked around locally).
+
+### What's wrong
+
+A package's (`p195-b2-ctl`) `assay` lane failed `BUDGET_EXCEEDED/LANE_TIMEOUT`
+("the lane-wide deadline expired") against its declared `budget = "30m"`.
+The run-gate log for that attempt shows it first blocked on a SECOND,
+finer-grained lock before the mutation run itself began:
+
+```
+run-gate: lane 'assay': waiting for container 'dstdns-98535c-test-runner' —
+another gate holds /tmp/run-gate-exec-dstdns-98535c-test-runner.lock
+```
+
+five other T1 packages' own gates/assay lanes were concurrently contending
+for the same shared container's exec lock at that moment. The package's own
+after-the-fact measurement (not run-gate's own diagnostics, which don't
+surface this breakdown): `main`'s history for this lane runs in ~450-470s;
+this attempt ran 1887.6s against the 1800s (30m) budget — and the lane's own
+footprint recorded 1.19 cores avg sustained (i.e. genuinely executing, not
+merely parked once it started) plus 158.5s stalled on memory (full). Whether
+the exec-lock queue-wait itself is counted inside the 1800s deadline, or the
+deadline only started once execution began (making the ~4x overrun purely
+instrumentation+memory-stall cost), is not something either the log or the
+`.assay/progress-*.jsonl` heartbeat distinguishes — the package correctly
+declined to assert either reading and is retrying the lane alone instead.
+
+### Why it matters
+
+RG-36 (fixed) added progress-file disclosure so a genuinely-slow mutation
+lane's health can be judged from candidate-rate/ETA rather than a guessed
+wall budget — but that's about the lane's OWN execution taking long. This is
+a different failure shape: a healthy, normal-duration lane can be pushed
+over its fixed budget purely by how many OTHER packages are queued on the
+same shared container's exec lock, with no signal distinguishing
+"contention ate my budget" from "my mutation run is genuinely slow this
+time" in the lane's own output. On a host running several concurrent
+gate-dispatched packages against one shared container (this project's own
+normal multi-package wave pattern), this makes `LANE_TIMEOUT` an
+ambiguous verdict rather than a real judgment.
+
+### Proposed fix
+
+- Emit the exec-lock acquisition wait duration explicitly in the lane's own
+  log/progress output (e.g. `run-gate: lane 'assay': exec lock acquired
+  after 812s wait`), separate from execution time, so a reader (human or
+  agent) doesn't have to reconstruct it from `main`'s history and the
+  lane's own footprint sampling.
+- Consider whether the `LANE_TIMEOUT` deadline should start counting only
+  once the exec lock is actually acquired (execution time only), rather
+  than from lane invocation (which bundles in an unbounded, contention-
+  dependent queue wait) — or, if deliberate, document that choice explicitly
+  so a BUDGET_EXCEEDED verdict's cause is knowable without independent
+  forensics.
+- Not fixed by this session; not touched by any Wave B2 package's own diff.
+
 **1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive`
 is order-dependent.** `PAIRINGS_SEEN` (a class-level `list`) is populated
 incrementally by the class's OTHER, parametrized test
