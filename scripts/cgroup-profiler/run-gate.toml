@@ -63,7 +63,12 @@ argv = [
     "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
-budget = "45m"
+# Controller ruling RW-19 (2026-09-12): 45m does not hold. Measured live,
+# jobs=2: 217 candidates at ~84s each -> ~2.5h wall clock; a 90m budget
+# would not hold either. Raised to 4h to match assay.toml's own
+# [lanes.r2] budget (this is the advisory run-gate-level budget; the real
+# enforcement is assay's own budget_s, read from assay.toml).
+budget = "4h"
 artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 
 # Proves the gate REJECTS known-bad code — this project's own

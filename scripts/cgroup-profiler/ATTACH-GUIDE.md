@@ -205,3 +205,53 @@ its own footprint is part of the design:
 - Analysis and rendering happen **after** the run, never during it.
 - Nothing is installed, downloaded, or built at run time. If `setup.sh` has not
   been run, collection still works and only the report step complains.
+
+---
+
+## 8. Profiling a run-gate lane
+
+This is the OTHER mode RG-55 added: a long-lived, privileged daemon
+(`cgprofile-host-daemon`, see the README's "Running the daemon") that
+run-gate talks to over a Unix socket, per lane invocation, instead of
+spawning a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full
+wire contract; this section is the short version of how a lane gets found.
+
+**By container id + token (the normal case).** Before starting a lane
+container/exec, run-gate generates `token = secrets.token_hex(16)` and
+exports it as `RUN_GATE_PROFILE_SESSION=<token>` into the lane process,
+then resolves the container id with `docker inspect --format '{{.Id}}'`
+and calls:
+
+```bash
+docker exec cgprofile-host-daemon cgprofile ctl start \
+  --target "containerid:$CONTAINER_ID" \
+  --scope container            `# an ephemeral lane container: the cgroup IS the lane` \
+  --token "$TOKEN" \
+  --damon on \
+  --meta '{"lane":"gate","project":"...","worktree":"...","commit":null,"run_gate_revision":0,"kind":"command","expected":null}' \
+  --json
+```
+
+`--scope container-shared` is the exec-mode twin: a long-lived container
+where the cgroup is shared and only the token-attributed pid subtree
+(walked from `/proc/<pid>/environ`, re-discovered every 2 s) counts toward
+the lane's numbers — `memory.current` is baseline-subtracted since
+`memory.peak` there is lifetime, not per-lane. `start` is idempotent by
+`(container id, token)`: a retried/duplicate call returns the same live
+session (`"reused": true`) rather than starting a second one.
+
+**By session id.** The `start` response's `"session"` field
+(`s-<timestamp>-<4 hex>`) is what every later call names —
+`ctl status <session>`, `ctl stop <session>` (run in the same `finally` as
+container teardown, before `docker rm -f`), `ctl report <session>` for a
+human afterwards. `stop` is idempotent too: a second call on an
+already-finished session returns the same stored summary with
+`"already_stopped": true`, never an error.
+
+**When the daemon is unavailable.** Any nonzero exit, timeout, or
+unparsable stdout from `ctl` means "profiling unavailable for this call" —
+run-gate's own basic fallback (`method: "basic"`, sampling the lane
+container's own cgroup directly, no daemon involved) takes over silently;
+see the contract §4.3. This guide's `--target`/`--observe` collector mode
+(sections 1–7 above) is unaffected either way — it never talks to the
+daemon at all.

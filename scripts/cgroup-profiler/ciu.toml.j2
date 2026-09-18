@@ -1,0 +1,15 @@
+# cgprofile — sparse, committed per-stack override (optional; CIU never
+# auto-creates or auto-fills this from ciu.defaults.toml.j2 — see that
+# file's own field docs for what there is to override). Empty by default:
+# every value this stack needs already has a sane, explicit default. A
+# local operator wanting a different image tag, interval, or retention
+# window for their own dev box adds it here, e.g.:
+#
+#   [cgprofile.image]
+#   tag = "1.2.3"
+#
+#   [cgprofile.daemon]
+#   interval = "0.5"
+
+[state]
+initialized = false

@@ -29,8 +29,11 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +53,7 @@ from lib import phases as phases_lib
 from lib import report_html as report_html_lib
 from lib import report_md as report_md_lib
 from lib import sampler as sampler_lib
+from lib import serve as serve_lib
 from lib import store as store_lib
 
 
@@ -1765,6 +1769,8 @@ class TestCmdTargets:
         captured_spec_call = {}
 
         def fake_build_helper_spec(repo, out, image, cgroup_parent=None):
+            captured_spec_call["repo"] = repo
+            captured_spec_call["out"] = out
             captured_spec_call["cgroup_parent"] = cgroup_parent
             return spec
 
@@ -1785,6 +1791,15 @@ class TestCmdTargets:
         assert "targets" in captured["command"]
         assert "--cgroup-parent=dev-interactive.slice" in captured["command"]
         assert captured_spec_call["cgroup_parent"] == "dev-interactive.slice"
+        # RW-3 regression guard: the helper spec's *output* mount must be
+        # DEFAULT_OUT (cgprofile.py's runs/ dir), not HERE (the repo dir
+        # itself) — `cmd_targets` never sampled anything before, but a wrong
+        # `out` mount here would corrupt the repo checkout the moment this
+        # verb grows an on-disk artifact. `repo` is still HERE (the code the
+        # helper needs to run `cgprofile.py targets --mode direct`).
+        assert captured_spec_call["repo"] == cg.HERE
+        assert captured_spec_call["out"] == cg.DEFAULT_OUT
+        assert captured_spec_call["out"] != cg.HERE
 
 
 # ── cmd_doctor ───────────────────────────────────────────────────────────
@@ -1954,3 +1969,390 @@ class TestLimitsSnapshot:
         got = analyze._effective_limits(analysis)
         assert got, "analyze could not read the writer's own output"
         assert got["/dev.slice/dev-background.slice"]["memory_max"] == 8 * 1024**3
+
+
+# ── serve / ctl: parser, defaults, the socket client (RG-55 C5) ──────────
+
+class TestDefaultsDriftGuard:
+    """`cgprofile.py`'s own DEFAULT_CTL_SOCKET/DEFAULT_CGPROFILE_SESSIONS are
+    literals, not imports from lib.serve (see that constant's own comment:
+    build_parser() should not have to import lib.serve just to read a
+    default) — this is the guard against the two drifting apart, the same
+    "lock file, not a second source of truth" shape pyproject.toml already
+    uses for requirements.txt."""
+
+    def test_ctl_socket_matches_lib_serve(self):
+        assert cg.DEFAULT_CTL_SOCKET == serve_lib.DEFAULT_SOCKET_PATH
+
+    def test_sessions_dir_matches_lib_serve(self):
+        assert cg.DEFAULT_CGPROFILE_SESSIONS == serve_lib.DEFAULT_SESSIONS_DIR
+
+
+class TestBuildParserServeCtl:
+    def test_serve_defaults(self):
+        args = cg.build_parser().parse_args(["serve"])
+        assert args.func is cg.cmd_serve
+        assert args.sessions == cg.DEFAULT_CGPROFILE_SESSIONS
+        assert args.socket == cg.DEFAULT_CTL_SOCKET
+        assert args.damon_default == "on"
+        assert args.interval == 1.0
+        assert args.keep_sessions == 200
+        assert args.keep_days == 14
+        assert args.observe_slices == ""
+        assert args.max_sessions == 16
+
+    def test_serve_refuses_cap_structurally(self):
+        # No --cap flag exists on this parser at all — argparse itself
+        # rejects it (exit 2), never a runtime check inside cmd_serve.
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args(["serve", "--cap", "x:memory.max=1G"])
+
+    def test_serve_has_no_common_target_observe_flags(self):
+        # `_add_common` (the run/attach/targets flags, incl. --cap) was
+        # deliberately never called for `serve` — this is the structural
+        # half of "refuses --cap" the handoff describes.
+        args = cg.build_parser().parse_args(["serve"])
+        assert not hasattr(args, "target")
+        assert not hasattr(args, "cap")
+
+    def test_ctl_requires_a_verb(self):
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args(["ctl"])
+
+    def test_ctl_json_flag_and_socket_default(self):
+        args = cg.build_parser().parse_args(["ctl", "version"])
+        assert args.func is cg.cmd_ctl
+        assert args.socket == cg.DEFAULT_CTL_SOCKET
+        assert args.json is False
+        args2 = cg.build_parser().parse_args(["ctl", "--json", "host"])
+        assert args2.json is True
+
+    def test_ctl_json_and_socket_work_in_every_position(self):
+        # RG55-INTERFACE-CONTRACT.md's own examples always place --json
+        # AFTER the verb (`ctl version --json`) — this is the exact bug a
+        # naive `parents=[_ctl_common]` mixin introduced (the child verb
+        # subparser's own default silently clobbered a LEADING flag the
+        # parent `ctl` parser had already set) and `default=SUPPRESS`
+        # fixed; pin every position so it cannot regress silently.
+        parser = cg.build_parser()
+        assert parser.parse_args(["ctl", "version", "--json"]).json is True
+        assert parser.parse_args(["ctl", "--json", "version"]).json is True
+        leading = parser.parse_args(["ctl", "--socket", "/tmp/leading.sock", "version"])
+        assert leading.socket == "/tmp/leading.sock"
+        trailing = parser.parse_args(["ctl", "version", "--socket", "/tmp/trailing.sock"])
+        assert trailing.socket == "/tmp/trailing.sock"
+        # Given at both positions, the more specific (trailing/child) one
+        # wins — an arbitrary but documented tie-break, not an accident.
+        both = parser.parse_args([
+            "ctl", "--socket", "/tmp/leading.sock", "version",
+            "--socket", "/tmp/trailing.sock",
+        ])
+        assert both.socket == "/tmp/trailing.sock"
+
+    def test_ctl_status_session_is_optional(self):
+        args = cg.build_parser().parse_args(["ctl", "status"])
+        assert args.session is None
+        args2 = cg.build_parser().parse_args(["ctl", "status", "s-20260101T000000Z-abcd"])
+        assert args2.session == "s-20260101T000000Z-abcd"
+
+    def test_ctl_stop_and_report_require_a_session_positional(self):
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args(["ctl", "stop"])
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args(["ctl", "report"])
+        stop_args = cg.build_parser().parse_args(["ctl", "stop", "s-1"])
+        assert stop_args.session == "s-1"
+        report_args = cg.build_parser().parse_args(["ctl", "report", "s-1"])
+        assert report_args.session == "s-1"
+
+    def test_ctl_start_required_and_optional_flags(self):
+        args = cg.build_parser().parse_args([
+            "ctl", "start", "--target", "containerid:" + "a" * 64,
+            "--scope", "container", "--meta", "{}",
+        ])
+        assert args.token is None
+        assert args.damon is None
+        assert args.interval is None
+        for missing in (
+            ["ctl", "start", "--scope", "container", "--meta", "{}"],
+            ["ctl", "start", "--target", "containerid:" + "a" * 64, "--meta", "{}"],
+            ["ctl", "start", "--target", "containerid:" + "a" * 64, "--scope", "container"],
+        ):
+            with pytest.raises(SystemExit):
+                cg.build_parser().parse_args(missing)
+
+    def test_ctl_start_scope_and_damon_choices_are_enforced(self):
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args([
+                "ctl", "start", "--target", "containerid:" + "a" * 64,
+                "--scope", "bogus", "--meta", "{}",
+            ])
+        with pytest.raises(SystemExit):
+            cg.build_parser().parse_args([
+                "ctl", "start", "--target", "containerid:" + "a" * 64,
+                "--scope", "container", "--damon", "bogus", "--meta", "{}",
+            ])
+
+    def test_ctl_gc_and_host_take_no_arguments(self):
+        assert cg.build_parser().parse_args(["ctl", "gc"]).verb == "gc"
+        assert cg.build_parser().parse_args(["ctl", "host"]).verb == "host"
+
+
+class TestCmdServe:
+    def test_refuses_without_a_host_cgroup_view(self, monkeypatch, capsys):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: False)
+        args = cg.build_parser().parse_args(["serve"])
+        with pytest.raises(SystemExit) as exc_info:
+            cg.cmd_serve(args)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--privileged" in err and "--cgroupns=host" in err and "--pid=host" in err
+
+    def test_constructs_the_server_and_serves_forever(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        captured: Dict[str, Any] = {}
+
+        class FakeServer:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def serve_forever(self):
+                captured["served"] = True
+
+        monkeypatch.setattr(serve_lib, "SessionServer", FakeServer)
+        args = cg.build_parser().parse_args([
+            "serve", "--sessions", str(tmp_path), "--socket", str(tmp_path / "x.sock"),
+            "--damon-default", "off", "--interval", "2.5", "--keep-sessions", "5",
+            "--keep-days", "1", "--observe-slices", "a.slice, ,b.slice,", "--max-sessions", "3",
+        ])
+        assert cg.cmd_serve(args) == 0
+        assert captured["served"] is True
+        assert captured["sessions_dir"] == str(tmp_path)
+        assert captured["socket_path"] == str(tmp_path / "x.sock")
+        assert captured["damon_default"] == "off"
+        assert captured["interval"] == 2.5
+        assert captured["keep_sessions"] == 5
+        assert captured["keep_days"] == 1
+        # Blank/whitespace-only entries (a trailing comma, a lone space) are
+        # dropped rather than becoming a bogus "" or " " slice name.
+        assert captured["observe_slices"] == ("a.slice", "b.slice")
+        assert captured["max_sessions"] == 3
+
+    def test_empty_observe_slices_is_the_empty_tuple(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        captured: Dict[str, Any] = {}
+
+        class FakeServer:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def serve_forever(self):
+                pass
+
+        monkeypatch.setattr(serve_lib, "SessionServer", FakeServer)
+        args = cg.build_parser().parse_args(["serve"])
+        cg.cmd_serve(args)
+        assert captured["observe_slices"] == ()
+
+
+class TestCtlRequest:
+    def _args(self, **overrides):
+        ns = argparse.Namespace(
+            verb="version", target=None, scope=None, token=None, damon=None,
+            interval=None, meta=None, session=None,
+        )
+        for key, value in overrides.items():
+            setattr(ns, key, value)
+        return ns
+
+    def test_version_host_gc_take_no_fields(self):
+        assert cg._ctl_request(self._args(verb="version")) == {"verb": "version"}
+        assert cg._ctl_request(self._args(verb="host")) == {"verb": "host"}
+        assert cg._ctl_request(self._args(verb="gc")) == {"verb": "gc"}
+
+    def test_status_stop_report_carry_session(self):
+        assert cg._ctl_request(self._args(verb="status", session=None)) == {
+            "verb": "status", "session": None,
+        }
+        assert cg._ctl_request(self._args(verb="status", session="s-1")) == {
+            "verb": "status", "session": "s-1",
+        }
+        assert cg._ctl_request(self._args(verb="stop", session="s-1")) == {
+            "verb": "stop", "session": "s-1",
+        }
+        assert cg._ctl_request(self._args(verb="report", session="s-1")) == {
+            "verb": "report", "session": "s-1",
+        }
+
+    def test_start_builds_the_full_request(self):
+        args = self._args(
+            verb="start", target="containerid:" + "a" * 64, scope="container",
+            token="a-real-token-99", damon="on", interval=2.0,
+            meta='{"lane": "l", "project": "p", "worktree": "w", "commit": null, '
+                 '"run_gate_revision": 1, "kind": "command", "expected": null}',
+        )
+        req = cg._ctl_request(args)
+        assert req["verb"] == "start"
+        assert req["target"] == "containerid:" + "a" * 64
+        assert req["scope"] == "container"
+        assert req["token"] == "a-real-token-99"
+        assert req["damon"] == "on"
+        assert req["interval"] == 2.0
+        assert req["meta"]["lane"] == "l"
+
+    def test_start_with_malformed_meta_json_is_a_clean_exit_2(self, capsys):
+        args = self._args(
+            verb="start", target="containerid:" + "a" * 64, scope="container", meta="{not json",
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cg._ctl_request(args)
+        assert exc_info.value.code == 2
+        assert "--meta must be valid JSON" in capsys.readouterr().err
+
+    def test_start_with_a_non_object_meta_is_a_clean_exit_2(self, capsys):
+        args = self._args(
+            verb="start", target="containerid:" + "a" * 64, scope="container", meta="[1, 2]",
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cg._ctl_request(args)
+        assert exc_info.value.code == 2
+        assert "--meta must be a JSON object" in capsys.readouterr().err
+
+
+class TestCtlRoundtrip:
+    def test_connect_failure_raises_oserror(self, tmp_path):
+        with pytest.raises(OSError):
+            cg._ctl_roundtrip(str(tmp_path / "nothing-listens-here.sock"), {"verb": "version"})
+
+    def _serve_once(self, socket_path: str, reply: bytes) -> threading.Thread:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(socket_path)
+        sock.listen(1)
+        sock.settimeout(5.0)
+
+        def run():
+            try:
+                conn, _addr = sock.accept()
+            except OSError:
+                return
+            try:
+                conn.settimeout(5.0)
+                conn.recv(65536)
+                if reply:
+                    conn.sendall(reply)
+            finally:
+                conn.close()
+                sock.close()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5.0
+        while not os.path.exists(socket_path) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return thread
+
+    def test_empty_response_raises_valueerror(self, tmp_path):
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = self._serve_once(socket_path, b"\n")
+        try:
+            with pytest.raises(ValueError, match="empty response"):
+                cg._ctl_roundtrip(socket_path, {"verb": "version"})
+        finally:
+            thread.join(timeout=5.0)
+
+    def test_connection_closed_with_no_reply_at_all_also_raises_valueerror(self, tmp_path):
+        # The peer closes without sending a single byte (not even one that
+        # already ends in "\n") — recv() returns b"" and the read loop's
+        # `if not chunk: break` is what stops it, distinct from the
+        # loop-condition exit the "\n"-terminated case above takes.
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = self._serve_once(socket_path, b"")
+        try:
+            with pytest.raises(ValueError, match="empty response"):
+                cg._ctl_roundtrip(socket_path, {"verb": "version"})
+        finally:
+            thread.join(timeout=5.0)
+
+    def test_malformed_json_response_raises_valueerror(self, tmp_path):
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = self._serve_once(socket_path, b"not json at all\n")
+        try:
+            with pytest.raises(ValueError, match="malformed response"):
+                cg._ctl_roundtrip(socket_path, {"verb": "version"})
+        finally:
+            thread.join(timeout=5.0)
+
+    def test_well_formed_response_round_trips(self, tmp_path):
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = self._serve_once(socket_path, b'{"ok": true, "contract": 1}\n')
+        try:
+            resp = cg._ctl_roundtrip(socket_path, {"verb": "version"})
+            assert resp == {"ok": True, "contract": 1}
+        finally:
+            thread.join(timeout=5.0)
+
+
+class TestCmdCtl:
+    def test_daemon_unreachable_prints_one_stderr_line_and_exits_3(self, monkeypatch, capsys):
+        def boom(socket_path, req, timeout=25.0):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(cg, "_ctl_roundtrip", boom)
+        args = cg.build_parser().parse_args(["ctl", "version"])
+        assert cg.cmd_ctl(args) == 3
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "connection refused" in captured.err
+
+    def test_malformed_response_also_exits_3(self, monkeypatch, capsys):
+        def boom(socket_path, req, timeout=25.0):
+            raise ValueError("empty response from daemon")
+
+        monkeypatch.setattr(cg, "_ctl_roundtrip", boom)
+        args = cg.build_parser().parse_args(["ctl", "host"])
+        assert cg.cmd_ctl(args) == 3
+        assert capsys.readouterr().out == ""
+
+    def test_ok_response_prints_json_and_exits_0(self, monkeypatch, capsys):
+        monkeypatch.setattr(cg, "_ctl_roundtrip", lambda *a, **k: {
+            "ok": True, "contract": 1, "cgprofile": "1.0.0",
+            "daemon": {
+                "name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:15:00Z",
+                "damon": "unavailable:not available on this host", "damon_default": "on",
+                "sessions_live": 0, "max_sessions": 16,
+            },
+        })
+        args = cg.build_parser().parse_args(["ctl", "version"])
+        assert cg.cmd_ctl(args) == 0
+        out = capsys.readouterr().out
+        assert json.loads(out)["ok"] is True
+        assert out.count("\n") == 1  # exactly one JSON document, nothing else
+
+    def test_not_ok_response_prints_json_and_exits_2(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            cg, "_ctl_roundtrip",
+            lambda *a, **k: {"ok": False, "contract": 1, "error": {"code": "x", "message": "y"}},
+        )
+        args = cg.build_parser().parse_args(["ctl", "stop", "s-1"])
+        assert cg.cmd_ctl(args) == 2
+        out = capsys.readouterr().out
+        assert json.loads(out)["ok"] is False
+
+    @pytest.mark.parametrize("reply", [
+        b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
+        b'[]\n',
+        b'{"contract": 1, "cgprofile": "1.0.0", "daemon": {}}\n',
+    ])
+    def test_incompatible_response_is_a_daemon_fault_without_printing(
+        self, tmp_path, reply, capsys
+    ):
+        socket_path = str(tmp_path / "ctl.sock")
+        thread = TestCtlRoundtrip()._serve_once(socket_path, reply)
+        try:
+            args = cg.build_parser().parse_args(["ctl", "--socket", socket_path, "version"])
+            assert cg.cmd_ctl(args) == 3
+            captured = capsys.readouterr()
+            assert captured.out == ""
+            assert "invalid response" in captured.err
+        finally:
+            thread.join(timeout=5.0)

@@ -24,6 +24,33 @@ while observing a victim is a first-class mode, not a workaround.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want
   to change it.
+- **[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)**
+  — why the always-on daemon owns only its measured state and how its contract
+  stays fail-closed.
+- **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)** — pasteable daemon and run-gate
+  adoption examples.
+
+## Verbs
+
+| verb | mode | what |
+|---|---|---|
+| `run -- <command>` | wrapper | wrap and profile one command |
+| `attach` | attach | profile something already running |
+| `mark <name>` | either | record a phase boundary from anywhere sharing the run dir |
+| `report [--run-dir D]` | either | re-render `report.html`/`report.md` for a finished run |
+| `targets [--target …]` | either | resolve target specs and print, without sampling |
+| `doctor` | either | what can this process reach? venv/DAMON/access summary |
+| `serve` | daemon | run the RG-55 daemon (PID 1 in `cgprofile-host-daemon`) |
+| `ctl <verb>` | daemon | talk to a running `serve` over its control socket — see "Running the daemon" below |
+
+The first six are the collector/report CLI (`ATTACH-GUIDE.md`); `serve`/`ctl`
+are RG-55's always-on daemon mode, a separate thing entirely — it never
+spawns a collector, and run-gate talks to it instead of to `run`/`attach`.
+Every daemon session records sample zero at start. A no-token start is always a
+new session (subject to `--max-sessions`); only the same non-null token is
+idempotent. The daemon control contract is major version 1, and `ctl` refuses
+to print a response whose object, major, `ok`, or verb-specific shape is not
+valid.
 
 ## What you get
 
@@ -64,6 +91,74 @@ need a host install.
 **Nothing at run time.** Dependencies are pinned in `requirements.txt` and
 built once by `./setup.sh`. No code path installs, downloads, or fetches while
 profiling — that would add exactly the load the tool exists to measure.
+
+## Running the daemon
+
+RG-55 added a second, always-on mode: a privileged host daemon that
+run-gate (or anyone else) talks to over a Unix socket instead of spawning a
+collector per lane. It is `scripts/cgroup-profiler/`'s own **standalone ciu
+root** — `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
+
+```bash
+python3 build-push.py --build      # -> cgprofile:local (needs docker buildx)
+ciu up --dir .                     # starts cgprofile-host-daemon
+docker exec cgprofile-host-daemon cgprofile ctl version --json
+docker exec cgprofile-host-daemon cgprofile ctl status --json
+ciu down                           # stops it (run from this dir); the volume survives
+```
+
+The daemon's version response is contract major 1:
+
+```json
+{
+  "ok": true,
+  "contract": 1,
+  "cgprofile": "1.0.0",
+  "daemon": {
+    "name": "cgprofile-host-daemon",
+    "started_at": "2026-09-12T10:15:00Z",
+    "damon": "available",
+    "damon_default": "on",
+    "sessions_live": 0,
+    "max_sessions": 16
+  }
+}
+```
+
+- **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
+  (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
+  container name is the fixed literal `cgprofile-host-daemon`. A second
+  worktree running `ciu up --dir .` collides on that name and refuses to
+  start a sibling, on purpose: the daemon owns the whole host's DAMON
+  facility and cgroup v2 view (`--privileged --pid=host --cgroupns=host`),
+  which cannot be meaningfully duplicated.
+- **`--network none`, no docker socket inside the container.** The only
+  surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
+  cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
+  docker access to that container. `ctl`'s own client-side timeout is 25 s;
+  see the contract §1.3/§1.5 for run-gate's own per-verb timeouts.
+- **Sessions live in the named volume** `cgprofile-sessions`, mounted at
+  `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
+  exact `session_dir` and the series files inside it (`samples.jsonl.gz`,
+  `events.jsonl`, `host.jsonl`, `manifest.json`, `summary.json`, plus
+  `damon.jsonl` only when actual DAMON samples were persisted). `ciu down`
+  preserves the volume; `ciu clean`/`--reset`
+  removes it, same as every other named volume in this estate.
+- **Rendering a report:** `docker exec cgprofile-host-daemon cgprofile ctl
+  report <session> --json` — the same interactive `report.html` a
+  `cgprofile run`/`attach` session produces, rendered by the image's own
+  venv (the daemon process itself never imports pandas/plotly — see
+  `lib/serve.py`'s `handle_report`). May take longer than 30 s on a long
+  session; run-gate itself never calls this verb.
+- **Retention:** `--keep-sessions 200 --keep-days 14` by default (`serve`
+  CLI flags) — the newest N finished sessions are kept, older ones dropped
+  on every `stop`, or on demand via `ctl gc --json`. A live session is
+  never pruned.
+- **If `ciu up` ever refuses** `privileged`/`pid`/`cgroupns` (it does not,
+  as of this writing — verified with `ciu up --dir . --dry-run`, see the
+  P1 REPORT's C7 section for the exact governance overlay observed),
+  `tools/daemon-run.sh` would be the documented `docker run` fallback; it
+  is not shipped because the refusal has not (yet) happened.
 
 ## Relationship to the neighbours
 

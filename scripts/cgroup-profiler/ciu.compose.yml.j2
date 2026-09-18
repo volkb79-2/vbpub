@@ -1,0 +1,87 @@
+# cgprofile — the RG-55 profiling daemon. Rendered by ciu from
+# ciu.defaults.toml.j2 (+ optional ciu.toml.j2 overrides). See that file
+# for the field docs; RG55-INTERFACE-CONTRACT.md §1/§5 for the contract
+# this container's shape (privileged/pid/cgroupns/network) exists to keep.
+#
+# ONE service, ONE host singleton (ciu.global.defaults.toml.j2's own
+# comment on `deploy.environment_tag = "host"`) — container_name below
+# composes to the exact literal RG55-INTERFACE-CONTRACT.md §1.8 names:
+# {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ cgprofile.daemon.name }}
+
+services:
+  {{ cgprofile.daemon.name }}:
+    {% if cgprofile.image.registry %}
+    image: {{ cgprofile.image.registry }}/{{ cgprofile.image.namespace }}/{{ cgprofile.image.name }}:{{ cgprofile.image.tag }}
+    {% else %}
+    image: {{ cgprofile.image.name }}:{{ cgprofile.image.tag }}
+    {% endif %}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ cgprofile.daemon.name }}
+    # ENTRYPOINT ["cgprofile", "serve"] already, per the Dockerfile — no
+    # command override needed. Flags map straight onto cgprofile.py's own
+    # `serve` parser (cgprofile.defaults.toml.j2's field names match them
+    # 1:1 on purpose).
+    command:
+      - "--sessions"
+      - "{{ cgprofile.daemon.sessions_dir }}"
+      - "--socket"
+      - "{{ cgprofile.daemon.socket_path }}"
+      - "--damon-default"
+      - "{{ cgprofile.daemon.damon_default }}"
+      - "--interval"
+      - "{{ cgprofile.daemon.interval }}"
+      - "--keep-sessions"
+      - "{{ cgprofile.daemon.keep_sessions }}"
+      - "--keep-days"
+      - "{{ cgprofile.daemon.keep_days }}"
+      {% if cgprofile.daemon.observe_slices %}
+      - "--observe-slices"
+      - "{{ cgprofile.daemon.observe_slices }}"
+      {% endif %}
+      - "--max-sessions"
+      - "{{ cgprofile.daemon.max_sessions }}"
+
+    # ── RG55-INTERFACE-CONTRACT.md §5: the daemon's whole safety envelope ──
+    # `serve` refuses `--cap` structurally and never instantiates TempCaps
+    # (lib/serve.py's own module docstring + C5's cmd_serve); these three
+    # flags are what give it the HOST cgroup v2 view and DAMON sysfs it
+    # needs to read (never write, except its own kdamonds and session dir —
+    # WRITABLE_ROOTS, C4) in order to profile containers it does not own:
+    privileged: true
+    pid: "host"
+    # Compose Specification key is `cgroup` (singular) with values
+    # "host"/"private" — NOT `cgroupns`, which docker compose's own schema
+    # validator refuses outright ("additional properties 'cgroupns' not
+    # allowed", verified live 2026-09-12 against docker compose v2.40.3).
+    # `docker run --cgroupns=host` is the CLI flag name; this is the
+    # differently-named compose-file equivalent of it.
+    cgroup: "host"
+    # No docker socket, no network at all (§5: "no docker socket inside the
+    # daemon — that is why targets are `containerid:` and the consumer
+    # resolves ids"; ctl talks to it via `docker exec`, never a published
+    # port). Mutually exclusive with a `networks:` block below — deliberately
+    # absent, unlike every other ciu stack in this estate.
+    network_mode: "none"
+    restart: unless-stopped
+
+    # AUTHORED here, not left to governance (C7): the daemon lives in the
+    # INTERACTIVE tier, not the `dev-background.slice` tier gate runs (the
+    # thing it profiles) live in — profiling the profiler's own noisy
+    # neighbour tier would be exactly backwards. Rendered by ciu's Jinja2
+    # pass reading the REAL process environment (`render_toml_template`'s
+    # `context['env']`, StrictUndefined): an unset $CGROUP_PARENT_DEV_INTERACTIVE
+    # REFUSES this render outright rather than silently falling back to a
+    # hardcoded slice name (AGENTS.md rule, restated in ciu's own
+    # governance.py `resolve_cgroup_parent` docstring).
+    cgroup_parent: "{{ env.CGROUP_PARENT_DEV_INTERACTIVE }}"
+    mem_limit: "{{ cgprofile.hardening.mem_limit }}"
+    memswap_limit: "{{ cgprofile.hardening.memswap_limit }}"
+
+    volumes:
+      - cgprofile-sessions:/var/lib/cgprofile
+
+volumes:
+  # `ciu down` PRESERVES this (S6.4) — a daemon restart must not lose every
+  # session directory a `ctl report` might still be asked to render.
+  # `ciu clean`/`--reset` DOES remove it, same as every other named volume
+  # in this estate.
+  cgprofile-sessions:
