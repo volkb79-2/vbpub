@@ -3542,3 +3542,12 @@ then refused because memory PSI was `full avg10=8.72`, above the mandatory
 it launches only after a single wake-point PSI check at or below 5, otherwise
 it records `P1_R2_CORRECTED_PSI_BLOCKED=1`. No mutation container was started
 under the red gate.
+
+### RW-288 — 2026-09-18 10:35:53Z — prepare linear P6 final tree
+
+While P1 waits for the PSI wake point, the controller materialized
+`rg55-followups-cgprofile-final` from current main and imported the exact P6
+package snapshot from judged tree `8076246c`. The resulting linear final tree
+is clean at `c362c8dffb41cad6c7c4c57fc69e5163eacd8f3b`, with current
+source-backed Assay 6.4 and no mutation/container launch. P6 remains queued
+behind a green PSI check and the estate's two-slot mutation limit.
