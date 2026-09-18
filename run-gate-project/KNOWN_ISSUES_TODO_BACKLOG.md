@@ -4726,6 +4726,57 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
+## RG-65 — `run-gate` resolves lane config from the invoking CWD, not `--worktree`; a resulting "unknown lane" failure was reported as exit 0 by the background wrapper
+
+**Provenance:** found live 2026-09-18 during dstdns Track B Wave B2, by
+`p195-b2-ctl`/P201 while trying to launch a worktree-only lane.
+
+### What's wrong
+
+Invoking `run-gate <lane> --worktree /workspaces/dstdns/.worktrees/<branch>`
+from the REPO ROOT (`/workspaces/dstdns`), for a lane declared only in the
+worktree's own (not-yet-merged) `run-gate.toml`/`nyxloom-trove/nyxloom.toml`,
+fails with `unknown lane` — `--worktree` scopes where the judged tree and
+per-worktree history store live (per this project's own documented
+contract), but lane/config RESOLUTION itself apparently still reads from the
+process's current working directory rather than the `--worktree` path. The
+practical trap: an agent working inside a worktree who runs a command from
+outside it (or a background-wrapper script whose own CWD isn't the
+worktree) gets a config file that doesn't yet contain the lane they just
+declared, and the failure message (`unknown lane`) does not obviously point
+at "you're resolving config from the wrong directory."
+
+**Worse than a confusing error**: the background-task wrapper used to launch
+this invocation reported **exit code 0** for the run despite it never
+executing a single test — a silent false-green. A caller trusting the
+wrapper's own exit code (rather than reading run-gate's own stdout/log for
+an actual `unknown lane` message) would conclude the lane passed when it
+never ran at all.
+
+### Why it matters
+
+`--worktree` is this project's own documented, load-bearing mechanism for
+running gates against in-progress worktree branches (see dstdns
+`CLAUDE.md` "Feature worktrees" and `nyxloom-trove/GUIDE.md`) — every
+Wave B2 package relies on it. If lane-config resolution silently follows
+CWD instead, the flag's own promise ("scopes both the judged tree and the
+per-(worktree × project) history store to that worktree") is incomplete:
+it scopes execution and history, but not lane discovery. Combined with a
+false exit-0 on the resulting failure, this is a genuine correctness risk —
+a merge decision made on a background wrapper's reported success alone
+could be based on a gate that never ran.
+
+### Proposed fix
+
+- `run-gate <lane> --worktree <path>` should resolve lane/config
+  definitions from `<path>` unconditionally, regardless of the invoking
+  process's CWD — the flag's whole point is to make CWD irrelevant.
+- An `unknown lane` failure (or any failure) must never surface as exit 0
+  through any wrapping mechanism; audit whatever produced the exit-0 result
+  here (a shell wrapper swallowing the real exit code, or run-gate itself
+  writing a 0 on a config-resolution failure before attempting execution).
+- Not fixed by this session; reported rather than worked around locally.
+
 ## RG-64 — a caller-side "instance flock" convention does not compose with run-gate's own internal exec lock; checking only the convention's lock cannot detect a real holder that bypassed it
 
 **Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
@@ -4858,6 +4909,12 @@ The same package (`p195-b2-ctl`) retried this lane a third time, deliberately ti
 **The decisive experiment — running this exact lane against `main` (no package's diff applied) on an equally quiet host — is named but was deliberately NOT run**, correctly left to whoever owns the shared config (the controller, or this backlog's resolver) rather than a package agent altering shared infrastructure to explain away its own gate. Recorded here rather than left only in the dstdns session record so the next person to hit this (in this project or another consumer) has both data points (contended AND quiet-host timeouts) rather than re-deriving the contention half of the story from scratch.
 
 **Sharpened proposed fix**: in addition to the exec-lock-wait disclosure above, a `budget` that hasn't been re-measured against a growing instrumented suite is exactly the "unbounded budget by convention" shape RG-36 was partly written to close — worth checking on this project's own next assay-lane budget review whether `[lanes.assay]`-shaped budgets anywhere in this estate are still sized against a stale baseline. Not fixed by this session.
+
+### Update 2026-09-18 (same day, later still yet again) — likely the actual root cause: an R2 lane re-runs its FULL R1-scoped argv once PER MUTATION CANDIDATE, so a slow baseline argv multiplies straight past any budget
+
+A third package in the same wave (`p195-b2-ctl`/P201) measured, rather than guessed, the actual per-candidate cost of one of its own R2 lanes (`p201_controller_main`): the lane's declared argv (inherited from its R1 baseline) takes **533s to execute once**. assay's R2/mutation mode re-executes that SAME argv once per surviving-candidate probe — ten mutants at ~533s each is **~90 minutes of real, necessary work** against a 20-minute budget. This is not a queue-wait artifact and not a stale-budget artifact: it reproduces on an uncontended lane, with a budget that was never touched, purely because the declared per-mutant test command is broad (the whole R1 target set) rather than narrow (just the fast unit tests that actually exercise the mutated lines). The package's own conclusion, which reads as the most concrete, actionable explanation of the whole RG-63 thread to date: **this class of `BUDGET_EXCEEDED` is not fixable by tuning `budget` or `max_mutants`** — the fix has to be a narrower per-mutant argv declared at the lane level, so each candidate's re-run cost is seconds, not many hundreds of seconds. Everything in this backlog entry's four earlier updates (queue-wait ambiguity, "suite outgrew its budget," the LANE_TIMEOUT-vs-`assay.toml`-budget mismatch) is consistent with — and possibly fully explained by — this same underlying mechanism: R2 lane argvs across this wave were declared by copying the R1 lane's own (broad, whole-module) argv, and multiplying any broad argv's runtime by a double-digit candidate count was never going to fit a 20-45 minute budget regardless of what number is in the config.
+
+**Sharpest proposed fix yet**: document explicitly, wherever R2/mutation lane declaration is taught (this project's own lane-authoring docs, `nyxloom` AUTHORING.md's R2-lane guidance, or both), that a mutation lane's argv must be scoped to the FASTEST test subset that still exercises the mutated code — never simply copy-pasted from the R1 lane's own (whole-module, broader-coverage) argv — and that `budget` should be sized as `candidate_count × per-candidate-argv-runtime × safety-margin`, not picked independent of that arithmetic. Consider whether `assay` itself could warn (not block) at lane-declaration or first-run time when a lane's own measured per-candidate cost times its candidate count would obviously blow its configured budget, so this is caught before a wasted 20-90 minute run rather than after. Not fixed by this session.
 
 ### Update 2026-09-18 (same day, later still) — a fourth data point: raising the assay-level `budget` had ZERO effect, pointing at a separate, un-configured timeout surface
 
