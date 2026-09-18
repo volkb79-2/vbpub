@@ -4777,7 +4777,9 @@ could be based on a gate that never ran.
   writing a 0 on a config-resolution failure before attempting execution).
 - Not fixed by this session; reported rather than worked around locally.
 
-## RG-64 — a caller-side "instance flock" convention does not compose with run-gate's own internal exec lock; checking only the convention's lock cannot detect a real holder that bypassed it
+### Update 2026-09-18 (same day, later) — independently reproduced by a second package; explains why a green gate can hide the bug
+
+`p194-b2-io-fault` hit the identical failure independently while launching its own worktree-only lanes: `cd /workspaces/dstdns && ... run-gate <lane> --worktree /workspaces/dstdns/.worktrees/p194-b2-io-fault` died with `unknown lane ... (config: /workspaces/dstdns/run-gate.toml)` — CWD was the repo root, `--worktree` pointed at the branch, and config resolution followed CWD exactly as RG-65 describes. This package also identified WHY the bug had survived eight of its own prior gate runs undetected: its `test-runner` lane happens to be declared identically in both `main`'s and the worktree's own `run-gate.toml` (a lane common to the whole project, not worktree-specific), so a CWD-rooted invocation "worked" by accident — reading the wrong file but finding the same lane definition in it. The bug only becomes visible the moment a lane exists ONLY in the worktree's own copy (any package's own newly-declared `assay-*` lanes), which is exactly the shape every Wave B2 package's own lane declarations take. This means **a package's own green `test-runner`/shared-lane results provide no assurance that its own newly-declared lanes would resolve correctly** — each must be checked independently, not inferred from a passing shared lane.
 
 **Provenance:** found live 2026-09-18 during dstdns Track B Wave B2 (same
 six-package concurrent-container wave as RG-63), by a package (`p194-b2-io-fault`)
