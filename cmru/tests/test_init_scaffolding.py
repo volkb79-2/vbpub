@@ -28,6 +28,10 @@ def _feed_input(monkeypatch, answers):
 
 
 def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, git_repo):
+    # The generated orchestration contract deliberately requires the host's
+    # gates tier; tests provide that declared fact instead of weakening the
+    # shipped fail-closed configuration with a fallback.
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
     (git_repo / "alpha").mkdir()
     (git_repo / "beta").mkdir()
     _feed_input(

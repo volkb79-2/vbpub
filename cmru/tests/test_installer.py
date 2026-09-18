@@ -1517,7 +1517,7 @@ install_dir_user   = "demo"
         text = self._help(out_file, "enroll", "--help")
         assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
 
-    def test_real_project_config_renders_enroll(self, capsys):
+    def test_real_project_config_renders_enroll(self, capsys, monkeypatch):
         """The one [project.installer] this monorepo actually ships renders it too.
 
         tls-edge declares required_commands, and ``main()`` runs
@@ -1528,6 +1528,7 @@ install_dir_user   = "demo"
         real = Path(__file__).resolve().parents[2] / "tls-edge" / "cmru.toml"
         if not real.exists():
             pytest.skip(f"no real installer config at {real}")
+        monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
         from cmru.getpy import render_from_config
         central = Path(__file__).resolve().parents[2] / "cmru.orchestration.toml"
         src = render_from_config("tls-edge", central)
