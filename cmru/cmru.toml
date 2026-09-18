@@ -1,14 +1,5 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 CMRU_RELEASE_NOTES = "## cmru wheel\n\nBuild, publish, and release orchestration for portable CMRU projects.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"

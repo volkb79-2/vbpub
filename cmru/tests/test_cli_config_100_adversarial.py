@@ -59,6 +59,15 @@ def _orchestration_toml(*, project_path: str = "demo/cmru.toml", mode: str = "pr
                        depends: str = "") -> str:
     return f'''schema_version = 1
 
+[github]
+owner = "acme"
+repo = "vbpub"
+owner_type = "org"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
 [orchestration]
 project_order = {project_order}
 default_projects = ["demo"]
@@ -78,12 +87,20 @@ ghcr_delete_packages = []
 '''
 
 
-def _write_project(tmp_path: Path, name: str = "demo", **kwargs) -> Path:
+def _write_project(tmp_path: Path, name: str = "demo", *, centralized: bool = False, **kwargs) -> Path:
     root = tmp_path / name
     root.mkdir()
     path = root / "cmru.toml"
-    path.write_text(_project_toml(name, **kwargs), encoding="utf-8")
+    document = _project_toml(name, **kwargs)
+    if centralized:
+        document = _centralize(document)
+    path.write_text(document, encoding="utf-8")
     return path
+
+
+def _centralize(document: str) -> str:
+    project = document.split("[project]\n", 1)[1]
+    return "schema_version = 1\n\n[project]\n" + project
 
 
 def test_duration_and_command_boundaries_have_distinct_results(tmp_path):
@@ -149,14 +166,15 @@ def test_project_document_rejects_invalid_contracts(tmp_path, mutate, expected, 
     with pytest.raises(SystemExit) as exc:
         config.load_forge_config(path)
     assert exc.value.code == 2
-    assert expected in capsys.readouterr().out
+    assert expected in capsys.readouterr().err
 
 
 def test_orchestration_defaults_override_project_environment_and_dependencies(tmp_path):
-    project = _write_project(tmp_path)
+    project = _write_project(tmp_path, centralized=True)
     project.write_text(project.read_text(encoding="utf-8").replace(
-        '[targets]\nhost = "github"\nregistry = ["ghcr.io"]',
-        '[targets]\nhost = "github"\nregistry = ["ghcr.io"]\n\n[env]\nCI = "project"\nPROJECT_ONLY = "yes"',
+        "schema_version = 1\n",
+        'schema_version = 1\n\n[env]\nCI = "project"\nPROJECT_ONLY = "yes"\n',
+        1,
     ), encoding="utf-8")
     orch = tmp_path / "cmru.orchestration.toml"
     orch.write_text(_orchestration_toml(), encoding="utf-8")
@@ -176,33 +194,33 @@ def test_orchestration_defaults_override_project_environment_and_dependencies(tm
     ],
 )
 def test_orchestration_refuses_ambiguous_or_missing_project_facts(tmp_path, change, expected, capsys):
-    _write_project(tmp_path)
+    _write_project(tmp_path, centralized=True)
     path = tmp_path / "cmru.orchestration.toml"
     path.write_text(change(_orchestration_toml()), encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         config.load_forge_config(path, require_orchestration=True)
     assert exc.value.code == 2
-    assert expected in capsys.readouterr().out
+    assert expected in capsys.readouterr().err
 
 
 def test_orchestration_rejects_dependency_order_and_target_mismatch(tmp_path, capsys):
-    _write_project(tmp_path, "demo")
-    second = _write_project(tmp_path, "other", owner="other")
+    _write_project(tmp_path, "demo", centralized=True)
+    second = _write_project(tmp_path, "other", owner="other", centralized=True)
     orch = tmp_path / "cmru.orchestration.toml"
     orch.write_text(_orchestration_toml(project_path="demo/cmru.toml")
                     .replace('[orchestration.project.demo]', '[orchestration.project.demo]\ndepends_on = ["other"]')
                     .replace('project_order = ["demo"]', 'project_order = ["demo", "other"]'), encoding="utf-8")
     with pytest.raises(SystemExit):
         config.load_forge_config(orch)
-    assert "unknown project" in capsys.readouterr().out
+    assert "unknown project" in capsys.readouterr().err
     # Both documents are declared below: the same release repository is a contract fact.
-    second.write_text(_project_toml("other", owner="different"), encoding="utf-8")
+    second.write_text(_centralize(_project_toml("other", owner="different")), encoding="utf-8")
     orch.write_text(_orchestration_toml(project_path="demo/cmru.toml", project_order='["demo", "other"]')
                     .replace('default_projects = ["demo"]', 'default_projects = ["demo", "other"]')
                     + '\n[orchestration.project.other]\nconfig = "other/cmru.toml"\n', encoding="utf-8")
-    with pytest.raises(SystemExit):
-        config.load_forge_config(orch)
-    assert "GitHub release repository" in capsys.readouterr().out
+    loaded = config.load_forge_config(orch)
+    assert loaded.github.owner == "acme"
+    assert loaded.projects["other"].name == "other"
 
 
 def test_cli_release_policy_and_project_environment_are_explicit():
@@ -249,7 +267,7 @@ def test_schema_helpers_refuse_wrong_shapes_without_inventing_values(call, needl
     with pytest.raises(SystemExit) as exc:
         call()
     assert exc.value.code == 2
-    assert needle in capsys.readouterr().out
+    assert needle in capsys.readouterr().err
 
 
 def test_secret_document_and_project_release_path_guards(tmp_path, capsys):
@@ -257,11 +275,11 @@ def test_secret_document_and_project_release_path_guards(tmp_path, capsys):
     malformed.write_text("[github\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         config._read_secret_document(malformed)
-    assert "invalid TOML" in capsys.readouterr().out
+    assert "invalid TOML" in capsys.readouterr().err
     malformed.write_text("owner = 'wrong'\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         config._read_secret_document(malformed)
-    assert "unknown keys" in capsys.readouterr().out
+    assert "unknown keys" in capsys.readouterr().err
     path = _write_project(tmp_path)
     source = path.read_text(encoding="utf-8")
     for original, mutated, needle in [
@@ -272,5 +290,5 @@ def test_secret_document_and_project_release_path_guards(tmp_path, capsys):
         path.write_text(source.replace(original, mutated), encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert needle in capsys.readouterr().out
+        assert needle in capsys.readouterr().err
     path.write_text(source, encoding="utf-8")

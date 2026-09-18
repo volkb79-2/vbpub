@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from cmru.cli_support import CMRUArgumentParser
+
 
 def _unescape_mountinfo(value: str) -> str:
     """Decode the octal escapes used by Linux mountinfo paths."""
@@ -568,7 +570,7 @@ def _missing_orchestration_env(args: argparse.Namespace) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Run a command in tester-unified for this worktree")
+    parser = CMRUArgumentParser(description="Run a command in tester-unified for this worktree")
     parser.add_argument("--cwd", required=True, help="relative directory in the current worktree")
     parser.add_argument(
         "--image",

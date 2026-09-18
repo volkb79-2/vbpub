@@ -14,7 +14,7 @@ Use the ordinary entry point. It creates/overwrites `cmru.release.log`; do not
 wrap it in `tee` yourself:
 
 ```bash
-./cmru.release.sh --project <project>
+cmru release <project>
 ```
 
 cmru obtains a local release lock and checks two things about the caller's own
@@ -26,7 +26,7 @@ checkout before it creates the release worktree:
    that is *behind* is reported but safe — the fetched remote commit is
    authoritative regardless.
 2. **No uncommitted change may touch a project's own path** for any project in
-   this run's scope (`--project <name>`, or every orchestrated project
+   this run's scope (`<name>`, or every orchestrated project
    otherwise) — whether or not that project would otherwise show as "changed".
    The release source is the fetched `origin/main` commit, never the caller's
    working tree, so an uncommitted edit under, say, `ciu/` would be silently
@@ -97,7 +97,7 @@ Failure retains the worktree and prints its path and branch. A **pre-tag** failu
 can be inspected, deliberately corrected, re-gated, and resumed there:
 
 ```bash
-./cmru.release.sh --resume /path/reported/by/cmru --project <project>
+cmru release <project> --resume /path/reported/by/cmru
 ```
 
 Do not copy generated files back into the caller's dirty checkout. A successful
@@ -139,7 +139,7 @@ SHA-256 inventory marked `publication: forbidden`, then removes its
 or retention failure keeps that worktree and prints its path; `cmru worktrees` discovers it and
 `cmru cleanup --discard-build-worktree <path> --yes` removes it after inspection. Rebuilding the
 same commit requires explicit deletion of the existing output record with
-`cmru cleanup --project <name> --delete-build-output <id> --yes`.
+`cmru cleanup <name> --delete-build-output <id> --yes`.
 
 > **Current recovery limit:** a post-tag publication failure is not an automatic retry.
 > Preserve the worktree, the stable logs, and generated provenance; do not assume a plain

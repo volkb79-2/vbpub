@@ -60,6 +60,13 @@ commands=[{{label="push",argv=["echo"],cwd="."}}]
 
 def orch(entry='config="demo/cmru.toml"', order='["demo"]', projects='demo'):
     return f'''schema_version=1
+[github]
+owner="acme"
+repo="vbpub"
+owner_type="org"
+[targets]
+host="github"
+registry=["ghcr.io"]
 [orchestration]
 project_order={order}
 default_projects=["demo"]
@@ -90,11 +97,11 @@ def test_config_secret_and_project_missing_facts_fail_closed(tmp_path, capsys):
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
 
 def test_config_orchestration_rejects_entry_shape_order_and_cross_project_targets(tmp_path, capsys):
-    demo = tmp_path / "demo"; demo.mkdir(); (demo / "cmru.toml").write_text(project_doc())
+    demo = tmp_path / "demo"; demo.mkdir(); (demo / "cmru.toml").write_text(project_doc().replace('[github]\nowner="acme"\nrepo="vbpub"\nowner_type="org"\n[targets]\nhost="github"\nregistry=["ghcr.io"]\n', ''))
     other = tmp_path / "other"; other.mkdir(); (other / "cmru.toml").write_text(project_doc("other", targets='registry=["other.example"]'))
     path = tmp_path / "cmru.orchestration.toml"
     cases = (
@@ -107,11 +114,11 @@ def test_config_orchestration_rejects_entry_shape_order_and_cross_project_target
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
     path.write_text(orch() + '\n[orchestration.project.other]\nconfig="other/cmru.toml"\n', encoding="utf-8")
     with pytest.raises(SystemExit):
         config.load_forge_config(path)
-    assert "identical [targets]" in capsys.readouterr().out
+    assert "central orchestration facts" in capsys.readouterr().err
 
 
 def test_transaction_overlay_and_record_write_reject_nonregular_inputs(tmp_path):

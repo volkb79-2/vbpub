@@ -33,7 +33,7 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     )
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
+            "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
     assert exc.value.code == 0
@@ -77,7 +77,7 @@ def test_release_ref_flag_overrides_the_ahead_of_origin_comparison_ref(monkeypat
     )
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
+            "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
             "--ref", "origin/main",
         ])
@@ -116,7 +116,7 @@ def test_release_ref_flag_defaults_to_main_when_omitted(monkeypatch, tmp_path):
     )
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
+            "release", "demo", "--config", str(tmp_path / "cmru.toml"),
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
     assert exc.value.code == 0

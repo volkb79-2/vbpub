@@ -22,6 +22,6 @@ def test_release_launcher_surfaces_workspace_creation_failure_and_stops(monkeypa
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("worktree unavailable")))
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("child")))
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["release", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 1
     assert "worktree unavailable" in capsys.readouterr().err

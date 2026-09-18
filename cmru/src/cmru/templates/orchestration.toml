@@ -5,6 +5,15 @@
 # [orchestration.defaults.env] and is resolved BEFORE a project override.
 schema_version = 1
 
+[github]
+owner = "@@OWNER@@"
+repo = "@@REPO@@"
+owner_type = "@@OWNER_TYPE@@"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
 [orchestration]
 project_order = [@@PROJECT_ORDER@@]
 default_projects = [@@PROJECT_ORDER@@]

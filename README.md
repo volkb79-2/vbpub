@@ -60,21 +60,21 @@ separately for that nested stack.
 
 ## Releasing (cmru)
 
-Use the installed `cmru` command for all verbs. The repository keeps one optional
-convenience wrapper for the common full release:
+Use the installed `cmru` command for all verbs. The native release command is
+the common full-release entry point:
 
 ```bash
 cmru status                             # preview what would be released (read-only)
-./cmru.release.sh                      # one-shot: detect changed → tag → push → build → publish
-./cmru.release.sh --dry-run            # preview tags only, no writes
-cmru changelog --project assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
-cmru build --project <name>            # retained isolated gate + build; no publish
-cmru publish --project <name>          # run the project's declared publish step
+cmru release                            # one-shot: detect changed → tag → push → build → publish
+cmru release --dry-run                  # preview tags only, no writes
+cmru changelog assay --backfill-tag assay-v0.1.0  # migrate a missed history entry
+cmru build <name>                       # retained isolated gate + build; no publish
+cmru publish <name>                     # run the project's declared publish step
 cmru cleanup --remove-assets 30d       # prune old releases / GHCR versions
 cmru --help                            # all verbs
 ```
 
-`./cmru.release.sh` creates a line-flushed full `cmru.release.log` by default while the
+Native `cmru release` creates a line-flushed full `cmru.release.log` by default while the
 console shows concise orchestration summaries. Add `--show-run-details` to stream raw
 Docker/test output too; add `--log-append` to retain prior transcripts with a divider.
 
@@ -91,6 +91,7 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
   intentionally offline and excluded from the build/release set.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
+  Design rationale: [`cmru/docs/DESIGN-GUIDE.md`](cmru/docs/DESIGN-GUIDE.md).
   Tooling overview: [`docs/RELEASE-TOOLING.md`](docs/RELEASE-TOOLING.md).
 
 ## Repo layout
@@ -101,7 +102,7 @@ ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
 docs/            release tooling, versioning, plans
-cmru.orchestration.toml  cmru.release.sh  cmru/build-initial-standalone.sh
+cmru.orchestration.toml  cmru/build-initial-standalone.sh
                          estate release-toolchain configuration and bootstrap
 ```
 

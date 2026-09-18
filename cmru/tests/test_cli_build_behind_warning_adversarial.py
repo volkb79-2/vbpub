@@ -29,7 +29,7 @@ def test_build_warns_when_local_main_is_behind_but_uses_fetched_origin(monkeypat
     monkeypatch.setattr(cli.transaction, "retain_successful_build_outputs", lambda *args: retained)
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["build", "demo", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert child
     assert workspace_args == {"base": "b" * 40, "purpose": "build", "scope": "demo"}

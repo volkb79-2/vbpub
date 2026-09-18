@@ -1,14 +1,4 @@
-"""`cmru init` — guided scaffolding, validation-first (S10.1 verb).
-
-Oracles:
-- Non-interactive monorepo init generates an orchestration file + per-project
-  contracts that PASS the real loaders (load_forge_config) — generation bugs
-  die in `init`, not in a consumer's first run.
-- Single-project layout writes ONLY the project contract (no orchestration
-  file; the bare cmru.toml loads standalone).
-- An existing target file is never overwritten — the run refuses naming every
-  existing target before writing anything.
-"""
+"""Behavioral tests for the interactive CMRU adoption wizard."""
 
 from __future__ import annotations
 
@@ -28,301 +18,136 @@ from cmru.config import load_forge_config  # noqa: E402
 def git_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    subprocess.run(["git", "init", "-qb", "main", "."], cwd=root, check=True,
-                   capture_output=True)
+    subprocess.run(["git", "init", "-qb", "main", "."], cwd=root, check=True, capture_output=True)
     return root
 
 
-@pytest.fixture(autouse=True)
-def ambient_gate_slice(monkeypatch):
-    """The generated orchestration contract requires a real gate-tier fact."""
-    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+def _feed_input(monkeypatch, answers):
+    values = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(values))
 
 
-def test_monorepo_init_generates_loader_valid_contracts(git_repo):
-    plan = scaffold.collect_plan(
-        ["--layout", "monorepo", "--project", "alpha", "--project", "beta",
-         "--owner", "acme"], git_repo,
+def test_monorepo_wizard_renders_central_facts_and_custom_commands(monkeypatch, git_repo):
+    (git_repo / "alpha").mkdir()
+    (git_repo / "beta").mkdir()
+    _feed_input(
+        monkeypatch,
+        [
+            "acme", "vbpub", "org", "2", "alpha,beta",
+            "alpha", "Alpha", "python", "wheel", "yes",
+            "beta", "Beta", "generic", "bundle", "no", "make bundle", "make publish",
+        ],
     )
+    plan = scaffold.collect_plan([], git_repo)
     files = scaffold.build_files(plan, git_repo)
     scaffold.validate(files, git_repo)
 
-    written = {p.relative_to(git_repo).as_posix() for p, _ in files}
-    assert written == {
-        "alpha/cmru.toml", "beta/cmru.toml", "cmru.orchestration.toml",
-    }
-    # loader-level oracle on the REAL tree after write
     for path, content in files:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    cfg = load_forge_config(git_repo / "cmru.orchestration.toml",
-                            require_orchestration=True)
-    assert set(cfg.projects) == {"alpha", "beta"}
-    # The gate tier is a required host fact; it survives into the declared env
-    # verbatim and is expanded at load time.
-    assert '${CGROUP_PARENT_DEV_GATES}' in (
-        git_repo / "cmru.orchestration.toml"
-    ).read_text(encoding="utf-8")
+    cfg = load_forge_config(git_repo / "cmru.orchestration.toml", require_orchestration=True)
+    assert list(cfg.projects) == ["alpha", "beta"]
+    assert "[github]" not in (git_repo / "alpha/cmru.toml").read_text()
+    beta = (git_repo / "beta/cmru.toml").read_text()
+    assert 'argv = ["make", "bundle"]' in beta
+    assert 'argv = ["make", "publish"]' in beta
 
 
-def test_single_project_layout_has_no_orchestration_file(git_repo):
-    plan = scaffold.collect_plan(["--layout", "single"], git_repo)
-    assert [p["id"] for p in plan["projects"]] == ["repo"]
+def test_single_project_wizard_allows_same_folder_and_keeps_standalone_facts(monkeypatch, git_repo):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "tarball", "yes", "make", "make publish"])
+    plan = scaffold.collect_plan([], git_repo)
+    assert plan["root"] == git_repo
     files = scaffold.build_files(plan, git_repo)
     scaffold.validate(files, git_repo)
-    assert all(p.name == "cmru.toml" for p, _ in files)
+    assert [path.name for path, _ in files] == ["cmru.toml"]
+    content = files[0][1]
+    assert "[github]" in content and 'artifacts = ["tarball"]' in content
 
 
-def test_init_refuses_existing_targets_before_writing_anything(git_repo, capsys):
-    (git_repo / "alpha").mkdir()
-    existing = git_repo / "alpha" / "cmru.toml"
+def test_wizard_refuses_existing_targets_before_writing(monkeypatch, git_repo, capsys):
+    project = git_repo / "alpha"
+    project.mkdir()
+    existing = project / "cmru.toml"
     existing.write_text("# operator content\n", encoding="utf-8")
-
-    plan = scaffold.collect_plan(
-        ["--layout", "monorepo", "--project", "alpha", "--owner", "acme"], git_repo,
-    )
-    with pytest.raises(SystemExit, match="refusing to overwrite"):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "2", "alpha", "alpha", "Alpha", "python", "wheel", "yes"])
+    plan = scaffold.collect_plan([], git_repo)
+    with pytest.raises(SystemExit):
         scaffold.build_files(plan, git_repo)
+    assert "refusing to overwrite" in capsys.readouterr().err
     assert existing.read_text(encoding="utf-8") == "# operator content\n"
 
 
-def test_templates_render_without_leftover_placeholders():
-    for name in ("project-wheel.toml", "orchestration.toml"):
-        text = scaffold._template(name)
-        assert "@@" not in scaffold.render_project_toml(
-            project_id="x", description="d", owner="o", repo="r",
-            owner_type="user", generated_by="t",
-        ) or name == "orchestration.toml"  # project template fully substituted
+def test_wizard_refuses_project_path_escape(monkeypatch, git_repo, tmp_path, capsys):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", str(outside)])
+    with pytest.raises(SystemExit):
+        scaffold.collect_plan([], git_repo)
+    assert "escapes CMRU root" in capsys.readouterr().err
 
 
-def test_cli_end_to_end_exit_zero_and_files(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    from cmru.cli import main
+def test_wizard_refuses_invalid_artifact_and_missing_generic_commands(monkeypatch, git_repo, capsys):
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "unknown"])
+    with pytest.raises(SystemExit):
+        scaffold.collect_plan([], git_repo)
+    assert "artifact types" in capsys.readouterr().err
 
-    assert main(["init", "--layout", "monorepo", "--project", "solo",
-                 "--owner", "acme"]) == 0
-    assert (tmp_path / "solo" / "cmru.toml").is_file()
-    assert (tmp_path / "cmru.orchestration.toml").is_file()
-
-
-# --- coverage of the remaining branches: prompts, flag forms, failure paths ---
-
-def test_git_owner_repo_parses_origin_url(monkeypatch, tmp_path):
-    import subprocess as sp
-
-    monkeypatch.setattr(sp, "run", lambda *a, **kw: sp.CompletedProcess(
-        [], 0, stdout="git@github.com:acme/widgets.git\n", stderr=""))
-    assert scaffold._git_owner_repo(tmp_path) == ("acme", "widgets")
+    _feed_input(monkeypatch, ["acme", "repo", "user", "1", "", "repo", "Repo", "python", "oci-image", "yes", "", ""])
+    with pytest.raises(SystemExit):
+        scaffold.collect_plan([], git_repo)
+    assert "Build command" in capsys.readouterr().err
 
 
-def test_git_owner_repo_survives_subprocess_failure(monkeypatch, tmp_path):
-    import subprocess as sp
-
-    def boom(*a, **kw):
-        raise OSError("git vanished")
-    monkeypatch.setattr(sp, "run", boom)
-    assert scaffold._git_owner_repo(tmp_path) == ("", "")
-
-
-def test_equals_style_flags_and_single_project_flag(git_repo):
-    plan = scaffold.collect_plan(
-        ["--layout=single", "--project=solo", "--owner=acme"], git_repo)
-    assert [p["id"] for p in plan["projects"]] == ["solo"]
-    assert plan["owner"] == "acme"
+def test_old_init_project_option_is_rejected(git_repo, capsys):
+    with pytest.raises(SystemExit):
+        scaffold.collect_plan(["--project", "old"], git_repo)
+    diagnostic = capsys.readouterr().err
+    from cmru.cli_support import cmru_headline
+    assert diagnostic.splitlines()[0] == cmru_headline()
+    assert "--project was removed" in diagnostic
 
 
-def test_unknown_layout_refuses(git_repo):
-    with pytest.raises(SystemExit, match="unknown layout"):
-        scaffold.collect_plan(["--layout", "weird", "--project", "x"], git_repo)
+def test_wizard_accepts_all_artifact_types_and_requires_generic_commands(monkeypatch, git_repo):
+    (git_repo / "alpha").mkdir()
+    _feed_input(
+        monkeypatch,
+        ["acme", "repo", "org", "2", "alpha", "alpha", "Alpha", "generic", "all", "yes", "build all", "publish all"],
+    )
+    plan = scaffold.collect_plan([], git_repo)
+    assert plan["projects"][0]["artifacts"] == ["wheel", "tarball", "bundle", "oci-image"]
+    content = scaffold.build_files(plan, git_repo)[0][1]
+    assert 'artifacts = ["wheel", "tarball", "bundle", "oci-image"]' in content
+    assert 'argv = ["build", "all"]' in content
+    assert 'argv = ["publish", "all"]' in content
 
 
-def _feed_input(monkeypatch, answers):
-    it = iter(answers)
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
-
-
-def test_interactive_monorepo_flow_with_comma_ids(monkeypatch, tmp_path):
-    _feed_input(monkeypatch, ["myowner", "2", "alpha,beta"])
-    plan = scaffold.collect_plan([], tmp_path)
-    assert [p["id"] for p in plan["projects"]] == ["alpha", "beta"]
-    assert plan["owner"] == "myowner"
-
-
-def test_interactive_empty_answers_take_defaults(monkeypatch, tmp_path):
-    _feed_input(monkeypatch, ["", "", "", ""])
-    plan = scaffold.collect_plan([], tmp_path)
-    assert plan["owner"] == "your-github-owner"
-    assert plan["layout"] == "single"
-    assert plan["projects"][0]["id"] == tmp_path.name.lower().replace("_", "-")
-
-
-def test_interactive_invalid_project_id_refuses(monkeypatch, tmp_path):
-    # no flags -> interactive; choose single via the layout prompt, then
-    # feed a project id that violates the slug grammar
-    _feed_input(monkeypatch, ["", "", "9lives"])
-    with pytest.raises(SystemExit, match="must match"):
-        scaffold.collect_plan([], tmp_path)
-
-
-def test_interactive_bad_id_in_comma_list_refuses(monkeypatch, tmp_path):
-    _feed_input(monkeypatch, ["o", "2", "good,BAD!"])
-    with pytest.raises(SystemExit, match="BAD!"):
-        scaffold.collect_plan([], tmp_path)
-
-
-def test_validate_reports_standards_failure(monkeypatch, git_repo):
-    import subprocess as sp
-    from cmru import standards  # noqa: F401  (module must be patchable-env)
-
-    plan = scaffold.collect_plan(
-        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
-    files = scaffold.build_files(plan, git_repo)
-
-    monkeypatch.setattr(sp, "run", lambda *a, **kw: sp.CompletedProcess(
-        [], 1, stdout="STANDARDS-BOOM", stderr=""))
-    with pytest.raises(SystemExit, match=r"fail `cmru standards`[\s\S]*STANDARDS-BOOM"):
-        scaffold.validate(files, git_repo)
-
-
-def test_cli_init_help_prints_usage(capsys):
-    from cmru.cli import main
+def test_cli_init_help_has_version_headline(capsys):
+    from cmru.cli import main, _cmru_version
 
     assert main(["init", "--help"]) == 0
     out = capsys.readouterr().out
-    assert "Guided scaffolding" in out and "--layout single|monorepo" in out
+    assert out.startswith(f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n")
+    assert "Guided scaffolding" in out
 
 
-def test_interactive_monorepo_empty_ids_fall_back_to_root_name(monkeypatch, tmp_path):
-    _feed_input(monkeypatch, ["", "2", ""])
-    plan = scaffold.collect_plan([], tmp_path)
-    assert [p["id"] for p in plan["projects"]] == [
-        tmp_path.name.lower().replace("_", "-")]
+def test_cli_init_runs_interactive_adoption(monkeypatch, git_repo):
+    from cmru.cli import main
+
+    monkeypatch.chdir(git_repo)
+    _feed_input(monkeypatch, ["repo", "user", "", "repo", "Repo", "python", "wheel", "yes", "yes"])
+    assert main(["init", "--root", str(git_repo), "--owner", "acme", "--layout", "single"]) == 0
+    assert (git_repo / "cmru.toml").is_file()
 
 
-# --- mutation-driven hardening: every survivor below is a pinned behavior ---
+def test_cli_init_preview_can_be_refused_before_writing(monkeypatch, git_repo, capsys):
+    monkeypatch.chdir(git_repo)
+    _feed_input(monkeypatch, ["repo", "user", "", "repo", "Repo", "python", "wheel", "yes", "no"])
 
-def test_git_owner_repo_passes_check_false(monkeypatch, tmp_path):
-    """check=False flip would turn failing git probes into raises; the
-    best-effort contract is 'never raise', pinned at the call site."""
-    import subprocess as sp
-    seen = {}
-    real_run = sp.run
+    with pytest.raises(SystemExit):
+        from cmru.cli import main
+        main(["init", "--root", str(git_repo), "--owner", "acme", "--layout", "single"])
 
-    def spy(*a, **kw):
-        seen.update(kw)
-        return sp.CompletedProcess([], 0, stdout="git@github.com:o/r.git\n")
-    monkeypatch.setattr(sp, "run", spy)
-    assert scaffold._git_owner_repo(tmp_path) == ("o", "r")
-    assert seen["check"] is False
-
-
-def test_flag_at_end_of_argv_yields_no_value(git_repo):
-    """A trailing --project consumes nothing: non-interactive fallback to the
-    root name, never an IndexError and never the flag token itself."""
-    plan = scaffold.collect_plan(["--layout", "monorepo", "--project"], git_repo)
-    assert [p["id"] for p in plan["projects"]] == [
-        git_repo.name.lower().replace("_", "-")]
-
-
-def test_real_git_origin_drives_owner_repo_defaults(tmp_path):
-    import subprocess as sp
-    sp.run(["git", "init", "-qb", "main", "."], cwd=tmp_path, check=True,
-           capture_output=True)
-    sp.run(["git", "-C", str(tmp_path), "remote", "add", "origin",
-            "https://github.com/acme/widgets.git"], check=True, capture_output=True)
-    plan = scaffold.collect_plan(["--layout", "single"], tmp_path)
-    assert plan["repo"] == "widgets"      # git-derived
-    assert plan["owner"] == "acme"
-    flagged = scaffold.collect_plan(
-        ["--layout", "single", "--repo", "explicit"], tmp_path)
-    assert flagged["repo"] == "explicit"  # flag outranks git
-
-
-def test_interactive_owner_prompt_shows_default(monkeypatch, tmp_path):
-    prompts = []
-    it = iter(["", "", "", ""])
-    monkeypatch.setattr("builtins.input",
-                        lambda prompt="": prompts.append(prompt) or next(it))
-    scaffold.collect_plan([], tmp_path)
-    assert any("[your-github-owner]" in p for p in prompts)
-
-
-def test_noninteractive_without_layout_never_prompts(monkeypatch, git_repo):
-    def forbidden(prompt=""):
-        raise AssertionError("prompted outside interactive mode")
-    monkeypatch.setattr("builtins.input", forbidden)
-    with pytest.raises(SystemExit, match="unknown layout"):
-        scaffold.collect_plan(["--project", "x"], git_repo)
-
-
-def test_validate_mkdir_is_idempotent(monkeypatch, git_repo):
-    """The validate tempdir writes pin the FULL mkdir contract: idempotent
-    (exist_ok) AND nested (parents) — flipping either flag changes what the
-    validator tolerates, even where current callers cannot observe it."""
-    import subprocess as sp
-    from pathlib import Path
-    plan = scaffold.collect_plan(
-        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
-    files = scaffold.build_files(plan, git_repo)
-    real_mkdir = Path.mkdir
-    seen = []
-
-    def spy(self, *a, **kw):
-        seen.append((str(self), kw.get("parents"), kw.get("exist_ok")))
-        return real_mkdir(self, *a, **kw)
-    monkeypatch.setattr(Path, "mkdir", spy)
-    monkeypatch.setattr(sp, "run", lambda *a, **k: sp.CompletedProcess([], 0, "", ""))
-    scaffold.validate(files, git_repo)
-    # the copied alpha/ project dir must be created idempotently+nested;
-    # other libraries' mkdirs (parents=False) are out of scope here
-    alpha_calls = [t for t in seen if t[0].endswith("/alpha")]
-    assert alpha_calls and all(a is True and b is True for _, a, b in alpha_calls)
-
-
-def test_validate_standards_call_shape(monkeypatch, git_repo):
-    """The standards conformance probe must run captured+text (flips to
-    False would deadlock on inherited stdio or mangle encoding)."""
-    import subprocess as sp
-    plan = scaffold.collect_plan(
-        ["--layout", "monorepo", "--project", "alpha", "--owner", "a"], git_repo)
-    files = scaffold.build_files(plan, git_repo)
-    seen = {}
-
-    def spy(*a, **kw):
-        seen.update(kw)
-        return sp.CompletedProcess([], 1, stdout="boom", stderr="")
-    monkeypatch.setattr(sp, "run", spy)
-    with pytest.raises(SystemExit, match="standards"):
-        scaffold.validate(files, git_repo)
-    assert seen["capture_output"] is True and seen["text"] is True
-
-
-def test_init_main_tolerates_precreated_project_dir(monkeypatch, tmp_path):
-    """The write loop's mkdir must stay idempotent (operator pre-made the dir)
-    and parent-creating; the contract is pinned by spying the kwargs because
-    no reachable caller can distinguish parents=False behaviorally."""
-    import subprocess as sp
-    from pathlib import Path
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "solo").mkdir()
-    real_mkdir = Path.mkdir
-    seen = []
-
-    def spy(self, *a, **kw):
-        seen.append((str(self), kw.get("parents"), kw.get("exist_ok")))
-        return real_mkdir(self, *a, **kw)
-
-    from cmru.scaffold import init_main
-    monkeypatch.setattr(Path, "mkdir", spy)
-    try:
-        assert init_main(["--layout", "monorepo", "--project", "solo",
-                          "--owner", "acme"]) == 0
-    finally:
-        monkeypatch.undo()
-    assert (tmp_path / "solo" / "cmru.toml").is_file()
-    # the write loop mkdirs exactly the repo root and the project dir; both
-    # must carry the full idempotent+nested contract — scoped to these paths
-    # because other libs' mkdirs legitimately use parents=False
-    mine = [t for t in seen
-            if t[0] in (str(tmp_path), str(tmp_path / "solo"))]
-    assert len(mine) >= 2 and all(a is True and b is True for _, a, b in mine)
+    captured = capsys.readouterr()
+    assert "CMRU init preview:" in captured.out
+    assert "adoption cancelled" in captured.err
+    assert not (git_repo / "cmru.toml").exists()

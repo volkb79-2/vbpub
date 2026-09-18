@@ -60,8 +60,19 @@ commands=[{{label="push",argv=["echo"],cwd="."}}]
 '''
 
 
+def central_project_doc(name="demo"):
+    return "schema_version=1\n[project]\n" + project_doc(name).split("[project]\n", 1)[1]
+
+
 def orch(entry='config="demo/cmru.toml"', order='["demo"]'):
     return f'''schema_version=1
+[github]
+owner="acme"
+repo="vbpub"
+owner_type="org"
+[targets]
+host="github"
+registry=[]
 [orchestration]
 project_order={order}
 default_projects=["demo"]
@@ -78,7 +89,7 @@ ghcr_delete_packages=[]
 
 
 def test_config_orchestration_rejects_missing_tables_and_cross_project_facts(tmp_path, capsys):
-    project = tmp_path / "demo"; project.mkdir(); (project / "cmru.toml").write_text(project_doc())
+    project = tmp_path / "demo"; project.mkdir(); (project / "cmru.toml").write_text(central_project_doc())
     path = tmp_path / "cmru.orchestration.toml"
     cases = [
         (orch().replace("[orchestration]\n", "[orchestration]\ndefaults=[]\n"), "defaults"),
@@ -90,9 +101,9 @@ def test_config_orchestration_rejects_missing_tables_and_cross_project_facts(tmp
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert diagnostic in capsys.readouterr().out
+        assert diagnostic in capsys.readouterr().err
 
-    other = tmp_path / "other"; other.mkdir(); (other / "cmru.toml").write_text(project_doc(owner="different"))
+    other = tmp_path / "other"; other.mkdir(); (other / "cmru.toml").write_text(central_project_doc("other"))
     path.write_text(orch(entry='config="demo/cmru.toml"') .replace("[orchestration.project.demo]", "[orchestration.project.demo]\n"), encoding="utf-8")
     path.write_text(path.read_text() + '\n[orchestration.project.other]\nconfig="other/cmru.toml"\n', encoding="utf-8")
     with pytest.raises(SystemExit):

@@ -3,15 +3,6 @@
 # Secrets never belong here (gitignored cmru.secret.toml overlays supply them).
 schema_version = 1
 
-[github]
-owner = "@@OWNER@@"
-repo = "@@REPO@@"
-owner_type = "@@OWNER_TYPE@@"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 @@NOTES_ENV_KEY@@ = "## @@PROJECT_ID@@ wheel\n\n<release notes markdown>"
 

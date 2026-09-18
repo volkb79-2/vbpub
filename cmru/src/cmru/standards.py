@@ -147,13 +147,17 @@ def _update_project_revision(config_path: Path) -> bool:
 
 
 def standards_main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
+    from cmru.cli_support import CMRUArgumentParser, TargetSelectionError, select_target_names
+    parser = CMRUArgumentParser(
         description=(
             "Check CMRU project-framework conformance.  --update changes only CMRU "
             "template revision markers; it never rewrites project-owned commands."
         )
     )
-    parser.add_argument("--project", action="append", help="Check one project (repeatable)")
+    parser.add_argument(
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="Project target; omitted uses the current project or estate default",
+    )
     parser.add_argument(
         "--config", help=f"Path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}"
     )
@@ -166,10 +170,25 @@ def standards_main(argv: list[str] | None = None) -> None:
 
     config_path = _resolve_config(args.config)
     repo_root, projects, project_order, *_ = load_config(config_path)
-    selected = args.project or list(projects)
-    unknown = sorted(set(selected) - set(projects))
-    if unknown:
-        parser.error(f"unknown project(s): {', '.join(unknown)}")
+    from cmru.config import resolve_invocation_context
+    if args.target is None and config_path.name == PROJECT_CONFIG_FILENAME and len(projects) == 1:
+        context_project = next(iter(projects))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(config_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
+    try:
+        selected = select_target_names(
+            args.target, projects, project_order,
+            context_project=context_project,
+            estate_scope=estate_scope,
+        )
+    except TargetSelectionError as exc:
+        parser.error(str(exc))
 
     if args.update:
         changed = False

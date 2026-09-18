@@ -12,25 +12,21 @@ from cmru.agent import consul_backend, protocol, reconciler
 
 
 def test_resolve_main_rejects_missing_or_unknown_project(monkeypatch):
-    with pytest.raises(SystemExit) as error:
-        resolve.resolve_main([])
-    assert error.value.code == 2
-
     loaded = (
-        None, {"known": SimpleNamespace(prefix="known-v", github_token="")}, None, None,
+        None, {"known": SimpleNamespace(prefix="known-v", github_token="")}, ["known"], None,
         None, None, None, None, SimpleNamespace(owner="o", repo="r", token=None), None,
     )
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["--project", "missing"])
+        resolve.resolve_main(["missing"])
     assert error.value.code == 2
 
 
 def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(monkeypatch, capsys):
     project = SimpleNamespace(prefix="demo-v", github_token="project-token")
     loaded = (
-        None, {"demo": project}, None, None, None, None, None, None,
+        None, {"demo": project}, ["demo"], None, None, None, None, None,
         SimpleNamespace(owner="owner", repo="repo", token="root-token"), None,
     )
     monkeypatch.setattr("cmru.cli._resolve_config", lambda _: None)
@@ -44,7 +40,7 @@ def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(m
     monkeypatch.setattr("cmru.hosts.github.GitHubReleaseHost", Host)
     monkeypatch.setattr(resolve, "resolve", lambda host, prefix, **kwargs: None)
     with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["--project", "demo"])
+        resolve.resolve_main(["demo"])
     assert error.value.code == 1
     assert captured == {"owner": "owner", "repo": "repo", "token": "project-token"}
     assert "No releases found" in capsys.readouterr().err
@@ -52,7 +48,7 @@ def test_resolve_main_uses_project_prefix_and_refuses_missing_owner_or_release(m
     no_owner = loaded[:8] + (SimpleNamespace(owner="", repo="repo", token=None), None)
     monkeypatch.setattr("cmru.cli.load_config", lambda _: no_owner)
     with pytest.raises(SystemExit) as error:
-        resolve.resolve_main(["--prefix", "demo-v"])
+        resolve.resolve_main(["demo"])
     assert error.value.code == 2
     assert "owner/repo unknown" in capsys.readouterr().err
 

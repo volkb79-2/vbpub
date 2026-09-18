@@ -426,11 +426,14 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
 
 
 def main(argv: list | None = None) -> None:
-    parser = argparse.ArgumentParser(
+    from cmru.cli_support import CMRUArgumentParser
+    parser = CMRUArgumentParser(
         prog="cmru.handlers",
         description="cmru explicit project-step command library",
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(
+        dest="cmd", required=True, parser_class=CMRUArgumentParser,
+    )
 
     p_build = sub.add_parser("wheel-build", help="build the project's wheel into dist/")
     p_build.add_argument("--cwd", required=True, help="project directory (holds pyproject.toml)")

@@ -22,18 +22,18 @@ cmru worktrees              # discover retained failed build/release worktrees (
 cmru tool-deps [--allow-stale-tool-deps] [--refresh PROJECT]
                              # verify declared tool dependencies (S15): integrity/authenticity/freshness
                              # (network; also runs inside `release`'s preflight — never during tests)
-cmru changelog --project P --backfill-tag TAG  # migration: catalog an already-published tagged release
+cmru changelog P --backfill-tag TAG  # migration: catalog an already-published tagged release
 cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
-cmru cleanup --project P --delete-unmanaged-release-tag TAG --yes
+cmru cleanup P --delete-unmanaged-release-tag TAG --yes
                                   # delete one old GitHub Release only, never its Git tag
-cmru cleanup --project P --delete-build-output ID --yes
+cmru cleanup P --delete-build-output ID --yes
                                   # delete one exact local non-release output record
 cmru cleanup --discard-build-worktree PATH --yes
                                   # discard one exact inspected failed build worktree
 cmru version                      # print the CMRU version
 
-cmru resolve --project P    # consumer: highest-semver published version  (read-only)
-cmru get     --project P    # consumer: emit a standalone installer       (read-only)
+cmru resolve P    # consumer: highest-semver published version  (read-only)
+cmru get     P    # consumer: emit a standalone installer       (read-only)
 cmru run     [--build --push ...]  # escape hatch: run explicit steps × projects
 cmru run-step --config C --step S  # raw single-step runner (rarely needed)
 ```
@@ -62,7 +62,7 @@ for a visible path; it MUST never guess a cleanup target.
 working tree. It acquires a repository-local exclusive lock, rejects local-only commits on
 local `main` that the remote snapshot would omit (and warns if local `main` is behind), and
 rejects any uncommitted change (tracked or untracked) under a project's own path for every
-project in this run's scope (`--project <name>`, else every orchestrated project — the same
+project in this run's scope (`<name>`, else every orchestrated project — the same
 `project_order`-derived set `release` itself iterates, not the possibly-different
 `orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
@@ -188,10 +188,10 @@ only the reverted project and anything after it in `project_order` are attempted
 proceeds with a normal fresh release in the same invocation: its origin backup branch, local
 worktree/branch, and scope marker are removed (never touching `origin/main` — a retained
 attempt's gates ran, if at all, before promote, so there is nothing there to undo). `all-previous`
-abandons every retained worktree whose recorded project scope overlaps this run's — `--project X`
+abandons every retained worktree whose recorded project scope overlaps this run's — `X`
 narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
 retained before this feature existed (no recorded scope) are left for an explicit `--abandon
-<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru.release.sh` never abandons
+<path>`. `--resume` and `--abandon` are mutually exclusive. `cmru release` never abandons
 a failed worktree implicitly: inspect it, resume it explicitly when appropriate, or explicitly
 request `--abandon <path>|all-previous` after its logs and artifacts are no longer needed.
 
@@ -209,7 +209,7 @@ The branch is a FLAT single token with no nested ref path, so the branch string 
 worktree directory basename are byte-for-byte identical — true 1:1 naming, matching ciu's
 `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme. `<purpose>` is `release` or `build`.
 `<YYYYMMDD_HHMMSS>` is UTC, for chronological sort, with `_` separating date from time so that
-boundary stays visually distinct from the `-` field separators. `<scope>` is the `--project`
+boundary stays visually distinct from the `-` field separators. `<scope>` is the the selected target
 value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. `<uuid8>` is 8 hex
 characters from `uuid4()` and MUST NOT be removed or made deterministic: cleanup
 (`remove_workspace`, `abandon_workspace`) depends on a transaction being able to assume it
@@ -235,18 +235,17 @@ discovery or cleanup parses the directory name; only the branch and whatever `gi
 | File | Tracked? | Purpose |
 |---|---|---|
 | `<project>/cmru.toml` | committed | Complete portable product contract. **No secrets.** |
-| `cmru.orchestration.toml` | committed | Optional estate ordering/dependencies/cleanup only. |
+| `cmru.orchestration.toml` | committed | Nearest CMRU root: central facts, ordering/dependencies/cleanup. |
 | `cmru.secret.toml` | gitignored | Repository credential document; optional explicit per-project overrides (see S2.4). |
 | `cmru.project.sample.toml` | committed | Template for a project contract (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps. |
 | `cmru` console script | installed | Canonical portable entry point for every verb. |
-| `cmru.release.sh` | committed | vbpub-only convenience wrapper for the complete estate release. |
 | `cmru/build-initial-standalone.sh` | committed | Fresh-checkout bootstrap that builds the first CMRU wheel without CMRU installed. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
 `build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
 legacy remains. The installed `cmru` console script is the only general release entry
-point; vbpub additionally keeps `cmru.release.sh` as a convenience wrapper.
+point; native `cmru release` owns the aggregate log and live tee.
 
 ---
 
@@ -352,19 +351,19 @@ finds no new source or generated output beyond the cursor) and does not duplicat
 `release.changelog = "path/CHANGES.md"` selects a different project-relative filename;
 `release.changelog = false` is the explicit opt-out.
 
-`cmru changelog --project P --backfill-tag <prefix><version>` is the one-time migration for a
+`cmru changelog P --backfill-tag <prefix><version>` is the one-time migration for a
 tag that predates source-first history. It writes a generated `backfilled-after-release` entry
 to the current source tree and never moves the immutable tag; the caller reviews and commits
 that migration explicitly.
 
-**S-REL.4c — Unmanaged-release cleanup.** `cmru cleanup --project P
+**S-REL.4c — Unmanaged-release cleanup.** `cmru cleanup P
 --delete-unmanaged-release-tag TAG --yes` is a migration-only operation for an old GitHub
 Release outside P's normal `<prefix>-v<semver>`/`<prefix>-latest` lifecycle. It requires the
 explicit project namespace and confirmation (or `--dry-run`), deletes exactly one GitHub
 Release with that tag, and MUST NOT delete its Git tag. A managed release is rejected; normal
 project cleanup remains the sole operation allowed to delete managed Releases and tags.
 
-**S-REL.4d — Local-build cleanup.** `cmru cleanup --project P --delete-build-output ID --yes`
+**S-REL.4d — Local-build cleanup.** `cmru cleanup P --delete-build-output ID --yes`
 deletes only the exact commit-addressed local build record identified by its `build.json`;
 `--dry-run` is the non-mutating preview. `cmru cleanup --discard-build-worktree PATH --yes`
 deletes only an exact, visible `cmru-build-*` (or legacy `cmru/build/*`) worktree under this repository's managed
@@ -416,13 +415,13 @@ separate keystone (`publish_versioned_variants`) so the legacy path is provably 
 
 ## S2 — Config Schema
 
-CMRU has exactly two non-overlapping documents (select a non-default path only with
-`--config`). A portable product owns `<project>/cmru.toml`; it contains every fact
-and command needed to test, build, publish, retain, and release that product in a fresh
-repository root. An optional repository-root `cmru.orchestration.toml` names only those
-project documents, their order/dependencies, and cleanup policy. The repository-root
-secret document is the credential baseline; a selected project may explicitly overlay it
-from its own folder as defined in S2.4. Secrets are never committed.
+CMRU has two document grammars (select a non-default path only with `--config`). Without
+an explicit path, CMRU walks ancestors to the filesystem root and selects the nearest
+`cmru.orchestration.toml`; that file establishes the CMRU root and may serve several
+repositories below it. A nested orchestration file starts a new root. A standalone
+`cmru.toml` remains valid when it contains its own repository facts. The selected
+CMRU-root secret document is the credential baseline; a selected project may explicitly
+overlay it from its own folder as defined in S2.4. Secrets are never committed.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
@@ -530,11 +529,23 @@ label     = "Python 3.11 (glibc)"
 # cmru.build.toml are retired and rejected. There is no compatibility parser.
 ```
 
-**S2.2a — Orchestration document** (`cmru.orchestration.toml`) is a separate,
-strictly estate-level document:
+**S2.2a — Central repository facts.** An orchestration document contains one
+`[github]` and one `[targets]` table. Registered project documents omit those
+tables; duplicates are rejected. A project document used without orchestration
+keeps the tables as its standalone source of repository identity and targets.
+
+**S2.2b — Orchestration document** (`cmru.orchestration.toml`) is the central
+project registry and execution policy:
 
 ```toml
 schema_version = 1
+[github]
+owner = "your-github-owner"
+repo = "your-repository"
+owner_type = "user"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
 [orchestration]
 project_order = ["example"]
 default_projects = ["example"]
@@ -566,7 +577,7 @@ declared step; `--show-run-details` is the explicit live-detail override.
 
 **S2.4** Token resolution, so project `cmru.toml` stays secret-free:
 1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
-2. Deep merge repository-root `cmru.secret.toml` with the selected
+2. Deep merge CMRU-root `cmru.secret.toml` with the selected
    `<project>/cmru.secret.toml`; the nearer project table wins. The merged
    `[github].token` is the credential.
 
@@ -678,7 +689,7 @@ bake_set_vars = ["OCI_VERSION"]
 
 **S3.4** Step logs MUST be line-flushed and written to the stable path
 `<project>/logs/cmru/<step>.log`; a normal run overwrites that path. `--log-append`
-MUST insert `\n---\n` before the new record. The root `cmru.release.sh` wrapper overwrites
+MUST insert `\n---\n` before the new record. Native `cmru release` overwrites
 `cmru.release.log` by default and includes the full subprocess transcript even while the
 console is quiet. By default the orchestration console shows labels, elapsed time, known
 test-framework success evidence, and failure excerpts only. `--show-run-details` streams
@@ -750,7 +761,7 @@ CMRU must not report a visibility change as an enforced release guarantee.
 
 The resolver implements differentiator #2: highest-semver selection, replacing GitHub's single repo-global "Latest" badge.
 
-**S5.1** `cmru resolve --project <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
+**S5.1** `cmru resolve <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
 
 **S5.2** Semver comparison MUST be numeric-aware per segment: `r10 > r2 > r1` (not lexicographic).
 
@@ -796,7 +807,7 @@ update, rollback, and status. Unlike a curl-only bootstrap, `get.py` ships **ins
 release artifact, so `<project> update` works out of the box. Configuration lives in
 `[project.installer]` (see S2).
 
-**S6.1** `cmru get-py --project <name> --config cmru.toml` emits a standalone Python 3
+**S6.1** `cmru get-py <name> --config cmru.toml` emits a standalone Python 3
 installer to stdout. The output is a rendering of `templates/get.py.tmpl` with
 `[[VARNAME]]` placeholders replaced from the `[installer]` config. The rendering is
 deterministic (byte-identical for identical config). Any unreplaced `[[...]]` placeholder
@@ -1323,7 +1334,7 @@ distinction exists precisely so this cannot happen), and "could not check"
 MUST NEVER be reported as success.
 
 **S15.6 — Verification runs at release time and on demand; NEVER during
-tests.** `cmru tool-deps [--project P ...] [--json] [--allow-stale-tool-deps]
+tests.** `cmru tool-deps [P[,P...]] [--json] [--allow-stale-tool-deps]
 [--refresh PROVIDER_PROJECT] [--timeout S]` runs all three checks and reports
 per dependency (read-only; `--refresh` is the one exception, S15.8). The same
 verification is wired into the isolated release transaction's plan-computation

@@ -537,12 +537,15 @@ def run_step(project_config_path: Path, step_name: str) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    from cmru.cli_support import CMRUArgumentParser
+    parser = CMRUArgumentParser(
         description=f"Run one named step from a project {PROJECT_CONFIG_FILENAME}"
     )
     parser.add_argument(
-        "--config", required=True, help=f"Path to project {PROJECT_CONFIG_FILENAME}"
+        "target", nargs="?", metavar="[all|PROJECT[,PROJECT...]]",
+        help="registered project target; omitted uses the current project",
     )
+    parser.add_argument("--config", help=f"Path to project or orchestration config")
     parser.add_argument("--step", required=True, help="Step name to execute")
     parser.add_argument(
         "--show-run-details", action="store_true",
@@ -562,10 +565,40 @@ def main(argv: Optional[list[str]] = None) -> None:
         os.environ["CMRU_SHOW_RUN_DETAILS"] = "1"
     if args.log_append:
         os.environ["CMRU_LOG_APPEND"] = "1"
-    run_step(
-        Path(args.config).expanduser().resolve(),
-        args.step,
+    from cmru.cli_support import TargetSelectionError, select_target_names
+    from cmru.cli import _resolve_config, load_config
+    from cmru.config import load_forge_config, resolve_invocation_context
+
+    config_path = _resolve_config(args.config)
+    loaded = load_config(config_path)
+    projects, project_order = loaded[1], loaded[2]
+    if args.target is None and config_path.name == "cmru.toml" and len(projects) == 1:
+        context_project = next(iter(projects))
+        estate_scope = False
+    elif args.target is None:
+        context = resolve_invocation_context(config_path)
+        context_project = context.project_name
+        estate_scope = context.scope == "estate"
+    else:
+        context_project = None
+        estate_scope = False
+    try:
+        names = select_target_names(
+            args.target, projects, project_order,
+            context_project=context_project,
+            estate_scope=estate_scope,
+        )
+    except TargetSelectionError as exc:
+        parser.error(str(exc))
+    if len(names) != 1:
+        parser.error("run-step requires exactly one project target")
+    forge = load_forge_config(config_path)
+    project_path = (
+        forge.orchestration.project_configs[names[0]]
+        if forge.orchestration is not None
+        else config_path
     )
+    run_step(project_path, args.step)
 
 
 if __name__ == "__main__":

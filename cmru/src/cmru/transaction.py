@@ -136,7 +136,7 @@ _SCOPE_INVALID_RE = re.compile(r"[^a-z0-9-]+")
 
 
 def _sanitize_scope(scope: str | None) -> str:
-    """Normalise ``--project`` (or the unscoped ``all``) into a branch/path-safe
+    """Normalise a target (or the unscoped ``all``) into a branch/path-safe
     token (KI-16): lowercase, ``[a-z0-9-]`` only, collapsed, never empty. A
     project name is already constrained by config validation, but this feeds
     directly into a branch name and a worktree directory and must not assume
@@ -232,7 +232,7 @@ def create_workspace(
     ``purpose`` is intentionally visible in the branch/path. A successful release
     is ephemeral; a normal build is retained for inspection and must therefore
     never be mistaken for a failed, resumable release attempt. ``scope`` is the
-    ``--project`` value when the run is scoped, else ``None`` (recorded as
+    target value when the run is scoped, else ``None`` (recorded as
     ``all``) -- see :func:`_new_transaction_branch`.
 
     Discovery, resume, and cleanup recognise a transaction branch through
@@ -575,7 +575,7 @@ def retain_successful_build_outputs(
         if target_logs.exists() or target_artifacts.exists():
             raise RuntimeError(
                 f"{name}: build output {output_id} already exists; inspect it or remove it with "
-                f"cmru cleanup --project {name} --delete-build-output {output_id} --yes"
+                f"cmru cleanup {name} --delete-build-output {output_id} --yes"
             )
 
         stage = Path(tempfile.mkdtemp(prefix=".cmru-build-retain-", dir=main_project_root))

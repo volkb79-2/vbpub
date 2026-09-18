@@ -16,6 +16,8 @@ import os
 import sys
 from pathlib import Path
 
+from cmru.cli_support import CMRUArgumentParser
+
 
 log = logging.getLogger("cmru.controller")
 
@@ -190,7 +192,7 @@ def cmd_rollback(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CMRUArgumentParser(
         prog="cmru-controller",
         description="CMRU controller — assign desired state and orchestrate rollout waves",
     )
@@ -215,7 +217,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show actions without writing to Consul",
     )
 
-    sub = parser.add_subparsers(dest="verb", required=True)
+    sub = parser.add_subparsers(
+        dest="verb", required=True, parser_class=CMRUArgumentParser,
+    )
 
     # publish
     p_pub = sub.add_parser("publish", help="Publish desired state from a plan file")

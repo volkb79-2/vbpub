@@ -37,7 +37,6 @@ ROOT_CMRU_ARTIFACTS = (
     "cmru.orchestration.sample.toml",
     "cmru.orchestration.toml",
     "cmru.project.sample.toml",
-    "cmru.release.sh",
 )
 
 

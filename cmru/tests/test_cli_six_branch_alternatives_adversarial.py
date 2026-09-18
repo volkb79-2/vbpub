@@ -107,7 +107,7 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
     cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
-    assert calls == [{"project_filter": None, "minor": False, "major": False, "set_version": None, "dry_run": True}]
+    assert calls == [{"minor": False, "major": False, "set_version": None, "dry_run": True}]
 
 
 def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch, tmp_path):
@@ -118,5 +118,5 @@ def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch
     monkeypatch.setattr(version, "detect_changed_projects", lambda *args, **kwargs: [("demo", "changed")])
     calls = []
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
-    cli.main(["release", "--_transaction-child", "--dry-run", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
-    assert calls[0]["project_filter"] == "demo"
+    cli.main(["release", "--_transaction-child", "--dry-run", "demo", "--config", str(tmp_path / "cmru.toml")])
+    assert "project_filter" not in calls[0]

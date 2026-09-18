@@ -95,6 +95,18 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def mocked_invocation_context(monkeypatch):
+    """Transaction tests replace the loader with a lightweight fake config."""
+    monkeypatch.setattr(
+        cli,
+        "resolve_invocation_context",
+        lambda path: SimpleNamespace(
+            config_path=Path(path).resolve(), project_name=None, scope="estate",
+        ),
+    )
+
+
 def test_copy_secret_overlays_preserves_root_and_project_scoped_credentials(tmp_path):
     repo_root = tmp_path / "repo"
     workspace_path = tmp_path / "workspace"
@@ -144,8 +156,8 @@ def test_child_args_replaces_absolute_config_with_snapshot_relative_path(tmp_pat
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--project", "alpha", "--config", str(config)], config, tmp_path,
-    ) == ["--project", "alpha", "--config", "nested/cmru.toml"]
+        ["alpha", "--config", str(config)], config, tmp_path,
+    ) == ["alpha", "--config", "nested/cmru.toml"]
 
 
 def test_child_args_removes_parent_only_resume_option(tmp_path):
@@ -153,8 +165,8 @@ def test_child_args_removes_parent_only_resume_option(tmp_path):
     config.write_text("", encoding="utf-8")
 
     assert cli._child_release_args(
-        ["--resume", "/tmp/retained", "--project", "alpha"], config, tmp_path,
-    ) == ["--project", "alpha", "--config", "cmru.toml"]
+        ["--resume", "/tmp/retained", "alpha"], config, tmp_path,
+    ) == ["alpha", "--config", "cmru.toml"]
 
 
 def test_required_gate_rejects_project_without_run_tests(tmp_path):
@@ -276,7 +288,7 @@ def test_release_aborts_before_creating_a_workspace_when_a_released_project_is_d
         monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append("ran-child") or 0)
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha"])
+            cli.main(["release", "--config", str(config), "alpha"])
 
         assert exc.value.code == 2
         # It never got as far as fetching origin or creating the isolated worktree.
@@ -312,7 +324,7 @@ def test_release_proceeds_when_uncommitted_changes_are_explicitly_allowed(monkey
         )
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha", "--allow-uncommitted"])
+            cli.main(["release", "--config", str(config), "alpha", "--allow-uncommitted"])
 
         assert exc.value.code == 0
         assert "ran-child" in calls
@@ -350,7 +362,7 @@ def test_dry_run_is_not_blocked_by_uncommitted_release_path_changes(monkeypatch)
         )
 
         with pytest.raises(SystemExit) as exc:
-            cli.main(["release", "--config", str(config), "--project", "alpha", "--dry-run"])
+            cli.main(["release", "--config", str(config), "alpha", "--dry-run"])
 
         assert exc.value.code == 0
         assert "ran-child" in calls  # never hit the exit(2) uncommitted-changes gate
@@ -399,14 +411,14 @@ cwd = "alpha"
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--config", str(config), "--project", "alpha",
+            "release", "--config", str(config), "alpha",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0
     assert not any(isinstance(call, tuple) for call in calls)
     assert [
-        "--project", "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
         "--config", "cmru.toml",
     ] in calls
     assert "backup-removed" in calls
@@ -467,7 +479,7 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "remove_backup_branch", lambda _w: remove_calls.append("backup-removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--project", "alpha"])
+        cli.main(["release", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
     assert calls.index("checked-promotion") < calls.index("reverted") < calls.index("synced")
@@ -522,7 +534,7 @@ cwd = "alpha"
     )
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--project", "alpha"])
+        cli.main(["release", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
     assert "reverted" not in calls   # nothing to revert — promotion never landed
@@ -591,12 +603,12 @@ cwd = "beta"
 
     with pytest.raises(SystemExit) as exc:
         cli.main([
-            "release", "--config", str(config), "--project", "alpha", "--abandon", "all-previous",
+            "release", "--config", str(config), "alpha", "--abandon", "all-previous",
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0
-    # --project alpha narrows the abandon scope to alpha only, not the full default set.
+    # Positional alpha narrows the abandon scope to alpha only, not the full default set.
     assert ("abandon_previous", ["alpha"]) in calls
     # Abandoning didn't stop the run — a fresh release still proceeded afterward.
     assert "ran-child" in calls
@@ -1199,8 +1211,8 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=17)
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
-    assert transaction.run_child(workspace, ["--project", "alpha"]) == 17
-    assert observed["command"][-4:] == ["release", "--_transaction-child", "--project", "alpha"]
+    assert transaction.run_child(workspace, ["alpha"]) == 17
+    assert observed["command"][-3:] == ["release", "--_transaction-child", "alpha"]
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
@@ -2528,7 +2540,7 @@ def test_parent_build_retains_successful_outputs_then_removes_worktree(tmp_path,
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "--project", "alpha"])
+        cli.main(["build", "--config", str(config), "alpha"])
 
     assert exc.value.code == 0
     assert calls == ["retained", "removed"]
@@ -2564,7 +2576,7 @@ def test_parent_build_failure_keeps_worktree_and_does_not_retain_outputs(tmp_pat
     monkeypatch.setattr(transaction, "remove_workspace", lambda _workspace: calls.append("removed"))
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["build", "--config", str(config), "--project", "alpha"])
+        cli.main(["build", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
     assert calls == []

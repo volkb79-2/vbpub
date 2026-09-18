@@ -1,14 +1,5 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\n\nDeclared test lanes and machine-readable verdicts for a commit.\n\n**Install (wheel)**\n```bash\npipx install assay-*.whl\n```\n\n**No package manager? Use the zipapp**\n```bash\nchmod +x assay-*.pyz && ./assay-*.pyz --help\n```"
 

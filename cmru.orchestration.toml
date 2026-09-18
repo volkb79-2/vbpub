@@ -1,5 +1,14 @@
 schema_version = 1
 
+[github]
+owner = "volkb79-2"
+repo = "vbpub"
+owner_type = "user"
+
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+
 # Estate-only coordination. Every project owns its own release/build/test
 # contract in <project>/cmru.toml and remains runnable after being moved into a
 # fresh repository root.

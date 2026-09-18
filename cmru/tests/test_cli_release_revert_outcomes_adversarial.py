@@ -44,7 +44,7 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: (_ for _ in ()).throw(AssertionError("failed releases retain worktree")))
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--project", "alpha", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 1
     captured = capsys.readouterr()
     assert message in captured.out + captured.err

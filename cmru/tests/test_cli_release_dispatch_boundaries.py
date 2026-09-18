@@ -12,11 +12,11 @@ def test_child_release_args_replaces_parent_only_options_and_preserves_operation
     config = repo / "cmru.orchestration.toml"
     config.write_text("[projects]\n", encoding="utf-8")
     args = cli._child_release_args(
-        ["release", "--config", "/old/config.toml", "--project", "demo",
+        ["release", "--config", "/old/config.toml", "demo",
          "--resume=/old/worktree", "--abandon", "/old/worktree", "--dry-run"],
         config, repo,
     )
-    assert args == ["release", "--project", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]
+    assert args == ["release", "demo", "--dry-run", "--config", "cmru.orchestration.toml"]
     with pytest.raises(ValueError, match="tracked inside"):
         cli._child_release_args([], tmp_path / "outside.toml", repo)
 

@@ -1,14 +1,5 @@
 schema_version = 1
 
-[github]
-owner = "volkb79-2"
-repo = "vbpub"
-owner_type = "user"
-
-[targets]
-host = "github"
-registry = ["ghcr.io"]
-
 [env]
 CIU_RELEASE_NOTES = "## CIU CLI wheel\n\nRelease history is generated from the project-scoped source range in `CHANGES.md`.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 
@@ -33,7 +24,7 @@ git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
 
-# S14.7a / CIU-93 — inputs for `cmru get-py --project ciu`, whose rendered
+# S14.7a / CIU-93 — inputs for `cmru get-py ciu`, whose rendered
 # output is committed at `ciu/get.py` and published as a release asset (see
 # [steps.push]'s --extra-asset below). `ciu host enroll` prints
 #   https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py

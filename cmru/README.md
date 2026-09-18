@@ -11,12 +11,11 @@ cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags,
 pip install -e .             # provides the `cmru` console script
 ```
 
-The installed `cmru` executable is portable: run it from a project directory
-or repository root, or pass `--config /path/to/cmru.toml`. It reads
-`cmru.toml` in the current directory when present and otherwise reads the
-current directory's `cmru.orchestration.toml`; it never searches parent
-directories. From the vbpub repository root, use `--config cmru.orchestration.toml`
-when an explicit estate configuration is needed.
+The installed `cmru` executable is portable: run it from a project directory,
+repository, or CMRU root, or pass `--config /path/to/cmru.toml`. Without an
+explicit path it searches ancestors to the filesystem root for the nearest
+`cmru.orchestration.toml`; that file establishes the CMRU root and may serve
+several repositories below it. A nested orchestration file starts a new root.
 
 To build CMRU itself before any CMRU wheel is installed, use the supported
 fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
@@ -51,23 +50,23 @@ registry publication, or a combined image+bundle release without hidden behavior
 cmru status                       # preview changed projects + next versions (read-only)
 cmru release                      # isolated: prepare → gate → integrate → tag → build → publish
 cmru release --dry-run            # show tags only, no writes
-cmru release --project ciu        # one project
-cmru changelog --project assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
+cmru release ciu                  # one project
+cmru changelog assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
-cmru standards --project pwmcp --update  # safely update CMRU-owned revision markers
-cmru build   --project <name>     # isolated local build; retains logs/artifacts, then removes worktree
+cmru standards pwmcp --update     # safely update CMRU-owned revision markers
+cmru build   <name>               # isolated local build; retains logs/artifacts, then removes worktree
 cmru worktrees                    # list retained failed build/release worktrees
 cmru dependencies                 # show + preflight the project dependency graph
 cmru dependencies --write         # refresh its generated root-TOML comment block
 cmru tool-deps                    # verify declared tool dependencies: integrity/authenticity/freshness
 cmru tool-deps --allow-stale-tool-deps   # proceed despite a stale (behind-latest) pin
 cmru tool-deps --refresh <provider-project>  # deliberate external/copy artifact re-vendor + pin/hash update
-cmru publish --project <name>     # low-level caller-worktree push step
-cmru resolve --project <name>     # resolve the current "latest" (version/tag/url/sha256)
+cmru publish <name>               # low-level caller-worktree push step
+cmru resolve <name>               # resolve the current "latest" (version/tag/url/sha256)
 cmru cleanup --remove-assets 30d  # prune old Releases / ghcr versions
-cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
-cmru cleanup --project ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
-cmru cleanup --project ciu --delete-build-output <commit-date>_<commit> --dry-run
+cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run
+cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
+cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
 cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
 cmru version                      # print the CMRU version
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
@@ -92,10 +91,10 @@ be mistaken for policy cleanup of normal immutable `<project>-v<semver>` release
 
 ## Logging and live diagnostics
 
-Use the repository's one convenience wrapper directly—no `2>&1 | tee ...` is required:
+Use the native release command directly—no wrapper or `2>&1 | tee ...` is required:
 
 ```bash
-./cmru.release.sh --project assay
+cmru release assay
 ```
 
 It overwrites the root `cmru.release.log` with the complete release transcript.
@@ -109,9 +108,9 @@ declared artifact directories by default before removing the worktree: logs move
 `--discard-logs-on-release` / `--discard-artifacts-on-release` to opt out of either half.
 
 ```bash
-./cmru.release.sh --project modern-debian-tools-python-debug --show-run-details
-./cmru.release.sh --project assay --log-append
-./cmru.release.sh --project assay --log-prefix-time-short
+cmru release modern-debian-tools-python-debug --show-run-details
+cmru release assay --log-append
+cmru release assay --log-prefix-time-short
 ```
 
 `--show-run-details` also streams raw Docker/test output to the terminal. `--log-append`
@@ -125,8 +124,8 @@ an interactive terminal; `cmru.release.log` and pipes remain plain ANSI-free tex
 
 Each project owns one complete `cmru.toml` contract: identity, versioning, release artifacts,
 environment, and every runner step. That file is portable to a fresh repository root. A
-monorepo's `cmru.orchestration.toml` contains only selection, order/dependencies, cleanup, and
-no project commands. Repository credentials are defined separately at the repository root.
+monorepo's nearest `cmru.orchestration.toml` contains central GitHub/target facts,
+selection, order/dependencies, cleanup, and no project commands. It establishes the CMRU root.
 `template_revision = 4` lets
 `cmru standards` identify stale adoption without inventing project behavior. Ready-to-copy
 examples are [`templates/cmru.toml.tmpl`](templates/cmru.toml.tmpl) and
@@ -167,7 +166,7 @@ Never add the usual `CHANGES.md` opt-in just to enable the feature—it is alrea
 For a release that was published before this default existed, use the migration helper:
 
 ```bash
-cmru changelog --project assay --backfill-tag assay-v0.1.0
+cmru changelog assay --backfill-tag assay-v0.1.0
 git diff -- assay/CHANGES.md
 git commit --only -m "docs(assay): backfill v0.1.0 release history" -- assay/CHANGES.md
 ```
@@ -220,7 +219,7 @@ If the build or retention fails, CMRU keeps the exact
 path. Run `cmru worktrees` to discover retained build/release worktrees, then use
 `cmru cleanup --discard-build-worktree <path> --yes` only after inspection. An existing output
 coordinate is never overwritten; remove it explicitly with
-`cmru cleanup --project <name> --delete-build-output <id> --yes` before rebuilding that source.
+`cmru cleanup <name> --delete-build-output <id> --yes` before rebuilding that source.
 
 `steps.prepare` is for deterministic source preparation, such as resolving an upstream
 version. It may change only paths declared in `release.commit_generated`; cmru commits those
@@ -297,13 +296,13 @@ for the full contract.
 | file | committed? | purpose |
 |---|---|---|
 | `<project>/cmru.toml` | yes | complete portable project contract — **no secrets** |
-| `cmru.orchestration.toml` | yes | optional monorepo ordering/dependencies/cleanup only |
+| `cmru.orchestration.toml` | yes | nearest CMRU root: central facts, ordering/dependencies/cleanup |
 | `cmru.secret.toml` | no (gitignored) | repository credential document: `[github] token = "…"` |
 | `<project>/cmru.secret.toml` | no (gitignored) | optional same-shaped project override, deep-merged over the root secret |
 | `cmru.vars` | no (gitignored) | `KEY=VALUE` build vars a step emits for later steps |
 
 **Token resolution (S2.4):** `$GITHUB_PUSH_PAT` → `$GITHUB_TOKEN` → deep merge the
-repository-root `cmru.secret.toml` with the selected project's optional
+selected CMRU-root `cmru.secret.toml` with the selected project's optional
 `cmru.secret.toml` (the project `[github].token` wins). A committed `cmru.toml` token
 is rejected. Never commit a token.
 
@@ -342,6 +341,7 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 ## More
 
 - Adopting cmru (the HOW): [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
+- Design rationale (the WHY): [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md).
 - Full contract & rationale: [`docs/SPEC.md`](docs/SPEC.md) — start at *S-CLI* and *S-REL*.
 - Monorepo tooling overview: [`../docs/RELEASE-TOOLING.md`](../docs/RELEASE-TOOLING.md).
 - Release-modes design/plan: [`../docs/plan-cmru-release-modes.md`](../docs/plan-cmru-release-modes.md).

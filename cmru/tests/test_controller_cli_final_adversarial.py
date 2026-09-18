@@ -111,7 +111,7 @@ def test_cleanup_dispatch_validates_unmanaged_namespace_before_delete(monkeypatc
     monkeypatch.setattr(cmru_cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cmru_cli, "load_config", lambda path: loaded)
     with pytest.raises(SystemExit) as error:
-        cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-unmanaged-release-tag", "other-v1", "--project", "demo", "--dry-run"])
+        cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-unmanaged-release-tag", "other-v1", "demo", "--dry-run"])
     assert error.value.code == 2
 
 
@@ -122,7 +122,7 @@ def test_cleanup_dispatches_exact_local_build_deletion_and_requires_scope(monkey
     monkeypatch.setattr(cmru_cli, "load_config", lambda path: loaded)
     calls = []
     monkeypatch.setattr(cmru_cli.transaction, "delete_retained_build_output", lambda *args, **kwargs: calls.append((args, kwargs)) or [tmp_path / "artifact"])
-    cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "20240101T000000Z_" + "a" * 40, "--project", "demo", "--dry-run"])
+    cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "20240101T000000Z_" + "a" * 40, "demo", "--dry-run"])
     assert calls and calls[0][1]["dry_run"] is True
     with pytest.raises(SystemExit) as error:
         cmru_cli.main(["cleanup", "--config", str(cfg), "--delete-build-output", "bad"])
@@ -140,7 +140,7 @@ def test_cleanup_dispatches_discard_worktree_and_rejects_project_mix(monkeypatch
     cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "--dry-run"])
     assert calls == [{"dry_run": True}]
     with pytest.raises(SystemExit) as error:
-        cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "--project", "demo", "--dry-run"])
+        cmru_cli.main(["cleanup", "--config", str(cfg), "--discard-build-worktree", str(tmp_path / "w"), "demo", "--dry-run"])
     assert error.value.code == 2
 
 

@@ -98,11 +98,13 @@ def _config(repo_root: Path):
 
 
 def _run(monkeypatch, repo_root: Path, extra_args: list[str]) -> str:
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: repo_root / "cmru.toml")
+    config_path = repo_root / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
+    monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(repo_root))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     cli.main(
-        ["release", "--_transaction-child", "--config", str(repo_root / "cmru.toml")] + extra_args
+        ["release", "--_transaction-child", "--config", str(config_path)] + extra_args
     )
 
 
@@ -177,15 +179,17 @@ def test_detect_changed_projects_is_called_once_with_identical_strict_kwargs_on_
 
     monkeypatch.setattr(version, "detect_changed_projects", fake_detect)
     monkeypatch.setattr(version, "release_cmd", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
+    config_path = tmp_path / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
+    monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
 
-    cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
+    cli.main(["release", "--_transaction-child", "--dry-run", "--config", str(config_path)])
     dry_calls = list(calls)
     calls.clear()
 
-    cli.main(["release", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
+    cli.main(["release", "--_transaction-child", "--config", str(config_path)])
     real_calls = list(calls)
 
     assert len(dry_calls) == 1

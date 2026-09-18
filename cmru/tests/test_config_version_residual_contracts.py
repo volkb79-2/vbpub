@@ -59,8 +59,19 @@ commands=[{label="push",argv=["echo"],cwd="."}]
 '''
 
 
+def central_project_doc() -> str:
+    return "schema_version=1\n[project]\n" + project_doc().split("[project]\n", 1)[1]
+
+
 def orch_doc(entry='config="demo/cmru.toml"', order='["demo"]') -> str:
     return f'''schema_version=1
+[github]
+owner="acme"
+repo="vbpub"
+owner_type="org"
+[targets]
+host="github"
+registry=[]
 [orchestration]
 project_order={order}
 default_projects=["demo"]
@@ -93,7 +104,7 @@ def test_config_scalar_secret_runner_and_cleanup_errors_name_the_policy(tmp_path
             config._validate_runner_steps(raw)
     with pytest.raises(SystemExit):
         config._parse_cleanup(None)
-    assert "ERROR" in capsys.readouterr().out
+    assert "ERROR" in capsys.readouterr().err
 
 
 def test_config_project_metadata_and_orchestration_resolution_errors(tmp_path, capsys):
@@ -105,9 +116,9 @@ def test_config_project_metadata_and_orchestration_resolution_errors(tmp_path, c
         path.write_text(raw, encoding="utf-8")
         with pytest.raises(SystemExit):
             config.load_forge_config(path)
-        assert text in capsys.readouterr().out
+        assert text in capsys.readouterr().err
 
-    project = tmp_path / "demo"; project.mkdir(); (project / "cmru.toml").write_text(project_doc())
+    project = tmp_path / "demo"; project.mkdir(); (project / "cmru.toml").write_text(central_project_doc())
     orch = tmp_path / "cmru.orchestration.toml"
     for raw in (
         orch_doc(entry="config=\"demo/cmru.toml\"\ndepends_on=[]\n", order='["demo","demo"]'),
