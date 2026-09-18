@@ -2736,3 +2736,25 @@ consumer-facing examples are documented in
 and [`docs/CONSUMERS.md`](CONSUMERS.md); the product surface above is the
 short description, while this entry records the rationale and rejected
 alternatives.
+
+---
+
+## Pointer · 2026-09-18 · follow-on design doc: session self-introspection + a process/resource registry
+
+A live dstdns wave (Wave B2 T1, six real parallel implementers, session
+`01HSSw2AWAN69Fg7fLQLJmMn`) hit, in production, in one session: agents
+guessing their own context size with no real measurement available to them
+(confirmed by direct JSONL inspection — the `usage` block never surfaces as
+model-visible text); a subagent's self-armed `Monitor` on its own gate
+silently never firing (53 minutes of dead time, found only by file-mtime
+forensics — the exact failure mode `subagent-monitor-on-own-gate-can-silently-
+never-fire` warns about, recurring live); and an exact, quantified
+`nyxloom extract --profile manual_fresh` truncation risk
+(`max_words=8_000` is the only live stop condition — checkpoints/lifecycle
+markers are both effectively disabled in that profile — so a long enough
+session will start dropping its own oldest content, the original dispatch
+prompt, first). Full incident writeup, proposed `nyxloom session-context`
+verb, and a proposed centralized process/resource-registry service (with
+alternatives considered and a phased implementation plan) are in
+[`design-session-introspection-and-process-registry.md`](design-session-introspection-and-process-registry.md) —
+not started, captured for later revisiting.
