@@ -3523,3 +3523,22 @@ detached from `scripts/cgroup-profiler/`; wrapper PID `3442381` writes its
 authoritative child marker to `/tmp/rg55-p1-r2-final-20260918.log`. HEAD is
 held quiet and no progress polling is authorized before a meaningful
 completion boundary.
+
+### RW-287 — 2026-09-18 10:34:51Z — correct P1 merge-base and defer launch on PSI
+
+The first final P1 R2 attempt on merge HEAD
+`fc5d27370a848a24f9a62f69ba1a031bf0a3aac6` exited 5 with a separately read
+`INCONCLUSIVE/NO_MUTANTS` verdict. Assay resolved the merge commit's first
+parent `4845a58a` as its base, leaving no changed `lib/` lines; this is a
+base-shape artifact, not mutation evidence and not a product verdict.
+
+To remove that ambiguity, the controller created linear worktree
+`rg55-profiler-daemon-final` from current main and imported only the P1
+`scripts/cgroup-profiler/` snapshot. Its clean final HEAD is
+`9b70a46e902b5ea63ea9de699165593ddae8bd54`, with current source-backed Assay
+6.4 and a real `origin/main..HEAD` package diff. The corrected R2 launch was
+then refused because memory PSI was `full avg10=8.72`, above the mandatory
+`<=5` gate. A one-shot 20-minute detached watcher PID `3525316` is armed;
+it launches only after a single wake-point PSI check at or below 5, otherwise
+it records `P1_R2_CORRECTED_PSI_BLOCKED=1`. No mutation container was started
+under the red gate.
