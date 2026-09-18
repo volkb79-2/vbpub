@@ -3507,3 +3507,19 @@ counted. A retry was refused before launch because host memory PSI was
 container was launched under that pressure. The next controller must perform
 one fresh PSI check at a meaningful wake point, then launch CMRU with a
 detached child-exit marker only if the gate is satisfied.
+
+### RW-286 — 2026-09-18 09:37:01Z — launch final P1 R2 on current provider tree
+
+The installed release state now reports Assay 6.4.0 from the controller venv
+and run-gate rev 43; run-gate 23.9.0 is tagged. The P5 implementation has no
+post-release code/test diff, only RG-63/RG-65 backlog documentation, so its
+existing release evidence is retained without a redundant review.
+
+The clean P1 worktree `rg55-profiler-daemon` was reconciled with current main
+and current source-backed Assay 6.4.0 in merge commit `fc5d2737`. Its final
+judged HEAD is `fc5d27370a848a24f9a62f69ba1a031bf0a3aac6`. With host memory
+PSI `full avg10=2.24`, the controller launched the required final `r2` lane
+detached from `scripts/cgroup-profiler/`; wrapper PID `3442381` writes its
+authoritative child marker to `/tmp/rg55-p1-r2-final-20260918.log`. HEAD is
+held quiet and no progress polling is authorized before a meaningful
+completion boundary.
