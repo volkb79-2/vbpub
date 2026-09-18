@@ -3745,3 +3745,5 @@ and `assay/schemas/analysis-receipt.schema.json` (Draft 2020-12) for machine
 consumers. The receipt schema checks the outer shape; embedded verdicts still
 require the shipped `verdict.schema.json` and behavioral `assay verify` checks.
 A schema-valid receipt alone does not prove its files exist or its hashes match.
+
+Parser help, usage, and argument errors start with `ASSAY <version> — declared-lane judge`; preserve that first line when storing operator diagnostics.

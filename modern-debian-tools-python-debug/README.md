@@ -676,3 +676,7 @@ renderer remain command-tested because assay's Python adapter cannot judge
 shell behavior. The source checkout's `assay/` package is imported at lane
 runtime, as required for same-repository vbpub consumers; no stale vendored
 assay copy is used.
+
+### CLI diagnostics
+
+The shipped MDT Python parser scripts prefix help, usage, and argument errors with `MDT <version> — modern Debian tools and Python debug`. The value is read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime environment; when neither is supplied the diagnostic says `unknown` rather than inventing a release version.

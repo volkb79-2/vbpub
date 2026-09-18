@@ -9,6 +9,7 @@ never create a ``docker-container`` worker.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import os
 import subprocess
 import sys
@@ -191,7 +192,7 @@ def ensure_managed_builder(
 
 
 def _cli() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = MdtArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("configure", "verify"))
     parser.add_argument("--docker", default="docker")
     parser.add_argument("--endpoint", default=MANAGED_ENDPOINT)

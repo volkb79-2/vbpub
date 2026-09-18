@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 from pwmcp_client.contract import load_contract
+from pwmcp_client.cli import main
+from pwmcp_client.diagnostics import cli_headline
 from pwmcp_client.session import _major_minor
 
 
@@ -22,3 +24,12 @@ def test_load_contract(tmp_path):
 
 def test_major_minor_ignores_patch():
     assert _major_minor("1.61.1") == _major_minor("1.61.0")
+
+
+def test_parser_help_and_errors_start_with_the_package_headline(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["pwmcp", "--bad"])
+    try:
+        main()
+    except SystemExit:
+        pass
+    assert capsys.readouterr().err.splitlines()[0] == cli_headline()

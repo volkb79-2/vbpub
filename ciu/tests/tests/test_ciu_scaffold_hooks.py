@@ -132,6 +132,7 @@ def test_unknown_hooks_name_refuses_before_any_write(workdir, capsys):
         )
     assert exc.value.code == 2
     err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("CIU ")
     assert "bogus" in err
     assert "post_compose_db" in err  # the available list
     # Nothing scaffolded — collect_plan raised before build_files ever ran.
@@ -146,7 +147,9 @@ def test_unknown_hooks_name_among_valid_ones_still_refuses(workdir, capsys):
             workdir,
         )
     assert exc.value.code == 2
-    assert "bogus" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("CIU ")
+    assert "bogus" in err
 
 
 def test_hooks_without_any_stack_refuses(workdir, capsys):
@@ -156,6 +159,7 @@ def test_hooks_without_any_stack_refuses(workdir, capsys):
         )
     assert exc.value.code == 2
     err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("CIU ")
     assert "--stacks" in err
 
 

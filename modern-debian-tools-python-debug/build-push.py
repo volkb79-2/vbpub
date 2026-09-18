@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import os
 import re
@@ -41,7 +42,7 @@ _PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         description="Build and/or push modern-debian-tools-python-debug images"
     )
     mode = parser.add_mutually_exclusive_group(required=True)

@@ -247,6 +247,30 @@ func TestWorkerRefusesAMalformedInvocation(t *testing.T) {
 	}
 }
 
+func TestWorkerParserDiagnosticsStartWithHeadline(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := prepare([]string{"--not-a-worker-option"}, &stderr, "9.8.7-test"); code != ExitUsage {
+		t.Fatalf("worker exited %d, want usage exit %d", code, ExitUsage)
+	}
+	lines := strings.Split(stderr.String(), "\n")
+	if lines[0] != "SRDM 9.8.7-test — shared-ramdisk-depot-manager" {
+		t.Fatalf("first diagnostic line = %q, want SRDM headline", lines[0])
+	}
+	if !strings.Contains(stderr.String(), "hold-worker: flag provided but not defined") {
+		t.Fatalf("parse error missing from diagnostic: %q", stderr.String())
+	}
+}
+
+func TestWorkerValidationDiagnosticsStartWithHeadline(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := prepare(nil, &stderr, "9.8.7-test"); code != ExitUsage {
+		t.Fatalf("worker exited %d, want usage exit %d", code, ExitUsage)
+	}
+	if first := strings.Split(stderr.String(), "\n")[0]; first != "SRDM 9.8.7-test — shared-ramdisk-depot-manager" {
+		t.Fatalf("first diagnostic line = %q, want SRDM headline", first)
+	}
+}
+
 // The release directory the daemon points at has to BE the release it named.
 func TestWorkerRefusesAReleaseItCannotLoad(t *testing.T) {
 	cfg := testConfig(t)

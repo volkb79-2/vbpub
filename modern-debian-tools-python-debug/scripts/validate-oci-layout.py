@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import sys
 import tarfile
@@ -109,7 +110,7 @@ def validate_layout(layout: Path) -> tuple[int, int, list[str]]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = MdtArgumentParser(description=__doc__)
     parser.add_argument("layout", type=Path)
     parser.add_argument("--max-errors", type=int, default=20)
     args = parser.parse_args()

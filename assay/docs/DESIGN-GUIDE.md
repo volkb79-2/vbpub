@@ -3110,3 +3110,5 @@ outputs from both recording adapters, ERROR verdicts and partial progress,
 and reject invented review verdicts, malformed Git IDs and boolean byte counts.
 Runtime checks remain stdlib domain checks; no JSON-Schema engine is injected
 into the runtime dependency closure.
+
+**Parser identity.** The root and subcommand parsers share one versioned diagnostic formatter. This ties copied help or refusal output to the metadata-backed Assay build without coupling Assay to another estate tool.

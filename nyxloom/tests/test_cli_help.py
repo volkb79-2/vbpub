@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from nyxloom import __version__, cli
 from nyxloom.cli import _VERB_GROUPS, _build_parser, _classify_top_level_invocation
 
@@ -95,11 +97,19 @@ def test_top_level_help_screen_includes_version_and_every_group():
     cli._print_top_level_help(parser, subparsers, file=buf)
     out = buf.getvalue()
 
-    assert f"nyxloom {__version__}" in out
+    assert out.splitlines()[0] == cli.cli_headline()
     for group_name in _VERB_GROUPS:
         assert group_name in out
     for verb in subparsers.choices:
         assert verb in out
+
+
+def test_subcommand_help_and_argument_errors_start_with_the_headline(capsys):
+    assert cli.main(["status", "--not-a-status-option"]) == 2
+    assert capsys.readouterr().err.splitlines()[0] == cli.cli_headline()
+
+    assert cli.main(["status", "--help"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == cli.cli_headline()
 
 
 def test_top_level_help_screen_alphabetizes_within_each_group():
@@ -127,7 +137,7 @@ def test_bare_invocation_exits_2_and_prints_grouped_help_to_stderr(capsys):
     assert exit_code == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert f"nyxloom {__version__}" in captured.err
+    assert cli.cli_headline() in captured.err
     assert "project & workflow lifecycle:" in captured.err
 
 
@@ -136,7 +146,7 @@ def test_top_level_help_flag_exits_0_and_prints_to_stdout(capsys):
         exit_code = cli.main(argv)
         assert exit_code == 0
         captured = capsys.readouterr()
-        assert f"nyxloom {__version__}" in captured.out
+        assert cli.cli_headline() in captured.out
         assert "Commands (grouped by purpose" in captured.out
 
 
@@ -145,7 +155,7 @@ def test_unknown_command_exits_2_and_names_the_bad_token(capsys):
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "bogus-verb" in captured.err
-    assert f"nyxloom {__version__}" in captured.err
+    assert cli.cli_headline() in captured.err
 
 
 def test_unrecognized_top_level_flag_hits_argparses_own_error_path(capsys):
@@ -228,7 +238,7 @@ def test_subcommand_help_exits_0_shows_only_its_own_usage_and_carries_a_banner(c
     captured = capsys.readouterr()
     assert captured.err == ""
     assert "usage: nyxloom extract-report" in captured.out
-    assert f"nyxloom {__version__}" in captured.out
+    assert cli.cli_headline() in captured.out
     assert "--detailed" in captured.out
     # The wrong top-level verb list must not appear alongside the correct,
     # targeted help.

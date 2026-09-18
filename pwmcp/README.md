@@ -294,3 +294,7 @@ ciu-build -d . push-images
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+The `pwmcp` client parser prefixes help, usage, and argument errors with `PWMCP <version> — client utility`. Installed clients read `pwmcp-client` metadata; a source checkout uses the version already declared in its client project metadata.

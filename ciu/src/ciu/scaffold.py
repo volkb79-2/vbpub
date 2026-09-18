@@ -10,9 +10,10 @@ existing target file is never overwritten. Templates ship inside the wheel
 from __future__ import annotations
 
 import re
-import sys
 from importlib import resources
 from pathlib import Path
+
+from .cli_utils import cli_error, cli_headline
 
 _PROJECT_NAME_RE = re.compile(r"[a-z][a-z0-9-]*")
 # (entry, why-it-is-ignored) — written into the consumer's .gitignore with
@@ -147,7 +148,9 @@ def collect_plan(argv: list[str], root: Path) -> dict:
     if not project_name:
         project_name = _slug(root.name)
     elif not _PROJECT_NAME_RE.fullmatch(project_name):
-        raise SystemExit(f"init: --project-name must match {_PROJECT_NAME_RE.pattern}")
+        raise SystemExit(
+            f"{cli_headline()}\ninit: --project-name must match {_PROJECT_NAME_RE.pattern}"
+        )
     if interactive:
         project_name = _prompt("Project name (lowercase slug)", project_name)
     # CIU-104's correction (KNOWN_ISSUES_TODO_BACKLOG.md, 2026-09-10): a
@@ -170,7 +173,7 @@ def collect_plan(argv: list[str], root: Path) -> dict:
     )
     if not environment_tag.strip() or any(c in environment_tag for c in '"\n#'):
         raise SystemExit(
-            f"init: --environment-tag {environment_tag!r} must be a plain TOML "
+            f"{cli_headline()}\ninit: --environment-tag {environment_tag!r} must be a plain TOML "
             "string value (no quotes/newlines/#)."
         )
     stacks_raw = flag("--stacks")
@@ -209,20 +212,18 @@ def collect_plan(argv: list[str], root: Path) -> dict:
         available = _available_hook_templates()
         unknown = [h for h in hooks if h not in available]
         if unknown:
-            print(
+            cli_error(
                 "ciu init: unknown --hooks template(s): "
                 + ", ".join(unknown)
                 + " (available: "
                 + (", ".join(sorted(available)) or "none")
                 + ")",
-                file=sys.stderr,
             )
             raise SystemExit(2)
         if not parsed_stacks:
-            print(
+            cli_error(
                 "ciu init: --hooks requires at least one --stacks target "
                 "to copy into",
-                file=sys.stderr,
             )
             raise SystemExit(2)
 
@@ -331,7 +332,8 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
         rendered_global = jenv.from_string(global_text).render(**base_vars)
     except TemplateError as exc:
         raise SystemExit(
-            f"init: ciu.global.defaults.toml.j2 failed to render: {exc} — template bug."
+            f"{cli_headline()}\ninit: ciu.global.defaults.toml.j2 failed to render: "
+            f"{exc} — template bug."
         ) from exc
     parsed_global = tomllib.loads(rendered_global)  # S3.2 step 3 equivalent
 
@@ -342,8 +344,9 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
     for required in ("CONTAINER_UID", "DOCKER_GID", "REPO_ROOT", "PHYSICAL_REPO_ROOT"):
         if required not in shared:
             raise SystemExit(
-                f"init: generated global template lacks deploy.env.shared.{required} "
-                "(hostdir/secret ownership would fail at deploy) — template bug."
+                f"{cli_headline()}\ninit: generated global template lacks "
+                f"deploy.env.shared.{required} (hostdir/secret ownership would fail "
+                "at deploy) — template bug."
             )
 
     from ciu import config_model
@@ -355,8 +358,8 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
             rendered = jenv.from_string(entry).render(**vars_stack)
         except TemplateError as exc:
             raise SystemExit(
-                f"init: {stack['dir']}/ciu.defaults.toml.j2 failed to render: "
-                f"{exc} — template bug."
+                f"{cli_headline()}\ninit: {stack['dir']}/ciu.defaults.toml.j2 failed "
+                f"to render: {exc} — template bug."
             ) from exc
         tomllib.loads(rendered)
         # Real shape validator (S3.5/S3.7) on the RENDERED defaults:
@@ -365,8 +368,8 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 if path.name != ".gitignore-additions.txt" and path.exists()]
     if existing:
         raise SystemExit(
-            "init: refusing to overwrite existing file(s): " + ", ".join(existing)
-            + " — move them aside first."
+            f"{cli_headline()}\ninit: refusing to overwrite existing file(s): "
+            + ", ".join(existing) + " — move them aside first."
         )
     return files
 

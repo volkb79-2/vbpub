@@ -503,3 +503,7 @@ work before v2 (spec §10).
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+The `topos` parser families, including operational subcommands and the acceptance harness, prefix help, usage, and argument errors with `TOPOS <version> — host telemetry and resource control`. The version comes from the existing package metadata source.

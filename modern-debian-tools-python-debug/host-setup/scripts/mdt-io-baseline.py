@@ -21,6 +21,7 @@ changes, the results are rejected even if they were written moments ago.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import hashlib
 import os
 import re
@@ -69,7 +70,7 @@ def positive_int(value: object, label: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         prog="mdt-io-baseline.py",
         description=(
             "Run the official kernel io.cost coefficient matrix against a "

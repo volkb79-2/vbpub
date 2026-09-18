@@ -55,6 +55,7 @@ Flags
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import json
 import os
 import shutil
@@ -551,7 +552,7 @@ def run_hooks(phase: str, dc_dir: Path, hook_env: dict, strict: bool) -> bool:
 
 # ── main ────────────────────────────────────────────────────────────────────
 def main() -> int:
-    ap = argparse.ArgumentParser(description="mdt in-container finalize (post script).")
+    ap = MdtArgumentParser(description="mdt in-container finalize (post script).")
     ap.add_argument("--no-hooks", action="store_true", help="generic steps only")
     ap.add_argument("--hooks-only", action="store_true", help="consumer hooks only")
     ap.add_argument("--devcontainer-dir", default=None, help="override hook-discovery dir")

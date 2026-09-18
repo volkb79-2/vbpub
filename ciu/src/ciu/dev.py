@@ -27,6 +27,7 @@ from . import config_model
 from . import procutil
 from .config_constants import GLOBAL_CONFIG_DEFAULTS
 from .deploy_pkg import health as _health
+from .cli_utils import cli_error
 
 
 def resolve_repo_root(define_root: Path | str | None, start_dir: Path) -> Path:
@@ -368,7 +369,7 @@ def run_dev(
     repo_root = Path(repo_root).resolve()
     stack_dir = (repo_root / stack).resolve()
     if not stack_dir.is_dir():
-        print(f"[ERROR] dev: stack directory not found: {stack_dir}", flush=True)
+        cli_error(f"[ERROR] dev: stack directory not found: {stack_dir}")
         return 2
 
     if global_loader is None:
@@ -403,7 +404,7 @@ def run_dev(
         root_key = config_model.validate_stack_shape(stack_config)
         profile = parse_dev_profile(stack_config, root_key)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"[ERROR] dev: {exc}", flush=True)
+        cli_error(f"[ERROR] dev: {exc}")
         return 2
 
     merged = config_model.deep_merge(global_config, stack_config)
@@ -423,10 +424,9 @@ def run_dev(
                 else _health.wait_healthy(lambda: status_fn(service))
             )
             if not ready:
-                print(
+                cli_error(
                     f"[ERROR] dev: dependency '{service}' did not become healthy; "
                     "start it first (e.g. `ciu up`) or fix its healthcheck",
-                    flush=True,
                 )
                 return 1
 
@@ -436,7 +436,7 @@ def run_dev(
             profile, stack_dir, run_fn=build_run_fn, repo_root=repo_root
         )
     except RuntimeError as exc:
-        print(f"[ERROR] {exc}", flush=True)
+        cli_error(f"[ERROR] {exc}")
         return 1
 
     argv = build_run_command(

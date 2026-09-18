@@ -352,3 +352,5 @@ curl -X POST http://pwmcp:8939/browser/restart
 # Liveness + open-page count + uptime:
 curl http://pwmcp:8939/browser/health
 ```
+
+The standalone `pwmcp` CLI keeps parser diagnostics identifiable: the first line is `PWMCP <version> — client utility`, using the client package's existing metadata version.

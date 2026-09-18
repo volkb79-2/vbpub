@@ -36,6 +36,8 @@ and ``render_utils.py`` is deleted.
 
 from __future__ import annotations
 
+from .cli_utils import CiuArgumentParser
+
 import argparse
 import json
 import logging
@@ -300,7 +302,7 @@ class ComposeError(RuntimeError):
 
 def parse_arguments(argv: Optional[list] = None) -> argparse.Namespace:
     """Parse command-line arguments for ``ciu`` (the non-subcommand surface)."""
-    parser = argparse.ArgumentParser(
+    parser = CiuArgumentParser(
         description=f"CIU {get_cli_version()}: TOML-based Docker Compose orchestration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -373,7 +375,7 @@ Examples:
 
 def _build_secrets_subparser() -> argparse.ArgumentParser:
     """Argparse for the ``ciu secrets list|reset`` subcommand (S4.25)."""
-    parser = argparse.ArgumentParser(prog="ciu secrets",
+    parser = CiuArgumentParser(prog="ciu secrets",
                                      description="CIU secret lifecycle commands (S4.25)")
     parser.add_argument("action", choices=["list", "reset"], help="list or reset secret store files")
     parser.add_argument("-d", "--dir", type=Path, default=Path.cwd(), metavar="PATH",

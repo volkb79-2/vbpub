@@ -465,6 +465,7 @@ class TestUxSurface:
         assert proc.returncode == 0
         assert f"rev {run_gate.__revision__}" in proc.stdout
         assert "run-gate.root.toml" in proc.stdout
+        assert proc.stdout.splitlines()[0] == run_gate.cli_headline()
         assert "suite" in proc.stdout and "environment=tester-unified" in proc.stdout
 
     def test_no_args_prints_usage(self, tmp_path):
@@ -473,6 +474,11 @@ class TestUxSurface:
         proc = run_tool(proj)
         assert proc.returncode == 0
         assert "usage:" in proc.stdout
+
+    def test_parser_argument_error_starts_with_the_revision_headline(self, tmp_path):
+        proc = run_tool(tmp_path, "--not-a-run-gate-option")
+        assert proc.returncode == 2
+        assert proc.stderr.splitlines()[0] == run_gate.cli_headline()
 
     def test_no_config_is_one_line_not_traceback(self, tmp_path):
         proc = run_tool(tmp_path, "--help")  # empty dir: no config anywhere

@@ -365,3 +365,7 @@ ciu version
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+`ciu --help`, subcommand help/usage, and parser argument errors start with `CIU <version> — Container Infrastructure Utility`. The value is read from CIU's existing generated or package version source.

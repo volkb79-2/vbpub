@@ -40,9 +40,14 @@ func main() {
 	// (out of space) from a fault (D-017), and run()'s error path would
 	// collapse every one of them to 1.
 	if len(os.Args) > 1 && os.Args[1] == hold.WorkerSubcommand {
-		os.Exit(hold.RunWorker(os.Args[2:], os.Stderr))
+		os.Exit(hold.RunWorker(os.Args[2:], os.Stderr, Version))
 	}
 	if err := run(os.Args[1:]); err != nil {
+		var parseErr *flagParseError
+		if errors.As(err, &parseErr) {
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", cliHeadline())
 		fmt.Fprintf(os.Stderr, "srdm: %v\n", err)
 		os.Exit(1)
 	}
@@ -119,8 +124,7 @@ func pendingVerb(name string) string {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `srdm — shared-ramdisk-depot-manager
-
+	fmt.Fprintf(os.Stderr, "%s\n\n", cliHeadline())
 Operations — each takes --profile <file>, and each is one root process
 under a lock:
   srdm activate --profile <file> --release <id> [--write-owner uid:gid]
@@ -202,7 +206,7 @@ func loadProfile(path string) (*profile.Profile, error) {
 // ---------------------------------------------------------------- doctor --
 
 func cmdDoctor(args []string) error {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs := newFlagSet("doctor")
 	cfg := commonFlags(fs)
 	profilePath := fs.String("profile", "", "profile document, for the class-floor check")
 	asJSON := fs.Bool("json", false, "emit checks as JSON")
@@ -217,7 +221,7 @@ func cmdDoctor(args []string) error {
 	fs.Bool("offline", true, "run only checks that need no daemon (v1 has none — see D-025 — "+
 		"so every check below already runs; this flag is accepted for the invocation the "+
 		"master plan describes and never changes what runs)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -351,7 +355,7 @@ func cmdStore(args []string) error {
 }
 
 func cmdStorePromote(args []string) error {
-	fs := flag.NewFlagSet("store promote", flag.ContinueOnError)
+	fs := newFlagSet("store promote")
 	cfg := commonFlags(fs)
 	profilePath := fs.String("profile", "", "profile document (required)")
 	releaseID := fs.String("release", "", "release id (required)")
@@ -359,7 +363,7 @@ func cmdStorePromote(args []string) error {
 	channel := fs.String("channel", "", "flip this channel to the new release")
 	opID := fs.String("op", "", "operation id (defaults to the release id)")
 	source := fs.String("source", "", "provenance source, recorded in COMPLETE")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	for name, val := range map[string]string{"--profile": *profilePath, "--release": *releaseID, "--from": *from} {
@@ -424,13 +428,13 @@ func cmdStorePromote(args []string) error {
 }
 
 func cmdStoreActivate(args []string) error {
-	fs := flag.NewFlagSet("store activate", flag.ContinueOnError)
+	fs := newFlagSet("store activate")
 	cfg := commonFlags(fs)
 	profileID := fs.String("profile", "", "profile id (required)")
 	channel := fs.String("channel", "", "channel (required)")
 	releaseID := fs.String("release", "", "release id (required)")
 	opID := fs.String("op", "", "operation id")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	for name, val := range map[string]string{"--profile": *profileID, "--channel": *channel, "--release": *releaseID} {
@@ -461,10 +465,10 @@ func cmdStoreActivate(args []string) error {
 }
 
 func cmdStoreVerify(args []string) error {
-	fs := flag.NewFlagSet("store verify", flag.ContinueOnError)
+	fs := newFlagSet("store verify")
 	cfg := commonFlags(fs)
 	releaseID := fs.String("release", "", "release id (default: every release)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -503,9 +507,9 @@ func cmdStoreVerify(args []string) error {
 }
 
 func cmdStoreList(args []string) error {
-	fs := flag.NewFlagSet("store list", flag.ContinueOnError)
+	fs := newFlagSet("store list")
 	cfg := commonFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -556,10 +560,10 @@ func cmdStoreList(args []string) error {
 }
 
 func cmdStoreRecover(args []string) error {
-	fs := flag.NewFlagSet("store recover", flag.ContinueOnError)
+	fs := newFlagSet("store recover")
 	cfg := commonFlags(fs)
 	opID := fs.String("op", "recover", "operation id")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlagSet(fs, args); err != nil {
 		return err
 	}
 	if err := cfg.Validate(); err != nil {
@@ -604,10 +608,10 @@ func cmdJournal(args []string) error {
 	if len(args) == 0 {
 		return errors.New("journal: expected list or show")
 	}
-	fs := flag.NewFlagSet("journal "+args[0], flag.ContinueOnError)
+	fs := newFlagSet("journal " + args[0])
 	cfg := commonFlags(fs)
 	opID := fs.String("op", "", "operation id")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlagSet(fs, args[1:]); err != nil {
 		return err
 	}
 	if err := cfg.Validate(); err != nil {

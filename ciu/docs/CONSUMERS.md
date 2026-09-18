@@ -1626,3 +1626,5 @@ being occupied by a non-table — `ciu = "x"`, or
 reachable where the old block-slice did not. A naive
 `document.get("ciu", {}).get("instance", {}).get("generated")` chain leaks a
 bare `AttributeError` on both.
+
+When collecting CIU diagnostics, preserve the first line of help, usage, and argument errors: `CIU <version> — Container Infrastructure Utility`.

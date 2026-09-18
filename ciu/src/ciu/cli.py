@@ -10,12 +10,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .cli_utils import get_cli_version
+from .cli_utils import CiuArgumentParser, cli_error, cli_headline, get_cli_version
 from .config_constants import GLOBAL_CONFIG_DEFAULTS, WORKSPACE_ENV
 from .output import consume_cli_flags
 
 _USAGE = """\
-CIU {ver} — Container Infrastructure Utility (compose · init · up)
+CIU {ver} — Container Infrastructure Utility
+Container orchestration, development worktrees, and host operations (compose · init · up)
 Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
 
 Usage: ciu <verb> [options]
@@ -607,7 +608,7 @@ def _print_verb_help(verb: str) -> None:
     if block is None:
         print(_USAGE.format(ver=get_cli_version()))
     else:
-        print(f"CIU {get_cli_version()}\n")
+        print(f"{cli_headline()}\n")
         print(block, end="")
 
 
@@ -628,7 +629,7 @@ def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> P
     try:
         return resolve_repo_root(define_root, start_dir)
     except ValueError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
+        cli_error(f"[ERROR] {exc}")
         raise SystemExit(2)
 
 
@@ -673,7 +674,7 @@ def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
     """
     import argparse as _ap
 
-    p = _ap.ArgumentParser(add_help=False, allow_abbrev=False)
+    p = CiuArgumentParser(add_help=False, allow_abbrev=False)
     p.add_argument("--define-root", "--root-folder", dest="define_root",
                    type=Path, default=None, metavar="PATH")
     opts, remaining = p.parse_known_args(rest)
@@ -714,7 +715,7 @@ def _resolve_repo_root_deploy(define_root: Path | str | None) -> Path:
     try:
         return resolve_repo_root(define_root)
     except ValueError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
+        cli_error(f"[ERROR] {exc}")
         raise SystemExit(2)
 
 
@@ -730,9 +731,8 @@ def _load_remote_config(repo_root: Path) -> dict:
     try:
         return load_global_config(repo_root)
     except Exception as exc:
-        print(
+        cli_error(
             f"[ERROR] could not load global configuration for remote operation: {exc}",
-            file=sys.stderr,
         )
         raise SystemExit(2) from exc
 
@@ -871,7 +871,7 @@ def _flag_given(argv: list[str], flag: str) -> bool:
     # nargs="?"/const=True keeps a bare `--host` from raising `expected one
     # argument` HERE; the branch's own parser still owns that error, exactly as
     # it did before this predicate existed.
-    p = _ap.ArgumentParser(add_help=False)
+    p = CiuArgumentParser(add_help=False)
     for candidate in _DISPATCH_FLAGS:
         p.add_argument(candidate, dest=_flag_dest(candidate),
                        nargs="?", const=True, default=None)
@@ -914,7 +914,7 @@ def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str
     # exactly as it would on the remote. The six forbidden flags plus --layout
     # have distinct second characters (l/p/h/d/t/b/r), so no abbreviation of
     # one is ambiguous against another.
-    p = _ap.ArgumentParser(add_help=False)
+    p = CiuArgumentParser(add_help=False)
     p.add_argument("--layout", dest="layout", default=None)
     for flag in _LAYOUT_FORBIDDEN:
         p.add_argument(flag, dest=_flag_dest(flag),
@@ -975,7 +975,7 @@ def _env_show() -> int:
 def _env_generate(rest: list[str]) -> int:
     """Handle `ciu env generate [--define-root PATH]`."""
     import argparse as _ap
-    p = _ap.ArgumentParser(prog="ciu env generate", add_help=True)
+    p = CiuArgumentParser(prog="ciu env generate", add_help=True)
     p.add_argument("--define-root", "--root-folder", dest="define_root",
                    type=Path, default=None, metavar="PATH",
                    help="Override repository root directory (no parent walking)")
@@ -1017,7 +1017,7 @@ def _env_print(rest: list[str]) -> int:
     capability that cannot exist. Nothing is (re)generated here.
     """
     import argparse as _ap
-    p = _ap.ArgumentParser(prog="ciu env print", add_help=True)
+    p = CiuArgumentParser(prog="ciu env print", add_help=True)
     p.add_argument("--define-root", "--root-folder", dest="define_root",
                    type=Path, default=None, metavar="PATH",
                    help="Override repository root directory (no parent walking)")
@@ -1074,13 +1074,13 @@ def _iops_baseline(rest: list[str]) -> int:
     """Handle `ciu iops-baseline [--path P] [--runtime N] [--force]` (S15.9)."""
     import argparse as _ap
     from .governance import run_iops_baseline
-    p = _ap.ArgumentParser(prog="ciu iops-baseline", add_help=False)
+    p = CiuArgumentParser(prog="ciu iops-baseline", add_help=False)
     p.add_argument("--path", dest="path", type=Path, default=None, metavar="PATH")
     p.add_argument("--runtime", dest="runtime", type=int, default=10, metavar="N")
     p.add_argument("--force", action="store_true", default=False)
     opts = p.parse_args(rest)
     if opts.runtime < 1:
-        print("ciu iops-baseline: --runtime must be a positive integer.", file=sys.stderr)
+        cli_error("ciu iops-baseline: --runtime must be a positive integer.")
         return 2
     return run_iops_baseline(opts.path, runtime_s=opts.runtime, force=opts.force)
 
@@ -1101,7 +1101,7 @@ def _ksm(rest: list[str]) -> int:
     # weaker answer to the same question.
     from .workspace_env import _detect_physical_repo_root
 
-    p = _ap.ArgumentParser(prog="ciu ksm", add_help=False)
+    p = CiuArgumentParser(prog="ciu ksm", add_help=False)
     p.add_argument("action", choices=["build"])
     p.add_argument("--force", action="store_true", default=False)
     p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
@@ -1134,7 +1134,7 @@ def _provenance(rest: list[str]) -> int:
     import argparse as _ap
     import json as _json
 
-    p = _ap.ArgumentParser(prog="ciu provenance", add_help=False)
+    p = CiuArgumentParser(prog="ciu provenance", add_help=False)
     p.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                    action="store_true", default=False)
     p.add_argument("--no-preflight", action="store_true", default=False)
@@ -1326,7 +1326,7 @@ def _status(rest: list[str]) -> int:
 
     from .deploy import action_status, build_selection, load_global_config, resolve_profiles
 
-    p = _ap.ArgumentParser(prog="ciu status", add_help=False)
+    p = CiuArgumentParser(prog="ciu status", add_help=False)
     p.add_argument("--profile", action="append", default=None, metavar="NAME")
     p.add_argument("--json", dest="json_output", action="store_true", default=False)
     p.add_argument("--define-root", "--root-folder", dest="define_root",
@@ -1391,7 +1391,7 @@ def _bake(rest: list[str]) -> int:
     if has_profile_flag:
         import argparse as _ap
 
-        p = _ap.ArgumentParser(prog="ciu bake", add_help=False)
+        p = CiuArgumentParser(prog="ciu bake", add_help=False)
         p.add_argument("--profile", action="append", default=None, metavar="NAME")
         opts, remaining = p.parse_known_args(positional)
         if remaining:
@@ -1501,7 +1501,7 @@ def _worktree(rest: list[str]) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-    p = _ap.ArgumentParser(prog="ciu worktree", add_help=False)
+    p = CiuArgumentParser(prog="ciu worktree", add_help=False)
     sub = p.add_subparsers(dest="action", required=True)
 
     p_add = sub.add_parser("add", add_help=False)
@@ -1875,7 +1875,7 @@ def _host(rest: list[str]) -> int:
     from .host_enroll import EnrollError, enroll_abort, enroll_step1, enroll_step2
 
     define_root, rest = _extract_define_root(rest)
-    p = _ap.ArgumentParser(prog="ciu host", add_help=False)
+    p = CiuArgumentParser(prog="ciu host", add_help=False)
     sub = p.add_subparsers(dest="action", required=True)
     p_enroll = sub.add_parser("enroll", add_help=False)
     p_enroll.add_argument("name")
@@ -1986,7 +1986,7 @@ def main() -> None:
         if _flag_given(rest, "--host"):
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            p = _ap.ArgumentParser(add_help=False)
+            p = CiuArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
@@ -2109,7 +2109,7 @@ def main() -> None:
             # Remote push-deploy path
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            p = _ap.ArgumentParser(add_help=False)
+            p = CiuArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             p.add_argument("--bootstrap", action="store_true", default=False)
@@ -2160,7 +2160,7 @@ def main() -> None:
             raise SystemExit(rc)
         elif _flag_given(rest, "--dir"):
             import argparse as _ap
-            p = _ap.ArgumentParser(add_help=False)
+            p = CiuArgumentParser(add_help=False)
             p.add_argument("--dir", dest="dir", default=None)
             opts, remaining = p.parse_known_args(rest)
             dir_arg = opts.dir or "."
@@ -2175,7 +2175,7 @@ def main() -> None:
         if _flag_given(rest, "--host"):
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            p = _ap.ArgumentParser(add_help=False)
+            p = CiuArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
@@ -2205,7 +2205,7 @@ def main() -> None:
         if _flag_given(rest, "--host"):
             import argparse as _ap
             define_root, rest = _extract_define_root(rest)
-            p = _ap.ArgumentParser(add_help=False)
+            p = CiuArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
@@ -2244,13 +2244,13 @@ def main() -> None:
     elif verb == "diagnose":
         import argparse as _ap
         from .diagnose import run as diagnose_run
-        p = _ap.ArgumentParser(prog="ciu diagnose", add_help=False)
+        p = CiuArgumentParser(prog="ciu diagnose", add_help=False)
         p.add_argument("--project", default=None)
         p.add_argument("--logs", type=int, default=100)
         p.add_argument("--json", dest="json_output", action="store_true")
         opts = p.parse_args(rest)
         if opts.logs < 0 or opts.logs > 10_000:
-            print("ciu diagnose: --logs must be between 0 and 10000.", file=sys.stderr)
+            cli_error("ciu diagnose: --logs must be between 0 and 10000.")
             raise SystemExit(2)
         raise SystemExit(diagnose_run(project=opts.project, log_lines=opts.logs, json_output=opts.json_output))
 
@@ -2264,7 +2264,7 @@ def main() -> None:
         import argparse as _ap
 
         from . import worktree as wt_mod
-        p = _ap.ArgumentParser(prog="ciu capabilities", add_help=False)
+        p = CiuArgumentParser(prog="ciu capabilities", add_help=False)
         p.add_argument("--json", action="store_true", default=False)
         opts = p.parse_args(rest)
         if opts.json:
@@ -2291,7 +2291,7 @@ def main() -> None:
     elif verb == "dev":
         import argparse as _ap
         from .dev import run_dev
-        p = _ap.ArgumentParser(prog="ciu dev", add_help=False)
+        p = CiuArgumentParser(prog="ciu dev", add_help=False)
         p.add_argument("stack", nargs="?", default=None)
         p.add_argument("--profile", default=None, metavar="NAME")
         p.add_argument("--no-prebuild", dest="no_prebuild", action="store_true")
@@ -2299,7 +2299,7 @@ def main() -> None:
                        type=Path, default=None, metavar="PATH")
         opts = p.parse_args(rest)
         if not opts.stack:
-            print("ciu dev: missing <stack>. Run 'ciu dev --help'.", file=sys.stderr)
+            cli_error("ciu dev: missing <stack>. Run 'ciu dev --help'.")
             raise SystemExit(2)
         repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
         raise SystemExit(run_dev(
@@ -2322,7 +2322,7 @@ def main() -> None:
         # transport verbs.
         import argparse as _ap
         define_root, rest = _extract_define_root(rest)
-        p = _ap.ArgumentParser(add_help=False)
+        p = CiuArgumentParser(add_help=False)
         p.add_argument("host", nargs="?", default=None)
         p.add_argument("--materialize", action="store_true", default=False)
         p.add_argument("--list", action="store_true", default=False)
@@ -2411,7 +2411,7 @@ def main() -> None:
         import argparse as _ap
         from .hosts import get_host
         from .transport_ssh import ssh_exec
-        p = _ap.ArgumentParser(prog="ciu ssh", add_help=False)
+        p = CiuArgumentParser(prog="ciu ssh", add_help=False)
         p.add_argument("host", nargs="?", default=None)
         p.add_argument("--admin", action="store_true", default=False)
         # Split on '--' to separate host/flags from remote command
@@ -2428,12 +2428,16 @@ def main() -> None:
         define_root, ssh_rest = _extract_define_root(ssh_rest)
         opts = p.parse_args(ssh_rest)
         if not opts.host:
-            print("ciu ssh: missing <host>. Run 'ciu ssh --help'.", file=sys.stderr)
+            cli_error("ciu ssh: missing <host>. Run 'ciu ssh --help'.")
             raise SystemExit(2)
         # Resolve repo root (S1.1, CIU-54)
         repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
-        host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
+        try:
+            host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
+        except (OSError, ValueError) as exc:
+            cli_error(f"[ERROR] {exc}")
+            raise SystemExit(2) from exc
         interactive = len(cmd_argv) == 0
         raise SystemExit(ssh_exec(
             host_cfg, cmd_argv,
@@ -2445,11 +2449,13 @@ def main() -> None:
 
     else:
         if verb == "-d" and rest:
+            print(cli_headline(), file=sys.stderr)
             print(
                 f"ciu: '-d' is not a verb. Did you mean: ciu up --dir {rest[0]!r}?",
                 file=sys.stderr,
             )
         else:
+            print(cli_headline(), file=sys.stderr)
             print(f"ciu: unknown verb '{verb}'. Run 'ciu' for usage.", file=sys.stderr)
         raise SystemExit(2)
 

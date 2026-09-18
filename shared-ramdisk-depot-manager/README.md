@@ -219,3 +219,7 @@ The design insists `srdm` ships on its own cadence and that its slices are
 ordinary host units. v1 has **no Wings dependency at all**. Nesting it under
 the patch stack would structurally contradict the claim the whole reshape
 rests on.
+
+### CLI diagnostics
+
+SRDM flag-set help and argument errors begin with `SRDM <version> — shared-ramdisk-depot-manager`. The version is the existing build-time `Version` variable, which release builds may override with linker flags.

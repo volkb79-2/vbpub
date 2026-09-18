@@ -1212,3 +1212,5 @@ says.
   clone with zero installs.
 - NO silent defaults for environment facts (slice names, physical paths):
   DERIVE or READ or FAIL, per AGENTS §4.2a.
+
+Parser help, usage, and argument errors start with `RUN-GATE rev <revision> — per-project gate entrypoint`. Preserve that line in gate diagnostics; the revision is read from the shipped script's `__revision__` value.

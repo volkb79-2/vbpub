@@ -54,6 +54,8 @@ main(argv)                 : the ``ciu migration-check`` verb
 
 from __future__ import annotations
 
+from .cli_utils import CiuArgumentParser
+
 import json
 import sys
 from dataclasses import dataclass
@@ -396,11 +398,9 @@ def main(argv: list[str]) -> int:
     it. The ``ciu check`` STAGE form keeps ``ciu check``'s own aggregation
     instead — see ``deploy._check_migration``.
     """
-    import argparse
-
     from .cli import _resolve_repo_root_deploy
 
-    parser = argparse.ArgumentParser(
+    parser = CiuArgumentParser(
         prog="ciu migration-check", add_help=False, allow_abbrev=False
     )
     parser.add_argument("--define-root", "--root-folder", dest="define_root",

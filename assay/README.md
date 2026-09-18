@@ -897,3 +897,7 @@ you're changing assay itself:
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+All parser help, usage, and argument errors begin with `ASSAY <version> — declared-lane judge`, using the existing metadata-backed `assay.__version__`.

@@ -51,10 +51,11 @@ from topos.record.replay import ReplayDriver, format_frame_summary
 from topos.record.writer import RecordWriter
 from topos.registry import METRIC_GROUPS, parse_metrics_selector
 from topos.snapshot import inspect_bundle
+from topos.cli_diagnostics import ToposArgumentParser, print_cli_error
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos")
+    parser = ToposArgumentParser(prog="topos")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--once", action="store_true", help="collect one frame and exit")
     parser.add_argument("--record", type=Path, default=None, help="record live frames to JSONL or JSONL.zst")
@@ -92,7 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def parse_damon_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos damon")
+    parser = ToposArgumentParser(prog="topos damon")
     subparsers = parser.add_subparsers(dest="command", required=True)
     stop_parser = subparsers.add_parser("stop", help="stop topos-owned DAMON sessions")
     stop_parser.add_argument("--all-mine", action="store_true", help="stop every topos-owned DAMON session")
@@ -111,7 +112,7 @@ def parse_damon_args(argv: list[str]) -> argparse.Namespace:
 
 
 def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos snapshot")
+    parser = ToposArgumentParser(prog="topos snapshot")
     subparsers = parser.add_subparsers(dest="command", required=True)
     inspect_parser = subparsers.add_parser("inspect", help="inspect a topos incident snapshot bundle")
     inspect_parser.add_argument("file", type=Path, help="snapshot .tar or .tar.zst bundle")
@@ -119,7 +120,7 @@ def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
 
 
 def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos daemon")
+    parser = ToposArgumentParser(prog="topos daemon")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve = subparsers.add_parser("serve", help="serve read-only frames over a Unix socket")
     serve.add_argument("--socket", type=Path, required=True, help="Unix socket path")
@@ -207,7 +208,7 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
 
 def parse_mcp_args(argv: list[str]) -> argparse.Namespace:
     """Parse the deliberately small, stdio-only MCP command surface."""
-    parser = argparse.ArgumentParser(prog="topos mcp")
+    parser = ToposArgumentParser(prog="topos mcp")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve = subparsers.add_parser("serve", help="serve read-only daemon data over MCP stdio")
     serve.add_argument(
@@ -233,7 +234,7 @@ def parse_gateway_args(argv: list[str]) -> argparse.Namespace:
     owns authentication; this process only maps its verified identity header to
     a closed sensitivity ceiling.
     """
-    parser = argparse.ArgumentParser(prog="topos gateway")
+    parser = ToposArgumentParser(prog="topos gateway")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve = subparsers.add_parser("serve", help="serve authenticated versioned reads over HTTP")
     serve.add_argument(
@@ -260,7 +261,7 @@ def parse_gateway_args(argv: list[str]) -> argparse.Namespace:
 
 
 def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos bpf")
+    parser = ToposArgumentParser(prog="topos bpf")
     subparsers = parser.add_subparsers(dest="command", required=True)
     gate = subparsers.add_parser("gate", help="run the safe BPF measurement gate")
     gate.add_argument("--proc-root", type=Path, default=Path("/proc"), help="procfs root for the safe baseline probe")
@@ -270,7 +271,7 @@ def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
 
 
 def parse_inspect_files_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos inspect-files")
+    parser = ToposArgumentParser(prog="topos inspect-files")
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan = subparsers.add_parser("plan", help="plan a read-only file/log inspection (no content reads)")
     plan.add_argument("--kind", type=str, required=True, help="inspection kind: docker-json-log, systemd-journal, cgroup-files")
@@ -308,7 +309,7 @@ def _validate_metrics_mode(metrics: str) -> None:
     try:
         parse_metrics_selector(metrics)
     except ValueError as exc:
-        print(f"invalid --metrics: {exc}", file=sys.stderr)
+        print_cli_error(f"invalid --metrics: {exc}")
         raise SystemExit(2) from None
 
 
@@ -426,7 +427,7 @@ def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
     Uses subcommand-free flat arguments (like ``topos --once``), not
     subcommands (unlike ``topos action preview/execute``).
     """
-    parser = argparse.ArgumentParser(prog="topos squeeze")
+    parser = ToposArgumentParser(prog="topos squeeze")
     parser.add_argument("--target", type=str, required=True, help="cgroup path to squeeze")
     parser.add_argument("--admin", action="store_true", help="enable admin mode (required)")
     parser.add_argument("--confirm", type=str, default="", help="type SQUEEZE to confirm the measurement")
@@ -461,11 +462,11 @@ def _main_squeeze(argv: list[str]) -> int:
         floor_bytes = parse_size(args.floor)
         start_bytes = parse_size(args.start) if args.start else None
     except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print_cli_error(f"error: {exc}")
         return 2
 
     if args.delay is not None and args.delay < 1.0:
-        print("error: --delay should be at least 1 second (PSI avg10 window is 10s)", file=sys.stderr)
+        print_cli_error("error: --delay should be at least 1 second (PSI avg10 window is 10s)")
         return 2
 
     log_path = args.log if args.log is not None else _default_squeeze_log_path(args.target)
@@ -532,26 +533,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.headless and args.replay is not None:
-        print("--headless is not supported with --replay", file=sys.stderr)
+        print_cli_error("--headless is not supported with --replay")
         return 2
     if args.headless and args.record is None:
-        print("--headless requires --record FILE", file=sys.stderr)
+        print_cli_error("--headless requires --record FILE")
         return 2
     if args.record is not None and args.replay is not None:
-        print("choose either --record or --replay", file=sys.stderr)
+        print_cli_error("choose either --record or --replay")
         return 2
     if args.headless and args.attach is not None:
-        print("--headless is not supported with --attach", file=sys.stderr)
+        print_cli_error("--headless is not supported with --attach")
         return 2
     if args.duration is not None and args.frames is not None:
-        print("--duration and --frames are mutually exclusive", file=sys.stderr)
+        print_cli_error("--duration and --frames are mutually exclusive")
         return 2
     # Validate --slice early so bad values are rejected before collector work
     if args.slice is not None:
         try:
             _validate_slice_name(args.slice)
         except ValueError as exc:
-            print(f"invalid --slice: {exc}", file=sys.stderr)
+            print_cli_error(f"invalid --slice: {exc}")
             return 2
     # Validate --metrics early (must be 'full', 'compact', or a valid selector list)
     try:
@@ -560,27 +561,27 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.attach is not None:
         if args.replay is not None:
-            print("choose either --attach or --replay", file=sys.stderr)
+            print_cli_error("choose either --attach or --replay")
             return 2
         if args.step or args.speed != 1.0:
-            print("--attach does not accept replay pacing flags", file=sys.stderr)
+            print_cli_error("--attach does not accept replay pacing flags")
             return 2
         if args.cgroup_root is not None:
-            print("--attach does not accept --cgroup-root", file=sys.stderr)
+            print_cli_error("--attach does not accept --cgroup-root")
             return 2
         if args.record is not None:
-            print("--attach does not support --record in this build", file=sys.stderr)
+            print_cli_error("--attach does not support --record in this build")
             return 2
         if args.json and not args.once:
-            print("--json is supported with --attach only when --once is also set", file=sys.stderr)
+            print_cli_error("--json is supported with --attach only when --once is also set")
             return 2
         if args.entities is not None or args.slice is not None or args.metrics != "full" or args.container_selectors is not None:
-            print("--attach does not accept --entities/--slice/--metrics/--container", file=sys.stderr)
+            print_cli_error("--attach does not accept --entities/--slice/--metrics/--container")
             return 2
         try:
             if args.once:
                 if not args.json:
-                    print("topos --attach implements --once --json for canonical daemon frames", file=sys.stderr)
+                    print_cli_error("topos --attach implements --once --json for canonical daemon frames")
                     return 2
                 frame = current_frame(args.attach)
                 _print_frame_json(frame, args.pretty_json)
@@ -604,7 +605,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     if args.replay is not None:
         if args.entities is not None or args.slice is not None or args.metrics != "full" or args.container_selectors is not None:
-            print("--replay does not accept --entities/--slice/--metrics/--container", file=sys.stderr)
+            print_cli_error("--replay does not accept --entities/--slice/--metrics/--container")
             return 2
         driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(
@@ -625,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.record is not None:
         if args.json and not args.once:
-            print("--json is supported with --record only when --once is also set", file=sys.stderr)
+            print_cli_error("--json is supported with --record only when --once is also set")
             return 2
         collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
         try:
@@ -760,7 +761,7 @@ def _main_snapshot(argv: list[str]) -> int:
 
 
 def parse_action_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="topos action")
+    parser = ToposArgumentParser(prog="topos action")
     subparsers = parser.add_subparsers(dest="command", required=True)
     preview = subparsers.add_parser("preview", help="preview an admin action without executing it")
     preview.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
@@ -1026,7 +1027,7 @@ def parse_report_args(argv: list[str]) -> argparse.Namespace:
     for threshold gating (P61), whose exit code (1 on breach) does not depend
     on the chosen presentation.
     """
-    parser = argparse.ArgumentParser(prog="topos report")
+    parser = ToposArgumentParser(prog="topos report")
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to analyze")
     parser.add_argument(
         "--window", type=str, default="all",
@@ -1086,18 +1087,18 @@ def _main_report(argv: list[str]) -> int:
     try:
         stability_cov = float(args.stability_cov)
     except ValueError:
-        print("invalid --stability-cov — must be a finite non-negative number", file=sys.stderr)
+        print_cli_error("invalid --stability-cov — must be a finite non-negative number")
         return 2
     if not math.isfinite(stability_cov) or stability_cov < 0:
-        print("invalid --stability-cov — must be a finite non-negative number", file=sys.stderr)
+        print_cli_error("invalid --stability-cov — must be a finite non-negative number")
         return 2
     try:
         min_frames = int(args.min_frames)
     except ValueError:
-        print("invalid --min-frames — must be a positive integer", file=sys.stderr)
+        print_cli_error("invalid --min-frames — must be a positive integer")
         return 2
     if min_frames <= 0:
-        print("invalid --min-frames — must be a positive integer", file=sys.stderr)
+        print_cli_error("invalid --min-frames — must be a positive integer")
         return 2
 
     # Handle reader errors: corrupt/truncated recordings, missing zstandard,
@@ -1144,7 +1145,7 @@ def _main_report(argv: list[str]) -> int:
             try:
                 assertions.append(parse_assert_spec(spec))
             except ValueError as exc:
-                print(str(exc), file=sys.stderr)
+                print_cli_error(str(exc))
                 return 2
 
     assertion_results: list[AssertionResult] | None = None
@@ -1186,7 +1187,7 @@ def parse_query_args(argv: list[str]) -> argparse.Namespace:
     table by default, or as JSON with ``--json`` (``--json``/``--table`` are
     mutually exclusive; requesting both is a usage error, exit 2).
     """
-    parser = argparse.ArgumentParser(prog="topos query")
+    parser = ToposArgumentParser(prog="topos query")
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to query")
     parser.add_argument(
         "--shape", choices=["current", "raw", "summary"], default="summary",
@@ -1267,7 +1268,7 @@ def _main_query(argv: list[str]) -> int:
     from topos.query.source import RecordingFrameSource
 
     if not args.metrics:
-        print("topos query requires at least one --metric", file=sys.stderr)
+        print_cli_error("topos query requires at least one --metric")
         return 2
 
     caps = Caps(
@@ -1327,7 +1328,7 @@ def parse_compare_args(argv: list[str]) -> argparse.Namespace:
     deterministic per-(key, metric) deltas. Never reads a recording; D-007
     makes this comparison informational, not a release gate.
     """
-    parser = argparse.ArgumentParser(prog="topos compare")
+    parser = ToposArgumentParser(prog="topos compare")
     parser.add_argument(
         "current", type=Path, help="current P88 summary JSON result (topos query --shape summary --json)"
     )
@@ -1387,7 +1388,7 @@ def _main_compare(argv: list[str]) -> int:
             try:
                 rules.append(parse_compare_rule(spec))
             except CompareError as exc:
-                print(str(exc), file=sys.stderr)
+                print_cli_error(str(exc))
                 return 2
 
     assertion_results = evaluate_compare_rules(deltas, rules) if rules else None
@@ -1571,11 +1572,11 @@ def _main_gateway(argv: list[str]) -> int:
     principals: dict[str, str] = {}
     for item in args.principal:
         if item.count(":") != 1:
-            print("--principal must have NAME:CEILING form", file=sys.stderr)
+            print_cli_error("--principal must have NAME:CEILING form")
             return 2
         name, ceiling = item.split(":", 1)
         if name in principals:
-            print("--principal names must be unique", file=sys.stderr)
+            print_cli_error("--principal names must be unique")
             return 2
         principals[name] = ceiling
     try:

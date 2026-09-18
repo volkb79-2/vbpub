@@ -250,6 +250,28 @@ import os
 import sys
 from pathlib import Path
 
+from . import __version__
+
+
+def cli_headline() -> str:
+    return f"NYXLOOM {__version__} — operator CLI"
+
+
+class NyxloomArgumentParser(argparse.ArgumentParser):
+    """Keep every argparse diagnostic tied to the running nyxloom build."""
+
+    def format_help(self) -> str:
+        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{cli_headline()}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        self.exit(2)
+
 
 def _bootstrap_logging() -> None:
     """PACKAGE P05c: every OTHER module this CLI dispatches into
@@ -2839,17 +2861,15 @@ def _print_top_level_help(parser, subparsers, *, file) -> None:
     -- rather than a second hand-maintained string table, so the ONE place
     a verb's one-liner is authored is its own `add_parser(..., help=...)`
     call in _build_parser."""
-    from . import __version__
-
     registered = subparsers.choices  # verb name -> its own subparser
     verb_help = {a.dest: (a.help or "") for a in subparsers._choices_actions}
 
     grouped_verbs = {v for verbs in _VERB_GROUPS.values() for v in verbs}
     ungrouped = sorted(set(registered) - grouped_verbs)
 
-    print(f"nyxloom {__version__}", file=file)
+    print(cli_headline(), file=file)
     print(file=file)
-    print(parser.format_usage().strip(), file=file)
+    print(argparse.ArgumentParser.format_usage(parser).strip(), file=file)
     print(file=file)
     print("Commands (grouped by purpose; alphabetical within each group):", file=file)
 
@@ -2887,7 +2907,7 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     hand-maintaining a second list that can drift from what's actually
     wired up -- see `_VERB_GROUPS` and `_print_top_level_help` below, and
     tests/test_cli_help.py's sync-check tests."""
-    parser = argparse.ArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
+    parser = NyxloomArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
     parser.add_argument("--debug", action="store_true", help="Show tracebacks")
 
     subparsers = parser.add_subparsers(dest="cmd", help="Command")
@@ -3672,6 +3692,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_top_level_help(parser, subparsers, file=sys.stderr)
         return 2
     if kind == "unknown":
+        print(cli_headline(), file=sys.stderr)
         print(f"nyxloom: unrecognized command '{token}'\n", file=sys.stderr)
         _print_top_level_help(parser, subparsers, file=sys.stderr)
         return 2

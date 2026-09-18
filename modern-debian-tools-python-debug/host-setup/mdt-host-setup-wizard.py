@@ -40,6 +40,7 @@
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import importlib.util
 import os
 import re
@@ -2566,7 +2567,7 @@ def explain_install_map() -> None:
 
 
 def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+    parser = MdtArgumentParser(
         prog="mdt-host-setup-wizard.py",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(

@@ -37,6 +37,10 @@ type WorkerArgs struct {
 // WorkerSubcommand is the argv[1] under which srdm runs as a hold worker.
 const WorkerSubcommand = "hold-worker"
 
+func workerHeadline(version string) string {
+	return fmt.Sprintf("SRDM %s — shared-ramdisk-depot-manager", version)
+}
+
 // Argv renders the worker invocation.
 func (a WorkerArgs) Argv() []string {
 	return []string{
@@ -83,8 +87,12 @@ func (a WorkerArgs) validate() error {
 // The return value is the process exit status, and it is the daemon's
 // refusal channel: ExitNoSpace means the class cannot hold its content and
 // the generation is quarantined rather than half-published (D-017).
-func RunWorker(args []string, stderr io.Writer) int {
-	if code := prepare(args, stderr); code != ExitOK {
+func RunWorker(args []string, stderr io.Writer, versions ...string) int {
+	version := "unknown"
+	if len(versions) != 0 {
+		version = versions[0]
+	}
+	if code := prepare(args, stderr, version); code != ExitOK {
 		return code
 	}
 
@@ -108,19 +116,39 @@ func RunWorker(args []string, stderr io.Writer) int {
 // process-level and irreversible — a readiness signal to systemd and a park
 // that never returns — and a unit test that triggered either would be
 // testing the harness rather than the work.
-func prepare(args []string, stderr io.Writer) int {
+func prepare(args []string, stderr io.Writer, versions ...string) int {
+	version := "unknown"
+	if len(versions) != 0 {
+		version = versions[0]
+	}
 	fs := flag.NewFlagSet(WorkerSubcommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	suppressUsage := true
+	fs.Usage = func() {
+		if suppressUsage {
+			return
+		}
+		fmt.Fprintf(stderr, "%s\n\nUsage of %s:\n", workerHeadline(version), fs.Name())
+		fs.PrintDefaults()
+	}
 	var wa WorkerArgs
 	fs.StringVar(&wa.ReleaseDir, "release-dir", "", "store directory of the release")
 	fs.StringVar(&wa.ReleaseID, "release-id", "", "release id")
 	fs.StringVar(&wa.Class, "class", "", "publication class to hold")
 	fs.StringVar(&wa.Target, "target", "", "content root inside the class op tmpfs")
-	if err := fs.Parse(args); err != nil {
+	// ContinueOnError writes its parse error before returning it. Suppress that
+	// write so the worker controls the order: headline, usage, parse error.
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	suppressUsage = false
+	fs.SetOutput(stderr)
+	if err != nil {
+		fs.Usage()
+		fmt.Fprintf(stderr, "%s: %v\n", WorkerSubcommand, err)
 		return ExitUsage
 	}
 	if err := wa.validate(); err != nil {
-		fmt.Fprintf(stderr, "%v\n", err)
+		fmt.Fprintf(stderr, "%s\n%v\n", workerHeadline(version), err)
 		return ExitUsage
 	}
 

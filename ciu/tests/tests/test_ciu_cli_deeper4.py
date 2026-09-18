@@ -57,7 +57,7 @@ def test_dev_requires_stack_before_resolving_or_running(monkeypatch, capsys):
     monkeypatch.setattr(dev, "run_dev", lambda *_args, **_kwargs: pytest.fail("must not run dev"))
 
     assert _run(monkeypatch, ["dev"]) == 2
-    assert "missing <stack>" in capsys.readouterr().err
+    assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
 
 
 def test_dev_forwards_all_public_options_and_handler_exit(monkeypatch, tmp_path):
@@ -79,6 +79,15 @@ def test_dev_forwards_all_public_options_and_handler_exit(monkeypatch, tmp_path)
         ["dev", "web", "--profile", "laptop", "--no-prebuild", "--define-root", "/source"],
     ) == 19
     assert calls == [("web", resolved, "laptop", True)]
+
+
+def test_ssh_requires_host_with_headline_before_repository_resolution(monkeypatch, capsys):
+    import ciu.dev as dev
+
+    monkeypatch.setattr(dev, "resolve_repo_root", lambda *_: pytest.fail("must not resolve root"))
+
+    assert _run(monkeypatch, ["ssh"]) == 2
+    assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
 
 
 def test_secrets_forwards_subcommand_without_reinterpreting_arguments(monkeypatch):

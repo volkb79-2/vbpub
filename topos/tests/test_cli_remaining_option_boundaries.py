@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import topos.cli as cli
+from topos.cli_diagnostics import cli_headline
 from conftest import fixture_frame
 
 
@@ -76,7 +77,7 @@ def test_attach_once_without_json_rejects_before_daemon_read(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.strip() == (
-        "topos --attach implements --once --json for canonical daemon frames"
+        cli_headline() + "\ntopos --attach implements --once --json for canonical daemon frames"
     )
 
 

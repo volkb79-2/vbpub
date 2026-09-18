@@ -582,3 +582,5 @@ both axes.
 the gate's exit code — no trailing wrapper, pipe, or `|| true` can turn a
 failed job green. The verdict JSON is written outside the snapshot (gitignored
 `.assay/`), so evidence survives without dirtying the judged tree.
+
+**Parser identity.** CIU's operational parser families share one dynamic package/generated version source, so copied help or refusal output identifies the installed build without introducing a second version setting.

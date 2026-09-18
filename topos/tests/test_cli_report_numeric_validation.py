@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from topos.cli import _main_report
+from topos.cli_diagnostics import cli_headline
 
 
 @pytest.mark.parametrize(
@@ -34,4 +35,4 @@ def test_report_rejects_nonfinite_negative_and_nonpositive_numeric_options(
     assert _main_report([option, value, str(Path("/synthetic/recording.jsonl"))]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == message + "\n"
+    assert captured.err == cli_headline() + "\n" + message + "\n"

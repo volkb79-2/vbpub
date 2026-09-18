@@ -39,6 +39,8 @@ env_overrides flow into the env dict handed to stacks), no ``eval``.
 
 from __future__ import annotations
 
+from .cli_utils import CiuArgumentParser
+
 import argparse
 import json
 import os
@@ -4773,7 +4775,7 @@ def build_action_sequence(argv: list[str]) -> list[str]:
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Argparse for ``ciu-deploy`` (S10.2). NOTE: --groups is NOT defined (S7.5)."""
-    parser = argparse.ArgumentParser(
+    parser = CiuArgumentParser(
         description=f"CIU-deploy {get_cli_version()}: deployment orchestrator (S7).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""

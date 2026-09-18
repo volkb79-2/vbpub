@@ -130,6 +130,28 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 ROOT_CONFIG_NAME = "run-gate.root.toml"
 SCHEMA_VERSION = 1
+
+
+def cli_headline() -> str:
+    return f"RUN-GATE rev {__revision__} — per-project gate entrypoint"
+
+
+class RunGateArgumentParser(argparse.ArgumentParser):
+    """Give the zero-install parser a dynamic source identity."""
+
+    def format_help(self) -> str:
+        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{cli_headline()}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        self.exit(2)
+
+
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
@@ -8199,7 +8221,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
     inherited = inherited or set()
     table = sorted(lanes.items())
     lines = [
-        f"{PROG} rev {__revision__} — the per-project gate entrypoint",
+        cli_headline(),
         "",
         "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty] [--base REF]"
         " [--fresh]",
@@ -8418,7 +8440,7 @@ def find_project_dir() -> Path | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False, prog=PROG)
+    parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
     parser.add_argument("--list", action="store_true")

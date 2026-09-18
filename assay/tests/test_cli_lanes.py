@@ -19,7 +19,18 @@ from pathlib import Path
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
-from assay.cli import main
+from assay.cli import build_parser, cli_headline, main
+
+
+def test_parser_help_and_errors_start_with_the_dynamic_headline(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["lanes", "--not-an-option"])
+    assert capsys.readouterr().err.splitlines()[0] == cli_headline()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--help"])
+    assert capsys.readouterr().out.splitlines()[0] == cli_headline()
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:

@@ -8,6 +8,7 @@ the requested subset for the current install mode ("root", "user", or "venv").
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import os
 import platform
 import shlex
@@ -324,7 +325,7 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Install optional AI CLI tools")
+    parser = MdtArgumentParser(description="Install optional AI CLI tools")
     parser.add_argument("mode", choices=("root", "user", "venv"))
     args = parser.parse_args(argv)
 

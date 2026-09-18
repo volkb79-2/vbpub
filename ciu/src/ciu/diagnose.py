@@ -8,6 +8,8 @@ import subprocess
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .cli_utils import cli_error
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -90,7 +92,7 @@ def run(*, project: str | None, log_lines: int, json_output: bool) -> int:
     try:
         findings = collect(project=project, log_lines=log_lines)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        print(f"[ERROR] diagnose failed: {exc}")
+        cli_error(f"[ERROR] diagnose failed: {exc}")
         return 2
     if json_output:
         print(json.dumps([asdict(item) for item in findings], indent=2))

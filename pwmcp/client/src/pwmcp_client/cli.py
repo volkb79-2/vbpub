@@ -4,11 +4,12 @@ import argparse
 import json
 
 from .contract import load_contract
+from .diagnostics import PwmcpArgumentParser
 from .session import verify_installed_playwright
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="pwmcp")
+    parser = PwmcpArgumentParser(prog="pwmcp")
     parser.add_argument("command", choices=["doctor", "contract"])
     parser.add_argument("--contract", default="http://pwmcp:3000/contract")
     args = parser.parse_args()

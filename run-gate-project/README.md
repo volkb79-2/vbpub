@@ -336,3 +336,5 @@ carved after the dstdns config-cutover.)
   prose this tool turns into tested code (the section gains a pointer here
   when the tool ships, and per-project AGENTS.md name `run-gate.py` as the
   canonical starting point IN the adoption carve, never before).
+
+The standalone parser's help, usage, and argument errors begin with `RUN-GATE rev <revision> — per-project gate entrypoint`. The revision is the script's existing `__revision__` source, so a zero-install checkout can identify the exact launcher without importing another project.
