@@ -200,3 +200,7 @@ list no longer lists it as a non-goal because it shipped (P48).
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### CLI diagnostics
+
+Parser help, usage, and argument errors begin with `NYXLOOM <version> — operator CLI`. The version is the existing metadata-backed `nyxloom.__version__`.

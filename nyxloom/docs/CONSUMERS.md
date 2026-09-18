@@ -187,3 +187,5 @@ Set `carved_handoff` in the entry's frontmatter (or let your carve flow do
 it); when that handoff merges, the merge auto-tick sets `status=merged` +
 `merge_commit`. A `carved` status with a `carved_handoff` link is all the
 auto-tick needs.
+
+When recording CLI diagnostics, preserve the first line: `NYXLOOM <version> — operator CLI`, using the package metadata version exposed by `nyxloom.__version__`.
