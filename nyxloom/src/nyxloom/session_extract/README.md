@@ -413,6 +413,14 @@ ID lookup checks that active/default home, the default home, and sibling
 `~/.codex*` profiles. If the same UUID exists in more than one home, lookup
 fails with every path so the operator can pass the intended rollout file.
 
+Codex rollout identity is UUIDv7: the timestamp and randomized material make
+independent collisions extremely unlikely, but the homes are not a shared
+reservation namespace. The ID is repeated in the rollout filename and first
+`session_meta` record (`payload.id` and `payload.session_id`). Codex opens an
+existing new-rollout path with append/create semantics rather than retrying
+with another ID, so a live shared `sessions` symlink can merge streams. This
+adapter therefore treats duplicate paths as ambiguity and never guesses.
+
 Claude Code project directories are keyed by an escaped cwd
 (`/workspaces/vbpub` → `-workspaces-vbpub`, `.` and `/` both becoming `-`),
 so the directory matching the **current** cwd is searched first. That priority

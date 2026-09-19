@@ -1,6 +1,29 @@
 """OpenAI Codex CLI adapter -- $CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl
 (default ``~/.codex/sessions``).
 
+**Session storage and identity (source-level verification, Codex CLI 0.154.0,
+matching upstream ``rust-v0.154.0``):** ``CODEX_HOME`` is the state root, not
+an ID namespace. A normal new thread calls ``ThreadId::new()``, which calls
+``Uuid::now_v7()``; ``SessionId::new()`` uses the same UUIDv7 generator, and
+the ordinary rollout recorder derives ``session_id`` from the thread ID. The
+rollout filename is ``rollout-<local-second>-<thread-id>.jsonl`` and the first
+``session_meta`` record repeats the identity as both ``payload.id`` and
+``payload.session_id``. UUIDv7 combines a millisecond timestamp with random
+material from the OS; the uuid crate adds a process-local monotonic counter,
+reseeded with randomness per millisecond. There is no cross-home reservation
+or collision registry, so an independent cross-process collision is
+astronomically unlikely but not a filesystem guarantee.
+
+The writer's new-rollout path does not check for an existing filename. Its
+``OpenOptions`` uses ``append(true).create(true)``: if a path already exists,
+Codex appends to that JSONL file and does not generate a replacement ID. A
+shared live ``sessions`` directory can therefore combine two sessions into
+one stream; separate ``CODEX_HOME`` profiles also have separate writer-lock
+directories. Renaming a rollout file alone is not an ID migration because
+the embedded metadata and state/index references retain the original ID.
+This is why ``locate.py`` treats every matching ``~/.codex*`` rollout as a
+candidate and refuses a bare UUID when more than one path exists.
+
 Schema facts verified directly against 400+ real local rollout files
 spanning cli_version 0.142.2 through 0.151.0 (this machine has genuine
 Codex CLI history going back months -- not guessed from documentation).

@@ -2668,6 +2668,32 @@ Therefore a UUID present in both `~/.codex` and `~/.codex2` is ambiguous and
 must be disambiguated with the full rollout path. `CODEX_HOME` identifies the
 home to inspect; it does not weaken the exactly-one-match rule.
 
+**Codex identity/storage evidence (source inspection, 2026-09-18).** In the
+installed Codex CLI 0.154.0 (`rust-v0.154.0`), a normal thread ID is
+`Uuid::now_v7()`: UUIDv7 contains the current millisecond timestamp, OS-random
+material, and a process-local monotonic counter. The ordinary rollout recorder
+derives its `session_id` from that thread ID, writes the same value as
+`session_meta.payload.id` and `payload.session_id`, and puts the thread ID in
+`rollout-<local-second>-<id>.jsonl`. This makes independent cross-process
+collisions extraordinarily unlikely, but does not create a global uniqueness
+lock across homes.
+
+The source also makes the collision consequence load-bearing: new-rollout
+opening uses `append(true).create(true)` and has no existence-check/retry loop.
+An already existing path is appended to, so two live profiles sharing a
+`sessions` directory can produce one mixed JSONL stream. Their per-home writer
+locks do not coordinate. A filename rename alone cannot change the embedded
+identity or the state/index references, so it is not a supported way to
+repair or migrate an ID.
+
+For a live process, inspect the Codex process's command line for
+`codex resume <SESSION_ID>` and its `CODEX_HOME`, but treat that argument as
+the launch/resume target only: an interactive process can later switch to a
+new thread. The currently active identity is corroborated by the rollout path
+held by `/proc/<pid>/fd` and that file's first `session_meta` `id`/`session_id`.
+Do not infer the ID from “newest file” when subagents or multiple profiles are
+active. This is an operational diagnostic, not a new resolver fallback.
+
 **Decision: keep reading and copying as opposite render modes.**
 `--render-markdown` uses Rich per prose block, leaving nyxloom's separators,
 gap notes, stop notes, and machine-readable marker footer untouched. It is for
