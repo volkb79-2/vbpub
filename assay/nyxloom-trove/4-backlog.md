@@ -9,6 +9,7 @@ items:
   - {id: B096, title: "P7 S6: derive --rejudge-outcome help from MUTATION_BUCKETS", type: bug, component: cli, context_estimate: small}
   - {id: B097, title: "P7 B6-b: stamp process identity and parse xdist liveness events per process", type: bug, component: liveness, context_estimate: medium}
   - {id: B098, title: "P7 N3: include crashed in mutation_pct excluded-bucket enumeration", type: bug, component: mutation, context_estimate: small}
+  - {id: B100, title: "bounded operator report for live gate progress, verdicts, errors, and retained evidence", type: feature, component: evidence, context_estimate: medium}
   - {id: B089, title: "istanbul branch-arc self-contradiction on some .tsx files: a coverage record's arc list names a branch on a line the same record does not classify as executed or missing. Observed live (dstdns ui_unit lane, 2026-09-12) on ChartCard.tsx:34, DataTable.tsx:33-35, StatCard.tsx:17, StatTile.tsx:28 -- assay's own self-consistency check catches it and drops the offending arcs rather than misreport (non-blocking, lane still PASSes), but the root cause in the istanbul producer (B038/B045's parser) that emits an inconsistent record for these specific files is unexamined.", type: bug, component: parsers, context_estimate: small}
   - {id: B001, title: "SQL/DDL source-mutation adapter. IMPLEMENTED and RELEASED (wave 3, assay-v2.1.0): judge.language = \"sql\" at R2 only, seven sql:* operators on a stdlib-only two-level DDL lexer, equivalence_artifact REQUIRED, qualified against real PostgreSQL 18.4 at a pinned dstdns revision. No verdict-schema change.", type: feature, component: adapters, context_estimate: medium, folds_into: F013}
   - {id: B002, title: "Adopt cmru for assay's release process. COMPLETE: implemented 2026-08-11 (A-249/A-250), and the last open step -- the first real release -- is discharged by two cmru-cut releases, assay-v2.0.0 and assay-v2.1.0. cmru now owns snapshot/gate/tag/build/publish and generates the dated CHANGES.md entry. Five findings from the 2.1.0 run are filed as cmru KI-12..KI-16.", type: feature, component: distribution, context_estimate: medium, folds_into: F014}
@@ -9715,3 +9716,72 @@ corrupt record, and cover valid replay/cache-miss behavior separately.
 obsolete trusted-site exemption is removed. The derived JSON-parse audit
 also pins this guarded site by name, retaining both the stale-exemption
 refusal and protection against silent guard removal.
+
+## B100 — bounded operator report for live gate progress, verdicts, errors, and retained evidence
+
+**Proposed by:** estate release review, 2026-09-19. **Status: OPEN; backlog
+only.** Assay already has separate `analyze progress` and `analyze verdict`
+commands, but a long gate's wrapper output can exceed the controller's retained
+terminal buffer. Operators and AI/tool-call consumers need one deterministic
+snapshot command that selects the useful facts without scraping a terminal.
+
+### Proposed interface
+
+Add a read-only command such as:
+
+```text
+assay analyze report \
+  --expected-commit <SHA> \
+  --verdict <lane>=<path>... \
+  --progress <lane>=<path>... \
+  --log <lane>=<path>... \
+  [--format text|json] [--max-errors N]
+```
+
+The exact spelling can follow the shipped CLI's established option style, but
+the contract should remain explicit and tool-call friendly:
+
+- `--expected-commit` is required and every supplied verdict/receipt is
+  checked against it; an absent, unreadable, malformed, or mismatched artifact
+  returns an evidence error rather than a guessed status;
+- input paths are explicit and repeatable, with no parent search, network
+  access, or implicit current-directory selection;
+- JSON is stable machine output with one object per lane and fields for
+  `status` (`running`, `pass`, `fail`, or `evidence_error`), expected/actual
+  commit, exit code, reason code, latest phase/event, bounded error records,
+  progress counts when present, and paths to the full log, verdict, progress,
+  and evidence artifacts;
+- text starts with one compact status line per lane, then a short bounded
+  detail block. It never dumps a complete log by default. `--max-errors` (with
+  a small validated upper bound) selects error records; a separate explicit
+  path or full-detail operation can retrieve complete detail;
+- a live progress file may produce `running` when no terminal verdict exists,
+  but the command takes one snapshot and exits. It does not poll, sleep, or
+  convert a stale heartbeat into a pass;
+- process exit status remains machine meaningful: zero only when every
+  selected lane has a valid passing verdict, a distinct nonzero result for a
+  valid failing lane, and an evidence/refusal result when the report cannot
+  establish the requested facts;
+- reports expose the next evidence lookup as a path and lane identity, never
+  fabricate a repair command or interpret arbitrary child output as a verdict.
+
+### AI and tool-call design constraints
+
+The output should be safe to request after any gate invocation and cheap to
+parse from a tool result. Keep the summary bounded, deterministic, and
+commit-bound; include the full-artifact paths and hashes needed for a follow-up
+call; and preserve the distinction between a running job, a failed job, and
+missing evidence. A controller can then call `assay analyze report` once after
+a long command returns, select a single lane's full log only when needed, and
+avoid repeating a one-minute polling loop. The report is an evidence index,
+not a replacement for the structured verdict or for the gate's own exit code.
+
+### Oracles before implementation
+
+The acceptance slice must construct: a passing verdict, a failing verdict, a
+running progress stream with a partial final line, a stale/no-terminal stream,
+a missing path, malformed JSON, a commit mismatch, multiple lanes, bounded
+error selection, and a log whose content exceeds the report limit. Each case
+must assert both JSON and text shape plus the process exit code. The suite must
+prove that no report status is derived from the mere existence of a path or
+from a child log line, and that a report never writes into the judged tree.
