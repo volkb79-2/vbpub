@@ -550,3 +550,29 @@ def test_retention_reports_original_move_error_when_parent_cleanup_fails(tmp_pat
                     root, workspace, {"demo": project}, {"demo": "demo-v1"},
                     retain_logs=False, retain_artifacts=False,
                 )
+
+
+def test_retention_preserves_an_existing_evidence_parent_on_move_failure(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    child.mkdir(parents=True)
+    (child / "report.json").write_text("report\n", encoding="utf-8")
+    evidence_parent = root / "demo" / "evidence" / "cmru-release"
+    evidence_parent.mkdir(parents=True)
+    project = SimpleNamespace(
+        project_root=root / "demo", artifact_dirs=(), evidence_paths=("report.json",)
+    )
+
+    def fail_move(source, target):
+        if Path(source).parent == child:
+            raise OSError("simulated move failure")
+        return transaction.shutil.move(source, target)
+
+    with patch.object(transaction.shutil, "move", side_effect=fail_move):
+        with pytest.raises(OSError, match="simulated move failure"):
+            transaction.retain_success_outputs(
+                root, workspace, {"demo": project}, {"demo": "demo-v1"},
+                retain_logs=False, retain_artifacts=False,
+            )
+    assert evidence_parent.is_dir()
