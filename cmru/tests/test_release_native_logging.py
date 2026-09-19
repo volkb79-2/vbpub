@@ -26,5 +26,15 @@ def test_native_release_log_overwrites_then_appends_with_divider(tmp_path, monke
     assert nested.read_text(encoding="utf-8") == "\n---\n"
 
 
+def test_native_release_logging_reuses_an_existing_log_directory(tmp_path, monkeypatch):
+    parent = tmp_path / "existing-parent"
+    parent.mkdir()
+    monkeypatch.setenv("CMRU_RELEASE_LOG", str(parent / "cmru.log"))
+
+    assert cli._prepare_native_release_log(tmp_path, append=False) == (
+        parent / "cmru.log"
+    ).resolve()
+
+
 def test_shell_release_wrapper_is_retired():
     assert not (Path(__file__).resolve().parents[2] / "cmru.release.sh").exists()

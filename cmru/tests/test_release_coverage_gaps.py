@@ -269,6 +269,20 @@ def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatc
     assert cli.main() is None
     assert calls and calls[0][1] == {"append": False}
 
+    calls.clear()
+    assert cli.main(["status", "demo"]) is None
+    assert calls == []
+
+
+def test_project_loader_requires_both_repository_fact_tables(monkeypatch, tmp_path):
+    github = SimpleNamespace(owner="owner", repo="repo", owner_type="user")
+    project = SimpleNamespace(name="demo")
+    monkeypatch.setattr(config, "_parse_project_document", lambda *_args: (project, github, None))
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *_args: (None, {}))
+
+    with pytest.raises(AssertionError):
+        config._load_project_config(tmp_path / "cmru.toml")
+
 
 def test_cli_changelog_backfill_rejects_bad_assignments(monkeypatch, tmp_path, capsys):
     projects = {
