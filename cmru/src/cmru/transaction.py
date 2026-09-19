@@ -526,12 +526,7 @@ def _declared_evidence_path(name: str, raw_path: object) -> Path:
     if not isinstance(raw_path, str) or not raw_path:
         raise RuntimeError(f"{name}: evidence_paths must contain non-empty strings")
     relative = Path(raw_path)
-    if (
-        relative.is_absolute()
-        or ".." in relative.parts
-        or not relative.parts
-        or relative.name in ("", ".")
-    ):
+    if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
         raise RuntimeError(
             f"{name}: evidence path must be project-relative and may not contain '..' or '.'"
         )

@@ -5,8 +5,11 @@ import pytest
 from cmru import cli, transaction
 
 
-def _dispatch_fixture(monkeypatch, tmp_path, retained):
-    project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
+def _dispatch_fixture(monkeypatch, tmp_path, retained, *, evidence_paths=()):
+    project = cli.ProjectConfig(
+        "demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v",
+        github_token="token", evidence_paths=evidence_paths,
+    )
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
         cli.CleanupConfig([], [], [], []), cli.GitHubConfig("o", "r", "token", "user"),
@@ -73,6 +76,26 @@ def test_resumed_release_existing_discard_flags_skip_undeclared_evidence_retenti
     assert exc.value.code == 0
     assert seen == []
     assert "Retained release output:" not in capsys.readouterr().out
+
+
+def test_resumed_release_discarding_logs_and_artifacts_still_retains_declared_evidence(
+    monkeypatch, tmp_path, capsys,
+):
+    retained = [tmp_path / "demo" / "evidence" / "cmru-release" / "demo-v1"]
+    workspace, seen = _dispatch_fixture(
+        monkeypatch, tmp_path, retained, evidence_paths=("coverage.json",),
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--resume", str(workspace.path),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--config", str(tmp_path / "cmru.toml"),
+        ])
+    assert exc.value.code == 0
+    assert seen[0][1] == {
+        "retain_logs": False, "retain_artifacts": False, "retain_evidence": True,
+    }
+    assert f"Retained release output: {retained[0]}" in capsys.readouterr().out
 
 
 def test_resumed_release_discard_evidence_flag_is_independent(monkeypatch, tmp_path, capsys):

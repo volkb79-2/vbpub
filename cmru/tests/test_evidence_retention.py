@@ -79,6 +79,14 @@ def test_config_loads_evidence_paths_against_project_root_and_rejects_unsafe_pat
     loaded = config.load_forge_config(path)
     assert loaded.projects["demo"].evidence_paths == ["coverage.json", ".assay"]
 
+    path.write_text(
+        project_document().replace('"coverage.json", ".assay"', '"."'),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        config.load_forge_config(path)
+    assert "evidence_paths" in capsys.readouterr().err
+
     path.write_text(project_document().replace('"coverage.json", ".assay"', '"../coverage.json"'), encoding="utf-8")
     with pytest.raises(SystemExit):
         config.load_forge_config(path)
@@ -99,6 +107,28 @@ def test_config_loads_evidence_paths_against_project_root_and_rejects_unsafe_pat
         project_document().replace(
             '"coverage.json", ".assay"', '"coverage.json", "coverage.json/nested"',
         ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        config.load_forge_config(path)
+    assert "overlapping" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "declared_paths",
+    [
+        '"coverage.json", "coverage.json"',
+        '"coverage.json/nested", "coverage.json"',
+    ],
+)
+def test_config_rejects_duplicate_and_reverse_overlapping_paths(
+    tmp_path, capsys, declared_paths,
+):
+    project_root = tmp_path / "projects" / "demo"
+    project_root.mkdir(parents=True)
+    path = project_root / "cmru.toml"
+    path.write_text(
+        project_document().replace('"coverage.json", ".assay"', declared_paths),
         encoding="utf-8",
     )
     with pytest.raises(SystemExit):
@@ -144,6 +174,8 @@ def test_release_retains_files_and_directories_with_commit_hash_manifest(tmp_pat
         b'{"percent": 100}\n'
     ).hexdigest()
     assert files[".assay/verdict-demo.json"]["bytes"] == str(len(b'{"status":"passed"}\n'))
+    manifest_text = (evidence_root / "evidence.json").read_text(encoding="utf-8")
+    assert manifest_text.splitlines()[1].strip().startswith('"immutable_id"')
     assert not (child / "coverage.json").exists()
     assert not (child / ".assay").exists()
     transaction.remove_workspace(workspace)
@@ -273,6 +305,33 @@ def test_evidence_move_failure_rolls_back_sources_and_destination(tmp_path):
     assert (child / "one.json").is_file()
     assert (child / "two.json").is_file()
     assert not (root / "demo" / "evidence").exists()
+
+
+def test_evidence_retention_allows_multiple_files_in_one_nested_directory(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(
+        root, base=git(root, "rev-parse", "HEAD"), purpose="release",
+    )
+    child = workspace.path / "demo"
+    (child / "reports").mkdir(parents=True)
+    (child / "reports" / "one.json").write_text("one\n", encoding="utf-8")
+    (child / "reports" / "two.json").write_text("two\n", encoding="utf-8")
+    project = SimpleNamespace(
+        project_root=root / "demo", artifact_dirs=(),
+        evidence_paths=("reports/one.json", "reports/two.json"),
+    )
+
+    try:
+        retained = transaction.retain_success_outputs(
+            root, workspace, {"demo": project}, {"demo": "demo-v1"},
+            retain_logs=False, retain_artifacts=False,
+        )
+        evidence_root = root / "demo" / "evidence" / "cmru-release" / "demo-v1"
+        assert retained == [evidence_root]
+        assert (evidence_root / "reports/one.json").is_file()
+        assert (evidence_root / "reports/two.json").is_file()
+    finally:
+        transaction.remove_workspace(workspace)
 
 
 def test_discard_evidence_opt_out_leaves_generated_paths_in_worktree(tmp_path):
@@ -576,3 +635,33 @@ def test_retention_preserves_an_existing_evidence_parent_on_move_failure(tmp_pat
                 retain_logs=False, retain_artifacts=False,
             )
     assert evidence_parent.is_dir()
+
+
+def test_retention_does_not_remove_existing_evidence_root_when_evidence_is_discarded(
+    tmp_path,
+):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log\n", encoding="utf-8")
+    evidence_root = root / "demo" / "evidence" / "cmru-release" / "old"
+    evidence_root.mkdir(parents=True)
+    marker = evidence_root / "keep.txt"
+    marker.write_text("keep\n", encoding="utf-8")
+    project = SimpleNamespace(
+        project_root=root / "demo", artifact_dirs=(), evidence_paths=("report.json",),
+    )
+
+    def fail_move(source, target):
+        if Path(source) == child / "logs":
+            raise OSError("simulated log move failure")
+        return transaction.shutil.move(source, target)
+
+    with patch.object(transaction.shutil, "move", side_effect=fail_move):
+        with pytest.raises(OSError, match="simulated log move failure"):
+            transaction.retain_success_outputs(
+                root, workspace, {"demo": project}, {"demo": "old"},
+                retain_logs=True, retain_artifacts=False, retain_evidence=False,
+            )
+    assert marker.read_text(encoding="utf-8") == "keep\n"
