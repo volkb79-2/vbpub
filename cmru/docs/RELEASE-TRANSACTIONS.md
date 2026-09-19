@@ -149,7 +149,7 @@ same commit requires explicit deletion of the existing output record with
 ## Transaction order
 
 Every changed project releases **one after another** — its own prepare, gate,
-promote, tag, build, and publish all finish before the next project's cycle
+tag, build, publish, and promote all finish before the next project's cycle
 begins. This is what lets a later project resolve an earlier project's
 brand-new release within the *same* `cmru release` run (an OCI image project
 like `modern-debian-tools-python-debug` picking up a wheel project's
@@ -163,10 +163,11 @@ caller checkout
 cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8> worktree, one project at a time (project_order, changed only):
     ┌─────────────────────────────────────────────────────────────────────┐
     │  optional prepare → generate CHANGES.md → commit declared outputs  │
-    │  required tester-unified gate                                      │
-    │  fast-forward origin/main to current HEAD (or fail on a concurrent  │
-    │    remote update)                                                  │
+    │  required tester-unified gate (again if versioning adds a commit)  │
+    │  refresh durable candidate branch                                  │
     │  explicit tag (if versioned) → build → publish/push                │
+    │  fast-forward origin/main from this exact candidate (or fail closed │
+    │    on a concurrent remote update)                                  │
     │  checkpoint: record this project's HEAD as the last full success   │
     └─────────────────────────────────────────────────────────────────────┘
     → repeat for the next project, or stop and report on failure
@@ -176,49 +177,31 @@ source commit
 ```
 
 There is no in-place release mode. A local lock prevents two releases on one
-clone; each project's fast-forward push protects that slice of the source
-integration from a concurrent remote update. Publication for a project cannot
-begin until its own promotion has landed.
+clone; each project's final fast-forward push integrates the exact source commit
+that produced its public artifact. The durable candidate branch is refreshed
+before publication and retained if the final promotion fails. Publication for a
+project therefore does not silently turn into a different source commit through
+an automatic rebase.
 
-### Failure and revert
+### Failure and retained candidate
 
 If project *N* fails, cmru stops — it does not attempt project *N+1* onward.
-What gets reverted on `origin/main` depends on how far project *N* got:
-
-- **Before its own promote** (its prepare step failed, or its gate failed):
-  nothing new was pushed for it, so there is nothing to revert. Every earlier
-  project's release stands untouched.
-- **After its own promote, but before publish finished** (tag/build/push
-  failed): cmru pushes a revert commit on `origin/main` that undoes *only*
-  project *N*'s promoted commit — never an earlier project's. This is tracked
-  via a small checkpoint file, written after each project's complete success
-  and read back by the failure handler instead of the transaction's original
-  starting point. The checkpoint is seeded to *this run's own* starting point
-  before the loop begins, so a `--resume` (which reuses the same branch/token
-  as the attempt it's continuing) never reads a stale checkpoint left over
-  from an earlier, different attempt on that same token.
-- **The very first project in the run fails before its own promote**: nothing
-  in the whole transaction was ever pushed, so this degrades to the classic
-  "abort, nothing published" case — there's still nothing to revert, and the
-  worktree is retained exactly as before this feature existed.
-
-Note the checkpoint tracks *source-tree commits only* — a project with no
-`prepare` step (most wheel projects, e.g. ciu/nyxloom below) commits nothing
-of its own, so the checkpoint can still equal the run's starting point even
-after that project's tag and published artifact are real and live; those are
-never touched by any of this regardless, since tags/GitHub Releases/ghcr
-pushes aren't reverted by a source-tree `git revert`. cmru always reports
-"attempting automatic revert" and then whether anything actually needed
-reverting — it does not try to guess from the checkpoint alone whether an
-earlier project in the same run succeeded (tags/artifacts are the source of
-truth for that, not the checkpoint).
+The failed project's candidate is never promoted: promotion is the final step,
+after its tag/build/publish work. `origin/main` therefore remains at the last
+fully completed project, while the candidate branch and worktree retain the exact
+source SHA, logs, and any generated release output. cmru does not push a source
+revert commit and does not rebase the candidate after publication. If an artifact
+was already published when a concurrent remote update rejected promotion, the
+artifact and candidate branch are retained as an explicit post-publication state
+for operator resolution; the release engine does not claim that source history
+can undo an external publication.
 
 In every case the worktree/branch is retained for inspection and `--resume`.
 Starting a fresh release after an explicit `--abandon all-previous` is also safe:
 `detect_changed_projects` is tag-based, so any project that already fully
 released in the failed attempt shows as unchanged on the next run and is
-skipped — only the failed project (now reverted) and anything after it in
-`project_order` are attempted again.
+skipped — the retained candidate must be handled explicitly before a new
+publication attempt.
 
 ### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
 
@@ -237,18 +220,18 @@ Suppose only these three have real changes this run (`project_order` puts
 
 === ciu: releasing ===
 [INFO] ciu: running required release gate
-[INFO] ciu: promoted to origin/main            # origin/main → <sha A> (no prepare step; nothing new to commit)
 [INFO] ciu: ciu-v4.8.1 → ciu-v4.9.0 (minor)
 [INFO] Tagged: ciu-v4.9.0
 [INFO] Pushing tags to origin: ciu-v4.9.0
 [INFO] Building + publishing ciu (ciu-v4.9.0)   # wheel built + GitHub Release ciu-v4.9.0 published
+[INFO] ciu: promoted release candidate to origin/main  # exact <sha A>
 
 === nyxloom: releasing ===
 [INFO] nyxloom: running required release gate
-[INFO] nyxloom: promoted to origin/main         # origin/main → <sha B>
 [INFO] nyxloom: nyxloom-v0.1.0 → nyxloom-v0.2.0 (minor)
 [INFO] Tagged: nyxloom-v0.2.0
 [INFO] Building + publishing nyxloom (nyxloom-v0.2.0)   # wheel + 2 OCI images published
+[INFO] nyxloom: promoted release candidate to origin/main  # exact <sha B>
 
 === modern-debian-tools-python-debug: releasing ===
 [INFO] modern-debian-tools-python-debug: preparing release inputs   # build-push.py --build:
@@ -256,8 +239,8 @@ Suppose only these three have real changes this run (`project_order` puts
                                                                      #   LIVE — they're already published
 [INFO] modern-debian-tools-python-debug: committed prepared release inputs   # package-manifests-versioned/ diff
 [INFO] modern-debian-tools-python-debug: running required release gate
-[INFO] modern-debian-tools-python-debug: promoted to origin/main   # origin/main → <sha C> (includes the manifest commit)
 [INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)   # image pushed to ghcr
+[INFO] modern-debian-tools-python-debug: promoted release candidate to origin/main  # exact <sha C>
 
 [INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), modern-debian-tools-python-debug (image)
 ```
@@ -265,12 +248,12 @@ Suppose only these three have real changes this run (`project_order` puts
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
 real GitHub Releases with wheels attached; the mdt image on ghcr was built
 against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`
-branch/worktree and its origin backup are removed; your local `main` is synced to `<sha C>`.
+branch/worktree and its origin candidate branch are removed; your local `main` is synced to `<sha C>`.
 That removal is real here because this run actually pushed the backup once at least one
 project changed; a run that never pushes one (a dry run, "nothing to release", or a refused
 plan) has nothing to remove and prints nothing about it either (SPEC S-CLI.5d).
 
-**Partial failure — before that project's own promote (nothing to revert)**
+**Partial failure — before that project's own promotion**
 
 nyxloom's gate fails. ciu already fully succeeded (checkpoint at `<sha A>`);
 nyxloom's gate runs *before* its promote, so nothing new was ever pushed for
@@ -280,51 +263,42 @@ it:
 === nyxloom: releasing ===
 [INFO] nyxloom: running required release gate
 [ERROR] ... test failure ...
-[ERROR] Release failed after origin/main was already promoted; attempting
-        automatic revert of the in-flight project's changes...
-[INFO] Nothing to revert on origin/main — the in-flight project never got as
-       far as its own promotion.
+[ERROR] Release candidate was not promoted; origin/main was left at the last
+        fully completed project. The durable candidate branch was retained.
 ```
 
 `origin/main` is still exactly at ciu's checkpoint (nyxloom's gate ran
-*before* its own promote, so nothing new was ever pushed for it) — there was
+before its own promotion, so nothing new was integrated for it). There is
 nothing to revert. `ciu-v4.9.0` stands. mdt is never attempted. Fix nyxloom's
 test, then re-run: ciu shows unchanged (already tagged) and is skipped;
 nyxloom and mdt are attempted again.
 
-**Partial failure — after that project's own promote (scoped revert)**
+**Publication succeeds but final promotion loses a race**
 
-mdt's `prepare` succeeds and promotes its manifest commit to `origin/main`,
-but its subsequent `push` (uploading the image to ghcr) fails:
+mdt's `prepare` succeeds, its image is built and pushed, but the final candidate
+promotion loses a concurrent fast-forward race:
 
 ```
 === modern-debian-tools-python-debug: releasing ===
 [INFO] modern-debian-tools-python-debug: committed prepared release inputs
-[INFO] modern-debian-tools-python-debug: promoted to origin/main   # origin/main → <sha C>
 [INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)
-[ERROR] ... ghcr push failed ...
-[ERROR] Release failed after origin/main was already promoted; attempting
-        automatic revert of the in-flight project's changes...
-[INFO] origin/main reverted to its last-known-good state.
+[INFO] ... ghcr push succeeded ...
+[ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
 [ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-a3ae580d on branch
         cmru-release-20260818_195012-all-a3ae580d for inspection/resume.
 ```
 
-`origin/main` is now a *new* revert commit on top of `<sha B>` (nyxloom's
-checkpoint) that undoes mdt's manifest commit — `ciu-v4.9.0` and
-`nyxloom-v0.2.0` are completely untouched, still published. The worktree
-itself still has mdt's un-reverted manifest commit on its own branch (the
-revert only added a commit to `origin/main`, it never rewrites history), so
-`--resume` can pick up the investigation. Re-running fresh instead: ciu and
-nyxloom show unchanged and are skipped; mdt is attempted again from scratch.
+`origin/main` remains at `<sha B>` (nyxloom's completed commit); `ciu-v4.9.0`
+and `nyxloom-v0.2.0` are untouched, and the mdt candidate remains on the durable
+branch at `<sha C>`. The artifact is intentionally retained for operator
+resolution. Re-running fresh: ciu and nyxloom show unchanged and are skipped;
+mdt is attempted again from a new snapshot after the retained state is handled.
 
-**Full abort — the first project fails before promoting**
+**Full abort — the first project fails before promotion**
 
-If ciu's own gate had failed instead (the very first project in the run,
-before anything was ever promoted), this degrades to the original all-or-
-nothing case: `origin/main` never moved, `promotion_landed` reports false, no
-revert is attempted (there is nothing to revert), and the worktree is
-retained for inspection exactly as it always was.
+If ciu's own gate had failed instead, `origin/main` never moved and the durable
+candidate branch contains the prepared candidate for inspection. No revert is
+needed because no failed candidate was promoted.
 
 ## Project author contract
 

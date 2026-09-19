@@ -14,14 +14,7 @@ def _loaded(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    ("result", "message"),
-    [
-        (transaction.RevertResult(ok=True, reverted=False), "Nothing to revert on origin/main"),
-        (transaction.RevertResult(ok=False, reverted=False), "Automatic revert did not apply cleanly"),
-    ],
-)
-def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, capsys, result, message):
+def test_release_failure_retains_candidate_without_automatic_revert(monkeypatch, tmp_path, capsys):
     config = _loaded(tmp_path)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
@@ -35,9 +28,9 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)
     monkeypatch.setattr(cli.transaction, "plan_was_refused", lambda *args: False)
-    monkeypatch.setattr(cli.transaction, "promotion_landed", lambda *args: True)
-    monkeypatch.setattr(cli.transaction, "read_release_progress", lambda *args: None)
-    monkeypatch.setattr(cli.transaction, "revert_promotion", lambda *args, **kwargs: result)
+    calls = []
+    monkeypatch.setattr(cli.transaction, "promotion_landed", lambda *args: calls.append("promotion-check") or True)
+    monkeypatch.setattr(cli.transaction, "revert_promotion", lambda *args, **kwargs: calls.append("revert"))
     monkeypatch.setattr(
         cli.transaction, "_sync_local_main_result",
         lambda *args: transaction._SyncLocalMainResult(True),
@@ -47,4 +40,7 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
         cli.main(["release", "alpha", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert message in captured.out + captured.err
+    output = captured.out + captured.err
+    assert "Release candidate was not promoted" in output
+    assert "candidate branch" in output
+    assert calls == []

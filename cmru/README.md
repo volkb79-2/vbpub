@@ -48,7 +48,7 @@ registry publication, or a combined image+bundle release without hidden behavior
 
 ```bash
 cmru status                       # preview changed projects + next versions (read-only)
-cmru release                      # isolated: prepare → gate → integrate → tag → build → publish
+cmru release                      # isolated: prepare → gate → tag → build → publish → promote
 cmru release --dry-run            # show tags only, no writes
 cmru release ciu                  # one project
 cmru changelog assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
@@ -72,9 +72,11 @@ cmru version                      # print the CMRU version
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
-`release` detects changed projects, runs their explicit prepare/gate/promote/tag/build/push
-contract in dependency order, and retains a failed transaction for diagnosis. A retained
-transaction is the pre-publish debug/recovery path; see
+`release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
+contract in dependency order, and retains a failed transaction for diagnosis. It publishes
+from the exact gated candidate commit, then fast-forwards `origin/main` from that same commit.
+A concurrent remote update fails closed and leaves the candidate branch/worktree for diagnosis;
+CMRU never rebases a candidate after building its public artifact. See
 [KI-06](KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
 `build` is local-consumption/diagnostic only; do not chain it to `publish` expecting its
 retained artifact record to be published. The safe end-to-end verb is `release`; the deliberate
@@ -205,8 +207,9 @@ deprecated alias). Any such plan-time refusal is a clean, typed failure that dis
 just-created worktree — never retains it, since no project's cycle ever started. In the
 transaction worktree, cmru runs each changed project's required `run-tests` gate, then
 fast-forwards `origin/main` from the validated branch before creating tags or publishing.
-If another writer advanced remote main, the release fails before publication. A failure keeps
-the branch/worktree for diagnosis; success removes both (after optional evidence retention).
+If another writer advanced remote main, the final candidate promotion fails closed after the
+artifact step. A failure keeps the branch/worktree for diagnosis; success removes both (after
+optional evidence retention).
 
 `cmru build` uses the same remote snapshot and transaction mechanics but stops before every
 release action. On success it copies project logs to

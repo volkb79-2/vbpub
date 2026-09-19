@@ -157,7 +157,7 @@ export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
 
 ```
 cmru status                       # what would release, and at what version bump
-cmru release <name>     # one source-first transaction: gate → tag → build → publish
+cmru release <name>     # one source-first transaction: gate → tag → build → publish → promote
 cmru release                      # every changed project on one branch (S-CLI.5a)
 ```
 
@@ -172,7 +172,11 @@ that exact remote commit, named (`S-CLI.5b`, KI-16, ciu-aligned):
 
 Flat, chronologically sortable, and **the branch name is byte-for-byte the directory name** —
 the same 1:1 scheme ciu uses. A successful release removes the worktree; a **failure retains
-it** for diagnosis and prints its exact path. List and clean retained ones:
+it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
+publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
+concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
+source revert. Inspect the retained candidate and resolve the external publication explicitly
+before abandoning it. List and clean retained ones:
 
 ```
 cmru worktrees                                   # every retained failed build/release worktree

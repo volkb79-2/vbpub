@@ -1508,9 +1508,9 @@ def _run_untagged_project(
     project = configs[name]
     apply_project_release_env(github_config, env_config, project)
     # Projects that extract tracked provenance must do their private build in
-    # ``prepare``. It has already been committed, gated and promoted before cmru
-    # creates any tags for this transaction; rebuilding here would both waste work
-    # and risk producing artifacts from a post-tag HEAD.
+    # ``prepare``. It has already been committed and gated before cmru creates
+    # any tags for this transaction; rebuilding here would both waste work and
+    # risk producing artifacts from a post-tag HEAD.
     artifact_step = project.build_step
     if not artifact_step:
         raise RuntimeError(f"{name}: project.release.build_step is absent")
@@ -1538,6 +1538,29 @@ def _version_strategy(proj: "ProjectConfig") -> str:
     return proj.version.strategy if getattr(proj, "version", None) else "scm"
 
 
+def _assert_release_candidate_unchanged(
+    repo_root: Path, project_name: str, expected_sha: str,
+) -> None:
+    """Require publication to have used the exact candidate commit.
+
+    Release steps may create ignored logs and artifact output, but they must not
+    move ``HEAD`` or leave a non-ignored worktree mutation behind. A later
+    promotion must therefore integrate the same commit that was gated and built.
+    """
+    actual_sha = _git(repo_root, "rev-parse", "HEAD")
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            f"{project_name}: release step moved HEAD from {expected_sha} to "
+            f"{actual_sha}; refusing to promote a different commit"
+        )
+    changed = _worktree_changed_paths(repo_root)
+    if changed:
+        raise RuntimeError(
+            f"{project_name}: release step left non-ignored changes before promotion: "
+            f"{', '.join(changed)}"
+        )
+
+
 def _release_projects_sequentially(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -1551,17 +1574,19 @@ def _release_projects_sequentially(
     major: bool = False,
     set_version: Optional[str] = None,
 ) -> List[str]:
-    """Release every named project one after another (build all projects after
-    another): each project's own prepare → gate → promote → tag → build → publish
-    cycle completes in full before the next project starts. This is what lets a
-    later project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel)
-    brand-new release within this SAME run, instead of always trailing one
-    `cmru release` behind.
+    """Release every named project one after another.
+
+    Each project's own prepare → gate → tag → build → publish → promote cycle
+    completes in full before the next project starts. Promotion is intentionally
+    last: ``origin/main`` receives the exact candidate commit only after its
+    public artifact has succeeded. This is what lets a later project (e.g. an OCI
+    image) resolve an earlier project's (e.g. a wheel) brand-new release within
+    this SAME run, instead of always trailing one ``cmru release`` behind.
 
     Progress is checkpointed after each project's full success
-    (:func:`transaction.write_release_progress`) so that if a LATER project fails,
-    the caller's revert only undoes that project's promoted changes — an earlier,
-    already-succeeded, already-published project is left alone.
+    (:func:`transaction.write_release_progress`). A failed candidate remains on
+    its durable transaction branch; no source-tree revert is needed because the
+    failed project's candidate was never promoted.
 
     Returns the "{name} (...)" labels actually built/published (empty entries for
     projects released with ``no_build=True`` are omitted).
@@ -1569,10 +1594,10 @@ def _release_projects_sequentially(
     from cmru.version import release_cmd
 
     # Seed the checkpoint at this run's own starting point. Without this, a
-    # --resume reusing the same branch token would read a *previous* attempt's
-    # (older, now-invalid) checkpoint and could revert past the operator's own
-    # fix commit on --resume. read_release_progress() returning "the run's base"
-    # is exactly equivalent to "nothing has fully succeeded yet in this run".
+    # --resume reusing the same branch token would read a previous attempt's
+    # stale checkpoint and misreport the last completed source candidate.
+    # Returning "the run's base" is exactly equivalent to "nothing has fully
+    # succeeded yet in this run".
     transaction.write_release_progress(repo_root, workspace, workspace.base)
 
     released: List[str] = []
@@ -1584,60 +1609,75 @@ def _release_projects_sequentially(
         _prepare_release_projects(
             repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
         )
-        _run_release_gates(repo_root, configs, [name])
-
-        transaction.promote_workspace(workspace)
-        log_info(f"{name}: promoted to origin/main")
-        # Keep the durability backup current as the run progresses — otherwise
-        # it forever holds only the pre-run base and a crash mid-run has nothing
-        # of this run's work to recover from.
+        # Keep the remote candidate branch current before the gate too. A gate
+        # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(workspace)
+        _run_release_gates(repo_root, configs, [name])
+        gated_sha = _git(repo_root, "rev-parse", "HEAD")
 
         strategy = _version_strategy(project)
         if not getattr(project, "git_tag", True):
             if not no_build:
                 log_info(f"Building + publishing {name} (no git tag)")
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
                 )
+                _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
                 released.append(f"{name} (no git tag)")
                 transaction.write_release_result(
                     repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
                 )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
+            transaction.promote_workspace(workspace)
+            log_info(f"{name}: promoted release candidate to origin/main")
         else:
             release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
-            # A file:-strategy tag commits a version bump *after* the promote
-            # above — push it now so it lands on origin/main this cycle, not
-            # deferred to whichever project (if any) happens to promote next.
-            # A no-op (nothing new to push) for scm/counter strategies.
-            transaction.promote_workspace(workspace)
+            # A file:-strategy tag commits a version bump here. Refresh the
+            # durable candidate before tags or public publication are touched.
+            transaction.push_backup_branch(workspace)
+            candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+            if candidate_sha != gated_sha:
+                # The file strategy adds a mechanical version commit after the
+                # initial pre-tag gate. Re-run the real gate on that exact
+                # candidate so the commit that produces the artifact has passed
+                # the same acceptance contract before publication begins.
+                log_info(f"{name}: versioning changed the candidate; re-running release gate")
+                _run_release_gates(repo_root, configs, [name])
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
                 _push_tags(repo_root, [tag])
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
+                    candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                     artifact_phases = [] if project.build_step == "prepare" else [project.build_step]
                     _run_project_steps(
                         repo_root, configs, [name], [*artifact_phases, "push"],
                         github_config=github_config, env_config=env_config,
                     )
+                    _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
+                transaction.promote_workspace(workspace)
+                log_info(f"{name}: promoted release candidate to origin/main")
             elif not no_build:
                 raise RuntimeError(
                     f"{name}: gate passed and it was in this run's changed-project scope, "
                     "but no tag ended up on HEAD (release.git_tag produced nothing to "
                     "build/publish) — this should not happen; investigate before retrying"
                 )
+            else:
+                transaction.promote_workspace(workspace)
+                log_info(f"{name}: promoted release candidate to origin/main")
 
         # This project's whole cycle succeeded — checkpoint it so a LATER
-        # project's failure can only revert what comes after this point.
+        # project's retained candidate can be compared with the last complete
+        # source state.
         transaction.write_release_progress(repo_root, workspace, _git(repo_root, "rev-parse", "HEAD"))
 
     return released
@@ -1721,7 +1761,7 @@ def _check_release_tool_dependencies(
     loaded estate, used only to resolve each dependency's PROVIDER project's tag
     ``prefix``. Raises :class:`cmru.version.ReleasePlanRefused` -- exactly like the
     tag-preflight beside it -- so a blocking finding is a typed, clean refusal
-    before any project's prepare/gate/promote cycle starts, never a mid-release
+    before any project's prepare/gate cycle starts, never a mid-release
     failure. A project that declares nothing is a silent no-op: zero network calls."""
     from cmru.tool_deps import is_blocking, render_status, verify_project
     from cmru.version import ReleasePlanRefused
@@ -2472,36 +2512,17 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "were made (see the error above). Worktree discarded."
                         )
                     else:
-                        if transaction.promotion_landed(repo_root, workspace):
-                            # Projects release one after another (each project's own
-                            # prepare/gate/promote/tag/build/publish finishes before the next
-                            # starts — S-REL). checkpoint is the source commit as of the last
-                            # project to fully finish (may equal workspace.base, e.g. when
-                            # every earlier project in this run had no prepare-step commit of
-                            # its own — their tags/artifacts are unaffected either way, only
-                            # source-tree commits are ever reverted). Reverting from checkpoint
-                            # rather than workspace.base leaves any earlier project's own
-                            # promoted commit alone.
-                            checkpoint = transaction.read_release_progress(repo_root, workspace)
-                            log_error(
-                                "Release failed after origin/main was already promoted; "
-                                "attempting automatic revert of the in-flight project's "
-                                "changes..."
-                            )
-                            revert = transaction.revert_promotion(workspace, from_sha=checkpoint)
-                            if revert.ok and revert.reverted:
-                                log_info("origin/main reverted to its last-known-good state.")
-                            elif revert.ok:
-                                log_info(
-                                    "Nothing to revert on origin/main — the in-flight project "
-                                    "never got as far as its own promotion."
-                                )
-                            else:
-                                log_error(
-                                    "Automatic revert did not apply cleanly (origin/main may "
-                                    "have advanced, or the revert conflicted) — manual cleanup "
-                                    f"required: inspect branch {workspace.branch}."
-                                )
+                        # Promotion is now the final step of every project's
+                        # candidate cycle. A failed project therefore leaves its
+                        # source commit on the retained candidate branch while
+                        # origin/main contains only earlier, fully completed
+                        # projects. Never manufacture a revert commit for a
+                        # candidate whose public artifact may already exist.
+                        log_error(
+                            "Release candidate was not promoted; origin/main was left "
+                            "at the last fully completed project. The durable candidate "
+                            f"branch {workspace.branch} was retained for inspection."
+                        )
                         _sync_local_main_and_report(repo_root)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
@@ -2598,17 +2619,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
 
         # Build all projects after another (S-REL): each project's own
-        # prepare → gate → promote → tag → build → publish cycle runs to completion
+        # prepare → gate → tag → build → publish → promote cycle runs to completion
         # before the next project starts. This is what lets a later project (e.g. an
         # OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
         # within this SAME `cmru release` run, instead of always trailing one run
-        # behind. Each project's promotion is independent: if project N fails, the
-        # already-published projects before it are left alone (see
-        # transaction.write_release_progress / the parent's scoped-revert handling).
+        # behind. If project N fails, its exact candidate remains on the retained
+        # transaction branch and already-published projects before it are left alone.
         workspace = _transaction_workspace_from_env(repo_root)
         transaction.write_release_scope(repo_root, workspace, release_names)
         transaction.push_backup_branch(workspace)
-        log_info(f"Backed up release branch {workspace.branch} to origin (durability).")
+        log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
 
         released = _release_projects_sequentially(
             repo_root, configs, workspace, release_names,

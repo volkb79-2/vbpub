@@ -7,8 +7,9 @@ release child there.  The caller's uncommitted files therefore cannot leak into 
 wheel, image, tag, or release asset.
 
 The parent process owns a repository-local flock for the lifetime of its child.
-The child may fast-forward ``origin/main`` from the prepared release branch; a
-concurrent remote update fails closed before tags or publication.
+The child builds and publishes from the fixed candidate, then fast-forwards
+``origin/main`` from that exact branch tip; a concurrent remote update fails
+closed without rebasing the candidate.
 """
 from __future__ import annotations
 
@@ -859,11 +860,10 @@ def retain_success_outputs(
 def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: str) -> None:
     """Record the commit SHA as of the last *fully completed* project in a
     per-project release run (build-all-projects-after-another: S-REL — each
-    project's prepare/gate/promote/tag/build/publish cycle finishes before the
-    next project's starts). On a later failure, the parent uses this instead of
-    the transaction's original base commit so it only reverts the in-flight
-    project's promoted changes, never an earlier project's already-published
-    release."""
+    project's prepare/gate/tag/build/publish/promote cycle finishes before the
+    next project's starts). It identifies the last complete source candidate
+    for inspection and resume reporting; current releases never use it to
+    manufacture a source-tree revert."""
     scope_dir = _scope_dir(repo_root)
     scope_dir.mkdir(parents=True, exist_ok=True)
     (scope_dir / f"{_release_token(workspace)}.progress").write_text(sha, encoding="utf-8")
@@ -871,8 +871,7 @@ def write_release_progress(repo_root: Path, workspace: ReleaseWorkspace, sha: st
 
 def read_release_progress(repo_root: Path, workspace: ReleaseWorkspace) -> str | None:
     """The last-fully-completed-project checkpoint for a workspace, or None if no
-    project has completed yet (or this predates the feature) — callers should
-    fall back to ``workspace.base`` (revert everything) in that case."""
+    project has completed yet (or this predates the feature)."""
     path = _scope_dir(repo_root) / f"{_release_token(workspace)}.progress"
     if not path.exists():
         return None
@@ -935,10 +934,12 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
 
 
 def abandon_workspace(repo_root: Path, workspace: ReleaseWorkspace) -> None:
-    """Fully discard a retained, never-promoted release attempt: its origin backup
-    branch, local worktree/branch, and scope marker. Unlike remove_workspace() (the
-    success path) this never touches origin/main — a failed release's gates ran
-    before promote, so there is nothing there to undo."""
+    """Fully discard a retained release attempt and its origin candidate branch.
+
+    Unlike ``remove_workspace`` (the success path), this never touches
+    ``origin/main``. The current release order leaves a failed candidate out of
+    main, so deleting the candidate is the only source cleanup required here.
+    """
     remove_backup_branch(workspace)
     remove_workspace(workspace)
     forget_release_scope(repo_root, workspace)
@@ -961,95 +962,43 @@ def abandon_previous(repo_root: Path, current_projects: Sequence[str]) -> list[s
     return abandoned
 
 
-_PROMOTE_MAX_RETRIES = 5
-
-
 def promote_workspace(workspace: ReleaseWorkspace) -> None:
-    """Fast-forward remote main from the prepared branch, or fail before publication.
+    """Fast-forward ``origin/main`` from the exact release candidate tip.
 
-    This repo has other concurrent committers (see AGENTS.md) — a project's own
-    prepare/gate cycle can run long enough (an OCI image build especially) that
-    ``origin/main`` moves before this push lands. A plain, unretried push would
-    fail the WHOLE release over a race that a bare ``git pull --rebase && push``
-    would have resolved by hand. So: on a non-fast-forward rejection, fetch and
-    rebase this branch's own commits onto the new ``origin/main`` tip and retry,
-    bounded to :data:`_PROMOTE_MAX_RETRIES` attempts (a busy-fought repo should
-    fail loud, not spin forever). A rebase that hits a REAL conflict is never
-    auto-resolved — abort back to a clean state and raise immediately, exactly
-    as an unretriable failure would, so the retained worktree stays inspectable.
-
-    Rebasing rewrites every commit SHA in the branch, including any earlier
-    project's already-recorded :func:`write_release_progress` checkpoint from
-    EARLIER in this same multi-project run — left stale, a later revert would
-    compute its undo range against commits that no longer exist on this branch.
-    Each successful rebase re-anchors that checkpoint to its rebased equivalent
-    by commit COUNT (a plain, non-interactive rebase preserves commit order and
-    count 1:1), not by content-matching, which would be fragile.
+    The candidate is built and published before this function is called. It is
+    therefore unsafe to fetch and rebase here: rebasing would change the commit
+    that was gated and used to produce the public artifact. A concurrent update
+    is a deliberate, fail-closed outcome. The candidate branch and its durable
+    backup remain available for inspection; a later attempt can start from a
+    freshly fetched main without pretending that the already-published artifact
+    came from a different commit.
     """
-    checkpoint = read_release_progress(workspace.repo_root, workspace)
-    checkpoint_depth = (
-        int(_git(workspace.path, "rev-list", "--count", f"{checkpoint}..HEAD"))
-        if checkpoint else None
+    result = subprocess.run(
+        ["git", "push", "origin", "HEAD:refs/heads/main"],
+        cwd=workspace.path, capture_output=True, text=True,
     )
-    # Every iteration either succeeds or raises.  An explicit unbounded loop
-    # makes that contract structural: there is no phantom fall-through after
-    # the bounded retry policy for coverage (or callers) to mistake for a
-    # successful promotion.
-    attempt = 0
-    while True:
-        result = subprocess.run(
-            ["git", "push", "origin", "HEAD:refs/heads/main"],
-            cwd=workspace.path, capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            return
-        stderr = result.stderr or ""
-        # Git uses "(non-fast-forward)" when it can tell locally that the
-        # remote is ahead, and the more generic "(fetch first)" when it can't
-        # (e.g. no recent fetch) — both mean the same thing: the remote moved,
-        # rebase and retry. Anything else "[rejected]" (a protected-branch
-        # hook, say) would just keep failing every retry too, surfacing as
-        # the same "lost the race" error once attempts are exhausted below.
-        if "[rejected]" not in stderr:
-            raise RuntimeError(f"git push origin HEAD:refs/heads/main failed:\n{stderr}")
-        if attempt == _PROMOTE_MAX_RETRIES:
-            raise RuntimeError(
-                f"git push origin HEAD:refs/heads/main lost the race to a concurrent "
-                f"push {_PROMOTE_MAX_RETRIES} time(s) in a row — resolve manually "
-                "(this repo has other concurrent committers; see AGENTS.md)."
-            )
-        subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=workspace.path, check=True)
-        rebase = subprocess.run(
-            ["git", "rebase", "origin/main"], cwd=workspace.path, capture_output=True, text=True,
-        )
-        if rebase.returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], cwd=workspace.path, check=False)
-            raise RuntimeError(
-                "A concurrent push landed on origin/main while this release was "
-                "running, and rebasing this release's own commits onto it hit a "
-                "real conflict — not auto-resolvable. Resolve manually in the "
-                f"retained worktree:\n{rebase.stdout}\n{rebase.stderr}"
-            )
-        if checkpoint_depth is not None:
-            checkpoint = _git(workspace.path, "rev-parse", f"HEAD~{checkpoint_depth}")
-            write_release_progress(workspace.repo_root, workspace, checkpoint)
-        attempt += 1
+    if result.returncode == 0:
+        return
+    stderr = result.stderr or ""
+    raise RuntimeError(
+        "release candidate was not promoted to origin/main; the candidate may "
+        "have lost a fast-forward race or the remote rejected the push. The "
+        f"candidate branch {getattr(workspace, 'branch', '<unknown>')} was retained "
+        f"for inspection.\n{stderr}"
+    )
 
 
 def push_backup_branch(workspace: ReleaseWorkspace) -> None:
-    """Push the validated, gated branch to origin under its own name, before promotion.
+    """Push the current release candidate to its durable origin branch.
 
-    Purely additive durability: a crashed machine or lost worktree after this point
-    still leaves an inspectable, resumable copy of the prepared release on origin —
+    This is called initially, after each prepare/tag commit, and before each
+    public build or publish step. A crashed machine or lost worktree after any
+    such call still leaves an inspectable copy of the exact candidate on origin;
     ``main`` itself is untouched by this push.
 
-    ``--force`` is safe here specifically because ``workspace.branch`` is a
-    uuid-scoped name this ONE transaction created and exclusively owns (never a
-    shared or human-authored branch) — required, not just permissive, once
-    :func:`promote_workspace` has rebased: origin's own copy of this same branch
-    name (pushed by an EARLIER call in this same run, before the rebase) then
-    diverges from the local rewritten history, and a plain push would itself
-    hit the identical non-fast-forward rejection this function exists to avoid.
+    ``--force`` is safe here because ``workspace.branch`` is a uuid-scoped name
+    this ONE transaction created and exclusively owns. Each refresh deliberately
+    replaces that branch's prior candidate tip as the local transaction advances.
 
     Records that THIS transaction actually pushed the backup
     (:func:`mark_backup_pushed`, KI-15) — the state :func:`remove_backup_branch`
@@ -1092,12 +1041,11 @@ def remove_backup_branch(workspace: ReleaseWorkspace) -> None:
 
 
 def promotion_landed(repo_root: Path, workspace: ReleaseWorkspace) -> bool:
-    """True if ``origin/main`` still sits exactly at this workspace's branch tip.
+    """Legacy inspector for transactions created by the pre-candidate-order flow.
 
-    Used after a failed release to distinguish "promote_workspace() ran, then a
-    later step (tag/build/publish) failed" from "the failure happened before
-    promotion" or "origin/main has since moved past this release entirely" — the
-    latter two are not safe to auto-revert.
+    The current release path promotes only after publication and does not call
+    this function. It remains available to inspect an older retained attempt
+    without making that historical state part of the normal failure path.
     """
     subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
     origin_main = _git(repo_root, "rev-parse", "origin/main")
@@ -1112,7 +1060,12 @@ class RevertResult:
 
 
 def revert_promotion(workspace: ReleaseWorkspace, *, from_sha: str | None = None) -> RevertResult:
-    """Best-effort: undo this release's commits on ``origin/main`` by pushing a revert.
+    """Legacy recovery helper for a transaction created by the old release order.
+
+    The current release path never calls this function: failed candidates are
+    withheld from ``origin/main`` and retained on their own branch. For an older
+    retained attempt, this still best-effort undoes source commits on
+    ``origin/main`` by pushing a revert.
 
     ``from_sha`` scopes the revert to ``(from_sha, branch tip]`` instead of the whole
     transaction (``workspace.base``) — pass the last-fully-completed-project checkpoint

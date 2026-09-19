@@ -74,24 +74,30 @@ are still ignored: they cannot enter the immutable remote snapshot regardless.
 
 **S-CLI.5a — Projects release one after another, not in a shared batch.** Inside the worktree,
 every changed project (`orchestration.project_order`, filtered to what actually changed) runs
-its own full cycle — prepare → gate → promote → tag → build → publish — to completion before
-the next project's cycle begins. Before any given project's tag or public artifact, cmru MUST
-run that project's declared `run-tests` gate in its real gate environment, then fast-forward
-`origin/main` from the worktree's current `HEAD` (a non-fast-forward remote update aborts
-before that project's publication). The origin backup branch (durability: a crashed machine or
-lost worktree still leaves an inspectable, resumable copy on origin) is pushed once up front
-and refreshed again after each project's own promote, so it stays current with this run's
-progress rather than forever holding only the pre-run base. This ordering is what lets a later
-project (e.g. an OCI image) resolve an earlier project's (e.g. a wheel) brand-new release
-within the same `cmru release` run, instead of always trailing one run behind.
+its own full cycle — prepare → gate → tag → build → publish → promote — to completion before
+the next project's cycle begins. The gate runs in the real gate environment before any tag or
+public artifact. The public artifact is built from the exact gated candidate commit; only after
+that build/publish succeeds does cmru fast-forward `origin/main` from that same `HEAD`.
+A non-fast-forward remote update therefore fails closed after publication and never rewrites the
+candidate by rebasing it onto a different source commit.
+If a versioning strategy creates a mechanical version commit after the initial pre-tag gate,
+cmru runs the gate again on that exact candidate before it publishes.
 
-On success: the origin backup branch and the local worktree/branch are removed, and cmru
+The origin candidate branch is durable. cmru pushes it once up front, refreshes it after every
+prepare or tag commit, and refreshes it before each public build or publish step. A crashed
+machine or lost worktree leaves the exact candidate on that branch for inspection. The branch
+is removed only after the complete transaction succeeds; on failure it stays with the retained
+worktree. This ordering lets a later project (e.g. an OCI image) resolve an earlier project's
+(e.g. a wheel) brand-new release within the same `cmru release` run, instead of always trailing
+one run behind.
+
+On success: the origin candidate branch and the local worktree/branch are removed, and cmru
 attempts to sync the caller's local `main` with `origin/main`: a fast-forward when local main
 hasn't moved (the common case), or a `git rebase` when it has (e.g. ongoing work in another
 terminal while the release built) — rebase, not merge, to stay consistent with the rest of
 this pipeline, which is fast-forward-only end to end (`promote_workspace`'s push,
-`revert_promotion`'s push, the "local main not ahead" precondition below); no other step here
-ever produces a merge commit. Safe to replay because a release only ever commits declared,
+the "local main not ahead" precondition below); no other step here ever produces a merge
+commit. Safe to replay because a release only ever commits declared,
 mechanical generated paths (S-REL.4a), never hand-edited source, so local commits essentially
 never touch the same files. When the caller is currently on `main`, cmru first requires the
 checkout to be clean, including tracked and untracked changes. A dirty checkout returns a
@@ -109,29 +115,25 @@ rather than ignored.
 Before the release:
   origin/main:     ──●(base)
   local main:      ──●(base)                          [repo_root's own checkout — untouched]
-  release branch:  (does not exist yet)
+  candidate branch: (does not exist yet)
 
-The release runs entirely inside an ISOLATED WORKTREE — a separate checkout on
-its own cmru-release-<id> branch. repo_root's own `main` is never checked out,
-never touched, during any of this. push_backup_branch runs once, up front
-(origin gets a copy of this branch for durability, before any project starts).
-Each changed project then promotes SEPARATELY, one after another (S-CLI.5a) —
-shown here for two projects, "alpha" then "beta":
+The release runs entirely inside an ISOLATED WORKTREE. The candidate branch is pushed to origin
+before any project starts and refreshed as each candidate commit is made:
 
-  release branch:  ──●(base)──●(A1: alpha's prep/tag commit, if any)
-                                │
-                      promote_workspace → git push origin HEAD:refs/heads/main
-                                ▼
-  origin/main:     ──●(base)──●(A1)          ← alpha fully tagged/built/published here;
-                                                checkpoint records A1 as the last full success
+  candidate:       ──●(base)──●(A1: alpha's prep/tag commit, if any)
+                                  │
+                                  ├─ gate → build → publish alpha
+                                  └─ promote exact A1 → origin/main
 
-  release branch:  ──●(base)──●(A1)──●(B1: beta's prep commit, if any)
-                                       │
-                           promote_workspace → git push origin HEAD:refs/heads/main
-                                       ▼
-  origin/main:     ──●(base)──●(A1)──●(B1)   ← beta fully tagged/built/published here;
-                                                checkpoint advances to B1
-  local main:      ──●(base)                 ← still here; nothing touched it
+  origin/main:     ──●(base)──●(A1)
+
+  candidate:       ──●(base)──●(A1)──●(B1: beta's prep/tag commit, if any)
+                                             │
+                                             ├─ gate → build → publish beta
+                                             └─ promote exact B1 → origin/main
+
+  origin/main:     ──●(base)──●(A1)──●(B1)
+  local main:      ──●(base)                 ← still here until final cleanup
 
 Meanwhile, if the caller committed their own work locally while the release built:
   local main:      ──●(base)──●(D1)──●(D2)             [unrelated local work]
@@ -146,7 +148,7 @@ When the caller is dirty, cleanup refuses before the rebase instead:
   result:          warning with the dirty-checkout reason; local main/ref untouched
 ```
 
-Deleting the release branch on success (both locally and its origin backup) is cleanup of a
+Deleting the release branch on success (both locally and its origin candidate branch) is cleanup of a
 now-redundant ref — A1/B1 are already permanently part of `origin/main`'s history, so the
 branch's job is done. That deletion does nothing to `local main` by itself; `sync_local_main`
 is the only step that touches it. If synchronization returns false, the parent reports
@@ -156,38 +158,22 @@ undetermined clean-rebase failure as a rebase conflict, or claims that local mai
 synchronized. The warning is the reason captured by that synchronization call, not a later
 guess based only on the checkout's final state.
 
-On failure: the local worktree/branch and its origin backup are retained for inspection —
-`release` never resumes one automatically; the caller explicitly chooses `--resume <path>` to
-continue that exact attempt, or lets the next `release` invocation start fresh instead (the
-normal/default case: gates must re-validate against a fresh snapshot rather than a debugged,
-possibly hand-edited one — see S-REL.4a). Because projects release one after another
-(S-CLI.5a), a failing project's own promotion — if it landed before the failure — is reverted
-*without disturbing any earlier project in the same run that already fully released*: cmru
-tracks a checkpoint (the commit as of the last project to fully succeed, written after each
-project's complete cycle, and seeded to this run's own `base` before the loop starts — so a
-`--resume` reusing the same branch/token never reads a stale checkpoint left over from an
-earlier, different attempt on that token) and reverts only `(checkpoint, origin/main]`, never
-the whole transaction's `(base, origin/main]` range. If the failing project is the first one in
-the run and never got as far as its own promote, the checkpoint equals `base` and this degrades
-to "nothing to revert" — the classic all-or-nothing case. (The checkpoint tracks source-tree
-commits only: a project with no `prepare` step commits nothing of its own, so the checkpoint can
-still equal `base` even after that project's tag and published artifact are real — those are
-untouched regardless, since a source-tree `git revert` never touches tags/Releases/registry
-pushes.) The revert itself is always a plain
-`git revert` commit pushed on top of `origin/main` — never a force-push or history rewrite. It
-is skipped, requiring manual cleanup, if it does not apply cleanly or if `origin/main` has
-advanced past the release since promotion (a concurrent push landed on top). Local `main`
-cleanup is attempted with the same clean-checkout guard regardless of outcome; a false result
-is reported and does not claim that local main was synchronized. This includes a child
-failure, while a plan refusal also performs and reports the same cleanup attempt.
-On a later `release` invocation (fresh or via `--resume`), each already-fully-released project
-in the failed attempt shows as unchanged (S12.2 is tag-based) and is skipped automatically —
-only the reverted project and anything after it in `project_order` are attempted again.
+On failure: the local worktree/branch and its origin candidate branch are retained for
+inspection — `release` never resumes one automatically; the caller explicitly chooses
+`--resume <path>` to continue that exact attempt, or lets the next `release` invocation start
+fresh instead. Promotion is the final step of a project's cycle, so `origin/main` contains only
+earlier, fully completed projects. cmru does not create a source-tree revert commit and does not
+silently rebase a candidate after its artifact was built. If publication succeeded but promotion
+lost a fast-forward race, the candidate SHA and public artifact remain visible together on the
+retained branch/logs; resolving that post-publication state is an explicit operator action.
+Local `main` cleanup is attempted with the same clean-checkout guard regardless of outcome; a
+false result is reported and does not claim that local main was synchronized. On a later fresh
+release, tag-based plan detection skips projects already released; `--resume` remains an
+explicit continuation of the retained candidate.
 
 **`--abandon <path>|all-previous`** discards a retained attempt instead of resuming it, then
-proceeds with a normal fresh release in the same invocation: its origin backup branch, local
-worktree/branch, and scope marker are removed (never touching `origin/main` — a retained
-attempt's gates ran, if at all, before promote, so there is nothing there to undo). `all-previous`
+proceeds with a normal fresh release in the same invocation: its origin candidate branch, local
+worktree/branch, and scope marker are removed (never touching `origin/main`). `all-previous`
 abandons every retained worktree whose recorded project scope overlaps this run's — `X`
 narrows that to just `X`; otherwise it's the full `orchestration.default_projects`. Worktrees
 retained before this feature existed (no recorded scope) are left for an explicit `--abandon
@@ -379,11 +365,11 @@ may commit; optional `artifact_dirs` lists directories eligible for explicit ret
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
 declared mechanical outputs, never hand-edited source. Every project follows the same
-prepare → gate → backup-push → promote → optional tag → `build_step` → `push` frame;
-the project commands define what the last two phases do.
-`backup-push` (S-CLI.5) is a durability step only — it pushes the validated branch to origin
-under its own name, never touching `main`; the fast-forward of `main` remains a separate,
-subsequent step.
+prepare → gate → backup-push → optional tag → `build_step` → `push` → promote frame;
+the project commands define what the publication phases do.
+`backup-push` (S-CLI.5) is a durability step only — it pushes the candidate branch to origin
+under its own name, never touching `main`; the final fast-forward of `main` integrates the exact
+candidate commit after its public artifact succeeds. A candidate is never rebased at that point.
 
 **S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or
 `tarball` project MAY declare N named **variants** so that ONE release tag publishes one
@@ -1121,7 +1107,7 @@ is actually a half-completed cmru release, not a hand-made tag — but the tool 
 apart from git state alone). Never tag a cmru-managed project by hand.
 
 **S12.2d — A release-plan refusal (S12.2a/S12.2b) is a typed, clean failure that discards its
-worktree.** No project's `prepare`/gate/promote/tag cycle has started when the plan itself
+worktree.** No project's `prepare`/gate/tag cycle has started when the plan itself
 refuses — nothing was gated, promoted, or tagged, and the durability backup branch (S-CLI.5a)
 was never pushed either, since it is pushed only after the plan is accepted. The isolated
 release transaction MUST therefore surface this as a clean operator-facing `[ERROR]` message
@@ -1339,7 +1325,7 @@ tests.** `cmru tool-deps [P[,P...]] [--json] [--allow-stale-tool-deps]
 per dependency (read-only; `--refresh` is the one exception, S15.8). The same
 verification is wired into the isolated release transaction's plan-computation
 phase (S12.2a/S12.2b's own network-touching preflight, before any project's
-prepare/gate/promote cycle starts), scoped to exactly the projects this run
+prepare/gate cycle starts), scoped to exactly the projects this run
 will release — an unrelated orchestrated project's stale or unreachable tool
 dependency MUST NOT block a run that never touches it, and a no-op run (no
 project changed) makes zero network calls for this check. It runs identically
