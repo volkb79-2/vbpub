@@ -30,10 +30,17 @@ def test_native_release_logging_reuses_an_existing_log_directory(tmp_path, monke
     parent = tmp_path / "existing-parent"
     parent.mkdir()
     monkeypatch.setenv("CMRU_RELEASE_LOG", str(parent / "cmru.log"))
+    mkdir_calls = []
+
+    def record_mkdir(path, *args, **kwargs):
+        mkdir_calls.append((path, args, kwargs))
+
+    monkeypatch.setattr(Path, "mkdir", record_mkdir)
 
     assert cli._prepare_native_release_log(tmp_path, append=False) == (
         parent / "cmru.log"
     ).resolve()
+    assert mkdir_calls == [(parent, (), {"parents": True, "exist_ok": True})]
 
 
 def test_shell_release_wrapper_is_retired():
