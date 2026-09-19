@@ -68,7 +68,7 @@ if [ -z "$host_repo_root" ]; then
           ;;
       esac
     done < <(docker inspect "$self" \
-      --format '{{range .Mounts}}{{println .Source "\t" .Destination}}{{end}}' \
+      --format '{{range .Mounts}}{{printf "%s\\t%s\\n" .Source .Destination}}{{end}}' \
       2>/dev/null || true)
   fi
 fi
