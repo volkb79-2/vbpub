@@ -4,6 +4,19 @@ This document records why CMRU's configuration and command selection work the wa
 The [README](../README.md) describes the shipped surface; [CONSUMERS.md](CONSUMERS.md)
 shows the files an adopter can copy and load.
 
+## Top-level version compatibility
+
+CMRU keeps its version verb and also accepts cmru --version at the top level.
+Both spellings use the same source-tree or installed metadata resolver and
+print cmru <version> on stdout with exit 0. The second spelling is compatibility
+surface for scripts that probe every first-party estate CLI in the same way; it
+does not create a second version source or change verb dispatch.
+
+The same identity is the first line of every help, usage, and configuration
+diagnostic emitted by the main parser and the installed `cmru-agent` and
+`cmru-controller` dispatchers, including nested verbs. Normal command output is
+unchanged.
+
 ## Context comes from the nearest CMRU root
 
 CMRU searches the current directory and every parent up to the filesystem root for the

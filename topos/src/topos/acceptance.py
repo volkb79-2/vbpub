@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from topos import __version__
 from topos.cli_diagnostics import ToposArgumentParser, print_cli_error
 
 # No Textual import: this module must work without the UI dependency tree.
@@ -168,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m topos.acceptance",
         description="topos acceptance smoke harness for rootless release-confidence checks.",
     )
+    parser.add_argument("--version", action="version", version=f"topos {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     smoke = sub.add_parser("smoke", help="Run release smoke checks.")

@@ -105,6 +105,11 @@ def cli_headline() -> str:
 class AssayArgumentParser(argparse.ArgumentParser):
     """Make help, usage and parse failures identify the assay build."""
 
+    def add_subparsers(self, **kwargs):
+        """Use the headline-aware parser for every nested command."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
     def format_help(self) -> str:
         return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
 

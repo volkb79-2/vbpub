@@ -16,3 +16,15 @@ the broad lane now has a consistent minimum reach contract.
 Hypothesis remains appropriate for pure CLI and configuration invariants where
 input families are broad. Schemathesis is outside the CLI-only lane because
 Nyxloom does not expose an owned HTTP/OpenAPI contract there.
+## Top-level version compatibility
+
+Nyxloom keeps the `version` command for its normal command grouping and adds
+`nyxloom --version` as an identity probe before command dispatch. Both use
+`nyxloom.__version__`; the legacy command prints the bare metadata value,
+while the top-level flag prints `nyxloom <version>` and exits 0.
+The early probe avoids importing command-specific state merely to identify the
+installed CLI and gives estate automation the same top-level contract as the
+other first-party tools.
+At every nested parser depth, help, usage, and configuration diagnostics begin
+with `NYXLOOM <version> — operator CLI` as line 1 before argparse usage text;
+normal command output is unchanged.

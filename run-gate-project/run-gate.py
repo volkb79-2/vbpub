@@ -14,7 +14,9 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 45  # rev 45: shared root configuration uses the distinct
+__revision__ = 46  # rev 46: declared versioned entrypoints accept top-level
+# --version with a stdout version line and zero exit status.
+# rev 45: shared root configuration uses the distinct
 # run-gate.root.toml filename; ancestor run-gate.toml files remain project-local
 # and are never treated as inherited configuration.
 # rev 44: gate/lane containers resolve their host placement
@@ -8443,6 +8445,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
+    parser.add_argument(
+        "--version", action="version", version=f"{PROG} rev {__revision__}"
+    )
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--check-env", action="store_true",
                         help="advisory drift sweep: env references not covered "

@@ -111,6 +111,27 @@ def test_subcommand_help_and_argument_errors_start_with_the_headline(capsys):
     assert cli.main(["status", "--help"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == cli.cli_headline()
 
+def test_nested_missing_required_positional_starts_with_the_headline(capsys):
+    assert cli.main(["extract"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines()[0] == cli.cli_headline()
+    assert "usage: nyxloom extract" in captured.err
+    assert "SESSION_LOG" in captured.err
+
+def test_nested_help_starts_with_the_headline(capsys):
+    assert cli.main(["extract", "--help"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.splitlines()[0] == cli.cli_headline()
+    assert "usage: nyxloom extract" in captured.out
+
+def test_nested_unknown_argument_starts_with_the_headline(capsys):
+    assert cli.main(["extract", "SESSION_LOG", "--not-an-option"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines()[0] == cli.cli_headline()
+
 
 def test_top_level_help_screen_alphabetizes_within_each_group():
     parser, subparsers = _build_parser()
@@ -150,6 +171,13 @@ def test_top_level_help_flag_exits_0_and_prints_to_stdout(capsys):
         assert "Commands (grouped by purpose" in captured.out
 
 
+def test_top_level_version_flag_exits_0_and_is_quiet_on_stderr(capsys):
+    assert cli.main(["--version"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"nyxloom {__version__}\n"
+    assert captured.err == ""
+
+
 def test_unknown_command_exits_2_and_names_the_bad_token(capsys):
     exit_code = cli.main(["bogus-verb"])
     assert exit_code == 2
@@ -173,6 +201,7 @@ def test_unrecognized_top_level_flag_hits_argparses_own_error_path(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "usage: nyxloom" in captured.err
+    assert captured.err.splitlines()[0] == cli.cli_headline()
     assert "Commands (grouped by purpose" not in captured.err
 
 

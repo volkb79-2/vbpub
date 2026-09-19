@@ -900,4 +900,10 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 ### CLI diagnostics
 
-All parser help, usage, and argument errors begin with `ASSAY <version> — declared-lane judge`, using the existing metadata-backed `assay.__version__`.
+All parser help, usage, missing-argument, unknown-argument, and configuration
+diagnostics begin with `ASSAY <version> — declared-lane judge` as line 1 at
+every lane and analysis verb depth, using the existing metadata-backed
+`assay.__version__`. The top-level `assay --version` probe prints exactly one
+`assay <version>` line to stdout, exits 0, and writes nothing to stderr.
+Normal command output is unchanged. See the [design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility)
+for why this is a separate identity probe from lane execution.

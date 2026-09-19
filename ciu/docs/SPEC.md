@@ -1859,9 +1859,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `version`, `init`, `env`, `render`, `profiles`, `up`, `down`, `clean`,
   `health`, `layouts`, `diagnose`, `bake`, `ksm`, `dev`, `secrets`, `check`,
   `graph`, `ssh`, `iops-baseline`, `worktree`, `capabilities`, `host-secrets`,
-  and `provenance`. `ciu version` is the sole
-  public version query; the former top-level `ciu --version` option is
-  withdrawn. Single-stack execution is `ciu up --dir PATH`; this public form forwards the
+  and `provenance`. `ciu --version` and `ciu version` are equivalent
+  public version queries. Both print `ciu <version>` to stdout and exit 0;
+  `--version` is retained as the estate-wide compatibility spelling.
+  `--version` is one identity line on stdout with exit 0 and no stderr; all
+  parser help, usage, and configuration diagnostics at every verb depth begin
+  with the CIU headline as line 1. Normal command output is unchanged.
+  Single-stack execution is `ciu up --dir PATH`; this public form forwards the
   remaining single-stack engine flags (for example `--render-toml`, `--reset`,
   and `--print-context`). Profile-based orchestration is `ciu up --profile
   NAME`; environment generation is `ciu env generate`. Flat `ciu -d …` forms

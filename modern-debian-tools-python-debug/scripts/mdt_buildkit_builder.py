@@ -193,6 +193,7 @@ def ensure_managed_builder(
 
 def _cli() -> int:
     parser = MdtArgumentParser(description=__doc__)
+    parser.add_version_argument()
     parser.add_argument("command", choices=("configure", "verify"))
     parser.add_argument("--docker", default="docker")
     parser.add_argument("--endpoint", default=MANAGED_ENDPOINT)

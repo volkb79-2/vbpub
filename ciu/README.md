@@ -4,7 +4,7 @@ CIU renders and runs Docker Compose stacks from layered templates, with secrets,
 host-aware paths, and multi-stack orchestration built in. It ships **one**
 console entrypoint, **`ciu`**, a flat verb dispatcher:
 
-- identity and evidence: `ciu version`, `ciu provenance [--json]`
+- identity and evidence: `ciu --version` (also `ciu version`), `ciu provenance [--json]`
 - **Cross-profile secret producers are declarable** (`produced_by`, S13.6): an ASK_VAULT directive names the profile whose deployment provisions its Vault path, so a partial selection refuses upfront naming producer + path + remedies instead of failing mid-deploy with only the path.
 - **Honest provenance for mixed fleets** (`[deploy.provenance] vendor_images`, S17.5): declare third-party image references; running pins report `vendor-pinned`, drifted pins report `mismatch`, and `verified-match` becomes reachable on all-vendor deployments (provenance JSON at schema_version 2).
 - **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten. `--hooks NAME1,NAME2` (S19.1) additionally copies shipped, revision-stamped hook templates into every scaffolded stack.
@@ -20,9 +20,12 @@ verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/
 normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the task guides
 under [docs/](docs/README.md) are the place to start.
 
-CIU v5 intentionally removes the legacy top-level `ciu --version` form:
-use `ciu version`. See [CHANGES.md](CHANGES.md) for the historical release
-record and the change list generated for each future release.
+The top-level `ciu --version` option is supported for estate-wide CLI
+compatibility and prints `ciu <version>` on stdout before exiting 0.
+`ciu version` remains the equivalent verb. The rationale is in
+[the design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
+See [CHANGES.md](CHANGES.md) for the historical release record and the change
+list generated for each future release.
 
 > **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
 > run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
@@ -368,4 +371,9 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 ### CLI diagnostics
 
-`ciu --help`, subcommand help/usage, and parser argument errors start with `CIU <version> — Container Infrastructure Utility`. The value is read from CIU's existing generated or package version source.
+`ciu --version` is the one-line identity probe: it prints `ciu <version>` to
+stdout, exits 0, and writes nothing to stderr. At every parser depth,
+`--help`, usage, missing-argument, unknown-argument, and other configuration
+diagnostics start with `CIU <version> — Container Infrastructure Utility` as
+line 1, before usage text. Normal command output is unchanged. The value is
+read from CIU's existing generated or package version source.

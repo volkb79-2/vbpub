@@ -36,8 +36,11 @@ import subprocess
 import sys
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
+import tomllib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+with open(os.path.join(HERE, "pyproject.toml"), "rb") as _project_file:
+    __version__ = tomllib.load(_project_file)["project"]["version"]
 sys.path.insert(0, HERE)
 
 from lib import access, targets as targets_mod, util  # noqa: E402
@@ -46,6 +49,29 @@ READY_FILE = "collector.ready"
 STOP_FILE = "collector.stop"
 DONE_FILE = "collector.done"
 DEFAULT_OUT = os.path.join(HERE, "runs")
+
+def cli_headline() -> str:
+    return f"CGPROFILE {__version__} — cgroup resource profiler"
+
+
+class CgprofileArgumentParser(argparse.ArgumentParser):
+    """Prefix help and parse diagnostics with the profiler identity."""
+
+    def add_subparsers(self, **kwargs):
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
+    def format_help(self) -> str:
+        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{cli_headline()}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        self.exit(2)
 
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -814,12 +840,15 @@ def _add_log_tail_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CgprofileArgumentParser(
         prog="cgprofile",
         description="Profile a container/cgroup's resource use over time, with "
                     "effective limits, phase marks, and a report at the end.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="See ATTACH-GUIDE.md for wiring this into a gate.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"cgprofile {__version__}"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

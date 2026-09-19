@@ -2651,6 +2651,7 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
             """
         ),
     )
+    parser.add_version_argument()
     parser.add_argument(
         "--example", type=Path, default=DEFAULT_EXAMPLE,
         metavar="PATH", help="template to read (default: host-setup.env.example)",

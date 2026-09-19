@@ -68,6 +68,10 @@ dedicated container, never here. For the vbpub family that is
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
 
+When installing a locally built wheel for inspection or a bounded local test,
+use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
+`/home/vscode/.local` is not the wheel installation environment.
+
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
 alongside dev/test/build work, so any container you or a tool starts must be

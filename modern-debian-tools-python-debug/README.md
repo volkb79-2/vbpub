@@ -679,4 +679,15 @@ assay copy is used.
 
 ### CLI diagnostics
 
-The shipped MDT Python parser scripts prefix help, usage, and argument errors with `MDT <version> — modern Debian tools and Python debug`. The value is read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime environment; when neither is supplied the diagnostic says `unknown` rather than inventing a release version.
+The shipped MDT Python parser scripts prefix help, usage, missing-argument,
+unknown-argument, and configuration diagnostics at every parser depth with
+`MDT <version> — modern Debian tools and Python debug` as line 1. The value is
+read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime
+environment; when neither is supplied the diagnostic says `unknown` rather
+than inventing a release version.
+The declared operator entrypoints also accept top-level `--version` and print
+exactly one `MDT <version>` line on stdout with exit 0 and no stderr output.
+Normal command output is unchanged. This
+surface covers `build-push.py`, `check-mcr-devcontainer-tags.py`, the host
+setup wizard, `mdt-io-baseline.py`, and `mdt_buildkit_builder.py`; service
+watchers and build-time helper scripts remain internal interfaces.

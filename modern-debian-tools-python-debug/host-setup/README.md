@@ -619,6 +619,12 @@ must be on the same filesystem/device as Docker data. **The benchmark saturates
 that device for about 12 minutes at default settings** — run it in a quiet
 window.
 
+The installed/operator Python entrypoints accept top-level `--version`; for
+example, `sudo mdt-io-baseline.py --version` prints exactly one `MDT <version>`
+line and exits 0 before host checks or writes. Parser diagnostics begin with
+the MDT headline at every parser depth. Service watchers and timer-only audits
+are not separate versioned CLI entrypoints.
+
 There is no arbitrary age expiry. The results are reusable only when the target
 path and size, Docker-data filesystem, resolved block-device identity/topology,
 device facts, kernel release and benchmark-generator fingerprint still match.

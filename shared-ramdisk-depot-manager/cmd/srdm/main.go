@@ -62,6 +62,9 @@ func run(args []string) error {
 	case "version":
 		fmt.Println(Version)
 		return nil
+	case "--version":
+		fmt.Printf("srdm %s\n", Version)
+		return nil
 	case "doctor":
 		return cmdDoctor(args[1:])
 	case "store":

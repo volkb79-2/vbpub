@@ -4,6 +4,8 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -38,6 +40,33 @@ def write_config(tmp_path, **overrides):
 
 
 # --- bootstrap.py CLI ---
+
+def test_cli_top_level_version_is_clean(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--version"])
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert captured.out == "debian-install-v2 2\n"
+    assert captured.err == ""
+
+def test_documented_wrapper_top_level_version_is_clean():
+    wrapper = Path(__file__).resolve().parents[2] / "debian-install-v2.py"
+    proc = subprocess.run(
+        [sys.executable, str(wrapper), "--version"],
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0
+    assert proc.stdout == "debian-install-v2 2\n"
+    assert proc.stderr == ""
+
+
+def test_cli_parser_diagnostics_start_with_headline(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["--unknown"])
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert captured.out == ""
+    assert captured.err.splitlines()[0] == "DEBIAN-INSTALL-V2 2 — Debian host installer"
 
 
 def test_cli_install_dry_run(tmp_path, capsys):

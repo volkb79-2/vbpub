@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser = MdtArgumentParser(
         description="Build and/or push modern-debian-tools-python-debug images"
     )
+    parser.add_version_argument()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true", help="Resolve env and build images locally")
     mode.add_argument("--push", action="store_true", help="Push previously built images to registry")

@@ -12,6 +12,7 @@ while observing a victim is a first-class mode, not a workaround.
 
 ```bash
 ./setup.sh                      # once
+./cgprofile --version           # prints cgprofile 0.1.0
 ./cgprofile doctor              # what can I reach?
 
 ./cgprofile run \
@@ -20,10 +21,19 @@ while observing a victim is a first-class mode, not a workaround.
   -- ./gate.sh
 ```
 
+`./cgprofile --version` is the documented operator identity probe. It prints
+exactly one `cgprofile 0.1.0` line to stdout, exits 0, and emits no stderr; the
+value comes from the project version in `pyproject.toml`. Help, usage, missing-
+argument, unknown-argument, and configuration diagnostics at every subcommand
+depth begin with `CGPROFILE 0.1.0 — cgroup resource profiler` as line 1.
+Normal profiling output is unchanged. The shell shim and `cgprofile.py`
+therefore expose the same top-level compatibility option.
+
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want
   to change it.
+- **`docs/CONSUMERS.md`** — pasteable operator probes and adoption notes.
 
 ## What you get
 

@@ -12,6 +12,11 @@ from collections.abc import Iterable, Mapping
 
 def cmru_headline() -> str:
     """Return the dynamic headline used by every CMRU parser diagnostic."""
+    return f"CMRU {cmru_version()} — Configurable Multi Release Utility"
+
+
+def cmru_version() -> str:
+    """Return CMRU's authoritative source or installed version."""
     try:
         from cmru.cli import _cmru_version
 
@@ -23,7 +28,7 @@ def cmru_headline() -> str:
             version = version("cmru")
         except Exception:
             version = "dev"
-    return f"CMRU {version} — Configurable Multi Release Utility"
+    return version
 
 
 class CMRUArgumentParser(argparse.ArgumentParser):

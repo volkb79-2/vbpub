@@ -97,6 +97,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 ## 2. CLI contract
 
+- `R-00` `--version` prints `run-gate rev <__revision__>` to stdout and exits 0
+  without reading project configuration. `__revision__` is the copied-script
+  identity; the wheel's SemVer remains a separate distribution identity. The
+  output is exactly one identity line with no stderr. Every help, usage, and
+  configuration diagnostic starts with `RUN-GATE rev <__revision__> —
+  per-project gate entrypoint` as line 1; normal lane output is unchanged.
 - `R-01` `<lane>` runs one lane; `--list` emits `name<TAB>kind<TAB>environment`
   per lane, sorted by name — THREE columns, stable, machine-readable, never
   extended (consumers parse it). `--help`/no-args prints revision + the

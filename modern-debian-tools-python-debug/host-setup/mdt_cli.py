@@ -18,6 +18,17 @@ def cli_headline() -> str:
 
 
 class MdtArgumentParser(argparse.ArgumentParser):
+    def add_subparsers(self, **kwargs):
+        """Keep nested MDT parser diagnostics on the same headline."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+    def add_version_argument(self) -> None:
+        self.add_argument(
+            "--version",
+            action="version",
+            version=f"MDT {mdt_version()}",
+        )
+
     def format_help(self) -> str:
         return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
 

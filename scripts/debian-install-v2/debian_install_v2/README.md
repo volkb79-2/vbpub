@@ -10,6 +10,27 @@ and performs the current fresh-host setup in two internal phases.
 sudo ./debian-install-v2.py --action install --config /root/install.json
 ```
 
+### Version probe
+
+The documented installer front door accepts a top-level compatibility probe:
+
+```bash
+./debian-install-v2.py --version
+# debian-install-v2 2
+```
+
+It writes only `debian-install-v2 2` plus its newline to stdout, exits 0, and
+writes nothing to stderr. The `2` is the installer generation identity exposed
+by `debian_install_v2.__version__`. Its usage and configuration diagnostics
+begin with `DEBIAN-INSTALL-V2 2 — Debian host installer` as line 1; normal
+installation output is unchanged.
+
+`bootstrap-remote.py` is a curl-to-stdin transport adapter that fetches this
+front door and then executes it; it has no separate command-line parser or
+version identity. `inuse_partition_editor.py` is an internal partition helper
+that is importable for tests and implementation reuse. Neither is a separate
+operator entrypoint in the estate version surface.
+
 ### Remote install (curl | python3)
 
 `bootstrap-remote.py` (sibling of this README, one directory up) is the v2

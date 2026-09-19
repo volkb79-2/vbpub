@@ -8,6 +8,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -15,11 +16,29 @@ from pathlib import Path
 import pytest
 
 from cmru import cli
+from cmru.agent.cli import _build_parser as build_agent_parser
+from cmru.controller.cli import _build_parser as build_controller_parser
+from cmru.cli_support import cmru_headline
 
 
 def test_version_prefers_an_exact_source_tag_over_stale_install_metadata(monkeypatch):
     monkeypatch.setattr(cli, "_source_tree_version", lambda: "2.0.0")
     assert cli._cmru_version() == "2.0.0"
+
+def test_helper_nested_help_and_errors_start_with_the_headline(capsys):
+    with pytest.raises(SystemExit) as agent_help:
+        build_agent_parser().parse_args(["enroll", "--help"])
+    captured = capsys.readouterr()
+    assert agent_help.value.code == 0
+    assert captured.err == ""
+    assert captured.out.splitlines()[0] == cmru_headline()
+
+    with pytest.raises(SystemExit) as controller_error:
+        build_controller_parser().parse_args(["publish"])
+    captured = capsys.readouterr()
+    assert controller_error.value.code == 2
+    assert captured.out == ""
+    assert captured.err.splitlines()[0] == cmru_headline()
 
 
 def test_source_dev_version_is_derived_from_the_nearest_cmru_tag():
@@ -417,16 +436,48 @@ def test_unknown_verb_diagnostic_is_version_headed(capsys):
     assert capsys.readouterr().err.splitlines()[0] == cmru_headline()
 
 
-def test_version_is_a_verb_not_a_flag(monkeypatch):
+def test_version_verb_and_top_level_flag_are_compatible(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
     out = io.StringIO()
     with redirect_stdout(out):
         cli.main(["version"])
     assert out.getvalue() == "cmru 2.0.2\n"
 
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["--version"])
-    assert exc.value.code == 2
+    cli.main(["--version"])
+    captured = capsys.readouterr()
+    assert captured.out == "cmru 2.0.2\n"
+    assert captured.err == ""
+
+
+def test_agent_and_controller_version_flags(monkeypatch, capsys):
+    from cmru.agent import cli as agent_cli
+    from cmru.controller import cli as controller_cli
+
+    monkeypatch.setattr(cli, "_cmru_version", lambda: "2.0.2")
+    for entrypoint, main in (
+        ("cmru-agent", agent_cli.main),
+        ("cmru-controller", controller_cli.main),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(["--version"])
+        captured = capsys.readouterr()
+        assert exc.value.code == 0
+        assert captured.out == f"{entrypoint} 2.0.2\n"
+        assert captured.err == ""
+
+def test_module_console_dispatch_accepts_top_level_version():
+    source = str(Path(__file__).resolve().parents[1] / "src")
+    proc = subprocess.run(
+        [sys.executable, "-m", "cmru.cli", "--version"],
+        env={**os.environ, "PYTHONPATH": source},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("cmru ")
+    assert proc.stdout.endswith("\n")
+    assert proc.stderr == ""
 
 
 def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
