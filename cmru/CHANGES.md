@@ -11,6 +11,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.3.1] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=32950335ea21e1b22f9dea04920cfb1a6a69246d -->
+
+### Changed
+- cmru: promote release candidates after publication (1a7b5941)
+- merge: adopt contextual cmru configuration (f4151963)
+- cmru: complete contextual config migration fixes (3af75077)
+- cmru: adopt contextual config and positional targets (16961d15)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs: record cmru and isolated gate lane plans (6091cfef)
+
+### Testing
+- test: declare gates tier in cmru config fixtures (8c56f6b3)
+
 ## [5.3.0] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=32511a4273f266bb202030da18056b461f79c2e6 -->
