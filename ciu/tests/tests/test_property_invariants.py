@@ -53,5 +53,5 @@ def test_shared_infra_aliases_are_order_preserving_and_reference_their_names(
     raw = ",".join(aliases)
 
     assert _parse_ref_services_arg(raw, label="--ref-services") == tuple(
-        (alias, alias) for alias in aliases
+        (alias, alias) for alias in sorted(aliases)
     )

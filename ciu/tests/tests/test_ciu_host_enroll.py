@@ -1075,11 +1075,14 @@ class TestRenderedInstaller:
         cmru_toml = CIU_ROOT / "cmru.toml"
         if not cmru_toml.exists():
             pytest.skip("ciu/cmru.toml not available")
-        doc = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
-        assert doc["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
-        assert doc["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
-        assert doc["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
-        assert "installer" in doc["project"]
+        project = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
+        central = tomllib.loads(
+            (CIU_ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )
+        assert central["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
+        assert central["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
+        assert project["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
+        assert "installer" in project["project"]
 
     def test_release_publishes_get_py_as_an_asset(self):
         cmru_toml = CIU_ROOT / "cmru.toml"
@@ -1111,7 +1114,10 @@ class TestRenderedInstaller:
 
         from cmru.config import load_forge_config
 
-        cfg = load_forge_config(CIU_ROOT / "cmru.toml")
+        cfg = load_forge_config(
+            CIU_ROOT.parent / "cmru.orchestration.toml",
+            require_orchestration=True,
+        )
         proj = cfg.projects["ciu"]
         ins = proj.installer
         rendered = getpy.render_get_py(
