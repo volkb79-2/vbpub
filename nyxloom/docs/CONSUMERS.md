@@ -189,3 +189,8 @@ it); when that handoff merges, the merge auto-tick sets `status=merged` +
 auto-tick needs.
 
 When recording CLI diagnostics, preserve the first line: `NYXLOOM <version> — operator CLI`, using the package metadata version exposed by `nyxloom.__version__`.
+
+The broad `tester-unified` lane is Assay-judged with 100% whole-source line and
+branch coverage. The `session-extract` lane additionally carries its declared
+mutation and canary checks. Invoke both through the project's `./run-gate.py`
+entrypoint; local cockpit test results do not certify a release.
