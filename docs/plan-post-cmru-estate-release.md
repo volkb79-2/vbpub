@@ -108,6 +108,13 @@ Source paths: each project's `run-gate.toml` and `assay.toml`, the shared
 declarations. The audit is a starting point for the work slices below, not a
 claim that any lane is currently green.
 
+First implementation slice: CIU branch `feat/ciu-property-coverage`, commit
+`17a71c10` (2026-09-19 UTC). It adds Hypothesis to the test closure and
+property checks for path translation, size parsing, and shared-infrastructure
+argument grammar, and corrects CIU's gate documentation to use
+`$CGROUP_PARENT_DEV_GATES`. Its proof remains pending until the declared
+`tester-unified` lane runs from an integrated committed tree.
+
 ## Phase 3 — run the estate matrix in the right environments
 
 For every release-facing project, run its declared lanes at one clean commit
