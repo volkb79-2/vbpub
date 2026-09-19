@@ -4,6 +4,30 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.8.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=cd8cbe873dab9b71dd950bf46348cccb13e662fa -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix: preserve nested gate stack governance (eb9a0a59)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(nyxloom): clarify whole-source gate judge (d4e0b44d)
+- docs(nyxloom): align gate comments with coverage contract (d2ae6d7e)
+- docs(nyxloom): codex session id creation and log storage (fb9995a2)
+- docs: add nyxloom CLI diagnostic guidance (23a0f925)
+- docs: document universal nyxloom CLI diagnostics (881a8ebe)
+
+### Testing
+- test(nyxloom): enforce branch coverage for CLI lane (5174cf36)
+
 ## [0.7.1] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=6f680f185d3091989077b616b53ad5426eae8208 -->
