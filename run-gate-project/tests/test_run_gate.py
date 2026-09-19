@@ -7128,7 +7128,11 @@ def record_run(proj: Path, repo: Path, *, lane: str = "suite",
     """Drive the REAL recorder — real git repo, real ignore check, real lock,
     real atomic write. Only the clock is substituted."""
     rec = run_gate.start_run_record(lane, repo, repo)
-    rec["_started_monotonic"] = time.monotonic() - seconds
+    # These tests exercise retention and statistics, not wall-clock
+    # measurement. Use the recorder's private fixed-duration channel so a
+    # scheduler tick between start and finish cannot turn the prescribed
+    # 10.0-second sample into 10.001 and make the history oracle flaky.
+    rec["_duration_seconds"] = seconds
     if error is not None:
         run_gate.finish_run_record(rec, error=error)
     else:
