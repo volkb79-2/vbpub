@@ -185,3 +185,31 @@ def test_runner_step_uses_nearest_central_config_for_project_path(monkeypatch, t
     runner.run_step(project_config, "build")
 
     assert executed == [(step, project_root, project.env)]
+
+
+def test_runner_step_refuses_central_config_without_exact_project_match(
+    monkeypatch, tmp_path
+):
+    project_root = tmp_path / "requested"
+    other_root = tmp_path / "other"
+    project_root.mkdir()
+    other_root.mkdir()
+    project_config = project_root / "cmru.toml"
+    central = tmp_path / "cmru.orchestration.toml"
+    project_config.write_text("schema_version = 1\n", encoding="utf-8")
+    central.write_text("schema_version = 1\n", encoding="utf-8")
+    project = SimpleNamespace(project_root=other_root, runner_steps={})
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda *, cwd: SimpleNamespace(config_path=central),
+    )
+    monkeypatch.setattr(
+        "cmru.cli.load_config",
+        lambda path: (
+            tmp_path, {"other": project}, ["other"], [], [],
+            "project-first", {}, None, SimpleNamespace(), SimpleNamespace(),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="does not register exactly one project"):
+        runner.run_step(project_config, "build")
