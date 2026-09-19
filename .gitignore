@@ -355,5 +355,6 @@ core
 /logs/
 **/logs/
 **/artifacts/
+**/evidence/
 nyxloom/ntfy/.secrets/
 nyxloom/nyxloomd/secrets.env

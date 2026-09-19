@@ -25,6 +25,8 @@ bump = "conventional"
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
+# Release-gate outputs retained under evidence/cmru-release/<tag> with hashes.
+evidence_paths = ["coverage.json", ".assay"]
 
 [steps.run-tests]
 quiet = true

@@ -101,14 +101,18 @@ cmru release <project> --resume /path/reported/by/cmru
 ```
 
 Do not copy generated files back into the caller's dirty checkout. A successful
-transaction removes the ephemeral branch/worktree, but retains its project logs
-and artifacts by default first: logs move into
-`<project>/logs/cmru-release/<immutable-id>/`, and any explicitly declared
-artifact directories move into `<project>/artifacts/<immutable-id>/` with a
-`release.json` SHA-256 inventory. Pass `--discard-logs-on-release` and/or
-`--discard-artifacts-on-release` to opt out of either half. A project that
-declares no `project.release.artifact_dirs` simply has nothing to retain and is
-skipped for the artifact half, not an error.
+transaction removes the ephemeral branch/worktree, but retains its project logs, declared
+artifacts, and declared gate evidence by default first: logs move into
+`<project>/logs/cmru-release/<immutable-id>/`, explicitly declared artifact directories move
+into `<project>/artifacts/<immutable-id>/` with the existing `release.json` SHA-256 inventory,
+and `evidence_paths` move into `<project>/evidence/cmru-release/<immutable-id>/` with an
+`evidence.json` source-commit/hash inventory. Pass `--discard-logs-on-release`,
+`--discard-artifacts-on-release`, and/or `--discard-evidence-on-release` to opt out of each
+half. A project that declares no `project.release.artifact_dirs` or no
+`project.release.evidence_paths` simply has nothing to retain for that half and is skipped,
+not an error. Evidence declarations name only project-relative files/directories produced by
+the release gate; missing, escaping, or symlinked paths fail retention and preserve the
+worktree for inspection.
 
 ### Caller-main cleanup
 

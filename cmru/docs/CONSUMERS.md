@@ -41,6 +41,9 @@ bump = "conventional"             # version derived from Conventional Commits si
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
+# Add only outputs the release gate actually writes; these are retained separately
+# from publishable artifacts and bound to the gated commit.
+# evidence_paths = ["coverage.json"]
 
 # Every phase is project-owned and explicit. The gate always runs through tester-unified.
 [steps.run-tests]
@@ -208,6 +211,23 @@ The same diagnostic is printed after a successful release, a plan refusal, or a 
 the primary release result and retained-worktree behavior remain unchanged. See the normative
 [`S-CLI.5a`](SPEC.md#s-cli5a--projects-release-one-after-another-not-in-a-shared-batch) contract
 and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cleanup).
+
+### Retaining gate evidence
+
+If the release gate writes commit-bound evidence, declare each exact file or directory under
+`[project.release]`:
+
+```toml
+evidence_paths = ["coverage.json", ".assay"]
+```
+
+CMRU moves those paths into `<project>/evidence/cmru-release/<immutable-id>/` after the whole
+release succeeds and writes `evidence.json` with the gated source commit and SHA-256 hashes.
+The paths must be project-relative, contain no `..`, and contain no symlink component; a
+missing or unsafe declared path fails retention and keeps the release worktree available for
+inspection. Use `--discard-evidence-on-release` only when deliberately discarding those
+outputs. `evidence_paths` is separate from `artifact_dirs`: evidence proves the gate's input
+commit and is not offered to a publisher.
 
 ---
 

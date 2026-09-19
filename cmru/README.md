@@ -103,11 +103,13 @@ It overwrites the root `cmru.release.log` with the complete release transcript.
 The terminal stays readable: CMRU reports command labels, duration, known test-framework
 success evidence, and concise failure excerpts. Detailed subprocess output is line-flushed to
 the audit log and the transaction-local project files such as
-`assay/logs/cmru/run-tests.log`. A successful release retains those project logs and any
-declared artifact directories by default before removing the worktree: logs move to
-`assay/logs/cmru-release/<immutable-tag>/`, and declared directories move into
-`assay/artifacts/<immutable-tag>/` with a hash inventory in `release.json`. Pass
-`--discard-logs-on-release` / `--discard-artifacts-on-release` to opt out of either half.
+`assay/logs/cmru/run-tests.log`. A successful release retains those project logs, declared
+artifact directories, and explicitly declared gate evidence by default before removing the
+worktree: logs move to `assay/logs/cmru-release/<immutable-tag>/`, declared directories move
+into `assay/artifacts/<immutable-tag>/` with the existing hash inventory in `release.json`, and
+gate evidence moves into `assay/evidence/cmru-release/<immutable-tag>/` with an `evidence.json`
+source-commit/hash manifest. Pass `--discard-logs-on-release`,
+`--discard-artifacts-on-release`, or `--discard-evidence-on-release` to opt out of each half.
 
 ```bash
 cmru release modern-debian-tools-python-debug --show-run-details

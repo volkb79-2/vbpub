@@ -51,6 +51,8 @@ git_tag = true
 build_step = "build"
 # CMRU generates CHANGES.md before the gate by default.
 artifact_dirs = ["dist"]
+# Optional: list files/directories actually produced by the release gate.
+# evidence_paths = ["coverage.json"]
 
 # Every release phase is project-owned and explicit. A meaningful gate always
 # runs through tester-unified.

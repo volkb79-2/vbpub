@@ -54,8 +54,13 @@ file is then loaded by CMRU's real configuration reader.
 
 The old shell wrapper duplicated release dispatch and made the installed command and wrapper
 drift risks. `cmru release` now owns context discovery, `PYTHONUNBUFFERED`, the aggregate
-`cmru.release.log`, append separators, and the live tee. Retention is the default; explicit
-`--discard-logs-on-release` and `--discard-artifacts-on-release` opt out. Removing the wrapper
+`cmru.release.log`, append separators, and the live tee. Retention is the default for logs,
+declared artifacts, and declared gate evidence; explicit `--discard-logs-on-release`,
+`--discard-artifacts-on-release`, and `--discard-evidence-on-release` opt out independently.
+Evidence is declared separately from publishable artifacts because a coverage report or assay
+verdict proves the gated commit but is not a release asset. The declaration is bounded to
+project-relative files/directories and the transaction refuses missing or symlinked evidence
+rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
 ## Candidate-first promotion protects the source history

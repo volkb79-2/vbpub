@@ -74,6 +74,7 @@ class ProjectConfig:
     runner_steps: Mapping[str, StepConfig] = None  # strict project-local runner controls
     build_metadata: Mapping[str, str] = None
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
+    evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
     github_token: str = ""              # root credential or explicit project-secret override
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
@@ -448,6 +449,7 @@ def load_config(
             changelog=parsed.changelog, project_root=project_root,
             runner_steps=runner_steps, build_metadata=parsed.build_metadata,
             artifact_dirs=tuple(parsed.artifact_dirs),
+            evidence_paths=tuple(parsed.evidence_paths),
             build_step=parsed.build_step,
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
@@ -1920,7 +1922,8 @@ def usage() -> str:
         "    release  [all|P[,P...]] [--config C] [--minor|--major|--set-version V] [--dry-run]\n"
         "             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]\n"
         "             [--allow-uncommitted] [--show-run-details] [--log-append]\n"
-        "             [--discard-logs-on-release] [--discard-artifacts-on-release] [--ref REF]\n"
+        "             [--discard-logs-on-release] [--discard-artifacts-on-release]\n"
+        "             [--discard-evidence-on-release] [--ref REF]\n"
         "                                                  isolated source-first transaction\n"
         "    changelog [all|P[,P...]] --config C --backfill-tag TAG (repeat for all)\n"
         "                                                  catalog an already-published tagged release\n"
@@ -2360,6 +2363,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                  "project.release.artifact_dirs is declared.",
         )
         parser.add_argument(
+            "--discard-evidence-on-release", action="store_true",
+            help="After a successful release, do NOT move declared gate evidence into "
+                 "<project>/evidence/cmru-release/<tag> -- retained by default when "
+                 "project.release.evidence_paths is declared.",
+        )
+        parser.add_argument(
             "--ref", metavar="REF",
             help="Evaluate against REF instead of the local main branch (KI-20): for "
                  "release, the ahead-of-origin refusal; for status, the "
@@ -2477,14 +2486,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                         retained: list[Path] = []
                         retain_logs = not vargs.discard_logs_on_release
                         retain_artifacts = not vargs.discard_artifacts_on_release
-                        if retain_logs or retain_artifacts:
+                        retain_evidence = not vargs.discard_evidence_on_release
+                        has_declared_evidence = any(
+                            bool(getattr(configs.get(name), "evidence_paths", ()) or ())
+                            for name in configs
+                        )
+                        if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
+                            release_results = transaction.read_release_results(repo_root, workspace)
                             retained = transaction.retain_success_outputs(
                                 repo_root,
                                 workspace,
                                 configs,
-                                transaction.read_release_results(repo_root, workspace),
+                                release_results,
                                 retain_logs=retain_logs,
                                 retain_artifacts=retain_artifacts,
+                                retain_evidence=retain_evidence,
                             )
                         for path in retained:
                             log_info(f"Retained release output: {path}")
