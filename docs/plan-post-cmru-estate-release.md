@@ -1,8 +1,7 @@
 # Post-CMRU estate release plan
 
-Status: execution plan created 2026-09-19 UTC. The CMRU release candidate is
-currently running its governed release gate. This plan is deliberately separate
-from that candidate and will be merged only after the release outcome is known.
+Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.3.1 is
+released and installed; the estate lanes and final release remain in progress.
 
 ## Operating rules
 
@@ -20,6 +19,19 @@ from that candidate and will be merged only after the release outcome is known.
   an explicit `--discard-logs-on-release` or `--discard-artifacts-on-release`.
 
 ## Phase 0 — finish and install CMRU
+
+Completed 2026-09-19 UTC from promoted commit
+`20fa7730cb0f5e46b47b45037ffc88f78dfd17e6`:
+
+- the governed CMRU gate passed with **1796 passed, 10 skipped**, 100% line
+  and branch coverage, and a complete mutation campaign;
+- tag `cmru-v5.3.1`, the published wheel, retained logs, and retained release
+  artifacts were verified; and
+- the wheel was force-reinstalled into the devcontainer user environment and
+  verified outside the editable checkout as CMRU 5.3.1.
+
+The remaining steps below use this installed CMRU. The final estate release
+still has to verify the new first-party artifacts after promotion.
 
 1. Let the retained CMRU candidate complete its `run-gate gate` conjunction.
 2. If it passes, verify the exact promoted commit, `cmru-v5.3.1` tag, published
@@ -92,7 +104,7 @@ line coverage or from a green pytest command.
 
 ### Baseline audit
 
-Static audit completed 2026-09-19 UTC against `main` commit `32950335`.
+Static audit completed 2026-09-19 UTC against `main` commit `7f1cea69`.
 This records declarations only; no cockpit result is release evidence.
 
 | project | current evidence and environment | assay/resume state | property testing | highest-value first slice |
@@ -112,14 +124,17 @@ First implementation slice: CIU branch `feat/ciu-property-coverage`, commit
 `17a71c10` (2026-09-19 UTC). It adds Hypothesis to the test closure and
 property checks for path translation, size parsing, and shared-infrastructure
 argument grammar, and corrects CIU's gate documentation to use
-`$CGROUP_PARENT_DEV_GATES`. Its proof remains pending until the declared
-`tester-unified` lane runs from an integrated committed tree.
+`$CGROUP_PARENT_DEV_GATES`. The final CIU-managed worktree gate passed at
+commit `6c687916` through `tester-unified` under `dev-gates.slice`; its
+`run-ciu-tests.py` command enforces the complete pytest-cov line and branch
+floor.
 
 Second implementation slice: Nyxloom branch `feat/nyxloom-cli-branch-coverage`,
 commit `f5e806e4` (2026-09-19 UTC). It enables `--cov-branch` and
 `require_branch = true` for the broad CLI lane and adds the required README,
-design, and consumer documentation. Its gate must establish whether the
-existing CLI suite reaches the new floor before this branch is merged.
+design, and consumer documentation. The final rerun also corrects stale gate
+comments so they describe the whole-source line and branch contract; its
+tester-unified verdict is recorded after that rerun and before merge.
 
 CMRU repair state: the first candidate gate reached 100% branch coverage but
 failed its mutation lane with twelve survivors. Candidate commit `d9ff92f8`
