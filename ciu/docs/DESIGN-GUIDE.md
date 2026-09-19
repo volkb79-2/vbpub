@@ -585,6 +585,20 @@ failed job green. The verdict JSON is written outside the snapshot (gitignored
 
 **Parser identity.** CIU's operational parser families share one dynamic package/generated version source, so copied help or refusal output identifies the installed build without introducing a second version setting.
 
+The compatibility contract has two parts: `ciu --version` emits exactly one
+`ciu <version>` identity line with exit 0 and no stderr; every help, usage, or
+configuration diagnostic at every verb depth starts with the same headline as
+line 1. This formatter is applied to nested parsers as they are built, while
+normal command output remains unchanged.
+
+## Top-level version compatibility
+
+The console entrypoint accepts `ciu --version` before verb dispatch and
+prints `ciu <version>` on stdout with exit 0. The existing `ciu version`
+verb remains available. Keeping both paths on the same `get_cli_version()`
+source makes compatibility a spelling change rather than a second identity
+or a configuration lookup.
+
 **Why property tests are part of the test closure.** CIU's path translation,
 resource-size parsing, and shared-infrastructure argument grammar have compact
 invariants with many valid inputs. Hypothesis exercises those input families

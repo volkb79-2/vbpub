@@ -15,6 +15,10 @@ case "${1:-}" in
     ;;
 esac
 
+if [[ "${1:-}" == "--version" ]]; then
+  exec python3 "$here/cgprofile.py" "$@"
+fi
+
 if [[ -x "$here/venv/bin/python" ]]; then
   exec "$here/venv/bin/python" "$here/cgprofile.py" "$@"
 fi

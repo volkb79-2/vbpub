@@ -12,6 +12,14 @@ On the Docker host, review and apply the shipped host configuration:
 sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
+To identify the MDT build before choosing an operation, run:
+
+    ./build-push.py --version
+
+The declared MDT entrypoints use the same top-level probe and print exactly one
+`MDT <version>` line on stdout, exit 0, and write nothing to stderr. Their
+parser help, usage, and configuration diagnostics begin with the MDT headline
+as line 1 at every parser depth; normal command output is unchanged.
 
 On a fresh host, use the wizard: a plain first run refuses the incomplete
 example and leaves `/etc/mdt` untouched. A manual `install.sh` run requires a

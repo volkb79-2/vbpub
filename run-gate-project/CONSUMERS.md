@@ -1214,3 +1214,8 @@ says.
   DERIVE or READ or FAIL, per AGENTS §4.2a.
 
 Parser help, usage, and argument errors start with `RUN-GATE rev <revision> — per-project gate entrypoint`. Preserve that line in gate diagnostics; the revision is read from the shipped script's `__revision__` value.
+Before selecting a lane, a consumer can run `./run-gate.py --version`. It
+prints exactly one `run-gate rev <revision>` line on stdout, exits 0 without
+loading project configuration, and writes nothing to stderr. The revision is
+the script copy-drift marker; the
+wheel's SemVer is a separate distribution identity.

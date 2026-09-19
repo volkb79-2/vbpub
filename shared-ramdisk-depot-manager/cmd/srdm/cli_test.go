@@ -2,9 +2,57 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestTopLevelVersionFlag(t *testing.T) {
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	runErr := run([]string{"--version"})
+	writer.Close()
+	os.Stdout = original
+	output, readErr := io.ReadAll(reader)
+	reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if runErr != nil {
+		t.Fatalf("run(--version) error = %v", runErr)
+	}
+	if got, want := string(output), "srdm "+Version+"\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestLegacyVersionVerbRemainsBare(t *testing.T) {
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	runErr := run([]string{"version"})
+	writer.Close()
+	os.Stdout = original
+	output, readErr := io.ReadAll(reader)
+	reader.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if runErr != nil {
+		t.Fatalf("run(version) error = %v", runErr)
+	}
+	if got, want := string(output), Version+"\n"; got != want {
+		t.Fatalf("legacy version output = %q, want %q", got, want)
+	}
+}
 
 func TestFlagParserDiagnosticsStartWithHeadline(t *testing.T) {
 	fs := newFlagSet("status")

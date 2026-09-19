@@ -15,6 +15,16 @@
 
 Every exclusion in §7 and every tier in §3 follows from this. When a proposal
 arrives that does not obviously belong, test it here first.
+## Top-level version compatibility
+
+The console entrypoint accepts `assay --version` before a lane is selected.
+It uses the package's existing `__version__` source, prints one
+`assay <version>` line to stdout, and exits 0. This keeps identity checks
+side-effect free while allowing estate tooling to probe all first-party CLIs
+with one top-level option.
+At every nested parser depth, help, usage, and configuration diagnostics begin
+with `ASSAY <version> — declared-lane judge` as line 1, before argparse usage
+text. Normal command output is unchanged.
 
 ## 1. What assay is, in one paragraph
 

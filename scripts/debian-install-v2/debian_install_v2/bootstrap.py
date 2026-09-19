@@ -10,13 +10,34 @@ from .actions import HostActions
 from .config import Config, ConfigError, load_config
 from .installer import Installer
 from .state import StateError, StateStore
+from . import __version__
 
 
 PROG = "debian-install-v2"
+VERSION_HEADLINE = f"DEBIAN-INSTALL-V2 {__version__} — Debian host installer"
+
+
+class DebianInstallArgumentParser(argparse.ArgumentParser):
+    """Keep installer help and parser diagnostics identifiable."""
+
+    def format_help(self) -> str:
+        return f"{VERSION_HEADLINE}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{VERSION_HEADLINE}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{VERSION_HEADLINE}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        self.exit(2)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=PROG)
+    parser = DebianInstallArgumentParser(prog=PROG)
+    parser.add_argument(
+        "--version", action="version", version=f"{PROG} {__version__}"
+    )
     parser.add_argument(
         "--action",
         choices=("install", "resume", "status", "verify", "disable-stage2", "show-plan"),
@@ -51,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ConfigError(f"--action {args.action} requires --config FILE or --config-json JSON")
             config = load_config(args.config, args.config_json)
     except (ConfigError, StateError) as exc:
+        print(VERSION_HEADLINE, file=sys.stderr)
         print(f"{PROG}: {exc}", file=sys.stderr)
         return 2
 

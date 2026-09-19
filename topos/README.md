@@ -50,6 +50,7 @@ pip install -e topos/
 pip install -e './topos[mcp]'
 claude mcp add topos -- topos mcp serve
 topos --once --json
+topos --version
 topos
 topos --replay topos/tests/fixtures/frames/gstammtisch-once.jsonl --step
 topos snapshot inspect /path/to/topos-incident-*.tar
@@ -506,4 +507,12 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 ### CLI diagnostics
 
-The `topos` parser families, including operational subcommands and the acceptance harness, prefix help, usage, and argument errors with `TOPOS <version> — host telemetry and resource control`. The version comes from the existing package metadata source.
+The `topos` parser families, including operational subcommands and the
+acceptance harness, prefix help, usage, missing-argument, unknown-argument, and
+configuration diagnostics at every depth with `TOPOS <version> — host telemetry
+and resource control` as line 1. The top-level `topos --version` command prints
+exactly one `topos <version>` line on stdout, exits 0, and writes nothing to
+stderr. Normal command output is unchanged.
+The documented `python -m topos.acceptance` entrypoint is also versioned: its
+top-level `--version` prints the same one-line `topos <version>` identity and
+its nested parser diagnostics use the same TOPOS headline.

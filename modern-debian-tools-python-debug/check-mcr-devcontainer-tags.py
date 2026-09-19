@@ -158,6 +158,7 @@ def parse_args() -> argparse.Namespace:
     parser = MdtArgumentParser(
         description="Check availability of devcontainers/python tags on MCR",
     )
+    parser.add_version_argument()
     parser.add_argument(
         "--debian",
         action="append",

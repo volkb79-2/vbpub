@@ -56,6 +56,14 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `R-43h`).
 
 ## Gate and evidence
+### Version probe
+
+The script accepts `./run-gate.py --version` and prints exactly one
+`run-gate rev N` identity line on stdout before exiting 0, with no stderr. Help,
+usage, missing-argument, unknown-argument, and configuration diagnostics begin
+with `RUN-GATE rev N — per-project gate entrypoint` as line 1. Normal lane
+output is unchanged. N is the script's `__revision__` copy-drift marker;
+the wheel's SemVer remains a separate distribution identity.
 
 This project's own `run-gate.toml` declares five lanes (dogfooding — see
 "Built deltas" above):

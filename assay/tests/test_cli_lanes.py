@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from conftest import R0_LANE, R1_LANE, Project, drop_key, set_key
 
+from assay import __version__
 from assay.cli import build_parser, cli_headline, main
 
 
@@ -31,6 +32,22 @@ def test_parser_help_and_errors_start_with_the_dynamic_headline(capsys):
     with pytest.raises(SystemExit):
         parser.parse_args(["--help"])
     assert capsys.readouterr().out.splitlines()[0] == cli_headline()
+
+def test_nested_parser_help_and_missing_argument_start_with_the_headline(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit) as help_exit:
+        parser.parse_args(["analyze", "collect", "--help"])
+    help_capture = capsys.readouterr()
+    assert help_exit.value.code == 0
+    assert help_capture.err == ""
+    assert help_capture.out.splitlines()[0] == cli_headline()
+
+    with pytest.raises(SystemExit) as error_exit:
+        parser.parse_args(["analyze", "collect"])
+    error_capture = capsys.readouterr()
+    assert error_exit.value.code == 2
+    assert error_capture.out == ""
+    assert error_capture.err.splitlines()[0] == cli_headline()
 
 
 def run(argv: list[str]) -> tuple[int, str, str]:
@@ -187,10 +204,13 @@ def test_main_returns_an_int_rather_than_exiting(project: Project):
     assert isinstance(code, int)
 
 
-def test_version_flag_reports_a_version():
+def test_version_flag_reports_a_version(capsys):
     with pytest.raises(SystemExit) as excinfo:
         main(["--version"])
+    captured = capsys.readouterr()
     assert excinfo.value.code == 0
+    assert captured.out == f"assay {__version__}\n"
+    assert captured.err == ""
 
 
 def test_a_subcommand_is_required():

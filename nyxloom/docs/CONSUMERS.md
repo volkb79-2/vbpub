@@ -16,6 +16,13 @@ id_prefix = "CIU"                     # your project's issue sequence
 
 Then:
 
+### Check the installed CLI
+
+    nyxloom --version
+
+This prints `nyxloom <version>` on stdout and exits 0 without accessing the
+project registry.
+
 ```bash
 nyxloom lint                 # BLG2/BLG3 now active (silent before adoption)
 nyxloom backlog new "clean leaves instance-scoped networks" \
@@ -188,7 +195,10 @@ it); when that handoff merges, the merge auto-tick sets `status=merged` +
 `merge_commit`. A `carved` status with a `carved_handoff` link is all the
 auto-tick needs.
 
-When recording CLI diagnostics, preserve the first line: `NYXLOOM <version> — operator CLI`, using the package metadata version exposed by `nyxloom.__version__`.
+When recording CLI diagnostics, preserve the first line at every verb depth:
+`NYXLOOM <version> — operator CLI`, using the package metadata version exposed
+by `nyxloom.__version__`. `nyxloom --version` is exactly one identity line;
+normal command output is unchanged.
 
 The broad `tester-unified` lane is Assay-judged with 100% whole-source line and
 branch coverage. The `session-extract` lane additionally carries its declared

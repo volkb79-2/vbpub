@@ -297,4 +297,10 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 ### CLI diagnostics
 
-The `pwmcp` client parser prefixes help, usage, and argument errors with `PWMCP <version> — client utility`. Installed clients read `pwmcp-client` metadata; a source checkout uses the version already declared in its client project metadata.
+The `pwmcp` client parser prefixes help, usage, missing-argument, unknown-
+argument, and configuration diagnostics with `PWMCP <version> — client utility`
+as line 1. Installed clients read `pwmcp-client` metadata; a source checkout
+uses the version already declared in its client project metadata. The installed
+client also accepts `pwmcp --version`; it prints exactly one `pwmcp <version>`
+line on stdout, exits 0, and writes nothing to stderr. Normal command output is
+unchanged.

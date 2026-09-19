@@ -23,6 +23,11 @@ def print_cli_error(message: object, *, stream=None) -> None:
 class ToposArgumentParser(argparse.ArgumentParser):
     """Prefix parser help, usage and errors with the topos build identity."""
 
+    def add_subparsers(self, **kwargs):
+        """Use the headline-aware parser at every command depth."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
     def format_help(self) -> str:
         return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
 

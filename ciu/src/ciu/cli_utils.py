@@ -37,6 +37,11 @@ def cli_error(message: object, *, stream=None) -> None:
 class CiuArgumentParser(argparse.ArgumentParser):
     """Argument parser whose diagnostics identify the running CIU build."""
 
+    def add_subparsers(self, **kwargs):
+        """Keep nested CIU parsers on the same diagnostic contract."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
     def format_help(self) -> str:
         return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
 

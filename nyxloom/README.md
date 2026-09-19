@@ -209,4 +209,10 @@ a cockpit-local pytest run is diagnostic only.
 
 ### CLI diagnostics
 
-Parser help, usage, and argument errors begin with `NYXLOOM <version> — operator CLI`. The version is the existing metadata-backed `nyxloom.__version__`.
+Parser help, usage, missing-argument, unknown-argument, and configuration
+diagnostics begin with `NYXLOOM <version> — operator CLI` as line 1 at every
+verb depth. The version is the existing metadata-backed `nyxloom.__version__`.
+The top-level `nyxloom --version` probe prints exactly one `nyxloom <version>`
+line on stdout, exits 0, and writes nothing to stderr. Normal command output
+is unchanged. The rationale is in the
+[design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).

@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-from cmru.cli_support import CMRUArgumentParser
+from cmru.cli_support import CMRUArgumentParser, cmru_version
 
 
 log = logging.getLogger("cmru.controller")
@@ -195,6 +195,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = CMRUArgumentParser(
         prog="cmru-controller",
         description="CMRU controller — assign desired state and orchestrate rollout waves",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"cmru-controller {cmru_version()}"
     )
     parser.add_argument(
         "--landscape", default=None,

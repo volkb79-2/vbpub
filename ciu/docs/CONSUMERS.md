@@ -1632,4 +1632,13 @@ reachable where the old block-slice did not. A naive
 `document.get("ciu", {}).get("instance", {}).get("generated")` chain leaks a
 bare `AttributeError` on both.
 
-When collecting CIU diagnostics, preserve the first line of help, usage, and argument errors: `CIU <version> — Container Infrastructure Utility`.
+When collecting CIU diagnostics, preserve the first line of help, usage, and
+argument errors at every verb depth: `CIU <version> — Container Infrastructure
+Utility`. The top-level `ciu --version` probe is exactly one identity line;
+normal command output is unchanged.
+
+Check the installed console entrypoint before selecting a CIU verb:
+
+    ciu --version
+
+It prints `ciu <version>` on stdout, exits 0, and writes nothing to stderr.

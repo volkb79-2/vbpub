@@ -90,6 +90,12 @@ sha256sum -c assay-<version>.pyz.sha256
 
 The zipapp is useful for hermetic CI because it has no runtime dependencies. Its test command
 still needs the project's test tools in the gate environment.
+Check the installed judge before invoking a lane:
+
+    assay --version
+
+The command prints `assay <version>` on stdout and exits 0 without running or
+loading a lane.
 
 ## Add a lane, then gate it
 
@@ -3746,4 +3752,8 @@ consumers. The receipt schema checks the outer shape; embedded verdicts still
 require the shipped `verdict.schema.json` and behavioral `assay verify` checks.
 A schema-valid receipt alone does not prove its files exist or its hashes match.
 
-Parser help, usage, and argument errors start with `ASSAY <version> — declared-lane judge`; preserve that first line when storing operator diagnostics.
+Parser help, usage, missing-argument, unknown-argument, and configuration
+diagnostics at every lane and analysis verb depth start with `ASSAY <version> —
+declared-lane judge` as line 1; preserve it when storing operator diagnostics.
+`assay --version` is exactly one identity line, and normal command output is
+unchanged.

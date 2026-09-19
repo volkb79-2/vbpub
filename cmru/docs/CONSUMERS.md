@@ -12,6 +12,19 @@ one entry in the nearest CMRU root's `cmru.orchestration.toml`. cmru owns the ge
 (isolated worktrees, generated history, tags); your project owns every release *phase* command
 explicitly.
 
+Before selecting a release verb, a consumer can inspect the installed build
+with this pasteable probe:
+
+    cmru --version
+
+It prints one `cmru <version>` line on stdout and exits 0. The equivalent native
+verb is `cmru version`. Help, usage, and configuration diagnostics from
+`cmru`, `cmru-agent`, and `cmru-controller`, including nested verbs, begin with
+their CMRU headline as line 1; normal command output is unchanged.
+The documented `python3 -m cmru.handlers` calls are explicit project-step
+library adapters rather than a separately versioned operator entrypoint, so
+they are outside this top-level identity surface.
+
 ---
 
 ## 1. The two files

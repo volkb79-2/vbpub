@@ -1994,7 +1994,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(usage())
         return
 
-    if av[0] == "version":
+    if av[0] in ("version", "--version"):
         print(f"cmru {_cmru_version()}")
         return
 

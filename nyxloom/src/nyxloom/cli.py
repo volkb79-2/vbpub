@@ -260,6 +260,11 @@ def cli_headline() -> str:
 class NyxloomArgumentParser(argparse.ArgumentParser):
     """Keep every argparse diagnostic tied to the running nyxloom build."""
 
+    def add_subparsers(self, **kwargs):
+        """Use the headline-aware parser at every command depth."""
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
     def format_help(self) -> str:
         return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
 
@@ -2909,6 +2914,9 @@ def _build_parser() -> "tuple[argparse.ArgumentParser, argparse._SubParsersActio
     tests/test_cli_help.py's sync-check tests."""
     parser = NyxloomArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
     parser.add_argument("--debug", action="store_true", help="Show tracebacks")
+    parser.add_argument(
+        "--version", action="version", version=f"nyxloom {__version__}"
+    )
 
     subparsers = parser.add_subparsers(dest="cmd", help="Command")
 

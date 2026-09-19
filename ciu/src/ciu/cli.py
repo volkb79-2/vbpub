@@ -20,6 +20,7 @@ Container orchestration, development worktrees, and host operations (compose · 
 Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
 
 Usage: ciu <verb> [options]
+       ciu --version
        ciu version
 
 Run-scoped overrides (never written back to the TOML layer):
@@ -1944,10 +1945,9 @@ def main() -> None:
         print(_USAGE.format(ver=get_cli_version()))
         raise SystemExit(0)
 
-    # CIU-16: `version` is a VERB, matching every other CIU verb and the
-    # estate's other CLIs. There is deliberately no `--version` alias — a
-    # greenfield tool carries one spelling per thing, not two.
-    if raw[0] == "version":
+    # `version` remains the canonical CIU verb; --version is the estate-wide
+    # top-level compatibility spelling used by console entrypoints.
+    if raw[0] in ("version", "--version"):
         print(f"ciu {get_cli_version()}")
         raise SystemExit(0)
 

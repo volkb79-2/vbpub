@@ -458,6 +458,12 @@ class TestEarlyMutationSentinels:
 # ---------------------------------------------------------------------------
 
 class TestUxSurface:
+    def test_version_prints_revision_and_exits_cleanly(self, tmp_path):
+        proc = run_tool(tmp_path, "--version")
+        assert proc.returncode == 0
+        assert proc.stdout == f"run-gate rev {run_gate.__revision__}\n"
+        assert proc.stderr == ""
+
     def test_help_prints_revision_and_lanes(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)

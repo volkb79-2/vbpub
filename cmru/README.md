@@ -69,8 +69,16 @@ cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --yes
 cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
 cmru cleanup --discard-build-worktree /path/reported/by/cmru --yes
 cmru version                      # print the CMRU version
+cmru --version                    # estate-wide top-level compatibility spelling
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
+
+Both version spellings print exactly one `cmru <version>` identity line to
+stdout and exit 0 without diagnostics on stderr. At every parser depth,
+`--help`, usage, missing-argument, unknown-argument, and other configuration
+diagnostics begin with the CMRU headline as line 1. Normal command output is
+unchanged. The compatibility rationale is in the
+[design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
 
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes

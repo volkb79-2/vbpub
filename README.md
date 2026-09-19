@@ -24,6 +24,22 @@ one config and one installed CLI.
 
 Each product has its own README with product-specific detail.
 
+First-party operator entrypoints with a declared authoritative product version
+accept a top-level `--version`. They print their entrypoint name and version
+(or run-gate revision) on stdout and exit 0 without diagnostics on stderr.
+The probe is exactly one identity line. At every parser depth, help, usage,
+missing-argument, unknown-argument, and other configuration diagnostics begin
+with the tool headline as line 1, before argparse usage text. Normal command
+output is unchanged.
+Product READMEs document the supported entrypoints; helper scripts, vendored
+commands, and tools without a declared version source are outside this
+compatibility surface. In particular, `scripts/damon-analysis/damon_cli.py`
+is a documented operator CLI but remains excluded because the project has no
+release or version metadata of its own; the DAMON kernel and `damo` versions
+recorded in its guide are host dependencies, not this CLI's version.
+The DAMON decision and its operator-facing scope are recorded in
+[`scripts/damon-analysis/SCRIPTS.md`](scripts/damon-analysis/SCRIPTS.md).
+
 Testing is uniform across the projects that adopted the gate entrypoint:
 `cd <project> && ./run-gate.py --list` discovers that project's declared
 lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
