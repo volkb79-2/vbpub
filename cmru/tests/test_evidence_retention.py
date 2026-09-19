@@ -312,7 +312,7 @@ def test_runtime_evidence_path_validator_rejects_an_outside_root(tmp_path):
         transaction._assert_no_symlink_components(root, tmp_path / "outside", "demo")
 
 
-def test_runtime_evidence_path_validator_rejects_a_symlinked_project_root(tmp_path):
+def test_no_symlink_components_rejects_a_symlinked_project_root(tmp_path):
     real_root = tmp_path / "real"
     real_root.mkdir()
     linked_root = tmp_path / "linked"
@@ -419,6 +419,55 @@ def test_retention_rejects_an_existing_evidence_destination(tmp_path):
             )
 
 
+def test_retention_rejects_a_dangling_evidence_root_symlink(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    child.mkdir(parents=True)
+    (child / "coverage.json").write_text("coverage\n", encoding="utf-8")
+    project = SimpleNamespace(
+        project_root=root / "demo", artifact_dirs=(), evidence_paths=("coverage.json",)
+    )
+    evidence_parent = root / "demo" / "evidence" / "cmru-release"
+    evidence_parent.mkdir(parents=True)
+    (evidence_parent / "demo-v1").symlink_to(tmp_path / "missing-evidence", target_is_directory=True)
+    with patch.object(transaction, "_assert_no_symlink_components"):
+        with pytest.raises(RuntimeError, match="retained evidence destination already exists"):
+            transaction.retain_success_outputs(
+                root, workspace, {"demo": project}, {"demo": "demo-v1"},
+                retain_logs=False, retain_artifacts=False,
+            )
+
+
+def test_retention_rejects_a_symlinked_evidence_file_destination(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    child.mkdir(parents=True)
+    (child / "coverage.json").write_text("coverage\n", encoding="utf-8")
+    project = SimpleNamespace(
+        project_root=root / "demo", artifact_dirs=(), evidence_paths=("coverage.json",)
+    )
+    evidence_root = root / "demo" / "evidence" / "cmru-release" / "demo-v1"
+    evidence_root.mkdir(parents=True)
+    destination = evidence_root / "coverage.json"
+    destination.symlink_to(tmp_path / "missing-coverage")
+    real_exists = Path.exists
+
+    def fake_exists(path):
+        if Path(path) in {evidence_root, destination}:
+            return False
+        return real_exists(path)
+
+    with patch.object(transaction, "_assert_no_symlink_components"):
+        with patch.object(Path, "exists", autospec=True, side_effect=fake_exists):
+            with pytest.raises(RuntimeError, match="evidence destination already exists"):
+                transaction.retain_success_outputs(
+                    root, workspace, {"demo": project}, {"demo": "demo-v1"},
+                    retain_logs=False, retain_artifacts=False,
+                )
+
+
 def test_retention_rejects_non_regular_source_after_component_check(tmp_path):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
@@ -471,7 +520,7 @@ def test_retention_rolls_back_and_reports_cleanup_failure(tmp_path):
                 )
 
 
-def test_retention_rolls_back_when_parent_cleanup_cannot_remove_empty_dirs(tmp_path):
+def test_retention_reports_original_move_error_when_parent_cleanup_fails(tmp_path):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, tmp_path / "release", "cmru/release/x", "a" * 40)
     child = workspace.path / "demo"
