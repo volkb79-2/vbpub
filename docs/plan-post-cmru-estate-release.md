@@ -90,6 +90,24 @@ surface. Add Schemathesis only where the project owns an HTTP/OpenAPI contract;
 otherwise record a reasoned N/A. Do not claim full branch coverage merely from
 line coverage or from a green pytest command.
 
+### Baseline audit
+
+Static audit completed 2026-09-19 UTC against `main` commit `32950335`.
+This records declarations only; no cockpit result is release evidence.
+
+| project | current evidence and environment | assay/resume state | property testing | highest-value first slice |
+|---|---|---|---|---|
+| CIU | `tester-unified`; declared 100% line+branch | R0+R1; run-gate injects resume/progress | no Hypothesis; Schemathesis N/A for CLI scope | property tests for parser, path, worktree, and governance invariants; correct stale gate-slice docs |
+| CMRU | coverage lane requests 100% line+branch; coverage/mutation/canary in `tester-unified`, enrollment/conjunction bare-host | custom mutation runner lacks durable resume/progress | no Hypothesis; Schemathesis N/A | make mutation evidence durable or move it to declared Assay R2/R3 semantics |
+| Assay | self-hosted tester-unified from a bare-host driver; deliberately R0-only | direct tester script passes resume/progress | Hypothesis properties currently skip when dependency is absent | define self-qualification coverage policy and make the registered property dependency explicit |
+| Nyxloom CLI | tester-unified; main lane is 100% line-only, `session-extract` has branch/R2/R3 evidence | both lanes receive resume/progress | Hypothesis present; Schemathesis N/A for CLI-only scope | measure and raise the complete CLI lane to branch enforcement |
+| run-gate-project | bare-host by design for Docker/mountinfo self-tests; no VM lane | R1/R2 resume/progress; canary is command lane | no Hypothesis; Schemathesis N/A | whole-project line+branch campaign and make release consume complete Assay evidence |
+
+Source paths: each project's `run-gate.toml` and `assay.toml`, the shared
+`run-gate-project/run-gate.py`, and the project-specific tests named by those
+declarations. The audit is a starting point for the work slices below, not a
+claim that any lane is currently green.
+
 ## Phase 3 — run the estate matrix in the right environments
 
 For every release-facing project, run its declared lanes at one clean commit
