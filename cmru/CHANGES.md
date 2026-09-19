@@ -11,6 +11,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.4.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=240caa0f7776390a902f58e7c1c32ee69e176902 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- Merge branch 'feat/estate-cli-version-20260919' (0795ebb9)
+- cmru: retain declared release gate evidence (1e149e49)
+
 ## [5.3.1] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=32950335ea21e1b22f9dea04920cfb1a6a69246d -->
