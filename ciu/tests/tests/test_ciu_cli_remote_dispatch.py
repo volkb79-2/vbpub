@@ -151,6 +151,27 @@ def test_remote_config_load_failure_stops_before_opening_transport(remote, monke
     assert "could not load global configuration for remote operation" in capsys.readouterr().err
 
 
+def test_ssh_host_lookup_failure_is_a_clean_cli_error(remote, monkeypatch, capsys):
+    """Host inventory errors are reported before any SSH transport starts."""
+    seen, _ = remote
+    import ciu.hosts as hosts
+
+    monkeypatch.setattr(
+        hosts,
+        "get_host",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad host")),
+    )
+
+    assert _run(monkeypatch, ["ssh", "web"]) == 2
+    assert seen["exec"] == []
+    from ciu.cli_utils import cli_headline
+
+    assert capsys.readouterr().err.splitlines() == [
+        cli_headline(),
+        "[ERROR] bad host",
+    ]
+
+
 def test_resolve_repo_root_deploy_helper_reraises_as_clean_system_exit(monkeypatch, capsys):
     """Unit-level: `cli._resolve_repo_root_deploy` turns ANY ValueError from
     `deploy.resolve_repo_root` into `[ERROR] ...` on stderr + a clean

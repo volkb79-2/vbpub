@@ -1075,11 +1075,14 @@ class TestRenderedInstaller:
         cmru_toml = CIU_ROOT / "cmru.toml"
         if not cmru_toml.exists():
             pytest.skip("ciu/cmru.toml not available")
-        doc = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
-        assert doc["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
-        assert doc["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
-        assert doc["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
-        assert "installer" in doc["project"]
+        project = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
+        central = tomllib.loads(
+            (CIU_ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )
+        assert central["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
+        assert central["github"]["repo"] == host_enroll.INSTALLER_REPO_NAME
+        assert project["project"]["prefix"] == host_enroll.INSTALLER_TAG_PREFIX
+        assert "installer" in project["project"]
 
     def test_release_publishes_get_py_as_an_asset(self):
         cmru_toml = CIU_ROOT / "cmru.toml"
@@ -1090,7 +1093,7 @@ class TestRenderedInstaller:
         assert "--extra-asset" in argv
         assert argv[argv.index("--extra-asset") + 1] == "get.py"
 
-    def test_render_is_byte_identical_to_the_committed_file(self):
+    def test_render_is_byte_identical_to_the_committed_file(self, tmp_path):
         """O6's byte-identity half. It needs cmru's `get.py.tmpl`, which the
         installed cmru wheel does not ship (`[tool.setuptools.package-data]`
         packages only `templates/*.toml`), so it runs against a cmru source
@@ -1111,7 +1114,25 @@ class TestRenderedInstaller:
 
         from cmru.config import load_forge_config
 
-        cfg = load_forge_config(CIU_ROOT / "cmru.toml")
+        project_text = (CIU_ROOT / "cmru.toml").read_text(encoding="utf-8")
+        central = tomllib.loads(
+            (CIU_ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )
+        schema, rest = project_text.split("\n", 1)
+        effective_project = tmp_path / "cmru.toml"
+        effective_project.write_text(
+            schema
+            + "\n[github]\n"
+            + f"owner = {central['github']['owner']!r}\n"
+            + f"repo = {central['github']['repo']!r}\n"
+            + f"owner_type = {central['github']['owner_type']!r}\n"
+            + "\n[targets]\n"
+            + f"host = {central['targets']['host']!r}\n"
+            + f"registry = {central['targets']['registry']!r}\n"
+            + rest,
+            encoding="utf-8",
+        )
+        cfg = load_forge_config(effective_project)
         proj = cfg.projects["ciu"]
         ins = proj.installer
         rendered = getpy.render_get_py(
