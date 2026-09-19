@@ -4,7 +4,7 @@
 # The lane command is nyxloom's existing pytest invocation (pytest-cov, NOT
 # `coverage run` -- coverage run traces only the parent, measuring ~nothing
 # of xdist workers, which would false-FAIL under `-n auto`). R1 makes Assay
-# JUDGE that coverage: the changed-line floor on base..HEAD (the role the
+# JUDGE that coverage: the whole-source line and branch floor (the role the
 # retired `nyxloom.coverage_gate` used to play) and a verifiable verdict
 # artifact. tester-unified supplies the environment; run-gate installs the
 # selected worktree's assay source as the Assay CLI boundary, and the verdict

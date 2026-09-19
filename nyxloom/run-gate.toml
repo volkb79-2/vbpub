@@ -2,7 +2,8 @@
 # nyxloom project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.tester-unified] (R0+R1:
-# the existing pytest-cov suite, D-064-L2 changed-line floor). NL-1 landed
+# the existing pytest-cov suite with a whole-source line and branch floor).
+# NL-1 landed
 # here (nyxloom-P48): judgment moved from `nyxloom.coverage_gate`
 # self-judgment to Assay's own R1 changed-line judge -- ciu/run-gate.toml is
 # the proven precedent this mirrors. See run-gate-project/SPEC.md.
