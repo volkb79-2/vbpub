@@ -12,11 +12,12 @@ one config and one installed CLI.
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
-| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane (offline/redesign; excluded from builds and releases) | — |
+| **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
+| **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
-| vsc-devcontainer | [`vsc-devcontainer/`](vsc-devcontainer/) | devcontainer image | n/a |
+| devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
 | **debian-install v2** | [`scripts/debian-install-v2/`](scripts/debian-install-v2/) | root-only Python installer | n/a |
 
 Each product has its own README with product-specific detail.
@@ -94,8 +95,9 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
 - **Auto-released set** (`orchestration.project_order` in `cmru.orchestration.toml`): ciu, cmru,
-  assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge. Nyxloom is
-  intentionally offline and excluded from the build/release set.
+  assay, topos, nyxloom, modern-debian-tools-python-debug, pwmcp, tls-edge, and
+  run-gate-project. Each entry is governed by its project-local `cmru.toml`;
+  an artifact may still be deliberately omitted from a project's artifact list.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
   Design rationale: [`cmru/docs/DESIGN-GUIDE.md`](cmru/docs/DESIGN-GUIDE.md).

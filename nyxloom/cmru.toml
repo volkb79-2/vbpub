@@ -33,8 +33,9 @@ quiet = true
 commands = [
   # SSOT pointer (D-110/D-111): the real test/coverage/canary contract lives
   # in nyxloom/run-gate.toml + nyxloom-trove/nyxloom.toml [gates.tester-unified]
-  # (tests-pass + changed-line-coverage + canary-verified via Assay's real
-  # judge, NL-1/nyxloom-P48). This step owns no test logic; a bare
+  # (tests-pass + whole-source line/branch coverage via Assay's real judge;
+  # the canary remains in the separate session-extract lane and is not part
+  # of this bounded release step, NL-1/nyxloom-P48). This step owns no test logic; a bare
   # `cmru tester-gate -- pytest` here would release on a lesser bare-pytest
   # check than every other gate this project's own pipeline actually trusts.
   { label = "nyxloom: run-gate tester-unified", argv = ["./run-gate.py", "tester-unified"], cwd = "." },

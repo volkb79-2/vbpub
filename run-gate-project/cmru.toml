@@ -59,7 +59,7 @@ artifact_dirs = ["dist"]
 # lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
 # line and not `cmru tester-gate` — dogfooding means run-gate gates itself
 # through its own machinery, and the lane owns all test logic (pytest +
-# diff-coverage floor) in exactly one place. The lane runs in HOST mode
+# diff-coverage floor) in exactly one place. The lane runs in BARE-HOST mode
 # deliberately (run-gate.toml explains why: this suite is self-referential
 # and a container-wrapped run breaks its own mountinfo assertions). Steps
 # execute with project_root as cwd, so the sibling script resolves directly.

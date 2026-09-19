@@ -3,6 +3,13 @@
 Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.3.1 is
 released and installed; the estate lanes and final release remain in progress.
 
+Independent read-only review by Plato on 2026-09-19 found and drove fixes for
+stale checklist rows, the README's obsolete Nyxloom exclusion and broken
+devcontainer link, stale Nyxloom gate comments, and the run-gate contract's
+bare-host wording. The remaining review findings are operational: complete the
+live lane verdict ledger, promote the clean local `main` tip to `origin/main`,
+and verify every artifact after the final release.
+
 ## Operating rules
 
 - Keep `/workspaces/vbpub` clean. All implementation, review, and test changes
@@ -144,6 +151,14 @@ tree. The same retained candidate transaction is being resumed; no second
 CMRU release transaction is allowed for this attempt.
 
 ## Phase 3 — run the estate matrix in the right environments
+
+Environment exception: `run-gate-project` and Assay's self-hosting driver use
+their declared `bare-host` lanes because their tests start Docker and inspect
+the host's real mountinfo. These are host harnesses invoked from the cockpit,
+not tests run in the cockpit interpreter; the product tests execute in the
+declared subprocess/venv and their release contract records the exception.
+All ordinary Python and container lanes remain in `tester-unified` under
+`dev-gates.slice`.
 
 For every release-facing project, run its declared lanes at one clean commit
 and retain:
