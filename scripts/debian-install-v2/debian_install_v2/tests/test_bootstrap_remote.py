@@ -53,6 +53,12 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
     }
 
 
+def test_build_config_maps_controller_ssh_pubkey(mod, monkeypatch):
+    monkeypatch.setenv("CONTROLLER_SSH_PUBKEY", "ssh-ed25519 AAAAtest vbpub-controller-ephemeral")
+    config = mod.build_config()
+    assert config == {"controller_ssh_pubkey": "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"}
+
+
 def test_build_config_empty_when_nothing_set(mod, monkeypatch):
     for name in list(mod._STRING_FIELDS) + list(mod._INT_FIELDS) + list(mod._BOOL_FIELDS):
         monkeypatch.delenv(name, raising=False)

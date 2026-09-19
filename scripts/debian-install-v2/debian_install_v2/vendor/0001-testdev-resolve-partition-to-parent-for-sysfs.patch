@@ -1,0 +1,18 @@
+--- a/debian_install_v2/vendor/iocost_coef_gen.py	2026-09-09 21:16:29.727510539 +0000
++++ b/debian_install_v2/vendor/iocost_coef_gen.py	2026-09-09 21:17:03.233988609 +0000
+@@ -129,6 +129,15 @@
+     devno = f'{os.major(rdev)}:{os.minor(rdev)}'
+     testfile = f'/dev/{devname}'
+     info(f'Test target: {devname}({devno})')
++    # vbpub patch (see debian_install_v2/vendor/0001-*.patch): resolve
++    # partition -> whole device for the /sys/block/<devname>/queue/*
++    # lookups below -- those are whole-disk properties and don't exist
++    # as a per-partition sysfs path (e.g. /sys/block/vda5 is not a
++    # thing; only /sys/block/vda/vda5 is). devno/testfile above stay
++    # exactly what --testdev named; only this devname is widened.
++    parents = glob.glob('/sys/block/*/' + devname)
++    if len(parents):
++        devname = os.path.basename(os.path.dirname(parents[0]))
+ else:
+     devname, devno = dir_to_dev('.')
+     testfile = 'iocost-coef-fio.testfile'

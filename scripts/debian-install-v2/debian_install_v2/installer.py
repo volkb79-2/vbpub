@@ -88,8 +88,18 @@ class Installer:
         self.release = self._detect_release()
         self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
 
-    def _run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str:
-        output = self.actions.run(argv, description=description, dangerous=dangerous)
+    def _run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str:
+        # input is forwarded only when actually supplied (not just non-None
+        # by default) so the many pre-existing test doubles for
+        # actions.run(argv, description=..., dangerous=...) -- fixed,
+        # narrower signatures with no **kwargs -- keep working unchanged;
+        # only _apply_known_swap_shape()'s two sfdisk calls ever pass one.
+        kwargs: dict[str, object] = {"description": description, "dangerous": dangerous}
+        if input is not None:
+            kwargs["input"] = input
+        output = self.actions.run(argv, **kwargs)
         return (output or "").strip()
 
     def _detect_release(self) -> str:
@@ -154,7 +164,19 @@ class Installer:
     def install(self) -> None:
         self.state.save_new(StateStore.new(self.config))
         if self._notifications_enabled:
-            self._notify(self._initial_report_message())
+            # This is a courtesy notification, not part of the install
+            # itself -- a bug in facts-collection/plan-preview code here
+            # must never abort the whole install before _stage1() even
+            # gets a chance to run, and (since this happens before the
+            # try/except below) never silently skip every failure
+            # notification too (adversarial review finding, 2026-09-08: an
+            # unguarded show_plan() call here once did exactly that for
+            # Case B hosts -- see _resolve_swap_plan()'s docstring for the
+            # actual bug that triggered this backstop).
+            try:
+                self._notify(self._initial_report_message())
+            except Exception as exc:
+                print(f"[WARN] could not build/send initial report notification: {exc}", flush=True)
         try:
             self._stage1()
         except BaseException as exc:
@@ -191,6 +213,20 @@ class Installer:
             self.state.save(status="success", phase="done")
             if not self.actions.dry_run:
                 Path(self.config.state_dir, "stage2_done").touch(mode=0o600)
+            # Only NOW, after the marker external pollers watch for already
+            # exists on disk: this used to run inside _stage2() itself,
+            # BEFORE this marker was ever touched. Live-confirmed
+            # 2026-09-09 (v1001 round 12, the first fully successful
+            # install this whole effort): scp-api-install-host.py's own
+            # completion poller authenticates with this exact controller
+            # key, so revoking it before the marker exists created a race
+            # where a successful install could permanently strand its own
+            # external poller -- unable to ever reconnect and see the
+            # marker it's specifically waiting for, silently retrying for
+            # up to its full timeout (an hour, by default) and then
+            # reporting a spurious TimeoutError for an install that had
+            # actually already succeeded.
+            self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
@@ -212,7 +248,7 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
-        partitions, new_root_size = self._plan_swap_partitions()
+        partitions, new_root_size, _shrink_needed = self._resolve_swap_plan()
         plan_path = Path(self.config.state_dir) / "partition-plan.sfdisk"
         if plan_path.is_file():
             plan_text = plan_path.read_text(encoding="utf-8")
@@ -275,13 +311,37 @@ class Installer:
         self.actions.write_file("/etc/apt/sources.list.d/debian.sources", APT_SOURCES.format(release=self.release))
         self.actions.write_file("/etc/apt/apt.conf.d/custom.conf", APT_CUSTOM)
         self.actions.write_file("/etc/apt/preferences.d/debian-priorities", APT_PRIORITIES.format(release=self.release))
-        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
-        if not self.actions.dry_run:
+
+        # A freshly-booted VPS's network/DNS isn't always fully settled the
+        # instant customScript starts running - confirmed live 2026-09-08 on
+        # two independent hosts, both first-attempt: apt-get update fetched
+        # the release/updates/security suites fine but silently dropped
+        # backports/testing/unstable, then succeeded immediately on a manual
+        # retry seconds later with no code changes at all. Retry a few times
+        # before treating it as a real configuration failure.
+        expected = [self.release, f"{self.release}-updates", f"{self.release}-security", f"{self.release}-backports", "testing", "unstable"]
+        missing = list(expected)
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            self._run(["/usr/bin/apt-get", "update", "-qq"], "apt: refresh apt metadata")
+            if self.actions.dry_run:
+                missing = []
+                break
             policy = self._run(["/usr/bin/apt-cache", "policy"], "verify apt suites resolve")
-            expected = [self.release, f"{self.release}-updates", f"{self.release}-security", f"{self.release}-backports", "testing", "unstable"]
             missing = [suite for suite in expected if suite not in policy]
-            if missing:
-                raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+            if not missing:
+                break
+            if attempt < max_attempts:
+                print(
+                    f"[WARN] apt-get update did not resolve suite(s) yet: {', '.join(missing)} "
+                    f"(attempt {attempt}/{max_attempts}); retrying in 5s.",
+                    flush=True,
+                )
+                time.sleep(5)
+        if missing:
+            raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+
+        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
         self._mark_step("apt_config", "success", self.release)
 
     def _configure_users(self) -> None:
@@ -301,18 +361,22 @@ class Installer:
         self._mark_step("user_config", "success", ", ".join(packages))
 
     def _configure_journald(self) -> None:
+        # 1G/60d, not the earlier 200M/12month: with docker_log_driver
+        # defaulting to journald, this is now also every container's log
+        # store, not just the host's own -- operator-set retention,
+        # 2026-09-09.
         content = """[Journal]
 Storage=persistent
 Compress=yes
-SystemMaxUse=200M
+SystemMaxUse=1G
 SystemKeepFree=500M
 SystemMaxFileSize=100M
-MaxRetentionSec=12month
+MaxRetentionSec=60d
 MaxFileSec=1month
 """
         self.actions.write_file("/etc/systemd/journald.conf.d/99-vbpub-v2.conf", content)
         self._run(["/usr/bin/systemctl", "restart", "systemd-journald"], "restart journald", dangerous=True)
-        self._mark_step("journald_config", "success", "persistent 200M journal")
+        self._mark_step("journald_config", "success", "persistent 1G/60d journal")
 
     def _install_docker(self) -> None:
         arch = platform.machine()
@@ -381,9 +445,21 @@ MaxFileSec=1month
         existing = self._read_json_for_merge("/etc/docker/daemon.json")
         existing["live-restore"] = self.config.docker_live_restore
         existing["log-driver"] = self.config.docker_log_driver
-        existing.setdefault("log-opts", {})
-        existing["log-opts"]["max-size"] = self.config.docker_log_max_size
-        existing["log-opts"]["max-file"] = self.config.docker_log_max_file
+        # max-size/max-file are json-file/local-specific rotation options --
+        # meaningless (Docker logs a per-container warning and ignores them)
+        # under journald, where _configure_journald()'s SystemMaxUse/
+        # MaxRetentionSec are the real retention knobs instead.
+        if self.config.docker_log_driver in ("json-file", "local"):
+            existing.setdefault("log-opts", {})
+            existing["log-opts"]["max-size"] = self.config.docker_log_max_size
+            existing["log-opts"]["max-file"] = self.config.docker_log_max_file
+        else:
+            # A host re-run after switching drivers (e.g. json-file ->
+            # journald, the 2026-09-09 default flip) must not leave a
+            # stale, meaningless log-opts block behind -- this function
+            # owns log-driver/log-opts together (see comment above), so an
+            # idempotent re-run must fully reflect the current driver.
+            existing.pop("log-opts", None)
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 
@@ -479,6 +555,11 @@ MaxFileSec=1month
         self._mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
 
     def _configure_oomd(self) -> None:
+        # systemd-oomd ships as its own package on Debian, not part of the
+        # base systemd install - confirmed live 2026-09-08 on two freshly
+        # provisioned trixie hosts, both failing identically with "Unit
+        # systemd-oomd.service does not exist" before this install step.
+        self._packages(["systemd-oomd"], "oomd")
         self.actions.mkdir("/etc/systemd/oomd.conf.d")
         self.actions.write_file("/etc/systemd/oomd.conf.d/vbpub.conf", OOMD_CONFIG)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
@@ -541,7 +622,29 @@ MaxFileSec=1month
         )
         self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-        self._run(["/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service"], "enable early tuning units")
+        # enable --now, not a bare enable: both units are WantedBy=sysinit.target
+        # (templates.py), a target already passed earlier in THIS boot --
+        # `_health_gate_swap_devices()` reads the live zswap compressor from
+        # sysfs immediately afterward, in the same _stage2() run, with no
+        # reboot in between. A bare `enable` only symlinks the unit for the
+        # NEXT boot; it never actually runs this boot, so the health gate
+        # was reading the kernel's still-default 'lzo' compressor instead of
+        # the configured one. Live-confirmed 2026-09-09 (v1001 round 10, the
+        # first round to ever get this far -- pre-existing since 9ab176399,
+        # 2026-08-27, never reached before because earlier rounds died
+        # during partitioning): "health gate failed: zswap compressor is
+        # 'lzo', expected 'zstd'".
+        # "enable-now" (a single token) is NOT a real systemctl verb --
+        # confirmed via `man systemctl` against systemd 257.13-1~deb13u1,
+        # the exact version this installer targets: --now is a FLAG
+        # combined with the enable verb, not its own operation. Caught by
+        # review before this shipped for real -- every OTHER enable+start
+        # call site in this file already uses the correct two-token form
+        # (see e.g. line 406, "docker"); this one was a copy-paste slip
+        # that would have printed "Unknown operation enable-now." and
+        # aborted _configure_zswap() with a brand new failure instead of
+        # fixing the original one.
+        self._run(["/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service"], "enable and start early tuning units")
         self._mark_step("zswap_config", "success", self.config.zswap_compressor)
 
     def _disk_facts(self) -> tuple[int, int, int]:
@@ -610,7 +713,23 @@ MaxFileSec=1month
             if source == f"/dev/{self.root_disk}" or (source.startswith(prefix) and source[len(prefix):].isdigit()):
                 forbidden.append(line)
         allowed = {self.root_partition_path}
-        unexpected_mounts = [line for line in forbidden if line.split()[0] not in allowed]
+        unexpected_mounts = []
+        for line in forbidden:
+            source = line.split()[0]
+            if source in allowed:
+                continue
+            suffix = source[len(prefix):] if source.startswith(prefix) else ""
+            # Partitions numbered below root_number (e.g. the ESP and a
+            # separate /boot on a standard UEFI/GPT layout) are left
+            # byte-for-byte unchanged by _write_sfdisk_plan()'s own `kept`
+            # pass -- their being mounted is normal on every real host this
+            # tool targets and poses no risk to this transaction. Confirmed
+            # live 2026-09-08: this check's original allowlist-only-root
+            # form refused every run on a stock netcup trixie host, which
+            # always mounts vda1 (/boot/efi) and vda2 (/boot) alongside root.
+            if suffix.isdigit() and int(suffix) < self.root_number:
+                continue
+            unexpected_mounts.append(line)
         if unexpected_mounts:
             raise RuntimeError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
         return {"holders": holder_names, "mounts": forbidden}
@@ -636,6 +755,27 @@ MaxFileSec=1month
             values = {key: value.strip('"') for key, value in inuse_partition_editor.ATTR_RE.findall(attrs_text)}
             entries[int(suffix)] = values
         return entries
+
+    @staticmethod
+    def _geometry_for_comparison(attrs: dict[str, str]) -> dict[str, str | None]:
+        """Project a parsed partition-entry dict down to the fields a
+        write plan actually controls (start/size/type), case-folding
+        type. Live-confirmed 2026-09-09 (v1001 round 9, this same
+        readback-verification diagnostic's own first live outing): a
+        raw dict `!=` between the in-memory plan and a real `sfdisk
+        --dump` readback flags EVERY real write as a mismatch, not just
+        broken ones -- real sfdisk always assigns a random `uuid=` the
+        plan never specifies, and normalizes `type=` to uppercase
+        regardless of the case it was written in. A perfectly correct
+        forward write was rolled back over exactly these two cosmetic
+        differences, undoing otherwise-successful partitioning. Compare
+        only what the plan itself constrains.
+        """
+        return {
+            "start": attrs.get("start"),
+            "size": attrs.get("size"),
+            "type": (attrs.get("type") or "").upper(),
+        }
 
     def _validate_plan_geometry(
         self,
@@ -681,7 +821,20 @@ MaxFileSec=1month
             raise RuntimeError(f"swap target too small for {self.config.swap_file_count} devices")
         actual_total = per_device * self.config.swap_file_count
         end_buffer = 2048
-        new_root_size = max(root_size, self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // 512)
+        # Case A never resizes root -- it stays exactly its current size,
+        # full stop. Confirmed live 2026-09-08: this used to be
+        # max(root_size, preserve_root_size_gb-in-sectors), which on a real
+        # host whose default-image root partition is SMALLER than the
+        # configured preserve_root_size_gb (v1001's actual root was ~8.81
+        # GiB against a configured preserve_root_size_gb of 10) inflated
+        # new_root_size past the real root_size -- producing a plan that
+        # tried to GROW root, correctly refused by _validate_plan_geometry()
+        # ("partition plan unexpectedly grows the root partition"), but only
+        # after a real live install got that far. preserve_root_size_gb is
+        # exclusively a Case B concept (the floor _plan_root_shrink() will
+        # not shrink root below) and has no business influencing Case A's
+        # swap-placement math at all.
+        new_root_size = root_size
         first_swap_start = ((root_start + new_root_size + alignment - 1) // alignment) * alignment
         required_end = first_swap_start + actual_total + end_buffer
         if required_end > disk_sectors:
@@ -725,29 +878,31 @@ MaxFileSec=1month
             raise RuntimeError("could not determine minimum root filesystem size from resize2fs -P")
         return block_size, minimum_blocks
 
-    def _plan_root_shrink(self) -> None:
-        """Case B: install an initramfs hook to shrink root offline, pre-mount.
+    def _resolve_swap_plan(self) -> tuple[list[tuple[int, int]], int, bool]:
+        """Resolve (swap partitions, new root size, shrink_needed).
 
-        Called late in _stage1(), before _install_stage2()/_reboot() -- an
-        initramfs-tools local-premount hook fires on EVERY boot, so
-        installing it before stage1's own existing reboot is enough; no
-        extra reboot cycle is needed. Auto-detected, not configurable:
-        _plan_swap_partitions() succeeding at all means free space already
-        covers the known swap shape (Case A, the inuse_partition_editor.Table
-        path in _apply_known_swap_shape() handles it exactly as today, and
-        this method is a no-op). Only its "disk lacks space" failure mode
-        means root itself must shrink first (Case B).
+        Tries the free-space-already-covers-it plan first (Case A). Falls
+        back to a root-shrink-based plan when the disk lacks space for that
+        (Case B) -- the only difference between the two cases is whether
+        root itself must first shrink to (about) its filesystem minimum to
+        make room. Shared by _plan_root_shrink() (which also installs the
+        actual shrink hook when shrink_needed) and show_plan() (a pure,
+        no-side-effect preview) so both agree on what will actually happen,
+        instead of show_plan() calling _plan_swap_partitions() directly and
+        crashing unguarded on Case B (adversarial review finding,
+        2026-09-08: that crash happened inside _initial_report_message(),
+        called by install() BEFORE its own try/except around _stage1() --
+        so it produced no "Install FAILED" notification and no recorded
+        failure state at all, just a bare, silent process exit).
         """
         try:
-            self._plan_swap_partitions()
+            partitions, new_root_size = self._plan_swap_partitions()
         except RuntimeError as exc:
             if "disk lacks space for known swap shape" not in str(exc):
                 raise
         else:
-            self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
-            return
+            return partitions, new_root_size, False
 
-        self._packages(["e2fsprogs"], "stage1")
         disk_sectors, root_start, root_size = self._disk_facts()
         sector = 512
         block_size, minimum_blocks = self._root_filesystem_facts()
@@ -800,6 +955,28 @@ MaxFileSec=1month
         swap_partitions = [
             (first_swap_start + index * per_device, per_device) for index in range(self.config.swap_file_count)
         ]
+        return swap_partitions, target_root_sectors, True
+
+    def _plan_root_shrink(self) -> None:
+        """Case B: install an initramfs hook to shrink root offline, pre-mount.
+
+        Called late in _stage1(), before _install_stage2()/_reboot() -- an
+        initramfs-tools local-premount hook fires on EVERY boot, so
+        installing it before stage1's own existing reboot is enough; no
+        extra reboot cycle is needed. Auto-detected via _resolve_swap_plan():
+        not needed at all (Case A, the inuse_partition_editor.Table path in
+        _apply_known_swap_shape() handles it exactly as today) unless the
+        disk lacks space for the known swap shape as-is.
+        """
+        swap_partitions, target_root_sectors, shrink_needed = self._resolve_swap_plan()
+        if not shrink_needed:
+            self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
+            return
+
+        self._packages(["e2fsprogs"], "stage1")
+        _, _, root_size = self._disk_facts()
+        sector = 512
+        block_size, _ = self._root_filesystem_facts()
 
         plan_text = self._write_sfdisk_plan(swap_partitions, target_root_sectors)
         target_blocks = (target_root_sectors * sector) // block_size
@@ -820,7 +997,25 @@ MaxFileSec=1month
             ROOT_SHRINK_LOCAL_PREMOUNT_HOOK,
             0o755,
         )
-        self._run(["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs with the root-shrink hook", dangerous=True)
+        # -k all, not a bare -u: -u only rebuilds the CURRENTLY RUNNING
+        # kernel's initrd. Live-confirmed root cause of r1002's silent
+        # shrink no-op (2026-09-09): stage1 install steps before this point
+        # can pull in a newer linux-image package as an ordinary dependency
+        # (confirmed on r1002: 6.12.94+deb13 was running when this ran, but
+        # 6.12.107+deb13 was ALSO installed and reboot's GRUB default picks
+        # the newest kernel) -- that newer kernel's own postinst had
+        # already auto-generated ITS initrd (without our hook, installed
+        # only after the fact) at package-install time, so a plain -u here
+        # silently rebuilt the WRONG (soon-to-be-unused) kernel's image
+        # while the one GRUB actually booted kept its pristine, hookless
+        # initrd -- zero disk change, no logged failure, exactly what was
+        # observed. -k all rebuilds every installed kernel's initrd
+        # regardless of which one is currently running or which one GRUB
+        # ultimately boots.
+        self._run(
+            ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
+            "rebuild initramfs with the root-shrink hook", dangerous=True,
+        )
         self._mark_step(
             "root_shrink", "planned",
             f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
@@ -878,8 +1073,14 @@ MaxFileSec=1month
                 "/etc/vbpub/root-shrink-plan.sfdisk",
             ):
                 Path(path).unlink(missing_ok=True)
+            # -k all: same reasoning as _plan_root_shrink()'s own build call
+            # -- more than one kernel can be installed by this point, and a
+            # stale hook+plan-file copy left in a non-running kernel's
+            # initrd is untidy even though it's harmless (the idempotent
+            # no-op check in the hook script would just skip it next boot).
             self._run(
-                ["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs without the root-shrink hook", dangerous=True
+                ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
+                "rebuild initramfs without the root-shrink hook", dangerous=True,
             )
             self._mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
             return True
@@ -932,16 +1133,26 @@ MaxFileSec=1month
             if line.startswith(f"{prefix}{self.root_number} ") or line.startswith(f"{prefix}{self.root_number}, ")
         )
         device, separator, attributes = root_line.partition(":")
-        root_parts = [part.strip(",") for part in attributes.split()]
+        # Real `sfdisk --dump` output pads attribute values for column
+        # alignment (e.g. "start=        2048, size=      497664, ..."), so
+        # a plain whitespace .split() mis-tokenizes "start=" and "2048,"
+        # into two separate, malformed pieces -- silently dropping the
+        # "start" key entirely once re-parsed by _parse_partition_entries(),
+        # which later crashed _validate_plan_geometry() with an uncaught
+        # KeyError('start') (confirmed live 2026-09-08 against a real host's
+        # dump; the exact same mis-tokenization bug _parse_partition_entries()
+        # itself was already fixed for, via this same ATTR_RE, but that fix
+        # was never applied here). Use ATTR_RE to extract key=value pairs
+        # regardless of padding, preserving every non-"size" value verbatim
+        # (including quoted ones, e.g. a name="...").
         rebuilt = []
         inserted = False
-        for part in root_parts:
-            key = part.partition("=")[0]
+        for key, value in inuse_partition_editor.ATTR_RE.findall(attributes):
             if key == "size":
                 rebuilt.append(f"size={new_root_size}")
                 inserted = True
             else:
-                rebuilt.append(part)
+                rebuilt.append(f"{key}={value}")
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
@@ -977,24 +1188,143 @@ MaxFileSec=1month
             backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
             self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
             self.actions.write_file(plan_path, plan_text)
-            self._run(["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"], dangerous=True)
+            # input=plan_text is REQUIRED -- sfdisk with no positional script
+            # argument reads its new table from stdin (this is exactly how
+            # inuse_partition_editor.py's own Table.write() calls it:
+            # `run(["sfdisk", ...], input=self.to_dump())`); the port here had
+            # dropped that `input=` entirely, and HostActions.run() had no
+            # stdin plumbing at all to carry it even if supplied. Under
+            # systemd (Type=oneshot, no StandardInput=), default stdin is
+            # /dev/null, so sfdisk got an empty script and silently wrote
+            # nothing -- readback then never matched the plan, and EVERY
+            # real run fell into the (also broken, see below) rollback
+            # branch. Confirmed live 2026-09-09 on v1001 round 6: this was
+            # the true cause of "rollback failed partition write", not the
+            # partx/blkid path bugs fixed earlier in this same session.
+            self._run(
+                ["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"],
+                dangerous=True,
+                input=plan_text,
+            )
             # partx -a + udevadm settle (inuse_partition_editor.Table.write()'s
             # own apply mechanism, ported to go through HostActions rather than
             # its bare subprocess.run) is more reliable than partprobe alone at
             # getting the new swap partitions' /dev/xxxN nodes to actually exist
             # before _activate_swap_partitions() tries to mkswap them (P0#3).
-            self._run(["/usr/sbin/partx", "-a", f"/dev/{self.root_disk}"], "register new partitions with the kernel", dangerous=True)
+            # Confirmed live 2026-09-08 on real Debian 13 trixie: partx lives
+            # at /usr/bin/partx (util-linux), NOT /usr/sbin/partx -- the code
+            # had assumed the latter and crashed with a bare
+            # FileNotFoundError the moment a real host actually reached this
+            # line (every existing test faked the subprocess call, so the
+            # wrong path was never exercised for real). blkid similarly moved
+            # the OTHER direction on this same host (/usr/sbin/blkid, not
+            # /usr/bin/blkid) -- see _health_gate_swap_devices() and
+            # _activate_swap_partitions() below. Paths were verified directly
+            # against a live host with `which`, not assumed from any package
+            # changelog.
+            # --nr <range> is REQUIRED, not optional (confirmed live
+            # 2026-09-08, the very next real host to reach this line once
+            # the path above was fixed): a bare `partx -a <disk>` with no
+            # range tries to re-add EVERY partition number on the disk,
+            # including the ones the kernel already has (the ESP/boot/root
+            # partitions this write never touched) -- and adding an
+            # already-registered partition fails outright ("error adding
+            # partitions 1-3"). inuse_partition_editor.Table.write() itself
+            # already scopes this correctly (`partx --add --nr min:max`);
+            # the port here had dropped that scoping.
+            self._run(
+                [
+                    "/usr/bin/partx", "-a", "--nr",
+                    f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
+                    f"/dev/{self.root_disk}",
+                ],
+                "register new partitions with the kernel", dangerous=True,
+            )
             self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
-            if readback_entries != plan_entries:
+            expected_geometry = {n: self._geometry_for_comparison(a) for n, a in plan_entries.items()}
+            actual_geometry = {n: self._geometry_for_comparison(a) for n, a in readback_entries.items()}
+            if actual_geometry != expected_geometry:
+                # Diagnostic-only, computed before the rollback below
+                # overwrites the disk: every prior mismatch on this exact
+                # line has needed an SSH session to a still-broken host to
+                # find out WHAT differed (2026-09-08/09, three separate
+                # rounds) -- surface the actual diff in the raised error
+                # itself so it reaches Telegram/custom_script.output2
+                # without another live round + manual SSH dig. Compares
+                # the same normalized (start/size/type-cased) projection
+                # used for the pass/fail decision above, not the raw
+                # attrs dicts -- otherwise the diff itself would show the
+                # exact uuid/type-case noise that _geometry_for_comparison
+                # exists to ignore.
+                all_numbers = sorted(set(expected_geometry) | set(actual_geometry))
+                diff_parts = []
+                for number in all_numbers:
+                    expected = expected_geometry.get(number)
+                    actual = actual_geometry.get(number)
+                    if expected != actual:
+                        diff_parts.append(f"p{number}: expected={expected} actual={actual}")
+                mismatch_detail = "; ".join(diff_parts) or "(dicts differ but no per-number diff found)"
+                # Same missing-stdin bug as the forward write above: sfdisk
+                # takes its restore script on stdin, not as a positional
+                # path argument -- a bare positional arg after the device is
+                # sfdisk's (unrelated) "operate on just this partition
+                # number" syntax, which is why the live failure was
+                # literally "failed to parse partition number: '<path>'".
+                # current_dump is the exact backup content already held in
+                # memory (identical to what was just written to
+                # backup_dir/backup_name), so feed it straight back in
+                # rather than re-reading the file. _run() unconditionally
+                # .strip()s command output, so current_dump lost its
+                # trailing newline on the way in (unlike plan_text, which
+                # _write_sfdisk_plan() builds with one already) -- restore
+                # it so both `input=` payloads this method feeds sfdisk are
+                # terminated the same way (adversarial-review finding,
+                # 2026-09-09: harmless in practice, sfdisk's line reader
+                # handles a final unterminated line fine, but an
+                # unintentional divergence from the reference
+                # inuse_partition_editor.py, which never strips at all).
                 self._run(
-                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}", str(backup_dir / backup_name)],
+                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}"],
                     description="rollback failed partition write",
                     dangerous=True,
+                    input=current_dump + "\n",
                 )
-                self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel view after rollback")
-                raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
+                # partx + udevadm settle instead of partprobe (not even
+                # installed by this package set -- it ships in the separate
+                # `parted` package, never one of stage2's own dependencies).
+                # Two calls, not one (adversarial-review finding,
+                # 2026-09-08, round 2 -- confirmed directly against
+                # util-linux's own partx.c source, not just man-page
+                # recall): this branch just restored the OLD backup table, a
+                # strictly SMALLER set of partitions than what the
+                # just-reverted write's own partx -a already registered with
+                # the kernel (the new swap partitions, the resized root).
+                # `partx -u` alone only fixes GEOMETRY for partition numbers
+                # still present in the restored table (which is exactly what
+                # un-resizes root back to its original size) -- upd_parts()
+                # silently skips (warns, does not delete) any number that's
+                # now entirely ABSENT from the restored table, per
+                # util-linux's own source. The vanished swap-partition
+                # numbers need an explicit, scoped `-d --nr` first; `-d`
+                # treats an already-absent partition as success (ENXIO), so
+                # this is safe/idempotent even if the forward path never got
+                # as far as registering them.
+                self._run(
+                    [
+                        "/usr/bin/partx", "-d", "--nr",
+                        f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
+                        f"/dev/{self.root_disk}",
+                    ],
+                    "retract stale swap partitions after rollback", dangerous=True,
+                )
+                self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
+                self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
+                raise RuntimeError(
+                    f"partition table verification failed; restored backup {backup_dir / backup_name}; "
+                    f"diff: {mismatch_detail}"
+                )
             expected_paths = [
                 f"{self._partition_base}{number}"
                 for number in range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
@@ -1035,7 +1365,7 @@ MaxFileSec=1month
         }
         for number in expected_numbers:
             path = f"{prefix}{number}"
-            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not partuuid:
                 raise RuntimeError(f"health gate failed: missing PARTUUID on {path}")
             if not self.actions.dry_run and path not in active_names:
@@ -1061,12 +1391,12 @@ MaxFileSec=1month
         for offset, number in enumerate(range(first_number, last_number + 1), start=1):
             path = f"{prefix}{number}"
             label = f"vbpub-swap{offset}"
-            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not self.actions.dry_run and not partuuid:
                 raise RuntimeError(f"expected swap partition has no PARTUUID after partitioning: {path}")
             self._run(["/usr/sbin/mkswap", "-L", label, path], f"format {path}", dangerous=True)
-            self._run(["/usr/bin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
-            refreshed = partuuid if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            self._run(["/usr/sbin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
+            refreshed = partuuid if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not refreshed:
                 raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
             fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")
@@ -1182,16 +1512,105 @@ MaxFileSec=1month
                 print(f"[WARN] Telegram notification failed: {exc}", flush=True)
                 break  # don't send later chunks out of order after a failure
 
+    #: Confirmed live 2026-09-08 against a real Netcup host: a synchronous
+    #: reboot from inside the still-running customScript process strands
+    #: netcup's own ServerImageSetupTask forever at its CloudinitWait step
+    #: (it never sees cloud-init report completion, because the guest goes
+    #: down before that signal fires) -- which then PERMANENTLY LOCKS the
+    #: server against any further install-image API call
+    #: ("server.lock.error"). scripts/debian-install (v1)'s bootstrap.sh
+    #: already named and solved this exact failure mode
+    #: (stage1_reboot()/stage2_reboot(): "rebooting inline can strand the
+    #: provider task (e.g. Netcup CloudinitWait)") by scheduling a delayed,
+    #: detached reboot instead of an inline one, so the script can exit
+    #: cleanly and cloud-init can report completion first. This constant
+    #: mirrors v1's own default delay.
+    _REBOOT_DELAY_SECONDS = 60
+
     def _reboot(self) -> None:
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
             self._mark_step("reboot", "deferred", "disabled by configuration")
             self._notify("<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.")
             return
-        self._mark_step("reboot", "scheduled", "stage2 resumes on next boot")
+        self._mark_step(
+            "reboot", "scheduled",
+            f"stage2 resumes on next boot (reboot delayed {self._REBOOT_DELAY_SECONDS}s to let cloud-init report completion)",
+        )
         self._notify("<b>Stage1 complete.</b> Rebooting into stage2.")
-        self._run(["/usr/bin/systemctl", "reboot"], "reboot into stage2", dangerous=True)
+        # systemd-run schedules a transient, detached unit and returns
+        # immediately -- this process (and the customScript/cloud-init
+        # runcmd it's a child of) gets to exit normally well before the
+        # actual reboot fires. Not a raw shell backgrounded job
+        # (`sleep N && systemctl reboot &`, v1's own approach): this
+        # codebase's action allowlist deliberately has no path for
+        # ad hoc shell invocation at all (HostActions._validate() refuses
+        # bash/sh outright), so systemd-run -- a single, non-shell argv,
+        # allowlisted like any other command -- is the idiomatic
+        # equivalent here.
+        self._run(
+            [
+                "/usr/bin/systemd-run",
+                "--on-active", str(self._REBOOT_DELAY_SECONDS),
+                "--", "/usr/bin/systemctl", "reboot",
+            ],
+            "schedule delayed reboot into stage2 (avoids stranding the provider's cloud-init tracking)",
+            dangerous=True,
+        )
+
+    def _configure_controller_ssh_key(self) -> None:
+        pubkey_line = self.config.controller_ssh_pubkey.strip()
+        if not pubkey_line:
+            self._mark_step("controller_ssh_key", "skipped", "no controller_ssh_pubkey configured")
+            return
+        # mkdir -p's default mode is not group/other-writable (root's own
+        # umask), which is all sshd's StrictModes actually requires -- no
+        # need for an explicit chmod (neither `install` nor `chmod` is on
+        # actions.py's command allowlist, and shouldn't need to be for this).
+        self.actions.mkdir("/root/.ssh")
+        authorized_keys = Path("/root/.ssh/authorized_keys")
+        existing = "" if self.actions.dry_run or not authorized_keys.is_file() else authorized_keys.read_text(encoding="utf-8")
+        if pubkey_line in existing:
+            self._mark_step("controller_ssh_key", "success", "already present")
+            return
+        combined = existing if (not existing or existing.endswith("\n")) else existing + "\n"
+        self.actions.write_file(str(authorized_keys), combined + pubkey_line + "\n", 0o600)
+        self._mark_step("controller_ssh_key", "success", "controller pubkey installed for stage1/stage2 SSH monitoring")
+
+    def _remove_controller_ssh_key(self) -> None:
+        # Last step of stage2, once everything else has already succeeded --
+        # no further controller access is needed. Removes only the exact
+        # line _configure_controller_ssh_key() installed, so the operator's
+        # own persistent key (however it got there) is never touched.
+        #
+        # Deliberately NOT called from install()'s/resume()'s own failure
+        # handlers (adversarial review finding, 2026-09-08): if stage1 or
+        # stage2 fails partway through, the ephemeral key staying in
+        # authorized_keys is exactly what lets the controller (or a human)
+        # SSH in and diagnose the failure -- removing it on failure would
+        # cut off the one access path useful for debugging a broken run.
+        # It's removed only on the clean-success path, once there's nothing
+        # left to diagnose.
+        pubkey_line = self.config.controller_ssh_pubkey.strip()
+        if not pubkey_line:
+            return
+        if self.actions.dry_run:
+            self._mark_step("controller_ssh_key_removed", "success", "dry-run: would remove controller pubkey")
+            return
+        authorized_keys = Path("/root/.ssh/authorized_keys")
+        if not authorized_keys.is_file():
+            self._mark_step("controller_ssh_key_removed", "skipped", "authorized_keys not present")
+            return
+        lines = authorized_keys.read_text(encoding="utf-8").splitlines()
+        remaining = [line for line in lines if line.strip() != pubkey_line]
+        if len(remaining) == len(lines):
+            self._mark_step("controller_ssh_key_removed", "skipped", "controller pubkey not found (already removed?)")
+            return
+        content = "\n".join(remaining) + ("\n" if remaining else "")
+        self.actions.write_file(str(authorized_keys), content, 0o600)
+        self._mark_step("controller_ssh_key_removed", "success", "no further controller access needed")
 
     def _stage1(self) -> None:
+        self._configure_controller_ssh_key()
         if self.config.run_apt_config:
             self._configure_apt()
         self._packages(["python3"], "stage1")
@@ -1232,3 +1651,6 @@ MaxFileSec=1month
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self.state.save(phase="done", status="success")
+        # _remove_controller_ssh_key() deliberately does NOT happen here --
+        # see resume(), which calls it only after the stage2_done marker
+        # file exists. See that comment for why.

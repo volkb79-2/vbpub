@@ -147,6 +147,7 @@ def test_vm_wrapper_maps_custom_hostname_to_physical_mount(tmp_path):
     fake_log = tmp_path / "docker.log"
     fake_docker = tmp_path / "docker"
     hostname = Path("/etc/hostname").read_text().strip()
+    mount_command = f"printf '{TESTING}\\t/home/vb/physical/testing\\n'"
     fake_docker.write_text(
         """#!/bin/sh
 set -eu
@@ -167,7 +168,7 @@ case "${1:-}" in
         esac
         ;;
       *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
-      *Mounts*) printf '/workspaces/vbpub\\t/home/vb/physical\\n' ;;
+      *Mounts*) MOUNT_COMMAND ;;
       *) printf '%s\\n' image-id ;;
     esac
     ;;
@@ -183,6 +184,7 @@ case "${1:-}" in
   *) : ;;
 esac
 """
+        .replace("MOUNT_COMMAND", mount_command)
     )
     fake_docker.chmod(0o755)
     env = os.environ.copy()
@@ -205,8 +207,8 @@ esac
     calls = fake_log.read_text()
     assert "inspect physical-id" in calls
     assert "inspect unrelated-id" in calls
-    expected_testing = "/home/vb/physical" + str(TESTING).split("/workspaces/vbpub", 1)[1]
-    expected_project = expected_testing.removesuffix("/testing")
+    expected_testing = "/home/vb/physical/testing"
+    expected_project = "/home/vb/physical"
     assert f"{expected_testing}:/work:ro" in calls
     assert f"{expected_project}:/source:ro" in calls
 
