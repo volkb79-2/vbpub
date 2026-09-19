@@ -44,6 +44,12 @@ diagnostic work. Preserve only behavior that is still unique and consistent
 with the current headline scope. Carry its tests and documentation with any
 ported behavior, then run the affected tool gates in their declared containers.
 
+Review result (2026-09-19 UTC): discard the merge commit. Its functional and
+test changes are already represented by `aa0e69fa` and subsequent main commits;
+the only two-document delta against that implementation is already present in
+current Nyxloom documentation. A wholesale merge would also reintroduce older
+CMRU, checklist, and release-document states.
+
 ### `9e46dc36dd2c3ef6e7c9c31815cbb0e8b6e31e33`
 
 Classify the commit before changing history:
@@ -57,6 +63,14 @@ Classify the commit before changing history:
 
 The result must be a reviewed worktree commit, rather than a blind merge of an
 old branch tip.
+
+Review result (2026-09-19 UTC): discard the branch tip as a merge candidate.
+The attribution correction was valid for the historical snapshot, but later
+main commits replaced that architecture with the managed BuildKit remote and
+remote-owned cache contract. The current MDT and PWMCP docs describe the
+superseding design, and the VM acceptance plan retains the unresolved large
+transfer investigation. No unique source or test change remains to port from
+this three-file documentation commit.
 
 ## Phase 2 — strengthen the highest-value test lanes
 
