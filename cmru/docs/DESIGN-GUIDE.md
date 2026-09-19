@@ -57,3 +57,17 @@ drift risks. `cmru release` now owns context discovery, `PYTHONUNBUFFERED`, the 
 `cmru.release.log`, append separators, and the live tee. Retention is the default; explicit
 `--discard-logs-on-release` and `--discard-artifacts-on-release` opt out. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
+
+## Candidate-first promotion protects the source history
+
+An isolated release pushes its transaction branch to origin as a durable candidate. Each
+project is prepared and gated there, then its tag and public artifact are produced from that
+fixed commit. CMRU fast-forwards `origin/main` from the same candidate only after publication
+succeeds. This keeps a failed build or upload out of `main` and lets a later project consume an
+earlier project's completed release in the same run.
+
+The promotion is deliberately a single fast-forward push. CMRU does not rebase the candidate
+when another writer advances `origin/main`, because that would change the SHA that was gated and
+used to build the artifact. The candidate branch and worktree remain available for inspection;
+success deletes the now-redundant branch. A version strategy that creates a mechanical version
+commit receives a second gate on that exact commit before publication.

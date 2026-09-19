@@ -458,11 +458,10 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "assert_local_main_not_ahead", lambda _root, **_kw: 0)
     monkeypatch.setattr(transaction, "create_workspace", lambda _root, *, base, **_kw: workspace)
     monkeypatch.setattr(transaction, "copy_secret_overlays", lambda *_args: calls.append("secret"))
-    # Child fails (e.g. build/publish) after it already promoted origin/main.
+    # Child fails after the candidate cycle started; the new parent must never
+    # infer that source history needs a compensating revert.
     monkeypatch.setattr(transaction, "run_child", lambda _workspace, args: calls.append(list(args)) or 1)
     monkeypatch.setattr(transaction, "plan_was_refused", lambda _root, _w: False)
-    monkeypatch.setattr(transaction, "promotion_landed", lambda _root, _w: calls.append("checked-promotion") or True)
-    monkeypatch.setattr(transaction, "read_release_progress", lambda _root, _w: None)
     monkeypatch.setattr(
         transaction, "revert_promotion",
         lambda _w, *, from_sha=None: calls.append("reverted") or transaction.RevertResult(ok=True, reverted=True),
@@ -482,10 +481,13 @@ cwd = "alpha"
         cli.main(["release", "--config", str(config), "alpha"])
 
     assert exc.value.code == 1
-    assert calls.index("checked-promotion") < calls.index("reverted") < calls.index("synced")
-    output = capsys.readouterr().out
+    assert "reverted" not in calls
+    assert "synced" in calls
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
     assert "caller checkout is dirty" in output
     assert "rebase conflict" not in output
+    assert "candidate was not promoted" in output
     # A failed release retains the worktree/branch for inspection — cleanup must not run.
     assert remove_calls == []
 
@@ -1233,9 +1235,8 @@ def test_promote_workspace_fast_forwards_remote_main():
         assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
 
 
-def test_promote_workspace_rebases_and_retries_past_a_concurrent_unrelated_push():
-    """This repo has other concurrent committers — a non-fast-forward rejection
-    from a race, not a real conflict, must not fail the whole release."""
+def test_promote_workspace_fails_closed_on_a_concurrent_unrelated_push():
+    """A candidate that was already built must never be rebased onto a new main."""
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/race")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1250,16 +1251,18 @@ def test_promote_workspace_rebases_and_retries_past_a_concurrent_unrelated_push(
         _git("commit", "-q", "-m", "concurrent change", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        transaction.promote_workspace(workspace)  # must rebase onto it and retry, not raise
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
+            transaction.promote_workspace(workspace)
 
         _git("fetch", "-q", "origin", "main", cwd=h.repo_root)
-        assert _git("rev-parse", "origin/main", cwd=h.repo_root) == _git("rev-parse", "HEAD", cwd=workspace_path)
+        assert _git("rev-parse", "origin/main", cwd=h.repo_root) != _git("rev-parse", "HEAD", cwd=workspace_path)
         remote_files = _git("ls-tree", "-r", "--name-only", "origin/main", cwd=h.repo_root)
-        assert "generated.txt" in remote_files  # this release's own change
-        assert "concurrent.txt" in remote_files  # the concurrent change, not clobbered
+        assert "generated.txt" not in remote_files
+        assert "concurrent.txt" in remote_files
+        assert _git("status", "--porcelain=v1", cwd=workspace_path) == ""
 
 
-def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
+def test_promote_workspace_does_not_start_a_rebase_on_a_concurrent_conflict():
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/conflict")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1274,7 +1277,7 @@ def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
         _git("commit", "-q", "-m", "concurrent conflicting edit", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        with pytest.raises(RuntimeError, match="real conflict"):
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
             transaction.promote_workspace(workspace)
 
         # Never left mid-rebase — a retained worktree must be immediately usable.
@@ -1283,10 +1286,8 @@ def test_promote_workspace_aborts_and_raises_on_a_real_rebase_conflict():
         assert _git("status", "--porcelain=v1", cwd=workspace_path) == ""
 
 
-def test_promote_workspace_remaps_an_earlier_projects_checkpoint_after_rebase():
-    """A multi-project run records write_release_progress() after each project's
-    own promote. A LATER project's rebase must not strand an earlier project's
-    already-recorded checkpoint on a commit its rewritten branch no longer has."""
+def test_promote_workspace_leaves_candidate_and_checkpoint_unchanged_on_race():
+    """A failed final promotion leaves the built candidate and progress intact."""
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/multi")
         base = _git("rev-parse", "HEAD", cwd=workspace_path)
@@ -1308,15 +1309,13 @@ def test_promote_workspace_remaps_an_earlier_projects_checkpoint_after_rebase():
         _git("commit", "-q", "-m", "concurrent change", cwd=other)
         _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
 
-        transaction.promote_workspace(workspace)
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
+            transaction.promote_workspace(workspace)
 
         new_checkpoint = transaction.read_release_progress(h.repo_root, workspace)
         assert new_checkpoint is not None
-        assert new_checkpoint != after_a  # the rebase gave it a brand new SHA
-        # Still sits exactly one commit before HEAD (project a done, b pending) —
-        # remapped by position, not left pointing at some other commit.
+        assert new_checkpoint == after_a
         assert _git("rev-list", "--count", f"{new_checkpoint}..HEAD", cwd=workspace_path) == "1"
-        # And it is genuinely reachable from the rebased tip.
         assert _git("merge-base", new_checkpoint, "HEAD", cwd=workspace_path) == new_checkpoint
 
 
@@ -1337,9 +1336,8 @@ def test_promote_workspace_raises_immediately_for_a_non_race_push_failure(monkey
     assert len(calls) == 1  # not a race signature — no retry attempted
 
 
-def test_promote_workspace_gives_up_after_exhausting_retries(monkeypatch, tmp_path):
+def test_promote_workspace_attempts_exactly_once_on_non_fast_forward(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "release", "cmru/release/x", "c" * 40)
-    monkeypatch.setattr(transaction, "read_release_progress", lambda *_a, **_k: None)
     rejected = SimpleNamespace(returncode=1, stdout="", stderr="! [rejected]  HEAD -> main (non-fast-forward)\n")
     calls = []
 
@@ -1351,11 +1349,11 @@ def test_promote_workspace_gives_up_after_exhausting_retries(monkeypatch, tmp_pa
 
     monkeypatch.setattr(transaction.subprocess, "run", fake_run)
 
-    with pytest.raises(RuntimeError, match="lost the race"):
+    with pytest.raises(RuntimeError, match="candidate was not promoted"):
         transaction.promote_workspace(workspace)
 
     push_attempts = [c for c in calls if c[:2] == ["git", "push"]]
-    assert len(push_attempts) == transaction._PROMOTE_MAX_RETRIES + 1
+    assert len(push_attempts) == 1
 
 
 def test_resume_rejects_worktree_from_another_repository(tmp_path, monkeypatch):

@@ -52,7 +52,7 @@ def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(mo
         github_config=SimpleNamespace(), env_config=SimpleNamespace(), no_build=True,
     )
     assert result == []
-    assert calls == ["prepare", "gate", "promote", "backup"]
+    assert calls == ["prepare", "backup", "gate", "promote"]
     assert progress == ["a" * 40, "b" * 40]
 
 

@@ -107,24 +107,14 @@ def test_retain_outputs_rolls_back_when_destination_setup_fails(tmp_path):
     assert not (root / "demo" / "artifacts" / "tag").exists()
 
 
-def test_promote_retries_a_non_fast_forward_then_succeeds(tmp_path):
-    workspace = SimpleNamespace(repo_root=tmp_path, path=tmp_path)
-    responses = iter([
-        SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout=""),
-        SimpleNamespace(returncode=0, stderr="", stdout=""),
-        SimpleNamespace(returncode=0, stderr="", stdout=""),
-        SimpleNamespace(returncode=0, stderr="", stdout=""),
-    ])
+def test_promote_fails_closed_on_a_non_fast_forward(tmp_path):
+    workspace = SimpleNamespace(repo_root=tmp_path, path=tmp_path, branch="cmru/release/x")
+    responses = iter([SimpleNamespace(returncode=1, stderr="[rejected] non-fast-forward", stdout="")])
     commands = []
-    with patch.object(transaction, "read_release_progress", return_value=None), \
-         patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or next(responses)):
-        transaction.promote_workspace(workspace)
-    assert commands == [
-        ["git", "push", "origin", "HEAD:refs/heads/main"],
-        ["git", "fetch", "--prune", "origin", "main"],
-        ["git", "rebase", "origin/main"],
-        ["git", "push", "origin", "HEAD:refs/heads/main"],
-    ]
+    with patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or next(responses)):
+        with pytest.raises(RuntimeError, match="candidate was not promoted"):
+            transaction.promote_workspace(workspace)
+    assert commands == [["git", "push", "origin", "HEAD:refs/heads/main"]]
 
 
 def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):
