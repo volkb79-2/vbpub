@@ -30,6 +30,13 @@ must not create one merely because the script was invoked. The generated
 controller public key is passed through the bootstrap and removed by stage2;
 the operator's persistent access key remains independent.
 
+The Netcup account-level `sshKeyIds` choice is separate from that local
+controller identity. Existing account keys are shown during the interactive
+key step and the first is the default; selecting one prevents a new account
+key from being registered. `--ssh-key-id ID` pins an existing key for direct
+payload runs. A new account key is created only when no account key exists or
+the operator explicitly selects the create-new choice.
+
 ## Test boundary
 
 The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap

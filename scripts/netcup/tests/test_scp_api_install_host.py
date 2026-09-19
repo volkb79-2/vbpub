@@ -412,6 +412,43 @@ def test_resolve_ssh_key_ids_auto_selects_first_noninteractive(install_host_mod,
     assert install_host_mod._resolve_ssh_key_ids(client, 1, None, None, interactive=False) == [10]
 
 
+def test_resolve_ssh_key_ids_uses_existing_key_before_creating_controller_key(
+    install_host_mod, fake_client, monkeypatch
+):
+    keys = [{"id": 10, "name": "persistent"}, {"id": 20, "name": "backup"}]
+    client = fake_client(get_responses=[keys])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+    monkeypatch.setattr(
+        install_host_mod,
+        "_ensure_netcup_ssh_key_id_for_identity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not create a key")),
+    )
+
+    assert install_host_mod._resolve_ssh_key_ids(
+        client, 1, None, "/tmp/controller-key", interactive=True
+    ) == [20]
+
+
+def test_resolve_ssh_key_ids_can_explicitly_create_controller_key(
+    install_host_mod, fake_client, monkeypatch
+):
+    keys = [{"id": 10, "name": "persistent"}]
+    client = fake_client(get_responses=[keys])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
+    calls = []
+
+    def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 99
+
+    monkeypatch.setattr(install_host_mod, "_ensure_netcup_ssh_key_id_for_identity", create)
+
+    assert install_host_mod._resolve_ssh_key_ids(
+        client, 1, None, "/tmp/controller-key", interactive=True
+    ) == [99]
+    assert calls
+
+
 def test_resolve_ssh_key_ids_none_when_no_keys(install_host_mod, fake_client):
     client = fake_client(get_responses=[[]])
     assert install_host_mod._resolve_ssh_key_ids(client, 1, None, None, interactive=False) is None
@@ -468,6 +505,36 @@ def test_install_from_payload_dry_run_never_posts(install_host_mod, tmp_path, fa
     assert not any(c[0] == "post" for c in client.calls)
     out = capsys.readouterr().out
     assert "dry-run" in out.lower()
+
+
+def test_install_from_payload_cli_ssh_key_ids_override_payload(
+    install_host_mod, tmp_path, fake_client, capsys
+):
+    payload = {
+        "serverId": 12345,
+        "hostname": "test.example.com",
+        "imageFlavourId": 128,
+        "diskName": "vda",
+        "sshKeyIds": [1],
+        "customScript": "echo hi",
+    }
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text(json.dumps(payload))
+
+    client = fake_client(allow=("get",))
+    args = types.SimpleNamespace(
+        dry_run=True,
+        yes=True,
+        ssh_identity_file=None,
+        ssh_key_ids=[42, 43],
+    )
+
+    install_host_mod.install_from_payload(client, str(payload_path), args)
+
+    output = capsys.readouterr().out
+    assert '"sshKeyIds": [' in output
+    assert "    42," in output
+    assert "    43" in output
 
 
 def test_install_from_payload_rejects_invalid_payload(install_host_mod, tmp_path, fake_client):
@@ -1066,6 +1133,14 @@ def test_parse_args_accepts_login_and_configure_commands(install_host_mod, monke
     assert install_host_mod.parse_args().command == "build-customscript"
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py"])
     assert install_host_mod.parse_args().command is None
+
+
+def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["scp-api-install-host.py", "--ssh-key-id", "10", "--ssh-key-id", "20"],
+    )
+    assert install_host_mod.parse_args().ssh_key_ids == [10, 20]
 
 
 # --- build-customscript wizard -----------------------------------------------

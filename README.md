@@ -58,7 +58,8 @@ the legacy shell bootstrap remains under `scripts/debian-install/`.
 For Netcup SCP API provisioning, use the guided tools under
 [`scripts/netcup/`](scripts/netcup/): `login` creates the OAuth refresh token,
 `configure` resolves account/image defaults into a local recipe, and the
-installer can preview or monitor a Debian-install-v2 run. See the
+installer can select an existing account SSH key (or explicitly register a
+new one), preview, or monitor a Debian-install-v2 run. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 
 ## Repository setup and initial CMRU build

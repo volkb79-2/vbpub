@@ -494,6 +494,9 @@ Examples:
   # Interactive mode (gather information and prompt for confirmation):
   %(prog)s
 
+  # Pin an already-registered account key in a payload; this skips account-key creation:
+  %(prog)s --payload=target-host.jsonc --ssh-key-id=123 --monitor
+
   # Direct installation from payload file, then watch it to completion:
   %(prog)s --payload=target-host.jsonc --monitor
 
@@ -662,6 +665,18 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
             "an unrendered template rather than silently generate a key that can't match the "
             "host). Not the host-generated per-host production key from bootstrap stage2."
         )
+    )
+    parser.add_argument(
+        "--ssh-key-id",
+        dest="ssh_key_ids",
+        action="append",
+        type=int,
+        metavar="ID",
+        help=(
+            "Use an already-registered Netcup account SSH key (repeat for multiple IDs); "
+            "prevents creating a new account key. In interactive mode, existing keys are "
+            "listed and selectable when this option is omitted."
+        ),
     )
     return parser.parse_args()
 
@@ -1600,12 +1615,14 @@ def _resolve_ssh_key_ids(
     """Resolve sshKeyIds: use preselected_ids as-is if given (payload already
     had sshKeyIds), else query and pick/derive.
 
-    With an identity file: ensure/derive its netcup key id and merge it with
-    every existing key already on the account (so the pre-seeded default key
-    stays authorized alongside the deterministic-attach key) - matches this
-    tool's prior behavior exactly. Without one: interactive runs get a
-    numbered prompt over the account's existing keys; non-interactive runs
-    keep the first key, also matching prior behavior.
+    With an identity file and existing account keys: interactive runs get a
+    numbered prompt whose default is the first existing key and whose final
+    choice explicitly creates a new account key for the controller identity.
+    Non-interactive runs use the first existing key. This keeps an existing
+    account key from being silently shadowed by a newly registered one. If no
+    account key exists, or the operator explicitly chooses creation, the
+    identity key is registered. Without an identity file, existing keys are
+    selected the same way and no key can be created.
     """
     if preselected_ids is not None:
         return preselected_ids
@@ -1618,31 +1635,26 @@ def _resolve_ssh_key_ids(
     else:
         print("   ⚠ WARNING: No SSH keys found on this netcup account!")
 
+    if identity_file and ssh_keys:
+        if interactive:
+            descs = [f"ID {k['id']:3d} | {k.get('name', '')}" for k in ssh_keys]
+            descs.append("Create a new key for this install's controller identity")
+            idx = _prompt_choice(descs, default_index=0, prompt_label="   Select SSH key")
+            if idx < len(ssh_keys):
+                chosen_id = int(ssh_keys[idx]["id"])
+                print(f"   ✓ Using existing SSH key ID: {chosen_id}")
+                return [chosen_id]
+        else:
+            chosen_id = int(ssh_keys[0]["id"])
+            print(f"   ✓ Auto-selected existing SSH key ID (non-interactive): {chosen_id}")
+            return [chosen_id]
+
+        print("   Creating a new Netcup SSH key for this install's controller identity...")
+
     if identity_file:
         ssh_key_id = _ensure_netcup_ssh_key_id_for_identity(client, identity_file, dry_run=dry_run)
-        if not ssh_keys:
-            print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_id}")
-            return [ssh_key_id]
-
-        ordered_ids: List[int] = []
-        seen_ids: set = set()
-        for key in ssh_keys:
-            try:
-                key_id = int(key["id"])
-            except Exception:
-                continue
-            if key_id not in seen_ids:
-                ordered_ids.append(key_id)
-                seen_ids.add(key_id)
-        if ssh_key_id not in seen_ids:
-            ordered_ids.append(ssh_key_id)
-            seen_ids.add(ssh_key_id)
-
-        if len(ordered_ids) == 1:
-            print(f"   ✓ Using sshKeyId matching identity file: {ordered_ids[0]}")
-        else:
-            print(f"   ✓ Using SSH Key IDs (existing + identity): {', '.join(str(x) for x in ordered_ids)}")
-        return ordered_ids
+        print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_id}")
+        return [ssh_key_id]
 
     if not ssh_keys:
         return None
@@ -1724,6 +1736,12 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
 
     print("✓ Payload loaded successfully")
     print()
+
+    requested_ssh_key_ids = getattr(args, "ssh_key_ids", None)
+    if requested_ssh_key_ids is not None:
+        # A CLI selection is an explicit per-run override, including when a
+        # checked-in/local payload contains a different stale selection.
+        installation_payload["sshKeyIds"] = requested_ssh_key_ids
 
     validation_errors = _validate_installation_payload(installation_payload)
     if validation_errors:
@@ -2272,7 +2290,7 @@ def main():
         # interactive: numbered prompt over existing keys when no identity file)
         print("5. Resolving SSH keys...")
         ssh_key_ids = _resolve_ssh_key_ids(
-            client, user_id, None,
+            client, user_id, getattr(args, "ssh_key_ids", None),
             getattr(args, "ssh_identity_file", None),
             interactive=interactive,
             dry_run=getattr(args, "dry_run", False),

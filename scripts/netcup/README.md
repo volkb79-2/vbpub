@@ -39,6 +39,21 @@ Run an interactive installation and follow stage2:
 python3 scp-api-install-host.py --payload target-host.jsonc --monitor
 ```
 
+During the interactive key step, existing Netcup account keys are listed and
+the first one is the default. Choosing one uses it without registering a new
+account key. To pin an existing key in a direct payload run, pass its ID (and
+repeat the option for multiple IDs):
+
+```bash
+python3 scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+```
+
+The local `--ssh-identity-file` is a separate ephemeral controller key used
+for monitoring and is still generated when needed; `--ssh-key-id` refers to a
+key already registered in the Netcup account. If no account key exists, or
+the interactive create option is selected, the controller key is registered
+before the final install request.
+
 `scp-api-install-host.py --help` documents the payload, attach-only, poweroff,
 and wizard modes. `scp-api-explore.py` provides read-only account/server
 inspection and explicitly gated reversible actions.

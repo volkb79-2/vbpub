@@ -65,6 +65,18 @@ python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
 python3 scp-api-install-host.py --payload target-host.jsonc --monitor
 ```
 
+The interactive install lists existing Netcup account SSH keys and uses the
+first selected key by default; choosing one does not register a new account
+key. For a direct payload run, pin an existing key explicitly:
+
+```bash
+python3 scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+```
+
+The local controller identity used for monitoring is separate. A new account
+key is registered only when no account key exists or the interactive create-new
+choice is selected.
+
 The generated `default-recipe.jsonc` is local and ignored. Its customScript
 uses a controller-side bootstrap placeholder; configure a feature-branch
 source before a live test:
