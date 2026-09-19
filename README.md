@@ -24,6 +24,9 @@ Each product has its own README with product-specific detail.
 Testing is uniform across the projects that adopted the gate entrypoint:
 `cd <project> && ./run-gate.py --list` discovers that project's declared
 lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
+The canonical estate-wide testing matrix, evidence rules, methodology review
+checklist, and Assay adoption policy are in
+[`TESTING-ESTATE-CHECKLIST.md`](TESTING-ESTATE-CHECKLIST.md).
 
 For Debian hosts, `debian-install v2` applies a known fresh-install swap shape
 from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
