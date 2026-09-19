@@ -21,6 +21,23 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.15.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=3e5e336d5696659744edab0202ef52740f23d944 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Testing
+- test(ciu): cover universal diagnostic branches (6c687916)
+- test(ciu): render installer from effective project config (f653ad81)
+- test(ciu): align gate witnesses with central config (98e31d36)
+- test(ciu): add property coverage for core grammars (2da81384)
+
 ## [7.14.0] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=8ff62e94efef00b5d15514d9cfd17a1476df5f1a -->
