@@ -9,12 +9,13 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from cmru import cli, config, getpy, resolve as resolve_module, runner, scaffold, standards, tester_gate, tool_deps
+from cmru import cli, cli_support, config, getpy, resolve as resolve_module, runner, scaffold, standards, tester_gate, tool_deps
 from cmru.cli_support import select_target_names
 
 
@@ -81,6 +82,25 @@ def test_config_parser_refuses_io_and_reserved_names(tmp_path, monkeypatch):
     reserved.write_text(_minimal_project("all"), encoding="utf-8")
     with pytest.raises(SystemExit):
         config._parse_project_document(reserved, require_repository_facts=False)
+
+
+def test_project_config_rejects_one_central_fact_duplicate(tmp_path):
+    path = tmp_path / "cmru.toml"
+    path.write_text(
+        "schema_version = 1\n[github]\nowner = 'o'\nrepo = 'r'\nowner_type = 'user'\n\n"
+        + _minimal_project().split("schema_version = 1\n", 1)[1],
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        config._parse_project_document(path, require_repository_facts=False)
+
+
+def test_invocation_context_is_immutable():
+    context = config.InvocationContext(
+        Path("/repo/cmru.toml"), "project", Path("/repo"), "demo", "project"
+    )
+    with pytest.raises(FrozenInstanceError):
+        context.scope = "estate"
 
 
 def _orchestration_with_entry(tmp_path: Path, entry_name: str, config_path: str) -> Path:
@@ -193,6 +213,21 @@ def test_cli_native_logging_and_candidate_integrity_edges(tmp_path, monkeypatch)
     assert cli._invocation_context(None) is marker
 
 
+def test_config_diagnostic_flushes_both_lines(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cli_support,
+        "print",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        raising=False,
+    )
+
+    cli_support.write_config_diagnostic("bad")
+
+    assert len(calls) == 2
+    assert all(call[1]["flush"] is True for call in calls)
+
+
 def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path):
     project = cli.ProjectConfig(
         "demo", {}, {}, prefix="demo-v", version=cli.VersionSpec(strategy="file:VERSION"),
@@ -223,13 +258,19 @@ def test_cli_status_from_console_entrypoint_configures_native_logging(monkeypatc
     monkeypatch.setattr(cli, "_resolve_config", lambda _arg: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _path: _loaded({"demo": project}))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
-    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *args, **kwargs: None)
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "_configure_native_release_logging",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
     monkeypatch.setattr("cmru.version.status_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(sys, "argv", ["cmru", "status", "demo"])
     assert cli.main() is None
+    assert calls and calls[0][1] == {"append": False}
 
 
-def test_cli_changelog_backfill_rejects_bad_assignments(monkeypatch, tmp_path):
+def test_cli_changelog_backfill_rejects_bad_assignments(monkeypatch, tmp_path, capsys):
     projects = {
         "demo": cli.ProjectConfig("demo", {}, {}, prefix="demo-v", project_root=tmp_path),
         "other": cli.ProjectConfig("other", {}, {}, prefix="other-v", project_root=tmp_path),
@@ -243,6 +284,21 @@ def test_cli_changelog_backfill_rejects_bad_assignments(monkeypatch, tmp_path):
         cli.main(["changelog", "demo", "--backfill-tag", "demo-v1", "--backfill-tag", "demo-v2"])
     with pytest.raises(SystemExit):
         cli.main(["changelog", "all", "--backfill-tag", "demo-v1"])
+    with pytest.raises(SystemExit):
+        cli.main(["changelog", "demo", "--config", str(tmp_path / "cmru.orchestration.toml")])
+    assert "required" in capsys.readouterr().err
+
+
+def test_cli_changelog_backfill_diagnostic_discloses_no_prefix_match(monkeypatch, tmp_path, capsys):
+    project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", project_root=tmp_path)
+    cfg = tmp_path / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _arg: cfg)
+    monkeypatch.setattr(cli, "load_config", lambda _path: _loaded({"demo": project}))
+
+    with pytest.raises(SystemExit):
+        cli.main(["changelog", "demo", "--backfill-tag", "other-v1"])
+
+    assert "matched none" in capsys.readouterr().err
 
 
 def test_cleanup_rejects_wrong_scope_and_missing_project(monkeypatch, tmp_path):

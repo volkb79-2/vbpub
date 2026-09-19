@@ -1343,21 +1343,18 @@ def _select_projects(
     # project context by definition; this keeps child dispatches deterministic
     # when they are given the snapshot's project-local config path.
     context_project: str | None = None
-    estate_scope = False
     if raw_target is None:
         if config_path.name == PROJECT_CONFIG_FILENAME and len(configs) == 1:
             context_project = next(iter(configs))
         else:
             context = resolve_invocation_context(config_path)
             context_project = context.project_name
-            estate_scope = context.scope == "estate"
     try:
         return select_target_names(
             raw_target,
             configs,
             project_order,
             context_project=context_project,
-            estate_scope=estate_scope,
         )
     except TargetSelectionError as exc:
         from cmru.cli_support import write_config_diagnostic
