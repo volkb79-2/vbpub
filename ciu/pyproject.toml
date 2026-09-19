@@ -24,6 +24,9 @@ test = [
     "pytest>=8",
     "pytest-cov>=5.0",
     "pytest-xdist>=3.6",
+    # Property tests exercise path, size, and worktree grammar invariants in
+    # the same tester-unified closure as the full branch-coverage gate.
+    "hypothesis>=6.140",
     # S5.7: configfile schema validation exercises the real jsonschema
     # library in the test closure; runtime users get it via ciu[schema].
     "jsonschema>=4.18",

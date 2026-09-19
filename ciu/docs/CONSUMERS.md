@@ -846,10 +846,15 @@ Contract notes for a consumer of the gate:
   the verdict is written under gitignored `.assay/`. Nothing else may be left
   untracked.
 - The gate's exit status is the Assay job's own; a red lane is a red gate.
-- The container slice comes only from `$CGROUP_PARENT_DEV_BACKGROUND`
+- The container slice comes only from `$CGROUP_PARENT_DEV_GATES`
   (verified `LoadState=loaded` before `docker run`, fail-closed) — see
   vbpub AGENTS.md "Manual tester-unified gate runs — the four traps" for a
   hand-rolled run.
+
+The CIU test extra includes Hypothesis because the gate contains property
+checks for path translation, Docker-style resource sizes, and shared-infra
+argument grammar. These properties supplement the full 100% line-and-branch
+suite; they do not replace the declared Assay judgment.
 
 ## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
 
