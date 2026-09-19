@@ -10,6 +10,8 @@ one config and one installed CLI.
 |---|---|---|---|
 | **cmru** | [`cmru/`](cmru/) | Python wheel | cmru (dogfood) — `cmru-v*` |
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
+| **assay** | [`assay/`](assay/) | Python wheel + zipapp | cmru — `assay-v*` |
+| **topos** | [`topos/`](topos/) | Python wheel | cmru — `topos-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
