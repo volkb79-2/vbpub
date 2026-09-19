@@ -1,13 +1,15 @@
 # Post-CMRU estate release plan
 
 Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.3.1 is
-released and installed; the estate lanes and final release remain in progress.
+released and installed; the reviewed run-gate and estate CLI changes are
+merged, and the final estate release remains in progress.
 
 Independent read-only review by Plato on 2026-09-19 found and drove fixes for
 stale checklist rows, the README's obsolete Nyxloom exclusion and broken
 devcontainer link, stale Nyxloom gate comments, and the run-gate contract's
-bare-host wording. The remaining review findings are operational: complete the
-live lane verdict ledger, promote the clean local `main` tip to `origin/main`,
+bare-host wording. The version branch was independently reviewed in this
+working session; the remaining operational steps are to record the final
+release-facing evidence, promote the clean local `main` tip to `origin/main`,
 and verify every artifact after the final release.
 
 ## Operating rules
@@ -22,8 +24,10 @@ and verify every artifact after the final release.
   release.
 - Do not inspect a running gate more often than once per 20 minutes. Every
   long-running invocation writes its own exit marker or structured verdict.
-- Retain release logs and declared artifacts by default. Discard them only with
-  an explicit `--discard-logs-on-release` or `--discard-artifacts-on-release`.
+- Retain release logs, declared artifacts, and declared gate evidence by
+  default. Discard each category only with its explicit opt-out flag:
+  `--discard-logs-on-release`, `--discard-artifacts-on-release`, or
+  `--discard-evidence-on-release`.
 
 ## Phase 0 — finish and install CMRU
 
@@ -34,23 +38,14 @@ Completed 2026-09-19 UTC from promoted commit
   and branch coverage, and a complete mutation campaign;
 - tag `cmru-v5.3.1`, the published wheel, retained logs, and retained release
   artifacts were verified; and
-- the wheel was force-reinstalled into the devcontainer user environment and
-  verified outside the editable checkout as CMRU 5.3.1.
+- the wheel was force-reinstalled into the devcontainer's canonical
+  `/home/vscode/.venv` environment and verified outside the editable checkout
+  as CMRU 5.3.1.
 
-The remaining steps below use this installed CMRU. The final estate release
-still has to verify the new first-party artifacts after promotion.
-
-1. Let the retained CMRU candidate complete its `run-gate gate` conjunction.
-2. If it passes, verify the exact promoted commit, `cmru-v5.3.1` tag, published
-   release, wheel, checksum, and retained evidence before removing the durable
-   candidate worktree.
-3. Install the published CMRU wheel into this devcontainer's user environment.
-   Verify the installed version and source identity from a shell outside the
-   editable checkout, then run a read-only CLI diagnostic from the installed
-   wheel.
-4. If the gate fails, repair in the retained candidate worktree, push that
-   candidate branch, and resume the same transaction. Do not create a second
-   release candidate for the same attempt.
+The remaining steps below use this installed CMRU. The CMRU candidate is
+closed; its merged worktree was retired after its evidence was recorded. The
+final estate release still has to verify the new first-party artifacts after
+promotion.
 
 ## Phase 1 — review the outstanding CLI commits
 
@@ -63,11 +58,12 @@ diagnostic work. Preserve only behavior that is still unique and consistent
 with the current headline scope. Carry its tests and documentation with any
 ported behavior, then run the affected tool gates in their declared containers.
 
-Review result (2026-09-19 UTC): discard the merge commit. Its functional and
-test changes are already represented by `aa0e69fa` and subsequent main commits;
-the only two-document delta against that implementation is already present in
-current Nyxloom documentation. A wholesale merge would also reintroduce older
-CMRU, checklist, and release-document states.
+Review result (2026-09-19 UTC): discard the merge commit. `c9c34431` merges
+parents `8c56f6b3` and `2000236f`; compared with the clean implementation
+`aa0e69fa`, its only remaining delta is six documentation lines in
+`nyxloom/README.md` and `nyxloom/docs/CONSUMERS.md`, and those lines are already
+present in current Nyxloom documentation. A wholesale merge would reintroduce
+the old merge snapshot's stale CMRU, checklist, and release-document states.
 
 ### `9e46dc36dd2c3ef6e7c9c31815cbb0e8b6e31e33`
 
@@ -91,6 +87,24 @@ superseding design, and the VM acceptance plan retains the unresolved large
 transfer investigation. No unique source or test change remains to port from
 this three-file documentation commit.
 
+### Estate CLI version compatibility
+
+The reviewed worktree `feat/estate-cli-version-20260919` produced commit
+`05f373a4055e6fa1d753a0dd43d9e86512b7a58c` and merged into `main` as
+`0795ebb9a2471b714cb0f9aee9ae07e7e044c639`. It adds the top-level
+`--version` probe and headline-first parser diagnostics to the documented
+first-party entrypoints. Nyxloom's `extract --help` and missing
+`SESSION_LOG` cases are explicit regression tests. The review retained the
+existing bare `version` verbs where they already existed and documented the
+intentional exclusions: DAMON has no authoritative product version metadata,
+and internal helpers are not separate operator entrypoints.
+
+Focused checks passed in the branch. Topos's parser assertions passed, but its
+optional `zstandard` dependency was unavailable for the complete local pytest
+run; SRDM Go tests and formatting could not run in the cockpit because Go is
+not installed. These are environment limitations, not release evidence; the
+declared estate release gates must supply the final verdict.
+
 ## Phase 2 — strengthen the highest-value test lanes
 
 Work in separate, non-overlapping worktrees. Use the current CMRU gate as the
@@ -103,6 +117,23 @@ reference shape, while keeping product tests in each product.
 | 3 | assay | Keep the self-hosting exception explicit; ensure its own progress/resume and mutation behavior is tested in its declared lane. |
 | 4 | run-gate-project | Make the full gate, container placement, identity, mount, and failure-status behavior measurable; use Assay for resumable R0/R1/R2 evidence. |
 | 5 | nyxloom CLI | Cover the CLI surface only as scoped, with deterministic Hypothesis profiles where useful; keep daemon/long-running tests in their own declared lanes. |
+
+CMRU evidence-retention implementation completed in commit `1e149e49` on
+2026-09-19. `[project.release].evidence_paths` now declares exact gate output
+files/directories; successful transactions retain them under the project-local
+`evidence/cmru-release/<immutable-id>/` coordinate with a source-commit and
+SHA-256 manifest. Missing, overlapping, escaping, or symlinked declarations
+refuse before any move, and rollback is covered. The initial declarations are
+CMRU's `coverage.json`/`.assay` and run-gate-project's `coverage.json`; other
+projects remain unclaimed until their gates name stable outputs.
+
+The estate CLI identity contract is being applied in the same version worktree:
+`tool --version` is a quiet, one-line identity probe (`tool <version>` on
+stdout, exit 0, no stderr), while every parser usage, help, and argument or
+configuration diagnostic at every verb depth starts with the tool's full
+headline (`TOOL <version> — description`). Normal command output is not
+prefixed. The Nyxloom nested-parser regression that exposed this distinction is
+the acceptance example for the other first-party entrypoints.
 
 For each lane, check the canonical estate checklist against the complete test
 surface. Add Schemathesis only where the project owns an HTTP/OpenAPI contract;
@@ -139,16 +170,23 @@ floor.
 Second implementation slice: Nyxloom branch `feat/nyxloom-cli-branch-coverage`,
 commit `f5e806e4` (2026-09-19 UTC). It enables `--cov-branch` and
 `require_branch = true` for the broad CLI lane and adds the required README,
-design, and consumer documentation. The final rerun also corrects stale gate
-comments so they describe the whole-source line and branch contract; its
-tester-unified verdict is recorded after that rerun and before merge.
+design, and consumer documentation. The final CIU-managed rerun on branch
+`nyxloom/gate-20260919`, commit `d4e0b44d`, corrected the stale gate comments
+and passed through `tester-unified` under `dev-gates.slice`.
+
+Third implementation slice: the clean run-gate integration branch merged as
+`e887693e` after a tester-unified gate on judged commit `e72b666a`. It passed
+`1224 passed, 3 skipped`; the warnings were the known unavailable wheel
+toolchain and inactive host profiler. The integrated test additions cover
+declared cgroup placement and parser/status paths without importing the
+obsolete documentation branch.
 
 CMRU repair state: the first candidate gate reached 100% branch coverage but
 failed its mutation lane with twelve survivors. Candidate commit `d9ff92f8`
-adds behavioral witnesses for those paths, removes two equivalent selector
-flags, and ensures the mutation subprocess imports the candidate's `src`
-tree. The same retained candidate transaction is being resumed; no second
-CMRU release transaction is allowed for this attempt.
+added behavioral witnesses for those paths, removed two equivalent selector
+flags, and ensured the mutation subprocess imports the candidate's `src`
+tree. The resumed transaction closed successfully as CMRU v5.3.1; no second
+CMRU transaction was created for that attempt.
 
 ## Phase 3 — run the estate matrix in the right environments
 
@@ -172,18 +210,41 @@ and retain:
 - canary/rejection evidence where declared; and
 - all artifacts named by the lane.
 
+The final `cmru release all` scope is the nine-project orchestration order:
+`ciu`, `cmru`, `assay`, `topos`, `nyxloom`,
+`modern-debian-tools-python-debug`, `pwmcp`, `tls-edge`, and
+`run-gate-project`. The five priority lanes above are the manually reviewed
+test-enhancement slices; they do not reduce the final release scope. The
+transaction's own per-project release gate supplies the remaining exact-commit
+evidence, and the ledger must record each selected project's result before the
+release is called complete.
+
 The cockpit may invoke `run-gate.py`, `cmru tester-gate`, or the VM controller,
 but no product test is accepted from the cockpit's own Python environment.
 Docker-sensitive tests use their declared nested-Docker lane. Debian install,
 host setup, and other system-boundary tests use the `debian-install-v2` VM lane
 or the project-specific VM harness.
 
+### Live lane verdict ledger
+
+These entries name the exact judged commit and environment. A pending entry is
+not release evidence.
+
+| lane | judged commit | environment and command | verdict |
+|---|---|---|---|
+| CIU | `6c687916` | CIU-managed worktree; `ciu/run-gate.py ciu`; `tester-unified`, `dev-gates.slice` | PASS; complete pytest-cov line+branch command |
+| Nyxloom CLI | `d4e0b44d` | CIU-managed worktree; `nyxloom/run-gate.py tester-unified`; `tester-unified`, `dev-gates.slice` | PASS; whole-source line+branch command |
+| Assay | `7f1cea69` | CIU-managed worktree; `assay/run-gate.py tester-unified`; declared bare-host self-hosting driver | PASS; self-hosted tester-unified qualification, intentionally R0-only |
+| run-gate-project | `e72b666a` | CIU-managed worktree; `run-gate.py gate-full`; declared bare-host exception | PASS; 1224 passed, 3 skipped; selftest, Assay R1/R3, and aggregate gate-full exited 0 |
+
 ## Phase 4 — full estate release
 
 After the reviewed worktrees are merged and the estate matrix is green:
 
-1. Confirm `main` is clean and aligned with `origin/main`.
-2. Run the native `cmru release all` dry-run and inspect the ordered project
+1. Confirm `main` is clean, then push the reviewed commit to `origin/main` so
+   CMRU's stable-source contract can snapshot the exact tree.
+2. Confirm the dry-run names the nine-project orchestration scope and inspect
+   the ordered project
    plan, changed-project selection, dependency order, and artifact inventory.
 3. Run the full `cmru release all` transaction with the declared gates value
    `CGROUP_PARENT_DEV_GATES=dev-gates.slice`.
@@ -199,11 +260,41 @@ behavior. Assay should continue to own the generic resume, progress, mutation,
 and evidence protocol. Temporary coverage JSON files, timer commands, and
 one-off shell probes are disposable.
 
-A later assay enhancement may produce a mechanical report grouping uncovered
-branches by project and linking them to a resumable checklist. It should report
-gaps and evidence; it should not generate hollow tests or silently turn
-uncovered code into a pass. That enhancement is lower priority than getting the
-five release-facing lanes green in their proper environments.
+CMRU now retains declared gate evidence, separately from publishable artifacts,
+and writes a source-commit/hash manifest. This closes the evidence-loss gap for
+the CMRU and run-gate-project release contracts; declarations for additional
+projects should be added only when their gate output paths are stable and
+verified.
+
+Assay already provides the useful pieces for retained evidence:
+`assay analyze progress` summarizes a progress JSONL stream, and
+`assay analyze verdict --format text` renders a compact, commit-bound verdict.
+The missing operator surface is a bounded `assay analyze report` (or equivalent)
+that combines a launcher/receipt, the latest progress phase, job exit status,
+the last limited set of errors, and paths to the complete logs and artifacts.
+It should refuse missing or mismatched commit evidence, never treat truncated
+wrapper output as a verdict, and leave full detail available by explicit path.
+That is the durable answer to long-gate output exceeding a terminal buffer; it
+is lower priority than getting the priority lanes and the complete
+nine-project release transaction green in their proper environments.
+
+The Codex-side operator log has a separate, smaller improvement: `Ran ...` is
+the UI rendering of an `exec_command` call, usually a shell command string, but
+it is not a promise that every tool call is Bash or that the displayed line is
+the complete command. A safe local wrapper would accept a human `--purpose`
+and an argv after `--`, print a bounded `PLAN`/`EXEC`/`EXIT` record, preserve
+the child's exit status, and write complex multi-step sequences to a reviewed
+script with `set -o pipefail` and an explicit exit marker. It should execute an
+argv array rather than `eval` a free-form string; the referenced Copilot wrapper
+is useful as an operator-facing pattern but its `eval` and sourced plan file
+are too permissive for a general estate helper.
+
+This wrapper can make session logs easier to review, but it cannot discover the
+model's true remaining context or token budget from Bash. A tool result may
+expose an output-token count, and Nyxloom can index an available session log,
+but those are different facts. A post-call hook may append timestamps, exit
+status, output-log paths, and tool-result size; it must label any token value as
+an approximation and never present it as the model context size.
 
 ## Definition of done
 
@@ -211,8 +302,9 @@ five release-facing lanes green in their proper environments.
   devcontainer, and the candidate worktree is retired only after evidence is
   retained.
 - Both outstanding commits have an explicit merge/port/discard decision.
-- CIU, CMRU, assay, run-gate, and the nyxloom CLI lane have current evidence at
-  their declared rigor, with open limitations recorded honestly.
+- every project selected by the nine-project `cmru release all` has current
+  exact-commit evidence at its declared rigor, with open limitations recorded
+  honestly; the five priority lanes also have their enhanced review evidence.
 - No ship claim depends on a cockpit-local test run.
 - The final `cmru release all` completes from a clean, reviewed `main` and all
   released artifacts are verified.
