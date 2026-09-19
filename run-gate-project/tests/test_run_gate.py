@@ -2047,8 +2047,8 @@ class TestExecDisclosure:
         monkeypatch.chdir(proj)
         assert run_gate.main(["suite", "--worktree", str(repo)]) == 0
         out = capsys.readouterr().out
-        assert "no cgroup_slice declared and no $CGROUP_PARENT_DEV_GATES" \
-            in out
+        assert "$TEST_GATE_SLICE declared by" in out
+        assert "(unset)" in out
 
     def test_live_run_discloses_slice_and_redacted_argv(
             self, tmp_path, monkeypatch):
