@@ -115,6 +115,19 @@ argument grammar, and corrects CIU's gate documentation to use
 `$CGROUP_PARENT_DEV_GATES`. Its proof remains pending until the declared
 `tester-unified` lane runs from an integrated committed tree.
 
+Second implementation slice: Nyxloom branch `feat/nyxloom-cli-branch-coverage`,
+commit `f5e806e4` (2026-09-19 UTC). It enables `--cov-branch` and
+`require_branch = true` for the broad CLI lane and adds the required README,
+design, and consumer documentation. Its gate must establish whether the
+existing CLI suite reaches the new floor before this branch is merged.
+
+CMRU repair state: the first candidate gate reached 100% branch coverage but
+failed its mutation lane with twelve survivors. Candidate commit `d9ff92f8`
+adds behavioral witnesses for those paths, removes two equivalent selector
+flags, and ensures the mutation subprocess imports the candidate's `src`
+tree. The same retained candidate transaction is being resumed; no second
+CMRU release transaction is allowed for this attempt.
+
 ## Phase 3 — run the estate matrix in the right environments
 
 For every release-facing project, run its declared lanes at one clean commit
