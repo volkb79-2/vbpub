@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import output
+from ciu import cli_utils
 from ciu.output import SeverityStream
 
 
@@ -106,6 +107,24 @@ def test_configure_leaves_plain_noninteractive_streams_unwrapped(monkeypatch):
 
     assert output.sys.stdout is stdout
     assert output.sys.stderr is stderr
+
+
+def test_cli_error_honors_an_explicit_stream_and_keeps_the_headline_first():
+    target = io.StringIO()
+
+    cli_utils.cli_error("bad configuration", stream=target)
+
+    assert target.getvalue().splitlines() == [
+        cli_utils.cli_headline(),
+        "bad configuration",
+    ]
+
+
+def test_argument_parser_usage_starts_with_the_product_headline():
+    parser = cli_utils.CiuArgumentParser(prog="ciu", add_help=False)
+    parser.add_argument("verb")
+
+    assert parser.format_usage().splitlines()[0] == cli_utils.cli_headline()
 
 
 def test_consume_cli_flags_preserves_command_passthrough_and_propagates_choice(monkeypatch):
