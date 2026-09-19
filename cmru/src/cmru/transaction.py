@@ -521,6 +521,75 @@ def _project_roots_for_retention(
     return main_project_root, workspace.path / relative
 
 
+def _declared_evidence_path(name: str, raw_path: object) -> Path:
+    """Validate one runtime evidence declaration and return its safe path."""
+    if not isinstance(raw_path, str) or not raw_path:
+        raise RuntimeError(f"{name}: evidence_paths must contain non-empty strings")
+    relative = Path(raw_path)
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or not relative.parts
+        or relative.name in ("", ".")
+    ):
+        raise RuntimeError(
+            f"{name}: evidence path must be project-relative and may not contain '..' or '.'"
+        )
+    return relative
+
+
+def _assert_no_symlink_components(root: Path, path: Path, name: str) -> None:
+    """Refuse a path that reaches its source or destination through a symlink."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(f"{name}: evidence path escaped its project root: {path}") from exc
+    if root.is_symlink():
+        raise RuntimeError(f"{name}: evidence project root is a symlink: {root}")
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise RuntimeError(f"{name}: evidence path is or crosses a symlink: {current}")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evidence_hashes(path: Path, coordinate: Path, name: str) -> list[dict[str, str]]:
+    """Validate a retained evidence path and return hashes relative to its record."""
+    if path.is_symlink():
+        raise RuntimeError(f"{name}: declared evidence path is a symlink: {path}")
+    if path.is_file():
+        return [{
+            "path": coordinate.as_posix(),
+            "sha256": _sha256_file(path),
+            "bytes": str(path.stat().st_size),
+        }]
+    if not path.is_dir():
+        raise RuntimeError(f"{name}: declared evidence path is missing or not a file/directory: {path}")
+
+    entries: list[dict[str, str]] = []
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            raise RuntimeError(f"{name}: declared evidence contains a symlink: {item}")
+        if item.is_dir():
+            continue
+        if not item.is_file():
+            raise RuntimeError(f"{name}: declared evidence contains a non-regular path: {item}")
+        entries.append({
+            "path": (coordinate / item.relative_to(path)).as_posix(),
+            "sha256": _sha256_file(item),
+            "bytes": str(item.stat().st_size),
+        })
+    return entries
+
+
 def retain_successful_build_outputs(
     repo_root: Path,
     workspace: ReleaseWorkspace,
@@ -734,6 +803,7 @@ def retain_success_outputs(
     *,
     retain_logs: bool,
     retain_artifacts: bool,
+    retain_evidence: bool = True,
 ) -> list[Path]:
     """Move selected completed-release evidence out before deleting the worktree.
 
@@ -744,7 +814,9 @@ def retain_success_outputs(
     is skipped without error (retention is now the release default, applied across
     every orchestrated project, not all of which build a local artifact). A
     project that DOES declare ``artifact_dirs`` and then fails to produce one is a
-    real build defect and still raises.
+    real build defect and still raises. Declared gate evidence follows the same
+    all-or-nothing transaction, but lives under a separate ``evidence`` coordinate
+    and has its own integrity manifest; it is never treated as a publishable artifact.
     """
     retained: list[Path] = []
     for name, immutable_id in results.items():
@@ -789,12 +861,54 @@ def retain_success_outputs(
                     raise RuntimeError(f"{name}: artifact directory destination already exists: {target}")
                 artifact_sources.append((target_name, source, target))
 
+        evidence_paths = tuple(getattr(project, "evidence_paths", ()) or ())
+        evidence_root = project_root / "evidence" / "cmru-release" / immutable_id
+        evidence_sources: list[tuple[str, Path, Path, str]] = []
+        attempt_evidence = retain_evidence and bool(evidence_paths)
+        if attempt_evidence:
+            _assert_no_symlink_components(project_root, evidence_root, name)
+            if evidence_root.exists() or evidence_root.is_symlink():
+                raise RuntimeError(f"{name}: retained evidence destination already exists: {evidence_root}")
+            seen_paths: list[tuple[Path, str]] = []
+            for raw_path in evidence_paths:
+                relative = _declared_evidence_path(name, raw_path)
+                if relative == Path("evidence.json"):
+                    raise RuntimeError(
+                        f"{name}: evidence path collides with the retention manifest: {raw_path}"
+                    )
+                for previous, previous_raw in seen_paths:
+                    if relative == previous or previous in relative.parents or relative in previous.parents:
+                        raise RuntimeError(
+                            f"{name}: evidence path collision/overlap: {previous_raw} and {raw_path}"
+                        )
+                seen_paths.append((relative, raw_path))
+                source = child_root / relative
+                _assert_no_symlink_components(child_root, source, name)
+                if source.is_symlink():
+                    raise RuntimeError(f"{name}: declared evidence path is a symlink: {source}")
+                if not source.exists():
+                    raise RuntimeError(f"{name}: declared evidence path is missing: {source}")
+                kind = "file" if source.is_file() else "directory" if source.is_dir() else "other"
+                if kind == "other":
+                    raise RuntimeError(
+                        f"{name}: declared evidence path is not a file/directory: {source}"
+                    )
+                _evidence_hashes(source, relative, name)
+                target = evidence_root / relative
+                _assert_no_symlink_components(project_root, target, name)
+                if target.exists() or target.is_symlink():
+                    raise RuntimeError(f"{name}: evidence destination already exists: {target}")
+                evidence_sources.append((relative.as_posix(), source, target, kind))
+
         log_parent = target_logs.parent
         log_parent_existed = log_parent.exists()
         artifact_parent = target_root.parent
         artifact_parent_existed = artifact_parent.exists()
+        evidence_parent = evidence_root.parent
+        evidence_parent_existed = evidence_parent.exists()
         moved_sources: list[tuple[Path, Path]] = []
         created_target_root = False
+        created_evidence_root = False
         moved_logs = False
         try:
             # All destination creation is deliberately before the first move.
@@ -804,6 +918,13 @@ def retain_success_outputs(
                 artifact_parent.mkdir(parents=True, exist_ok=True)
                 target_root.mkdir()
                 created_target_root = True
+            if attempt_evidence:
+                evidence_root.parent.mkdir(parents=True, exist_ok=True)
+                evidence_root.mkdir()
+                created_evidence_root = True
+                for _raw_path, _source, target, _kind in evidence_sources:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _assert_no_symlink_components(project_root, target, name)
 
             if retain_logs and source_logs.exists():
                 shutil.move(str(source_logs), str(target_logs))
@@ -825,10 +946,35 @@ def retain_success_outputs(
                 (target_root / "release.json").write_text(
                     json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
+            if attempt_evidence:
+                for _raw_path, source, target, _kind in evidence_sources:
+                    shutil.move(str(source), str(target))
+                    moved_sources.append((source, target))
+                evidence_manifest = {
+                    "schema_version": 1,
+                    "kind": "cmru-release-evidence",
+                    "project": name,
+                    "immutable_id": immutable_id,
+                    "source_commit": _git(workspace.path, "rev-parse", "HEAD"),
+                    "paths": [
+                        {
+                            "path": raw_path,
+                            "type": kind,
+                            "files": _evidence_hashes(target, Path(raw_path), name),
+                        }
+                        for raw_path, _source, target, kind in evidence_sources
+                    ],
+                }
+                (evidence_root / "evidence.json").write_text(
+                    json.dumps(evidence_manifest, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
             if moved_logs:
                 retained.append(target_logs)
             if attempt_artifacts:
                 retained.append(target_root)
+            if attempt_evidence:
+                retained.append(evidence_root)
         except Exception:
             rollback_errors: list[Exception] = []
             for source, target in reversed(moved_sources):
@@ -841,6 +987,11 @@ def retain_success_outputs(
                     shutil.rmtree(target_root)
                 except Exception as rollback_exc:
                     rollback_errors.append(rollback_exc)
+            if created_evidence_root and evidence_root.exists():
+                try:
+                    shutil.rmtree(evidence_root)
+                except Exception as rollback_exc:
+                    rollback_errors.append(rollback_exc)
             if not artifact_parent_existed and artifact_parent.exists():
                 try:
                     artifact_parent.rmdir()
@@ -851,6 +1002,14 @@ def retain_success_outputs(
                     log_parent.rmdir()
                 except OSError:
                     pass
+            if not evidence_parent_existed:
+                current = evidence_parent
+                while current != project_root and current.exists():
+                    try:
+                        current.rmdir()
+                    except OSError:
+                        break
+                    current = current.parent
             if rollback_errors:
                 raise RuntimeError(f"{name}: retention rollback failed") from rollback_errors[0]
             raise

@@ -360,7 +360,11 @@ fail rather than widen deletion.
 **S-REL.4b — Release declaration.** `[project.release]` MUST contain `git_tag` and
 `build_step`. `build_step` MUST name an explicit `[steps.<name>]` command. Optional
 `commit_generated = ["<project-relative path>", …]` lists mechanical tracked outputs CMRU
-may commit; optional `artifact_dirs` lists directories eligible for explicit retention.
+may commit; optional `artifact_dirs` lists publishable-output directories eligible for
+artifact retention. Optional `evidence_paths` lists commit-bound files or directories
+the successful release gate produces for retention. Evidence paths MUST be project-relative,
+MUST contain no `..` escape, and MUST resolve without symlinks in the isolated worktree;
+they are a bounded declaration, never a glob or an inferred directory.
 
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
@@ -459,6 +463,7 @@ git_tag = true                              # required; only source of tag polic
 build_step = "build"                         # required; one declared [steps.<name>]
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
 artifact_dirs = ["dist"]                     # required only when retaining artifacts
+# evidence_paths = ["coverage.json"]        # only files/dirs the release gate produces
 # changelog defaults to "CHANGES.md". Override only for another project-relative path;
 # `changelog = false` is the explicit opt-out.
 
@@ -688,15 +693,18 @@ three severity tokens green/yellow/red; redirected stdout/stderr is deliberately
 the stable logs and machine consumers retain plain text.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
-and artifacts for inspection/resume. Successful release MUST remove the worktree, but MUST
-retain its project logs and artifacts by default before doing so: logs move to
-`<project>/logs/cmru-release/<immutable-id>/`, and any declared `project.release.artifact_dirs`
-move to `<project>/artifacts/<immutable-id>/` with a `release.json` recording source commit and
-SHA-256 inventory. `--discard-logs-on-release` / `--discard-artifacts-on-release` opt out of
-either half. A project declaring no `artifact_dirs` has nothing to retain and is skipped for
-the artifact half without error — retention applies uniformly across every orchestrated
-project, not all of which build a local artifact (S15 first-party tool consumers and
-OCI-image-only projects are the common case). `cmru build` MUST use an isolated
+artifacts, and generated gate evidence for inspection/resume. Successful release MUST remove
+the worktree, but MUST retain its project logs, declared artifacts, and declared gate evidence
+by default before doing so: logs move to `<project>/logs/cmru-release/<immutable-id>/`, declared
+`project.release.artifact_dirs` move to `<project>/artifacts/<immutable-id>/` with the existing
+`release.json` source-commit and SHA-256 inventory, and declared `project.release.evidence_paths`
+move to `<project>/evidence/cmru-release/<immutable-id>/`. The evidence coordinate contains
+the declared files/directories and an `evidence.json` manifest recording the source commit and
+SHA-256 hash/byte inventory. `--discard-logs-on-release`, `--discard-artifacts-on-release`,
+and `--discard-evidence-on-release` are explicit independent opt-outs. A project declaring no
+`artifact_dirs` or no `evidence_paths` has nothing to retain for that half and is skipped
+without error — retention applies uniformly across every orchestrated project, not all of
+which build a local artifact or produce commit-bound evidence. `cmru build` MUST use an isolated
 `cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to
