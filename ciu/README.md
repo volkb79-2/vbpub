@@ -199,9 +199,9 @@ this table cannot drift out of sync with it.
 | `schema` | `pip install 'ciu[schema]'` | `jsonschema` | JSON Schema validation of a `[<root>.<service>.configfile.<name>]` block's optional `schema = "..."` key, on the up/dev render path (S5.7). |
 | `registry` | `pip install 'ciu[registry]'` | `pydantic` | `ciu check`'s stage 7 validation of `[registry.postgresql].database` and `[registry.consul].token_vault_path` (S13.4b). |
 
-The dev-only `test` extra (pytest plus the same jsonschema/pydantic pins, for
-CIU's own test suite) is not listed here — it exists for CIU's own
-contributors, not for consumers.
+The dev-only `test` extra (pytest, Hypothesis property tests, and the same
+jsonschema/pydantic pins, for CIU's own test suite) is not listed here — it
+exists for CIU's own contributors, not for consumers.
 
 ## Release: portable CMRU project contract
 

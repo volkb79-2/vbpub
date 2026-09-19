@@ -584,3 +584,12 @@ failed job green. The verdict JSON is written outside the snapshot (gitignored
 `.assay/`), so evidence survives without dirtying the judged tree.
 
 **Parser identity.** CIU's operational parser families share one dynamic package/generated version source, so copied help or refusal output identifies the installed build without introducing a second version setting.
+
+**Why property tests are part of the test closure.** CIU's path translation,
+resource-size parsing, and shared-infrastructure argument grammar have compact
+invariants with many valid inputs. Hypothesis exercises those input families
+inside the same tester-unified dependency closure as the 100% line-and-branch
+gate. This is supplemental behavioral evidence: Assay still judges the
+declared coverage artifact and changed-line contract, and Schemathesis is not
+used because CIU's release-facing lane is a CLI/library surface without an
+owned HTTP/OpenAPI contract.
