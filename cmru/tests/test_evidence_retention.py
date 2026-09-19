@@ -313,12 +313,12 @@ def test_evidence_retention_allows_multiple_files_in_one_nested_directory(tmp_pa
         root, base=git(root, "rev-parse", "HEAD"), purpose="release",
     )
     child = workspace.path / "demo"
-    (child / "reports").mkdir(parents=True)
-    (child / "reports" / "one.json").write_text("one\n", encoding="utf-8")
-    (child / "reports" / "two.json").write_text("two\n", encoding="utf-8")
+    (child / "reports" / "nested").mkdir(parents=True)
+    (child / "reports" / "nested" / "one.json").write_text("one\n", encoding="utf-8")
+    (child / "reports" / "nested" / "two.json").write_text("two\n", encoding="utf-8")
     project = SimpleNamespace(
         project_root=root / "demo", artifact_dirs=(),
-        evidence_paths=("reports/one.json", "reports/two.json"),
+        evidence_paths=("reports/nested/one.json", "reports/nested/two.json"),
     )
 
     try:
@@ -328,8 +328,8 @@ def test_evidence_retention_allows_multiple_files_in_one_nested_directory(tmp_pa
         )
         evidence_root = root / "demo" / "evidence" / "cmru-release" / "demo-v1"
         assert retained == [evidence_root]
-        assert (evidence_root / "reports/one.json").is_file()
-        assert (evidence_root / "reports/two.json").is_file()
+        assert (evidence_root / "reports/nested/one.json").is_file()
+        assert (evidence_root / "reports/nested/two.json").is_file()
     finally:
         transaction.remove_workspace(workspace)
 
