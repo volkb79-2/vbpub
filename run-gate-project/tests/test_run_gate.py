@@ -926,6 +926,11 @@ class TestNoSilentDefaults:
                 {"cgroup_slice_env": "DIRECT_GATE_SLICE"},
                 "test config",
             )
+        monkeypatch.setenv("DIRECT_GATE_SLICE", "direct.slice")
+        assert run_gate.resolve_slice(
+            {"cgroup_slice_env": "DIRECT_GATE_SLICE"},
+            "test config",
+        ) == ("direct.slice", "$DIRECT_GATE_SLICE")
 
     def test_slice_name_and_slice_env_cannot_both_be_declared(self, tmp_path):
         repo = make_repo(tmp_path)
