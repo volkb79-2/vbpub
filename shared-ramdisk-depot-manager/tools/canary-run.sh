@@ -21,14 +21,16 @@ fi
 [ -n "$host_repo_root" ] || die "set SRDM_HOST_REPO_ROOT to the host path of $repo_root"
 
 git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)"
-git_mount_args=()
+primary_mount_args=()
 if [ -n "$git_common_dir" ] && [ "$git_common_dir" != "$repo_root/.git" ]; then
   host_common_git="$(host_path_from_mounts "$git_common_dir")"
   if [ -z "$host_common_git" ] && [ "$host_repo_root" = "$repo_root" ]; then
     host_common_git="$git_common_dir"
   fi
   [ -n "$host_common_git" ] || die "cannot determine the host path of Git common directory $git_common_dir"
-  git_mount_args=(-v "$host_common_git:$git_common_dir:ro")
+  host_primary_root="${host_common_git%/.git}"
+  container_primary_root="${git_common_dir%/.git}"
+  primary_mount_args=(-v "$host_primary_root:$container_primary_root:ro")
 fi
 
 cgroup_parent="$("$here/cgroup-parent.sh" "${SRDM_CGROUP_PARENT:-}")"
@@ -47,10 +49,10 @@ rel_project="${project_dir#"$repo_root"/}"
 
 cid="$(docker run -d \
   --cgroup-parent="$cgroup_parent" \
+  "${primary_mount_args[@]}" \
   -v "$host_repo_root:$repo_root" \
-  "${git_mount_args[@]}" \
   -w "$repo_root/$rel_project" \
-  "$image" bash tools/canary.sh)"
+  "$image" bash -c 'git config --global --add safe.directory "*"; exec bash tools/canary.sh')"
 
 code="$(docker wait "$cid")"
 logs_code=0

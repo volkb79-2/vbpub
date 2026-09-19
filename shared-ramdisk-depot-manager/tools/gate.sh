@@ -58,7 +58,7 @@ fi
   Set SRDM_HOST_REPO_ROOT to it (the path as the DOCKER HOST sees this repo)."
 
 git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)"
-git_mount_args=()
+primary_mount_args=()
 if [ -n "$git_common_dir" ] && [ "$git_common_dir" != "$repo_root/.git" ]; then
   host_common_git="$(host_path_from_mounts "$git_common_dir")"
   if [ -z "$host_common_git" ] && [ "$host_repo_root" = "$repo_root" ]; then
@@ -66,7 +66,9 @@ if [ -n "$git_common_dir" ] && [ "$git_common_dir" != "$repo_root/.git" ]; then
   fi
   [ -n "$host_common_git" ] || die "cannot determine the host path of Git common directory $git_common_dir.
   Set SRDM_HOST_REPO_ROOT and run from a host-visible checkout."
-  git_mount_args=(-v "$host_common_git:$git_common_dir:ro")
+  host_primary_root="${host_common_git%/.git}"
+  container_primary_root="${git_common_dir%/.git}"
+  primary_mount_args=(-v "$host_primary_root:$container_primary_root:ro")
 fi
 
 # --- placement -----------------------------------------------------------
@@ -97,7 +99,8 @@ rel_project="${project_dir#"$repo_root"/}"
 work_in_container="$worktree/$rel_project"
 
 if [ "$target" = "unit" ]; then
-  cmd='set -euo pipefail
+cmd='set -euo pipefail
+git config --global --add safe.directory "*"
 cd "$0"
 unformatted="$(gofmt -l .)"
 if [ -n "$unformatted" ]; then
@@ -115,6 +118,7 @@ elif [ "$target" = "coverage" ]; then
   # indistinguishable from "excluded by a build tag" — the gate would have to
   # guess, and guessing in the lenient direction is how a floor stops binding.
   cmd='set -euo pipefail
+git config --global --add safe.directory "*"
 cd "$0"
 go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=/tmp/srdm-cover.out >/dev/null
 exec go run ./tools/covergate \
@@ -150,8 +154,8 @@ if [ "$target" = "e2e" ]; then
     --cgroup-parent="$cgroup_parent" \
     --privileged --cgroupns=private \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec,size=2g \
+    "${primary_mount_args[@]}" \
     -v "$host_repo_root:$repo_root" \
-    "${git_mount_args[@]}" \
     "$image")"
   trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 
@@ -175,7 +179,7 @@ if [ "$target" = "e2e" ]; then
   # step. An exec stream can be truncated or its status forged by a relay;
   # a file the suite wrote cannot be.
   docker exec "$cid" bash -c \
-    'cd "$1"; go test ./... -count=1 -tags=e2e -v; rc=$?; echo "$rc" > /tmp/srdm-e2e.rc; exit "$rc"' \
+    'git config --global --add safe.directory "*"; cd "$1"; go test ./... -count=1 -tags=e2e -v; rc=$?; echo "$rc" > /tmp/srdm-e2e.rc; exit "$rc"' \
     bash "$work_in_container" || true
   code="$(docker exec "$cid" cat /tmp/srdm-e2e.rc 2>/dev/null || true)"
   case "$code" in
@@ -195,8 +199,8 @@ cid="$(docker run -d \
   --cgroup-parent="$cgroup_parent" \
   "${run_env[@]}" \
   "${run_args[@]}" \
+  "${primary_mount_args[@]}" \
   -v "$host_repo_root:$repo_root" \
-  "${git_mount_args[@]}" \
   -w "$work_in_container" \
   "$image" \
   bash -c "$cmd" "$work_in_container")"
