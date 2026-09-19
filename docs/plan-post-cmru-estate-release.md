@@ -1,8 +1,9 @@
 # Post-CMRU estate release plan
 
-Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.3.1 is
+Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.4.1 is
 released and installed; the reviewed run-gate and estate CLI changes are
-merged, and the final estate release remains in progress.
+merged, the local Debian/NetCup integration is in a CIU worktree, and the
+final estate release remains in progress.
 
 Independent read-only review by Plato on 2026-09-19 found and drove fixes for
 stale checklist rows, the README's obsolete Nyxloom exclusion and broken
@@ -31,21 +32,26 @@ and verify every artifact after the final release.
 
 ## Phase 0 — finish and install CMRU
 
-Completed 2026-09-19 UTC from promoted commit
-`20fa7730cb0f5e46b47b45037ffc88f78dfd17e6`:
+Completed for the CMRU project on 2026-09-19 UTC from promoted commit
+`c22fa2f40edd3ab90ede20160b2edd0a85bba02e`:
 
-- the governed CMRU gate passed with **1796 passed, 10 skipped**, 100% line
-  and branch coverage, and a complete mutation campaign;
-- tag `cmru-v5.3.1`, the published wheel, retained logs, and retained release
-  artifacts were verified; and
-- the wheel was force-reinstalled into the devcontainer's canonical
-  `/home/vscode/.venv` environment and verified outside the editable checkout
-  as CMRU 5.3.1.
+- tag `cmru-v5.4.1`, the published wheel, checksum, and retained release
+  artifacts were verified;
+- the released first-party wheels for CMRU, CIU, Assay, Nyxloom, and Topos
+  were force-reinstalled into the devcontainer's canonical
+  `/home/vscode/.venv` environment and verified outside editable checkouts;
+- the first resume reached the MDT build after **1835 passed, 10 skipped**
+  and stopped because the old cockpit had no `mdt-managed` builder; a
+  disposable governed controller now supplies the managed BuildKit relay; and
+- the corrected resume is running as `cmru-resume-r10-mdt-ephemeral` under
+  `dev-gates.slice`, with its job-owned exit marker retained in the shared
+  temporary directory.
 
-The remaining steps below use this installed CMRU. The CMRU candidate is
-closed; its merged worktree was retired after its evidence was recorded. The
-final estate release still has to verify the new first-party artifacts after
-promotion.
+The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
+closed as a project release; the retained candidate worktree remains available
+until the resumed estate transaction and its artifacts are verified. The final
+estate release still has to promote the local integration tip and verify the
+new first-party artifacts.
 
 ## Phase 1 — review the outstanding CLI commits
 
@@ -142,7 +148,7 @@ line coverage or from a green pytest command.
 
 ### Baseline audit
 
-Static audit completed 2026-09-19 UTC against `main` commit `7f1cea69`.
+Static audit completed 2026-09-19 UTC against integration commit `46744b07`.
 This records declarations only; no cockpit result is release evidence.
 
 | project | current evidence and environment | assay/resume state | property testing | highest-value first slice |
