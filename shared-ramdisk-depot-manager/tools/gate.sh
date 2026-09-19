@@ -52,9 +52,24 @@ host_repo_root="${SRDM_HOST_REPO_ROOT:-}"
 if [ -z "$host_repo_root" ]; then
   self="$(cat /etc/hostname 2>/dev/null || true)"
   if [ -n "$self" ]; then
-    host_repo_root="$(docker inspect "$self" \
-      --format '{{range .Mounts}}{{if eq .Destination "'"$repo_root"'"}}{{.Source}}{{end}}{{end}}' \
-      2>/dev/null || true)"
+    # A linked Git worktree is below the primary checkout's mount destination,
+    # so an exact destination match misses it.  Translate from the longest
+    # enclosing mount instead; this preserves the host namespace required by
+    # Docker without asking the operator to repeat a path for every worktree.
+    host_mount_destination=""
+    while IFS=$'\t' read -r mount_source mount_destination; do
+      [ -n "$mount_source" ] || continue
+      case "$repo_root" in
+        "$mount_destination"|"$mount_destination"/*)
+          if [ "${#mount_destination}" -gt "${#host_mount_destination}" ]; then
+            host_mount_destination="$mount_destination"
+            host_repo_root="$mount_source${repo_root#"$mount_destination"}"
+          fi
+          ;;
+      esac
+    done < <(docker inspect "$self" \
+      --format '{{range .Mounts}}{{println .Source "\t" .Destination}}{{end}}' \
+      2>/dev/null || true)
   fi
 fi
 [ -n "$host_repo_root" ] || die "cannot determine the host path of $repo_root.
