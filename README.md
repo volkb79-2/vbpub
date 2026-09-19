@@ -28,6 +28,10 @@ The canonical estate-wide testing matrix, evidence rules, methodology review
 checklist, and Assay adoption policy are in
 [`TESTING-ESTATE-CHECKLIST.md`](TESTING-ESTATE-CHECKLIST.md).
 
+The current execution sequence for finishing CMRU, reviewing the outstanding
+CLI work, strengthening the major lanes, and performing the estate release is
+[`docs/plan-post-cmru-estate-release.md`](docs/plan-post-cmru-estate-release.md).
+
 For Debian hosts, `debian-install v2` applies a known fresh-install swap shape
 from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
 the legacy shell bootstrap remains under `scripts/debian-install/`.
