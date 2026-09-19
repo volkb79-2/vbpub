@@ -458,6 +458,16 @@ class TestEarlyMutationSentinels:
 # ---------------------------------------------------------------------------
 
 class TestUxSurface:
+    def test_dynamic_parser_headline_formats_help_usage_and_errors(self, capsys):
+        parser = run_gate.RunGateArgumentParser(prog="run-gate")
+        parser.add_argument("lane", nargs="?")
+        assert parser.format_help().splitlines()[0] == run_gate.cli_headline()
+        assert parser.format_usage().splitlines()[0] == run_gate.cli_headline()
+        with pytest.raises(SystemExit) as exc:
+            parser.error("bad option")
+        assert exc.value.code == 2
+        assert capsys.readouterr().err.splitlines()[0] == run_gate.cli_headline()
+
     def test_help_prints_revision_and_lanes(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
@@ -815,6 +825,22 @@ class TestConfigValidation:
 # ---------------------------------------------------------------------------
 
 class TestNoSilentDefaults:
+    def test_invalid_declared_slice_env_name_refuses_at_load(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            cgroup_slice_env = "NOT-A-SHELL-NAME"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        with pytest.raises(run_gate.GateError, match="environment-variable name"):
+            run_gate.load_config(proj)
+
     def test_missing_cgroup_env_var_fails_naming_it(self, tmp_path, monkeypatch):
         monkeypatch.delenv(CGROUP_VAR, raising=False)
         repo = make_repo(tmp_path)
@@ -892,6 +918,14 @@ class TestNoSilentDefaults:
                                                 cfg, central, cfg_path, cpath)
         with pytest.raises(run_gate.GateError, match="TEST_GATE_SLICE"):
             run_gate.resolve_slice(env, src)
+
+    def test_direct_missing_declared_slice_env_does_not_fall_back(self, monkeypatch):
+        monkeypatch.delenv("DIRECT_GATE_SLICE", raising=False)
+        with pytest.raises(run_gate.GateError, match="DIRECT_GATE_SLICE"):
+            run_gate.resolve_slice(
+                {"cgroup_slice_env": "DIRECT_GATE_SLICE"},
+                "test config",
+            )
 
     def test_slice_name_and_slice_env_cannot_both_be_declared(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -1986,6 +2020,35 @@ class TestExecDisclosure:
                             'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
         shim.write_text(body)
         return repo, proj, log
+
+    def test_live_exec_cgroup_slice_env_is_disclosed_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice_env = "TEST_GATE_SLICE"'))
+        monkeypatch.setenv("TEST_GATE_SLICE", "dev-gates.slice")
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["suite", "--worktree", str(repo)]) == 0
+        out = capsys.readouterr().out
+        assert "slice dev-gates.slice" in out
+        assert "TEST_GATE_SLICE" in out and "naming-only" in out
+
+    def test_live_exec_unset_cgroup_slice_env_is_disclosed_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, _log = self._runner_up(tmp_path, monkeypatch)
+        cfg = proj / "run-gate.toml"
+        cfg.write_text(cfg.read_text().replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice_env = "TEST_GATE_SLICE"'))
+        monkeypatch.delenv("TEST_GATE_SLICE", raising=False)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["suite", "--worktree", str(repo)]) == 0
+        out = capsys.readouterr().out
+        assert "no cgroup_slice declared and no $CGROUP_PARENT_DEV_GATES" \
+            in out
 
     def test_live_run_discloses_slice_and_redacted_argv(
             self, tmp_path, monkeypatch):
@@ -4490,6 +4553,52 @@ class TestExecModeMutex:
 # ---------------------------------------------------------------------------
 
 class TestDoctor:
+    def test_exec_declared_slice_is_reported_naming_only_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice = "dev-gates.slice"',
+        )
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "[OK] slice for env runner (exec): dev-gates.slice" in out
+
+    def test_exec_declared_slice_env_is_reported_naming_only_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice_env = "TEST_GATE_SLICE"',
+        )
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("TEST_GATE_SLICE", "dev-gates.slice")
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "[OK] slice for env runner (exec): dev-gates.slice" in out
+
+    def test_exec_declared_slice_env_unset_is_a_warning_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            'mode = "exec"',
+            'mode = "exec"\n    cgroup_slice_env = "TEST_GATE_SLICE"',
+        )
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv("TEST_GATE_SLICE", raising=False)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "[WARN] slice for env runner (exec)" in out
+        assert "TEST_GATE_SLICE declared" in out
+
     def test_healthy_container_project_all_ok(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
