@@ -1,0 +1,15 @@
+# scp-api-explore.toml
+#
+# Settings for scp-api-explore.py. Deliberately its own small file, not
+# shared with scp-api-install-host.toml: that file's schema is CLOSED
+# (extra/missing keys are hard errors) and carries a lot of install-only
+# keys (ssh.*) this tool has no use for. The two values below are
+# duplicated from scp-api-install-host.toml's own [api] section -- they're
+# the same Netcup account/API, just not worth a bigger shared-config
+# refactor to deduplicate two lines. The secret (refresh token) is NOT
+# duplicated -- both tools read it from the same .env via
+# netcup_scp_client.load_env_file()'s shared search path.
+
+[api]
+base_url = "https://www.servercontrolpanel.de/scp-core"
+keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"

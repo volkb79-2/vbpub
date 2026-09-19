@@ -54,6 +54,25 @@ def test_docker_cleanup_max_age_hours_bounds(value):
         load_config(raw_json=json.dumps(dict(BASE, docker_cleanup_max_age_hours=value)))
 
 
+def test_io_benchmark_defaults():
+    config = Config()
+    assert config.run_io_benchmark is False
+    assert config.io_benchmark_duration_s == 30
+    assert config.io_benchmark_max_size_gb == 32
+
+
+@pytest.mark.parametrize("value", [0, 301])
+def test_io_benchmark_duration_s_bounds(value):
+    with pytest.raises(ConfigError, match="io_benchmark_duration_s"):
+        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_duration_s=value)))
+
+
+@pytest.mark.parametrize("value", [0, 1025])
+def test_io_benchmark_max_size_gb_bounds(value):
+    with pytest.raises(ConfigError, match="io_benchmark_max_size_gb"):
+        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_max_size_gb=value)))
+
+
 def test_swap_discard_defaults_true_and_is_boolean_validated():
     assert Config().swap_discard is True
     with pytest.raises(ConfigError, match="must be a JSON boolean"):
@@ -106,6 +125,20 @@ def test_oomd_thresholds_written_and_enabled(tmp_path):
     assert "SwapUsedLimit=90%" in content
     descriptions = "\n".join(a.description for a in actions.planned)
     assert "enable systemd-oomd with vbpub thresholds" in descriptions
+
+
+def test_oomd_installs_its_package_before_enabling_the_unit(tmp_path):
+    """Regression for a real bug found live 2026-09-08 on two freshly
+    provisioned trixie hosts: systemd-oomd.service doesn't exist until the
+    systemd-oomd package is installed - it's not part of the base system.
+    _configure_oomd must apt-get install it before systemctl enable."""
+    _, actions = install_dry(tmp_path)
+    argvs = [a.argv for a in actions.planned]
+    install_idx = argvs.index(
+        ("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "systemd-oomd")
+    )
+    enable_idx = argvs.index(("/usr/bin/systemctl", "enable", "--now", "systemd-oomd"))
+    assert install_idx < enable_idx
 
 
 def test_fstrim_daily_override_written(tmp_path):
@@ -202,7 +235,20 @@ def test_stage2_unit_module_path_and_workdir_resolve(tmp_path):
     assert exec_line.endswith("-m debian_install_v2.bootstrap --action resume")
     workdir_line = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
     workdir = workdir_line.removeprefix("WorkingDirectory=")
-    assert workdir.endswith("/scripts/debian-install-v2")
+    # Regression, 2026-09-09: this used to assert workdir.endswith(
+    # "/scripts/debian-install-v2") -- true for a normal repo checkout, but
+    # NOT for every real deployment shape: a live host's actual
+    # WorkingDirectory is /opt/vbpub-debian-install-v2 (confirmed via SSH,
+    # v1001 round 6), and the privileged systemd test container
+    # (testing/run-privileged-tests.sh) bind-mounts this same directory as
+    # /work -- neither ends in that literal suffix, even though both are
+    # exactly as correct as the checkout case. installer.py computes
+    # working_directory as Path(__file__).resolve().parents[1] (the
+    # directory containing debian_install_v2/); this test file sits one
+    # level deeper (debian_install_v2/tests/), so parents[2] from here is
+    # the same value under any checkout/mount name -- an exact-match check
+    # that's actually portable, unlike a hardcoded path fragment.
+    assert workdir == str(Path(__file__).resolve().parents[2])
     assert (Path(workdir) / "debian_install_v2" / "bootstrap.py").is_file()
 
 
