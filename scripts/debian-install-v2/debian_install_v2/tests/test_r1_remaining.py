@@ -9,6 +9,7 @@ import urllib.request
 
 import pytest
 
+from debian_install_v2 import installer as installer_mod
 from debian_install_v2.actions import HostActions
 from debian_install_v2.bootstrap import main
 from debian_install_v2.config import Config, ConfigError, load_config
@@ -123,11 +124,51 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     sources = Path("/etc/apt/sources.list.d/debian.sources")
     monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    sleep_calls = []
+    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
     installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
     installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
     with pytest.raises(RuntimeError, match="APT configuration did not resolve"):
         installer._configure_apt()
+    # Every retry attempt re-ran apt-get update, not just the first.
+    update_calls = [p for p in installer.actions.planned if p.argv == ("/usr/bin/apt-get", "update", "-qq")]
+    assert len(update_calls) == 3
+    # Regression: must sleep between attempts 1->2 and 2->3 (2 sleeps), but
+    # NOT after the final (3rd) attempt before raising -- there's no point
+    # backing off before giving up for good.
+    assert len(sleep_calls) == 2
+
+
+def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monkeypatch):
+    """Regression for a real bug found live 2026-09-08: apt-get update on a
+    freshly-booted VPS fetched release/updates/security fine but silently
+    dropped backports/testing/unstable on the first pass, then succeeded
+    immediately on a manual retry with no changes at all. _configure_apt
+    must retry rather than hard-fail the whole bootstrap on the first miss.
+    """
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
+    monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
+    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+
+    policy_calls = {"n": 0}
+    incomplete_policy = "trixie trixie-updates trixie-security"
+    complete_policy = "trixie trixie-updates trixie-security trixie-backports testing unstable"
+
+    def fake_run(argv, description="", dangerous=False):
+        if tuple(argv) == ("/usr/bin/apt-cache", "policy"):
+            policy_calls["n"] += 1
+            return incomplete_policy if policy_calls["n"] == 1 else complete_policy
+        return installer.actions.outputs.get(tuple(argv), "")
+
+    monkeypatch.setattr(installer.actions, "run", fake_run)
+
+    installer._configure_apt()  # must not raise: second attempt resolves cleanly
+
+    assert policy_calls["n"] == 2
 
 
 def test_docker_unsupported_arch(tmp_path, monkeypatch):
@@ -295,16 +336,16 @@ def test_health_gate_failures(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
 
     # missing PARTUUID
     with pytest.raises(RuntimeError, match="missing PARTUUID"):
         installer._health_gate_swap_devices()
 
     # present but not active
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
     for num in range(5, 12):
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     with pytest.raises(RuntimeError, match="formatted but not active"):
         installer._health_gate_swap_devices()
 
@@ -322,13 +363,23 @@ def test_activate_swap_partitions_real(tmp_path):
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     for num in range(4, 12):
         p = f"/dev/vda{num}"
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
         installer.actions.outputs[("/usr/sbin/mkswap", p)] = ""
-        installer.actions.outputs[("/usr/bin/swapon", "-p", "10", p)] = ""
-    installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
+        installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", p)] = ""
     installer._activate_swap_partitions()
     fstab = installer.actions.files["/etc/fstab"].decode()
     assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 8
+    # Regression, 2026-09-08: confirmed live against real Debian 13 trixie
+    # (`which partx` / `which blkid` / `which swapon` on v1001.vxxu.de) --
+    # partx lives at /usr/bin/partx (not /usr/sbin), while blkid and swapon
+    # live at /usr/sbin (not /usr/bin, which the code briefly, wrongly, used
+    # for both). Every fake-actions test faked the subprocess call, so a
+    # bare FileNotFoundError for the wrong path was never exercised until a
+    # real host actually reached this code.
+    argvs = [action.argv for action in installer.actions.planned]
+    assert all(argv[0] != "/usr/bin/blkid" for argv in argvs)
+    assert all(argv[0] != "/usr/bin/swapon" for argv in argvs)
+    assert any(argv[0] == "/usr/sbin/swapon" for argv in argvs)
 
 
 def test_install_stage2_systemd_credentials(tmp_path):
@@ -356,11 +407,23 @@ def test_notify_failure(tmp_path, monkeypatch, capsys):
 
 
 def test_reboot_real(tmp_path):
+    """Regression, 2026-09-08: a real Netcup host confirmed that rebooting
+    synchronously from inside the still-running customScript process
+    strands the provider's own install-tracking task forever (it never
+    sees cloud-init report completion), permanently locking the server
+    against any further reinstall. _reboot() must schedule a delayed,
+    detached reboot via systemd-run instead of calling `systemctl reboot`
+    directly -- see _reboot()'s own docstring/comment for the full story."""
     installer = make_installer(tmp_path, dry_run=False, auto_reboot_after_stage1=True, never_reboot=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
-    installer.actions.outputs[("/usr/bin/systemctl", "reboot")] = ""
+    reboot_argv = (
+        "/usr/bin/systemd-run", "--on-active", "60", "--", "/usr/bin/systemctl", "reboot",
+    )
+    installer.actions.outputs[reboot_argv] = ""
     installer._reboot()
-    assert any(a.argv == ("/usr/bin/systemctl", "reboot") for a in installer.actions.planned)
+    assert any(a.argv == reboot_argv for a in installer.actions.planned)
+    # the old synchronous call must never recur
+    assert not any(a.argv == ("/usr/bin/systemctl", "reboot") for a in installer.actions.planned)
 
 
 def test_module_main_block():
@@ -382,7 +445,7 @@ def test_activate_swap_missing_partuuid(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
     with pytest.raises(RuntimeError, match="no PARTUUID"):
         installer._activate_swap_partitions()
 
@@ -391,13 +454,13 @@ def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
     installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda4")] = ""
-    installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda4")] = ""
     real_run = installer.actions.run
     calls = {"n": 0}
     def flaky(argv, **kw):
-        if argv == ["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
+        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
             calls["n"] += 1
             if calls["n"] == 2:
                 return ""
@@ -412,6 +475,30 @@ def test_notify_dry_run_returns_early(tmp_path):
     installer._notify("hello")  # must not raise; early return path
 
 
+def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
+    # Regression, 2026-09-09 (v1001 round 10 -- the first round this code
+    # was ever actually reached, ~9ab176399 predates this whole live-test
+    # effort): zswap-config.service/thp-config.service are
+    # WantedBy=sysinit.target, a target already passed earlier in the
+    # SAME boot _stage2() runs in -- a bare `enable` only symlinks the
+    # unit for the NEXT boot, so _health_gate_swap_devices() (called
+    # right after, same boot, no reboot in between) read the kernel's
+    # still-default 'lzo' compressor instead of the configured one and
+    # failed the whole install. Must be `enable --now` (two tokens -- a
+    # first attempt at this fix used the single, non-existent token
+    # "enable-now" and would have printed "Unknown operation enable-now."
+    # instead of fixing anything; caught by review before it shipped).
+    installer = make_installer(tmp_path, dry_run=False)
+    installer._configure_zswap()
+    argvs = [a.argv for a in installer.actions.planned]
+    assert ("/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service") in argvs
+    # Neither the original bug (bare enable, no --now at all) nor the
+    # first, also-wrong fix attempt (the single, non-existent token
+    # "enable-now") may reappear.
+    assert ("/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service") not in argvs
+    assert not any("enable-now" in argv for argv in argvs)
+
+
 def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
@@ -419,7 +506,7 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
         "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 12))
     )
     for num in range(4, 12):
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 12))
     real_read = Path.read_text
     real_is_file = Path.is_file
@@ -451,10 +538,20 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
         installer._health_gate_swap_devices()
 
 
+def test_configure_journald_writes_1g_60d_retention(tmp_path):
+    installer = make_installer(tmp_path)
+    installer._configure_journald()
+    written = installer.actions.dry_run_writes["/etc/systemd/journald.conf.d/99-vbpub-v2.conf"]
+    assert "SystemMaxUse=1G" in written
+    assert "MaxRetentionSec=60d" in written
+    assert "200M" not in written
+    assert "12month" not in written
+
+
 def test_config_docker_daemon_defaults():
     config = Config(telegram_bot_token="", telegram_chat_id="")
     assert config.docker_live_restore is True
-    assert config.docker_log_driver == "json-file"
+    assert config.docker_log_driver == "journald"
     assert config.docker_log_max_size == "50m"
     assert config.docker_log_max_file == "3"
 
@@ -513,8 +610,39 @@ def test_configure_docker_daemon_merges_existing_unrelated_key(tmp_path, monkeyp
     written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
     assert written["dns"] == ["1.1.1.1"]
     assert written["live-restore"] is True
-    assert written["log-driver"] == "json-file"
-    assert written["log-opts"] == {"max-size": "50m", "max-file": "3"}
+    assert written["log-driver"] == "journald"
+    assert "log-opts" not in written
+
+
+def test_configure_docker_daemon_sets_log_opts_for_json_file_and_local_only(tmp_path):
+    for driver in ("json-file", "local"):
+        installer = make_installer(tmp_path, docker_log_driver=driver)
+        installer._configure_docker_daemon()
+        written = json.loads(installer.actions.dry_run_writes["/etc/docker/daemon.json"])
+        assert written["log-opts"] == {"max-size": "50m", "max-file": "3"}
+
+    installer = make_installer(tmp_path, docker_log_driver="journald")
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.dry_run_writes["/etc/docker/daemon.json"])
+    assert "log-opts" not in written
+
+
+def test_configure_docker_daemon_drops_stale_log_opts_when_driver_changes(tmp_path, monkeypatch):
+    # A host previously provisioned with docker_log_driver=json-file (i.e.
+    # every host provisioned before the 2026-09-09 default flip to
+    # journald) re-run under the new default must not keep a stale,
+    # meaningless log-opts block -- this function owns log-driver/log-opts
+    # together, so an idempotent re-run must fully reflect the current
+    # driver, not just add to what's there.
+    installer = make_installer(tmp_path, dry_run=False, docker_log_driver="journald")
+    _patch_daemon_json_exists(monkeypatch, {
+        "log-driver": "json-file",
+        "log-opts": {"max-size": "50m", "max-file": "3"},
+    })
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
+    assert written["log-driver"] == "journald"
+    assert "log-opts" not in written
 
 
 def test_install_docker_merges_existing_key_and_omits_daemon_config_owned_keys(tmp_path, monkeypatch):

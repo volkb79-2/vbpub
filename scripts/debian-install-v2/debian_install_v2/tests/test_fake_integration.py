@@ -14,6 +14,23 @@ from debian_install_v2.state import StateStore
 
 CURRENT_DUMP = "label: gpt\ndevice: /dev/vda\n\n/dev/vda3 : start=2500608, size=20971520, type=0fc63daf-8483-4772-8e79-3d69d8477de4"
 
+# Same logical values as CURRENT_DUMP, but with the column-padding whitespace
+# real `sfdisk --dump` actually emits (captured verbatim from a live host,
+# 2026-09-08) -- every other fixture in this suite is unpadded, which is
+# exactly why the bug this padded fixture regression-tests went uncaught.
+PADDED_CURRENT_DUMP = (
+    "label: gpt\n"
+    "label-id: EF944F93-2091-40C3-9FC4-717B6880523C\n"
+    "device: /dev/vda\n"
+    "unit: sectors\n"
+    "first-lba: 34\n"
+    "last-lba: 1073741790\n"
+    "sector-size: 512\n"
+    "\n"
+    "/dev/vda3 : start=     2500608, size=    20971520, "
+    "type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=388A5F16-92A8-4AE3-BD71-CA1D6576BEBD\n"
+)
+
 
 class FakeHostActions(HostActions):
     def __init__(self) -> None:
@@ -23,10 +40,20 @@ class FakeHostActions(HostActions):
         self.readback: str | None = None
         self.applied = False
         self.exists_result = True
+        # (argv, input) per call -- lets tests verify sfdisk actually got fed
+        # the plan/backup text on stdin, not just that the argv looked right
+        # (regression, 2026-09-09: HostActions.run() had no stdin plumbing at
+        # all, so both the forward write and the rollback restore silently
+        # wrote nothing real to sfdisk -- see installer.py's _apply_known_
+        # swap_shape() comments).
+        self.inputs: list[tuple[tuple[str, ...], str | None]] = []
 
-    def run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str | None:
+    def run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str | None:
         self._validate(list(argv))
         self.planned.append(PlannedAction(tuple(argv), description or " ".join(argv), dangerous))
+        self.inputs.append((tuple(argv), input))
         if argv[0] == "/usr/sbin/sfdisk" and argv[1] == "--force":
             self.applied = True
             return ""
@@ -76,7 +103,6 @@ def make_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = "/dev/vda3 / ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
-    actions.outputs[("/usr/sbin/partprobe", "/dev/vda")] = ""
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return installer, actions
@@ -88,6 +114,48 @@ def expected_readback(installer: Installer) -> tuple[list[tuple[int, dict[str, s
     entries = installer._parse_partition_entries(plan_text)
     ordered = [(number, entries[number]) for number in sorted(entries)]
     return ordered, plan_text
+
+
+def realistic_readback(plan_text: str) -> str:
+    """Simulate what a REAL `sfdisk --dump` readback looks like, as
+    opposed to byte-replaying the in-memory plan text back at itself
+    (what every other fixture in this file does, which is exactly why
+    the regression this simulates went uncaught until a real host hit
+    it): real sfdisk always assigns a random per-partition uuid= the
+    plan never specifies, and normalizes type= GUIDs to uppercase
+    regardless of the case they were written in."""
+    lines = []
+    for line in plan_text.splitlines():
+        if " : " in line and "type=" in line:
+            device, _, attrs = line.partition(" : ")
+            parts = []
+            for chunk in attrs.split(", "):
+                key, _, value = chunk.partition("=")
+                if key == "type":
+                    value = value.upper()
+                parts.append(f"{key}={value}")
+            fake_uuid = f"AAAAAAAA-BBBB-CCCC-DDDD-{abs(hash(line)) % 10**12:012d}"
+            line = f"{device} : {', '.join(parts)}, uuid={fake_uuid}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def test_apply_tolerates_realistic_readback_uuid_and_type_case(tmp_path):
+    """Regression, 2026-09-09 (v1001 round 9): a real sfdisk --dump
+    readback always carries a random per-partition uuid= the in-memory
+    plan never specifies, and normalizes type= GUIDs to uppercase. A raw
+    dict `!=` between plan_entries and readback_entries treats EVERY
+    real write as a mismatch purely because of these two cosmetic
+    differences -- confirmed live: a perfectly correct forward write on
+    a real host was rolled back over exactly this, undoing otherwise-
+    successful partitioning and crashing stage2. Every other test in
+    this file uses `expected_readback()`, which byte-replays the plan
+    text back at itself and therefore could never have caught this --
+    this test specifically simulates what a real readback looks like."""
+    installer, actions = make_installer(tmp_path)
+    _, plan_text = expected_readback(installer)
+    actions.readback = realistic_readback(plan_text)
+    installer._apply_known_swap_shape()  # must NOT raise/roll back
 
 
 def test_transaction_succeeds_with_checksum_and_manifest(tmp_path):
@@ -103,6 +171,12 @@ def test_transaction_succeeds_with_checksum_and_manifest(tmp_path):
     assert manifest["backup"] == backup_name
     assert manifest["current"] == CURRENT_DUMP
     assert len([line for line in manifest["plan"].splitlines() if "type=0657fd6d" in line]) == 8
+    # Regression, 2026-09-09: the forward sfdisk write must actually be fed
+    # the computed plan on stdin (HostActions.run() previously had no stdin
+    # plumbing at all, so this call silently wrote nothing real).
+    forward_write = ("/usr/sbin/sfdisk", "--force", "--no-reread", "/dev/vda")
+    forward_inputs = [input_text for argv, input_text in actions.inputs if argv == forward_write]
+    assert forward_inputs == [manifest["plan"]]
 
 
 def test_mismatched_readback_rolls_back(tmp_path):
@@ -111,15 +185,106 @@ def test_mismatched_readback_rolls_back(tmp_path):
     actions.readback = readback.replace("start=23472128", "start=23472129", 1)
     with pytest.raises(RuntimeError, match="verification failed; restored backup"):
         installer._apply_known_swap_shape()
+    # Regression, 2026-09-09: sfdisk takes its restore script on stdin, not
+    # as a positional path argument (a bare positional arg after the device
+    # is sfdisk's unrelated "operate on just this partition number" syntax --
+    # confirmed live on v1001 round 6: "failed to parse partition number:
+    # '<backup path>'"). The rollback call is exactly 3 argv tokens now; the
+    # backup content must arrive via input=, matching what was written to
+    # the backup file.
     rollback = [
         action for action in actions.planned
-        if action.argv[:3] == ("/usr/sbin/sfdisk", "--force", "/dev/vda")
-        and len(action.argv) == 4
-        and action.argv[3].endswith(".sfdisk")
+        if action.argv == ("/usr/sbin/sfdisk", "--force", "/dev/vda")
     ]
     assert rollback
-    backup_name = rollback[0].argv[3]
-    assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
+    rollback_inputs = [input_text for argv, input_text in actions.inputs if argv == rollback[0].argv]
+    # +"\n": _run() strips command output (current_dump loses its trailing
+    # newline reading the backup back), so the rollback call restores it
+    # before feeding sfdisk -- otherwise this input would end mid-line
+    # unlike the forward write's plan_text, which already carries one.
+    assert rollback_inputs == [CURRENT_DUMP + "\n"]
+    backup_name = next(name for name in actions.files if "/backups/ptable-" in name and name.endswith(".sfdisk"))
+    assert actions.files[backup_name].decode() == CURRENT_DUMP
+
+    # Adversarial-review regression, 2026-09-08 (two rounds): the
+    # rollback's own kernel-view refresh must NOT reuse the forward apply
+    # path's plain `partx -a` -- this branch just restored a table with
+    # FEWER partitions than what that earlier -a call already registered
+    # with the kernel (the new swap partitions, the resized root), and -a
+    # only adds. Round 2 (verified against util-linux's own partx.c
+    # source): `partx -u` alone fixes GEOMETRY for numbers still present
+    # (un-resizes root) but silently skips -- does not delete -- numbers
+    # now entirely ABSENT from the restored table, so the vanished swap
+    # partitions need an explicit `-d --nr <range>` first. Exactly one -a
+    # (the forward apply, before the mismatch was detected), one scoped -d,
+    # and one -u (this rollback) must appear -- never a second -a.
+    argvs = [action.argv for action in actions.planned]
+    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_file_count}"
+    assert argvs.count(("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-u", "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx-refresh round
+    # -d must run BEFORE -u in the rollback (retract stale numbers, then
+    # resync geometry for what remains) -- order matters for correctness.
+    assert argvs.index(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) < argvs.index(("/usr/bin/partx", "-u", "/dev/vda"))
+
+
+def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):
+    """Regression, 2026-09-08: real `sfdisk --dump` output pads attribute
+    values for column alignment (confirmed against a live host's actual
+    dump -- see PADDED_CURRENT_DUMP). _write_sfdisk_plan()'s root-line
+    rebuild used a naive whitespace .split(), which mis-tokenized
+    "start=     2500608," into two separate pieces and silently dropped
+    the "start" key from the rebuilt line entirely. Once re-parsed by
+    _parse_partition_entries(), _validate_plan_geometry() then raised an
+    uncaught KeyError('start') -- the exact failure that crashed a real
+    live install (Case A, minimal-partition). Fixed to use the same
+    ATTR_RE-based extraction _parse_partition_entries() itself already
+    used, which tolerates padding correctly."""
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = PADDED_CURRENT_DUMP
+    ordered, readback = expected_readback(installer)
+    actions.readback = readback
+    installer._apply_known_swap_shape()  # must not raise KeyError('start')
+    root_entry = dict(ordered)[3]
+    assert root_entry["start"] == "2500608"
+    assert root_entry["type"] == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+    assert root_entry["uuid"] == "388A5F16-92A8-4AE3-BD71-CA1D6576BEBD"
+
+
+# Real numbers captured live from v1001.vxxu.de, 2026-09-08: this host's
+# actual default-image root partition is smaller than the configured
+# preserve_root_size_gb (10 GiB) -- 18468864 sectors is ~8.81 GiB.
+_SMALL_REAL_ROOT_DUMP = (
+    "label: gpt\ndevice: /dev/vda\n\n"
+    "/dev/vda3 : start=2500608, size=18468864, type=0fc63daf-8483-4772-8e79-3d69d8477de4"
+)
+
+
+def test_plan_swap_partitions_never_grows_root_below_preserve_floor(tmp_path):
+    """Regression, 2026-09-08: _plan_swap_partitions() used to compute
+    new_root_size as max(root_size, preserve_root_size_gb-in-sectors) --
+    Case A never actually resizes root, so on a real host whose existing
+    root partition is smaller than the configured preserve_root_size_gb
+    (confirmed live: v1001's real root was ~8.81 GiB against a configured
+    10 GiB floor), this inflated new_root_size past the real root_size,
+    producing a plan that tried to GROW root. _validate_plan_geometry()
+    correctly refused it ("partition plan unexpectedly grows the root
+    partition") -- but only after a real live install got that far.
+    preserve_root_size_gb is exclusively a Case B (root-shrink) concept and
+    must never influence Case A's swap-placement math."""
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = _SMALL_REAL_ROOT_DUMP
+
+    partitions, new_root_size = installer._plan_swap_partitions()
+
+    assert new_root_size == 18468864  # exactly root's real, unchanged size
+    assert installer.config.preserve_root_size_gb * 1024 ** 3 // 512 > new_root_size
+
+    # and the full apply pipeline must not raise "unexpectedly grows"
+    ordered, readback = expected_readback(installer)
+    actions.readback = readback
+    installer._apply_known_swap_shape()
 
 
 def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
@@ -133,7 +298,15 @@ def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
     actions.readback = readback
     installer._apply_known_swap_shape()
     argvs = [action.argv for action in actions.planned]
-    assert ("/usr/sbin/partx", "-a", "/dev/vda") in argvs
+    # Regression, 2026-09-08: a real live host confirmed a bare `partx -a
+    # <disk>` (no --nr) tries to re-add EVERY partition on the disk,
+    # including the ones the kernel already has (ESP/boot/root) -- and
+    # adding an already-registered partition fails outright ("error adding
+    # partitions 1-3"). Must be scoped to exactly the new swap-partition
+    # range, matching inuse_partition_editor.Table.write()'s own
+    # `--add --nr min:max`.
+    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_file_count}"
+    assert ("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda") in argvs
     assert ("/usr/bin/udevadm", "settle") in argvs
     assert not any(argv[0] == "/usr/sbin/partprobe" for argv in argvs)
 

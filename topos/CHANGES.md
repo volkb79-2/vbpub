@@ -4,6 +4,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.4.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=a2def16c934a888245a0d088ca9e44ddcf31792e -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
 ## [0.3.2] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=fba1be96e9ec571e6567800869e0c6cd740e2f02 -->

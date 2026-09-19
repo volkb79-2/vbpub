@@ -224,16 +224,15 @@ def _project_relative_paths(
     seen: List[Path] = []
     for raw_path in paths:
         candidate = Path(raw_path)
-        if (
-            candidate.is_absolute()
-            or ".." in candidate.parts
-            or not candidate.parts
-            or candidate.name in ("", ".")
-        ):
+        if candidate.is_absolute() or ".." in candidate.parts or candidate == Path("."):
             _error(f"{where} must contain project-relative paths without '..' or '.'")
-        if any(candidate == previous or candidate in previous.parents or previous in candidate.parents
-               for previous in seen):
-            _error(f"{where} must not contain duplicate or overlapping paths")
+        for previous in seen:
+            if candidate == previous:
+                _error(f"{where} must not contain duplicate or overlapping paths")
+            if candidate in previous.parents:
+                _error(f"{where} must not contain duplicate or overlapping paths")
+            if previous in candidate.parents:
+                _error(f"{where} must not contain duplicate or overlapping paths")
         seen.append(candidate)
         current = project_root
         for part in candidate.parts:

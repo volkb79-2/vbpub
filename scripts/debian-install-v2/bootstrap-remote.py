@@ -46,6 +46,14 @@ merged in last (wins over the named vars above):
              (root-storage|systemd), TELEGRAM_VERBOSE_PROGRESS (yes/no -
              also notify on every internal step, not just the stage-boundary
              start/reboot/resume/success/failure messages sent by default)
+  SSH:       CONTROLLER_SSH_PUBKEY - a one-line authorized_keys entry for the
+             controller's own ephemeral, per-host bootstrap key. Installed as
+             the very first stage1 step (before this key's own registration
+             with the provider is even guaranteed to have taken effect) and
+             removed again as the last stage2 step - no further controller
+             access is needed once the install is done. Leave unset to skip
+             entirely; the operator's own persistent access key is never
+             touched by this either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
 
   DRY_RUN=yes    — pass --dry-run through to the installer
@@ -89,6 +97,7 @@ _STRING_FIELDS = {
     "STATE_DIR": "state_dir",
     "LOG_DIR": "log_dir",
     "STAGE2_OUTPUT": "stage2_output",
+    "CONTROLLER_SSH_PUBKEY": "controller_ssh_pubkey",
 }
 _INT_FIELDS = {
     "SWAP_DISK_TOTAL_GB": "swap_disk_total_gb",

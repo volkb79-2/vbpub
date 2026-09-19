@@ -13,6 +13,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.5.0] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=55473fd56a77ba8f4a209f64bdd207ac82366641 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix: preserve nested gate stack governance (eb9a0a59)
+
+### Changed
+- Merge branch 'feat/estate-cli-version-20260919' (0795ebb9)
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(assay): add bounded gate report backlog item (e225d705)
+
 ## [6.4.0] - 2026-09-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=8512408c83c37759bb317d5023c94e554f708013 -->

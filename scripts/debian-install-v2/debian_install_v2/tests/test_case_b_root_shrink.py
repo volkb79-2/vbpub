@@ -146,12 +146,28 @@ def test_plan_root_shrink_installs_hook_when_disk_lacks_space(tmp_path):
 
     hook = actions.files["/etc/initramfs-tools/hooks/vbpub-root-shrink"].decode()
     assert "copy_exec /usr/sbin/sfdisk /usr/sbin/sfdisk" in hook
+    # Regression, 2026-09-09 (r1002 round 4): resize2fs is NOT bundled
+    # automatically by e2fsprogs's own initramfs-tools hook the way
+    # e2fsck is -- it must be copy_exec'd explicitly here, or the
+    # premount hook's `resize2fs -P "$DEVICE"` fails as "not found" at
+    # boot and the whole shrink silently no-ops (confirmed live via
+    # lsinitramfs on the real, booted initrd).
+    assert "copy_exec /usr/sbin/resize2fs /usr/sbin/resize2fs" in hook
     premount = actions.files["/etc/initramfs-tools/scripts/local-premount/vbpub-root-shrink"].decode()
     assert "/etc/vbpub/root-shrink-plan.env" in premount
     assert premount.startswith("#!/bin/sh\n")
 
     update_initramfs_calls = [a for a in actions.planned if a.argv[:2] == ("/usr/sbin/update-initramfs", "-u")]
     assert update_initramfs_calls
+    # Regression, 2026-09-09: a bare `-u` only rebuilds the CURRENTLY
+    # RUNNING kernel's initrd -- live-confirmed on r1002 that a newer
+    # kernel can get installed earlier in stage1 (an ordinary apt
+    # dependency pull) and GRUB's reboot then boots THAT kernel's own,
+    # separately-generated, hookless initrd, silently no-opping the whole
+    # shrink with zero disk change and no logged failure. Must be `-k all`
+    # so every installed kernel's initrd gets the hook, regardless of
+    # which one is running now or which one GRUB ultimately boots.
+    assert update_initramfs_calls[0].argv == ("/usr/sbin/update-initramfs", "-u", "-k", "all")
 
 
 def test_plan_root_shrink_honors_preserve_root_size_gb_above_filesystem_minimum(tmp_path):
@@ -231,6 +247,49 @@ def test_root_filesystem_facts_raises_when_minimum_size_unparseable(tmp_path):
         installer._root_filesystem_facts()
 
 
+# --- show_plan() / _resolve_swap_plan ---------------------------------------
+
+def test_show_plan_falls_back_to_shrink_plan_instead_of_crashing(tmp_path):
+    """Adversarial-review regression, 2026-09-08: show_plan() used to call
+    _plan_swap_partitions() directly and unguarded -- for a Case B disk
+    (root already fills the disk, no free space for swap) this raised
+    "disk lacks space for known swap shape" straight out of show_plan(),
+    which install() calls (via _initial_report_message()) BEFORE its own
+    try/except around _stage1(). That crash happened on a real live host:
+    no "Install FAILED" notification was ever sent (nothing wraps this
+    call), and state.json was never even marked "failed" -- a completely
+    silent death. show_plan() must now resolve the SAME shrink-aware plan
+    _plan_root_shrink() would, purely as a preview with no side effects."""
+    installer, actions = make_case_b_installer(tmp_path)
+    plan = installer.show_plan()  # must not raise
+    assert plan["new_root_size_sectors"] < ROOT_SECTORS  # a real shrink is reflected
+    assert len(plan["swap_partitions"]) == 8
+    # no side effects: a preview must not install the actual shrink hook
+    assert "/etc/initramfs-tools/hooks/vbpub-root-shrink" not in actions.files
+    assert "/etc/vbpub/root-shrink-plan.env" not in actions.files
+
+
+def test_show_plan_matches_plan_root_shrink_target(tmp_path):
+    """The preview and the real plan _plan_root_shrink() installs a hook
+    for must agree on the target root size and swap layout -- otherwise
+    the Telegram "Install plan" message would mislead the operator about
+    what's actually about to happen."""
+    installer, _ = make_case_b_installer(tmp_path)
+    plan = installer.show_plan()
+    partitions, target_root_sectors, shrink_needed = installer._resolve_swap_plan()
+    assert shrink_needed is True
+    assert plan["new_root_size_sectors"] == target_root_sectors
+    assert [(swap["start"], swap["sectors"]) for swap in plan["swap_partitions"]] == partitions
+
+
+def test_show_plan_case_a_unaffected(tmp_path):
+    installer, _ = make_case_a_installer(tmp_path)
+    plan = installer.show_plan()
+    _partitions, new_root_size, shrink_needed = installer._resolve_swap_plan()
+    assert shrink_needed is False
+    assert plan["new_root_size_sectors"] == new_root_size
+
+
 # --- _verify_and_apply_root_shrink ------------------------------------------
 
 def _seed_root_shrink_step(installer: Installer, status: str, detail: str = "") -> None:
@@ -307,6 +366,9 @@ def test_verify_root_shrink_success_cleans_up_and_falls_through(tmp_path, monkey
     assert state["steps"]["root_shrink"]["status"] == "success"
     cleanup_initramfs_calls = [a for a in actions.planned if a.argv[:2] == ("/usr/sbin/update-initramfs", "-u")]
     assert cleanup_initramfs_calls
+    # Same reasoning as the build-side regression test above: more than one
+    # kernel can be installed by the time cleanup runs too.
+    assert cleanup_initramfs_calls[0].argv == ("/usr/sbin/update-initramfs", "-u", "-k", "all")
 
 
 def test_verify_root_shrink_failure_raises_and_notifies_without_crashing(tmp_path, monkeypatch):
