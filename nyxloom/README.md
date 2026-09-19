@@ -201,6 +201,12 @@ list no longer lists it as a non-goal because it shipped (P48).
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
+The broad `tester-unified` CLI lane measures and enforces 100% whole-source
+line and branch coverage through Assay. The focused `session-extract` lane
+keeps its own branch, mutation, and canary contract. The rationale is in the
+[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `./run-gate.py`;
+a cockpit-local pytest run is diagnostic only.
+
 ### CLI diagnostics
 
 Parser help, usage, and argument errors begin with `NYXLOOM <version> — operator CLI`. The version is the existing metadata-backed `nyxloom.__version__`.

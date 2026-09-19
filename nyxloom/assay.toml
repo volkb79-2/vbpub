@@ -21,11 +21,9 @@
 # not something this lane exercises or any other project consumes as a
 # toolkit.
 #
-# require_branch = false: nyxloom's suite does not measure branch coverage
-# today (no --cov-branch, no [tool.coverage] config) -- this migration swaps
-# the JUDGE for the existing line-only floor (D-064-L2); it does not raise
-# the bar. Declaring require_branch=true here would hard-fail every run on
-# an unmeasured property. Widening to branch coverage is a separate decision.
+# The main CLI lane measures and enforces whole-source line and branch
+# coverage. The narrower session-extract lane already had this contract; the
+# estate baseline now requires the broad CLI surface to carry it as well.
 #
 # snapshot_selection = "repository-minus-unsafe-symlinks": this assay.toml
 # lives in the same vbpub monorepo as ciu/assay.toml, whose repository-wide
@@ -38,7 +36,7 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-report=json:coverage.json"]
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 # PATH: xdist worker spawn (subprocess). HOME: config/cache dirs some tests
 # touch. TERM/LANG: parity with ciu's lane. No CGROUP_PARENT_DEV_BACKGROUND
@@ -85,7 +83,7 @@ language = "python"
 source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
-require_branch = false
+require_branch = true
 base = "main"
 
 [lanes.tester-unified.judge.coverage]
