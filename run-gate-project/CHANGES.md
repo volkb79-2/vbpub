@@ -320,6 +320,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.9.1] - 2026-09-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=084dfdfa2084652a937505ca2fc4535d33aff657 -->
+
+### Changed
+- controller: prepare linear P6 mutation tree (ce9cfc43)
+- controller: correct P1 mutation base and PSI gate (2700c2b3)
+- controller: launch final P1 mutation gate (ce777043)
+
+### Documentation
+- docs(RG-63): correction -- the 533s figure was contention-inflated, quiet-host re-measurement is 70s (ed64080f)
+- docs(RG-65): independently reproduced by P194 -- explains why a green shared-lane gate can hide the bug (6dcb2190)
+- docs(RG-63,RG-65): likely root cause for the BUDGET_EXCEEDED saga; new false-green CWD-resolution defect (42ff7e51)
+- docs(RG-64): caller-side instance flock convention doesn't compose with run-gate's own internal exec lock (38048584)
+- docs(RG-63): fourth data point -- raising assay-level lane budget had zero effect (cd675880)
+- docs(run-gate): update RG-63 -- a third quiet-host attempt also timed out, likely a stale budget vs. a grown suite (631670b1)
+- docs(run-gate): file RG-63 -- LANE_TIMEOUT may bundle exec-lock queue-wait under multi-package contention (a90728a1)
+
 ## [23.9.0] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=e49ec776fdf8f487b01d83237161dacbd2dfde17 -->

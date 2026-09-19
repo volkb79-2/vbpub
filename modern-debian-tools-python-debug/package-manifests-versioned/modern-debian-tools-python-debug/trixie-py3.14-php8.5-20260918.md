@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20260918`
-- Built at (UTC): `2026-09-18T02:25:26Z`
+- Built at (UTC): `2026-09-18T15:21:06Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20260918`
@@ -105,10 +105,10 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
 | Tool | Version | Policy | Project Home | Package digest / source |
 |---|---|---|---|---|
 | `aider` | `aider 0.86.3.dev53+g5dc9490bb` | latest | https://github.com/Aider-AI/aider |  |
-| `antigravity` | `1.2.5` | latest | https://github.com/antigravity/antigravity-cli | [`sha256:e450caab5682acc920721b04…`](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.5-4931130160447488/linux-x64/cli_linux_x64.tar.gz) |
+| `antigravity` | `1.2.6` | latest | https://github.com/antigravity/antigravity-cli | [`sha256:3d4973187c4c074e70894068…`](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.6-5912685477494784/linux-x64/cli_linux_x64.tar.gz) |
 | `claude` | `2.1.276 (Claude Code)` | latest | https://github.com/anthropics/claude-code | [`sha256:8a56c8a14bd3cb246e2bdb7e…`](https://downloads.claude.ai/claude-code-releases/2.1.276/linux-x64/claude) |
 | `claudelink` | `1.6.1` | latest | https://github.com/RBJGlobal/claudelink |  |
-| `codex` | `codex-cli 0.154.0` | latest | https://github.com/openai/codex |  |
+| `codex` | `codex-cli 0.155.0` | latest | https://github.com/openai/codex |  |
 | `copilot` | `GitHub Copilot CLI 1.0.86.` | latest | https://github.com/github/copilot-cli |  |
 | `openclaw` | `OpenClaw 2026.9.4 (3a9d69d)` | latest | https://github.com/openclaw/openclaw |  |
 | `opencode` | `1.18.31` | latest | https://github.com/anomalyco/opencode |  |
@@ -275,7 +275,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     nh3==0.3.7
     nodeenv==1.10.0
     numpy==2.4.6
-    nyxloom==0.7.0
+    nyxloom==0.7.1
     openai==2.28.0
     orjson==3.11.7
     oslex==0.1.3
@@ -371,7 +371,7 @@ Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, c
     urllib3==2.6.3
     uv==0.12.16
     vcs-versioning==2.4.1
-    virtualenv==21.7.12
+    virtualenv==21.7.14
     watchfiles==1.1.1
     wcwidth==0.6.0
     websockets==17.1
