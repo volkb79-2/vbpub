@@ -19,11 +19,10 @@ method has not yet been checked against a project's complete test surface.
 ## Snapshot and evidence rules
 
 The full-estate inventory was checked on **2026-09-19 UTC** against audit
-baseline commit `fb9995a27d1c5852e794f39f42c743c73fa327cd`.
-The audit was a read-only configuration and evidence inventory by Codex. No
-long-running gate was started or polled during this check. The author-side
-review is recorded here; an independent reviewer has not yet accepted this
-document.
+baseline commit `7f1cea6924ede42e7769f45341cf27c3777c72a5`.
+The author-side review is by Codex. Plato performed the independent
+read-only consistency review on the same date; live gate evidence is recorded
+only after each job's own verdict has completed.
 
 The baseline commit is the commit whose configuration and stored evidence were
 examined. A later documentation commit must not be silently treated as a new
@@ -77,13 +76,13 @@ audit, even when that run is ineligible.
 
 | Project / lane surface | Row audit basis (commit/date) | Declared R0 | Declared R1 | Declared R2 | Declared R3 | Branch policy | Assay adoption and environment | Last stored run | Methodology status | Property / API testing status | Remaining checklist work |
 |---|---:|---:|---:|---:|---|---|---|---|---|---|---|
-| [`assay/`](assay/assay.toml) | `fb9995a2 / 2026-09-19` | ✅ | N/A by design | N/A by design | N/A by design | N/A for the self-hosting lane | Native self-hosting in `tester-unified` | No local history record | Central method is present; self-gate is intentionally R0-only | Real Hypothesis property tests exist | Record the deliberate self-hosting exemption in the estate manifest |
-| [`ciu/`](ciu/assay.toml) | `fb9995a2 / 2026-09-19` | ✅ | ✅ | ❌ | ❌ | R1 requires branches and a 100% floor | Assay lane in `tester-unified` | 2026-09-02 20:02Z; dirty, exit 3, ineligible | High-risk coverage packet exists; no complete suite inventory | No project-owned Hypothesis tests; Schemathesis not applicable to this surface | Decide whether R2/R3 are required; add properties for config and state invariants |
-| [`cmru/`](cmru/assay.toml) | `fb9995a2 / 2026-09-19` | ✅ Assay R0 | 🟡 Separate command lane | 🟡 Separate mutation command | 🟡 Separate canary command | Command lanes collect and enforce 100% line+branch; Assay declaration remains R0 | Assay plus raw `run-gate.toml` command lanes in `tester-unified` | 2026-09-02 18:26Z; dirty, exit 3, ineligible | Extensive behavioral/adversarial tests; no complete test-surface inventory | No project-owned Hypothesis tests; no OpenAPI surface for Schemathesis | Normalize command-lane evidence or record the deliberate exception; add properties where invariants are crisp |
+| [`assay/`](assay/assay.toml) | `7f1cea69 / 2026-09-19` | ✅ | N/A by design | N/A by design | N/A by design | N/A for the self-hosting lane | Native self-hosting in `tester-unified` | Current self-hosting verdict recorded in the release ledger | Central method is present; self-gate is intentionally R0-only | Real Hypothesis property tests exist | Retain the deliberate self-hosting exemption; do not imply R1/R2/R3 from the self-hosting run |
+| [`ciu/`](ciu/assay.toml) | `7f1cea69 / 2026-09-19` | ✅ | ✅ | ❌ | ❌ | R1 requires branches and a 100% floor | Assay lane in `tester-unified`, `dev-gates.slice` | 2026-09-19; PASS at `6c687916` in a CIU-managed worktree | Current gate exercised the complete pytest-cov line+branch command | Hypothesis property tests cover path, size, and argument grammars; Schemathesis N/A for this CLI surface | Decide whether R2/R3 are required; keep new properties tied to invariants |
+| [`cmru/`](cmru/assay.toml) | `7f1cea69 / 2026-09-19` | ✅ Assay R0 | ✅ Separate command lane | ✅ Separate mutation command | ✅ Separate canary command | Command lanes enforce 100% line+branch; Assay declaration remains R0 | Assay plus raw `run-gate.toml` command lanes in `tester-unified` | 2026-09-19; `cmru-v5.3.1` gate PASS, `1796 passed, 10 skipped` | Release evidence includes behavioral, coverage, mutation, and canary results | No project-owned Hypothesis tests; no OpenAPI surface for Schemathesis | Keep command-lane evidence bound to the promoted commit |
 | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/assay.toml) | `fb9995a2 / 2026-09-19` | ✅ | 🟡 | ✅ | ✅ | Branch data is collected, but `require_branch` is unset and the floor is 60% | Assay full lane plus host/VM command lanes | 2026-09-16 01:51Z; smoke passed but dirty and ineligible; not the full lane | Project docs exist; no complete checklist audit | No project-owned Hypothesis tests; no HTTP API for Schemathesis | Set the intended branch floor; add properties for planner/config invariants; keep VM evidence separate |
-| [`nyxloom/`](nyxloom/assay.toml) tester lane | `fb9995a2 / 2026-09-19` | ✅ | ✅ | ❌ | ❌ | Branches explicitly not required | Assay in `tester-unified` | 2026-09-09 21:11Z; dirty, exit 3, ineligible | Canonical method and project deltas exist; checklist not applied to every test | Hypothesis tests exist; deterministic gate/nightly profiles are still missing | Add deterministic Hypothesis profiles before relying on R2 |
-| `nyxloom/session-extract` | `fb9995a2 / 2026-09-19` | ✅ | ✅ | ✅ | ✅ | R1 requires branches | Assay in `tester-unified` | No current eligible run found | Same methodology gap as above | Hypothesis exists; no actual Schemathesis suite | Run the full matrix at the current clean commit and retain eligible evidence |
-| [`run-gate-project/`](run-gate-project/assay.toml) | `fb9995a2 / 2026-09-19` | ✅ | ✅ | ✅ | 🟡 | R1 requires branches; R2 does not | Assay R1/R2 plus raw R3 canary | 2026-09-18 19:20Z; dirty, exit 1, ineligible | `LANE-AUTHORING.md` is strong; no complete test-by-test checklist | No actual Hypothesis tests; Schemathesis not applicable | Decide whether R2 must require branch data and whether R3 should become an Assay lane |
+| [`nyxloom/`](nyxloom/assay.toml) tester lane | `7f1cea69 / 2026-09-19` | ✅ | ✅ | ❌ | ❌ | Broad R1 requires whole-source line and branch coverage; `session-extract` separately carries R2/R3 | Assay in `tester-unified`, `dev-gates.slice` | 2026-09-19; final rerun recorded in the release ledger | Canonical method and project deltas are present; CLI lane now has branch enforcement | Hypothesis tests exist; Schemathesis N/A for CLI-only scope | Keep the broad lane and session-extract scope distinct; retain the completed verdict |
+| `nyxloom/session-extract` | `7f1cea69 / 2026-09-19` | ✅ | ✅ | ✅ | ✅ | R1 requires branches | Assay in `tester-unified` | Separate from the broad CLI release gate | Same methodology gap as above | Hypothesis exists; no actual Schemathesis suite | Run R2/R3 when this narrower lane is in the release scope |
+| [`run-gate-project/`](run-gate-project/assay.toml) | `7f1cea69 / 2026-09-19` | ✅ | ✅ | ✅ | 🟡 | R1 requires branches; R2 does not | Assay R1/R2 plus raw R3 canary in the declared `bare-host` exception | 2026-09-19; selftest and full Assay result recorded in the release ledger | The bare-host exception is documented because mountinfo/Docker self-tests fail inside an extra container | No actual Hypothesis tests; Schemathesis not applicable | Keep `selftest` as the bounded release gate; run `assay-r1`/`r3` and the separately budgeted `r2` before a stronger release claim |
 | [`topos/`](topos/run-gate.toml) | `fb9995a2 / 2026-09-19` | 🟡 Raw command | 🟡 Branch-aware raw command | ❌ | ❌ | Branch data and a coverage gate exist outside Assay | Raw command in `tester-unified`; no `assay.toml` | 2026-09-08 01:54Z; dirty, exit 1, ineligible | No complete methodology inventory | No project-owned Hypothesis or Schemathesis suite found | Add Assay R0/R1 evidence; decide on mutation and canary lanes |
 | [`pwmcp/`](pwmcp/run-gate.toml) | `fb9995a2 / 2026-09-19` | 🟡 Raw pytest | ❌ | ❌ | ❌ | None | Raw command in `tester-unified`; no `assay.toml` | No local history record | No complete methodology inventory | No project-owned Hypothesis tests; Schemathesis is not presently justified | Add Assay R0 and behavioral boundary/integration evidence |
 | [`shared-ramdisk-depot-manager/`](shared-ramdisk-depot-manager/run-gate.toml) | `fb9995a2 / 2026-09-19` | 🟡 Raw unit lane | 🟡 Raw coverage lane | ❌ | 🟡 Separate canary/e2e behavior | Go branch coverage is structurally unavailable | Raw unit/coverage/e2e commands; no `assay.toml` | No local history record | No complete methodology inventory | No property framework found; consider Go fuzzing | Add Assay R0/R1 or an explicit external receipt; record Go limitations |
@@ -277,9 +276,11 @@ the project has a crisp invariant. Add Schemathesis only for a project that
 actually owns an OpenAPI or JSON Schema HTTP surface. Expand R2/R3 after the
 shorter lanes are stable and their budgets are measured.
 
-The next-hour priority is therefore **CMRU release evidence, released CMRU
-installation, and a focused run-gate worktree**. A full estate R0–R3 campaign
-and universal property-testing adoption are later waves.
+The current priority is **current CMRU evidence, the CIU/Nyxloom coverage
+slices, the declared run-gate Assay lanes, and the final estate release**.
+Universal R2/R3 adoption remains a later wave where a project has not declared
+those lanes, and the run-gate bare-host exception remains explicit because its
+tests inspect real mountinfo and Docker orchestration.
 
 ## Author and reviewer sign-off
 
@@ -287,14 +288,17 @@ Every update to this document should carry these fields in the commit or its
 review report:
 
 ```text
-Audit baseline commit:
-Audit date (UTC):
-Author/checker:
-Independent reviewer:
-Last full estate check:
-Changed project rows:
-Evidence intentionally not rerun:
-Open findings:
+Audit baseline commit: `7f1cea6924ede42e7769f45341cf27c3777c72a5`
+Audit date (UTC): `2026-09-19`
+Author/checker: Codex
+Independent reviewer: Plato (read-only consistency review, 2026-09-19)
+Last full estate check: in progress; final gate verdicts are recorded in
+`docs/plan-post-cmru-estate-release.md`
+Changed project rows: CMRU, CIU, Nyxloom, run-gate-project
+Evidence intentionally not rerun: unrelated products and long R2 lanes not in
+the immediate release critical path
+Open findings: final Nyxloom, Assay, and run-gate verdicts; remote promotion;
+artifact verification after the estate release
 ```
 
 Before declaring the estate merge-ready, the author checks every Table 2 row

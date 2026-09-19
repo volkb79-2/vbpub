@@ -65,8 +65,9 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    install: `python3 -m pytest tests -q --cov=. --cov-branch` followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`, not a total-coverage floor (still ~47% total; that
-   campaign is Phase 2).
+   since `main`. The release contract deliberately does not claim a
+   whole-project 100% floor; the separate `assay-r1` lane is the broader
+   line-and-branch judge.
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
    judge: the selected worktree's assay source running the same
    test command, `assay.toml [lanes.r1]` judging `source_roots = ["."]`
