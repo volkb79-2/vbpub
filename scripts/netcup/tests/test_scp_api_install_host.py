@@ -463,6 +463,16 @@ def test_get_access_token_happy_path(install_host_mod, monkeypatch):
     assert install_host_mod.get_access_token("refresh") == "tok123"
 
 
+def test_get_access_token_rejects_non_object_json(install_host_mod, monkeypatch):
+    monkeypatch.setattr(
+        install_host_mod.urllib.request,
+        "urlopen",
+        lambda req, timeout=30: FakeHTTPResponse(b"[]"),
+    )
+    with pytest.raises(RuntimeError, match="JSON object"):
+        install_host_mod.get_access_token("refresh")
+
+
 def test_client_get_retries_after_401(install_host_mod, monkeypatch):
     calls = {"n": 0}
 
@@ -985,6 +995,16 @@ def test_run_login_fails_cleanly_on_malformed_device_response(install_host_mod, 
     endpoint must not raise an unhandled JSONDecodeError."""
     monkeypatch.setattr(
         install_host_mod.netcup_scp_client.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(b"not json")
+    )
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
+    assert rc == 1
+
+
+def test_run_login_fails_cleanly_on_non_object_device_response(install_host_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        install_host_mod.netcup_scp_client.urllib.request,
+        "urlopen",
+        lambda req, timeout=30: FakeHTTPResponse(b"[]"),
     )
     rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1

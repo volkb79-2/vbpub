@@ -97,7 +97,7 @@ enumerate all servers and label each result with its source. An image flavour is
 a reinstallable OS/image variant, while an ISO image is bootable installer or
 recovery media. State-changing explorer options require an explicit server ID
 and use positional actions, for example `scp-api.py snapshots 799611 create`
-or `scp-api.py power-cycle 799611`.
+or `scp-api.py power cycle 799611`.
 
 For server operations and diagnostics:
 
@@ -107,11 +107,99 @@ python3 scp-api.py tasks --state RUNNING --server-id 799611
 python3 scp-api.py metrics 799611 cpu --hours 24
 python3 scp-api.py guest-agent-status 799611
 python3 scp-api.py firewall-policies
-python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
+python3 scp-api.py firewall 799611 get
 python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
+python3 scp-api.py power off 799611
+python3 scp-api.py power on 799611
+python3 scp-api.py power cycle 799611
+python3 scp-api.py power reset 799611
 ```
 
 ISO attachment and firewall assignment are confirmed mutations. Firewall
 `set` replaces the interface's existing copied/user policy assignment; it does
-not create firewall policies or rules. `guest-agent-status` reports the
-provider's QEMU guest-agent state, not SSH or installer state.
+not create firewall policies or rules. Omit the firewall MAC only when the
+server has exactly one interface; multiple interfaces require an explicit MAC.
+`guest-agent-status` reports the provider's QEMU guest-agent state, not SSH or
+installer state.
+
+### Firewall policy example: public server, SSH allow-list
+
+The CLI can read and assign policies, but policy/rule creation is intentionally
+kept as an explicit API request. Read the current assignment first, and check
+that `ingressImplicitRule` is `ACCEPT_ALL` if all non-SSH ports should remain
+public:
+
+```bash
+python3 scp-api.py firewall 799611 get --consistency-check
+```
+
+Create a policy using the SCP API. `$ACCESS_TOKEN` is a short-lived bearer
+token and `$SCP_USER_ID` is the SCP user ID, not the CCP customer number. If
+needed, discover the latter from the OIDC userinfo endpoint:
+
+```bash
+set -o pipefail
+SCP_USER_ID=$(curl --fail-with-body -sS \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/userinfo' | jq -r .id)
+```
+
+Replace the documentation-only TEST-NET addresses with real addresses before
+use:
+
+```bash
+BASE_URL=https://www.servercontrolpanel.de/scp-core
+POLICY_JSON=$(curl --fail-with-body -sS -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  "$BASE_URL/api/v1/users/$SCP_USER_ID/firewall-policies" \
+  --data '{
+    "name": "ssh-whitelist",
+    "description": "Allow SSH only from approved administrator addresses",
+    "rules": [
+      {"direction":"INGRESS", "protocol":"TCP", "action":"ACCEPT",
+       "sources":["198.51.100.10", "203.0.113.0/24"],
+       "destinationPorts":"22"},
+      {"direction":"INGRESS", "protocol":"TCP", "action":"DROP",
+       "destinationPorts":"22"}
+    ]
+  }')
+POLICY_ID=$(jq -r '.id // empty' <<<"$POLICY_JSON")
+test -n "$POLICY_ID" || { echo "policy response had no id" >&2; exit 1; }
+python3 scp-api.py firewall-policies
+python3 scp-api.py firewall 799611 set --user-policy-id "$POLICY_ID" --active
+python3 scp-api.py tasks --state RUNNING --server-id 799611
+```
+
+`firewall set` replaces the complete assignment, so include any existing
+policy IDs that must remain. Keep an out-of-band console/rescue path while
+testing: a wrong allow-list can immediately remove SSH access.
+
+### User ISO upload and boot
+
+The API supports account-level user ISO storage. `scp-api.py` accepts a user ISO
+name for attachment but does not currently wrap the upload itself. A simple
+single-part upload is:
+
+```bash
+BASE_URL=https://www.servercontrolpanel.de/scp-core
+ISO_KEY=debian-custom-recovery.iso
+UPLOAD_JSON=$(curl --fail-with-body -sS -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$BASE_URL/api/v1/users/$SCP_USER_ID/isos/$ISO_KEY?multipart=false")
+UPLOAD_URL=$(jq -r '.presignedUrl // empty' <<<"$UPLOAD_JSON")
+test -n "$UPLOAD_URL" || { echo "upload response had no presignedUrl" >&2; exit 1; }
+curl --fail-with-body -sS --upload-file ./debian-custom-recovery.iso "$UPLOAD_URL"
+
+# Keep the returned attach-task UUID and wait for it to be FINISHED.
+python3 scp-api.py attach-iso 799611 --user-iso-name "$ISO_KEY" \
+  --change-boot-device-to-cdrom --yes --json
+python3 scp-api.py tasks TASK_UUID --json
+python3 scp-api.py power cycle 799611
+```
+
+For large images use the API's multipart flow: prepare with `multipart=true`,
+get one presigned part URL per part, upload each part and retain its `ETag`,
+then complete the upload with the ordered `ETag`/`partNumber` list. The upload
+task must finish before attaching; `--change-boot-device-to-cdrom` makes the
+attached ISO the next boot medium.

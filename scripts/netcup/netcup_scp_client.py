@@ -272,6 +272,8 @@ def _http_json(
         raise HTTPStatusError(int(getattr(e, "code", 0) or 0), f"HTTP {getattr(e, 'code', '?')} for {url}", body)
     except urllib.error.URLError as e:
         raise RuntimeError(f"Network error for {url}: {e}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid JSON response from {method.upper()} {url}: {e}") from e
 
 
 # --- OAuth2 device-code login + token refresh -------------------------------
@@ -307,10 +309,15 @@ def get_access_token(refresh_token: str) -> str:
     except urllib.error.URLError as e:
         raise RuntimeError(f"Token request network error: {e}")
 
-    token_data = json.loads(raw)
+    try:
+        token_data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Token response was not valid JSON: {e}") from e
+    if not isinstance(token_data, dict):
+        raise RuntimeError("Token response was not a JSON object")
     access_token = token_data.get("access_token")
 
-    if not access_token:
+    if not isinstance(access_token, str) or not access_token.strip():
         raise ValueError("No access token in response")
 
     log_debug(f"Access token obtained (expires in {token_data.get('expires_in', 'unknown')} seconds)")
@@ -371,13 +378,26 @@ def run_device_code_login(env_path: Path) -> int:
         print(f"❌ ERROR: could not start device login: {e}", file=sys.stderr)
         return 1
 
+    if not isinstance(device, dict):
+        print("❌ ERROR: device-code response was not a JSON object", file=sys.stderr)
+        return 1
     device_code = device.get("device_code")
-    if not device_code:
+    if not isinstance(device_code, str) or not device_code.strip():
         print(f"❌ ERROR: device-code response had no device_code: {device}", file=sys.stderr)
         return 1
-    interval = max(1, int(device.get("interval", 5)))
-    expires_in = int(device.get("expires_in", 600))
+    try:
+        interval = max(1, int(device.get("interval", 5)))
+        expires_in = int(device.get("expires_in", 600))
+    except (TypeError, ValueError) as e:
+        print(f"❌ ERROR: device-code response had invalid timing values: {e}", file=sys.stderr)
+        return 1
+    if expires_in <= 0:
+        print("❌ ERROR: device-code response had non-positive expires_in", file=sys.stderr)
+        return 1
     verification_url = device.get("verification_uri_complete") or device.get("verification_uri")
+    if not isinstance(verification_url, str) or not verification_url.strip():
+        print("❌ ERROR: device-code response had no verification URL", file=sys.stderr)
+        return 1
 
     print(f"1. Open this URL and log in with your SCP credentials:\n   {verification_url}")
     if not device.get("verification_uri_complete") and device.get("user_code"):
@@ -409,6 +429,8 @@ def run_device_code_login(env_path: Path) -> int:
                 # Non-JSON error body (e.g. an HTML gateway-error page) -
                 # still a clean failure, not a crash.
                 body = {}
+            if not isinstance(body, dict):
+                body = {}
             error = body.get("error")
             if error == "authorization_pending":
                 continue
@@ -424,8 +446,11 @@ def run_device_code_login(env_path: Path) -> int:
             print(f"❌ ERROR: token response was not valid JSON: {e}", file=sys.stderr)
             return 1
 
+        if not isinstance(token_response, dict):
+            print("❌ ERROR: token response was not a JSON object", file=sys.stderr)
+            return 1
         refresh_token = token_response.get("refresh_token")
-        if not refresh_token:
+        if not isinstance(refresh_token, str) or not refresh_token.strip():
             print("❌ ERROR: token response had no refresh_token", file=sys.stderr)
             return 1
         _write_env_file(env_path, {"NETCUP_SCP_API_REFRESH_TOKEN": refresh_token})

@@ -62,7 +62,10 @@ installer can select an existing account SSH key (or explicitly register a
 new one), preview, or monitor a Debian-install-v2 run. The companion explorer
 enumerates server-scoped inventory account-wide by default, supports
 diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`, and supports
-filters such as `scp-api.py imageflavours --filter debian`. See the
+filters such as `scp-api.py imageflavours --filter debian`. It also exposes
+confirmed ISO attachment, firewall assignment, and grouped power actions
+(`scp-api.py power on|off|cycle|reset SERVER_ID`); policy creation and user-ISO
+upload remain explicit raw API flows documented in the tool guide. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 
 ## Repository setup and initial CMRU build

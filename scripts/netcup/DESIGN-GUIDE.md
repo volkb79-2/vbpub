@@ -52,10 +52,19 @@ an explicit server ID. This keeps the convenient account-wide default limited
 to inspection while retaining the API's server boundary for mutations.
 
 The same boundary applies to ISO attachment and firewall assignment: both
-require an explicit server, and firewall `set` requires an interface MAC plus
-the complete replacement policy assignment. The CLI deliberately does not
-pretend that guest-agent status is installer health, and it does not turn
-firewall policy/rule creation into an unreviewed convenience command.
+require an explicit server. Firewall `set` requires the complete replacement
+policy assignment, but its MAC is optional when live server details prove
+there is exactly one interface; multiple interfaces require an explicit MAC.
+The CLI deliberately does not pretend that guest-agent status is installer
+health, and it does not turn firewall policy/rule creation or user-ISO upload
+into an unreviewed convenience command. Those flows are documented as raw API
+operations in the consumer guide because they carry larger lockout/storage
+failure surfaces than a read/list wrapper.
+
+Power operations share one `power` verb (`on`, `off`, `cycle`, `reset`) because
+they are one API operation family: a PATCH of server state with an optional
+`stateOption`. The sub-action names make the destructive distinction visible
+in help while avoiding four unrelated top-level commands.
 
 ## Test boundary
 

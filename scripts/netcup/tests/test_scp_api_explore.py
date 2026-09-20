@@ -135,6 +135,13 @@ def test_cmd_servers_list(explore_mod, fake_client, capsys):
     assert "h" in capsys.readouterr().out
 
 
+def test_cmd_servers_rejects_non_array_api_answer(explore_mod, fake_client):
+    client = fake_client(get_responses=[{"id": 1}])
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(explore_mod.ResponseShapeError, match="expected a JSON array"):
+        explore_mod.cmd_servers(client, _ns(), pal)
+
+
 def test_cmd_server_details(explore_mod, fake_client, capsys):
     client = fake_client(get_responses=[{"id": 1, "hostname": "h"}])
     pal = explore_mod._Palette(enabled=False)
@@ -326,6 +333,20 @@ def test_cmd_firewall_policies_lists_user_policies(explore_mod, fake_client, cap
     assert "web" in capsys.readouterr().out
 
 
+def test_cmd_firewall_policies_rejects_partial_userinfo(explore_mod, fake_client):
+    client = fake_client(user_info={"username": "operator"})
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(explore_mod.ResponseShapeError, match="positive integer user id"):
+        explore_mod.cmd_firewall_policies(client, _ns(query=None, limit=None, offset=None), pal)
+
+
+def test_cmd_disks_supported_drivers_rejects_malformed_answer(explore_mod, fake_client):
+    client = fake_client(get_responses=[{"driver": "VIRTIO"}])
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(explore_mod.ResponseShapeError, match="expected a JSON array"):
+        explore_mod.cmd_disks(client, _ns(server_id=1, action="supported-drivers"), pal)
+
+
 def test_cmd_firewall_get_can_request_consistency_check(explore_mod, fake_client):
     client = fake_client(get_responses=[{"active": True}])
     pal = explore_mod._Palette(enabled=False)
@@ -341,6 +362,52 @@ def test_cmd_firewall_get_can_request_consistency_check(explore_mod, fake_client
             {"consistencyCheck": True},
         )
     ]
+
+
+def test_cmd_firewall_omitted_mac_resolves_single_interface(explore_mod, fake_client):
+    client = fake_client(get_responses=[
+        {"serverLiveInfo": {"interfaces": [{"mac": "aa:bb:cc:dd:ee:ff"}]}},
+        {"active": True},
+    ])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_firewall(
+        client,
+        _ns(server_id=1, mac=None, action="get", consistency_check=False),
+        pal,
+    )
+    assert client.calls == [
+        ("get", "/api/v1/servers/1", None),
+        ("get", "/api/v1/servers/1/interfaces/aa:bb:cc:dd:ee:ff/firewall", None),
+    ]
+
+
+def test_cmd_firewall_omitted_mac_rejects_multiple_interfaces(explore_mod, fake_client, capsys):
+    client = fake_client(get_responses=[{
+        "serverLiveInfo": {"interfaces": [
+            {"mac": "aa:bb:cc:dd:ee:ff"},
+            {"mac": "11:22:33:44:55:66"},
+        ]}
+    }])
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.cmd_firewall(
+            client,
+            _ns(server_id=1, mac=None, action="get", consistency_check=False),
+            pal,
+        )
+    assert exc.value.code == 2
+    assert "multiple interfaces" in capsys.readouterr().err
+
+
+def test_cmd_firewall_omitted_mac_rejects_partial_server_answer(explore_mod, fake_client):
+    client = fake_client(get_responses=[{"id": 1, "hostname": "vm"}])
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(explore_mod.ResponseShapeError, match="did not contain serverLiveInfo.interfaces"):
+        explore_mod.cmd_firewall(
+            client,
+            _ns(server_id=1, mac=None, action="get", consistency_check=False),
+            pal,
+        )
 
 
 def test_cmd_firewall_set_replaces_assignments_and_is_confirmed(explore_mod, fake_client, monkeypatch):
@@ -444,9 +511,9 @@ def test_cmd_tasks_cancel_without_uuid_errors_instead_of_silently_listing(explor
 @pytest.mark.parametrize(
     ("command", "payload", "params"),
     [
-        ("power-on", {"state": "ON"}, None),
-        ("power-off", {"state": "OFF"}, {"stateOption": "POWEROFF"}),
-        ("power-cycle", {"state": "ON"}, {"stateOption": "POWERCYCLE"}),
+        ("on", {"state": "ON"}, None),
+        ("off", {"state": "OFF"}, {"stateOption": "POWEROFF"}),
+        ("cycle", {"state": "ON"}, {"stateOption": "POWERCYCLE"}),
         ("reset", {"state": "ON"}, {"stateOption": "RESET"}),
     ],
 )
@@ -458,13 +525,13 @@ def test_cmd_power_actions_are_confirmed_and_use_server_patch(
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_power(
         declined,
-        _ns(command=command, server_id=42, yes=False),
+        _ns(action=command, server_id=42, yes=False),
         pal,
     )
     assert declined.calls == []
 
     client = fake_client(allow=("patch",))
-    explore_mod.cmd_power(client, _ns(command=command, server_id=42, yes=True), pal)
+    explore_mod.cmd_power(client, _ns(action=command, server_id=42, yes=True), pal)
     assert client.calls == [("patch", "/api/v1/servers/42", payload, params)]
 
 
@@ -585,6 +652,24 @@ def test_parse_args_metrics_and_firewall(explore_mod, monkeypatch):
     assert args.action == "set"
     assert args.user_policy_ids == [8]
     assert args.active is False
+
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "firewall", "42", "get"],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "firewall"
+    assert args.mac is None
+    assert args.action == "get"
+
+
+def test_parse_args_power_groups_action_under_power(explore_mod, monkeypatch):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "power", "cycle", "42"])
+    args = explore_mod.parse_args()
+    assert args.command == "power"
+    assert args.action == "cycle"
+    assert args.server_id == 42
 
 
 def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypatch):

@@ -34,8 +34,8 @@ Usage:
   scp-api.py metrics <server_id> {cpu,disk,network,network-packet} [--hours N]
   scp-api.py guest-agent-status <server_id>
   scp-api.py firewall-policies [--query TEXT]
-  scp-api.py firewall <server_id> <mac> [get|set] [options]
-  scp-api.py {power-on,power-off,power-cycle,reset} <server_id> [--yes]
+  scp-api.py firewall <server_id> [mac] [get|set] [options]
+  scp-api.py power {on,off,cycle,reset} <server_id> [--yes]
 
 Examples:
   scp-api.py login
@@ -54,7 +54,7 @@ Examples:
   scp-api.py firewall-policies
   scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
   scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
-  scp-api.py power-cycle 799611
+  scp-api.py power cycle 799611
 
 Verb groups:
   authentication: login
@@ -63,8 +63,8 @@ Verb groups:
                 metrics, guest-agent-status, firewall-policies, firewall get
   modification: attach-iso, iso-attached <server_id> detach,
                rescuesystem <server_id> deactivate, snapshots <server_id>
-               create, tasks <uuid> cancel, firewall <server_id> <mac> set,
-               power-on, power-off, power-cycle, reset
+               create, tasks <uuid> cancel, firewall <server_id> [mac] set,
+               power {on,off,cycle,reset}
 
 Every subcommand accepts --json for raw machine output; without it, output
 is a pretty, optionally-colored table/summary sized for a terminal. Color
@@ -169,6 +169,7 @@ def _stringify(value: Any) -> str:
 
 
 def print_table(rows: List[Dict[str, Any]], columns: List[str], pal: _Palette, empty_message: str) -> None:
+    rows = _response_rows(rows, "formatted table")
     if not rows:
         print(pal.dim(empty_message))
         return
@@ -182,6 +183,7 @@ def print_table(rows: List[Dict[str, Any]], columns: List[str], pal: _Palette, e
 
 
 def print_kv(data: Dict[str, Any], pal: _Palette, indent: int = 0) -> None:
+    data = _response_dict(data, "formatted object")
     pad = "  " * indent
     for key, value in data.items():
         if isinstance(value, dict) and value:
@@ -241,8 +243,11 @@ def _server_targets(client: NetcupSCPClient, server_id: Any) -> List[Dict[str, A
     """Return one explicit target or all account servers for exploration."""
     if server_id is not None:
         return [{"id": server_id}]
-    servers = _api_call(client.get, "/api/v1/servers")
-    return servers if isinstance(servers, list) else []
+    servers = _response_rows(_api_call(client.get, "/api/v1/servers"), "GET /api/v1/servers")
+    for index, server in enumerate(servers):
+        if not isinstance(server.get("id"), int) or isinstance(server.get("id"), bool) or server["id"] <= 0:
+            raise ResponseShapeError(f"GET /api/v1/servers: item {index} has no valid positive integer id")
+    return servers
 
 
 def _server_name(server: Dict[str, Any]) -> str:
@@ -271,6 +276,15 @@ def _filter_rows(rows: List[Dict[str, Any]], term: str | None) -> List[Dict[str,
     return [row for row in rows if needle in _stringify(row).casefold()]
 
 
+def _image_flavour_name(row: Dict[str, Any]) -> str:
+    image = row.get("image")
+    if image is None:
+        return ""
+    if not isinstance(image, dict):
+        raise ResponseShapeError("imageflavours: an image field was not a JSON object")
+    return _stringify(image.get("name"))
+
+
 def _require_server_id(args, action: str) -> int:
     if args.server_id is None:
         print(f"ERROR: {action} requires a server ID", file=sys.stderr)
@@ -293,6 +307,50 @@ _METRIC_ENDPOINTS = {
     "network-packet": "network/packet",
 }
 _MAC_ADDRESS_RE = re.compile(r"^[a-fA-F0-9]{2}(?::[a-fA-F0-9]{2}){5}$")
+
+
+class ResponseShapeError(RuntimeError):
+    """The API returned valid JSON with an unusable shape."""
+
+
+def _response_dict(value: Any, operation: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ResponseShapeError(
+            f"{operation}: expected a JSON object, got {type(value).__name__}"
+        )
+    return value
+
+
+def _response_rows(value: Any, operation: str) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ResponseShapeError(
+            f"{operation}: expected a JSON array, got {type(value).__name__}"
+        )
+    bad = next((index for index, row in enumerate(value) if not isinstance(row, dict)), None)
+    if bad is not None:
+        raise ResponseShapeError(f"{operation}: array item {bad} is not a JSON object")
+    return value
+
+
+def _response_strings(value: Any, operation: str) -> List[str]:
+    if not isinstance(value, list):
+        raise ResponseShapeError(
+            f"{operation}: expected a JSON array, got {type(value).__name__}"
+        )
+    bad = next((index for index, item in enumerate(value) if not isinstance(item, str)), None)
+    if bad is not None:
+        raise ResponseShapeError(f"{operation}: array item {bad} is not a string")
+    return value
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be an integer") from e
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return number
 
 
 def _nonnegative_int(value: str) -> int:
@@ -318,17 +376,26 @@ def _mac_address(value: str) -> str:
     return value
 
 
+def _nonempty_text(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must not be empty or whitespace")
+    return value
+
+
 # --- subcommands -------------------------------------------------------------
 
 def cmd_servers(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    servers = _api_call(client.get, "/api/v1/servers")
+    servers = _response_rows(_api_call(client.get, "/api/v1/servers"), "GET /api/v1/servers")
     emit(servers, args.json, lambda d: print_table(
         d, ["id", "hostname", "nickname", "name", "disabled"], pal, "no servers on this account"
     ))
 
 
 def cmd_server_details(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    server = _api_call(client.get, f"/api/v1/servers/{args.server_id}")
+    server = _response_dict(
+        _api_call(client.get, f"/api/v1/servers/{args.server_id}"),
+        f"GET /api/v1/servers/{args.server_id}",
+    )
     emit(server, args.json, lambda d: print_kv(d, pal))
 
 
@@ -338,7 +405,7 @@ def cmd_imageflavours(client: NetcupSCPClient, args, pal: _Palette) -> None:
     flavours: List[Dict[str, Any]] = []
     for server in targets:
         result = _api_call(client.get, f"/api/v1/servers/{server['id']}/imageflavours")
-        rows = result if isinstance(result, list) else []
+        rows = _response_rows(result, f"GET /api/v1/servers/{server['id']}/imageflavours")
         flavours.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
     flavours = _filter_rows(flavours, getattr(args, "filter", None))
 
@@ -348,7 +415,7 @@ def cmd_imageflavours(client: NetcupSCPClient, args, pal: _Palette) -> None:
                 "serverId": r.get("serverId"),
                 "serverName": r.get("serverName"),
                 "id": r.get("id"),
-                "name": (r.get("image") or {}).get("name"),
+                "name": _image_flavour_name(r),
                 "alias": r.get("alias"),
             }
             for r in rows
@@ -366,7 +433,7 @@ def cmd_iso_bootable(client: NetcupSCPClient, args, pal: _Palette) -> None:
     images: List[Dict[str, Any]] = []
     for server in targets:
         result = _api_call(client.get, f"/api/v1/servers/{server['id']}/isoimages")
-        rows = result if isinstance(result, list) else []
+        rows = _response_rows(result, f"GET /api/v1/servers/{server['id']}/isoimages")
         images.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
     images = _filter_rows(images, getattr(args, "filter", None))
     columns = ["serverId", "serverName", "id", "name", "description", "architecture"] if aggregate else ["id", "name", "description", "architecture"]
@@ -384,13 +451,18 @@ def cmd_attached_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
         print(pal.green("detached"))
         return
     if args.server_id is not None:
-        attached = _api_call(client.get, f"/api/v1/servers/{args.server_id}/iso")
+        attached = _response_dict(
+            _api_call(client.get, f"/api/v1/servers/{args.server_id}/iso"),
+            f"GET /api/v1/servers/{args.server_id}/iso",
+        )
         emit(attached, args.json, lambda d: print_kv(d, pal) if d else print(pal.dim("no ISO currently attached")))
         return
     rows = []
     for server in _server_targets(client, None):
-        attached = _api_call(client.get, f"/api/v1/servers/{server['id']}/iso")
-        row = attached if isinstance(attached, dict) else {}
+        row = _response_dict(
+            _api_call(client.get, f"/api/v1/servers/{server['id']}/iso"),
+            f"GET /api/v1/servers/{server['id']}/iso",
+        )
         rows.append(_annotate_server_row(row, server))
     emit(rows, args.json, lambda d: print_table(
         d, ["serverId", "serverName", "isoAttached", "iso"], pal, "no servers on this account"
@@ -409,26 +481,38 @@ def cmd_attach_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if not confirm(f"Attach the selected ISO to server {args.server_id}?", args.yes, pal):
         print("aborted")
         return
-    result = _api_call(client.post, f"/api/v1/servers/{args.server_id}/iso", data)
+    result = _response_dict(
+        _api_call(client.post, f"/api/v1/servers/{args.server_id}/iso", data),
+        f"POST /api/v1/servers/{args.server_id}/iso",
+    )
     emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) and d else print(pal.green("attach requested")))
 
 
 def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "supported-drivers":
         server_id = _require_server_id(args, "supported-drivers")
-        drivers = _api_call(client.get, f"/api/v1/servers/{server_id}/disks/supported-drivers")
+        drivers = _response_strings(
+            _api_call(client.get, f"/api/v1/servers/{server_id}/disks/supported-drivers"),
+            f"GET /api/v1/servers/{server_id}/disks/supported-drivers",
+        )
         emit(drivers, args.json, lambda d: print(", ".join(d) if d else pal.dim("none reported")))
         return
     if args.server_id is not None:
-        disks = _api_call(client.get, f"/api/v1/servers/{args.server_id}/disks")
+        disks = _response_rows(
+            _api_call(client.get, f"/api/v1/servers/{args.server_id}/disks"),
+            f"GET /api/v1/servers/{args.server_id}/disks",
+        )
         emit(disks, args.json, lambda d: print_table(
             d, ["name", "capacityInMiB", "allocationInMiB", "storageDriver"], pal, "no disks reported"
         ))
         return
     rows = []
     for server in _server_targets(client, None):
-        disks = _api_call(client.get, f"/api/v1/servers/{server['id']}/disks")
-        rows.extend(_annotate_server_row(row, server) for row in disks if isinstance(row, dict))
+        disks = _response_rows(
+            _api_call(client.get, f"/api/v1/servers/{server['id']}/disks"),
+            f"GET /api/v1/servers/{server['id']}/disks",
+        )
+        rows.extend(_annotate_server_row(row, server) for row in disks)
     emit(rows, args.json, lambda d: print_table(
         d, ["serverId", "serverName", "name", "capacityInMiB", "allocationInMiB", "storageDriver"], pal, "no disks reported"
     ))
@@ -444,13 +528,19 @@ def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
         print(pal.green("deactivated"))
         return
     if args.server_id is not None:
-        status = _api_call(client.get, f"/api/v1/servers/{args.server_id}/rescuesystem")
+        status = _response_dict(
+            _api_call(client.get, f"/api/v1/servers/{args.server_id}/rescuesystem"),
+            f"GET /api/v1/servers/{args.server_id}/rescuesystem",
+        )
         emit(status, args.json, lambda d: print_kv(d, pal))
         return
     rows = []
     for server in _server_targets(client, None):
-        status = _api_call(client.get, f"/api/v1/servers/{server['id']}/rescuesystem")
-        rows.append(_annotate_server_row(status if isinstance(status, dict) else {}, server))
+        status = _response_dict(
+            _api_call(client.get, f"/api/v1/servers/{server['id']}/rescuesystem"),
+            f"GET /api/v1/servers/{server['id']}/rescuesystem",
+        )
+        rows.append(_annotate_server_row(status, server))
     emit(rows, args.json, lambda d: print_table(
         d, ["serverId", "serverName", "active"], pal, "no servers on this account"
     ))
@@ -459,7 +549,10 @@ def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
 def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "dryrun":
         server_id = _require_server_id(args, "dryrun")
-        result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots:dryrun", {})
+        result = _response_dict(
+            _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots:dryrun", {}),
+            f"POST /api/v1/servers/{server_id}/snapshots:dryrun",
+        )
         emit(result, args.json, lambda d: print_kv(d, pal))
         return
     if args.action == "create":
@@ -473,19 +566,28 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
         # 2026-09-09). Default to a timestamp rather than forcing --name
         # on every call.
         name = args.name or f"vbpub-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots", {"name": name})
+        result = _response_dict(
+            _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots", {"name": name}),
+            f"POST /api/v1/servers/{server_id}/snapshots",
+        )
         emit(result, args.json, lambda d: print_kv(d, pal))
         return
     if args.server_id is not None:
-        snapshots = _api_call(client.get, f"/api/v1/servers/{args.server_id}/snapshots")
+        snapshots = _response_rows(
+            _api_call(client.get, f"/api/v1/servers/{args.server_id}/snapshots"),
+            f"GET /api/v1/servers/{args.server_id}/snapshots",
+        )
         emit(snapshots, args.json, lambda d: print_table(
             d, ["uuid", "name", "state", "online", "creationTime"], pal, "no snapshots for this server"
         ))
         return
     rows = []
     for server in _server_targets(client, None):
-        snapshots = _api_call(client.get, f"/api/v1/servers/{server['id']}/snapshots")
-        rows.extend(_annotate_server_row(row, server) for row in snapshots if isinstance(row, dict))
+        snapshots = _response_rows(
+            _api_call(client.get, f"/api/v1/servers/{server['id']}/snapshots"),
+            f"GET /api/v1/servers/{server['id']}/snapshots",
+        )
+        rows.extend(_annotate_server_row(row, server) for row in snapshots)
     emit(rows, args.json, lambda d: print_table(
         d, ["serverId", "serverName", "uuid", "name", "state", "online", "creationTime"], pal,
         "no snapshots on this account"
@@ -513,7 +615,7 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
         print("ERROR: cancel requires a task uuid", file=sys.stderr)
         sys.exit(2)
     if args.uuid is None:
-        tasks = _api_call(client.get, "/api/v1/tasks", params=params)
+        tasks = _response_rows(_api_call(client.get, "/api/v1/tasks", params=params), "GET /api/v1/tasks")
         emit(tasks, args.json, lambda d: print_table(
             d, ["uuid", "name", "state", "startedAt", "finishedAt"], pal, "no tasks found"
         ))
@@ -525,28 +627,33 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
         _api_call(client.put, f"/api/v1/tasks/{args.uuid}:cancel")
         print(pal.green("cancel requested"))
         return
-    task = _api_call(client.get, f"/api/v1/tasks/{args.uuid}")
+    task = _response_dict(_api_call(client.get, f"/api/v1/tasks/{args.uuid}"), f"GET /api/v1/tasks/{args.uuid}")
     emit(task, args.json, lambda d: print_kv(d, pal))
 
 
 def cmd_metrics(client: NetcupSCPClient, args, pal: _Palette) -> None:
     endpoint = _METRIC_ENDPOINTS[args.metric]
     params = {"hours": args.hours} if args.hours is not None else None
-    result = _api_call(client.get, f"/api/v1/servers/{args.server_id}/metrics/{endpoint}", params=params)
+    result = _response_dict(
+        _api_call(client.get, f"/api/v1/servers/{args.server_id}/metrics/{endpoint}", params=params),
+        f"GET /api/v1/servers/{args.server_id}/metrics/{endpoint}",
+    )
     emit(result, args.json)
 
 
 def cmd_guest_agent_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    result = _api_call(client.get, f"/api/v1/servers/{args.server_id}/guest-agent/status")
-    emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) else print(d))
+    result = _response_dict(
+        _api_call(client.get, f"/api/v1/servers/{args.server_id}/guest-agent/status"),
+        f"GET /api/v1/servers/{args.server_id}/guest-agent/status",
+    )
+    emit(result, args.json, lambda d: print_kv(d, pal))
 
 
 def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    user_info = _api_call(client.get_user_info)
-    user_id = user_info.get("id") if isinstance(user_info, dict) else None
-    if not isinstance(user_id, int):
-        print("ERROR: SCP userinfo response did not contain an integer user id", file=sys.stderr)
-        raise SystemExit(1)
+    user_info = _response_dict(_api_call(client.get_user_info), "GET OIDC userinfo")
+    user_id = user_info.get("id")
+    if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
+        raise ResponseShapeError("GET OIDC userinfo: response did not contain a positive integer user id")
     params = {}
     if args.query:
         params["q"] = args.query
@@ -554,7 +661,10 @@ def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
         params["limit"] = args.limit
     if args.offset is not None:
         params["offset"] = args.offset
-    result = _api_call(client.get, f"/api/v1/users/{user_id}/firewall-policies", params=params or None)
+    result = _response_rows(
+        _api_call(client.get, f"/api/v1/users/{user_id}/firewall-policies", params=params or None),
+        f"GET /api/v1/users/{user_id}/firewall-policies",
+    )
 
     def table(rows):
         flat = [
@@ -572,8 +682,46 @@ def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(result, args.json, table)
 
 
+def _resolve_firewall_mac(client: NetcupSCPClient, server_id: int) -> str:
+    endpoint = f"/api/v1/servers/{server_id}"
+    details = _response_dict(_api_call(client.get, endpoint), f"GET {endpoint}")
+    live_info = details.get("serverLiveInfo")
+    if isinstance(live_info, dict) and "interfaces" in live_info:
+        interfaces = live_info["interfaces"]
+    elif "interfaces" in details:
+        # Accept the older/condensed shape as well, but do not invent a MAC
+        # when the server response is only partially populated.
+        interfaces = details["interfaces"]
+    else:
+        raise ResponseShapeError(
+            f"GET {endpoint}: response did not contain serverLiveInfo.interfaces; "
+            "specify the interface MAC explicitly or retry with live server details"
+        )
+    if not isinstance(interfaces, list):
+        raise ResponseShapeError(f"GET {endpoint}: interfaces is not a JSON array")
+
+    macs = []
+    for index, interface in enumerate(interfaces):
+        if not isinstance(interface, dict):
+            raise ResponseShapeError(f"GET {endpoint}: interface {index} is not a JSON object")
+        mac = interface.get("mac")
+        if not isinstance(mac, str) or not _MAC_ADDRESS_RE.fullmatch(mac):
+            raise ResponseShapeError(f"GET {endpoint}: interface {index} has no valid MAC address")
+        if mac not in macs:
+            macs.append(mac)
+
+    if len(macs) == 1:
+        return macs[0]
+    if not macs:
+        raise ResponseShapeError(f"GET {endpoint}: no interfaces with a MAC address were returned")
+    print(
+        f"ERROR: server {server_id} has multiple interfaces; specify one MAC explicitly: {', '.join(macs)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
 def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{args.mac}/firewall"
     action = args.action or "get"
     copied_policy_ids = getattr(args, "copied_policy_ids", [])
     user_policy_ids = getattr(args, "user_policy_ids", [])
@@ -582,50 +730,54 @@ def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
         if copied_policy_ids or user_policy_ids or active is not None:
             print("ERROR: firewall set options require the explicit set action", file=sys.stderr)
             raise SystemExit(2)
+        mac = args.mac or _resolve_firewall_mac(client, args.server_id)
+        endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{mac}/firewall"
         params = {"consistencyCheck": True} if args.consistency_check else None
-        result = _api_call(client.get, endpoint, params=params)
-        emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) else print(d))
+        result = _response_dict(_api_call(client.get, endpoint, params=params), f"GET {endpoint}")
+        emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.dim("no firewall assignment reported")))
         return
 
     if active is None:
         print("ERROR: firewall set requires either --active or --inactive", file=sys.stderr)
         raise SystemExit(2)
+    mac = args.mac or _resolve_firewall_mac(client, args.server_id)
+    endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{mac}/firewall"
     data = {
         "copiedPolicies": [{"id": policy_id} for policy_id in copied_policy_ids],
         "userPolicies": [{"id": policy_id} for policy_id in user_policy_ids],
         "active": active,
     }
     if not confirm(
-        f"Replace firewall policy assignments on {args.server_id}/{args.mac}?",
+        f"Replace firewall policy assignments on {args.server_id}/{mac}?",
         args.yes,
         pal,
     ):
         print("aborted")
         return
-    result = _api_call(client.put, endpoint, data)
+    result = _response_dict(_api_call(client.put, endpoint, data), f"PUT {endpoint}")
     emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) and d else print(pal.green("firewall update requested")))
 
 
 _POWER_ACTIONS = {
-    "power-on": ("ON", None, "Power on"),
-    "power-off": ("OFF", "POWEROFF", "Power off"),
-    "power-cycle": ("ON", "POWERCYCLE", "Power-cycle"),
+    "on": ("ON", None, "Power on"),
+    "off": ("OFF", "POWEROFF", "Power off"),
+    "cycle": ("ON", "POWERCYCLE", "Power-cycle"),
     "reset": ("ON", "RESET", "Reset"),
 }
 
 
 def cmd_power(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    state, state_option, label = _POWER_ACTIONS[args.command]
+    state, state_option, label = _POWER_ACTIONS[args.action]
     if not confirm(f"{label} server {args.server_id}?", args.yes, pal):
         print("aborted")
         return
     params = {"stateOption": state_option} if state_option else None
-    result = _api_call(
+    result = _response_dict(_api_call(
         client.patch,
         f"/api/v1/servers/{args.server_id}",
         {"state": state},
         params=params,
-    )
+    ), f"PATCH /api/v1/servers/{args.server_id}")
     emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.green(f"{label.lower()} requested")))
 
 
@@ -696,7 +848,7 @@ def parse_args():
         "show detailed information for one server",
         "Show the complete API record for one server.\n\nExample:\n  ./scp-api.py server-details 799611",
     )
-    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
 
     for name, help_text, description in [
         (
@@ -715,8 +867,8 @@ def parse_args():
         ),
     ]:
         p = add_subcommand(name, help_text, description)
-        p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
-        p.add_argument("--filter", metavar="TEXT", help="case-insensitive text filter across returned fields")
+        p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
+        p.add_argument("--filter", type=_nonempty_text, metavar="TEXT", help="case-insensitive text filter across returned fields")
 
     p = add_subcommand(
         "iso-attached",
@@ -724,7 +876,7 @@ def parse_args():
         "Show the ISO currently attached to each server; add the detach action to remove one.\n\n"
         "Example:\n  ./scp-api.py iso-attached 799611",
     )
-    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
     add_actions(p, ("detach",), "detach: remove the currently-attached ISO (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
@@ -735,10 +887,10 @@ def parse_args():
         "This changes the server's attached media and always asks for confirmation.\n\n"
         "Example:\n  ./scp-api.py attach-iso 799611 --iso-id 1234",
     )
-    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
     iso_source = p.add_mutually_exclusive_group(required=True)
-    iso_source.add_argument("--iso-id", type=int, help="ID returned by iso-bootable")
-    iso_source.add_argument("--user-iso-name", metavar="NAME", help="name of an ISO uploaded to the account")
+    iso_source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
+    iso_source.add_argument("--user-iso-name", type=_nonempty_text, metavar="NAME", help="name of an ISO uploaded to the account")
     p.add_argument(
         "--change-boot-device-to-cdrom",
         action="store_true",
@@ -752,7 +904,7 @@ def parse_args():
         "List disk capacity/allocation and storage drivers.\n\n"
         "Example:\n  ./scp-api.py disks 799611",
     )
-    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
     add_actions(p, ("supported-drivers",), "supported-drivers: list storage drivers for one server")
 
     p = add_subcommand(
@@ -762,7 +914,7 @@ def parse_args():
         "this is separate from an arbitrary attached ISO. Add deactivate to turn it off.\n\n"
         "Example:\n  ./scp-api.py rescuesystem 799611",
     )
-    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
     add_actions(p, ("deactivate",), "deactivate: turn off the rescue system (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
@@ -772,7 +924,7 @@ def parse_args():
         "List snapshots, or use create/dryrun for one server.\n\n"
         "Example:\n  ./scp-api.py snapshots 799611",
     )
-    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
     add_actions(
         p,
         ("create", "dryrun"),
@@ -787,13 +939,13 @@ def parse_args():
         "List tasks, show one by UUID, or use cancel with a UUID.\n\n"
         "Example:\n  ./scp-api.py tasks",
     )
-    p.add_argument("uuid", nargs="?", default=None)
+    p.add_argument("uuid", nargs="?", type=_nonempty_text, default=None)
     add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
     p.add_argument(
-        "--query", "--filter", dest="query", metavar="TEXT",
+        "--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT",
         help="list tasks whose name, UUID, or server fields contain TEXT (API q filter)",
     )
-    p.add_argument("--server-id", dest="server_filter_id", type=int, metavar="ID", help="list tasks for one server")
+    p.add_argument("--server-id", dest="server_filter_id", type=_positive_int, metavar="ID", help="list tasks for one server")
     p.add_argument(
         "--state",
         choices=_TASK_STATES,
@@ -809,7 +961,7 @@ def parse_args():
         "Return timestamped SCP metrics. The API's hours value is a lookback window, not a sample interval.\n\n"
         "Example:\n  ./scp-api.py metrics 799611 cpu --hours 24",
     )
-    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
     p.add_argument("metric", choices=tuple(_METRIC_ENDPOINTS), metavar="{cpu,disk,network,network-packet}")
     p.add_argument("--hours", type=_hours, help="look back this many hours (1-1440; API default if omitted)")
 
@@ -819,7 +971,7 @@ def parse_args():
         "Read whether the guest agent is available; this describes agent reachability, not SSH or bootstrap state.\n\n"
         "Example:\n  ./scp-api.py guest-agent-status 799611",
     )
-    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
 
     p = add_subcommand(
         "firewall-policies",
@@ -827,19 +979,20 @@ def parse_args():
         "List policy IDs that can be assigned with firewall set. This reads policies; it does not create or edit them.\n\n"
         "Example:\n  ./scp-api.py firewall-policies",
     )
-    p.add_argument("--query", "--filter", dest="query", metavar="TEXT", help="search policy name/description")
+    p.add_argument("--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT", help="search policy name/description")
     p.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
     p.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
 
     p = add_subcommand(
         "firewall",
         "get or set firewall policy assignments for one interface",
-        "The get action reads the firewall attached to an interface MAC. The set action replaces its copied/user "
+        "The get action reads the firewall attached to an interface MAC. Omit MAC only when the server has exactly "
+        "one interface; the CLI resolves that MAC from live server details. The set action replaces its copied/user "
         "policy assignments and requires an explicit --active or --inactive choice; it does not create or edit policies.\n\n"
-        "Example:\n  ./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get",
+        "Example:\n  ./scp-api.py firewall 799611 get",
     )
-    p.add_argument("server_id", type=int, metavar="server_id")
-    p.add_argument("mac", type=_mac_address, metavar="mac")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
+    p.add_argument("mac", nargs="?", metavar="mac", help="interface MAC; omitted only when the server has exactly one interface")
     add_actions(p, ("get", "set"), "get: read assignment; set: replace assignment (confirmed)")
     p.add_argument(
         "--consistency-check",
@@ -847,11 +1000,11 @@ def parse_args():
         help="with get, ask SCP to compare configured and applied firewall state",
     )
     p.add_argument(
-        "--copied-policy-id", dest="copied_policy_ids", type=int, action="append", default=[], metavar="ID",
+        "--copied-policy-id", dest="copied_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
         help="repeat for copied policy IDs",
     )
     p.add_argument(
-        "--user-policy-id", dest="user_policy_ids", type=int, action="append", default=[], metavar="ID",
+        "--user-policy-id", dest="user_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
         help="repeat for user policy IDs",
     )
     active = p.add_mutually_exclusive_group()
@@ -860,15 +1013,16 @@ def parse_args():
     p.set_defaults(active=None)
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt for set")
 
-    for command, description in [
-        ("power-on", "Power on one server.\n\nExample:\n  ./scp-api.py power-on 799611"),
-        ("power-off", "Power off one server.\n\nExample:\n  ./scp-api.py power-off 799611"),
-        ("power-cycle", "Power-cycle one server.\n\nExample:\n  ./scp-api.py power-cycle 799611"),
-        ("reset", "Reset one server.\n\nExample:\n  ./scp-api.py reset 799611"),
-    ]:
-        p = add_subcommand(command, description)
-        p.add_argument("server_id", type=int, metavar="server_id")
-        p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p = add_subcommand(
+        "power",
+        "power on, off, cycle, or reset one server",
+        "Control server power state. `off` uses Netcup's POWEROFF option; `cycle` and `reset` use Netcup's "
+        "state options. Every action is confirmed unless --yes is supplied.\n\n"
+        "Example:\n  ./scp-api.py power cycle 799611",
+    )
+    add_actions(p, ("on", "off", "cycle", "reset"), "on/off/cycle/reset: selected power operation")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     # With no command the most useful response is the top-level usage, not
     # argparse's implementation detail about a required subparser. Print the
@@ -877,7 +1031,23 @@ def parse_args():
         parser.print_help(sys.stderr)
         parser.exit(2)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # `mac` is optional for the one-interface convenience form. Because it
+    # precedes the positional action, argparse initially sees
+    # `firewall SERVER get` as mac="get". Normalize that unambiguous spelling
+    # here while retaining the explicit `firewall SERVER MAC get` form.
+    if args.command == "firewall":
+        if args.mac in ("get", "set") and args.action is None:
+            args.action = args.mac
+            args.mac = None
+        if args.mac is not None:
+            try:
+                args.mac = _mac_address(args.mac)
+            except argparse.ArgumentTypeError as e:
+                parser.error(f"firewall MAC: {e}")
+
+    return args
 
 
 def main() -> int:
@@ -905,10 +1075,7 @@ def main() -> int:
         "guest-agent-status": cmd_guest_agent_status,
         "firewall-policies": cmd_firewall_policies,
         "firewall": cmd_firewall,
-        "power-on": cmd_power,
-        "power-off": cmd_power,
-        "power-cycle": cmd_power,
-        "reset": cmd_power,
+        "power": cmd_power,
     }
     try:
         dispatch[args.command](client, args, pal)

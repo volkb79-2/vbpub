@@ -90,9 +90,12 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py metrics 799611 cpu --hours 24
 ./scp-api.py guest-agent-status 799611
 ./scp-api.py firewall-policies
-./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
+./scp-api.py firewall 799611 get
 ./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
-./scp-api.py power-cycle 799611
+./scp-api.py power off 799611
+./scp-api.py power on 799611
+./scp-api.py power cycle 799611
+./scp-api.py power reset 799611
 ```
 
 `--filter` is case-insensitive and searches the returned fields, including an
@@ -105,9 +108,124 @@ from `iso-bootable` or the name of an uploaded user ISO. `metrics` returns the
 raw timestamped SCP data for CPU, disk, or network lookback windows.
 `guest-agent-status` reports QEMU guest-agent availability; it is not an SSH
 or bootstrap health check. Firewall `get`/`set` operates on one interface MAC:
+if the server has exactly one interface, omit the MAC and the command resolves
+it from live server details; multiple interfaces require an explicit MAC.
 `set` replaces copied/user policy assignments and requires an explicit firewall
 active state. It assigns existing policies; it does not create or edit policy
 rules.
+
+### Read, create, and assign a firewall policy
+
+Read the current assignment before changing it. With one interface the MAC is
+optional; with several interfaces, obtain the MAC from `server-details` and
+provide it explicitly:
+
+```bash
+./scp-api.py firewall 799611 get --consistency-check
+./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get --consistency-check
+```
+
+The explorer lists and assigns policies but deliberately does not create rule
+sets. The SCP API does create them. The following creates a policy that accepts
+SSH from two example addresses and drops other SSH traffic, while leaving
+other traffic to the existing implicit firewall rule. Replace the TEST-NET
+addresses with the real administrator addresses. First obtain an access token
+from the authenticated SCP session and the SCP user ID; never put the refresh
+token in a curl command:
+
+```bash
+export SCP_BASE_URL=https://www.servercontrolpanel.de/scp-core
+export ACCESS_TOKEN='access-token-from-the-authenticated-session'
+export SCP_USER_ID=12345  # SCP user id, not the CCP customer number
+
+# Or discover that SCP user id with the bearer token:
+set -o pipefail
+export SCP_USER_ID=$(curl --fail-with-body -sS \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/userinfo' | jq -r .id)
+
+curl --fail-with-body -sS \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$SCP_BASE_URL/api/v1/users/$SCP_USER_ID/firewall-policies" | jq .
+
+POLICY_JSON=$(curl --fail-with-body -sS -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  "$SCP_BASE_URL/api/v1/users/$SCP_USER_ID/firewall-policies" \
+  --data '{
+    "name": "ssh-whitelist",
+    "description": "Allow SSH only from approved administrator addresses",
+    "rules": [
+      {
+        "direction": "INGRESS",
+        "protocol": "TCP",
+        "action": "ACCEPT",
+        "sources": ["198.51.100.10", "203.0.113.0/24"],
+        "destinationPorts": "22"
+      },
+      {
+        "direction": "INGRESS",
+        "protocol": "TCP",
+        "action": "DROP",
+        "destinationPorts": "22"
+      }
+    ]
+  }')
+POLICY_ID=$(jq -r '.id // empty' <<<"$POLICY_JSON")
+test -n "$POLICY_ID" || { echo "policy response had no id" >&2; exit 1; }
+printf '%s\n' "$POLICY_JSON" | jq .
+```
+
+Before assignment, confirm the current `ingressImplicitRule` is
+`ACCEPT_ALL`; otherwise the policy above will not keep unrelated public ports
+open. Assignment replaces the complete policy list, so preserve any existing
+copied/user policy IDs if they are still required. The command is confirmed
+unless `--yes` is supplied:
+
+```bash
+./scp-api.py firewall-policies
+./scp-api.py firewall 799611 get --consistency-check
+./scp-api.py firewall 799611 set --user-policy-id "$POLICY_ID" --active
+./scp-api.py tasks --state RUNNING --server-id 799611
+```
+
+Treat this as a lockout-sensitive change: keep a provider console/rescue path
+available and test SSH from an allowed and a deliberately disallowed address.
+
+### Upload a user ISO and boot it
+
+User ISO storage is an SCP account API, not an `iso-bootable` server inventory.
+`scp-api.py` currently attaches an already-uploaded user ISO but does not wrap
+the raw-object upload flow. For an ordinary-sized image, prepare a single-part
+upload, send the file to the returned presigned URL without the bearer token,
+then attach it:
+
+```bash
+export ISO_KEY=debian-custom-recovery.iso
+
+UPLOAD_JSON=$(curl --fail-with-body -sS -X POST \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  "$SCP_BASE_URL/api/v1/users/$SCP_USER_ID/isos/$ISO_KEY?multipart=false")
+UPLOAD_URL=$(jq -r '.presignedUrl // empty' <<<"$UPLOAD_JSON")
+test -n "$UPLOAD_URL" || { echo "upload response had no presignedUrl" >&2; exit 1; }
+curl --fail-with-body -sS --upload-file ./debian-custom-recovery.iso "$UPLOAD_URL"
+
+# Use --json to retain the attach task UUID; wait for that task to report FINISHED.
+./scp-api.py attach-iso 799611 --user-iso-name "$ISO_KEY" \
+  --change-boot-device-to-cdrom --yes --json
+# Then inspect the UUID returned above:
+./scp-api.py tasks TASK_UUID --json
+./scp-api.py power cycle 799611
+```
+
+For a large image use `multipart=true`: the prepare response supplies an
+`uploadId`; fetch a presigned URL for every part at
+`.../isos/$ISO_KEY/$UPLOAD_ID/parts/$PART_NUMBER`, upload each part and record
+its returned `ETag`, then `PUT` the ordered list of `{"ETag": ..., "partNumber":
+...}` objects to `.../isos/$ISO_KEY/$UPLOAD_ID`. The API documentation in
+`netcup-scp-openapi.json` is authoritative for part sizing and the current
+presigned-URL response. Do not power-cycle until the attach task has finished;
+the boot-device option requests CD-ROM as the next boot device.
 
 ## Bootstrap source
 
