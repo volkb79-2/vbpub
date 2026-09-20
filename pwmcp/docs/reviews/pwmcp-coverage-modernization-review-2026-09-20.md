@@ -44,6 +44,13 @@ current Python release at this review date. The official MCP package pages
 identify `@playwright/mcp` 0.0.82 and `mcp-proxy` 6.7.18, while the Chrome
 DevTools MCP release page identifies 1.9.0 as latest.
 
+The Chrome DevTools MCP 1.9.0 release also changes security-relevant CLI
+defaults, including enabling unrestricted paths by default and adding a switch
+to disable JavaScript evaluation. PWMCP currently exposes the server through a
+proxy and does not declare an explicit path policy for that service, so a pin
+bump must review those defaults against `docs/SECURITY.md`, rather than being
+treated as a dependency-only update.
+
 Sources:
 
 - [Playwright Python release notes](https://playwright.dev/python/docs/release-notes)
