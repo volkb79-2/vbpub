@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "build-push.py"
 SPEC = importlib.util.spec_from_file_location("pwmcp_build_push_coverage", MODULE_PATH)
 assert SPEC and SPEC.loader
 build_push = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = build_push
 SPEC.loader.exec_module(build_push)
 
 
@@ -76,6 +78,17 @@ def test_run_uses_pwmcp_directory_by_default(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(build_push.subprocess, "run", fake_run)
     build_push.run(["docker", "version"])
     assert calls == [(["docker", "version"], True, str(build_push.PWMCP_DIR))]
+
+
+def test_run_accepts_explicit_working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        build_push.subprocess,
+        "run",
+        lambda argv, *, check, cwd: calls.append(cwd),
+    )
+    build_push.run(["docker", "version"], cwd=tmp_path)
+    assert calls == [str(tmp_path)]
 
 
 def test_create_builder_declares_all_governed_limits(

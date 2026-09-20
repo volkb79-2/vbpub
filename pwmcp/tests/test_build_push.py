@@ -44,6 +44,11 @@ def test_docker_size_bytes(value: str, expected: int) -> None:
     assert build_push.docker_size_bytes(value) == expected
 
 
+def test_docker_size_bytes_rejects_unknown_suffix() -> None:
+    with pytest.raises(SystemExit):
+        build_push.docker_size_bytes("4p")
+
+
 def test_missing_builder_setting_is_fatal(tmp_path: Path) -> None:
     config_path = tmp_path / "cmru.toml"
     config_path.write_text("[project_metadata.builder]\nname='incomplete'\n", encoding="utf-8")

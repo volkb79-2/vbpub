@@ -334,3 +334,6 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     assert 'default = "1.2.3-r4"' in bake.read_text()
     assert "PWMCP_VERSION=1.2.3-r4" in release_vars.read_text()
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
+
+    override.unlink()
+    resolver.main()

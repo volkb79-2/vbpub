@@ -121,6 +121,12 @@ def test_verify_playwright_rejects_missing_distribution(monkeypatch: pytest.Monk
         session.verify_installed_playwright(_contract())
 
 
+@pytest.mark.parametrize("value", ["1", "invalid.63"])
+def test_major_minor_rejects_malformed_version(value: str) -> None:
+    with pytest.raises((session.VersionMismatch, ValueError)):
+        session._major_minor(value)
+
+
 def test_verify_playwright_rejects_protocol_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session.importlib.metadata, "version", lambda _name: "1.62.9")
     with pytest.raises(session.VersionMismatch, match="does not match"):
