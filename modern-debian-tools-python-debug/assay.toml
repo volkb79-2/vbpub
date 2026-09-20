@@ -31,6 +31,7 @@ mode = "whole_target"
 targets = ["host-setup/mdt-host-setup-wizard.py"]
 fail_under = 60.0
 allow_excluded = false
+require_branch = true
 
 [lanes.host_setup.judge.coverage]
 format = "coverage-py-json"
@@ -55,3 +56,17 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
 mechanism = "import-break"
 target = "host-setup/mdt-host-setup-wizard.py"
 budget_per_attempt = "2m"
+
+# Host setup's real system boundary is a guest kernel. This R0 lane is an
+# Assay-resumable orchestration receipt; run-vm-acceptance.sh puts every
+# product assertion inside QEMU and uses the cockpit only to drive the
+# disposable runner.
+[lanes.vm_system]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
+env = {}
+env_passthrough = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "PATH"]
+budget = "45m"
+allow_argv_append = false

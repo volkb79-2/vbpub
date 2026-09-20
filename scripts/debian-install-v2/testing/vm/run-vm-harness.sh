@@ -29,7 +29,11 @@ TESTING_DIR="$(cd "$HERE/.." && pwd)"
 # it. That can make a gate execute another worktree's source. Derive both
 # names from this worktree's path so concurrent gates cannot share a mounted
 # runner or image tag.
-RUNNER_FINGERPRINT="$(printf '%s' "$TESTING_DIR" | sha256sum | cut -c1-12)"
+# Include an optional alternate source in the identity.  Two projects may
+# deliberately reuse this generic VM harness from one worktree, but their
+# read-only guest input must never be silently exchanged.
+SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
+RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
 IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
@@ -60,6 +64,7 @@ die() {
 # traversal through /work/.. cannot escape a Docker bind mount.
 HOST_TESTING_DIR="$TESTING_DIR"
 HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
+HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
 SELF_HOSTNAME="$(cat /etc/hostname 2>/dev/null || true)"
 SELF_CONTAINER_ID=""
 inside_container=0
@@ -125,7 +130,52 @@ EOF
     fi
     HOST_TESTING_DIR="$host_mount_src$host_suffix"
     HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
+
+    # MDT and future consumers can provide a project source below any of the
+    # cockpit's authoritative Docker bind mounts.  Resolve it using the same
+    # longest-prefix namespace mapping as the harness itself; never hand a
+    # container path to the daemon and never invent a host path when no mount
+    # contains it.
+    if [ -n "$SOURCE_NAMESPACE_DIR" ]; then
+        source_mount_src=""
+        source_mount_dest=""
+        while IFS=$'\t' read -r candidate_dest candidate_src; do
+            [ -n "$candidate_dest" ] || continue
+            case "$SOURCE_NAMESPACE_DIR/" in
+                "$candidate_dest"/*|"$candidate_dest")
+                    if [ "${#candidate_dest}" -gt "${#source_mount_dest}" ]; then
+                        source_mount_dest="$candidate_dest"
+                        source_mount_src="$candidate_src"
+                    fi
+                    ;;
+            esac
+        done < <(docker inspect "$SELF_CONTAINER_ID" --format \
+            '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null) || die \
+            "cannot inspect Docker mounts for source '$SOURCE_NAMESPACE_DIR'; refusing a namespace-wrong bind mount"
+        [ -n "$source_mount_dest" ] && [ -n "$source_mount_src" ] || die \
+            "no Docker mount contains requested VM source $SOURCE_NAMESPACE_DIR; refusing a namespace-wrong bind mount"
+        case "$source_mount_src" in
+            /*) ;;
+            *) die "Docker mount for source $source_mount_dest is not a physical host path ('$source_mount_src'); refusing a namespace-wrong bind mount" ;;
+        esac
+        if [ "$source_mount_dest" = "/" ]; then
+            source_suffix="$SOURCE_NAMESPACE_DIR"
+        else
+            source_suffix="${SOURCE_NAMESPACE_DIR#"$source_mount_dest"}"
+        fi
+        HOST_SOURCE_DIR="$source_mount_src$source_suffix"
+    fi
 fi
+
+# From a real host shell the caller's path is already in the daemon's
+# namespace, so the explicit source is authoritative without Docker mount
+# translation. The container path case above remains mandatory and fail-closed.
+if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
+    HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
+fi
+
+[ -d "$HOST_SOURCE_DIR" ] || die \
+    "VM source directory '$HOST_SOURCE_DIR' does not exist; refusing to start with a phantom bind"
 
 verify_cgroup_parent() {
     [ -n "$VM_CGROUP_PARENT" ] || die \
@@ -240,7 +290,7 @@ ensure_runner() {
         -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
         -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
         -v "$HOST_TESTING_DIR:/work:ro" \
-        -v "$HOST_PROJECT_DIR:/source:ro" \
+        -v "$HOST_SOURCE_DIR:/source:ro" \
         -w /work/vm \
         "$IMAGE" sleep infinity >/dev/null
 }

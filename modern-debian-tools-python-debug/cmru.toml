@@ -54,7 +54,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "modern-debian-tools-python-debug: release-flow tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "/opt/tester-venv/bin/python", "-m", "unittest", "scripts.test_release_flow", "scripts.test_oci_tool_staging", "scripts.test_oci_layout_push"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: run-gate release lane", argv = ["./run-gate.py", "release", "--worktree", "."], cwd = "." },
 ]
 
 [steps.build]
