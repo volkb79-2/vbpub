@@ -59,6 +59,40 @@ def test_render_toml_stops_before_network_merge_and_stack_execution(tmp_path, mo
     assert "Rendered CIU TOML files" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("flags",),
+    [
+        ({"dry_run": True, "print_context": False, "render_toml": False},),
+        ({"dry_run": False, "print_context": True, "render_toml": False},),
+    ],
+)
+def test_identity_repair_requires_all_three_runtime_mode_guards(
+    tmp_path, monkeypatch, flags
+):
+    """Each ``and`` in the runtime repair guard must remain an AND.
+
+    The two cases isolate the first and second conjunction respectively:
+    changing either one to OR would incorrectly enable repair for a
+    read-only invocation.
+    """
+    _early_pipeline(monkeypatch, {"ciu": {}})
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    captured = {}
+
+    class StopAfterBootstrap(Exception):
+        pass
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+        raise StopAfterBootstrap
+
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", capture)
+    with pytest.raises(StopAfterBootstrap):
+        engine.main_execution(working_dir=stack, define_root=tmp_path, **flags)
+    assert captured["allow_identity_repair"] is False
+
+
 def test_required_fqdn_rejects_empty_public_name_before_secret_or_compose_work(tmp_path, monkeypatch):
     """S2.3: require_fqdn is a preflight, not a late compose-time failure."""
     _early_pipeline(monkeypatch, {"ciu": {"require_fqdn": True}})

@@ -4,6 +4,7 @@ from __future__ import annotations
 import builtins
 import subprocess
 from contextlib import nullcontext
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,6 +92,29 @@ def test_root_context_namespace_and_explicit_root_refusal(tmp_path):
         workspace.resolve_ciu_root(tmp_path, root_folder=tmp_path / "missing")
 
 
+def test_root_context_is_frozen_and_root_lock_is_reentrant_for_setup(
+    tmp_path,
+):
+    context = workspace.RootContext(
+        workspace=SimpleNamespace(
+            workspace_id="w1", git_common_dir=tmp_path / ".git-common"
+        ),
+        ciu_root=tmp_path,
+        ciu_root_offset=Path("."),
+        root_instance_id="r1",
+        physical_ciu_root=tmp_path,
+    )
+    with pytest.raises(FrozenInstanceError):
+        context.root_instance_id = "changed"
+
+    # The second admission must work after the first created the lock
+    # directory.  A mutated ``exist_ok=True`` would fail here.
+    with workspace.root_lock(context):
+        pass
+    with workspace.root_lock(context):
+        pass
+
+
 def test_context_for_root_refuses_root_outside_discovered_git_family(monkeypatch, tmp_path):
     fake = SimpleNamespace(
         discover_git_context=lambda _root: (tmp_path / "git", tmp_path / ".git", "main", "a" * 40)
@@ -117,6 +141,54 @@ def test_committed_root_and_marker_validation_fail_closed(monkeypatch, tmp_path)
             workspace._validate_committed_marker(tmp_path, "HEAD", "ciu.global.defaults.toml.j2")
 
 
+def test_committed_root_errors_preserve_stderr_and_subprocess_contract(monkeypatch, tmp_path):
+    result = subprocess.CompletedProcess(
+        [], 1, stdout="stdout-detail", stderr="stderr-detail"
+    )
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return result
+
+    monkeypatch.setattr(workspace.subprocess, "run", run)
+    with pytest.raises(workspace.CiuWorkspaceError, match="stderr-detail"):
+        workspace.discover_committed_roots(tmp_path)
+    assert calls[0][1] == {
+        "cwd": tmp_path.resolve(),
+        "text": True,
+        "capture_output": True,
+        "check": False,
+    }
+
+    calls.clear()
+    valid = subprocess.CompletedProcess([], 0, stdout=b"[ciu]\n", stderr=b"")
+    monkeypatch.setattr(workspace.subprocess, "run", lambda *args, **kwargs: valid)
+    workspace._validate_committed_marker(
+        tmp_path, "HEAD", "ciu.global.defaults.toml.j2"
+    )
+    # The marker is bytes until the explicit UTF-8 decode, and Git failures are
+    # handled as data so the adapter can report its typed refusal.
+    assert calls == []
+
+    marker_calls = []
+
+    def marker_run(*args, **kwargs):
+        marker_calls.append((args, kwargs))
+        return valid
+
+    monkeypatch.setattr(workspace.subprocess, "run", marker_run)
+    workspace._validate_committed_marker(
+        tmp_path, "HEAD", "ciu.global.defaults.toml.j2"
+    )
+    assert marker_calls[0][1] == {
+        "cwd": tmp_path.resolve(),
+        "text": False,
+        "capture_output": True,
+        "check": False,
+    }
+
+
 def test_tracked_blob_checks_both_git_type_outcomes(monkeypatch, tmp_path):
     monkeypatch.setattr(
         workspace.subprocess,
@@ -130,6 +202,23 @@ def test_tracked_blob_checks_both_git_type_outcomes(monkeypatch, tmp_path):
         lambda *args, **kwargs: subprocess.CompletedProcess([], 1, stdout="blob", stderr=""),
     )
     assert workspace._tracked_blob(tmp_path, "HEAD", "file") is False
+
+
+def test_tracked_blob_preserves_binary_git_probe_contract(monkeypatch, tmp_path):
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess([], 0, stdout="blob", stderr="")
+
+    monkeypatch.setattr(workspace.subprocess, "run", run)
+    assert workspace._tracked_blob(tmp_path, "HEAD", "file") is True
+    assert calls[0][1] == {
+        "cwd": tmp_path.resolve(),
+        "text": True,
+        "capture_output": True,
+        "check": False,
+    }
 
 
 def test_root_names_and_identity_collision_are_distinct():
@@ -154,6 +243,46 @@ def test_generated_facts_render_rejects_unknown_and_invalid_machine_values():
         workspace_env.render_generated_facts_block(IDENTITY, {**MACHINE, "other": "x"})
     with pytest.raises(workspace_env.WorkspaceEnvError, match="machine facts must be strings"):
         workspace_env.render_generated_facts_block(IDENTITY, {**MACHINE, "env_type": 3})
+
+
+def test_machine_facts_rejects_missing_and_unknown_keys_together(monkeypatch, tmp_path):
+    table = {"schema_version": 2, **MACHINE}
+    table.pop(next(iter(MACHINE)))
+    table["unexpected"] = "x"
+    monkeypatch.setattr(
+        workspace_env,
+        "generated_facts_document",
+        lambda _root: {"ciu": {"instance": {"machine": table}}},
+    )
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="invalid"):
+        workspace_env.read_generated_machine_facts(tmp_path)
+
+
+def test_identity_fallback_rejects_default_repair_and_handles_partial_identity(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        workspace,
+        "_shared",
+        lambda: SimpleNamespace(workspace_id_for_path=lambda _path: "derived"),
+    )
+    one_missing = workspace_env._compute_network_name(
+        tmp_path, workspace_id="explicit", root_instance_id=None
+    )
+    other_missing = workspace_env._compute_network_name(
+        tmp_path, workspace_id=None, root_instance_id="explicit"
+    )
+    assert one_missing["INSTANCE_ID"] == "derived"
+    assert other_missing["INSTANCE_ID"] == "derived"
+
+    monkeypatch.setattr(workspace_env, "seed_identity_env", lambda _root: {})
+    monkeypatch.setattr(
+        workspace_env,
+        "generate_ciu_env",
+        lambda *_args, **_kwargs: pytest.fail("default repair must be refused"),
+    )
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="no complete"):
+        workspace_env._seed_identity_or_repair(tmp_path, generated=False)
 
 
 def test_compose_ksm_sources_require_a_logical_repo_root(tmp_path):
@@ -356,6 +485,28 @@ def test_legacy_record_migration_wraps_shared_adoption_failure(monkeypatch, tmp_
         worktree._ensure_shared_record(tmp_path, record)
 
 
+def test_legacy_record_migration_preserves_shared_record_metadata(monkeypatch, tmp_path):
+    captured = {}
+    shared = SimpleNamespace(
+        WorkspaceError=RuntimeError,
+        adopt_workspace=lambda *args, **kwargs: captured.update(kwargs) or "shared",
+    )
+    record = SimpleNamespace(
+        git_worktree_path=tmp_path / "checkout",
+        logical_name="legacy",
+        ciu_root_offset=Path("nested"),
+    )
+    monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(worktree, "_shared_record_for_checkout", lambda _path: None)
+    monkeypatch.setattr(
+        worktree, "_physical_workspace_target", lambda *_args: tmp_path / "physical"
+    )
+    monkeypatch.setattr(worktree, "primary_worktree_root", lambda _root: tmp_path)
+
+    assert worktree._ensure_shared_record(tmp_path, record) == "shared"
+    assert captured["metadata"] == {"ciu_root_offset": "nested", "legacy_record": True}
+
+
 def test_create_refuses_a_committed_root_marker_that_did_not_materialize(monkeypatch, tmp_path):
     primary, _target, _shared = _create_setup(monkeypatch, tmp_path, roots=[tmp_path / "primary"], materialize=False)
     with pytest.raises(worktree.WorktreeError, match="did not materialize"):
@@ -366,8 +517,24 @@ def test_create_prepares_nested_roots_and_generates_non_ready_root(monkeypatch, 
     primary, target, _shared = _create_setup(
         monkeypatch, tmp_path, roots=[tmp_path / "primary", tmp_path / "primary" / "nested"]
     )
+    writes = []
+    _shared.write_record = lambda record: writes.append(record)
     ready = worktree.create(tmp_path, "demo", path=target)
     assert ready.state == "allocating"
+    entries = writes[-1].metadata["root_entries"]
+    assert [entry["offset"] for entry in entries] == [".", "nested"]
+
+
+def test_adopt_shared_infra_requires_every_value_before_side_effects(tmp_path):
+    with pytest.raises(worktree.WorktreeError, match="all-or-nothing"):
+        worktree.adopt(
+            tmp_path,
+            "demo",
+            "target",
+            shared_infra="primary",
+            shared_infra_services=None,
+            shared_infra_ref_projects="project",
+        )
 
 
 def test_create_marks_partial_multi_root_preparation_and_preserves_worktree_error(
