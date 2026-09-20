@@ -170,3 +170,32 @@ def test_a_resolved_git_dir_that_is_not_an_existing_absolute_directory_is_refuse
         git_module._resolve_repo(project, git_executable)
     assert excinfo.value.reason_code is ReasonCode.GIT_FAILED
     assert "not an absolute, existing directory" in str(excinfo.value)
+
+
+def test_every_git_child_disables_optional_index_preload_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The closed Git argv pins the resource-affecting option.
+
+    ``GIT_CONFIG_*`` cannot be used for this assertion: the replacement
+    environment deliberately removes ambient configuration. Capture both the
+    bootstrap and substantive children instead, proving the setting is
+    applied at the boundary every caller shares.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    captured: list[tuple[str, ...]] = []
+
+    def fake_bounded(argv, *, remaining=None):
+        captured.append(tuple(argv))
+        if "--absolute-git-dir" in argv:
+            return 0, str(project / ".git").encode(), b""
+        return 0, b"", b""
+
+    monkeypatch.setattr(git_module, "_run_bounded", fake_bounded)
+    git_module._run_raw(project, "status", "--porcelain=v1", "-z")
+
+    assert len(captured) == 2
+    for argv in captured:
+        assert ("-c", "core.preloadIndex=false") in tuple(zip(argv, argv[1:]))

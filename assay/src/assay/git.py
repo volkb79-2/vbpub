@@ -165,6 +165,13 @@ _FIXED_CONFIG: tuple[str, ...] = (
     "-c", "core.quotePath=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.fsmonitor=",
+    # Git's index-preload worker pool is an optional optimisation, not part of
+    # the repository fact being measured. A gate can run many isolated
+    # snapshots concurrently, so allowing each status call to create its own
+    # lstat threads can exhaust the tester cgroup before Git reports any
+    # useful result ("unable to create threaded lstat"). Pin the option at
+    # the Git boundary; ambient GIT_CONFIG_* is intentionally discarded above.
+    "-c", "core.preloadIndex=false",
     "-c", "commit.gpgSign=false",
     "-c", "core.excludesFile=",
 )
