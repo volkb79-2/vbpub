@@ -274,6 +274,34 @@ def test_shipped_template_run_uses_wait_healthy_and_finds_materialized_secret(tm
     }
 
 
+def test_shipped_template_direct_module_body_is_covered_without_synthetic_loading(
+    tmp_path,
+):
+    """The reference module itself remains covered with serial pytest.
+
+    The hook runner also exercises a copied module under a synthetic name. That
+    path is intentionally retained, but coverage of the shipped reference must
+    not depend on xdist's worker merge behavior.
+    """
+    import ciu.hook_templates.post_compose_db as mod
+
+    secret_path = tmp_path / "db_password"
+    secret_path.write_text("secret\n", encoding="utf-8")
+    ctx = _ctx(
+        tmp_path,
+        secret_file=lambda name: secret_path if name == "db_password" else _unknown_secret(name),
+        wait_healthy=lambda service: service == "postgres",
+    )
+    assert mod.run({"deploy": {"db_service_name": "postgres"}}, ctx)[
+        "hook_state.db_service_healthy"
+    ] == {"value": True, "persist": "state"}
+    assert mod.run({"deploy": {}}, _ctx(
+        tmp_path, secret_file=_unknown_secret, wait_healthy=None
+    ))["hook_state.db_password_materialized"] == {
+        "value": False, "persist": "state"
+    }
+
+
 def test_shipped_template_validate_config_flags_missing_service_name():
     import ciu.hook_templates.post_compose_db as mod
 

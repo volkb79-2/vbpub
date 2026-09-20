@@ -41,8 +41,8 @@ def main() -> None:
     # command.  Invalid values fail loudly instead of silently changing the
     # coverage execution shape.
     workers = os.environ.get("CIU_PYTEST_WORKERS", "auto")
-    if workers != "auto" and (not workers.isdigit() or int(workers) < 1):
-        raise SystemExit("CIU_PYTEST_WORKERS must be 'auto' or a positive integer")
+    if workers != "auto" and (not workers.isdigit() or int(workers) < 0):
+        raise SystemExit("CIU_PYTEST_WORKERS must be 'auto' or a non-negative integer")
     cmd = [
         sys.executable, "-m", "pytest", "tests",
         "--cov=ciu",

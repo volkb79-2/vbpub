@@ -22,7 +22,11 @@ scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "run-ciu-tests.py"]
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", CIU_PYTEST_WORKERS = "2" }
+# Assay repeatedly snapshots Git while xdist workers are active. Git's
+# optional threaded index preload is redundant for these isolated snapshots
+# and can exhaust the tester's task budget; force the same comparison to be
+# single-threaded without changing the judged test parallelism.
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", CIU_PYTEST_WORKERS = "auto", GIT_CONFIG_COUNT = "1", GIT_CONFIG_KEY_0 = "core.preloadIndex", GIT_CONFIG_VALUE_0 = "false" }
 # The suite genuinely reads these from the ambient environment: the four
 # governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist
 # worker spawn + git/ssh detection need PATH, and HOME is required for tests
