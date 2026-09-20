@@ -188,6 +188,20 @@ on hosts that provide it; otherwise TCG is slower but keeps the runner
 unprivileged. Keep VM disks under disposable storage and never attach a
 production block device.
 
+MDT's system acceptance uses the repository's shared Debian-install VM
+harness. From the MDT project root, run `./run-gate.py vm-system`; the lane
+requires the governed `CGROUP_PARENT_DEV_GATES`,
+`CGROUP_PARENT_DEV_INTERACTIVE`, and `BUILDX_BUILDER` variables. The harness
+maps the selected worktree's physical source mount and runs the installer,
+systemd, cgroup, Docker, and slice assertions inside the QEMU guest. It does
+not run those product checks in the cockpit. The harness override is
+`MDT_VM_SOURCE_DIR`, which is resolved through Docker's authoritative mount
+table and refuses an unmapped or missing source.
+
+The image release gate is `./run-gate.py release`. CMRU invokes that declared
+lane, so the OCI release-flow tests remain in `tester-unified` and do not have
+a second hand-written tester command in `cmru.toml`.
+
 ### Persistent AI CLI state
 
 The vendored template uses source-backed bind mounts under

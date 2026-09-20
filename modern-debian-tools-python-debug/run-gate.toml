@@ -23,12 +23,23 @@ budget = "2m"
 memory = "1g"
 memory_swap = "2g"
 
-[lanes.assay-full]
+# The CMRU image release consumes this same tester-unified release-flow lane;
+# keeping the command here prevents a second tester-gate recipe from drifting
+# away from the project gate declaration.
+[lanes.release]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && mkdir -p .assay && export PYTHONPATH={worktree}/assay/src && /opt/tester-venv/bin/python -c 'from assay.cli import main; raise SystemExit(main())' run host_setup --file assay.toml --verdict-json .assay/verdict-host_setup.json --resume --progress .assay/progress-host_setup.jsonl"]
+argv = ["bash", "-c", "cd {worktree}/modern-debian-tools-python-debug && exec /opt/tester-venv/bin/python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_layout_push"]
+clean_tree = true
+budget = "15m"
+
+[lanes.assay-full]
+kind = "assay"
+assay_lane = "host_setup"
+environment = "tester-unified"
+clean_tree = true
 budget = "2h"
-artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl"]
+artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl", ".assay/coverage.json"]
 
 [lanes.assay-full.resources]
 # The full wizard R0-R3 lane routinely exceeds 4 GiB while executing the
@@ -38,3 +49,11 @@ artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl
 # aggregate host boundary.
 memory = "6g"
 memory_swap = "16g"
+
+[lanes.vm-system]
+kind = "assay"
+assay_lane = "vm_system"
+environment = "bare-host"
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
+budget = "45m"
