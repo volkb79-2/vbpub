@@ -5,13 +5,12 @@ First-class exploration, not manual curl+jq: this is exactly what
 scp-api-install-host.py used to do ad hoc for imageflavours only (query,
 filter, print a numbered list) -- generalized to the rest of the
 "pre-install recon" resource set (servers, imageflavours, iso-bootable, disks,
-rescuesystem status, snapshots, tasks), plus a handful of paired SAFE
-mutating actions (task cancel, ISO detach, rescue-system deactivate,
-snapshot create/dryrun-check) named explicitly because they're reversible/
-non-destructive. Deliberately does NOT expose: disk format, image setup
-(server reinstall), or snapshot revert -- those are genuinely destructive
-and belong in a dedicated, deliberate flow, not a recon tool's convenience
-actions.
+rescuesystem status, snapshots, tasks, metrics, guest-agent status, and
+firewall assignment), plus explicitly confirmed actions (ISO attach/detach,
+task cancel, rescue-system deactivate, snapshot create/dryrun-check, power
+operations, and firewall assignment). Deliberately does NOT expose: disk
+format, image setup (server reinstall), snapshot revert, or firewall policy
+creation/editing -- those need a dedicated, deliberate flow.
 
 Auth/settings: shares netcup_scp_client.py with scp-api-install-host.py
 (same .env-sourced NETCUP_SCP_API_REFRESH_TOKEN, same OAuth2 device-code
@@ -26,10 +25,16 @@ Usage:
   scp-api.py imageflavours [server_id] [--filter TEXT] [--json]
   scp-api.py iso-bootable [server_id] [--filter TEXT] [--json]
   scp-api.py iso-attached [server_id] [detach] [--yes]
+  scp-api.py attach-iso <server_id> (--iso-id ID | --user-iso-name NAME) [--yes]
   scp-api.py disks [server_id] [supported-drivers]
   scp-api.py rescuesystem [server_id] [deactivate] [--yes]
   scp-api.py snapshots [server_id] [create|dryrun] [--name NAME] [--yes]
-  scp-api.py tasks [uuid] [cancel] [--yes]
+  scp-api.py tasks [uuid] [cancel] [--query TEXT] [--server-id ID]
+                  [--state STATE] [--limit N] [--offset N]
+  scp-api.py metrics <server_id> {cpu,disk,network,network-packet} [--hours N]
+  scp-api.py guest-agent-status <server_id>
+  scp-api.py firewall-policies [--query TEXT]
+  scp-api.py firewall <server_id> <mac> [get|set] [options]
   scp-api.py {power-on,power-off,power-cycle,reset} <server_id> [--yes]
 
 Examples:
@@ -39,18 +44,26 @@ Examples:
   scp-api.py imageflavours --filter debian
   scp-api.py iso-bootable --filter rescue
   scp-api.py iso-attached 799611
+  scp-api.py attach-iso 799611 --iso-id 1234
   scp-api.py disks 799611 supported-drivers
   scp-api.py rescuesystem 799611
   scp-api.py snapshots 799611
-  scp-api.py tasks
+  scp-api.py tasks --state RUNNING --server-id 799611
+  scp-api.py metrics 799611 cpu --hours 24
+  scp-api.py guest-agent-status 799611
+  scp-api.py firewall-policies
+  scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
+  scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
   scp-api.py power-cycle 799611
 
 Verb groups:
   authentication: login
   exploration: servers, server-details, imageflavours, iso-bootable,
-                iso-attached, disks, rescuesystem, snapshots, tasks
-  modification: iso-attached <server_id> detach, rescuesystem <server_id>
-               deactivate, snapshots <server_id> create, tasks <uuid> cancel,
+                iso-attached, disks, rescuesystem, snapshots, tasks,
+                metrics, guest-agent-status, firewall-policies, firewall get
+  modification: attach-iso, iso-attached <server_id> detach,
+               rescuesystem <server_id> deactivate, snapshots <server_id>
+               create, tasks <uuid> cancel, firewall <server_id> <mac> set,
                power-on, power-off, power-cycle, reset
 
 Every subcommand accepts --json for raw machine output; without it, output
@@ -265,6 +278,46 @@ def _require_server_id(args, action: str) -> int:
     return args.server_id
 
 
+_TASK_STATES = (
+    "PENDING",
+    "RUNNING",
+    "FINISHED",
+    "ERROR",
+    "WAITING_FOR_CANCEL",
+    "CANCELED",
+)
+_METRIC_ENDPOINTS = {
+    "cpu": "cpu",
+    "disk": "disk",
+    "network": "network",
+    "network-packet": "network/packet",
+}
+_MAC_ADDRESS_RE = re.compile(r"^[a-fA-F0-9]{2}(?::[a-fA-F0-9]{2}){5}$")
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be an integer") from e
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return number
+
+
+def _hours(value: str) -> int:
+    number = _nonnegative_int(value)
+    if number == 0 or number > 1440:
+        raise argparse.ArgumentTypeError("must be between 1 and 1440 hours")
+    return number
+
+
+def _mac_address(value: str) -> str:
+    if not _MAC_ADDRESS_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("must be a MAC address such as aa:bb:cc:dd:ee:ff")
+    return value
+
+
 # --- subcommands -------------------------------------------------------------
 
 def cmd_servers(client: NetcupSCPClient, args, pal: _Palette) -> None:
@@ -342,6 +395,22 @@ def cmd_attached_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(rows, args.json, lambda d: print_table(
         d, ["serverId", "serverName", "isoAttached", "iso"], pal, "no servers on this account"
     ))
+
+
+def cmd_attach_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    data: Dict[str, Any] = {}
+    if args.iso_id is not None:
+        data["isoId"] = args.iso_id
+    if args.user_iso_name is not None:
+        data["userIsoName"] = args.user_iso_name
+    if args.change_boot_device_to_cdrom:
+        data["changeBootDeviceToCdrom"] = True
+
+    if not confirm(f"Attach the selected ISO to server {args.server_id}?", args.yes, pal):
+        print("aborted")
+        return
+    result = _api_call(client.post, f"/api/v1/servers/{args.server_id}/iso", data)
+    emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) and d else print(pal.green("attach requested")))
 
 
 def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
@@ -424,11 +493,27 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    params = {}
+    if getattr(args, "query", None):
+        params["q"] = args.query
+    if getattr(args, "server_filter_id", None) is not None:
+        params["serverId"] = args.server_filter_id
+    if getattr(args, "state", None):
+        params["state"] = args.state
+    if getattr(args, "limit", None) is not None:
+        params["limit"] = args.limit
+    if getattr(args, "offset", None) is not None:
+        params["offset"] = args.offset
+    params = params or None
+
+    if args.uuid is not None and params is not None:
+        print("ERROR: task filters are only valid when listing tasks, not with a task UUID", file=sys.stderr)
+        raise SystemExit(2)
     if args.action == "cancel" and args.uuid is None:
         print("ERROR: cancel requires a task uuid", file=sys.stderr)
         sys.exit(2)
     if args.uuid is None:
-        tasks = _api_call(client.get, "/api/v1/tasks")
+        tasks = _api_call(client.get, "/api/v1/tasks", params=params)
         emit(tasks, args.json, lambda d: print_table(
             d, ["uuid", "name", "state", "startedAt", "finishedAt"], pal, "no tasks found"
         ))
@@ -442,6 +527,83 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
         return
     task = _api_call(client.get, f"/api/v1/tasks/{args.uuid}")
     emit(task, args.json, lambda d: print_kv(d, pal))
+
+
+def cmd_metrics(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    endpoint = _METRIC_ENDPOINTS[args.metric]
+    params = {"hours": args.hours} if args.hours is not None else None
+    result = _api_call(client.get, f"/api/v1/servers/{args.server_id}/metrics/{endpoint}", params=params)
+    emit(result, args.json)
+
+
+def cmd_guest_agent_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    result = _api_call(client.get, f"/api/v1/servers/{args.server_id}/guest-agent/status")
+    emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) else print(d))
+
+
+def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    user_info = _api_call(client.get_user_info)
+    user_id = user_info.get("id") if isinstance(user_info, dict) else None
+    if not isinstance(user_id, int):
+        print("ERROR: SCP userinfo response did not contain an integer user id", file=sys.stderr)
+        raise SystemExit(1)
+    params = {}
+    if args.query:
+        params["q"] = args.query
+    if args.limit is not None:
+        params["limit"] = args.limit
+    if args.offset is not None:
+        params["offset"] = args.offset
+    result = _api_call(client.get, f"/api/v1/users/{user_id}/firewall-policies", params=params or None)
+
+    def table(rows):
+        flat = [
+            {
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "rules": len(row.get("rules") or []) if isinstance(row.get("rules"), list) else "",
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        print_table(flat, ["id", "name", "description", "rules"], pal, "no firewall policies found")
+
+    emit(result, args.json, table)
+
+
+def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{args.mac}/firewall"
+    action = args.action or "get"
+    copied_policy_ids = getattr(args, "copied_policy_ids", [])
+    user_policy_ids = getattr(args, "user_policy_ids", [])
+    active = getattr(args, "active", None)
+    if action == "get":
+        if copied_policy_ids or user_policy_ids or active is not None:
+            print("ERROR: firewall set options require the explicit set action", file=sys.stderr)
+            raise SystemExit(2)
+        params = {"consistencyCheck": True} if args.consistency_check else None
+        result = _api_call(client.get, endpoint, params=params)
+        emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) else print(d))
+        return
+
+    if active is None:
+        print("ERROR: firewall set requires either --active or --inactive", file=sys.stderr)
+        raise SystemExit(2)
+    data = {
+        "copiedPolicies": [{"id": policy_id} for policy_id in copied_policy_ids],
+        "userPolicies": [{"id": policy_id} for policy_id in user_policy_ids],
+        "active": active,
+    }
+    if not confirm(
+        f"Replace firewall policy assignments on {args.server_id}/{args.mac}?",
+        args.yes,
+        pal,
+    ):
+        print("aborted")
+        return
+    result = _api_call(client.put, endpoint, data)
+    emit(result, args.json, lambda d: print_kv(d, pal) if isinstance(d, dict) and d else print(pal.green("firewall update requested")))
 
 
 _POWER_ACTIONS = {
@@ -567,6 +729,24 @@ def parse_args():
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     p = add_subcommand(
+        "attach-iso",
+        "attach a bootable or user ISO to one server",
+        "Attach an ISO by ID from iso-bootable, or attach a user-uploaded ISO by name. "
+        "This changes the server's attached media and always asks for confirmation.\n\n"
+        "Example:\n  ./scp-api.py attach-iso 799611 --iso-id 1234",
+    )
+    p.add_argument("server_id", type=int, metavar="server_id")
+    iso_source = p.add_mutually_exclusive_group(required=True)
+    iso_source.add_argument("--iso-id", type=int, help="ID returned by iso-bootable")
+    iso_source.add_argument("--user-iso-name", metavar="NAME", help="name of an ISO uploaded to the account")
+    p.add_argument(
+        "--change-boot-device-to-cdrom",
+        action="store_true",
+        help="also make the virtual CD-ROM the next boot device",
+    )
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
+    p = add_subcommand(
         "disks",
         "list disks for all servers, or one server",
         "List disk capacity/allocation and storage drivers.\n\n"
@@ -578,7 +758,8 @@ def parse_args():
     p = add_subcommand(
         "rescuesystem",
         "show rescue-system status for all servers, or one server",
-        "Show whether the rescue system is active; add deactivate to turn it off.\n\n"
+        "Show whether Netcup's provider-managed emergency rescue environment is active; "
+        "this is separate from an arbitrary attached ISO. Add deactivate to turn it off.\n\n"
         "Example:\n  ./scp-api.py rescuesystem 799611",
     )
     p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
@@ -608,7 +789,76 @@ def parse_args():
     )
     p.add_argument("uuid", nargs="?", default=None)
     add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
+    p.add_argument(
+        "--query", "--filter", dest="query", metavar="TEXT",
+        help="list tasks whose name, UUID, or server fields contain TEXT (API q filter)",
+    )
+    p.add_argument("--server-id", dest="server_filter_id", type=int, metavar="ID", help="list tasks for one server")
+    p.add_argument(
+        "--state",
+        choices=_TASK_STATES,
+        help="list tasks in one state (ROLLBACK is not supported by the API filter)",
+    )
+    p.add_argument("--limit", type=_nonnegative_int, help="maximum number of tasks to return")
+    p.add_argument("--offset", type=_nonnegative_int, help="number of matching tasks to skip")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
+    p = add_subcommand(
+        "metrics",
+        "show CPU, disk, or network metrics for one server",
+        "Return timestamped SCP metrics. The API's hours value is a lookback window, not a sample interval.\n\n"
+        "Example:\n  ./scp-api.py metrics 799611 cpu --hours 24",
+    )
+    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("metric", choices=tuple(_METRIC_ENDPOINTS), metavar="{cpu,disk,network,network-packet}")
+    p.add_argument("--hours", type=_hours, help="look back this many hours (1-1440; API default if omitted)")
+
+    p = add_subcommand(
+        "guest-agent-status",
+        "show the QEMU guest-agent status for one server",
+        "Read whether the guest agent is available; this describes agent reachability, not SSH or bootstrap state.\n\n"
+        "Example:\n  ./scp-api.py guest-agent-status 799611",
+    )
+    p.add_argument("server_id", type=int, metavar="server_id")
+
+    p = add_subcommand(
+        "firewall-policies",
+        "list existing firewall policies available to this SCP user",
+        "List policy IDs that can be assigned with firewall set. This reads policies; it does not create or edit them.\n\n"
+        "Example:\n  ./scp-api.py firewall-policies",
+    )
+    p.add_argument("--query", "--filter", dest="query", metavar="TEXT", help="search policy name/description")
+    p.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
+    p.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
+
+    p = add_subcommand(
+        "firewall",
+        "get or set firewall policy assignments for one interface",
+        "The get action reads the firewall attached to an interface MAC. The set action replaces its copied/user "
+        "policy assignments and requires an explicit --active or --inactive choice; it does not create or edit policies.\n\n"
+        "Example:\n  ./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get",
+    )
+    p.add_argument("server_id", type=int, metavar="server_id")
+    p.add_argument("mac", type=_mac_address, metavar="mac")
+    add_actions(p, ("get", "set"), "get: read assignment; set: replace assignment (confirmed)")
+    p.add_argument(
+        "--consistency-check",
+        action="store_true",
+        help="with get, ask SCP to compare configured and applied firewall state",
+    )
+    p.add_argument(
+        "--copied-policy-id", dest="copied_policy_ids", type=int, action="append", default=[], metavar="ID",
+        help="repeat for copied policy IDs",
+    )
+    p.add_argument(
+        "--user-policy-id", dest="user_policy_ids", type=int, action="append", default=[], metavar="ID",
+        help="repeat for user policy IDs",
+    )
+    active = p.add_mutually_exclusive_group()
+    active.add_argument("--active", dest="active", action="store_true", help="enable the firewall in the replacement")
+    active.add_argument("--inactive", dest="active", action="store_false", help="disable the firewall in the replacement")
+    p.set_defaults(active=None)
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt for set")
 
     for command, description in [
         ("power-on", "Power on one server.\n\nExample:\n  ./scp-api.py power-on 799611"),
@@ -646,10 +896,15 @@ def main() -> int:
         "imageflavours": cmd_imageflavours,
         "iso-bootable": cmd_iso_bootable,
         "iso-attached": cmd_attached_iso,
+        "attach-iso": cmd_attach_iso,
         "disks": cmd_disks,
         "rescuesystem": cmd_rescuesystem,
         "snapshots": cmd_snapshots,
         "tasks": cmd_tasks,
+        "metrics": cmd_metrics,
+        "guest-agent-status": cmd_guest_agent_status,
+        "firewall-policies": cmd_firewall_policies,
+        "firewall": cmd_firewall,
         "power-on": cmd_power,
         "power-off": cmd_power,
         "power-cycle": cmd_power,

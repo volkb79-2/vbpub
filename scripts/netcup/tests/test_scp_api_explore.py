@@ -203,6 +203,39 @@ def test_cmd_attached_iso_detach_with_yes_calls_delete(explore_mod, fake_client)
     assert client.calls == [("delete", "/api/v1/servers/1/iso", None)]
 
 
+def test_cmd_attach_iso_uses_bootable_iso_id_and_confirmation(explore_mod, fake_client, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    declined = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_attach_iso(
+        declined,
+        _ns(server_id=1, iso_id=10, user_iso_name=None, change_boot_device_to_cdrom=True, yes=False),
+        pal,
+    )
+    assert declined.calls == []
+
+    client = fake_client(allow=("post",))
+    explore_mod.cmd_attach_iso(
+        client,
+        _ns(server_id=1, iso_id=10, user_iso_name=None, change_boot_device_to_cdrom=True, yes=True),
+        pal,
+    )
+    assert client.calls == [
+        ("post", "/api/v1/servers/1/iso", {"isoId": 10, "changeBootDeviceToCdrom": True})
+    ]
+
+
+def test_cmd_attach_iso_can_use_uploaded_iso_name(explore_mod, fake_client):
+    client = fake_client(allow=("post",))
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_attach_iso(
+        client,
+        _ns(server_id=1, iso_id=None, user_iso_name="my-recovery.iso", change_boot_device_to_cdrom=False, yes=True),
+        pal,
+    )
+    assert client.calls == [("post", "/api/v1/servers/1/iso", {"userIsoName": "my-recovery.iso"})]
+
+
 def test_cmd_rescuesystem_deactivate_gated_by_confirm(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     client = fake_client(allow=())
@@ -216,6 +249,153 @@ def test_cmd_tasks_cancel_with_yes(explore_mod, fake_client):
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_tasks(client, _ns(uuid="abc", action="cancel", yes=True), pal)
     assert client.calls == [("put", "/api/v1/tasks/abc:cancel", None, None)]
+
+
+def test_cmd_tasks_passes_api_filters(explore_mod, fake_client):
+    client = fake_client(get_responses=[[{"uuid": "abc", "state": "RUNNING"}]])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_tasks(
+        client,
+        _ns(
+            uuid=None,
+            action=None,
+            query="install",
+            server_filter_id=42,
+            state="RUNNING",
+            limit=10,
+            offset=20,
+        ),
+        pal,
+    )
+    assert client.calls == [
+        (
+            "get",
+            "/api/v1/tasks",
+            {"q": "install", "serverId": 42, "state": "RUNNING", "limit": 10, "offset": 20},
+        )
+    ]
+
+
+def test_cmd_tasks_rejects_filters_with_task_uuid(explore_mod, fake_client):
+    client = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(SystemExit):
+        explore_mod.cmd_tasks(
+            client,
+            _ns(uuid="abc", action=None, query="install", server_filter_id=None, state=None, limit=None, offset=None),
+            pal,
+        )
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("metric", "endpoint"),
+    [
+        ("cpu", "/api/v1/servers/1/metrics/cpu"),
+        ("disk", "/api/v1/servers/1/metrics/disk"),
+        ("network", "/api/v1/servers/1/metrics/network"),
+        ("network-packet", "/api/v1/servers/1/metrics/network/packet"),
+    ],
+)
+def test_cmd_metrics_selects_endpoint_and_hours(explore_mod, fake_client, metric, endpoint):
+    client = fake_client(get_responses=[{"2026-09-20T00:00:00Z": {"value": 1}}])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_metrics(client, _ns(server_id=1, metric=metric, hours=24), pal)
+    assert client.calls == [("get", endpoint, {"hours": 24})]
+
+
+def test_cmd_guest_agent_status_reads_status(explore_mod, fake_client, capsys):
+    client = fake_client(get_responses=[{"guestAgentAvailable": True}])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_guest_agent_status(client, _ns(server_id=1), pal)
+    assert client.calls == [("get", "/api/v1/servers/1/guest-agent/status", None)]
+    assert "guestAgentAvailable" in capsys.readouterr().out
+
+
+def test_cmd_firewall_policies_lists_user_policies(explore_mod, fake_client, capsys):
+    client = fake_client(
+        get_responses=[[{"id": 12, "name": "web", "description": "HTTP", "rules": [{"action": "ACCEPT"}]}]],
+        user_info={"id": 99},
+    )
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_firewall_policies(client, _ns(query="web", limit=10, offset=0), pal)
+    assert client.calls == [
+        ("get_user_info",),
+        ("get", "/api/v1/users/99/firewall-policies", {"q": "web", "limit": 10, "offset": 0}),
+    ]
+    assert "web" in capsys.readouterr().out
+
+
+def test_cmd_firewall_get_can_request_consistency_check(explore_mod, fake_client):
+    client = fake_client(get_responses=[{"active": True}])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_firewall(
+        client,
+        _ns(server_id=1, mac="aa:bb:cc:dd:ee:ff", action="get", consistency_check=True),
+        pal,
+    )
+    assert client.calls == [
+        (
+            "get",
+            "/api/v1/servers/1/interfaces/aa:bb:cc:dd:ee:ff/firewall",
+            {"consistencyCheck": True},
+        )
+    ]
+
+
+def test_cmd_firewall_set_replaces_assignments_and_is_confirmed(explore_mod, fake_client, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    declined = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    args = _ns(
+        server_id=1,
+        mac="aa:bb:cc:dd:ee:ff",
+        action="set",
+        consistency_check=False,
+        copied_policy_ids=[3, 4],
+        user_policy_ids=[8],
+        active=False,
+        yes=False,
+    )
+    explore_mod.cmd_firewall(declined, args, pal)
+    assert declined.calls == []
+
+    client = fake_client(allow=("put",))
+    args.yes = True
+    explore_mod.cmd_firewall(client, args, pal)
+    assert client.calls == [
+        (
+            "put",
+            "/api/v1/servers/1/interfaces/aa:bb:cc:dd:ee:ff/firewall",
+            {
+                "copiedPolicies": [{"id": 3}, {"id": 4}],
+                "userPolicies": [{"id": 8}],
+                "active": False,
+            },
+            None,
+        )
+    ]
+
+
+def test_cmd_firewall_set_requires_explicit_active_state(explore_mod, fake_client):
+    client = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(SystemExit):
+        explore_mod.cmd_firewall(
+            client,
+            _ns(
+                server_id=1,
+                mac="aa:bb:cc:dd:ee:ff",
+                action="set",
+                consistency_check=False,
+                copied_policy_ids=[],
+                user_policy_ids=[],
+                active=None,
+                yes=True,
+            ),
+            pal,
+        )
+    assert client.calls == []
 
 
 def test_cmd_snapshots_dryrun_uses_post(explore_mod, fake_client):
@@ -331,6 +511,80 @@ def test_parse_args_iso_attached_detach_yes(explore_mod, monkeypatch):
     assert args.server_id == 42
     assert args.action == "detach"
     assert args.yes is True
+
+
+def test_parse_args_attach_iso(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "attach-iso", "42", "--iso-id", "7", "--change-boot-device-to-cdrom", "--yes"],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "attach-iso"
+    assert args.server_id == 42
+    assert args.iso_id == 7
+    assert args.user_iso_name is None
+    assert args.change_boot_device_to_cdrom is True
+    assert args.yes is True
+
+
+def test_parse_args_task_filters(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        [
+            "scp-api.py",
+            "tasks",
+            "--filter",
+            "install",
+            "--server-id",
+            "42",
+            "--state",
+            "RUNNING",
+            "--limit",
+            "10",
+            "--offset",
+            "2",
+        ],
+    )
+    args = explore_mod.parse_args()
+    assert args.query == "install"
+    assert args.server_filter_id == 42
+    assert args.state == "RUNNING"
+    assert args.limit == 10
+    assert args.offset == 2
+
+
+def test_parse_args_metrics_and_firewall(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "metrics", "42", "network-packet", "--hours", "24"],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "metrics"
+    assert args.metric == "network-packet"
+    assert args.hours == 24
+
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        [
+            "scp-api.py",
+            "firewall",
+            "42",
+            "aa:bb:cc:dd:ee:ff",
+            "set",
+            "--user-policy-id",
+            "8",
+            "--inactive",
+        ],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "firewall"
+    assert args.action == "set"
+    assert args.user_policy_ids == [8]
+    assert args.active is False
 
 
 def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypatch):

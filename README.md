@@ -60,7 +60,8 @@ For Netcup SCP API provisioning, use the guided tools under
 `configure` resolves account/image defaults into a local recipe, and the
 installer can select an existing account SSH key (or explicitly register a
 new one), preview, or monitor a Debian-install-v2 run. The companion explorer
-enumerates server-scoped inventory account-wide by default and supports
+enumerates server-scoped inventory account-wide by default, supports
+diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`, and supports
 filters such as `scp-api.py imageflavours --filter debian`. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 

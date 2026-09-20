@@ -51,6 +51,12 @@ deactivation, snapshot creation, and snapshot dry-run therefore refuse without
 an explicit server ID. This keeps the convenient account-wide default limited
 to inspection while retaining the API's server boundary for mutations.
 
+The same boundary applies to ISO attachment and firewall assignment: both
+require an explicit server, and firewall `set` requires an interface MAC plus
+the complete replacement policy assignment. The CLI deliberately does not
+pretend that guest-agent status is installer health, and it does not turn
+firewall policy/rule creation into an unreviewed convenience command.
+
 ## Test boundary
 
 The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap

@@ -83,8 +83,15 @@ bootable installer or recovery media. Useful first queries are:
 
 # Explicit, confirmed actions:
 ./scp-api.py iso-attached 799611 detach
+./scp-api.py attach-iso 799611 --iso-id 1234
 ./scp-api.py rescuesystem 799611 deactivate
 ./scp-api.py snapshots 799611 create --name before-upgrade
+./scp-api.py tasks --state RUNNING --server-id 799611
+./scp-api.py metrics 799611 cpu --hours 24
+./scp-api.py guest-agent-status 799611
+./scp-api.py firewall-policies
+./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
+./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
 ./scp-api.py power-cycle 799611
 ```
 
@@ -92,6 +99,15 @@ bootable installer or recovery media. Useful first queries are:
 image flavour's name and alias or an ISO image's name, description, and
 architecture. All commands support `--help` and `--json`; no short `-h` alias
 is used so the complete public spelling is visible in generated usage.
+
+`attach-iso` changes the server's attached media and requires either an ISO ID
+from `iso-bootable` or the name of an uploaded user ISO. `metrics` returns the
+raw timestamped SCP data for CPU, disk, or network lookback windows.
+`guest-agent-status` reports QEMU guest-agent availability; it is not an SSH
+or bootstrap health check. Firewall `get`/`set` operates on one interface MAC:
+`set` replaces copied/user policy assignments and requires an explicit firewall
+active state. It assigns existing policies; it does not create or edit policy
+rules.
 
 ## Bootstrap source
 

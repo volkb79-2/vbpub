@@ -98,3 +98,20 @@ a reinstallable OS/image variant, while an ISO image is bootable installer or
 recovery media. State-changing explorer options require an explicit server ID
 and use positional actions, for example `scp-api.py snapshots 799611 create`
 or `scp-api.py power-cycle 799611`.
+
+For server operations and diagnostics:
+
+```bash
+python3 scp-api.py attach-iso 799611 --iso-id 1234
+python3 scp-api.py tasks --state RUNNING --server-id 799611
+python3 scp-api.py metrics 799611 cpu --hours 24
+python3 scp-api.py guest-agent-status 799611
+python3 scp-api.py firewall-policies
+python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
+python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
+```
+
+ISO attachment and firewall assignment are confirmed mutations. Firewall
+`set` replaces the interface's existing copied/user policy assignment; it does
+not create firewall policies or rules. `guest-agent-status` reports the
+provider's QEMU guest-agent state, not SSH or installer state.
