@@ -65,6 +65,8 @@ python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
 python3 scp-api-install-host.py --payload target-host.jsonc --monitor
 ```
 
+`login` writes the refresh token to the local `.env` with mode `0600`.
+
 The interactive install lists existing Netcup account SSH keys and uses the
 first selected key by default; choosing one does not register a new account
 key. For a direct payload run, pin an existing key explicitly:
@@ -88,4 +90,10 @@ python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
 
 The dry run must show the intended branch before a real Netcup API install is
 confirmed. See [`scripts/netcup/README.md`](../scripts/netcup/README.md) for
-attach-only, exploration, and bootstrap-source details.
+attach-only, exploration, and bootstrap-source details. To inspect the API
+inventory before choosing a target, use `scp-api-explore.py imageflavours
+--filter debian` or `scp-api-explore.py isoimages --filter rescue`; without a
+server ID these enumerate all servers and label each result with its source.
+An image flavour is a reinstallable OS/image variant, while an ISO image is
+bootable installer or recovery media. State-changing explorer options require
+an explicit server ID.

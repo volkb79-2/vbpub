@@ -23,13 +23,25 @@ Usage:
   scp-api-explore.py login                          # same device-code flow as scp-api-install-host.py
   scp-api-explore.py servers [--json]
   scp-api-explore.py servers <id> [--json]
-  scp-api-explore.py imageflavours <id> [--json]
-  scp-api-explore.py isoimages <id> [--json]
-  scp-api-explore.py iso <id> [--json] [--detach [--yes]]
-  scp-api-explore.py disks <id> [--json] [--supported-drivers]
-  scp-api-explore.py rescuesystem <id> [--json] [--deactivate [--yes]]
-  scp-api-explore.py snapshots <id> [--json] [--create [--yes]] [--dryrun]
+  scp-api-explore.py imageflavours [<id>] [--filter TEXT] [--json]
+  scp-api-explore.py isoimages [<id>] [--filter TEXT] [--json]
+  scp-api-explore.py iso [<id>] [--json] [--detach [--yes]]
+  scp-api-explore.py disks [<id>] [--json] [--supported-drivers]
+  scp-api-explore.py rescuesystem [<id>] [--json] [--deactivate [--yes]]
+  scp-api-explore.py snapshots [<id>] [--json] [--create [--yes]] [--dryrun]
   scp-api-explore.py tasks [uuid] [--json] [--cancel [--yes]]
+
+Examples:
+  scp-api-explore.py login
+  scp-api-explore.py servers
+  scp-api-explore.py servers 799611 --json
+  scp-api-explore.py imageflavours --filter debian
+  scp-api-explore.py isoimages --filter rescue
+  scp-api-explore.py iso 799611
+  scp-api-explore.py disks 799611 --supported-drivers
+  scp-api-explore.py rescuesystem 799611
+  scp-api-explore.py snapshots 799611
+  scp-api-explore.py tasks
 
 Every subcommand accepts --json for raw machine output; without it, output
 is a pretty, optionally-colored table/summary sized for a terminal. Color
@@ -202,6 +214,47 @@ def _api_call(fn, *a, **kw):
         sys.exit(1)
 
 
+def _server_targets(client: NetcupSCPClient, server_id: Any) -> List[Dict[str, Any]]:
+    """Return one explicit target or all account servers for exploration."""
+    if server_id is not None:
+        return [{"id": server_id}]
+    servers = _api_call(client.get, "/api/v1/servers")
+    return servers if isinstance(servers, list) else []
+
+
+def _server_name(server: Dict[str, Any]) -> str:
+    return str(
+        server.get("name")
+        or server.get("nickname")
+        or server.get("hostname")
+        or server.get("id")
+        or ""
+    )
+
+
+def _annotate_server_row(row: Dict[str, Any], server: Dict[str, Any]) -> Dict[str, Any]:
+    """Add source-server context to an account-wide result row."""
+    annotated = dict(row)
+    annotated["serverId"] = server.get("id")
+    annotated["serverName"] = _server_name(server)
+    annotated["serverHostname"] = server.get("hostname")
+    return annotated
+
+
+def _filter_rows(rows: List[Dict[str, Any]], term: str | None) -> List[Dict[str, Any]]:
+    if not term:
+        return rows
+    needle = term.casefold()
+    return [row for row in rows if needle in _stringify(row).casefold()]
+
+
+def _require_server_id(args, action: str) -> int:
+    if args.server_id is None:
+        print(f"ERROR: {action} requires a server ID", file=sys.stderr)
+        raise SystemExit(2)
+    return args.server_id
+
+
 # --- subcommands -------------------------------------------------------------
 
 def cmd_servers(client: NetcupSCPClient, args, pal: _Palette) -> None:
@@ -216,63 +269,121 @@ def cmd_servers(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_imageflavours(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    flavours = _api_call(client.get, f"/api/v1/servers/{args.server_id}/imageflavours")
+    targets = _server_targets(client, args.server_id)
+    aggregate = args.server_id is None
+    flavours: List[Dict[str, Any]] = []
+    for server in targets:
+        result = _api_call(client.get, f"/api/v1/servers/{server['id']}/imageflavours")
+        rows = result if isinstance(result, list) else []
+        flavours.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
+    flavours = _filter_rows(flavours, getattr(args, "filter", None))
 
     def table(rows):
-        flat = [{"id": r.get("id"), "name": (r.get("image") or {}).get("name"), "alias": r.get("alias")} for r in rows]
-        print_table(flat, ["id", "name", "alias"], pal, "no image flavours available for this server")
+        flat = [
+            {
+                "serverId": r.get("serverId"),
+                "serverName": r.get("serverName"),
+                "id": r.get("id"),
+                "name": (r.get("image") or {}).get("name"),
+                "alias": r.get("alias"),
+            }
+            for r in rows
+        ]
+        columns = ["serverId", "serverName", "id", "name", "alias"] if aggregate else ["id", "name", "alias"]
+        scope = "on this account" if aggregate else "for this server"
+        print_table(flat, columns, pal, f"no image flavours available {scope}")
 
     emit(flavours, args.json, table)
 
 
 def cmd_isoimages(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    images = _api_call(client.get, f"/api/v1/servers/{args.server_id}/isoimages")
-    emit(images, args.json, lambda d: print_table(
-        d, ["id", "name", "description", "architecture"], pal, "no ISO images available for this server"
-    ))
+    targets = _server_targets(client, args.server_id)
+    aggregate = args.server_id is None
+    images: List[Dict[str, Any]] = []
+    for server in targets:
+        result = _api_call(client.get, f"/api/v1/servers/{server['id']}/isoimages")
+        rows = result if isinstance(result, list) else []
+        images.extend(_annotate_server_row(row, server) if aggregate else row for row in rows)
+    images = _filter_rows(images, getattr(args, "filter", None))
+    columns = ["serverId", "serverName", "id", "name", "description", "architecture"] if aggregate else ["id", "name", "description", "architecture"]
+    scope = "on this account" if aggregate else "for this server"
+    emit(images, args.json, lambda d: print_table(d, columns, pal, f"no ISO images available {scope}"))
 
 
 def cmd_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.detach:
+        server_id = _require_server_id(args, "--detach")
         if not confirm(f"Detach the ISO currently attached to server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
-        _api_call(client.delete, f"/api/v1/servers/{args.server_id}/iso")
+        _api_call(client.delete, f"/api/v1/servers/{server_id}/iso")
         print(pal.green("detached"))
         return
-    attached = _api_call(client.get, f"/api/v1/servers/{args.server_id}/iso")
-    emit(attached, args.json, lambda d: print_kv(d, pal) if d else print(pal.dim("no ISO currently attached")))
+    if args.server_id is not None:
+        attached = _api_call(client.get, f"/api/v1/servers/{args.server_id}/iso")
+        emit(attached, args.json, lambda d: print_kv(d, pal) if d else print(pal.dim("no ISO currently attached")))
+        return
+    rows = []
+    for server in _server_targets(client, None):
+        attached = _api_call(client.get, f"/api/v1/servers/{server['id']}/iso")
+        row = attached if isinstance(attached, dict) else {}
+        rows.append(_annotate_server_row(row, server))
+    emit(rows, args.json, lambda d: print_table(
+        d, ["serverId", "serverName", "isoAttached", "iso"], pal, "no servers on this account"
+    ))
 
 
 def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.supported_drivers:
-        drivers = _api_call(client.get, f"/api/v1/servers/{args.server_id}/disks/supported-drivers")
+        server_id = _require_server_id(args, "--supported-drivers")
+        drivers = _api_call(client.get, f"/api/v1/servers/{server_id}/disks/supported-drivers")
         emit(drivers, args.json, lambda d: print(", ".join(d) if d else pal.dim("none reported")))
         return
-    disks = _api_call(client.get, f"/api/v1/servers/{args.server_id}/disks")
-    emit(disks, args.json, lambda d: print_table(
-        d, ["name", "capacityInMiB", "allocationInMiB", "storageDriver"], pal, "no disks reported"
+    if args.server_id is not None:
+        disks = _api_call(client.get, f"/api/v1/servers/{args.server_id}/disks")
+        emit(disks, args.json, lambda d: print_table(
+            d, ["name", "capacityInMiB", "allocationInMiB", "storageDriver"], pal, "no disks reported"
+        ))
+        return
+    rows = []
+    for server in _server_targets(client, None):
+        disks = _api_call(client.get, f"/api/v1/servers/{server['id']}/disks")
+        rows.extend(_annotate_server_row(row, server) for row in disks if isinstance(row, dict))
+    emit(rows, args.json, lambda d: print_table(
+        d, ["serverId", "serverName", "name", "capacityInMiB", "allocationInMiB", "storageDriver"], pal, "no disks reported"
     ))
 
 
 def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.deactivate:
+        server_id = _require_server_id(args, "--deactivate")
         if not confirm(f"Deactivate the rescue system for server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
-        _api_call(client.delete, f"/api/v1/servers/{args.server_id}/rescuesystem")
+        _api_call(client.delete, f"/api/v1/servers/{server_id}/rescuesystem")
         print(pal.green("deactivated"))
         return
-    status = _api_call(client.get, f"/api/v1/servers/{args.server_id}/rescuesystem")
-    emit(status, args.json, lambda d: print_kv(d, pal))
+    if args.server_id is not None:
+        status = _api_call(client.get, f"/api/v1/servers/{args.server_id}/rescuesystem")
+        emit(status, args.json, lambda d: print_kv(d, pal))
+        return
+    rows = []
+    for server in _server_targets(client, None):
+        status = _api_call(client.get, f"/api/v1/servers/{server['id']}/rescuesystem")
+        rows.append(_annotate_server_row(status if isinstance(status, dict) else {}, server))
+    emit(rows, args.json, lambda d: print_table(
+        d, ["serverId", "serverName", "active"], pal, "no servers on this account"
+    ))
 
 
 def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.dryrun:
-        result = _api_call(client.post, f"/api/v1/servers/{args.server_id}/snapshots:dryrun", {})
+        server_id = _require_server_id(args, "--dryrun")
+        result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots:dryrun", {})
         emit(result, args.json, lambda d: print_kv(d, pal))
         return
     if args.create:
+        server_id = _require_server_id(args, "--create")
         if not confirm(f"Create a new snapshot of server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -282,12 +393,22 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
         # 2026-09-09). Default to a timestamp rather than forcing --name
         # on every call.
         name = args.name or f"vbpub-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        result = _api_call(client.post, f"/api/v1/servers/{args.server_id}/snapshots", {"name": name})
+        result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots", {"name": name})
         emit(result, args.json, lambda d: print_kv(d, pal))
         return
-    snapshots = _api_call(client.get, f"/api/v1/servers/{args.server_id}/snapshots")
-    emit(snapshots, args.json, lambda d: print_table(
-        d, ["uuid", "name", "state", "online", "creationTime"], pal, "no snapshots for this server"
+    if args.server_id is not None:
+        snapshots = _api_call(client.get, f"/api/v1/servers/{args.server_id}/snapshots")
+        emit(snapshots, args.json, lambda d: print_table(
+            d, ["uuid", "name", "state", "online", "creationTime"], pal, "no snapshots for this server"
+        ))
+        return
+    rows = []
+    for server in _server_targets(client, None):
+        snapshots = _api_call(client.get, f"/api/v1/servers/{server['id']}/snapshots")
+        rows.extend(_annotate_server_row(row, server) for row in snapshots if isinstance(row, dict))
+    emit(rows, args.json, lambda d: print_table(
+        d, ["serverId", "serverName", "uuid", "name", "state", "online", "creationTime"], pal,
+        "no snapshots on this account"
     ))
 
 
@@ -323,55 +444,96 @@ def parse_args():
         description="Explore the netcup SCP API account/server surface (read-only + a few safe paired actions).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+        add_help=False,
     )
+    parser.add_argument("--help", action="help", help="show this help message and exit")
     parser.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("login", help="OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)")
+    def add_subcommand(name: str, help_text: str, description: str = ""):
+        command_parser = sub.add_parser(
+            name,
+            help=help_text,
+            description=description or help_text,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            add_help=False,
+        )
+        command_parser.add_argument("--help", action="help", help="show this help message and exit")
+        # Keep the documented `command --json` spelling working as well as
+        # the global `--json command` spelling. SUPPRESS avoids an omitted
+        # subcommand option overwriting a global one.
+        command_parser.add_argument(
+            "--json", action="store_true", default=argparse.SUPPRESS,
+            help="print raw JSON instead of a formatted table/summary",
+        )
+        command_parser.add_argument(
+            "--no-color", action="store_true", default=argparse.SUPPRESS,
+            help="disable ANSI color even on a TTY",
+        )
+        return command_parser
 
-    p = sub.add_parser("servers", help="list servers, or show one server's detail")
+    add_subcommand("login", "OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)")
+
+    p = add_subcommand("servers", "list servers, or show one server's detail")
     p.add_argument("server_id", nargs="?", type=int, default=None)
 
-    for name, help_text in [
-        ("imageflavours", "list image flavours available for a server"),
-        ("isoimages", "list ISO images available for a server"),
+    for name, help_text, description in [
+        (
+            "imageflavours",
+            "list reinstallable OS/image flavours (all servers unless an ID is given)",
+            "An image flavour is a server-compatible reinstallable OS/image variant, "
+            "for example a Debian 13 UEFI amd64 image. It is not a VM template.",
+        ),
+        (
+            "isoimages",
+            "list available ISO images (all servers unless an ID is given)",
+            "ISO images are bootable installer/recovery media exposed by SCP. "
+            "Use --filter debian or --filter rescue to narrow the names and descriptions.",
+        ),
     ]:
-        p = sub.add_parser(name, help=help_text)
-        p.add_argument("server_id", type=int)
+        p = add_subcommand(name, help_text, description)
+        p.add_argument("server_id", nargs="?", type=int, default=None)
+        p.add_argument("--filter", metavar="TEXT", help="case-insensitive text filter across returned fields")
 
-    p = sub.add_parser("iso", help="show (or detach) the ISO attached to a server")
-    p.add_argument("server_id", type=int)
+    p = add_subcommand("iso", "show ISO attachments for all servers, or one server")
+    p.add_argument("server_id", nargs="?", type=int, default=None)
     p.add_argument("--detach", action="store_true", help="detach the currently-attached ISO (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = sub.add_parser("disks", help="list a server's disks (or its supported storage drivers)")
-    p.add_argument("server_id", type=int)
+    p = add_subcommand("disks", "list disks for all servers, or one server")
+    p.add_argument("server_id", nargs="?", type=int, default=None)
     p.add_argument("--supported-drivers", action="store_true")
 
-    p = sub.add_parser("rescuesystem", help="show (or deactivate) a server's rescue-system status")
-    p.add_argument("server_id", type=int)
+    p = add_subcommand("rescuesystem", "show rescue-system status for all servers, or one server")
+    p.add_argument("server_id", nargs="?", type=int, default=None)
     p.add_argument("--deactivate", action="store_true", help="deactivate the rescue system (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = sub.add_parser("snapshots", help="list, create, or dry-run-check snapshots for a server")
-    p.add_argument("server_id", type=int)
+    p = add_subcommand("snapshots", "list snapshots for all servers, or act on one server")
+    p.add_argument("server_id", nargs="?", type=int, default=None)
     p.add_argument("--create", action="store_true", help="create a new snapshot (additive, does not touch existing ones)")
     p.add_argument("--dryrun", action="store_true", help="check whether creating a snapshot is currently possible")
     p.add_argument("--name", default=None, help="optional name for --create")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = sub.add_parser("tasks", help="list tasks, show one, or cancel one")
+    p = add_subcommand("tasks", "list tasks, show one, or cancel one")
     p.add_argument("uuid", nargs="?", default=None)
     p.add_argument("--cancel", action="store_true", help="cancel a running task (does not undo whatever it already did)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
+    # With no command the most useful response is the top-level usage, not
+    # argparse's implementation detail about a required subparser.
+    if len(sys.argv) == 1:
+        parser.print_usage(sys.stderr)
+        parser.exit(2)
 
     return parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args()  # --help/-h exits here, before _configure() ever runs
+    args = parse_args()  # --help exits here, before _configure() ever runs
     _configure()
 
     if args.command == "login":

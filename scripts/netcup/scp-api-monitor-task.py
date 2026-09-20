@@ -289,8 +289,10 @@ Environment Variables:
   NETCUP_SCP_API_REFRESH_TOKEN   Required: Netcup API refresh token (or in .env in this folder).
   NETCUP_SCP_API_DEBUG           Enable verbose request/response logging (yes/true/1); same as --debug.
 """,
+        add_help=False,
     )
-    p.add_argument("uuid", help="Task UUID (from scp-api-install-host.py's install-image response)")
+    p.add_argument("--help", action="help", help="show this help message and exit")
+    p.add_argument("uuid", nargs="?", help="Task UUID (from scp-api-install-host.py's install-image response)")
     p.add_argument("--poll", type=float, default=SETTINGS["monitor.poll_interval"], help="Poll interval seconds (default: from scp-api-monitor-task.toml)")
     p.add_argument("--json", action="store_true", help="Print full task JSON and exit")
     p.add_argument("--raw", action="store_true", help="With --json: print raw JSON (includes secrets like rootPassword)")
@@ -307,7 +309,11 @@ Environment Variables:
         action="store_true",
         help="Enable verbose request/response logging. Same as NETCUP_SCP_API_DEBUG=yes.",
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.uuid is None:
+        p.print_usage(sys.stderr)
+        p.exit(2)
+    return args
 
 
 def main() -> None:

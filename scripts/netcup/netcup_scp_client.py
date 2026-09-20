@@ -89,6 +89,10 @@ def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # The file contains a long-lived OAuth refresh token.  Enforce this on
+    # both newly-created and pre-existing files; relying on the process umask
+    # leaves a common 0644 file readable by every local user.
+    os.chmod(path, 0o600)
 
 
 def load_env_file() -> None:

@@ -531,8 +531,10 @@ Environment Variables (see .env.example):
                                     set REPO_BRANCH with the URL when testing a feature branch.
 
 These can be set in a .env file in the current directory (see scripts/netcup/.env.example).
-"""
+""",
+        add_help=False,
     )
+    parser.add_argument("--help", action="help", help="show this help message and exit")
     parser.add_argument(
         "command",
         nargs="?",

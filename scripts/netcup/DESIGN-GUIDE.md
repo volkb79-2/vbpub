@@ -37,6 +37,20 @@ key from being registered. `--ssh-key-id ID` pins an existing key for direct
 payload runs. A new account key is created only when no account key exists or
 the operator explicitly selects the create-new choice.
 
+## Account-wide API exploration
+
+The SCP API makes most inventory endpoints server-scoped: there is no
+account-level `GET /imageflavours` or `GET /isoimages`. The explorer therefore
+lists `/servers` first and queries each server when a read-only command has no
+ID. It adds the source server to those rows so identical image names from two
+VMs cannot be mistaken for one result. An explicit ID remains available for a
+focused query, and filters are applied locally to the returned fields.
+
+Actions that change state cannot safely fan out. ISO detach, rescue-system
+deactivation, snapshot creation, and snapshot dry-run therefore refuse without
+an explicit server ID. This keeps the convenient account-wide default limited
+to inspection while retaining the API's server boundary for mutations.
+
 ## Test boundary
 
 The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap

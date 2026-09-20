@@ -44,6 +44,16 @@ def test_real_settings_file_is_valid(monitor_task_mod):
     assert monitor_task_mod.SETTINGS["monitor.poll_interval"] == 5.0
 
 
+def test_no_argument_prints_usage(monitor_task_mod, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["scp-api-monitor-task.py"])
+    with pytest.raises(SystemExit) as exc:
+        monitor_task_mod.parse_args()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "usage:" in err
+    assert "required: uuid" not in err
+
+
 # --- get_access_token: regression test for the found-and-fixed bug -------
 # Previously (when this used `requests`) an HTTP error could escape uncaught
 # as a raw traceback instead of a clean message. Must raise RuntimeError.

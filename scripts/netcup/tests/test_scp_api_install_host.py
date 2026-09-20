@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import stat
 import types
 import urllib.error
 from pathlib import Path
@@ -866,12 +867,14 @@ def test_env_file_round_trip_preserves_unknown_lines(install_host_mod, tmp_path)
     assert "NETCUP_SCP_API_REFRESH_TOKEN=new-token" in content
     assert "NETCUP_SCP_API_REFRESH_TOKEN=old" not in content
     assert install_host_mod._load_env_file(path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "new-token"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_write_env_file_appends_new_key(install_host_mod, tmp_path):
     path = tmp_path / ".env"
     install_host_mod._write_env_file(path, {"NEW_KEY": "value"})
     assert install_host_mod._load_env_file(path)["NEW_KEY"] == "value"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_resolve_env_path_prefers_cwd_then_falls_back_to_script_dir(install_host_mod, tmp_path, monkeypatch):

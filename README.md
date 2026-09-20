@@ -59,7 +59,9 @@ For Netcup SCP API provisioning, use the guided tools under
 [`scripts/netcup/`](scripts/netcup/): `login` creates the OAuth refresh token,
 `configure` resolves account/image defaults into a local recipe, and the
 installer can select an existing account SSH key (or explicitly register a
-new one), preview, or monitor a Debian-install-v2 run. See the
+new one), preview, or monitor a Debian-install-v2 run. The companion explorer
+enumerates server-scoped inventory account-wide by default and supports
+filters such as `imageflavours --filter debian`. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 
 ## Repository setup and initial CMRU build

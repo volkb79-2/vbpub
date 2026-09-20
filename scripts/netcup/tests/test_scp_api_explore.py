@@ -152,6 +152,42 @@ def test_cmd_imageflavours_flattens_nested_image_name(explore_mod, fake_client, 
     assert "Minimal" in out
 
 
+def test_cmd_imageflavours_without_id_enumerates_and_filters_all_servers(explore_mod, fake_client, capsys):
+    client = fake_client(get_responses=[
+        [
+            {"id": 1, "name": "debian-vm", "hostname": "debian.example"},
+            {"id": 2, "name": "windows-vm", "hostname": "windows.example"},
+        ],
+        [{"id": 5, "alias": "Debian UEFI", "image": {"name": "Debian 13"}}],
+        [{"id": 9, "alias": "Windows", "image": {"name": "Windows 2022"}}],
+    ])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_imageflavours(client, _ns(server_id=None, filter="debian"), pal)
+    out = capsys.readouterr().out
+    assert client.calls == [
+        ("get", "/api/v1/servers", None),
+        ("get", "/api/v1/servers/1/imageflavours", None),
+        ("get", "/api/v1/servers/2/imageflavours", None),
+    ]
+    assert "debian-vm" in out
+    assert "Debian 13" in out
+    assert "Windows 2022" not in out
+
+
+def test_cmd_isoimages_without_id_enumerates_all_servers(explore_mod, fake_client, capsys):
+    client = fake_client(get_responses=[
+        [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}],
+        [{"id": 10, "name": "debian-installer", "description": "Debian", "architecture": "AMD64"}],
+        [{"id": 11, "name": "rescue", "description": "Recovery", "architecture": "AMD64"}],
+    ])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_isoimages(client, _ns(server_id=None, filter=None), pal)
+    out = capsys.readouterr().out
+    assert "first" in out and "second" in out
+    assert "debian-installer" in out and "rescue" in out
+    assert "serverId" in out
+
+
 def test_cmd_iso_detach_declined_never_calls_delete(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     client = fake_client(allow=())  # any get/post/patch/put/delete raises
@@ -238,6 +274,17 @@ def test_help_short_circuits_before_configure(explore_mod, monkeypatch):
     assert exc.value.code == 0
 
 
+def test_no_argument_prints_top_level_usage_without_required_command_error(explore_mod, monkeypatch, capsys):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py"])
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.parse_args()
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "usage:" in err
+    assert "required: command" not in err
+    assert "imageflavours" in err
+
+
 # --- CLI wiring ----------------------------------------------------------------
 
 def test_parse_args_servers_no_id(explore_mod, monkeypatch):
@@ -254,3 +301,15 @@ def test_parse_args_iso_detach_yes(explore_mod, monkeypatch):
     assert args.server_id == 42
     assert args.detach is True
     assert args.yes is True
+
+
+def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api-explore.py", "isoimages", "--filter", "debian", "--json"],
+    )
+    args = explore_mod.parse_args()
+    assert args.server_id is None
+    assert args.filter == "debian"
+    assert args.json is True

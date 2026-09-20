@@ -12,7 +12,8 @@ python3 scp-api-install-host.py login
 ```
 
 The browser device-code flow writes `NETCUP_SCP_API_REFRESH_TOKEN` to the
-loaded `.env` file. Set `NETCUP_SCP_API_SERVER_NAME` there as well, then let
+loaded `.env` file and enforces mode `0600` because it contains a long-lived
+credential. Set `NETCUP_SCP_API_SERVER_NAME` there as well, then let
 the API-backed wizard resolve the current Debian UEFI image and save a local
 recipe:
 
@@ -56,7 +57,31 @@ before the final install request.
 
 `scp-api-install-host.py --help` documents the payload, attach-only, poweroff,
 and wizard modes. `scp-api-explore.py` provides read-only account/server
-inspection and explicitly gated reversible actions.
+inspection and explicitly gated reversible actions. Read-only resource commands
+enumerate every server when no ID is supplied, because the SCP API exposes
+image flavours, ISO images, disks, rescue status, snapshots, and ISO attachment
+status below each server. Results from an account-wide query include the source
+server ID/name. Use a server ID to inspect only one server; mutating options
+such as `--detach`, `--deactivate`, `--create`, and `--dryrun` still require it.
+
+An image flavour is a server-compatible reinstallable OS/image variant (for
+example a Debian 13 UEFI amd64 image), not a VM template. ISO images are
+bootable installer or recovery media. Useful first queries are:
+
+```bash
+./scp-api-explore.py servers
+./scp-api-explore.py imageflavours --filter debian
+./scp-api-explore.py isoimages --filter rescue
+./scp-api-explore.py isoimages 799611 --filter debian --json
+./scp-api-explore.py disks
+./scp-api-explore.py snapshots
+./scp-api-explore.py tasks
+```
+
+`--filter` is case-insensitive and searches the returned fields, including an
+image flavour's name and alias or an ISO image's name, description, and
+architecture. All commands support `--help` and `--json`; no short `-h` alias
+is used so the complete public spelling is visible in generated usage.
 
 ## Bootstrap source
 
