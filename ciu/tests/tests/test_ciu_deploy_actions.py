@@ -1516,6 +1516,10 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg=None, **_kw: [])
+    # The generated facts deliberately contain an identity network.  Keep this
+    # unit test focused on durable-file preservation while making the network
+    # invariant deterministic without a Docker daemon.
+    monkeypatch.setattr(deploy, "_network_exists", lambda _name: False)
 
     assert deploy.action_clean(tmp_path, profile, [], ignore_errors=True) == 0
     for name, body in durable.items():
