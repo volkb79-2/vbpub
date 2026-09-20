@@ -46,12 +46,17 @@ Completed for the CMRU project on 2026-09-19 UTC from promoted commit
 - retries r11 and r12 reached the durable backup push but were stopped by the
   controller's unavailable VS Code credential IPC socket; retry r14 then
   exposed a helper bug, because the retained secret is `[github].token`, not a
-  root-level `token`; and
-- retry r15 is now running under `dev-gates.slice` with direct Git askpass,
-  the same retained candidate branch, and a job-owned exit marker in the
-  shared temporary directory. The controller also mounts the existing host
-  `/tmp` bind, which is how the temporary governed BuildKit relay is visible
-  inside this older cockpit; it does not mutate the cockpit's mount namespace.
+  root-level `token`. Retry r15 then proved a separate controller defect:
+  Docker API access failed because the disposable image's `docker` group was
+  GID 995 while the mounted host API socket is GID 994; Buildx concealed this
+  because it uses the separate BuildKit socket. A same-image pull probe passed
+  with supplementary GID 994; and
+- retry r16 is now running under `dev-gates.slice` with direct Git askpass,
+  the same retained candidate branch, a Docker API group derived from the
+  mounted socket, and a job-owned exit marker in the shared temporary
+  directory. The controller also mounts the existing host `/tmp` bind, which
+  is how the temporary governed BuildKit relay is visible inside this older
+  cockpit; it does not mutate the cockpit's mount namespace.
 
 The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
 closed as a project release; the retained candidate worktree remains available
