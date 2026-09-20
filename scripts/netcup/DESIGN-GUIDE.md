@@ -9,7 +9,9 @@ authentication usable before a target host has been selected.
 
 `configure` is also local recipe setup after one read-only server/image lookup.
 It likewise does not generate an SSH identity. The normal install path is the
-only path that needs a per-host controller key for SSH monitoring.
+only API-install path that needs a per-host controller key for SSH monitoring;
+the optional `build-customscript` wizard can also create one after the
+operator explicitly asks to include it in a manually pasted script.
 
 ## Generated recipe and source selection
 
@@ -65,7 +67,7 @@ the operator explicitly selects the create-new choice.
 ## Account-wide API exploration
 
 The SCP API makes most inventory endpoints server-scoped: there is no
-account-level `GET /imageflavours` or `GET /isoimages`. `scp-api.py` therefore
+account-level endpoint for image flavours or bootable ISO images. `scp-api.py` therefore
 lists `/servers` first and queries each server when a read-only command has no
 ID. It adds the source server to those rows so identical image names from two
 VMs cannot be mistaken for one result. An explicit ID remains available for a

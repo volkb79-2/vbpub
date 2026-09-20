@@ -5,26 +5,76 @@ Server Control Panel API and feed them the `debian-install-v2` bootstrap.
 
 ## First-time setup
 
-From this directory, create the OAuth refresh token with the wizard:
+From this directory, create the local secret file and set the target server
+name before logging in:
 
 ```bash
-python3 scp-api.py login
+cp .env.example .env
+chmod 600 .env
+vi .env                               # set NETCUP_SCP_API_SERVER_NAME
+./scp-api.py login
 ```
 
 The browser device-code flow writes `NETCUP_SCP_API_REFRESH_TOKEN` to the
 loaded `.env` file and enforces mode `0600` because it contains a long-lived
-credential. Set `NETCUP_SCP_API_SERVER_NAME` there as well, then let
-the API-backed wizard resolve the current Debian UEFI image and save a local
-recipe:
+credential. The login command belongs to `scp-api.py`; it does not create an
+SSH key or contact a server.
+
+### Quickstart: inspect and install a Debian VM
+
+The normal installer gathers server-specific facts live. `configure` is
+optional: it saves local locale/timezone/partition defaults, while the normal
+interactive install still resolves the current Debian UEFI image every time.
 
 ```bash
-python3 scp-api-install-host.py configure
+./scp-api.py servers
+./scp-api.py imageflavours --filter debian
+
+# Optional local defaults wizard; requires NETCUP_SCP_API_SERVER_NAME in .env.
+./scp-api-install-host.py configure
+
+# Preview the gathered payload and account-key decision. This does not call a
+# mutating Netcup API, but it may create the local controller key used for SSH
+# monitoring. It does not save target-host.jsonc.
+./scp-api-install-host.py --dry-run
+
+# Gather again, save target-host.jsonc, ask for final confirmation, install,
+# and follow the task plus Debian bootstrap logs.
+./scp-api-install-host.py --monitor
 ```
 
-`default-recipe.jsonc` is deliberately local and gitignored. Delete it or
-rerun `configure` to regenerate it. It contains placeholders for secrets and
-for the bootstrap source; the controller expands those only in the API
-request, never by modifying the saved recipe.
+The installer writes `target-host.jsonc` before its final install confirmation
+so the exact request can be reviewed or reused. It is local and gitignored.
+Selecting “create a new account key” registers that Netcup account key during
+the gathering step, before the final confirmation; cancelling afterwards does
+not undo that registration. Select an existing key, or use `--ssh-key-id`, to
+avoid creating one. The separate local controller identity is generated when
+needed for the bootstrap/monitoring path and is not the account key.
+
+If the dry-run looks correct, the second command can be made non-interactive:
+
+```bash
+./scp-api-install-host.py --yes --monitor
+```
+
+`--yes` skips confirmation, so use it only after reviewing the dry-run and
+the selected bootstrap source.
+
+To save or repeat a gathered request explicitly, use the generated file:
+
+```bash
+./scp-api-install-host.py --payload target-host.jsonc --dry-run
+./scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+```
+
+Direct payload mode does not load `default-recipe.jsonc`: for a Debian install,
+the payload must contain `serverId` (or a resolvable `hostname`), `diskName`,
+and the `customScript` that should be sent to Netcup. `imageFlavourId` and
+`sshKeyIds` may be omitted and are resolved live. The normal interactive flow
+is the easiest way to create a complete payload. `default-recipe.jsonc` is
+deliberately local and gitignored; delete it or rerun `configure` to reset
+those interactive defaults. Its secret and bootstrap placeholders are expanded
+only in the API request, never by modifying the saved file.
 
 ### Notifications
 
@@ -45,6 +95,7 @@ committing it:
 
 ```bash
 webhook_url=$(cat ../../nyxloom/mattermost/.ciu/secrets/installer_webhook_url)
+sed -i 's/^NOTIFY_BACKEND=.*/NOTIFY_BACKEND=mattermost/' .env
 sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
 ```
 
@@ -52,22 +103,40 @@ Use the public Mattermost hostname in the webhook URL; an external Netcup VM
 cannot use the Mattermost stack's internal Docker hostname. The webhook is
 post-only and channel-bound, so this integration does not need a Mattermost
 PAT or REST client. Notification failures are logged as warnings and do not
-turn a successful Debian install into a failed one. The wizard asks which
-backend to use and only prompts for that backend's credentials.
+turn a successful Debian install into a failed one. The `build-customscript`
+wizard asks which backend to use; normal API installs read `NOTIFY_BACKEND` and
+the matching credentials from `.env`. To generate a fully expanded script for
+a manual web-host UI install, run:
+
+```bash
+./scp-api-install-host.py build-customscript
+```
 
 ## Install workflow
 
 Preview an installation without mutating the Netcup account:
 
 ```bash
-python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
+./scp-api-install-host.py --dry-run
 ```
 
 Run an interactive installation and follow stage2:
 
 ```bash
-python3 scp-api-install-host.py --payload target-host.jsonc --monitor
+./scp-api-install-host.py --monitor
 ```
+
+Use `--payload target-host.jsonc` only after the normal flow has generated the
+file, or when supplying a separately prepared complete payload. To monitor a
+task after the installer has exited, use the standalone task watcher:
+
+```bash
+./scp-api-monitor-task.py TASK_UUID
+./scp-api-monitor-task.py TASK_UUID --json
+```
+
+Avoid `--raw` unless the response is being handled as a secret: task payloads
+can contain values such as the generated root password.
 
 During the interactive key step, existing Netcup account keys are listed and
 the first one is the default. Choosing one uses it without registering a new
@@ -79,10 +148,10 @@ python3 scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --m
 ```
 
 The local `--ssh-identity-file` is a separate ephemeral controller key used
-for monitoring and is still generated when needed; `--ssh-key-id` refers to a
-key already registered in the Netcup account. If no account key exists, or
-the interactive create option is selected, the controller key is registered
-before the final install request.
+for bootstrap access and monitoring and is still generated when needed;
+`--ssh-key-id` refers to a key already registered in the Netcup account. If no
+account key exists, or the interactive create option is selected, the new
+account key is registered during gathering, before the final confirmation.
 
 `scp-api-install-host.py --help` documents the payload, attach-only, poweroff,
 and wizard modes. `scp-api.py` provides read-only account/server
@@ -130,8 +199,9 @@ bootable installer or recovery media. Useful first queries are:
 
 `--filter` is case-insensitive and searches the returned fields, including an
 image flavour's name and alias or an ISO image's name, description, and
-architecture. All commands support `--help` and `--json`; no short `-h` alias
-is used so the complete public spelling is visible in generated usage.
+architecture. Every `scp-api.py` verb supports `--help`; resource reads and
+API actions support `--json` for machine-readable output. No short `-h` alias
+is used, so the complete public spelling is visible in generated usage.
 
 `attach-iso` changes the server's attached media and requires either an ISO ID
 from `iso-bootable` or the name of an uploaded user ISO. `metrics` returns the
@@ -236,7 +306,7 @@ export ISO_KEY=debian-custom-recovery.iso
   --change-boot-device-to-cdrom --yes --json
 # Then inspect the UUID returned above:
 ./scp-api.py tasks TASK_UUID --json
-./scp-api.py power cycle 799611
+./scp-api.py power cycle 799611 --yes
 ```
 
 For a large image, the API prepare response supplies an

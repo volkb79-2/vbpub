@@ -1,11 +1,13 @@
 # Firewall policy examples
 
-These files are `FirewallPolicySave` request bodies. Validate and create one
-with:
+These files are `FirewallPolicySave` request bodies. From `scripts/netcup/`,
+validate and create one with:
 
 ```bash
+SERVER_ID=799611
 ./scp-api.py firewall-policies create \
-  --policy-file firewall-policy-examples/public-ssh-whitelist.json
+  --policy-file firewall-policy-examples/public-ssh-whitelist.json \
+  --yes --json
 ```
 
 Use `--yes` only after reviewing the policy and checking the server's current
@@ -13,9 +15,14 @@ Use `--yes` only after reviewing the policy and checking the server's current
 complete user/copied policy assignment on the selected interface:
 
 ```bash
-./scp-api.py firewall SERVER get --consistency-check
-./scp-api.py firewall SERVER set --user-policy-id POLICY_ID --active
+./scp-api.py firewall "$SERVER_ID" get --consistency-check
+./scp-api.py firewall "$SERVER_ID" set --user-policy-id POLICY_ID --active
 ```
+
+Capture the policy ID from the JSON response before the assignment, then
+replace `POLICY_ID` with that value. Omit the firewall MAC only when the server
+has exactly one interface; for multiple interfaces use
+`firewall "$SERVER_ID" MAC get` and pass the same MAC to `set`.
 
 The addresses in these examples are documentation ranges except for the
 private ranges; replace them with the real administrator, VPN, and resolver
