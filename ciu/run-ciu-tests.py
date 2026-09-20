@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -33,10 +34,19 @@ COV_FAIL_UNDER = "100"
 
 def main() -> None:
     argv = sys.argv[1:]
+    # The normal local gate uses xdist's automatic worker count.  The
+    # tester-unified mutation lane can run many complete suites over time, and
+    # its container's process/thread budget is smaller than the cockpit's.
+    # Let the lane declare a bounded count without maintaining a second test
+    # command.  Invalid values fail loudly instead of silently changing the
+    # coverage execution shape.
+    workers = os.environ.get("CIU_PYTEST_WORKERS", "auto")
+    if workers != "auto" and (not workers.isdigit() or int(workers) < 1):
+        raise SystemExit("CIU_PYTEST_WORKERS must be 'auto' or a positive integer")
     cmd = [
         sys.executable, "-m", "pytest", "tests",
         "--cov=ciu",
-        "-n", "auto",
+        "-n", workers,
         "--dist", "loadfile",
         "--cov-branch",
         "--cov-report=term-missing",
