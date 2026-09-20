@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from hypothesis import given, strategies as st
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "resolve-playwright-version.py"
@@ -46,3 +47,31 @@ def test_mcr_versions_only_accept_exact_stable_distro_tags(monkeypatch: pytest.M
 def test_resolver_fails_when_no_version_is_jointly_available() -> None:
     with pytest.raises(SystemExit):
         resolver.resolve_latest_common_version({"1.62.0"}, {"1.61.0"}, {"1.61.1"})
+
+
+@st.composite
+def _version_numbers(draw) -> set[tuple[int, int, int]]:
+    return draw(
+        st.sets(
+            st.tuples(
+                st.integers(min_value=0, max_value=99),
+                st.integers(min_value=0, max_value=99),
+                st.integers(min_value=0, max_value=99),
+            ),
+            min_size=1,
+            max_size=20,
+        )
+    )
+
+
+@given(_version_numbers())
+def test_common_version_selection_is_the_highest_stable_intersection(
+    versions: set[tuple[int, int, int]],
+) -> None:
+    """A newly published version is usable only when every upstream agrees."""
+    common = {"%d.%d.%d" % version for version in versions}
+    npm = common | {"999.0.0-beta", "garbage"}
+    pypi = common | {"998.0.0rc1"}
+    mcr = common | {"1.2.3-next"}
+    expected = max(common, key=lambda value: tuple(map(int, value.split("."))))
+    assert resolver.resolve_latest_common_version(npm, pypi, mcr) == expected

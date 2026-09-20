@@ -7,8 +7,16 @@
 # =============================================================================
 schema_version = 1
 
-[lanes.tests]
-kind = "command"
+[lanes.r1]
+kind = "assay"
+assay_lane = "r1"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/pwmcp && exec /opt/tester-venv/bin/python -m pytest tests -q"]
-budget = "10m"
+clean_tree = true
+budget = "15m"
+
+[lanes.r2]
+kind = "assay"
+assay_lane = "r2"
+environment = "tester-unified"
+clean_tree = true
+budget = "4h"

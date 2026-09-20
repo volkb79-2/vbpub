@@ -1,0 +1,70 @@
+schema_version = 2
+
+[lanes.r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "client/tests", "-q", "--cov=.", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "client/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "15m"
+allow_argv_append = false
+
+[lanes.r1.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.r1.judge]
+language = "python"
+source_roots = ["."]
+mode = "whole_target"
+targets = ["build-push.py", "scripts", "client/src"]
+fail_under = 60.0
+allow_excluded = false
+require_branch = true
+
+[lanes.r1.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.r2]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "client/tests", "-q", "--cov=.", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "client/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "4h"
+allow_argv_append = false
+
+[lanes.r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.r2.judge]
+language = "python"
+source_roots = ["."]
+mode = "whole_target"
+targets = ["build-push.py", "scripts", "client/src"]
+fail_under = 60.0
+allow_excluded = false
+require_branch = true
+
+[lanes.r2.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.r2.judge.mutation]
+jobs = 1
+max_mutants = 1000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "900s"
+liveness = false
