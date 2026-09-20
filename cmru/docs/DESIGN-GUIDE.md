@@ -78,6 +78,18 @@ also removes it from CMRU's mutation and coverage input lists.
 
 ## Candidate-first promotion protects the source history
 
+### Dry-run external version discovery
+
+An external version is a declared fact produced by a project's `steps.prepare`
+command. A preview that skips that query cannot show the version it would tag,
+which makes the preview less useful precisely for projects such as PWMCP whose
+version is the intersection of several upstream registries. CMRU therefore runs
+only the selected external-version preparation in the disposable release
+candidate before computing the plan. It commits only declared generated paths
+there; the caller checkout, gates, tags, builds, pushes, and promotion remain
+untouched. Ordinary projects and non-external prepare steps retain the existing
+dry-run behavior.
+
 An isolated release pushes its transaction branch to origin as a durable candidate. Each
 project is prepared and gated there, then its tag and public artifact are produced from that
 fixed commit. CMRU fast-forwards `origin/main` from the same candidate only after publication
