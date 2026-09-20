@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 import pytest
 
@@ -340,6 +341,167 @@ def test_cmd_firewall_policies_rejects_partial_userinfo(explore_mod, fake_client
         explore_mod.cmd_firewall_policies(client, _ns(query=None, limit=None, offset=None), pal)
 
 
+def test_cmd_firewall_policy_create_validates_before_post(explore_mod, fake_client):
+    client = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(ValueError, match="unknown field"):
+        explore_mod.cmd_firewall_policies(
+            client,
+            _ns(
+                action="create",
+                policy_id=None,
+                policy_json='{"name":"ssh","unexpected":true}',
+                policy_file=None,
+                query=None,
+                limit=None,
+                offset=None,
+                yes=True,
+            ),
+            pal,
+        )
+    assert client.calls == []
+
+
+def test_cmd_firewall_policy_put_posts_validated_payload(explore_mod, fake_client):
+    client = fake_client(allow=("get_user_info", "put"), user_info={"id": 99})
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_firewall_policies(
+        client,
+        _ns(
+            action="put",
+            policy_id=12,
+            policy_json=json.dumps({
+                "name": "ssh",
+                "rules": [{
+                    "direction": "INGRESS",
+                    "protocol": "TCP",
+                    "action": "DROP",
+                    "destinationPorts": "22",
+                }],
+            }),
+            policy_file=None,
+            query=None,
+            limit=None,
+            offset=None,
+            yes=True,
+        ),
+        pal,
+    )
+    assert client.calls == [
+        ("get_user_info",),
+        ("put", "/api/v1/users/99/firewall-policies/12", {
+            "name": "ssh",
+            "rules": [{
+                "direction": "INGRESS",
+                "protocol": "TCP",
+                "action": "DROP",
+                "destinationPorts": "22",
+            }],
+        },
+        None),
+    ]
+
+
+def test_firewall_policy_examples_pass_local_validation(explore_mod):
+    examples = Path(__file__).resolve().parent.parent / "firewall-policy-examples"
+    for path in sorted(examples.glob("*.json")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        assert explore_mod._validate_firewall_policy(document)["name"]
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"name": "bad", "rules": [{"direction": "INGRESS", "protocol": "TCP"}]},
+        {"name": "bad", "rules": [{"direction": "INGRESS", "protocol": "TCP", "action": "DROP", "destinationPorts": "65536"}]},
+        {"name": "bad", "rules": [{"direction": "INGRESS", "protocol": "TCP", "action": "DROP", "sources": ["not-an-ip"]}]},
+    ],
+)
+def test_firewall_policy_validation_rejects_incomplete_values(explore_mod, document):
+    with pytest.raises(ValueError, match="firewall policy"):
+        explore_mod._validate_firewall_policy(document)
+
+
+def test_cmd_user_isos_lists_account_objects(explore_mod, fake_client, capsys):
+    client = fake_client(
+        get_responses=[[{"key": "recovery.iso", "sizeInB": 123, "lastModified": "now"}]],
+        user_info={"id": 99},
+    )
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_user_isos(client, _ns(action=None, file=None, name=None, multipart=False), pal)
+    assert client.calls == [
+        ("get_user_info",),
+        ("get", "/api/v1/users/99/isos", None),
+    ]
+    assert "recovery.iso" in capsys.readouterr().out
+
+
+def test_cmd_user_isos_uploads_single_part_and_does_not_expose_url(explore_mod, fake_client, tmp_path, capsys):
+    iso = tmp_path / "recovery.iso"
+    iso.write_bytes(b"iso-bytes")
+    client = fake_client(
+        allow=("get_user_info", "post", "upload_file"),
+        post_responses=[{"presignedUrl": "https://objects.invalid/upload?signature=secret"}],
+        user_info={"id": 99},
+    )
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_user_isos(
+        client,
+        _ns(
+            action="upload", file=str(iso), name=None, multipart=False,
+            part_size_mib=64, yes=True,
+        ),
+        pal,
+    )
+    assert client.calls[:2] == [
+        ("get_user_info",),
+        ("post", "/api/v1/users/99/isos/recovery.iso?multipart=false", None),
+    ]
+    assert client.calls[2][0] == "upload_file"
+    out = capsys.readouterr().out
+    assert "recovery.iso" in out
+    assert "presigned" not in out.lower()
+
+
+def test_cmd_user_isos_uploads_multipart_and_completes_parts(explore_mod, fake_client, tmp_path):
+    iso = tmp_path / "large.iso"
+    iso.write_bytes(b"x" * (5 * 1024 * 1024 + 10))
+    client = fake_client(
+        get_responses=[
+            {"url": "https://objects.invalid/part-1"},
+            {"url": "https://objects.invalid/part-2"},
+        ],
+        post_responses=[{"uploadId": "upload/id"}],
+        allow=("get", "get_user_info", "post", "upload_file", "put"),
+        user_info={"id": 99},
+    )
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_user_isos(
+        client,
+        _ns(
+            action="upload", file=str(iso), name="large.iso", multipart=True,
+            part_size_mib=5, yes=True,
+        ),
+        pal,
+    )
+    assert client.calls[0:2] == [
+        ("get_user_info",),
+        ("post", "/api/v1/users/99/isos/large.iso?multipart=true", None),
+    ]
+    assert client.calls[2][0:2] == (
+        "get", "/api/v1/users/99/isos/large.iso/upload%2Fid/parts/1"
+    )
+    assert client.calls[4][0:2] == (
+        "get", "/api/v1/users/99/isos/large.iso/upload%2Fid/parts/2"
+    )
+    assert client.calls[-1][0] == "put"
+    assert client.calls[-1][1] == "/api/v1/users/99/isos/large.iso/upload%2Fid"
+    assert client.calls[-1][2] == [
+        {"ETag": '"fake-etag"', "partNumber": 1},
+        {"ETag": '"fake-etag"', "partNumber": 2},
+    ]
+
+
 def test_cmd_disks_supported_drivers_rejects_malformed_answer(explore_mod, fake_client):
     client = fake_client(get_responses=[{"driver": "VIRTIO"}])
     pal = explore_mod._Palette(enabled=False)
@@ -551,6 +713,20 @@ def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
     assert "[-h]" not in help_out
 
 
+def test_main_rejects_invalid_policy_before_configure(explore_mod, monkeypatch, capsys):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "firewall-policies", "create", "--policy-json", "[]"],
+    )
+    monkeypatch.setattr(
+        explore_mod, "_configure",
+        lambda: (_ for _ in ()).throw(AssertionError("settings must not load for invalid local input")),
+    )
+    assert explore_mod.main() == 2
+    assert "must be a JSON object" in capsys.readouterr().err
+
+
 def test_no_argument_prints_top_level_usage_without_required_command_error(explore_mod, monkeypatch, capsys):
     monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py"])
     with pytest.raises(SystemExit) as exc:
@@ -670,6 +846,33 @@ def test_parse_args_power_groups_action_under_power(explore_mod, monkeypatch):
     assert args.command == "power"
     assert args.action == "cycle"
     assert args.server_id == 42
+
+
+def test_parse_args_user_iso_upload(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "user-isos", "upload", "custom.iso", "--multipart", "--part-size-mib", "8"],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "user-isos"
+    assert args.action == "upload"
+    assert args.file == "custom.iso"
+    assert args.multipart is True
+    assert args.part_size_mib == 8
+
+
+def test_parse_args_firewall_policy_put(explore_mod, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod.sys,
+        "argv",
+        ["scp-api.py", "firewall-policies", "put", "12", "--policy-file", "policy.json"],
+    )
+    args = explore_mod.parse_args()
+    assert args.command == "firewall-policies"
+    assert args.action == "put"
+    assert args.policy_id == 12
+    assert args.policy_file == "policy.json"
 
 
 def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypatch):

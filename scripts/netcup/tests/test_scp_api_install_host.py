@@ -473,6 +473,55 @@ def test_get_access_token_rejects_non_object_json(install_host_mod, monkeypatch)
         install_host_mod.get_access_token("refresh")
 
 
+def test_presigned_upload_streams_without_api_authorization(install_host_mod, monkeypatch, tmp_path):
+    class Response:
+        status = 200
+
+        def read(self, limit):
+            return b""
+
+        def getheaders(self):
+            return [("ETag", '"etag-1"')]
+
+    class Connection:
+        instances = []
+
+        def __init__(self, *args, **kwargs):
+            self.headers = []
+            self.sent = []
+            self.__class__.instances.append(self)
+
+        def putrequest(self, method, target):
+            self.request = (method, target)
+
+        def putheader(self, key, value):
+            self.headers.append((key, value))
+
+        def endheaders(self):
+            pass
+
+        def send(self, chunk):
+            self.sent.append(chunk)
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.http.client, "HTTPConnection", Connection)
+    path = tmp_path / "custom.iso"
+    path.write_bytes(b"abc")
+    headers = install_host_mod.netcup_scp_client.upload_file_to_presigned_url(
+        "http://object.invalid/upload?signature=secret", path
+    )
+    connection = Connection.instances[0]
+    assert connection.request == ("PUT", "/upload?signature=secret")
+    assert ("Authorization", "Bearer") not in connection.headers
+    assert b"".join(connection.sent) == b"abc"
+    assert headers["etag"] == '"etag-1"'
+
+
 def test_client_get_retries_after_401(install_host_mod, monkeypatch):
     calls = {"n": 0}
 

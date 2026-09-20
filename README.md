@@ -64,8 +64,8 @@ enumerates server-scoped inventory account-wide by default, supports
 diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`, and supports
 filters such as `scp-api.py imageflavours --filter debian`. It also exposes
 confirmed ISO attachment, firewall assignment, and grouped power actions
-(`scp-api.py power on|off|cycle|reset SERVER_ID`); policy creation and user-ISO
-upload remain explicit raw API flows documented in the tool guide. See the
+(`scp-api.py power on|off|cycle|reset SERVER_ID`); validated firewall policy
+create/PUT and account user-ISO upload are also available through the CLI. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 
 ## Repository setup and initial CMRU build

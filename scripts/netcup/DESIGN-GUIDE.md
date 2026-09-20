@@ -56,10 +56,24 @@ require an explicit server. Firewall `set` requires the complete replacement
 policy assignment, but its MAC is optional when live server details prove
 there is exactly one interface; multiple interfaces require an explicit MAC.
 The CLI deliberately does not pretend that guest-agent status is installer
-health, and it does not turn firewall policy/rule creation or user-ISO upload
-into an unreviewed convenience command. Those flows are documented as raw API
-operations in the consumer guide because they carry larger lockout/storage
-failure surfaces than a read/list wrapper.
+health. Firewall policy create/PUT and user-ISO upload are supported, but both
+validate locally and remain confirmation-gated because they carry larger
+lockout/storage failure surfaces than a read/list wrapper. Presigned ISO
+uploads bypass the authenticated API request helper so the SCP bearer token is
+never sent to object storage.
+
+Firewall policy input is the API's `FirewallPolicySave` request shape, supplied
+as strict inline JSON or a JSON file. The validator rejects unknown/read-only
+fields, missing rule enums, malformed addresses, duplicate addresses, and
+invalid ports before contacting SCP. The API remains authoritative for
+provider-side semantic constraints and rule application order.
+
+The policy examples cover the recurring operator cases: public services with
+restricted administrator ports, WireGuard handshakes with public SSH blocked,
+and an egress allow-list followed by protocol drops. A WireGuard `wg0` inside
+the guest is not a distinct SCP interface, so the provider firewall cannot by
+itself express “allow this post-decryption traffic only on wg0”; the guest
+firewall must enforce that half.
 
 Power operations share one `power` verb (`on`, `off`, `cycle`, `reset`) because
 they are one API operation family: a PATCH of server state with an optional

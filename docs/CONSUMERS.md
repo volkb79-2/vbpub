@@ -107,6 +107,7 @@ python3 scp-api.py tasks --state RUNNING --server-id 799611
 python3 scp-api.py metrics 799611 cpu --hours 24
 python3 scp-api.py guest-agent-status 799611
 python3 scp-api.py firewall-policies
+python3 scp-api.py user-isos
 python3 scp-api.py firewall 799611 get
 python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
 python3 scp-api.py power off 799611
@@ -115,57 +116,40 @@ python3 scp-api.py power cycle 799611
 python3 scp-api.py power reset 799611
 ```
 
-ISO attachment and firewall assignment are confirmed mutations. Firewall
-`set` replaces the interface's existing copied/user policy assignment; it does
-not create firewall policies or rules. Omit the firewall MAC only when the
-server has exactly one interface; multiple interfaces require an explicit MAC.
-`guest-agent-status` reports the provider's QEMU guest-agent state, not SSH or
-installer state.
+ISO attachment, ISO upload, and firewall changes are confirmed mutations.
+Firewall `set` replaces the interface's existing copied/user policy assignment.
+Omit the firewall MAC only when the server has exactly one interface; multiple
+interfaces require an explicit MAC. `guest-agent-status` reports the
+provider's QEMU guest-agent state, not SSH or installer state.
 
 ### Firewall policy example: public server, SSH allow-list
 
-The CLI can read and assign policies, but policy/rule creation is intentionally
-kept as an explicit API request. Read the current assignment first, and check
-that `ingressImplicitRule` is `ACCEPT_ALL` if all non-SSH ports should remain
-public:
+The CLI validates and creates/updates policy definitions from inline JSON or a
+JSON file, then separately assigns policy IDs to interfaces. Read the current
+assignment first, and check that `ingressImplicitRule` is `ACCEPT_ALL` if all
+non-SSH ports should remain public:
 
 ```bash
 python3 scp-api.py firewall 799611 get --consistency-check
 ```
 
-Create a policy using the SCP API. `$ACCESS_TOKEN` is a short-lived bearer
-token and `$SCP_USER_ID` is the SCP user ID, not the CCP customer number. If
-needed, discover the latter from the OIDC userinfo endpoint:
+Create a policy from one of the shipped examples:
 
 ```bash
-set -o pipefail
-SCP_USER_ID=$(curl --fail-with-body -sS \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/userinfo' | jq -r .id)
-```
-
-Replace the documentation-only TEST-NET addresses with real addresses before
-use:
-
-```bash
-BASE_URL=https://www.servercontrolpanel.de/scp-core
-POLICY_JSON=$(curl --fail-with-body -sS -X POST \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  "$BASE_URL/api/v1/users/$SCP_USER_ID/firewall-policies" \
-  --data '{
-    "name": "ssh-whitelist",
-    "description": "Allow SSH only from approved administrator addresses",
-    "rules": [
-      {"direction":"INGRESS", "protocol":"TCP", "action":"ACCEPT",
-       "sources":["198.51.100.10", "203.0.113.0/24"],
-       "destinationPorts":"22"},
-      {"direction":"INGRESS", "protocol":"TCP", "action":"DROP",
-       "destinationPorts":"22"}
-    ]
-  }')
+POLICY_JSON=$(python3 scp-api.py firewall-policies create \
+  --policy-file firewall-policy-examples/public-ssh-whitelist.json \
+  --yes --json)
 POLICY_ID=$(jq -r '.id // empty' <<<"$POLICY_JSON")
 test -n "$POLICY_ID" || { echo "policy response had no id" >&2; exit 1; }
+```
+
+Inline JSON and PUT/update use the same validation:
+
+```bash
+python3 scp-api.py firewall-policies create --policy-json \
+  '{"name":"ssh-whitelist","rules":[{"direction":"INGRESS","protocol":"TCP","action":"ACCEPT","sources":["198.51.100.10"],"destinationPorts":"22"},{"direction":"INGRESS","protocol":"TCP","action":"DROP","destinationPorts":"22"}]}'
+python3 scp-api.py firewall-policies put "$POLICY_ID" \
+  --policy-file firewall-policy-examples/public-ssh-whitelist.json
 python3 scp-api.py firewall-policies
 python3 scp-api.py firewall 799611 set --user-policy-id "$POLICY_ID" --active
 python3 scp-api.py tasks --state RUNNING --server-id 799611
@@ -177,19 +161,13 @@ testing: a wrong allow-list can immediately remove SSH access.
 
 ### User ISO upload and boot
 
-The API supports account-level user ISO storage. `scp-api.py` accepts a user ISO
-name for attachment but does not currently wrap the upload itself. A simple
+The API supports account-level user ISO storage. The CLI lists and uploads
+account user ISOs, then `attach-iso` selects one for a server. A simple
 single-part upload is:
 
 ```bash
-BASE_URL=https://www.servercontrolpanel.de/scp-core
 ISO_KEY=debian-custom-recovery.iso
-UPLOAD_JSON=$(curl --fail-with-body -sS -X POST \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  "$BASE_URL/api/v1/users/$SCP_USER_ID/isos/$ISO_KEY?multipart=false")
-UPLOAD_URL=$(jq -r '.presignedUrl // empty' <<<"$UPLOAD_JSON")
-test -n "$UPLOAD_URL" || { echo "upload response had no presignedUrl" >&2; exit 1; }
-curl --fail-with-body -sS --upload-file ./debian-custom-recovery.iso "$UPLOAD_URL"
+python3 scp-api.py user-isos upload ./debian-custom-recovery.iso --yes
 
 # Keep the returned attach-task UUID and wait for it to be FINISHED.
 python3 scp-api.py attach-iso 799611 --user-iso-name "$ISO_KEY" \
@@ -200,6 +178,14 @@ python3 scp-api.py power cycle 799611
 
 For large images use the API's multipart flow: prepare with `multipart=true`,
 get one presigned part URL per part, upload each part and retain its `ETag`,
-then complete the upload with the ordered `ETag`/`partNumber` list. The upload
-task must finish before attaching; `--change-boot-device-to-cdrom` makes the
+then complete the upload with the ordered `ETag`/`partNumber` list. The CLI
+wraps this as `python3 scp-api.py user-isos upload FILE --multipart`. The
+upload must finish before attaching; `--change-boot-device-to-cdrom` makes the
 attached ISO the next boot medium.
+
+See [`scripts/netcup/firewall-policy-examples/`](../scripts/netcup/firewall-policy-examples/)
+for SSH allow-lists, public services with restricted admin ports, WireGuard
+management, and limited egress. The WireGuard example exposes only the outer
+UDP handshake and drops other provider-level ingress. A guest `wg0` is not a
+separate SCP NIC, so the guest firewall must enforce SSH/services only on
+`wg0`.

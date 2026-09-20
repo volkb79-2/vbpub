@@ -66,9 +66,10 @@ class FakeClient:
     method names).
     """
 
-    def __init__(self, *, get_responses=None, user_info=None, allow=("get", "get_user_info")):
+    def __init__(self, *, get_responses=None, post_responses=None, user_info=None, allow=("get", "get_user_info")):
         self.calls = []
         self._get_responses = list(get_responses or [])
+        self._post_responses = list(post_responses or [])
         self._user_info = user_info or {"id": 1}
         self._allow = set(allow)
 
@@ -84,7 +85,7 @@ class FakeClient:
         if "post" not in self._allow:
             raise AssertionError(f"unexpected mutating POST {endpoint} (dry-run must not call this)")
         self.calls.append(("post", endpoint, data))
-        return {}
+        return self._post_responses.pop(0) if self._post_responses else {}
 
     def patch(self, endpoint, data, params=None):
         if "patch" not in self._allow:
@@ -103,6 +104,12 @@ class FakeClient:
             raise AssertionError(f"unexpected mutating DELETE {endpoint} (dry-run/declined-confirm must not call this)")
         self.calls.append(("delete", endpoint, params))
         return {}
+
+    def upload_file(self, url, path, offset=0, size=None):
+        if "upload_file" not in self._allow:
+            raise AssertionError(f"unexpected presigned upload {url}")
+        self.calls.append(("upload_file", url, path, offset, size))
+        return {"etag": '"fake-etag"'}
 
     def get_user_info(self):
         if "get_user_info" not in self._allow:

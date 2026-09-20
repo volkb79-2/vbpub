@@ -21,6 +21,7 @@ directory is on sys.path" behavior, same as any other sibling module.
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import sys
 import time
@@ -233,13 +234,56 @@ class HTTPStatusError(RuntimeError):
         self.body = body
 
 
+def _upload_presigned_stream(url: str, stream, size: int, *, timeout: float = 300.0) -> Dict[str, str]:
+    """PUT a file stream to an S3 presigned URL without adding API auth."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError("presigned upload URL is not an absolute HTTP(S) URL")
+    connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    connection = connection_class(parsed.netloc, timeout=timeout)
+    target = parsed.path or "/"
+    if parsed.query:
+        target += "?" + parsed.query
+    try:
+        connection.putrequest("PUT", target)
+        connection.putheader("Content-Length", str(size))
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.endheaders()
+        remaining = size
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise RuntimeError("local ISO changed or ended before the declared upload size")
+            connection.send(chunk)
+            remaining -= len(chunk)
+        response = connection.getresponse()
+        body = response.read(2000).decode("utf-8", errors="replace")
+        if not 200 <= response.status < 300:
+            raise HTTPStatusError(response.status, f"presigned upload failed with HTTP {response.status}", body)
+        return {key.lower(): value for key, value in response.getheaders()}
+    finally:
+        connection.close()
+
+
+def upload_file_to_presigned_url(url: str, path: Path, *, offset: int = 0, size: Optional[int] = None) -> Dict[str, str]:
+    """Stream all or one part of a local file to an unauthenticated presigned URL."""
+    file_size = path.stat().st_size
+    if size is None:
+        size = file_size - offset
+    if offset < 0 or size < 0 or offset + size > file_size:
+        raise ValueError("presigned upload range is outside the local file")
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        return _upload_presigned_stream(url, stream, size)
+
+
 def _http_json(
     method: str,
     url: str,
     *,
     headers: Optional[Dict[str, str]] = None,
     params: Optional[Dict[str, Any]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Any] = None,
     timeout: float = 30.0,
 ) -> Any:
     if params:
@@ -494,7 +538,7 @@ class NetcupSCPClient:
         log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
         return result
 
-    def post(self, endpoint: str, data: Dict) -> Any:
+    def post(self, endpoint: str, data: Optional[Any] = None) -> Any:
         """Make POST request to API"""
         url = f"{self.base_url}{endpoint}"
         log_debug(f"POST {url}")
@@ -532,7 +576,7 @@ class NetcupSCPClient:
         log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
         return result
 
-    def put(self, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None) -> Any:
+    def put(self, endpoint: str, data: Optional[Any] = None, params: Optional[Dict] = None) -> Any:
         """Make PUT request to API (e.g. tasks:cancel, interface/vlan updates)."""
         url = f"{self.base_url}{endpoint}"
         log_debug(f"PUT {url} {params or ''}")
@@ -565,6 +609,15 @@ class NetcupSCPClient:
                 raise
         log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
         return result
+
+    def upload_file(self, url: str, path: Path, *, offset: int = 0, size: Optional[int] = None) -> Dict[str, str]:
+        """Upload a whole file or part to an SCP-provided presigned URL.
+
+        Presigned object-storage URLs must not receive the SCP bearer token;
+        this deliberately bypasses the authenticated API request helpers.
+        """
+        log_debug(f"PUT presigned upload {url.split('?', 1)[0]} offset={offset} size={size}")
+        return upload_file_to_presigned_url(url, path, offset=offset, size=size)
 
     def get_user_info(self) -> Dict:
         """Get user information from OIDC userinfo endpoint"""

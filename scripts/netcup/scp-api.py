@@ -8,9 +8,9 @@ filter, print a numbered list) -- generalized to the rest of the
 rescuesystem status, snapshots, tasks, metrics, guest-agent status, and
 firewall assignment), plus explicitly confirmed actions (ISO attach/detach,
 task cancel, rescue-system deactivate, snapshot create/dryrun-check, power
-operations, and firewall assignment). Deliberately does NOT expose: disk
-format, image setup (server reinstall), snapshot revert, or firewall policy
-creation/editing -- those need a dedicated, deliberate flow.
+operations, firewall policy create/PUT, firewall assignment, and user-ISO
+upload). Deliberately does NOT expose: disk format, image setup (server
+reinstall), or snapshot revert.
 
 Auth/settings: shares netcup_scp_client.py with scp-api-install-host.py
 (same .env-sourced NETCUP_SCP_API_REFRESH_TOKEN, same OAuth2 device-code
@@ -33,7 +33,8 @@ Usage:
                   [--state STATE] [--limit N] [--offset N]
   scp-api.py metrics <server_id> {cpu,disk,network,network-packet} [--hours N]
   scp-api.py guest-agent-status <server_id>
-  scp-api.py firewall-policies [--query TEXT]
+  scp-api.py user-isos [upload FILE] [--name KEY] [--multipart]
+  scp-api.py firewall-policies [create|put] [policy_id] [--policy-json JSON | --policy-file PATH]
   scp-api.py firewall <server_id> [mac] [get|set] [options]
   scp-api.py power {on,off,cycle,reset} <server_id> [--yes]
 
@@ -51,7 +52,10 @@ Examples:
   scp-api.py tasks --state RUNNING --server-id 799611
   scp-api.py metrics 799611 cpu --hours 24
   scp-api.py guest-agent-status 799611
+  scp-api.py user-isos
+  scp-api.py user-isos upload ./custom.iso --yes
   scp-api.py firewall-policies
+  scp-api.py firewall-policies create --policy-file firewall-policy.json --yes
   scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
   scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
   scp-api.py power cycle 799611
@@ -60,10 +64,12 @@ Verb groups:
   authentication: login
   exploration: servers, server-details, imageflavours, iso-bootable,
                 iso-attached, disks, rescuesystem, snapshots, tasks,
-                metrics, guest-agent-status, firewall-policies, firewall get
+                metrics, guest-agent-status, user-isos, firewall-policies,
+                firewall get
   modification: attach-iso, iso-attached <server_id> detach,
                rescuesystem <server_id> deactivate, snapshots <server_id>
-               create, tasks <uuid> cancel, firewall <server_id> [mac] set,
+               create, tasks <uuid> cancel, user-isos upload,
+               firewall-policies create/put, firewall <server_id> [mac] set,
                power {on,off,cycle,reset}
 
 Every subcommand accepts --json for raw machine output; without it, output
@@ -74,10 +80,12 @@ auto-detects a TTY and respects NO_COLOR (https://no-color.org/) and
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -307,6 +315,21 @@ _METRIC_ENDPOINTS = {
     "network-packet": "network/packet",
 }
 _MAC_ADDRESS_RE = re.compile(r"^[a-fA-F0-9]{2}(?::[a-fA-F0-9]{2}){5}$")
+_PORT_VALUE_RE = re.compile(r"^(?:0|[1-9][0-9]{0,4})(?:-(?:0|[1-9][0-9]{0,4}))?$")
+_POLICY_FIELDS = {"name", "description", "rules"}
+_RULE_FIELDS = {
+    "description",
+    "direction",
+    "protocol",
+    "action",
+    "sources",
+    "sourcePorts",
+    "destinations",
+    "destinationPorts",
+}
+_RULE_DIRECTIONS = {"INGRESS", "EGRESS"}
+_RULE_PROTOCOLS = {"TCP", "UDP", "ICMP", "ICMPv6"}
+_RULE_ACTIONS = {"ACCEPT", "DROP"}
 
 
 class ResponseShapeError(RuntimeError):
@@ -370,6 +393,13 @@ def _hours(value: str) -> int:
     return number
 
 
+def _part_size_mib(value: str) -> int:
+    number = _positive_int(value)
+    if number < 5:
+        raise argparse.ArgumentTypeError("must be at least 5 MiB for multipart S3 uploads")
+    return number
+
+
 def _mac_address(value: str) -> str:
     if not _MAC_ADDRESS_RE.fullmatch(value):
         raise argparse.ArgumentTypeError("must be a MAC address such as aa:bb:cc:dd:ee:ff")
@@ -380,6 +410,162 @@ def _nonempty_text(value: str) -> str:
     if not value.strip():
         raise argparse.ArgumentTypeError("must not be empty or whitespace")
     return value
+
+
+def _policy_validation_error(path: str, message: str) -> None:
+    raise ValueError(f"firewall policy {path}: {message}")
+
+
+def _validate_policy_text(
+    value: Any,
+    path: str,
+    *,
+    max_length: int,
+    allow_none: bool = False,
+    require_nonempty: bool = True,
+) -> None:
+    if value is None and allow_none:
+        return
+    if not isinstance(value, str):
+        _policy_validation_error(path, "must be a string")
+    if require_nonempty and not value.strip():
+        _policy_validation_error(path, "must not be empty or whitespace")
+    if len(value) > max_length:
+        _policy_validation_error(path, f"must be at most {max_length} characters")
+
+
+def _validate_policy_addresses(value: Any, path: str) -> set[int]:
+    if value is None:
+        return set()
+    if not isinstance(value, list):
+        _policy_validation_error(path, "must be an array of IP addresses or networks")
+    if all(isinstance(item, str) for item in value) and len(value) != len(set(value)):
+        _policy_validation_error(path, "must not contain duplicate addresses")
+    families: set[int] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            _policy_validation_error(f"{path}[{index}]", "must be a non-empty IP address or network")
+        try:
+            try:
+                parsed = ipaddress.ip_address(item)
+            except ValueError:
+                parsed = ipaddress.ip_network(item, strict=False)
+        except ValueError as e:
+            _policy_validation_error(f"{path}[{index}]", f"is not a valid IP address or network: {e}")
+        families.add(parsed.version)
+    return families
+
+
+def _validate_policy_ports(value: Any, path: str) -> None:
+    if value is None:
+        return  # SCP documents null as “any port”; omission has the same effect.
+    if not isinstance(value, str) or not _PORT_VALUE_RE.fullmatch(value):
+        _policy_validation_error(path, "must be a port number or range from 0 to 65535")
+    parts = value.split("-")
+    numbers = [int(part) for part in parts]
+    if any(number > 65535 for number in numbers):
+        _policy_validation_error(path, "must be a port number or range from 0 to 65535")
+    if len(numbers) == 2 and numbers[0] > numbers[1]:
+        _policy_validation_error(path, "must have its lower port first")
+
+
+def _validate_firewall_policy(value: Any) -> Dict[str, Any]:
+    """Validate the FirewallPolicySave request shape before POST/PUT.
+
+    This intentionally validates the request schema locally, including the
+    documented IP/port constraints, without silently dropping unknown fields.
+    The SCP API remains the authority for provider-specific semantic checks.
+    """
+    if not isinstance(value, dict):
+        _policy_validation_error("$", "must be a JSON object")
+    unknown = set(value) - _POLICY_FIELDS
+    if unknown:
+        _policy_validation_error("$", f"unknown field(s): {', '.join(sorted(unknown))}")
+    if "name" not in value:
+        _policy_validation_error("$.name", "is required")
+    _validate_policy_text(value["name"], "$.name", max_length=255)
+    if "description" in value:
+        _validate_policy_text(value["description"], "$.description", max_length=255, require_nonempty=False)
+    if "rules" not in value:
+        return value
+    rules = value["rules"]
+    if not isinstance(rules, list):
+        _policy_validation_error("$.rules", "must be an array")
+    if len(rules) > 500:
+        _policy_validation_error("$.rules", "may contain at most 500 rules")
+    for index, rule in enumerate(rules):
+        path = f"$.rules[{index}]"
+        if not isinstance(rule, dict):
+            _policy_validation_error(path, "must be a JSON object")
+        unknown = set(rule) - _RULE_FIELDS
+        if unknown:
+            _policy_validation_error(path, f"unknown field(s): {', '.join(sorted(unknown))}")
+        for required in ("direction", "protocol", "action"):
+            if required not in rule:
+                _policy_validation_error(f"{path}.{required}", "is required")
+        if not isinstance(rule["direction"], str) or rule["direction"] not in _RULE_DIRECTIONS:
+            _policy_validation_error(f"{path}.direction", f"must be one of {sorted(_RULE_DIRECTIONS)}")
+        if not isinstance(rule["protocol"], str) or rule["protocol"] not in _RULE_PROTOCOLS:
+            _policy_validation_error(f"{path}.protocol", f"must be one of {sorted(_RULE_PROTOCOLS)}")
+        if not isinstance(rule["action"], str) or rule["action"] not in _RULE_ACTIONS:
+            _policy_validation_error(f"{path}.action", f"must be one of {sorted(_RULE_ACTIONS)}")
+        if "description" in rule:
+            _validate_policy_text(
+                rule["description"], f"{path}.description", max_length=255,
+                allow_none=True, require_nonempty=False,
+            )
+        source_families = set()
+        destination_families = set()
+        if "sources" in rule:
+            source_families = _validate_policy_addresses(rule["sources"], f"{path}.sources")
+        if "destinations" in rule:
+            destination_families = _validate_policy_addresses(rule["destinations"], f"{path}.destinations")
+        if len(rule.get("sources") or []) > 1 and len(rule.get("destinations") or []) > 1:
+            _policy_validation_error(path, "multiple sources and multiple destinations cannot be combined")
+        if len(source_families) > 1 and rule.get("destinations"):
+            _policy_validation_error(path, "mixed IPv4/IPv6 sources require any destination")
+        if len(destination_families) > 1 and rule.get("sources"):
+            _policy_validation_error(path, "mixed IPv4/IPv6 destinations require any source")
+        for field in ("sourcePorts", "destinationPorts"):
+            if field in rule:
+                _validate_policy_ports(rule[field], f"{path}.{field}")
+    return value
+
+
+def _reject_duplicate_json_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_nonstandard_json_constant(value: str):
+    raise ValueError(f"non-standard JSON constant {value!r} is not allowed")
+
+
+def _load_firewall_policy(args) -> Dict[str, Any]:
+    if args.policy_json is None and args.policy_file is None:
+        raise ValueError("firewall policy input: provide exactly one of --policy-json or --policy-file")
+    if args.policy_json is not None:
+        source = "--policy-json"
+        raw = args.policy_json
+    else:
+        source = f"--policy-file {args.policy_file}"
+        try:
+            raw = Path(args.policy_file).read_text(encoding="utf-8")
+        except OSError as e:
+            raise ValueError(f"{source}: cannot read file: {e}") from e
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(f"{source}: invalid JSON: {e}") from e
+    return _validate_firewall_policy(value)
 
 
 # --- subcommands -------------------------------------------------------------
@@ -649,11 +835,156 @@ def cmd_guest_agent_status(client: NetcupSCPClient, args, pal: _Palette) -> None
     emit(result, args.json, lambda d: print_kv(d, pal))
 
 
-def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
+def _scp_user_id(client: NetcupSCPClient) -> int:
     user_info = _response_dict(_api_call(client.get_user_info), "GET OIDC userinfo")
     user_id = user_info.get("id")
     if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
         raise ResponseShapeError("GET OIDC userinfo: response did not contain a positive integer user id")
+    return user_id
+
+
+def _firewall_policy_input_args(args) -> Dict[str, Any]:
+    return _load_firewall_policy(args)
+
+
+def cmd_firewall_policy_write(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    if args.query is not None or args.limit is not None or args.offset is not None:
+        print("ERROR: policy list filters cannot be combined with create or put", file=sys.stderr)
+        raise SystemExit(2)
+    policy = _firewall_policy_input_args(args)
+    if not policy.get("rules"):
+        print("WARNING: policy contains no rules; it will not match any traffic by itself", file=sys.stderr)
+    if args.action == "put":
+        if args.policy_id is None:
+            print("ERROR: firewall-policies put requires a policy_id", file=sys.stderr)
+            raise SystemExit(2)
+        prompt = f"Update firewall policy {args.policy_id} ({policy['name']!r})?"
+    else:
+        if args.policy_id is not None:
+            print("ERROR: firewall-policies create does not take a policy_id", file=sys.stderr)
+            raise SystemExit(2)
+        prompt = f"Create firewall policy {policy['name']!r}?"
+    if not confirm(prompt, args.yes, pal):
+        print("aborted")
+        return
+    user_id = _scp_user_id(client)
+    if args.action == "put":
+        endpoint = f"/api/v1/users/{user_id}/firewall-policies/{args.policy_id}"
+        method = client.put
+        method_args = (endpoint, policy)
+        operation = f"PUT {endpoint}"
+    else:
+        endpoint = f"/api/v1/users/{user_id}/firewall-policies"
+        method = client.post
+        method_args = (endpoint, policy)
+        operation = f"POST {endpoint}"
+    result = _response_dict(_api_call(method, *method_args), operation)
+    emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.green("firewall policy request accepted")))
+
+
+def _user_iso_endpoint(user_id: int, key: str) -> str:
+    return f"/api/v1/users/{user_id}/isos/{urllib.parse.quote(key, safe='')}"
+
+
+def _user_iso_key(args, path: Path) -> str:
+    key = args.name or path.name
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("user ISO name must not be empty")
+    return key
+
+
+def _user_iso_file(args) -> tuple[Path, int, str]:
+    if args.file is None:
+        raise ValueError("user-isos upload requires a local FILE")
+    path = Path(args.file)
+    try:
+        if not path.is_file():
+            raise ValueError(f"ISO file {path} is not a regular file")
+        size = path.stat().st_size
+    except OSError as e:
+        raise ValueError(f"cannot inspect ISO file {path}: {e}") from e
+    if size <= 0:
+        raise ValueError(f"ISO file {path} is empty")
+    return path, size, _user_iso_key(args, path)
+
+
+def cmd_user_isos(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    if args.action == "upload":
+        path, size, key = _user_iso_file(args)
+        if not confirm(f"Upload {path} as user ISO {key!r} ({size} bytes)?", args.yes, pal):
+            print("aborted")
+            return
+        user_id = _scp_user_id(client)
+        multipart = args.multipart
+        endpoint = _user_iso_endpoint(user_id, key)
+        prepared = _response_dict(
+            _api_call(client.post, f"{endpoint}?multipart={'true' if multipart else 'false'}", None),
+            f"POST {endpoint}",
+        )
+        if multipart:
+            upload_id = prepared.get("uploadId")
+            if not isinstance(upload_id, str) or not upload_id.strip():
+                raise ResponseShapeError(f"POST {endpoint}: multipart response had no uploadId")
+            part_size = (args.part_size_mib or 64) * 1024 * 1024
+            parts = []
+            offset = 0
+            part_number = 1
+            while offset < size:
+                length = min(part_size, size - offset)
+                part_endpoint = f"{endpoint}/{urllib.parse.quote(upload_id, safe='')}/parts/{part_number}"
+                part_result = _response_dict(
+                    _api_call(client.get, part_endpoint),
+                    f"GET {part_endpoint}",
+                )
+                upload_url = part_result.get("url")
+                if not isinstance(upload_url, str) or not upload_url.strip():
+                    raise ResponseShapeError(f"GET {part_endpoint}: response had no upload URL")
+                headers = _api_call(client.upload_file, upload_url, path, offset=offset, size=length)
+                etag = headers.get("etag") if isinstance(headers, dict) else None
+                if not isinstance(etag, str) or not etag.strip():
+                    raise ResponseShapeError(f"PUT part {part_number}: upload response had no ETag")
+                parts.append({"ETag": etag, "partNumber": part_number})
+                offset += length
+                part_number += 1
+            complete_endpoint = f"{endpoint}/{urllib.parse.quote(upload_id, safe='')}"
+            _api_call(client.put, complete_endpoint, parts)
+            summary = {"key": key, "sizeInB": size, "multipart": True, "parts": len(parts)}
+        else:
+            upload_url = prepared.get("presignedUrl")
+            if not isinstance(upload_url, str) or not upload_url.strip():
+                raise ResponseShapeError(f"POST {endpoint}: response had no presignedUrl")
+            _api_call(client.upload_file, upload_url, path)
+            summary = {"key": key, "sizeInB": size, "multipart": False}
+        emit(summary, args.json, lambda d: print_kv(d, pal))
+        return
+
+    if (getattr(args, "file", None) is not None
+            or getattr(args, "name", None) is not None
+            or getattr(args, "multipart", False)
+            or getattr(args, "part_size_mib", None) is not None
+            or getattr(args, "yes", False)):
+        print("ERROR: user-isos upload options require the explicit upload action", file=sys.stderr)
+        raise SystemExit(2)
+    user_id = _scp_user_id(client)
+    result = _response_rows(
+        _api_call(client.get, f"/api/v1/users/{user_id}/isos"),
+        f"GET /api/v1/users/{user_id}/isos",
+    )
+    emit(result, args.json, lambda d: print_table(
+        d, ["key", "lastModified", "sizeInB"], pal, "no user ISOs uploaded"
+    ))
+
+
+def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    if getattr(args, "action", None) in ("create", "put"):
+        return cmd_firewall_policy_write(client, args, pal)
+    if (getattr(args, "policy_id", None) is not None
+            or getattr(args, "policy_json", None) is not None
+            or getattr(args, "policy_file", None) is not None
+            or getattr(args, "yes", False)):
+        print("ERROR: policy write options require the create or put action", file=sys.stderr)
+        raise SystemExit(2)
+    user_id = _scp_user_id(client)
     params = {}
     if args.query:
         params["q"] = args.query
@@ -974,14 +1305,41 @@ def parse_args():
     p.add_argument("server_id", type=_positive_int, metavar="server_id")
 
     p = add_subcommand(
-        "firewall-policies",
-        "list existing firewall policies available to this SCP user",
-        "List policy IDs that can be assigned with firewall set. This reads policies; it does not create or edit them.\n\n"
-        "Example:\n  ./scp-api.py firewall-policies",
+        "user-isos",
+        "list account user ISOs or upload one",
+        "List account-level user ISO objects, or upload a local ISO through SCP's "
+        "presigned single-part or multipart object-storage flow. The upload action "
+        "does not attach or boot the ISO; use attach-iso and power cycle afterward.\n\n"
+        "Examples:\n"
+        "  ./scp-api.py user-isos\n"
+        "  ./scp-api.py user-isos upload ./custom.iso --yes",
     )
+    add_actions(p, ("upload",), "upload: upload one local ISO (confirmed)")
+    p.add_argument("file", nargs="?", metavar="FILE")
+    p.add_argument("--name", type=_nonempty_text, metavar="KEY", help="object name; defaults to the local filename")
+    p.add_argument("--multipart", action="store_true", help="use multipart upload for large ISOs")
+    p.add_argument("--part-size-mib", type=_part_size_mib, default=None, metavar="N", help="multipart part size (default: 64; minimum: 5)")
+    p.add_argument("--yes", action="store_true", help="skip the upload confirmation prompt")
+
+    p = add_subcommand(
+        "firewall-policies",
+        "list, create, or PUT firewall policies for this SCP user",
+        "List policy IDs, or create/update a FirewallPolicySave request after strict local JSON validation. "
+        "`put` updates an existing policy definition; `firewall SERVER set` separately assigns policy IDs to an interface.\n\n"
+        "Examples:\n"
+        "  ./scp-api.py firewall-policies\n"
+        "  ./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}'\n"
+        "  ./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json",
+    )
+    add_actions(p, ("create", "put"), "create: POST a new policy; put: PUT an existing policy definition")
+    p.add_argument("policy_id", nargs="?", type=_positive_int, metavar="policy_id")
+    policy_input = p.add_mutually_exclusive_group()
+    policy_input.add_argument("--policy-json", metavar="JSON", help="validated FirewallPolicySave JSON object")
+    policy_input.add_argument("--policy-file", metavar="PATH", help="file containing validated FirewallPolicySave JSON")
     p.add_argument("--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT", help="search policy name/description")
     p.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
     p.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
+    p.add_argument("--yes", action="store_true", help="skip the create/PUT confirmation prompt")
 
     p = add_subcommand(
         "firewall",
@@ -1052,6 +1410,19 @@ def parse_args():
 
 def main() -> int:
     args = parse_args()  # --help exits here, before _configure() ever runs
+    # Validate local write/upload inputs before loading settings, refreshing a
+    # token, or contacting the API. This makes a typo in a policy/file a local
+    # error rather than an authenticated request followed by a provider error.
+    try:
+        if args.command == "firewall-policies" and args.action in ("create", "put"):
+            _load_firewall_policy(args)
+            if args.action == "put" and args.policy_id is None:
+                raise ValueError("firewall-policies put requires a policy_id")
+        elif args.command == "user-isos" and args.action == "upload":
+            _user_iso_file(args)
+    except (OSError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
     _configure()
 
     if args.command == "login":
@@ -1073,6 +1444,7 @@ def main() -> int:
         "tasks": cmd_tasks,
         "metrics": cmd_metrics,
         "guest-agent-status": cmd_guest_agent_status,
+        "user-isos": cmd_user_isos,
         "firewall-policies": cmd_firewall_policies,
         "firewall": cmd_firewall,
         "power": cmd_power,
