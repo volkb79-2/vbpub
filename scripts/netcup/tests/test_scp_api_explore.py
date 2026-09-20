@@ -263,7 +263,7 @@ def test_cmd_tasks_cancel_without_uuid_errors_instead_of_silently_listing(explor
 
 # --- main()/--help must not require a working settings file -------------------
 
-def test_help_short_circuits_before_configure(explore_mod, monkeypatch):
+def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
     monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py", "--help"])
     monkeypatch.setattr(
         explore_mod, "_configure",
@@ -272,6 +272,9 @@ def test_help_short_circuits_before_configure(explore_mod, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         explore_mod.main()
     assert exc.value.code == 0
+    help_out = capsys.readouterr().out
+    assert "--help" in help_out
+    assert "[-h]" not in help_out
 
 
 def test_no_argument_prints_top_level_usage_without_required_command_error(explore_mod, monkeypatch, capsys):

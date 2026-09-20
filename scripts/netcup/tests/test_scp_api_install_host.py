@@ -1146,6 +1146,16 @@ def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monk
     assert install_host_mod.parse_args().ssh_key_ids == [10, 20]
 
 
+def test_parse_args_exposes_only_long_help(install_host_mod, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        install_host_mod.parse_args()
+    assert exc.value.code == 0
+    help_out = capsys.readouterr().out
+    assert "--help" in help_out
+    assert "[-h]" not in help_out
+
+
 # --- build-customscript wizard -----------------------------------------------
 
 
