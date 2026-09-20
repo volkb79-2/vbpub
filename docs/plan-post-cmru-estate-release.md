@@ -1,6 +1,6 @@
 # Post-CMRU estate release plan
 
-Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.4.1 is
+Status: execution in progress, updated 2026-09-20 UTC. CMRU v5.4.1 is
 released and installed; the reviewed run-gate and estate CLI changes are
 merged, the local Debian/NetCup integration is in a CIU worktree, and the
 final estate release remains in progress.
@@ -42,10 +42,16 @@ Completed for the CMRU project on 2026-09-19 UTC from promoted commit
   `/home/vscode/.venv` environment and verified outside editable checkouts;
 - the first resume reached the MDT build after **1835 passed, 10 skipped**
   and stopped because the old cockpit had no `mdt-managed` builder; a
-  disposable governed controller now supplies the managed BuildKit relay; and
-- the corrected resume is running as `cmru-resume-r10-mdt-ephemeral` under
-  `dev-gates.slice`, with its job-owned exit marker retained in the shared
-  temporary directory.
+  disposable governed controller now supplies the managed BuildKit relay;
+- retries r11 and r12 reached the durable backup push but were stopped by the
+  controller's unavailable VS Code credential IPC socket; retry r14 then
+  exposed a helper bug, because the retained secret is `[github].token`, not a
+  root-level `token`; and
+- retry r15 is now running under `dev-gates.slice` with direct Git askpass,
+  the same retained candidate branch, and a job-owned exit marker in the
+  shared temporary directory. The controller also mounts the existing host
+  `/tmp` bind, which is how the temporary governed BuildKit relay is visible
+  inside this older cockpit; it does not mutate the cockpit's mount namespace.
 
 The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
 closed as a project release; the retained candidate worktree remains available
