@@ -85,8 +85,9 @@ dependency, or when nothing changed. See `cmru tool-deps` for the standalone ver
 
 Every project this plan skips (equal, ahead-and-allowed, or the ordinary "behind" case) prints
 its own `[INFO] Unchanged, skipping: <name> (…)` line naming the exact baseline tag and reason —
-never a bare list of names (SPEC S12.2e); see the worked example below. This computation runs
-exactly once, before `--dry-run` is ever considered, so a preview and a real run report
+never a bare list of names (SPEC S12.2e); see the worked example below. After a dry run has
+performed any selected external-version prepare in its disposable candidate, this computation
+runs exactly once before the preview branch, so a preview and a real run report
 identical plan/baseline/reason diagnostics — a dry run only adds the `[DRY] Would …` prefix on
 what a real run instead performs for real (SPEC S-CLI.5c).
 
