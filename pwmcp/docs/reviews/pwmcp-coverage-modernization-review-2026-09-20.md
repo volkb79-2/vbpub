@@ -117,8 +117,8 @@ selected MCR tag family.
 These should become explicit refusal paths in the compatibility hardening
 change, with tests that construct a missing-key template and assert that the
 resolver names the missing input. The coverage tests exercise the current
-success and fallback behavior so the present implementation remains measured;
-the follow-up can then change the contract deliberately rather than silently.
+success and refusal behavior, and the implementation now refuses these
+ambiguous inputs instead of silently proceeding.
 
 The vendored Lighthouse MCP package has a related reproducibility issue:
 `@modelcontextprotocol/sdk` and `chrome-launcher` use caret ranges and the

@@ -177,36 +177,44 @@ def compute_release_number(pw_version: str) -> int:
 def update_toml_j2(path: Path, pw_version: str, image_tag: str) -> None:
     content = path.read_text(encoding="utf-8")
 
-    content = re.sub(
+    content, version_matches = re.subn(
         r'(playwright_version\s*=\s*)"[^"]+"',
         f'\\1"{pw_version}"',
         content,
     )
+    if version_matches != 1:
+        fail(f"{path.name} must contain exactly one playwright_version field (found {version_matches})")
     # Update image.tag under [pwmcp.unified.image].
-    content = re.sub(
+    content, image_matches = re.subn(
         r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"',
         lambda m: m.group(0).rsplit('"', 2)[0] + f'"{image_tag}"',
         content,
         flags=re.DOTALL,
     )
+    if image_matches != 1:
+        fail(f"{path.name} must contain exactly one [pwmcp.unified.image] tag field (found {image_matches})")
     path.write_text(content, encoding="utf-8")
 
 
 def update_bake_hcl(path: Path, playwright_version: str, pwmcp_version: str) -> None:
     content = path.read_text(encoding="utf-8")
 
-    content = re.sub(
+    content, playwright_matches = re.subn(
         r'(variable\s+"PLAYWRIGHT_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
         f'\\1"{playwright_version}"',
         content,
         flags=re.DOTALL,
     )
-    content = re.sub(
+    if playwright_matches != 1:
+        fail(f"{path.name} must contain exactly one PLAYWRIGHT_VERSION variable (found {playwright_matches})")
+    content, pwmcp_matches = re.subn(
         r'(variable\s+"PWMCP_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
         f'\\1"{pwmcp_version}"',
         content,
         flags=re.DOTALL,
     )
+    if pwmcp_matches != 1:
+        fail(f"{path.name} must contain exactly one PWMCP_VERSION variable (found {pwmcp_matches})")
     path.write_text(content, encoding="utf-8")
 
 
@@ -252,8 +260,10 @@ def write_release_vars(
 
 def read_current_distro() -> str:
     content = DEFAULTS_FILE.read_text(encoding="utf-8")
-    m = re.search(r'image_distro\s*=\s*"([^"]+)"', content)
-    return m.group(1) if m else "noble"
+    matches = re.findall(r'image_distro\s*=\s*"([^"]+)"', content)
+    if len(matches) != 1 or not matches[0].strip():
+        fail(f"{DEFAULTS_FILE.name} must contain exactly one non-empty image_distro field (found {len(matches)})")
+    return matches[0]
 
 
 def main() -> None:

@@ -273,6 +273,22 @@ def test_update_helpers_rewrite_release_inputs(tmp_path: Path) -> None:
     assert updated["playwright"] == {"python": "1.2.3", "protocol": "1.2"}
 
 
+def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
+    toml = tmp_path / "ciu.toml.j2"
+    toml.write_text('[pwmcp]\nplaywright_version = "1.0.0"\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="image tag field"):
+        resolver.update_toml_j2(toml, "1.2.3", "1.2.3-r4")
+
+    bake = tmp_path / "docker-bake.hcl"
+    bake.write_text('variable "PWMCP_VERSION" { default = "old-r1" }\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="PLAYWRIGHT_VERSION"):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
+
+    bake.write_text('variable "PLAYWRIGHT_VERSION" { default = "old" }\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="PWMCP_VERSION"):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
+
+
 def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bake = tmp_path / "docker-bake.hcl"
     bake.write_text('variable "X" { default = "value" }\n', encoding="utf-8")
@@ -288,7 +304,7 @@ def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.Monk
     assert "GHCR_PACKAGE_NAMES=pwmcp" in output.read_text()
 
 
-def test_read_current_distro_uses_file_or_noble_fallback(
+def test_read_current_distro_requires_authoritative_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     defaults = tmp_path / "defaults"
@@ -296,7 +312,11 @@ def test_read_current_distro_uses_file_or_noble_fallback(
     monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
     assert resolver.read_current_distro() == "jammy"
     defaults.write_text("[pwmcp]\n", encoding="utf-8")
-    assert resolver.read_current_distro() == "noble"
+    with pytest.raises(SystemExit, match="image_distro"):
+        resolver.read_current_distro()
+    defaults.write_text('image_distro = ""\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="image_distro"):
+        resolver.read_current_distro()
 
 
 def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
