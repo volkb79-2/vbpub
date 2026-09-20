@@ -38,12 +38,24 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
-    monkeypatch.setattr(cli, "run_project_step", lambda *_: events.append("prepare"))
+    def prepare(*_args):
+        project.project_root.mkdir(parents=True, exist_ok=True)
+        (project.project_root / "cmru.vars").write_text(
+            "PWMCP_VERSION=1.61.2-r3\n", encoding="utf-8"
+        )
+        events.append("prepare")
+
+    monkeypatch.setattr(cli, "run_project_step", prepare)
     monkeypatch.setattr(cli, "_commit_prepared_generated", lambda *_: events.append("commit"))
     monkeypatch.setattr(
         version,
         "detect_changed_projects",
-        lambda *_args, **_kwargs: (events.append("plan") or [("pwmcp", project, None, "patch")]),
+        lambda *_args, **_kwargs: (
+            events.append(
+                "plan:" + (project.project_root / "cmru.vars").read_text(encoding="utf-8").strip()
+            )
+            or [("pwmcp", project, None, "patch")]
+        ),
     )
     monkeypatch.setattr(version, "release_cmd", lambda *_args, **_kwargs: events.append("preview"))
 
@@ -51,5 +63,5 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
         "release", "--_transaction-child", "--dry-run", "--config", str(config_path)
     ])
 
-    assert events == ["prepare", "commit", "plan", "preview"]
+    assert events == ["prepare", "commit", "plan:PWMCP_VERSION=1.61.2-r3", "preview"]
     assert "preparing external version inputs for dry-run" in capsys.readouterr().out
