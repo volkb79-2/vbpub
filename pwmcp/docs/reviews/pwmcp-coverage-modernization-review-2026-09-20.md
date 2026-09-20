@@ -174,21 +174,116 @@ The implementation sequence is:
 5. keep the PWMCP compatibility validator and live endpoint acceptance lane;
 6. run the container build and smoke lane through `tester-unified`.
 
+## Schema proposal
+
+The alignment relationship should be structural rather than a repeated field.
+The preferred CMRU shape is a named target table with source subtables:
+
+```toml
+[versions.targets."pwmcp.playwright"]
+mode = "aligned"
+constraint = ">=1.60,<2"
+
+[versions.targets."pwmcp.playwright".sources.npm]
+name = "playwright"
+registry = "https://registry.npmjs.org"
+
+[versions.targets."pwmcp.playwright".sources.pypi]
+name = "playwright"
+registry = "https://pypi.org"
+
+[versions.targets."pwmcp.playwright".sources.oci]
+image = "mcr.microsoft.com/playwright"
+tag = "v{version}-{image_distro}"
+
+[versions.targets."pwmcp.chrome-devtools-mcp"]
+mode = "single"
+constraint = ">=1.8,<2"
+
+[versions.targets."pwmcp.chrome-devtools-mcp".sources.npm]
+name = "chrome-devtools-mcp"
+registry = "https://registry.npmjs.org"
+```
+
+The table path `pwmcp.playwright` is the alignment identity. CMRU does not
+need a separate `alignment_group` value that can be misspelled or accidentally
+left different on one source. `mode = "aligned"` means one version must be
+available and old enough at every declared source; `mode = "single"` resolves
+one source independently. The same structure handles Python, npm, Go, OCI,
+and future ecosystems without hard-coding PWMCP names into CMRU.
+
+The alternatives were considered as follows:
+
+| Shape | Benefit | Cost | Decision |
+| --- | --- | --- | --- |
+| Flat coordinates plus `alignment_group` | Small parser and easy programmatic input | Repeated group names, typo risk, weak human visibility | Reject |
+| One table per target with source subtables | Relationship is structural, readable, supports aligned and single-source targets | Requires a small target/source schema | **Recommend** |
+| One table per ecosystem only | Fits the original FEAT-03 sketch | Cross-ecosystem alignment becomes an extra side table or field | Reject for aligned targets |
+| Consumer-owned resolver scripts | Minimal CMRU implementation | Every project reimplements age filtering, provenance, and alignment | Reject |
+
+## Consumer-facing generation model
+
+CMRU should minimize project-specific code. `cmru versions init` should offer
+project-type templates and inspect known manifests where a fact can be derived:
+
+- Python: read `pyproject.toml` or `requirements.in`, resolve through the
+  Python engine, and create the committed dated constraints artifact plus the
+  stable `constraints.txt` pointer described by FEAT-03;
+- npm: read `package.json`, generate or update the lockfile, and use exact
+  managed versions or native `overrides` where requested;
+- Go: read `go.mod` and write the native module results;
+- OCI/template consumers: render declared target values into supported TOML,
+  JSON, HCL, and Jinja-backed output templates.
+
+A Python project should not need to write its own resolver. It should be able
+to run `cmru versions init`, review the generated inputs, and then use
+`cmru versions refresh`. CMRU creates the version files the project consumes;
+the project keeps its semantic dependency declarations and gates consume the
+committed generated artifact.
+
+For PWMCP, CMRU would generate the Playwright npm/PyPI/image values and the
+independent MCP package values into the declared templates. PWMCP’s remaining
+custom code would validate browser/protocol compatibility and live endpoints.
+
 ## Remaining decisions
 
-The product decisions are now settled: central default policy, explicit
+The product decisions are settled: central default policy, explicit
 project/image overrides, stable releases only, explicit pins/holds, synchronized
 Playwright sources, `/mcp` as the only supported transport, and BasicAuth for
-external access. The remaining design work is limited to the generic CMRU
-schema: the exact coordinate/output mapping shape, whether a per-image policy
-override means a stricter age window or only an explicit pin/hold, and how a
-managed transitive npm coordinate is represented (`dependencies` versus
-`overrides`).
+external access. The implementation questions are now bounded to:
 
-The existing CMRU FEAT-03 backlog is the version-policy backlog. PWMCP has no
-separate backlog file; the bearer-token feature belongs in the existing
-`tls-edge/KNOWN_ISSUES.md` roadmap when it is carved, with PWMCP retaining only
-the consumer-side security note.
+1. whether the final CMRU spelling is `versions.targets` or another equivalent
+   named-target table;
+2. whether a per-image override may only make the age window stricter, with a
+   newer version requiring an explicit pin/hold;
+3. the exact native output templates for Python constraints, npm lockfiles, and
+   Jinja/HCL projections.
+
+For point 2, the recommended behavior is:
+
+```toml
+# Repository default
+[versions]
+age_window_days = 14
+
+# A target may be stricter
+[versions.targets."pwmcp.playwright".policy]
+age_window_days = 21
+
+# A known urgent fix may bypass the window, but must explain and expire
+[versions.targets."pwmcp.playwright".pin]
+version = "1.63.0"
+reason = "Security fix required before the normal vetting window"
+expires = "2026-10-01"
+```
+
+A target setting `age_window_days = 7` would be refused because it weakens the
+repository policy. A temporary hold would keep an eligible version out of the
+selection with the same required reason and expiry fields.
+
+The version-policy backlog remains CMRU FEAT-03. The bearer-token feature is
+owned by [tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md](../../../tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md)
+FEAT-01; PWMCP only documents its future use.
 
 ## Previous review decision
 
