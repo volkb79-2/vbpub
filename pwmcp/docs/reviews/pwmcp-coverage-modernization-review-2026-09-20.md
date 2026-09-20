@@ -113,6 +113,13 @@ resolver names the missing input. The coverage tests exercise the current
 success and fallback behavior so the present implementation remains measured;
 the follow-up can then change the contract deliberately rather than silently.
 
+The vendored Lighthouse MCP package has a related reproducibility issue:
+`@modelcontextprotocol/sdk` and `chrome-launcher` use caret ranges and the
+Dockerfile runs `npm install --production` without a committed lockfile. A
+modernization pass should either commit and install the lockfile or make the
+resolved versions explicit, then include the resulting MCP protocol behavior
+in the container acceptance lane.
+
 ## Review decision
 
 Proceed with coverage improvements in this worktree. Keep upstream package
