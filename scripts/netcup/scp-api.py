@@ -33,7 +33,7 @@ Usage:
                   [--state STATE] [--limit N] [--offset N]
   scp-api.py metrics <server_id> {cpu,disk,network,network-packet} [--hours N]
   scp-api.py guest-agent-status <server_id>
-  scp-api.py user-isos [upload FILE] [--name KEY] [--multipart]
+  scp-api.py user-iso [upload FILE] [--name KEY] [--multipart]
   scp-api.py firewall-policies [create|put] [policy_id] [--policy-json JSON | --policy-file PATH]
   scp-api.py firewall <server_id> [mac] [get|set] [options]
   scp-api.py power {on,off,cycle,reset} <server_id> [--yes]
@@ -52,8 +52,8 @@ Examples:
   scp-api.py tasks --state RUNNING --server-id 799611
   scp-api.py metrics 799611 cpu --hours 24
   scp-api.py guest-agent-status 799611
-  scp-api.py user-isos
-  scp-api.py user-isos upload ./custom.iso --yes
+  scp-api.py user-iso
+  scp-api.py user-iso upload ./custom.iso --yes
   scp-api.py firewall-policies
   scp-api.py firewall-policies create --policy-file firewall-policy.json --yes
   scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
@@ -64,11 +64,11 @@ Verb groups:
   authentication: login
   exploration: servers, server-details, imageflavours, iso-bootable,
                 iso-attached, disks, rescuesystem, snapshots, tasks,
-                metrics, guest-agent-status, user-isos, firewall-policies,
+                metrics, guest-agent-status, user-iso, firewall-policies,
                 firewall get
   modification: attach-iso, iso-attached <server_id> detach,
                rescuesystem <server_id> deactivate, snapshots <server_id>
-               create, tasks <uuid> cancel, user-isos upload,
+               create, tasks <uuid> cancel, user-iso upload,
                firewall-policies create/put, firewall <server_id> [mac] set,
                power {on,off,cycle,reset}
 
@@ -895,7 +895,7 @@ def _user_iso_key(args, path: Path) -> str:
 
 def _user_iso_file(args) -> tuple[Path, int, str]:
     if args.file is None:
-        raise ValueError("user-isos upload requires a local FILE")
+        raise ValueError("user-iso upload requires a local FILE")
     path = Path(args.file)
     try:
         if not path.is_file():
@@ -908,7 +908,7 @@ def _user_iso_file(args) -> tuple[Path, int, str]:
     return path, size, _user_iso_key(args, path)
 
 
-def cmd_user_isos(client: NetcupSCPClient, args, pal: _Palette) -> None:
+def cmd_user_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "upload":
         path, size, key = _user_iso_file(args)
         if not confirm(f"Upload {path} as user ISO {key!r} ({size} bytes)?", args.yes, pal):
@@ -963,7 +963,7 @@ def cmd_user_isos(client: NetcupSCPClient, args, pal: _Palette) -> None:
             or getattr(args, "multipart", False)
             or getattr(args, "part_size_mib", None) is not None
             or getattr(args, "yes", False)):
-        print("ERROR: user-isos upload options require the explicit upload action", file=sys.stderr)
+        print("ERROR: user-iso upload options require the explicit upload action", file=sys.stderr)
         raise SystemExit(2)
     user_id = _scp_user_id(client)
     result = _response_rows(
@@ -1125,11 +1125,13 @@ def parse_args():
         epilog=__doc__,
         add_help=False,
     )
-    parser.add_argument("--help", action="help", help="show this help message and exit")
-    parser.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
-    parser.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
+    help_options = parser.add_argument_group("help")
+    help_options.add_argument("--help", action="help", help="show this help message and exit")
+    output_options = parser.add_argument_group("output options")
+    output_options.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
+    output_options.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
 
-    sub = parser.add_subparsers(dest="command", required=True, metavar="VERB")
+    sub = parser.add_subparsers(dest="command", required=True, title="verbs")
 
     def add_subcommand(name: str, help_text: str, description: str = ""):
         command_parser = sub.add_parser(
@@ -1138,15 +1140,17 @@ def parse_args():
             formatter_class=argparse.RawDescriptionHelpFormatter,
             add_help=False,
         )
-        command_parser.add_argument("--help", action="help", help="show this help message and exit")
+        help_options = command_parser.add_argument_group("help")
+        help_options.add_argument("--help", action="help", help="show this help message and exit")
         # Keep the documented `command --json` spelling working as well as
         # the global `--json command` spelling. SUPPRESS avoids an omitted
         # subcommand option overwriting a global one.
-        command_parser.add_argument(
+        output_options = command_parser.add_argument_group("output options")
+        output_options.add_argument(
             "--json", action="store_true", default=argparse.SUPPRESS,
             help="print raw JSON instead of a formatted table/summary",
         )
-        command_parser.add_argument(
+        output_options.add_argument(
             "--no-color", action="store_true", default=argparse.SUPPRESS,
             help="disable ANSI color even on a TTY",
         )
@@ -1162,24 +1166,28 @@ def parse_args():
             help=help_text,
         )
 
+    def add_confirmation(command_parser, help_text="skip the confirmation prompt"):
+        confirmation = command_parser.add_argument_group("confirmation")
+        confirmation.add_argument("--yes", action="store_true", help=help_text)
+
     add_subcommand(
         "login",
         "OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)",
         "Obtain the long-lived refresh token through the browser device-code flow.\n\n"
-        "Example:\n  ./scp-api.py login",
+        "Examples:\n  ./scp-api.py login",
     )
 
     add_subcommand(
         "servers",
         "list all known servers",
-        "List the account's server inventory.\n\nExample:\n  ./scp-api.py servers",
+        "List the account's server inventory.\n\nExamples:\n  ./scp-api.py servers",
     )
     p = add_subcommand(
         "server-details",
         "show detailed information for one server",
-        "Show the complete API record for one server.\n\nExample:\n  ./scp-api.py server-details 799611",
+        "Show the complete API record for one server.\n\nExamples:\n  ./scp-api.py server-details 799611",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
     for name, help_text, description in [
         (
@@ -1187,55 +1195,73 @@ def parse_args():
             "list reinstallable OS/image flavours (all servers unless an ID is given)",
             "An image flavour is a server-compatible reinstallable OS/image variant, "
             "for example a Debian 13 UEFI amd64 image. It is not a VM template.\n\n"
-            "Example:\n  ./scp-api.py imageflavours --filter debian",
+            "Examples:\n  ./scp-api.py imageflavours --filter debian",
         ),
         (
             "iso-bootable",
             "list available ISO images (all servers unless an ID is given)",
             "ISO images are bootable installer/recovery media exposed by SCP. "
             "Use --filter debian or --filter rescue to narrow the names and descriptions.\n\n"
-            "Example:\n  ./scp-api.py iso-bootable --filter rescue",
+            "Examples:\n  ./scp-api.py iso-bootable --filter rescue",
         ),
     ]:
         p = add_subcommand(name, help_text, description)
-        p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
-        p.add_argument("--filter", type=_nonempty_text, metavar="TEXT", help="case-insensitive text filter across returned fields")
+        p.add_argument(
+            "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+            help="Netcup SCP server ID; omit to list choices across the account",
+        )
+        selection = p.add_argument_group("selection")
+        selection.add_argument("--filter", type=_nonempty_text, metavar="TEXT", help="case-insensitive text filter across returned fields")
 
     p = add_subcommand(
         "iso-attached",
         "show attached ISOs for all servers, or one server",
         "Show the ISO currently attached to each server; add the detach action to remove one.\n\n"
-        "Example:\n  ./scp-api.py iso-attached 799611",
+        "Examples:\n"
+        "  ./scp-api.py iso-attached 799611\n"
+        "  ./scp-api.py iso-attached 799611 detach --yes",
     )
-    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
+    p.add_argument(
+        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+        help="Netcup SCP server ID; omit to inspect every server",
+    )
     add_actions(p, ("detach",), "detach: remove the currently-attached ISO (safe/reversible)")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    add_confirmation(p)
 
     p = add_subcommand(
         "attach-iso",
         "attach a bootable or user ISO to one server",
         "Attach an ISO by ID from iso-bootable, or attach a user-uploaded ISO by name. "
         "This changes the server's attached media and always asks for confirmation.\n\n"
-        "Example:\n  ./scp-api.py attach-iso 799611 --iso-id 1234",
+        "Examples:\n"
+        "  ./scp-api.py attach-iso 799611 --iso-id 1234 --yes\n"
+        "  ./scp-api.py attach-iso 799611 --user-iso-name custom.iso "
+        "--change-boot-device-to-cdrom --yes",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
-    iso_source = p.add_mutually_exclusive_group(required=True)
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
+    iso_source = p.add_argument_group("ISO source").add_mutually_exclusive_group(required=True)
     iso_source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
     iso_source.add_argument("--user-iso-name", type=_nonempty_text, metavar="NAME", help="name of an ISO uploaded to the account")
-    p.add_argument(
+    boot_options = p.add_argument_group("boot options")
+    boot_options.add_argument(
         "--change-boot-device-to-cdrom",
         action="store_true",
         help="also make the virtual CD-ROM the next boot device",
     )
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    add_confirmation(p)
 
     p = add_subcommand(
         "disks",
         "list disks for all servers, or one server",
         "List disk capacity/allocation and storage drivers.\n\n"
-        "Example:\n  ./scp-api.py disks 799611",
+        "Examples:\n"
+        "  ./scp-api.py disks 799611\n"
+        "  ./scp-api.py disks 799611 supported-drivers",
     )
-    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
+    p.add_argument(
+        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+        help="Netcup SCP server ID; omit to list disks for every server",
+    )
     add_actions(p, ("supported-drivers",), "supported-drivers: list storage drivers for one server")
 
     p = add_subcommand(
@@ -1243,83 +1269,112 @@ def parse_args():
         "show rescue-system status for all servers, or one server",
         "Show whether Netcup's provider-managed emergency rescue environment is active; "
         "this is separate from an arbitrary attached ISO. Add deactivate to turn it off.\n\n"
-        "Example:\n  ./scp-api.py rescuesystem 799611",
+        "Examples:\n"
+        "  ./scp-api.py rescuesystem 799611\n"
+        "  ./scp-api.py rescuesystem 799611 deactivate --yes",
     )
-    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
+    p.add_argument(
+        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+        help="Netcup SCP server ID; omit to inspect every server",
+    )
     add_actions(p, ("deactivate",), "deactivate: turn off the rescue system (safe/reversible)")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    add_confirmation(p)
 
     p = add_subcommand(
         "snapshots",
         "list snapshots for all servers, or act on one server",
         "List snapshots, or use create/dryrun for one server.\n\n"
-        "Example:\n  ./scp-api.py snapshots 799611",
+        "Examples:\n"
+        "  ./scp-api.py snapshots 799611\n"
+        "  ./scp-api.py snapshots 799611 dryrun\n"
+        "  ./scp-api.py snapshots 799611 create --name before-upgrade --yes",
     )
-    p.add_argument("server_id", nargs="?", type=_positive_int, default=None, metavar="server_id")
+    p.add_argument(
+        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+        help="Netcup SCP server ID; omit to list snapshots for every server",
+    )
     add_actions(
         p,
         ("create", "dryrun"),
         "create: create a snapshot; dryrun: check whether snapshot creation is possible",
     )
-    p.add_argument("--name", default=None, help="optional name for the create action")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    snapshot_options = p.add_argument_group("snapshot options")
+    snapshot_options.add_argument("--name", default=None, help="optional name for the create action")
+    add_confirmation(p)
 
     p = add_subcommand(
         "tasks",
         "list tasks, show one, or cancel one",
         "List tasks, show one by UUID, or use cancel with a UUID.\n\n"
-        "Example:\n  ./scp-api.py tasks",
+        "Examples:\n"
+        "  ./scp-api.py tasks --state RUNNING\n"
+        "  ./scp-api.py tasks TASK_UUID\n"
+        "  ./scp-api.py tasks TASK_UUID cancel --yes",
     )
-    p.add_argument("uuid", nargs="?", type=_nonempty_text, default=None)
-    add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
     p.add_argument(
+        "uuid", nargs="?", type=_nonempty_text, default=None, metavar="task_uuid",
+        help="task UUID; omit to list tasks",
+    )
+    add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
+    task_filters = p.add_argument_group("list filters")
+    task_filters.add_argument(
         "--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT",
         help="list tasks whose name, UUID, or server fields contain TEXT (API q filter)",
     )
-    p.add_argument("--server-id", dest="server_filter_id", type=_positive_int, metavar="ID", help="list tasks for one server")
-    p.add_argument(
+    task_filters.add_argument("--server-id", dest="server_filter_id", type=_positive_int, metavar="ID", help="list tasks for one server")
+    task_filters.add_argument(
         "--state",
         choices=_TASK_STATES,
         help="list tasks in one state (ROLLBACK is not supported by the API filter)",
     )
-    p.add_argument("--limit", type=_nonnegative_int, help="maximum number of tasks to return")
-    p.add_argument("--offset", type=_nonnegative_int, help="number of matching tasks to skip")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    task_filters.add_argument("--limit", type=_nonnegative_int, help="maximum number of tasks to return")
+    task_filters.add_argument("--offset", type=_nonnegative_int, help="number of matching tasks to skip")
+    add_confirmation(p)
 
     p = add_subcommand(
         "metrics",
         "show CPU, disk, or network metrics for one server",
         "Return timestamped SCP metrics. The API's hours value is a lookback window, not a sample interval.\n\n"
-        "Example:\n  ./scp-api.py metrics 799611 cpu --hours 24",
+        "Examples:\n  ./scp-api.py metrics 799611 cpu --hours 24",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
-    p.add_argument("metric", choices=tuple(_METRIC_ENDPOINTS), metavar="{cpu,disk,network,network-packet}")
-    p.add_argument("--hours", type=_hours, help="look back this many hours (1-1440; API default if omitted)")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
+    p.add_argument(
+        "metric", choices=tuple(_METRIC_ENDPOINTS), metavar="{cpu,disk,network,network-packet}",
+        help="metric series to return",
+    )
+    metrics_options = p.add_argument_group("metric options")
+    metrics_options.add_argument("--hours", type=_hours, help="look back this many hours (1-1440; API default if omitted)")
 
     p = add_subcommand(
         "guest-agent-status",
         "show the QEMU guest-agent status for one server",
         "Read whether the guest agent is available; this describes agent reachability, not SSH or bootstrap state.\n\n"
-        "Example:\n  ./scp-api.py guest-agent-status 799611",
+        "Examples:\n  ./scp-api.py guest-agent-status 799611",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
     p = add_subcommand(
-        "user-isos",
+        "user-iso",
         "list account user ISOs or upload one",
         "List account-level user ISO objects, or upload a local ISO through SCP's "
         "presigned single-part or multipart object-storage flow. The upload action "
         "does not attach or boot the ISO; use attach-iso and power cycle afterward.\n\n"
         "Examples:\n"
-        "  ./scp-api.py user-isos\n"
-        "  ./scp-api.py user-isos upload ./custom.iso --yes",
+        "  ./scp-api.py user-iso\n"
+        "  ./scp-api.py user-iso upload ./custom.iso --name custom.iso --yes\n"
+        "  ./scp-api.py attach-iso 799611 --user-iso-name custom.iso --yes\n"
+        "  ./scp-api.py power cycle 799611 --yes",
     )
     add_actions(p, ("upload",), "upload: upload one local ISO (confirmed)")
-    p.add_argument("file", nargs="?", metavar="FILE")
-    p.add_argument("--name", type=_nonempty_text, metavar="KEY", help="object name; defaults to the local filename")
-    p.add_argument("--multipart", action="store_true", help="use multipart upload for large ISOs")
-    p.add_argument("--part-size-mib", type=_part_size_mib, default=None, metavar="N", help="multipart part size (default: 64; minimum: 5)")
-    p.add_argument("--yes", action="store_true", help="skip the upload confirmation prompt")
+    p.add_argument(
+        "file", nargs="?", metavar="FILE",
+        help="local ISO path; required with upload, omitted when listing",
+    )
+    upload_options = p.add_argument_group("upload options")
+    upload_options.add_argument("--name", type=_nonempty_text, metavar="KEY", help="object name; defaults to the local filename")
+    upload_options.add_argument("--multipart", action="store_true", help="use multipart upload for large ISOs")
+    upload_options.add_argument("--part-size-mib", type=_part_size_mib, default=None, metavar="N", help="multipart part size (default: 64; minimum: 5)")
+    add_confirmation(p, "skip the upload confirmation prompt")
 
     p = add_subcommand(
         "firewall-policies",
@@ -1329,17 +1384,22 @@ def parse_args():
         "Examples:\n"
         "  ./scp-api.py firewall-policies\n"
         "  ./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}'\n"
-        "  ./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json",
+        "  ./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json\n"
+        "  ./scp-api.py firewall 799611 set --user-policy-id 12 --active --yes",
     )
     add_actions(p, ("create", "put"), "create: POST a new policy; put: PUT an existing policy definition")
-    p.add_argument("policy_id", nargs="?", type=_positive_int, metavar="policy_id")
-    policy_input = p.add_mutually_exclusive_group()
+    p.add_argument(
+        "policy_id", nargs="?", type=_positive_int, metavar="policy_id",
+        help="existing policy ID; required with put, unused for list/create",
+    )
+    policy_input = p.add_argument_group("policy input for create/put").add_mutually_exclusive_group()
     policy_input.add_argument("--policy-json", metavar="JSON", help="validated FirewallPolicySave JSON object")
     policy_input.add_argument("--policy-file", metavar="PATH", help="file containing validated FirewallPolicySave JSON")
-    p.add_argument("--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT", help="search policy name/description")
-    p.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
-    p.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
-    p.add_argument("--yes", action="store_true", help="skip the create/PUT confirmation prompt")
+    policy_filters = p.add_argument_group("list filters")
+    policy_filters.add_argument("--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT", help="search policy name/description")
+    policy_filters.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
+    policy_filters.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
+    add_confirmation(p, "skip the create/PUT confirmation prompt")
 
     p = add_subcommand(
         "firewall",
@@ -1347,40 +1407,46 @@ def parse_args():
         "The get action reads the firewall attached to an interface MAC. Omit MAC only when the server has exactly "
         "one interface; the CLI resolves that MAC from live server details. The set action replaces its copied/user "
         "policy assignments and requires an explicit --active or --inactive choice; it does not create or edit policies.\n\n"
-        "Example:\n  ./scp-api.py firewall 799611 get",
+        "Examples:\n"
+        "  ./scp-api.py firewall 799611 get\n"
+        "  ./scp-api.py firewall 799611 set --user-policy-id 12 --active --yes",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
     p.add_argument("mac", nargs="?", metavar="mac", help="interface MAC; omitted only when the server has exactly one interface")
     add_actions(p, ("get", "set"), "get: read assignment; set: replace assignment (confirmed)")
-    p.add_argument(
+    firewall_read = p.add_argument_group("get options")
+    firewall_read.add_argument(
         "--consistency-check",
         action="store_true",
         help="with get, ask SCP to compare configured and applied firewall state",
     )
-    p.add_argument(
+    firewall_set = p.add_argument_group("set options")
+    firewall_set.add_argument(
         "--copied-policy-id", dest="copied_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
         help="repeat for copied policy IDs",
     )
-    p.add_argument(
+    firewall_set.add_argument(
         "--user-policy-id", dest="user_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
         help="repeat for user policy IDs",
     )
-    active = p.add_mutually_exclusive_group()
+    active = firewall_set.add_mutually_exclusive_group()
     active.add_argument("--active", dest="active", action="store_true", help="enable the firewall in the replacement")
     active.add_argument("--inactive", dest="active", action="store_false", help="disable the firewall in the replacement")
     p.set_defaults(active=None)
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt for set")
+    add_confirmation(p, "skip the confirmation prompt for set")
 
     p = add_subcommand(
         "power",
         "power on, off, cycle, or reset one server",
         "Control server power state. `off` uses Netcup's POWEROFF option; `cycle` and `reset` use Netcup's "
         "state options. Every action is confirmed unless --yes is supplied.\n\n"
-        "Example:\n  ./scp-api.py power cycle 799611",
+        "Examples:\n"
+        "  ./scp-api.py power cycle 799611 --yes\n"
+        "  ./scp-api.py power on 799611 --yes",
     )
     add_actions(p, ("on", "off", "cycle", "reset"), "on/off/cycle/reset: selected power operation")
-    p.add_argument("server_id", type=_positive_int, metavar="server_id")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
+    add_confirmation(p)
 
     # With no command the most useful response is the top-level usage, not
     # argparse's implementation detail about a required subparser. Print the
@@ -1418,7 +1484,7 @@ def main() -> int:
             _load_firewall_policy(args)
             if args.action == "put" and args.policy_id is None:
                 raise ValueError("firewall-policies put requires a policy_id")
-        elif args.command == "user-isos" and args.action == "upload":
+        elif args.command == "user-iso" and args.action == "upload":
             _user_iso_file(args)
     except (OSError, ValueError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -1444,7 +1510,7 @@ def main() -> int:
         "tasks": cmd_tasks,
         "metrics": cmd_metrics,
         "guest-agent-status": cmd_guest_agent_status,
-        "user-isos": cmd_user_isos,
+        "user-iso": cmd_user_iso,
         "firewall-policies": cmd_firewall_policies,
         "firewall": cmd_firewall,
         "power": cmd_power,

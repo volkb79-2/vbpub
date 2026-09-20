@@ -80,6 +80,14 @@ they are one API operation family: a PATCH of server state with an optional
 `stateOption`. The sub-action names make the destructive distinction visible
 in help while avoiding four unrelated top-level commands.
 
+The account-level ISO collection uses the singular `user-iso` verb even though
+the default action lists multiple objects; its explicit `upload` action makes
+the state-changing path visible in both the command and help output. Help keeps
+actions in their own group, separates list/write/confirmation options, and
+shows an executable example for each action family. The public spelling is
+`--help` (there is no short `-h` alias), so generated usage cannot hide the
+documented interface behind argparse's shorthand.
+
 ## Test boundary
 
 The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap

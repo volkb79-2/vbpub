@@ -422,13 +422,13 @@ def test_firewall_policy_validation_rejects_incomplete_values(explore_mod, docum
         explore_mod._validate_firewall_policy(document)
 
 
-def test_cmd_user_isos_lists_account_objects(explore_mod, fake_client, capsys):
+def test_cmd_user_iso_lists_account_objects(explore_mod, fake_client, capsys):
     client = fake_client(
         get_responses=[[{"key": "recovery.iso", "sizeInB": 123, "lastModified": "now"}]],
         user_info={"id": 99},
     )
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_user_isos(client, _ns(action=None, file=None, name=None, multipart=False), pal)
+    explore_mod.cmd_user_iso(client, _ns(action=None, file=None, name=None, multipart=False), pal)
     assert client.calls == [
         ("get_user_info",),
         ("get", "/api/v1/users/99/isos", None),
@@ -436,7 +436,7 @@ def test_cmd_user_isos_lists_account_objects(explore_mod, fake_client, capsys):
     assert "recovery.iso" in capsys.readouterr().out
 
 
-def test_cmd_user_isos_uploads_single_part_and_does_not_expose_url(explore_mod, fake_client, tmp_path, capsys):
+def test_cmd_user_iso_uploads_single_part_and_does_not_expose_url(explore_mod, fake_client, tmp_path, capsys):
     iso = tmp_path / "recovery.iso"
     iso.write_bytes(b"iso-bytes")
     client = fake_client(
@@ -445,7 +445,7 @@ def test_cmd_user_isos_uploads_single_part_and_does_not_expose_url(explore_mod, 
         user_info={"id": 99},
     )
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_user_isos(
+    explore_mod.cmd_user_iso(
         client,
         _ns(
             action="upload", file=str(iso), name=None, multipart=False,
@@ -463,7 +463,7 @@ def test_cmd_user_isos_uploads_single_part_and_does_not_expose_url(explore_mod, 
     assert "presigned" not in out.lower()
 
 
-def test_cmd_user_isos_uploads_multipart_and_completes_parts(explore_mod, fake_client, tmp_path):
+def test_cmd_user_iso_uploads_multipart_and_completes_parts(explore_mod, fake_client, tmp_path):
     iso = tmp_path / "large.iso"
     iso.write_bytes(b"x" * (5 * 1024 * 1024 + 10))
     client = fake_client(
@@ -476,7 +476,7 @@ def test_cmd_user_isos_uploads_multipart_and_completes_parts(explore_mod, fake_c
         user_info={"id": 99},
     )
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_user_isos(
+    explore_mod.cmd_user_iso(
         client,
         _ns(
             action="upload", file=str(iso), name="large.iso", multipart=True,
@@ -852,10 +852,10 @@ def test_parse_args_user_iso_upload(explore_mod, monkeypatch):
     monkeypatch.setattr(
         explore_mod.sys,
         "argv",
-        ["scp-api.py", "user-isos", "upload", "custom.iso", "--multipart", "--part-size-mib", "8"],
+        ["scp-api.py", "user-iso", "upload", "custom.iso", "--multipart", "--part-size-mib", "8"],
     )
     args = explore_mod.parse_args()
-    assert args.command == "user-isos"
+    assert args.command == "user-iso"
     assert args.action == "upload"
     assert args.file == "custom.iso"
     assert args.multipart is True
@@ -897,3 +897,18 @@ def test_subcommand_help_separates_actions_from_options(explore_mod, monkeypatch
     assert "{create,dryrun}" in out
     assert "--create" not in out
     assert "--yes" in out
+
+
+def test_user_iso_help_is_singular_and_groups_upload_options(explore_mod, monkeypatch, capsys):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "user-iso", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.parse_args()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "scp-api.py user-iso upload" in out
+    assert "user-isos" not in out
+    assert "actions:" in out
+    assert "upload options:" in out
+    assert "confirmation:" in out
+    assert "--multipart" in out
+    assert "attach-iso" in out

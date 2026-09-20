@@ -90,7 +90,7 @@ bootable installer or recovery media. Useful first queries are:
 ./scp-api.py metrics 799611 cpu --hours 24
 ./scp-api.py guest-agent-status 799611
 ./scp-api.py firewall-policies
-./scp-api.py user-isos
+./scp-api.py user-iso
 ./scp-api.py firewall 799611 get
 ./scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
 ./scp-api.py power off 799611
@@ -183,8 +183,8 @@ presigned object-storage URL. The CLI never sends the SCP bearer token to that
 URL:
 
 ```bash
-./scp-api.py user-isos
-./scp-api.py user-isos upload ./debian-custom-recovery.iso --yes
+./scp-api.py user-iso
+./scp-api.py user-iso upload ./debian-custom-recovery.iso --yes
 ```
 
 For a large image, use multipart upload. The CLI obtains one presigned URL
@@ -192,7 +192,7 @@ per part, checks every returned ETag, and completes the upload only after all
 parts were uploaded:
 
 ```bash
-./scp-api.py user-isos upload ./debian-custom-recovery.iso \
+./scp-api.py user-iso upload ./debian-custom-recovery.iso \
   --name debian-custom-recovery.iso --multipart --part-size-mib 64 --yes
 ```
 
@@ -211,7 +211,7 @@ export ISO_KEY=debian-custom-recovery.iso
 ```
 
 For a large image, the API prepare response supplies an
-`uploadId`; `user-isos upload --multipart` performs that flow. The API
+`uploadId`; `user-iso upload --multipart` performs that flow. The API
 documentation in `netcup-scp-openapi.json` remains authoritative for the
 presigned-URL response. The boot-device option requests CD-ROM as the next
 boot device.

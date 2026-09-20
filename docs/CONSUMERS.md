@@ -107,7 +107,7 @@ python3 scp-api.py tasks --state RUNNING --server-id 799611
 python3 scp-api.py metrics 799611 cpu --hours 24
 python3 scp-api.py guest-agent-status 799611
 python3 scp-api.py firewall-policies
-python3 scp-api.py user-isos
+python3 scp-api.py user-iso
 python3 scp-api.py firewall 799611 get
 python3 scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
 python3 scp-api.py power off 799611
@@ -167,7 +167,7 @@ single-part upload is:
 
 ```bash
 ISO_KEY=debian-custom-recovery.iso
-python3 scp-api.py user-isos upload ./debian-custom-recovery.iso --yes
+python3 scp-api.py user-iso upload ./debian-custom-recovery.iso --yes
 
 # Keep the returned attach-task UUID and wait for it to be FINISHED.
 python3 scp-api.py attach-iso 799611 --user-iso-name "$ISO_KEY" \
@@ -179,7 +179,7 @@ python3 scp-api.py power cycle 799611
 For large images use the API's multipart flow: prepare with `multipart=true`,
 get one presigned part URL per part, upload each part and retain its `ETag`,
 then complete the upload with the ordered `ETag`/`partNumber` list. The CLI
-wraps this as `python3 scp-api.py user-isos upload FILE --multipart`. The
+wraps this as `python3 scp-api.py user-iso upload FILE --multipart`. The
 upload must finish before attaching; `--change-boot-device-to-cdrom` makes the
 attached ISO the next boot medium.
 
