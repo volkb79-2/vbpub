@@ -62,7 +62,9 @@ The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
 closed as a project release; the retained candidate worktree remains available
 until the resumed estate transaction and its artifacts are verified. The final
 estate release still has to promote the local integration tip and verify the
-new first-party artifacts.
+new first-party artifacts. The integration tip also carries `a4420c42`, which
+keeps Docker pull failure output bounded but preserves the daemon's diagnostic
+context for future release retries.
 
 ## Phase 1 — review the outstanding CLI commits
 
