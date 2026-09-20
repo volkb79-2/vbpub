@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-686f3d77c283] - 2026-09-20
+<!-- cmru: generated -->
+<!-- cmru: source-end=686f3d77c283613d81bf3817097d804b1985bb22 -->
+
+### Added
+- feat: add estate cli version compatibility (05f373a4)
+
+### Fixed
+- fix(mdt): stage CLI parser with AI installer (90a37794)
+- fix(mdt): preserve Docker pull diagnostics (a4420c42)
+
+### Changed
+- cli: universalize vbpub parser diagnostics (aa0e69fa)
+- chore: land run-gate root and dev-gates migration (41c1cafb)
+
+### Documentation
+- docs(mdt): explain VM and Assay test boundaries (5885cd03)
+- docs: record cmru and isolated gate lane plans (6091cfef)
+
+### Testing
+- test(mdt): add governed VM and assay lanes (79a0d5ee)
+- test(mdt): make assay source imports explicit (46744b07)
+
 ## [source-b0210c0e25a2] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=b0210c0e25a2dab723abcd50eb456bc1cc2d9abc -->
