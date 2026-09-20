@@ -51,18 +51,25 @@ Completed for the CMRU project on 2026-09-19 UTC from promoted commit
   GID 995 while the mounted host API socket is GID 994; Buildx concealed this
   because it uses the separate BuildKit socket. A same-image pull probe passed
   with supplementary GID 994; and
-- retry r16 is now running under `dev-gates.slice` with direct Git askpass,
-  the same retained candidate branch, a Docker API group derived from the
-  mounted socket, and a job-owned exit marker in the shared temporary
-  directory. The controller also mounts the existing host `/tmp` bind, which
-  is how the temporary governed BuildKit relay is visible inside this older
-  cockpit; it does not mutate the cockpit's mount namespace.
+- retry r16 completed with Docker API access fixed and reached the MDT BuildKit
+  image build, but exited 1 before promotion. The precise failure was
+  `ModuleNotFoundError: No module named 'mdt_cli'` from
+  `/tmp/install_ai_cli_tools.py`: the Dockerfile copied that installer to
+  `/tmp` without copying its sibling `scripts/mdt_cli.py`. No project was
+  promoted by r16. Integration commit `90a37794` copies the parser beside the
+  installer and adds a release-flow regression assertion; the corrected MDT
+  smoke lane is running in `tester-unified` before a fresh stable-source
+  release transaction is started. The controller used direct Git askpass, a
+  Docker API group derived from the mounted socket, and the existing host
+  `/tmp` bind for the governed BuildKit relay; it did not mutate the cockpit's
+  mount namespace.
 
 The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
-closed as a project release; the retained candidate worktree remains available
-until the resumed estate transaction and its artifacts are verified. The final
-estate release still has to promote the local integration tip and verify the
-new first-party artifacts. The integration tip also carries `a4420c42`, which
+closed as a project release; the failed retained candidate remains available
+as an inspection record until the fresh transaction is verified and the old
+attempt is explicitly retired. The final estate release still has to promote
+the local integration tip and verify the new first-party artifacts. The
+integration tip also carries `a4420c42`, which
 keeps Docker pull failure output bounded but preserves the daemon's diagnostic
 context for future release retries.
 
