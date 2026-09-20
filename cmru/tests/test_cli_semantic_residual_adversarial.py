@@ -20,6 +20,12 @@ def test_build_refuses_uncommitted_snapshot_before_fetch_or_workspace(monkeypatc
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", build_step="build")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {"demo": ["demo/input.py"]})
@@ -33,6 +39,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", build_step="build")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
@@ -50,7 +57,7 @@ def test_build_success_runs_child_retains_outputs_and_reports_cleanup_command(mo
         cli.main(["build", "--config", str(tmp_path / "cmru.toml"), "demo"])
     assert exc.value.code == 0
     assert calls[0][1] == ["demo", "--config", "cmru.toml"]
-    assert calls[0][2] == {"verb": "build"}
+    assert calls[0][2] == {"verb": "build", "project_names": ["demo"]}
     assert calls[-1] == ("removed", workspace)
     assert "--delete-build-output build-1 --yes" in capsys.readouterr().out
 

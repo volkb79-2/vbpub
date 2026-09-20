@@ -11,6 +11,15 @@ RFC 2119 key words (MUST, SHOULD, MAY, etc.) are normative.
 cmru is one CLI over a monorepo of independently-versioned **projects**. Everything a user
 touches is named `cmru.*` so the association is unambiguous.
 
+**Root and Git-family scope.** CMRU discovers the nearest
+`cmru.orchestration.toml` as the CMRU root, even when that directory is above
+several independent Git repositories. Project selection is resolved from that
+root. Git snapshots, locks, branches and isolated workspaces are then selected
+per project from the project's own Git family; the orchestration directory is
+never treated as a Git repository merely because it contains the registry.
+Each project declares `[runtime].kind = "none"` or `"ciu"`; CMRU supplies the
+workspace context and does not infer or manage arbitrary Docker runtimes.
+
 ### Verbs, in the order you use them
 
 ```
@@ -59,23 +68,29 @@ bind-mount view. It MUST print the exact `--resume` or `--discard-build-worktree
 for a visible path; it MUST never guess a cleanup target.
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
-working tree. It acquires a repository-local exclusive lock, rejects local-only commits on
-local `main` that the remote snapshot would omit (and warns if local `main` is behind), and
+working tree. For each selected project it resolves that project's Git family and acquires
+its exclusive lock; the CMRU orchestration root itself is not used as a Git root. It rejects
+local-only commits on local `main` that the remote snapshot would omit (and warns if local
+`main` is behind), and
 rejects any uncommitted change (tracked or untracked) under a project's own path for every
 project in this run's scope (`<name>`, else every orchestrated project — the same
 `project_order`-derived set `release` itself iterates, not the possibly-different
 `orchestration.default_projects`) — skipped entirely for `--dry-run` (nothing is published, so
 there is nothing to protect). `--allow-uncommitted` overrides this second check only; there is
 no override for local-only commits. It then fetches `origin/main`, creates an ephemeral
-`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (KI-16; see S-CLI.5b) at that exact
+`cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (KI-16; see S-CLI.5b) at that exact
 remote commit, and re-execs there. All caller
 working-tree edits that survive the preflight (i.e. that don't touch a released project's path)
 are still ignored: they cannot enter the immutable remote snapshot regardless.
 
-**S-CLI.5a — Projects release one after another, not in a shared batch.** Inside the worktree,
-every changed project (`orchestration.project_order`, filtered to what actually changed) runs
-its own full cycle — prepare → gate → tag → build → publish → promote — to completion before
-the next project's cycle begins. The gate runs in the real gate environment before any tag or
+#### S-CLI.5a — Projects release one after another, not in a shared batch
+
+Inside each
+Git-family workspace, every changed project in that family (`orchestration.project_order`,
+filtered to what actually changed) runs its own full cycle — prepare → gate → tag → build →
+publish → promote — to completion before the next project's cycle begins. Independent Git
+families are dispatched as separate ordered transactions; their results are coordinated but
+cannot be one atomic Git commit. The gate runs in the real gate environment before any tag or
 public artifact. The public artifact is built from the exact gated candidate commit; only after
 that build/publish succeeds does cmru fast-forward `origin/main` from that same `HEAD`.
 A non-fast-forward remote update therefore fails closed after publication and never rewrites the
@@ -183,12 +198,12 @@ request `--abandon <path>|all-previous` after its logs and artifacts are no long
 
 The repository-root secret document is copied mode `0600`, never committed.
 
-**S-CLI.5b — Transaction branch/worktree naming (KI-16, ciu-aligned).** Every `cmru-release-*`
-and `cmru-build-*` transaction this tool creates is named:
+**S-CLI.5b — Transaction branch/worktree naming (KI-16, shared-library aligned).** Every
+`cmru-release-*` and `cmru-build-*` transaction this tool creates is named:
 
 ```
-branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
-directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
+branch:     cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
+directory:  .worktrees/cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
 ```
 
 The branch is a FLAT single token with no nested ref path, so the branch string and the
@@ -196,17 +211,14 @@ worktree directory basename are byte-for-byte identical — true 1:1 naming, mat
 `<prefix>-<YYYYMMDD_HHMMSS>-<feature>` scheme. `<purpose>` is `release` or `build`.
 `<YYYYMMDD_HHMMSS>` is UTC, for chronological sort, with `_` separating date from time so that
 boundary stays visually distinct from the `-` field separators. `<scope>` is the the selected target
-value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. `<uuid8>` is 8 hex
-characters from `uuid4()` and MUST NOT be removed or made deterministic: cleanup
-(`remove_workspace`, `abandon_workspace`) depends on a transaction being able to assume it
-exclusively owns the name it created, so the scheme MUST stay collision-free even for two runs
-on the same scope in the same second — this collision-freedom is why the name is NOT purely
-`<prefix>-<timestamp>-<feature>` like ciu's. The directory basename equals the branch (identity;
-never computed by `mkdtemp`-then-`rmdir`). `git worktree add` on its own is NOT sufficient here:
-it fails closed on a non-empty existing directory but silently ADOPTS an empty one, which would
-violate "this ONE transaction exclusively owns the name it created" if a uuid8 collision or a
-stale leftover ever left an empty directory in the way — the code MUST therefore refuse
-explicitly (any existing path, empty or not) before ever calling `git worktree add`.
+value when the run is scoped, sanitised to `[a-z0-9-]`, else `all`. The shared allocator derives
+a six-character lower-case base-36 identity and exposes it in the branch/worktree token,
+family record, and child environment; it does not append an unrelated UUID. CMRU supplies the
+allocator's explicit canonical allocation identity path while constructing that visible token,
+because hashing a final basename that already contains its own digest would be circular. The
+record persists and rechecks that identity input. If the identity is already claimed by a
+different path, allocation refuses and names both paths. The directory basename equals the
+branch; the allocator refuses any existing path, empty or not, before calling `git worktree add`.
 
 Discovery, resume, and cleanup recognise a transaction branch through predicates
 (`_is_release_branch`, `_is_build_branch`) that accept BOTH the flat `cmru-<purpose>-` names
@@ -435,6 +447,9 @@ owner_type = "user"                # required: user | org
 host     = "github"               # required: provider for releases
 registry = ["ghcr.io"]            # list: image registries to push to (S11)
 
+[runtime]
+kind = "none"                      # required: none | ciu
+
 [env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder@sha256:<digest>"       # required by wheel-build
 CMRU_TESTER_UNIFIED_IMAGE = "tester-unified@sha256:<digest>"     # required by tester-gate
@@ -519,6 +534,13 @@ label     = "Python 3.11 (glibc)"
 # NOTE: `[projects]`, `artifact`, `cwd`, project aliases, `[project.oci]`, and
 # cmru.build.toml are retired and rejected. There is no compatibility parser.
 ```
+
+`[runtime].kind` is a closed declaration. `none` means CMRU supplies the
+isolated workspace and invokes the project's declared steps without owning an
+external runtime lifecycle. `ciu` means the project step is responsible for
+invoking CIU from that prepared worktree and for its explicit up/health/cleanup
+sequence. CMRU does not inspect Compose files or guess ownership from arbitrary
+Docker commands; a missing or unknown kind is rejected before a runner starts.
 
 **S2.2a — Central repository facts.** An orchestration document contains one
 `[github]` and one `[targets]` table. Registered project documents omit those
@@ -705,7 +727,7 @@ and `--discard-evidence-on-release` are explicit independent opt-outs. A project
 `artifact_dirs` or no `evidence_paths` has nothing to retain for that half and is skipped
 without error — retention applies uniformly across every orchestrated project, not all of
 which build a local artifact or produce commit-bound evidence. `cmru build` MUST use an isolated
-`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
+`cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to
 `<project>/artifacts/<commit-date>_<full-commit>/`, write a `build.json` SHA-256
@@ -1386,6 +1408,38 @@ discipline as `cmru dependencies --write`'s generated comment block and `cmru
 standards --update`'s revision-marker edit). No verification path, and no
 release, ever calls this on its own; it is a deliberate, separate operator
 action, reviewed like any other source change before it is committed.
+
+---
+
+## S16 — Release-gate rigor (Assay-backed)
+
+CMRU's internal `assay.toml` declares the `cmru` lane with the complete
+`R0`, `R1`, `R2`, and `R3` ladder. The lane command is the full CMRU test
+suite and emits `coverage.json`; its judge requires 100% line and branch
+coverage, forbids excluded source, and compares changed source against
+`base = "main"`. R2 is native serial Python mutation with the declared
+operator set and per-candidate budget. R3 is an import-break canary against
+`src/cmru/config.py`.
+
+**S16.1 — Snapshot boundary.** R1-R3 run in
+`repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
+fixture paths listed in `cmru/assay.toml` omitted because their absolute link
+targets cannot be materialised safely. A new unsafe symlink is a gate error;
+the omission list is not a general exclusion mechanism.
+
+**S16.2 — Gate ownership and evidence.** The `assay` lane in
+`run-gate.toml` installs Assay from the selected vbpub worktree and invokes
+the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
+`.assay/verdict-cmru.json` and its progress stream is
+`.assay/progress-cmru.jsonl`, both outside the judged tree. The `gate` lane
+also runs CMRU's release-specific coverage, mutation, canary, and real-system
+enrollment checks; those are supplemental evidence, not a second definition
+of the shared workspace lifecycle or a substitute for the Assay ladder.
+
+**S16.3 — Admission boundary.** The canonical entrypoint is
+`./run-gate.py`; the tester-unified lane requires the estate-provided
+`$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
+loaded unit. A local devcontainer pytest result is not gate evidence.
 
 ---
 

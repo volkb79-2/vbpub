@@ -77,6 +77,7 @@ class ProjectConfig:
     evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
     github_token: str = ""              # root credential or explicit project-secret override
+    runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: tuple = ()
@@ -258,13 +259,44 @@ def run_project_step(
     # transaction worktree (and therefore these logs) unless the caller elected
     # to retain them after verified completion.
     stable_log_root = project_root / "logs" / "cmru"
-    execute_step(
-        step,
-        project_root,
-        stable_log_root,
-        extra_env=dict(project.env) if project.env else None,
-        build_metadata=project.build_metadata,
+    context_keys = (
+        "CMRU_WORKSPACE_ID", "CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT",
+        "CMRU_RELEASE_BRANCH", "CMRU_RELEASE_BASE",
     )
+    has_transaction_context = bool(
+        os.environ.get(transaction.CHILD_ENV)
+        and os.environ.get("CMRU_WORKSPACE_PATH")
+    )
+    ambient_context = {key: os.environ.get(key) for key in context_keys}
+    if not has_transaction_context:
+        # A direct caller may have sourced a sibling's shell exports. Those
+        # values are not a CMRU context and must not be handed to a project
+        # runner as if this invocation owned that workspace.
+        for key in context_keys:
+            os.environ.pop(key, None)
+    try:
+        execute_step(
+            step,
+            project_root,
+            stable_log_root,
+            extra_env={
+                **dict(project.env),
+                "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
+                **{
+                    key: os.environ[key]
+                    for key in context_keys
+                    if os.environ.get(key)
+                },
+            },
+            build_metadata=project.build_metadata,
+        )
+    finally:
+        if not has_transaction_context:
+            for key, value in ambient_context.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -407,17 +439,63 @@ def load_config(
     orchestration = forge.orchestration
     if orchestration is None:  # defensive: both strict loaders always supply one
         raise ValueError("cmru configuration has no project selection")
-    repo_root = forge.repo_root
+    orchestration_root = forge.repo_root
+    # A CMRU orchestration root may intentionally sit above the Git family it
+    # drives. In a transaction child, keep loading the authoritative central
+    # document, but remap each project document into the isolated source
+    # worktree before constructing executable commands.
+    child_workspace = os.environ.get("CMRU_WORKSPACE_PATH")
+    child_source_root = os.environ.get("CMRU_SOURCE_GIT_ROOT")
+    if os.environ.get(transaction.CHILD_ENV) and child_workspace and child_source_root:
+        execution_root = Path(child_workspace).expanduser().resolve()
+        source_git_root = Path(child_source_root).expanduser().resolve()
+    else:
+        execution_root = orchestration_root
+        source_git_root = orchestration_root
+    repo_root = execution_root
+    transaction_scope = os.environ.get("CMRU_TRANSACTION_PROJECTS")
+    if transaction_scope and os.environ.get(transaction.CHILD_ENV):
+        requested_names = [item for item in transaction_scope.split(",") if item]
+        if not requested_names or len(set(requested_names)) != len(requested_names):
+            raise ValueError("CMRU_TRANSACTION_PROJECTS must contain unique project names")
+        unknown = sorted(set(requested_names) - set(forge.projects))
+        if unknown:
+            raise ValueError(
+                "CMRU_TRANSACTION_PROJECTS names unknown project(s): " + ", ".join(unknown)
+            )
+        selected_project_names = [
+            name for name in orchestration.project_order if name in set(requested_names)
+        ]
+    else:
+        selected_project_names = list(forge.projects)
     projects: dict[str, ProjectConfig] = {}
-    for name, parsed in forge.projects.items():
-        project_config_path = orchestration.project_configs[name]
+    for name in selected_project_names:
+        parsed = forge.projects[name]
+        source_project_config_path = orchestration.project_configs[name]
+        try:
+            project_rel_to_source = source_project_config_path.parent.resolve().relative_to(
+                source_git_root
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{name}: project root {source_project_config_path.parent} is outside "
+                f"the selected Git root {source_git_root}"
+            ) from exc
+        project_config_path = (
+            execution_root / project_rel_to_source / PROJECT_CONFIG_FILENAME
+        ).resolve()
+        if not project_config_path.is_file():
+            raise ValueError(
+                f"{name}: transaction project config is missing from the isolated "
+                f"worktree: {project_config_path}"
+            )
         with project_config_path.open("rb") as handle:
             document = tomllib.load(handle)
         project_raw = document["project"]
         steps_raw = document["steps"]
         project_root = project_config_path.parent.resolve()
         try:
-            project_rel = project_root.relative_to(repo_root)
+            project_rel = project_root.relative_to(execution_root)
         except ValueError as exc:  # should already be prohibited by config validation
             raise ValueError(f"{name}: project root is outside orchestration root") from exc
         cwd = project_rel.as_posix() if project_rel.parts else "."
@@ -453,6 +531,7 @@ def load_config(
             build_step=parsed.build_step,
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
+            runtime_kind=parsed.runtime_kind,
         )
 
     cleanup_raw = forge.cleanup
@@ -474,8 +553,8 @@ def load_config(
     return (
         repo_root,
         projects,
-        orchestration.project_order,
-        orchestration.default_projects,
+        [name for name in orchestration.project_order if name in projects],
+        [name for name in orchestration.default_projects if name in projects],
         orchestration.default_steps,
         orchestration.execution_mode,
         {},
@@ -1684,6 +1763,24 @@ def _release_projects_sequentially(
 
 def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorkspace:
     """Recover transaction provenance in the re-execed child process."""
+    shared_path = os.environ.get("CMRU_WORKSPACE_PATH")
+    if shared_path:
+        try:
+            shared = transaction._shared_worktree()
+            path = Path(shared_path).resolve()
+            _top, common, _branch, _head = shared.discover_git_context(path)
+            for record in shared.list_workspaces(common):
+                if record.worktree_path == path:
+                    context = shared.ensure_workspace(record)
+                    return transaction.ReleaseWorkspace(
+                        repo_root=context.source_git_root,
+                        path=path,
+                        branch=context.branch,
+                        base=context.base_commit,
+                        context=context,
+                    )
+        except Exception as exc:
+            raise RuntimeError(f"invalid shared workspace context: {exc}") from exc
     workspace = transaction.ReleaseWorkspace(
         repo_root=repo_root,
         path=repo_root,
@@ -1695,9 +1792,13 @@ def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorks
     return workspace
 
 
-def _child_release_args(rest: List[str], config_path: Path, repo_root: Path) -> List[str]:
-    """Point a transaction child at the matching config *inside* its snapshot."""
+def _child_release_args(
+    rest: List[str], config_path: Path, repo_root: Path, *, source_git_root: Path | None = None,
+    target_override: str | None = None, original_target: str | None = None,
+) -> List[str]:
+    """Point a transaction child at its snapshot or central CMRU config."""
     result: List[str] = []
+    removed_target = original_target is None
     skip_next = False
     for index, value in enumerate(rest):
         if skip_next:
@@ -1718,14 +1819,135 @@ def _child_release_args(rest: List[str], config_path: Path, repo_root: Path) -> 
             continue
         if value.startswith("--abandon="):
             continue
+        if not removed_target and value == original_target:
+            removed_target = True
+            continue
         result.append(value)
     try:
-        relative = config_path.resolve().relative_to(repo_root.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            "isolated releases require a config tracked inside the repository"
-        ) from exc
-    result.extend(["--config", str(relative)])
+        relative = config_path.resolve().relative_to(
+            (source_git_root or repo_root).resolve()
+        )
+    except ValueError:
+        # The CMRU root is allowed to be a central directory above/around the
+        # selected Git family. Such a root is still the authoritative config
+        # source for the child; load_config remaps registered project documents
+        # into the isolated worktree.
+        config_arg = str(config_path.resolve())
+    else:
+        config_arg = str(relative)
+    if target_override is not None:
+        result.insert(0, target_override)
+    result.extend(["--config", config_arg])
+    return result
+
+
+def _dispatch_independent_git_families(
+    verb: str,
+    rest: List[str],
+    config_path: Path,
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+    *,
+    original_target: str | None,
+) -> int | None:
+    """Run one normal transaction per independent selected Git family.
+
+    Git cannot make commits in independent repositories atomic.  Keeping the
+    existing single-family transaction as the child protocol, while dispatching
+    each family as its own explicit invocation, preserves that limitation in
+    observable state: every family has its own branch, workspace record, lock,
+    promotion result, and recovery path.
+    """
+    if len(project_names) <= 1:
+        return None
+    groups = transaction.project_git_family_groups(
+        repo_root, [configs[name] for name in project_names]
+    )
+    if len(groups) <= 1:
+        return None
+    if any(flag in rest or any(item.startswith(flag + "=") for item in rest)
+           for flag in ("--resume", "--abandon")):
+        raise RuntimeError(
+            "resume/abandon must target one retained CMRU family workspace at a time; "
+            "select one Git-family project set"
+        )
+    try:
+        import shutil
+        launcher = os.environ.get("CMRU_BIN") or shutil.which("cmru")
+        if launcher:
+            command_prefix = [launcher]
+        else:
+            command_prefix = [sys.executable, "-m", "cmru"]
+        for family_root, members in groups.items():
+            names = [getattr(project, "name") for project in members]
+            child_args = _child_release_args(
+                rest,
+                config_path,
+                repo_root,
+                source_git_root=family_root,
+                target_override=",".join(names),
+                original_target=original_target,
+            )
+            completed = subprocess.run(
+                [*command_prefix, verb, *child_args],
+                cwd=Path.cwd(),
+                env=os.environ.copy(),
+            )
+            if completed.returncode:
+                return completed.returncode
+    except OSError as exc:
+        raise RuntimeError(f"could not dispatch per-Git-family {verb} transaction: {exc}") from exc
+    return 0
+
+
+def _configs_for_git_family(
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+    git_root: Path,
+) -> dict[str, "ProjectConfig"]:
+    """Rebase the execution model for read-only/direct project verbs.
+
+    ``load_config`` normally derives paths from the CMRU root.  When that root
+    is above a repository, Git-facing helpers need the same projects expressed
+    relative to the selected repository instead; command paths are rebased with
+    them so direct verbs cannot accidentally run from the orchestration root.
+    """
+    result: dict[str, ProjectConfig] = {}
+    selected_root = git_root.resolve()
+    for name in project_names:
+        project = configs[name]
+        project_root = Path(getattr(project, "project_root", None) or "")
+        if not project_root.is_absolute():
+            project_root = selected_root / project_root
+        project_root = project_root.resolve()
+        try:
+            relative = project_root.relative_to(selected_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}: project root {project_root} is outside selected Git root {selected_root}"
+            ) from exc
+        child_root = selected_root / relative
+        rebased_steps: dict[str, list[Command]] = {}
+        for step_name, commands in project.steps.items():
+            rebased: list[Command] = []
+            for command in commands:
+                try:
+                    command_relative = command.cwd.relative_to(project_root)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{name}: declared command cwd escapes project root: {command.cwd}"
+                    ) from exc
+                rebased.append(replace(command, cwd=child_root / command_relative))
+            rebased_steps[step_name] = rebased
+        cwd = relative.as_posix() if relative.parts else "."
+        result[name] = replace(
+            project,
+            cwd=cwd,
+            paths=[cwd],
+            project_root=child_root,
+            steps=rebased_steps,
+        )
     return result
 
 
@@ -1815,7 +2037,19 @@ def _uncommitted_release_paths(
         project = ordered.get(name)
         if project is None:
             continue
-        paths = getattr(project, "paths", None) or [getattr(project, "cwd", None) or name]
+        project_root = getattr(project, "project_root", None)
+        if project_root is None:
+            continue
+        project_root = Path(project_root)
+        if not project_root.is_absolute():
+            project_root = repo_root / project_root
+        try:
+            relative_root = project_root.resolve().relative_to(repo_root.resolve())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name}: project root {project_root} is outside selected Git root {repo_root}"
+            ) from exc
+        paths = [relative_root.as_posix() if relative_root.parts else "."]
         changed = _worktree_changed_paths(repo_root, paths=paths)
         if changed:
             dirty[name] = changed
@@ -2145,15 +2379,32 @@ def main(argv: Optional[List[str]] = None) -> None:
         step = "build" if verb == "build" else "push"
 
         if verb == "build" and not vargs._transaction_child:
+            dispatched = _dispatch_independent_git_families(
+                verb,
+                rest,
+                cfg_path,
+                repo_root,
+                configs,
+                names,
+                original_target=vargs.target,
+            )
+            if dispatched is not None:
+                _sys.exit(dispatched)
             # A normal build uses the exact same isolated source boundary as a
             # release, but intentionally stops before every release action.  A
             # successful build copies its local-only evidence to the caller tree
             # and removes the worktree; a failure retains the worktree exactly
             # where the diagnostic source/log/artifact state exists.
             try:
-                child_args = _child_release_args(rest, cfg_path, repo_root)
-                with transaction.release_lock(repo_root):
-                    dirty = _uncommitted_release_paths(repo_root, configs, names)
+                transaction_root = transaction.source_git_root_for_projects(
+                    repo_root, [configs[name] for name in names]
+                )
+                child_args = _child_release_args(
+                    rest, cfg_path, repo_root, source_git_root=transaction_root,
+                    target_override=",".join(names), original_target=vargs.target,
+                )
+                with transaction.release_lock(transaction_root):
+                    dirty = _uncommitted_release_paths(transaction_root, configs, names)
                     if dirty:
                         for project_name, files in dirty.items():
                             log_error(f"{project_name}: uncommitted changes — {', '.join(files)}")
@@ -2161,8 +2412,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "cmru build snapshots origin/main; commit and push the selected project "
                             "changes first so the isolated build cannot silently omit them."
                         )
-                    base = transaction.fetch_origin_main(repo_root)
-                    behind = transaction.assert_local_main_not_ahead(repo_root)
+                    base = transaction.fetch_origin_main(transaction_root)
+                    behind = transaction.assert_local_main_not_ahead(transaction_root)
                     if behind:
                         log_warn(
                             f"Local main is {behind} commit(s) behind origin/main; "
@@ -2170,18 +2421,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                         )
                     workspace = transaction.create_workspace(
                         repo_root, base=base, purpose="build", scope=','.join(names),
+                        source_git_root=transaction_root,
                     )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
-                         if project.project_root is not None],
+                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in names
+                         if configs[name].project_root is not None],
                     )
                     log_info(
                         f"Build transaction {workspace.branch}: snapshot {workspace.base[:12]} "
                         f"at {workspace.path}"
                     )
-                    rc = transaction.run_child(workspace, child_args, verb="build")
+                    rc = transaction.run_child(
+                        workspace, child_args, verb="build", project_names=names,
+                    )
                     if rc:
                         log_error(
                             f"Build transaction failed; worktree retained for debugging: {workspace.path}"
@@ -2224,10 +2478,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         if verb == "build":
             _run_isolated_build_projects(repo_root, configs, names)
         else:
-            _run_project_steps(
-                repo_root, configs, names, [step],
-                github_config=github_config, env_config=env_config,
+            groups = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in names]
             )
+            for family_root, members in groups.items():
+                family_names = [getattr(project, "name") for project in members]
+                family_configs = _configs_for_git_family(configs, family_names, family_root)
+                _run_project_steps(
+                    family_root, family_configs, family_names, [step],
+                    github_config=github_config, env_config=env_config,
+                )
         log_info(f"cmru {verb} complete")
 
     elif verb == "resolve":
@@ -2401,17 +2661,36 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         from cmru.version import status_cmd, release_cmd
         if verb == "status":
-            status_projects = selected_ordered
-            status_cmd(
-                repo_root, status_projects,
-                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-                ref=vargs.ref or "HEAD",
+            groups = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in selected_names]
             )
+            for family_root, members in groups.items():
+                family_names = [getattr(project, "name") for project in members]
+                family_configs = _configs_for_git_family(configs, family_names, family_root)
+                status_cmd(
+                    family_root,
+                    {name: family_configs[name] for name in family_names},
+                    minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                    ref=vargs.ref or "HEAD",
+                )
             return
 
         release_scope = selected_names
         if not vargs.dry_run:
             require_project_publish_credentials(configs, release_scope)
+
+        if not vargs._transaction_child:
+            dispatched = _dispatch_independent_git_families(
+                verb,
+                rest,
+                cfg_path,
+                repo_root,
+                configs,
+                release_scope,
+                original_target=vargs.target,
+            )
+            if dispatched is not None:
+                _sys.exit(dispatched)
 
         # The normal command is a launcher, never a publisher from the caller's
         # checkout: origin/main is the only release source, built in an isolated
@@ -2422,20 +2701,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         # silently left out with no warning, since the build never looks at it.
         if not vargs._transaction_child:
             try:
-                child_args = _child_release_args(rest, cfg_path, repo_root)
-                with transaction.release_lock(repo_root):
+                transaction_root = transaction.source_git_root_for_projects(
+                    repo_root, [configs[name] for name in release_scope]
+                )
+                child_args = _child_release_args(
+                    rest, cfg_path, repo_root, source_git_root=transaction_root,
+                    target_override=",".join(release_scope), original_target=vargs.target,
+                )
+                with transaction.release_lock(transaction_root):
                     scope = release_scope
                     if getattr(vargs, "abandon", None):
                         if vargs.abandon == "all-previous":
-                            abandoned = transaction.abandon_previous(repo_root, scope)
+                            abandoned = transaction.abandon_previous(transaction_root, scope)
                             if abandoned:
                                 for branch in abandoned:
                                     log_info(f"Abandoned previous release attempt: {branch}")
                             else:
                                 log_info("No previous release attempts to abandon.")
                         else:
-                            target = transaction.resume_workspace(repo_root, Path(vargs.abandon))
-                            transaction.abandon_workspace(repo_root, target)
+                            target = transaction.resume_workspace(transaction_root, Path(vargs.abandon))
+                            transaction.abandon_workspace(transaction_root, target)
                             log_info(f"Abandoned release attempt: {target.branch}")
 
                     # Not --dry-run: a preview has no publish step to protect, and "I have
@@ -2446,7 +2731,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # --abandon scope above) — check what will really run, not a
                         # possibly-narrower-or-wider default.
                         release_scope = selected_names
-                        dirty = _uncommitted_release_paths(repo_root, ordered, release_scope)
+                        dirty = _uncommitted_release_paths(transaction_root, ordered, release_scope)
                         if dirty:
                             for name, files in dirty.items():
                                 log_error(f"{name}: uncommitted changes — {', '.join(files)}")
@@ -2459,10 +2744,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                             _sys.exit(2)
 
                     if getattr(vargs, "resume", None):
-                        workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
+                        workspace = transaction.resume_workspace(transaction_root, Path(vargs.resume))
                     else:
-                        base = transaction.fetch_origin_main(repo_root)
-                        behind = transaction.assert_local_main_not_ahead(repo_root, ref=vargs.ref or "main")
+                        base = transaction.fetch_origin_main(transaction_root)
+                        behind = transaction.assert_local_main_not_ahead(transaction_root, ref=vargs.ref or "main")
                         if behind:
                             log_warn(
                                 f"Local main is {behind} commit(s) behind origin/main; "
@@ -2470,18 +2755,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                             )
                         workspace = transaction.create_workspace(
                             repo_root, base=base, scope=','.join(release_scope),
+                            source_git_root=transaction_root,
                         )
                     transaction.copy_secret_overlays(
                         repo_root,
                         workspace,
-                        [Path(project.project_root) / PROJECT_CONFIG_FILENAME for project in configs.values()
-                         if project.project_root is not None],
+                        [Path(configs[name].project_root) / PROJECT_CONFIG_FILENAME for name in release_scope
+                         if configs[name].project_root is not None],
                     )
                     log_info(
                         f"Release transaction {workspace.branch}: "
                         f"snapshot {workspace.base[:12]} at {workspace.path}"
                     )
-                    rc = transaction.run_child(workspace, child_args)
+                    rc = transaction.run_child(
+                        workspace, child_args, project_names=release_scope,
+                    )
                     if rc == 0:
                         retained: list[Path] = []
                         retain_logs = not vargs.discard_logs_on_release
@@ -2492,7 +2780,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                             for name in configs
                         )
                         if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
-                            release_results = transaction.read_release_results(repo_root, workspace)
+                            release_results = transaction.read_release_results(transaction_root, workspace)
                             retained = transaction.retain_success_outputs(
                                 repo_root,
                                 workspace,
@@ -2506,11 +2794,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                             log_info(f"Retained release output: {path}")
                         transaction.remove_backup_branch(workspace)
                         transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(repo_root, workspace)
-                        if _sync_local_main_and_report(repo_root):
+                        transaction.forget_release_scope(transaction_root, workspace)
+                        if _sync_local_main_and_report(transaction_root):
                             log_info("Local main synced with origin/main.")
                         log_info("Release transaction complete; isolated worktree removed.")
-                    elif transaction.plan_was_refused(repo_root, workspace):
+                    elif transaction.plan_was_refused(transaction_root, workspace):
                         # The release plan itself refused (S12.2a/S12.2b) before any
                         # project's cycle started: no gate ran, nothing was promoted or
                         # tagged, and `push_backup_branch` never ran either -- there is
@@ -2518,8 +2806,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # mid-release failure. Discard it exactly like a success would
                         # (the detailed refusal was already printed by the child above).
                         transaction.remove_workspace(workspace)
-                        transaction.forget_release_scope(repo_root, workspace)
-                        _sync_local_main_and_report(repo_root)
+                        transaction.forget_release_scope(transaction_root, workspace)
+                        _sync_local_main_and_report(transaction_root)
                         log_error(
                             "Release plan refused before any project started; no changes "
                             "were made (see the error above). Worktree discarded."
@@ -2536,7 +2824,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "at the last fully completed project. The durable candidate "
                             f"branch {workspace.branch} was retained for inspection."
                         )
-                        _sync_local_main_and_report(repo_root)
+                        _sync_local_main_and_report(transaction_root)
                         log_error(
                             f"Release transaction failed; retained {workspace.path} "
                             f"on branch {workspace.branch} for inspection/resume."

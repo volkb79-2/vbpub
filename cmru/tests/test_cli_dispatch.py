@@ -79,6 +79,8 @@ owner_type = "user"
 [targets]
 host = "github"
 registry = ["ghcr.io"]
+[runtime]
+kind = "none"
 [project]
 id = "alpha"
 description = "alpha"
@@ -415,6 +417,11 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
         version,
         "status_cmd",
         lambda root, projects, **kwargs: calls.append((root, list(projects), kwargs)),
+    )
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
     )
 
     cli.main(["status", "alpha"])

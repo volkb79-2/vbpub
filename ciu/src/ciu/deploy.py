@@ -185,30 +185,16 @@ def container_name(config: dict, service_name: str) -> str:
 # ===========================================================================
 
 
-def resolve_repo_root(define_root: Optional[Path]) -> Path:
-    """Resolve the repo root from --define-root/--root-folder or REPO_ROOT (S1.1).
+def resolve_repo_root(
+    define_root: Optional[Path], start_dir: Optional[Path] = None,
+) -> Path:
+    """Resolve the nearest CIU root; ambient ``REPO_ROOT`` is never a selector."""
+    from .workspace import CiuWorkspaceError, resolve_ciu_root
 
-    Mirrors engine.main_execution's rule: --define-root must match REPO_ROOT
-    when both are set.
-    """
-    if define_root is not None:
-        repo_root = Path(define_root).resolve()
-        env_repo_root = os.environ.get("REPO_ROOT")
-        if env_repo_root and Path(env_repo_root).resolve() != repo_root:
-            raise ValueError(
-                f"[ERROR] --define-root ({repo_root}) does not match "
-                f"REPO_ROOT ({env_repo_root}). Re-run `ciu env generate` and\n"
-                "re-export with `eval \"$(ciu env print)\"`, or pass a "
-                "matching --define-root."
-            )
-        return repo_root
-    env_repo_root = os.environ.get("REPO_ROOT")
-    if not env_repo_root:
-        raise WorkspaceEnvError(
-            "[ERROR] REPO_ROOT not set. Run 'ciu env generate' and "
-            "source ciu.env."
-        )
-    return Path(env_repo_root).resolve()
+    try:
+        return resolve_ciu_root(start_dir or Path.cwd(), root_folder=define_root)
+    except CiuWorkspaceError as exc:
+        raise WorkspaceEnvError(str(exc)) from exc
 
 
 def load_global_config(repo_root: Path) -> dict:
@@ -4845,7 +4831,7 @@ Examples:
                               "it, clean leaves every one of them untouched")
     control.add_argument("--dry-run", dest="dry_run", action="store_true",
                          help="Run the pipeline but skip docker compose up (S8.3)")
-    control.add_argument("--root-folder", "--define-root", dest="define_root", type=Path, default=None,
+    control.add_argument("--root-folder", dest="define_root", type=Path, default=None,
                          metavar="PATH", help="Repository root override (S1.1)")
     control.add_argument("--update-cert-permission", dest="update_cert_permission", action="store_true",
                          help="Update Let's Encrypt cert permissions (requires root)")
@@ -4981,6 +4967,9 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     # render-path bug). Mirrors engine.main_execution's working_dir call.
     enforce_standalone_root(Path.cwd())
 
+    # The resolver owns the invocation-directory default.  Keeping this call
+    # to its public one-argument form also preserves the adapter seam used by
+    # callers that replace the resolver for bounded orchestration tests.
     repo_root = resolve_repo_root(define_root)
 
     # --- config + profile (S3.3 / S7.4 / Seam 4) ---

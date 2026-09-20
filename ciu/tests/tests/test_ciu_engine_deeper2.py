@@ -28,15 +28,15 @@ def _early_pipeline(monkeypatch: pytest.MonkeyPatch, global_config: dict) -> Non
     monkeypatch.setattr(engine, "configure_logging", lambda *_: None)
 
 
-def test_define_root_must_match_bootstrapped_repository(tmp_path, monkeypatch):
-    """S1.2: an explicit root cannot quietly operate against another ciu.env."""
-    _early_pipeline(monkeypatch, {})
-    (tmp_path / "stack").mkdir()
+def test_define_root_wins_over_bootstrapped_repository(tmp_path, monkeypatch):
+    """S1.1: explicit root intent is not second-guessed by ambient state."""
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     other_root = tmp_path / "other"
     monkeypatch.setenv("REPO_ROOT", str(other_root))
 
-    with pytest.raises(ValueError, match="does not match REPO_ROOT"):
-        engine.main_execution(tmp_path / "stack", define_root=tmp_path)
+    from ciu.workspace_env import resolve_env_root
+
+    assert resolve_env_root(tmp_path, tmp_path, "ciu.global.defaults.toml.j2") == tmp_path
 
 
 def test_render_toml_stops_before_network_merge_and_stack_execution(tmp_path, monkeypatch, capsys):

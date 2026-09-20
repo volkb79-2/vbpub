@@ -45,7 +45,7 @@ def test_public_dev_profile_rejects_non_numeric_port() -> None:
         dev.parse_dev_profile(_profile(port="hmr"), "web")
 
 
-def test_repo_root_falls_back_to_start_directory_without_global_marker(
+def test_repo_root_refuses_start_directory_without_global_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Running from an unrelated tree must not select an arbitrary parent as CIU root."""
@@ -53,7 +53,8 @@ def test_repo_root_falls_back_to_start_directory_without_global_marker(
     start.mkdir(parents=True)
     monkeypatch.delenv("REPO_ROOT", raising=False)
 
-    assert dev.resolve_repo_root(None, start) == start.resolve()
+    with pytest.raises(ValueError, match=r"\[no-ciu-root\]"):
+        dev.resolve_repo_root(None, start)
 
 
 def test_run_dev_uses_default_loader_and_runner_without_docker(

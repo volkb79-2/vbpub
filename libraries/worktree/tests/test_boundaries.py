@@ -1,0 +1,393 @@
+"""Fail-closed boundary coverage for the neutral workspace substrate."""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import worktree.core as core
+from worktree import (
+    Lease,
+    WorkspaceContext,
+    WorkspaceError,
+    acquire_lease,
+    adopt_workspace,
+    create_workspace,
+    ensure_workspace,
+    inspect_workspace,
+    list_workspaces,
+    remove_unrecorded_workspace,
+    remove_workspace,
+    release_lease,
+    workspace_lock,
+)
+
+
+def _git(path: Path, *args: str, check: bool = True) -> str:
+    result = subprocess.run(["git", *args], cwd=path, text=True, capture_output=True)
+    if check and result.returncode:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
+
+
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "worktree tests")
+    (repo / "README").write_text("source\n", encoding="utf-8")
+    _git(repo, "add", "README")
+    _git(repo, "commit", "-q", "-m", "initial")
+    return repo
+
+
+def test_value_objects_and_lease_validation():
+    namespace = core.ResourceNamespace("abc123", {"role": "test"})
+    assert namespace.as_dict() == {"workspace_id": "abc123", "labels": {"role": "test"}}
+    with pytest.raises(WorkspaceError, match="holder"):
+        Lease("", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, "perpetual")
+    with pytest.raises(WorkspaceError, match="unknown lease mode"):
+        Lease("x", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, "other")
+    with pytest.raises(WorkspaceError, match="held leases"):
+        Lease("x", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, "held")
+    with pytest.raises(WorkspaceError, match="perpetual leases"):
+        Lease("x", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", "perpetual")
+    assert Lease("x", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, "perpetual").to_dict()["mode"] == "perpetual"
+    context = WorkspaceContext(
+        Path("/source"), Path("/worktree"), Path("/common"), Path("/physical"),
+        "abc123", "main", "head", Path("/record"), namespace,
+    )
+    assert context.logical_worktree_path == Path("/worktree")
+
+
+def test_path_math_git_errors_and_invocation_resolution(monkeypatch, tmp_path):
+    assert core.physical_path("/outside", logical_root="/logical", physical_root="/host") == Path("/outside")
+    with pytest.raises(ValueError, match="non-negative"):
+        core._base36(-1)
+    assert core._base36(0) == "0"
+    monkeypatch.setattr(
+        core.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="bad git"),
+    )
+    with pytest.raises(WorkspaceError, match="bad git"):
+        core._git(tmp_path, "status")
+
+    file_path = tmp_path / "file"
+    file_path.write_text("x")
+    calls = []
+
+    def fake_git(cwd, *args, **kwargs):
+        calls.append((cwd, args))
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        if args == ("rev-parse", "--git-common-dir"):
+            return ".git"
+        if args == ("branch", "--show-current"):
+            return ""
+        return "head"
+
+    monkeypatch.setattr(core, "_git", fake_git)
+    top, common, branch, head = core.discover_git_context(file_path)
+    assert top == tmp_path and common == tmp_path / ".git" and branch == "HEAD" and head == "head"
+    monkeypatch.undo()
+    with pytest.raises(WorkspaceError, match="could not start"):
+        core.discover_git_context(tmp_path / "missing" / "nested")
+    monkeypatch.setattr(core, "discover_git_context", lambda selected: (tmp_path, tmp_path / ".git", "main", "head"))
+    invocation = core.resolve_invocation(tmp_path / "nested", root_folder=tmp_path)
+    assert invocation.invocation_dir == (tmp_path / "nested").resolve()
+    assert invocation.worktree_path == tmp_path
+
+
+def test_lock_and_timestamp_validation(monkeypatch, tmp_path):
+    with workspace_lock(tmp_path / ".git"):
+        assert (tmp_path / ".git" / core._LOCK_NAME).exists()
+
+    monkeypatch.setattr(core.fcntl, "flock", lambda *_args: (_ for _ in ()).throw(OSError("locked")))
+    with pytest.raises(WorkspaceError, match="cannot acquire"):
+        with workspace_lock(tmp_path / "lock-git"):
+            pass
+    for value in (None, "", "not-a-date"):
+        with pytest.raises(WorkspaceError, match="timestamp"):
+            core._parse_timestamp(value, label="x")
+    with pytest.raises(WorkspaceError, match="no UTC offset"):
+        core._parse_timestamp("2026-01-01T00:00:00", label="x")
+
+
+def test_record_parser_rejects_every_structural_corruption(repository, tmp_path):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/record", purpose="test")
+    record = core.read_record(context.record_path)
+    raw = record.as_dict()
+    cases = [
+        ([], "one JSON object"),
+        ({**raw, "extra": 1}, "unexpected workspace-record keys"),
+        ({**raw, "record_version": 9}, "unsupported workspace record"),
+        ({**raw, "workspace_id": "bad"}, "invalid workspace_id"),
+        ({**raw, "labels": []}, "labels.*must be an object"),
+        ({**raw, "source_git_root": ""}, "source_git_root.*must be a path"),
+        ({**raw, "branch": []}, "branch.*must be a non-empty string"),
+        ({**raw, "created_at_utc": "not-a-date"}, "created_at_utc.*timestamp"),
+        ({**raw, "lease": []}, "lease must be an object"),
+        ({**raw, "lease": {"holder": "x"}}, "lease keys"),
+    ]
+    for candidate, message in cases:
+        with pytest.raises(WorkspaceError, match=message):
+            core._record(candidate, context.record_path)
+    broken_lease = {
+        "holder": "x", "acquired_at_utc": "bad", "renewed_at_utc": "2026-01-01T00:00:00Z",
+        "expires_at_utc": None, "mode": "perpetual",
+    }
+    with pytest.raises(WorkspaceError, match="timestamp"):
+        core._lease(broken_lease)
+    assert list_workspaces(record.git_common_dir)
+    remove_workspace(context)
+
+
+def test_record_io_and_handle_coercion_errors(repository, tmp_path, monkeypatch):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/io", purpose="test")
+    record = core.read_record(context.record_path)
+    assert core._coerce_record(context).workspace_id == record.workspace_id
+    assert core._coerce_record(context.record_path).workspace_id == record.workspace_id
+    with pytest.raises(WorkspaceError, match="does not exist"):
+        core.read_record(tmp_path / "missing.json")
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text("not-json")
+    with pytest.raises(WorkspaceError, match="unreadable"):
+        core.read_record(invalid)
+    mismatched = dict(record.as_dict())
+    mismatched["workspace_id"] = "zzzzzz"
+    context.record_path.write_text(json.dumps(mismatched), encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="does not match"):
+        core.read_record(context.record_path)
+    monkeypatch.setattr(core.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(WorkspaceError, match="could not write"):
+        core.write_record(record)
+    monkeypatch.undo()
+    core.write_record(record)
+    remove_workspace(context, force=True)
+
+
+def test_branch_and_collision_helpers(repository, tmp_path):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/helpers", purpose="test")
+    record = core.read_record(context.record_path)
+    for branch in ("", "/absolute", "bad/../branch", "bad space"):
+        with pytest.raises(WorkspaceError, match="invalid branch"):
+            core._validate_branch(branch)
+    with pytest.raises(WorkspaceError, match="physical workspace path"):
+        core._check_collision([record], "other1", record.physical_worktree_path)
+    with pytest.raises(core.WorkspaceCollisionError, match="identity collision"):
+        core._check_collision([record], record.workspace_id, tmp_path / "other")
+    nonmatching = SimpleNamespace(physical_worktree_path=tmp_path / "elsewhere", workspace_id="other1")
+    core._check_collision([nonmatching], "target1", tmp_path / "target")
+    assert core._record_for_path([record], record.worktree_path) is record
+    assert core._record_for_path([record], tmp_path / "other") is None
+    remove_workspace(context)
+
+
+def test_create_workspace_input_and_git_failure_branches(repository, tmp_path, monkeypatch):
+    with pytest.raises(WorkspaceError, match="invalid workspace purpose"):
+        create_workspace(repository, tmp_path / "bad", branch="ok", purpose="bad space")
+    common = repository / ".git"
+    monkeypatch.setattr(core, "discover_git_context", lambda _path: (tmp_path / "top", common, "main", "head"))
+    monkeypatch.setattr(core, "_workspace_lock", lambda _common: nullcontext())
+    monkeypatch.setattr(core, "_records", lambda _common: [])
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr="branch exists"))
+    with pytest.raises(WorkspaceError, match="branch already exists"):
+        create_workspace(repository, tmp_path / "branch", branch="new", purpose="test")
+
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="", stderr=""))
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    with pytest.raises(WorkspaceError, match="path already exists"):
+        create_workspace(repository, existing, branch="new", purpose="test")
+
+    target = tmp_path / "recorded"
+    recorded = SimpleNamespace(physical_worktree_path=tmp_path / "physical", workspace_id="other1", worktree_path=target)
+    monkeypatch.setattr(core, "_records", lambda _common: [recorded])
+    with pytest.raises(WorkspaceError, match="workspace path is already recorded"):
+        create_workspace(repository, target, branch="recorded", purpose="test")
+
+    monkeypatch.setattr(core, "_records", lambda _common: [])
+    def fail_add(argv, **kwargs):
+        if argv[1:4] == ["show-ref", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 2, stdout="", stderr="add failed")
+
+    monkeypatch.setattr(core.subprocess, "run", fail_add)
+    with pytest.raises(WorkspaceError, match="worktree add failed"):
+        create_workspace(repository, tmp_path / "add-fail", branch="new2", purpose="test")
+
+
+def test_create_workspace_record_rollback_and_identity_guards(repository, tmp_path, monkeypatch):
+    common = repository / ".git"
+    monkeypatch.setattr(core, "discover_git_context", lambda path: (Path(path), common, "main", "head"))
+    monkeypatch.setattr(core, "_workspace_lock", lambda _common: nullcontext())
+    monkeypatch.setattr(core, "_records", lambda _common: [])
+    monkeypatch.setattr(core, "_git", lambda *_args, **_kwargs: "head")
+    run_calls = []
+    def successful_git_setup(argv, **kwargs):
+        run_calls.append(argv)
+        if argv[1:4] == ["show-ref", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(core.subprocess, "run", successful_git_setup)
+    monkeypatch.setattr(core, "write_record", lambda _record: (_ for _ in ()).throw(OSError("write")))
+    with pytest.raises(OSError, match="write"):
+        create_workspace(repository, tmp_path / "rollback", branch="rollback", purpose="test")
+    assert any(argv[1:3] == ["worktree", "remove"] for argv in run_calls)
+
+    values = iter(["first1", "second2"])
+    monkeypatch.setattr(core, "workspace_id_for_path", lambda _path: next(values))
+    with pytest.raises(WorkspaceError, match="identity changed"):
+        create_workspace(repository, tmp_path / "identity", branch="identity", purpose="test")
+
+
+def test_adopt_workspace_validates_family_and_records_existing_checkout(repository, tmp_path):
+    target = tmp_path / "adopted"
+    _git(repository, "worktree", "add", "-q", "-b", "adopted", str(target), "HEAD")
+    context = adopt_workspace(repository, target, purpose="test", identity_path=tmp_path / "seed")
+    assert context.worktree_path == target.resolve()
+    record = core.read_record(context.record_path)
+    assert record.state == "adopted"
+    remove_workspace(context)
+
+
+def test_adopt_workspace_rejects_the_primary_checkout(repository):
+    with pytest.raises(WorkspaceError, match="primary checkout"):
+        adopt_workspace(repository, repository)
+
+
+def test_remove_unrecorded_workspace_uses_the_shared_lifecycle(repository, tmp_path):
+    target = tmp_path / "legacy"
+    _git(repository, "worktree", "add", "-q", "-b", "legacy", str(target), "HEAD")
+    with pytest.raises(WorkspaceError, match="branch changed"):
+        remove_unrecorded_workspace(repository, target, expected_branch="wrong")
+    assert target.is_dir()
+
+    remove_unrecorded_workspace(
+        repository, target, expected_branch="legacy", purpose="legacy-cleanup"
+    )
+    assert not target.exists()
+    assert _git(repository, "show-ref", "--verify", "--quiet", "refs/heads/legacy", check=False) == ""
+
+
+def test_adopt_workspace_rejects_wrong_top_and_family(monkeypatch, repository, tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    common = repository / ".git"
+    monkeypatch.setattr(core, "discover_git_context", lambda _path: (tmp_path / "other", common, "main", "head"))
+    with pytest.raises(WorkspaceError, match="worktree top level"):
+        adopt_workspace(repository, target)
+    monkeypatch.setattr(core, "discover_git_context", lambda path: (
+        target if Path(path) == target else repository,
+        tmp_path / ("other-common" if Path(path) == target else ".git"),
+        "main", "head",
+    ))
+    with pytest.raises(WorkspaceError, match="different Git worktree family"):
+        adopt_workspace(repository, target)
+
+    monkeypatch.setattr(core, "discover_git_context", lambda path: (
+        target if Path(path) == target else repository,
+        repository / ".git", "main", "head",
+    ))
+    existing = SimpleNamespace(
+        physical_worktree_path=tmp_path / "different-physical",
+        workspace_id="other1", worktree_path=target,
+    )
+    monkeypatch.setattr(core, "_records", lambda _common: [existing])
+    monkeypatch.setattr(core, "_workspace_lock", lambda _common: nullcontext())
+    with pytest.raises(WorkspaceError, match="workspace path is already recorded"):
+        adopt_workspace(repository, target)
+
+
+def test_ensure_and_inspect_cover_stale_and_refresh_paths(repository, tmp_path, monkeypatch):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/ensure", purpose="test")
+    record = core.read_record(context.record_path)
+    stale = core.replace(record, worktree_path=tmp_path / "other")
+    with pytest.raises(WorkspaceError, match="record path changed"):
+        ensure_workspace(stale)
+    shutil.rmtree(context.worktree_path)
+    with pytest.raises(WorkspaceError, match="checkout is missing"):
+        ensure_workspace(record)
+    context.worktree_path.mkdir()
+    monkeypatch.setattr(core, "discover_git_context", lambda _path: (context.worktree_path, record.git_common_dir, "different", "head"))
+    with pytest.raises(WorkspaceError, match="no longer matches"):
+        ensure_workspace(record)
+    monkeypatch.setattr(core, "discover_git_context", lambda _path: (context.worktree_path, record.git_common_dir, record.branch, "head"))
+    updated = ensure_workspace(record, labels={"new": "label"}, metadata={"changed": True})
+    assert updated.namespace.labels == {"new": "label"}
+    inspected = inspect_workspace(updated)
+    assert inspected["git"]["matches_record"] is True
+    shutil.rmtree(context.worktree_path)
+    assert inspect_workspace(updated)["git"]["state"] == "missing"
+    remove_workspace(context, force=True)
+
+
+def test_lease_expiry_cleanup_and_release_failures(repository, tmp_path, monkeypatch):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/lease", purpose="test")
+    record = core.read_record(context.record_path)
+    now = datetime.now(timezone.utc)
+    assert core._lease_expired(None, now) is False
+    perpetual = Lease("x", "2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z", None, "perpetual")
+    assert core._lease_expired(perpetual, now) is False
+    expired = Lease("x", "2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z", "held")
+    assert core._lease_expired(expired, now) is True
+    held = acquire_lease(record, holder="owner", ttl=timedelta(minutes=5), now=now)
+    with pytest.raises(WorkspaceError, match="active lease"):
+        remove_workspace(held)
+    assert release_lease(held).lease is None
+    ran = []
+    remove_workspace(context, cleanup=lambda _ctx: ran.append(True), delete_branch=False)
+    assert ran == [True]
+
+
+def test_cleanup_git_and_branch_failures_leave_state(repository, tmp_path, monkeypatch):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/fail-clean", purpose="test")
+    record = core.read_record(context.record_path)
+    original = core.subprocess.run
+
+    def worktree_failure(argv, **kwargs):
+        if argv[1:3] == ["worktree", "remove"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="remove")
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", worktree_failure)
+    with pytest.raises(WorkspaceError, match="worktree remove failed"):
+        remove_workspace(record)
+    assert context.record_path.exists()
+    monkeypatch.undo()
+
+    def branch_failure(argv, **kwargs):
+        if argv[1:3] == ["worktree", "remove"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if argv[1:3] == ["branch", "-D"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="branch")
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", branch_failure)
+    with pytest.raises(WorkspaceError, match="branch -D"):
+        remove_workspace(record)
+    assert context.record_path.exists()
+    monkeypatch.undo()
+    remove_workspace(context, force=True)
+
+
+def test_acquire_lease_rejects_invalid_requests_and_conflicting_holder(repository, tmp_path):
+    context = create_workspace(repository, tmp_path / "checkout", branch="test/acquire", purpose="test")
+    record = core.read_record(context.record_path)
+    for kwargs in ({}, {"ttl": timedelta(minutes=1), "perpetual": True}, {"ttl": timedelta(0)}):
+        with pytest.raises(WorkspaceError, match="choose exactly one|positive"):
+            acquire_lease(record, holder="owner", **kwargs)
+    held = acquire_lease(record, holder="owner", ttl=timedelta(minutes=5))
+    with pytest.raises(WorkspaceError, match="already has an active lease"):
+        acquire_lease(held, holder="other", ttl=timedelta(minutes=5))
+    remove_workspace(held, force=True)

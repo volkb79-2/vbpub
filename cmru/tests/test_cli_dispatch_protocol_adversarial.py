@@ -65,24 +65,27 @@ def test_changelog_dispatch_refuses_unknown_or_disabled_project(monkeypatch, cap
 
 def test_status_dispatch_selects_orchestrated_project_and_forwards_version_flags(monkeypatch, tmp_path):
     cfg = tmp_path / "cmru.toml"; cfg.write_text("[project]\n")
-    project = SimpleNamespace(name="demo")
+    project = cli.ProjectConfig(name="demo", env={}, steps={})
     monkeypatch.setattr(cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cli, "load_config", lambda path: _config_tuple(tmp_path, {"demo": project}, ["demo"]))
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     calls = []
     monkeypatch.setattr("cmru.version.status_cmd", lambda root, projects, **kwargs: calls.append((root, projects, kwargs)))
     cli.main(["status", "--config", str(cfg), "demo", "--major", "--set-version", "2.0.0"])
-    assert calls[0][1] == {"demo": project}
+    assert calls[0][1]["demo"].name == project.name
+    assert calls[0][1]["demo"].project_root == tmp_path
     assert calls[0][2] == {"minor": False, "major": True, "set_version": "2.0.0", "ref": "HEAD"}
 
 
 def test_status_dispatch_forwards_a_custom_ref(monkeypatch, tmp_path):
     # KI-20: --ref origin/main reaches status_cmd instead of the default HEAD.
     cfg = tmp_path / "cmru.toml"; cfg.write_text("[project]\n")
-    project = SimpleNamespace(name="demo")
+    project = cli.ProjectConfig(name="demo", env={}, steps={})
     monkeypatch.setattr(cli, "_resolve_config", lambda value: cfg)
     monkeypatch.setattr(cli, "load_config", lambda path: _config_tuple(tmp_path, {"demo": project}, ["demo"]))
     monkeypatch.setattr(cli, "apply_release_env", lambda *args: None)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     calls = []
     monkeypatch.setattr("cmru.version.status_cmd", lambda root, projects, **kwargs: calls.append((root, projects, kwargs)))
     cli.main(["status", "--config", str(cfg), "--ref", "origin/main"])

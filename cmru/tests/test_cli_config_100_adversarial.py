@@ -22,6 +22,9 @@ owner_type = "org"
 host = "github"
 registry = ["{registry}"]
 
+[runtime]
+kind = "none"
+
 [project]
 id = "{name}"
 description = "A test project"
@@ -100,7 +103,7 @@ def _write_project(tmp_path: Path, name: str = "demo", *, centralized: bool = Fa
 
 def _centralize(document: str) -> str:
     project = document.split("[project]\n", 1)[1]
-    return "schema_version = 1\n\n[project]\n" + project
+    return "schema_version = 1\n\n[runtime]\nkind = \"none\"\n\n[project]\n" + project
 
 
 def test_duration_and_command_boundaries_have_distinct_results(tmp_path):

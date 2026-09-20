@@ -26,6 +26,7 @@ def test_publish_dispatch_runs_only_declared_push_step(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)

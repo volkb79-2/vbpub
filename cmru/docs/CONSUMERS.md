@@ -39,6 +39,9 @@ below. Secrets never live here. Minimal wheel example (see
 ```toml
 schema_version = 1
 
+[runtime]
+kind = "none" # use "ciu" only when the project owns declared CIU roots
+
 [project]
 id = "example-wheel"
 description = "Example wheel project"
@@ -77,6 +80,13 @@ commands = [
   { label = "publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "example-wheel", "--cwd", ".", "--notes-env", "EXAMPLE_RELEASE_NOTES"], cwd = "." },
 ]
 ```
+
+The runtime declaration is mandatory and closed. Paste `kind = "none"` for a
+self-contained project step; use `kind = "ciu"` when the step deliberately
+uses CIU's isolated workspace/runtime adapter. CMRU passes
+`CMRU_WORKSPACE_ID`, `CMRU_WORKSPACE_PATH`, and `CMRU_SOURCE_GIT_ROOT` to the
+step, so its evidence can name the candidate that produced it. It never
+guesses from a `docker` command.
 
 **`<cmru-root>/cmru.orchestration.toml`** — central coordination; project commands remain in
 project files. The nearest file found while walking ancestors establishes the CMRU root and may
@@ -167,6 +177,25 @@ export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
 # then run the step's argv
 ```
 
+### The CMRU R0-R3 gate
+
+For the vbpub CMRU checkout, use the project entrypoint rather than a cockpit
+pytest command:
+
+```sh
+./run-gate.py --list
+./run-gate.py assay
+./run-gate.py gate
+```
+
+The `assay` lane installs Assay from the selected worktree, snapshots the
+repository with the three declared Topos fixture omissions, and judges R0
+(full tests), R1 (100% line and branch coverage), R2 (native mutation), and
+R3 (import-break canary). Every assay invocation resumes and writes
+`.assay/progress-cmru.jsonl`; the verdict is `.assay/verdict-cmru.json`.
+`gate` additionally runs CMRU's release-specific coverage, mutation, canary,
+and real-enrollment evidence lanes.
+
 ---
 
 ## 3. The release flow, and what an isolated transaction is
@@ -174,7 +203,7 @@ export CMRU_TESTER_UNIFIED_IMAGE=tester-unified:local \
 ```
 cmru status                       # what would release, and at what version bump
 cmru release <name>     # one source-first transaction: gate → tag → build → publish → promote
-cmru release                      # every changed project on one branch (S-CLI.5a)
+cmru release                      # changed projects, one transaction per Git family (S-CLI.5a)
 ```
 
 `cmru release` never publishes from your working tree (`S-CLI.5`). It fetches `origin/main`,
@@ -182,13 +211,15 @@ refuses local-only `main` commits the snapshot would omit, and creates a tempora
 that exact remote commit, named (`S-CLI.5b`, KI-16, ciu-aligned):
 
 ```
-.worktrees/cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
-       e.g. .worktrees/cmru-release-20260819_143022-assay-a3ae580d
+.worktrees/cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>
+       e.g. .worktrees/cmru-release-20260819_143022-assay-abc123
 ```
 
 Flat, chronologically sortable, and **the branch name is byte-for-byte the directory name** —
 the same 1:1 scheme ciu uses. A successful release removes the worktree; a **failure retains
 it** for diagnosis and prints its exact path. The origin candidate branch is also retained. CMRU
+records the allocator's canonical identity input so the visible six-character token and the
+structured workspace context remain the same fact across resume and cleanup.
 publishes from the exact gated candidate SHA and only then fast-forwards `origin/main`; if a
 concurrent update rejects that final promotion, CMRU does not rebase the candidate or create a
 source revert. Inspect the retained candidate and resolve the external publication explicitly
@@ -198,6 +229,11 @@ before abandoning it. List and clean retained ones:
 cmru worktrees                                   # every retained failed build/release worktree
 cmru cleanup --discard-build-worktree <PATH> --yes
 ```
+
+When the central CMRU root registers projects from independent Git repositories, the same
+selection is dispatched as one transaction per Git family. Each repository therefore gets its
+own lock, candidate branch, workspace identity, and promotion result; cross-repository release
+is coordinated in order but is not one atomic Git commit.
 
 `cmru build X` is the local-inspection sibling: it runs prepare/gate/build in a
 retained `cmru-build-…` worktree and **never publishes** (KI-10). Do not expect
@@ -231,6 +267,15 @@ If the release gate writes commit-bound evidence, declare each exact file or dir
 `[project.release]`:
 
 ```toml
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[project]
+id = "example-wheel"
+
+[project.release]
 evidence_paths = ["coverage.json", ".assay"]
 ```
 

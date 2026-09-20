@@ -18,6 +18,11 @@ def _prepare_build(monkeypatch, tmp_path):
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/build/fail", "a" * 40)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path))
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})

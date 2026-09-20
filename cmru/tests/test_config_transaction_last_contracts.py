@@ -34,6 +34,8 @@ owner_type="org"
 [targets]
 host="github"
 {targets}
+[runtime]
+kind="none"
 [project]
 id="{name}"
 description="demo"

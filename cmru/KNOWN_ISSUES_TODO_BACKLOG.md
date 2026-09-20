@@ -594,14 +594,14 @@ older than N days" expressible for the first time.
 > `S2.6a`'s sibling, `S-CLI.5b`):
 >
 > ```
-> cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>
->   e.g.  cmru-release-20260819_143022-assay-a3ae580d   (branch string == worktree dir string)
+> cmru-release-<YYYYMMDD_HHMMSS>-<scope>
+>   e.g.  cmru-release-20260819_143022-assay   (branch string == worktree dir string)
 > ```
 >
-> Two deliberate divergences from ciu, decided with the operator: the trailing **`uuid8` is
-> kept** — this section's own "collision-freedom is non-negotiable" argument stands, and ciu's
-> suffix-free name cannot make it, so cmru is ciu-*shaped* but not byte-identical — and the
-> date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
+> The shared allocator derives a six-character lower-case base-36 identity from the canonical
+> physical worktree path and records it with the transaction context; a same-second/same-scope
+> allocation receives a numeric suffix, while a short-identity collision refuses with both
+> paths. The date/time separator is **`_`** to match ciu exactly. The nested `cmru/release/` and
 > `cmru/build/` prefixes are **still recognised** for discovery/resume/cleanup (predicates
 > `_is_release_branch`/`_is_build_branch`), so the ~50 worktrees retained under the old naming
 > in this checkout are not stranded. The retention-policy point above is still open.

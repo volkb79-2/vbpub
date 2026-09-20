@@ -65,7 +65,7 @@ def test_project_step_constructs_stable_root_and_passes_project_environment(monk
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
     assert calls[0][0][0] is step
     assert calls[0][0][2] == tmp_path / "demo" / "logs" / "cmru"
-    assert calls[0][1]["extra_env"] == {"X": "1"}
+    assert calls[0][1]["extra_env"] == {"X": "1", "CMRU_RUNTIME_KIND": "none"}
 
 
 @pytest.mark.parametrize("raw, expected", [(None, None), ("bad", "table"), ({"bump": "bad"}, "bump")])

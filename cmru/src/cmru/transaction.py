@@ -22,7 +22,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -61,6 +60,92 @@ class ReleaseWorkspace:
     path: Path
     branch: str
     base: str
+    context: object | None = None
+
+    @property
+    def workspace_id(self) -> str | None:
+        value = getattr(self.context, "workspace_id", None)
+        if value:
+            return str(value)
+        return _shared_worktree().workspace_id_for_path(self.path)
+
+
+def _shared_worktree():
+    """Load the internal source dependency in checkout and wheel modes."""
+    try:
+        import worktree
+        return worktree
+    except ModuleNotFoundError:
+        # Source-tree test runners import cmru/src directly.  Wheels include
+        # this same package through pyproject's package-dir mapping; this
+        # fallback only makes direct source execution use that canonical source.
+        library_src = Path(__file__).resolve().parents[3] / "libraries" / "worktree" / "src"
+        if library_src.is_dir():
+            sys.path.insert(0, str(library_src))
+            import worktree
+            return worktree
+        raise
+
+
+def project_git_family_groups(
+    repo_root: Path, projects: Sequence[object],
+) -> dict[Path, list[object]]:
+    """Group selected projects by their actual Git object/ref family.
+
+    The CMRU root is orchestration scope, not automatically a Git root.  A
+    central orchestration file may therefore coordinate projects from several
+    repositories, but each family gets its own transaction workspace.  The
+    insertion order is retained so release ordering remains the configured
+    project order within each family.
+    """
+
+    shared = _shared_worktree()
+    groups: dict[tuple[Path, Path], list[object]] = {}
+    for project in projects:
+        project_root = getattr(project, "project_root", None)
+        if project_root is None:
+            raise RuntimeError("CMRU project has no project_root; cannot resolve its Git family")
+        selected = Path(project_root)
+        if not selected.is_absolute():
+            selected = repo_root / selected
+        selected = selected.resolve()
+        try:
+            top, common, _branch, _head = shared.discover_git_context(selected)
+        except Exception as exc:
+            raise RuntimeError(
+                f"CMRU project root {selected} is not inside a usable Git worktree: {exc}"
+            ) from exc
+        groups.setdefault((common, top), []).append(project)
+    if not groups:
+        try:
+            top, _common, _branch, _head = shared.discover_git_context(repo_root)
+        except Exception as exc:
+            raise RuntimeError(
+                f"CMRU root {repo_root} has no selected project Git family: {exc}"
+            ) from exc
+        return {top: []}
+    by_root: dict[Path, list[object]] = {}
+    for (_common, top), members in groups.items():
+        by_root[top] = members
+    return by_root
+
+
+def source_git_root_for_projects(repo_root: Path, projects: Sequence[object]) -> Path:
+    """Resolve the sole Git family for one transaction child.
+
+    Multi-family callers split the operation with
+    :func:`project_git_family_groups`; retaining this strict helper prevents a
+    single child from accidentally treating independent repositories as one
+    worktree.
+    """
+    groups = project_git_family_groups(repo_root, projects)
+    if len(groups) != 1:
+        details = ", ".join(str(root) for root in sorted(groups))
+        raise RuntimeError(
+            "selected CMRU projects belong to independent Git families; split the "
+            f"transaction by family before allocating a worktree ({details})"
+        )
+    return next(iter(groups))
 
 
 class _SyncLocalMainResult(NamedTuple):
@@ -194,23 +279,27 @@ def workspace_purpose(branch: str) -> str:
     return parts[1] if len(parts) >= 2 else branch
 
 
-def _new_transaction_branch(purpose: str, scope: str | None) -> str:
-    """``cmru-<purpose>-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>`` (KI-16, ciu-aligned).
+def _new_transaction_branch(
+    purpose: str,
+    scope: str | None,
+    *,
+    identity: str,
+    suffix: int = 1,
+) -> str:
+    """Return a readable transaction branch without a second UUID identity.
 
     Flat single-token name -- no nested ref path -- so the branch string IS the
     worktree directory basename (see :func:`_worktree_dirname`). The ``_``
     between date and time matches ciu's ``<prefix>-<YYYYMMDD_HHMMSS>-<feature>``
     scheme and keeps the date/time boundary visually distinct from the ``-``
-    field separators. UTC timestamp for chronological sort; sanitized scope for
-    readability; a trailing 8 hex from ``uuid4`` for collision-freedom --
-    cleanup depends on a transaction being able to assume it exclusively owns
-    the name it created, so the random suffix is required, not decorative, and
-    this name is deliberately NOT made purely deterministic from
-    timestamp+scope alone.
+    field separators. UTC timestamp for chronological sort and a numeric suffix
+    for the rare same-second/same-scope allocation collision. The shared
+    allocator's six-character path identity is the ownership identity and is
+    persisted in its record; CMRU does not invent a second UUID namespace.
     """
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    token = uuid.uuid4().hex[:8]
-    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{token}"
+    suffix_text = "" if suffix == 1 else f"-{suffix}"
+    return f"cmru-{purpose}-{timestamp}-{_sanitize_scope(scope)}-{identity}{suffix_text}"
 
 
 def _worktree_dirname(branch: str) -> str:
@@ -227,6 +316,7 @@ def _worktree_dirname(branch: str) -> str:
 
 def create_workspace(
     repo_root: Path, *, base: str | None = None, purpose: str = "release", scope: str | None = None,
+    source_git_root: Path | None = None,
 ) -> ReleaseWorkspace:
     """Create a worktree at one already-fetched authoritative remote commit.
 
@@ -245,28 +335,73 @@ def create_workspace(
     """
     if purpose not in {"release", "build"}:
         raise ValueError(f"unknown CMRU workspace purpose: {purpose}")
+    source_root = (source_git_root or repo_root).resolve()
     if base is None:
-        base = fetch_origin_main(repo_root)
-    branch = _new_transaction_branch(purpose, scope)
-    parent = repo_root / ".worktrees"
+        base = fetch_origin_main(source_root)
+    shared = _shared_worktree()
+    parent = source_root / ".worktrees"
     parent.mkdir(exist_ok=True)
+    # The visible allocation identity is derived before the final branch/path
+    # is named. This avoids the impossible self-reference of hashing a path
+    # whose basename contains the hash itself; the durable shared record stores
+    # this explicit canonical seed path, so ownership admission and resume use
+    # the same identity input.
+    seed_branch = _new_transaction_branch(
+        purpose, scope, identity=_shared_worktree().workspace_id_for_path(parent / "allocation-seed")
+    )
+    visible_identity = _shared_worktree().workspace_id_for_path(parent / seed_branch)
+    branch = _new_transaction_branch(purpose, scope, identity=visible_identity)
     path = parent / _worktree_dirname(branch)
-    # Uniqueness comes from the branch's own uuid8 now, so there is nothing to
-    # mkdtemp+rmdir for. Explicitly refuse an existing path rather than
+    # Uniqueness is admitted by the shared family allocator and its path-derived
+    # record identity, so there is nothing to mkdtemp+rmdir for. Explicitly
+    # refuse an existing path rather than
     # trusting `git worktree add` to: git only fails closed on a NON-EMPTY
     # existing directory -- it silently ADOPTS an empty pre-existing one,
     # which would not be "this ONE transaction exclusively owns the name it
-    # created" if that ever happened (uuid8 collision, or a stale leftover).
+    # created" if that ever happened (an allocation collision or stale leftover).
     if path.exists():
         raise RuntimeError(
-            f"worktree path already exists: {path} (uuid8 collision or a stale leftover "
-            "directory -- this should not happen; inspect and remove it manually before "
-            "retrying)"
+            f"worktree path already exists: {path}; refusing to reuse an occupied transaction name"
         )
-    subprocess.run(
-        ["git", "worktree", "add", "-b", branch, str(path), base], cwd=repo_root, check=True,
-    )
-    return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=base)
+    try:
+        context = shared.create_workspace(
+            source_root,
+            # The workspace allocator must operate on the selected Git
+            # family, never on an orchestration directory above it.
+            path,
+            branch=branch,
+            base=base,
+            purpose=f"cmru-{purpose}",
+                labels={"cmru.purpose": purpose, "cmru.scope": _sanitize_scope(scope)},
+                metadata={"transaction_scope": _sanitize_scope(scope)},
+                identity_path=parent / seed_branch,
+        )
+        # The neutral allocator deliberately admits a checkout with no
+        # files so CIU can write its adapter record before its own reset.
+        # CMRU has no such staged allocation phase: its child must see the
+        # committed project documents before it starts, so materialize the
+        # exact requested snapshot before returning the workspace.
+        checkout = subprocess.run(
+            ["git", "reset", "--hard", base],
+            cwd=path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if checkout.returncode:
+            try:
+                shared.remove_workspace(context, force=True)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"git reset --hard {base} failed ({checkout.returncode}): "
+                f"{(checkout.stderr or checkout.stdout).strip()}"
+            )
+        return ReleaseWorkspace(
+            repo_root=source_root, path=path, branch=branch, base=base, context=context,
+        )
+    except shared.WorkspaceError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
@@ -275,32 +410,68 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
     path = path.resolve()
     if not path.is_dir():
         raise RuntimeError(f"release worktree does not exist: {path}")
-    if _common_git_dir(path) != _common_git_dir(repo_root):
+    shared = _shared_worktree()
+    try:
+        path_top, path_common, _path_branch, _path_head = shared.discover_git_context(path)
+    except Exception as exc:
+        raise RuntimeError(f"{path} is not a worktree: {exc}") from exc
+    try:
+        expected_common = _common_git_dir(repo_root)
+    except RuntimeError:
+        expected_common = None
+    if expected_common is not None and path_common != expected_common:
         raise RuntimeError(f"{path} is not a worktree of {repo_root}")
+    # New transactions are resumed from the shared record. Legacy retained
+    # worktrees have no record and use the compatibility reader below.
+    try:
+        _top, common, _branch, _head = shared.discover_git_context(path)
+        for record in shared.list_workspaces(common):
+            if record.worktree_path == path:
+                context = shared.ensure_workspace(record)
+                if not _is_release_branch(context.branch):
+                    raise RuntimeError(
+                        f"{path} is not a retained cmru release branch (got {context.branch!r})"
+                    )
+                return ReleaseWorkspace(
+                    repo_root=repo_root.resolve(),
+                    path=path,
+                    branch=context.branch,
+                    base=context.base_commit,
+                    context=context,
+                )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
     if not _is_release_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru release branch (got {branch!r})")
-    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=repo_root, check=True)
-    return ReleaseWorkspace(repo_root=repo_root, path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
+    subprocess.run(["git", "fetch", "--prune", "origin", "main"], cwd=path_top, check=True)
+    return ReleaseWorkspace(repo_root=repo_root.resolve(), path=path, branch=branch, base=_git(path, "rev-parse", "HEAD"))
 
 
 def copy_secret_overlays(
     repo_root: Path, workspace: ReleaseWorkspace, project_config_paths: Sequence[Path],
 ) -> None:
     """Copy the root credential and explicit project overlays into a child worktree."""
+    source_root = workspace.repo_root.resolve()
     source = repo_root.resolve() / "cmru.secret.toml"
     if source.exists() and not source.is_file():
         raise RuntimeError(f"repository credential path is not a regular file: {source}")
-    if source.is_file():
+    if source.is_file() and repo_root.resolve() == source_root:
         target = workspace.path / "cmru.secret.toml"
         shutil.copyfile(source, target)
         target.chmod(0o600)
+    # A central CMRU root can be outside the selected Git family. In that
+    # layout the child receives the absolute orchestration config and reads the
+    # central root secret directly; copying it into an unrelated worktree would
+    # make ownership ambiguous.
     for config_path in project_config_paths:
         config_path = config_path.resolve()
         try:
-            relative = config_path.parent.relative_to(repo_root.resolve())
+            relative = config_path.parent.relative_to(source_root)
         except ValueError as exc:
-            raise RuntimeError(f"project config is outside repository: {config_path}") from exc
+            raise RuntimeError(
+                f"project config is outside selected Git workspace {source_root}: {config_path}"
+            ) from exc
         source = config_path.with_name("cmru.secret.toml")
         if source.exists() and not source.is_file():
             raise RuntimeError(f"project credential path is not a regular file: {source}")
@@ -314,17 +485,26 @@ def copy_secret_overlays(
 
 def remove_workspace(workspace: ReleaseWorkspace) -> None:
     """Remove a successful ephemeral worktree and its private branch."""
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(workspace.path)],
-        cwd=workspace.repo_root, check=True,
-    )
-    subprocess.run(
-        ["git", "branch", "-D", workspace.branch], cwd=workspace.repo_root, check=True,
-    )
+    if workspace.context is not None:
+        try:
+            _shared_worktree().remove_workspace(workspace.context)
+            return
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+    try:
+        _shared_worktree().remove_unrecorded_workspace(
+            workspace.repo_root,
+            workspace.path,
+            expected_branch=workspace.branch,
+            purpose="cmru-legacy",
+            force=True,
+        )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _release_token(workspace: ReleaseWorkspace) -> str:
-    """The ``<timestamp>_<scope>-<uuid8>`` token that names this transaction's
+    """The ``<timestamp>_<scope>`` token that names this transaction's
     sidecar state files, stripped of its scheme prefix so the token is stable
     and prefix-free under both naming schemes: a flat ``cmru-<purpose>-<token>``
     branch drops the ``cmru-release-``/``cmru-build-`` head; a legacy nested
@@ -515,9 +695,12 @@ def _project_roots_for_retention(
         raise RuntimeError(f"{name}: cannot retain outputs without project_root")
     main_project_root = Path(project_root).resolve()
     try:
-        relative = main_project_root.relative_to(repo_root.resolve())
+        relative = main_project_root.relative_to(workspace.repo_root.resolve())
     except ValueError as exc:
-        raise RuntimeError(f"{name}: project_root is outside repository: {main_project_root}") from exc
+        raise RuntimeError(
+            f"{name}: project_root is outside selected Git workspace "
+            f"{workspace.repo_root}: {main_project_root}"
+        ) from exc
     return main_project_root, workspace.path / relative
 
 
@@ -779,11 +962,22 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
     branch = _git(path, "branch", "--show-current")
     if not _is_build_branch(branch):
         raise RuntimeError(f"{path} is not a retained cmru build worktree (got {branch!r})")
+    context = None
+    shared = _shared_worktree()
+    try:
+        _top, common, _branch, _head = shared.discover_git_context(path)
+        for record in shared.list_workspaces(common):
+            if record.worktree_path == path:
+                context = shared.ensure_workspace(record)
+                break
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
     workspace = ReleaseWorkspace(
         repo_root=repo_root,
         path=path,
         branch=branch,
         base=_git(path, "rev-parse", "HEAD"),
+        context=context,
     )
     if not dry_run:
         remove_workspace(workspace)
@@ -822,7 +1016,7 @@ def retain_success_outputs(
         if project_root is None:
             raise RuntimeError(f"{name}: cannot retain outputs without project_root")
         project_root = Path(project_root).resolve()
-        relative = project_root.relative_to(repo_root.resolve())
+        relative = project_root.relative_to(workspace.repo_root.resolve())
         child_root = workspace.path / relative
         source_logs = child_root / "logs"
         target_logs = project_root / "logs" / "cmru-release" / immutable_id
@@ -1150,7 +1344,7 @@ def push_backup_branch(workspace: ReleaseWorkspace) -> None:
     such call still leaves an inspectable copy of the exact candidate on origin;
     ``main`` itself is untouched by this push.
 
-    ``--force`` is safe here because ``workspace.branch`` is a uuid-scoped name
+    ``--force`` is safe here because ``workspace.branch`` is an allocator-scoped name
     this ONE transaction created and exclusively owns. Each refresh deliberately
     replaces that branch's prior candidate tip as the local transaction advances.
 
@@ -1424,6 +1618,7 @@ def sync_local_main(repo_root: Path) -> bool:
 
 def run_child(
     workspace: ReleaseWorkspace, child_args: Sequence[str], *, verb: str = "release",
+    project_names: Sequence[str] | None = None,
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
@@ -1435,6 +1630,12 @@ def run_child(
     env[CHILD_ENV] = "1"
     env[BRANCH_ENV] = workspace.branch
     env[BASE_ENV] = workspace.base
+    if workspace.workspace_id:
+        env["CMRU_WORKSPACE_ID"] = workspace.workspace_id
+    env["CMRU_WORKSPACE_PATH"] = str(workspace.path)
+    env["CMRU_SOURCE_GIT_ROOT"] = str(workspace.repo_root)
+    if project_names is not None:
+        env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
     launcher = [os.environ.get("CMRU_BIN") or shutil.which("cmru") or "cmru"]
     command = [*launcher, verb, "--_transaction-child", *child_args]
     return subprocess.run(command, cwd=workspace.path, env=env).returncode

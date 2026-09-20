@@ -36,6 +36,8 @@ owner_type="org"
 [targets]
 host="github"
 registry=["{registry}"]
+[runtime]
+kind="none"
 [project]
 id="{name}"
 description="demo"
@@ -61,7 +63,7 @@ commands=[{{label="push",argv=["echo"],cwd="."}}]
 
 
 def central_project_doc(name="demo"):
-    return "schema_version=1\n[project]\n" + project_doc(name).split("[project]\n", 1)[1]
+    return "schema_version=1\n[runtime]\nkind=\"none\"\n[project]\n" + project_doc(name).split("[project]\n", 1)[1]
 
 
 def orch(entry='config="demo/cmru.toml"', order='["demo"]'):

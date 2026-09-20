@@ -19,17 +19,21 @@ def _patch_repo_root(monkeypatch, tmp_path):
     monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: tmp_path)
 
 
-class TestWorktreeAddDispatch:
+class TestWorktreeCreateDispatch:
     def test_forwards_all_options(self, monkeypatch, capsys):
         seen = {}
 
-        def fake_add(
+        def fake_create(
             repo_root,
             name,
             *,
             base,
-            profile,
             worktree_dir,
+            display_name,
+            prefix,
+            feature,
+            branch,
+            path,
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
@@ -39,26 +43,30 @@ class TestWorktreeAddDispatch:
                 repo_root=repo_root,
                 name=name,
                 base=base,
-                profile=profile,
                 worktree_dir=worktree_dir,
+                display_name=display_name,
+                prefix=prefix,
+                feature=feature,
+                branch=branch,
+                path=path,
                 shared_infra=shared_infra,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
             )
-            return Path("/tmp/repo/.worktrees/mypkg")
+            return _ready_record()
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
+        monkeypatch.setattr(wt_mod, "create", fake_create)
         code = cli._worktree(
             [
-                "add",
+                "create",
                 "mypkg",
                 "--base",
                 "develop",
-                "--profile",
-                "core,db",
                 "--worktree-dir",
                 ".wt",
+                "--name",
+                "display",
             ]
         )
         assert code == 0
@@ -66,8 +74,12 @@ class TestWorktreeAddDispatch:
             "repo_root": seen["repo_root"],
             "name": "mypkg",
             "base": "develop",
-            "profile": "core,db",
             "worktree_dir": ".wt",
+            "display_name": "display",
+            "prefix": None,
+            "feature": None,
+            "branch": None,
+            "path": None,
             "shared_infra": None,
             "shared_infra_services": None,
             "shared_infra_ref_projects": None,
@@ -76,38 +88,35 @@ class TestWorktreeAddDispatch:
         assert "worktree ready:" in capsys.readouterr().out
 
     def test_worktree_error_maps_to_exit_2(self, monkeypatch, capsys):
-        def fake_add(*_a, **_kw):
+        def fake_create(*_a, **_kw):
             raise wt_mod.WorktreeError("[S16] boom")
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
-        assert cli._worktree(["add", "mypkg"]) == 2
+        monkeypatch.setattr(wt_mod, "create", fake_create)
+        assert cli._worktree(["create", "mypkg"]) == 2
         assert "[S16] boom" in capsys.readouterr().err
 
-    def test_add_json_refuses_missing_postcondition_record(self, monkeypatch, capsys):
-        monkeypatch.setattr(wt_mod, "add", lambda *_a, **_kw: Path("/tmp/checkout"))
-        monkeypatch.setattr(wt_mod, "find_instance_record", lambda *_a: None)
-        assert cli._worktree(["add", "mypkg", "--json"]) == 2
-        assert "no managed record" in capsys.readouterr().err
-
-    def test_add_json_emits_managed_record(self, monkeypatch, capsys):
+    def test_create_json_emits_managed_record(self, monkeypatch, capsys):
         record = _ready_record()
-        monkeypatch.setattr(wt_mod, "add", lambda *_a, **_kw: record.git_worktree_path)
-        monkeypatch.setattr(wt_mod, "find_instance_record", lambda *_a: record)
-        assert cli._worktree(["add", "mypkg", "--json"]) == 0
-        assert json.loads(capsys.readouterr().out)["operation"] == "add"
+        monkeypatch.setattr(wt_mod, "create", lambda *_a, **_kw: record)
+        assert cli._worktree(["create", "mypkg", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["operation"] == "create"
 
 
-class TestWorktreeAddSharedInfraDispatch:
+class TestWorktreeCreateSharedInfraDispatch:
     def test_forwards_shared_infra_flags(self, monkeypatch, capsys):
         seen = {}
 
-        def fake_add(
+        def fake_create(
             repo_root,
             name,
             *,
             base,
-            profile,
             worktree_dir,
+            display_name,
+            prefix,
+            feature,
+            branch,
+            path,
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
@@ -119,15 +128,13 @@ class TestWorktreeAddSharedInfraDispatch:
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
             )
-            return Path("/tmp/repo/.worktrees/mypkg")
+            return _ready_record()
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
+        monkeypatch.setattr(wt_mod, "create", fake_create)
         code = cli._worktree(
             [
-                "add",
+                "create",
                 "mypkg",
-                "--profile",
-                "core,db",
                 "--shared-infra",
                 "primary",
                 "--shared-infra-services",
@@ -150,13 +157,17 @@ class TestWorktreeAddSharedInfraDispatch:
     def test_shared_infra_flags_default_to_none(self, monkeypatch):
         seen = {}
 
-        def fake_add(
+        def fake_create(
             repo_root,
             name,
             *,
             base,
-            profile,
             worktree_dir,
+            display_name,
+            prefix,
+            feature,
+            branch,
+            path,
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
@@ -168,10 +179,10 @@ class TestWorktreeAddSharedInfraDispatch:
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
             )
-            return Path("/tmp/repo/.worktrees/mypkg")
+            return _ready_record()
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
-        cli._worktree(["add", "mypkg"])
+        monkeypatch.setattr(wt_mod, "create", fake_create)
+        cli._worktree(["create", "mypkg"])
         assert seen == {
             "shared_infra": None,
             "shared_infra_services": None,
@@ -182,11 +193,11 @@ class TestWorktreeAddSharedInfraDispatch:
     def test_partial_shared_infra_error_surfaces_as_exit_2(
         self, monkeypatch, capsys
     ):
-        def fake_add(*_a, **_kw):
+        def fake_create(*_a, **_kw):
             raise wt_mod.WorktreeError("[S16.1] partial group")
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
-        assert cli._worktree(["add", "mypkg", "--shared-infra", "primary"]) == 2
+        monkeypatch.setattr(wt_mod, "create", fake_create)
+        assert cli._worktree(["create", "mypkg", "--shared-infra", "primary"]) == 2
         assert "partial group" in capsys.readouterr().err
 
     def test_ref_services_alone_reaches_the_all_or_nothing_refusal(
@@ -197,13 +208,13 @@ class TestWorktreeAddSharedInfraDispatch:
         forwarded and refused, never quietly accepted as a no-op."""
         seen = {}
 
-        def fake_add(*_a, **kw):
+        def fake_create(*_a, **kw):
             seen.update(kw)
             raise wt_mod.WorktreeError("[S16.1] partial group")
 
-        monkeypatch.setattr(wt_mod, "add", fake_add)
+        monkeypatch.setattr(wt_mod, "create", fake_create)
         assert cli._worktree(
-            ["add", "mypkg", "--shared-infra-ref-services", "vault"]
+            ["create", "mypkg", "--shared-infra-ref-services", "vault"]
         ) == 2
         assert seen["shared_infra_ref_services"] == "vault"
         assert seen["shared_infra"] is None
@@ -440,7 +451,7 @@ class TestManagedLifecycleDispatch:
 
         monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
         assert cli._worktree([
-            verb, "task-one", "--profile", "core",
+            verb, "task-one",
             "--shared-infra", "primary",
             "--shared-infra-services", "api",
             "--shared-infra-ref-projects", "idp-dev-idp",
@@ -459,7 +470,7 @@ class TestManagedLifecycleDispatch:
 
         monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
         assert cli._worktree([
-            "adopt", "task-one", "/tmp/existing", "--profile", "core",
+            "adopt", "task-one", "/tmp/existing",
             "--shared-infra", "primary",
             "--shared-infra-services", "api",
             "--shared-infra-ref-projects", "idp-dev-idp",
@@ -516,14 +527,14 @@ class TestWorktreeUpExecDispatch:
         assert cli._worktree(["exec", "logical-one", "--target", "tester", "--", "pwd"]) == 5
         assert seen == {"logical": "logical-one", "alias": "tester", "argv": ["--", "pwd"]}
 
-    def test_exec_forwards_define_root(self, monkeypatch):
+    def test_exec_forwards_root_folder(self, monkeypatch):
         seen = {}
 
-        def fake_resolve(define_root, cwd):
-            seen["define_root"] = define_root
+        def fake_resolve(start_dir, *, root_folder):
+            seen["define_root"] = root_folder
             return Path("/resolved")
 
-        monkeypatch.setattr(dev, "resolve_repo_root", fake_resolve)
+        monkeypatch.setattr("ciu.workspace.resolve_worktree_git_root", fake_resolve)
 
         def fake_exec(repo_root, logical, argv):
             seen.update(repo_root=repo_root, logical=logical, argv=argv)
@@ -531,7 +542,7 @@ class TestWorktreeUpExecDispatch:
 
         monkeypatch.setattr(wt_mod, "exec_instance", fake_exec)
         assert cli._worktree(
-            ["exec", "logical-one", "--define-root", "/r", "--", "pwd"]
+            ["exec", "logical-one", "--root-folder", "/r", "--", "pwd"]
         ) == 0
         assert seen["define_root"] == "/r"
         assert seen["repo_root"] == Path("/resolved")
@@ -549,9 +560,9 @@ class TestWorktreeUpExecDispatch:
         assert cli._worktree(["exec", "logical-one", "--target"]) == 2
         assert "--target requires an alias" in capsys.readouterr().err
 
-    def test_exec_define_root_missing_value_refuses_exit_2(self, monkeypatch, capsys):
-        assert cli._worktree(["exec", "logical-one", "--define-root"]) == 2
-        assert "--define-root requires a PATH" in capsys.readouterr().err
+    def test_exec_root_folder_missing_value_refuses_exit_2(self, monkeypatch, capsys):
+        assert cli._worktree(["exec", "logical-one", "--root-folder"]) == 2
+        assert "--root-folder requires a PATH" in capsys.readouterr().err
 
     def test_exec_without_logical_name_refuses_exit_2(self, monkeypatch, capsys):
         assert cli._worktree(["exec"]) == 2

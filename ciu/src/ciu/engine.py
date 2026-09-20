@@ -335,10 +335,8 @@ Examples:
                         help="Print merged configuration as JSON with secrets redacted (S4.23)")
     parser.add_argument("--render-toml", action="store_true",
                         help="Render ciu.toml from templates and stop (S8.3 step 3)")
-    parser.add_argument("--define-root", type=Path, default=None, metavar="PATH",
-                        help="Override repository root directory (no parent walking)")
     parser.add_argument("--root-folder", dest="define_root", type=Path, default=None, metavar="PATH",
-                        help="Alias for --define-root")
+                        help="Override repository root directory (no parent walking)")
     parser.add_argument("--skip-hostdir-check", action="store_true",
                         help="Skip hostdir creation/validation (cleanup mode)")
     parser.add_argument("--skip-hooks", action="store_true",
@@ -380,10 +378,8 @@ def _build_secrets_subparser() -> argparse.ArgumentParser:
     parser.add_argument("action", choices=["list", "reset"], help="list or reset secret store files")
     parser.add_argument("-d", "--dir", type=Path, default=Path.cwd(), metavar="PATH",
                         help="Stack directory (default: current directory)")
-    parser.add_argument("--define-root", type=Path, default=None, metavar="PATH",
-                        help="Override repository root directory")
     parser.add_argument("--root-folder", dest="define_root", type=Path, default=None, metavar="PATH",
-                        help="Alias for --define-root")
+                        help="Override repository root directory")
     parser.add_argument("--name", type=str, default=None, metavar="NAME",
                         help="Limit the action to a single secret name (reset only)")
     parser.add_argument("-y", "--yes", action="store_true",
@@ -1373,6 +1369,9 @@ def main_execution(
                 generate_env=generate_env,
                 update_cert_permission=update_cert_permission,
                 required_keys=REQUIRED_KEYS_CORE,
+                allow_identity_repair=(
+                    not dry_run and not print_context and not render_toml
+                ),
             )
         except WorkspaceEnvError:
             raise  # exit 3 via main()
@@ -1381,22 +1380,11 @@ def main_execution(
         # source deploy.py's render path now uses via the shared helper.
         enforce_standalone_root(working_dir)
 
-        # repo_root from --define-root or env REPO_ROOT (keep v1 mismatch rule).
-        if define_root:
-            repo_root = Path(define_root).resolve()
-            env_repo_root = os.environ.get("REPO_ROOT")
-            if env_repo_root and Path(env_repo_root).resolve() != repo_root:
-                raise ValueError(
-                    f"[ERROR] --define-root ({repo_root}) does not match REPO_ROOT ({env_repo_root}). "
-                    "Update ciu.env or use a matching --define-root."
-                )
-        else:
-            env_repo_root = os.environ.get("REPO_ROOT")
-            if not env_repo_root:
-                raise WorkspaceEnvError(
-                    "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
-                )
-            repo_root = Path(env_repo_root).resolve()
+        # The selected root comes from the nearest committed marker (or the
+        # explicit override). REPO_ROOT is seeded as an output for child
+        # processes after this decision and cannot redirect it.
+        repo_root = resolve_env_root(working_dir, define_root, GLOBAL_CONFIG_DEFAULTS)
+        os.environ["REPO_ROOT"] = str(repo_root)
 
         # ---- Step 2: render global chain (S3.3) ----
         print("[STEP 2/17] Rendering global configuration...", flush=True)
@@ -1931,49 +1919,11 @@ def run_shipped(
             generate_env=generate_env,
             update_cert_permission=update_cert_permission,
             required_keys=REQUIRED_KEYS_CORE,
+            allow_identity_repair=not dry_run,
         )
 
-        if define_root:
-            repo_root = Path(define_root).resolve()
-        else:
-            # CIU-46 (review): prefer THIS checkout's own env root — found by
-            # walking UP from the stack dir to its global-defaults marker —
-            # over an ambient `REPO_ROOT`, which a shell that sourced ANOTHER
-            # checkout's ciu.env carries. A linked worktree nested under its
-            # main checkout would otherwise name its compose project with the
-            # MAIN instance's identity record and silently adopt main's
-            # containers. The walk-up lands on exactly the env root
-            # bootstrap_workspace_env loaded, so naming and environment agree.
-            resolved_env_root = resolve_env_root(
-                working_dir, None, GLOBAL_CONFIG_DEFAULTS
-            )
-            # resolve_env_root falls back to start_dir when NOTHING is found;
-            # only an actually-present marker makes this the checkout's root.
-            marker_found = (
-                resolved_env_root / GLOBAL_CONFIG_DEFAULTS
-            ).is_file()
-            env_repo_root = os.environ.get("REPO_ROOT")
-            if marker_found:
-                if (
-                    env_repo_root
-                    and Path(env_repo_root).resolve() != resolved_env_root.resolve()
-                ):
-                    print(
-                        "[INFO] [S8.7] ambient REPO_ROOT points at "
-                        f"{Path(env_repo_root).resolve()} but this stack's "
-                        f"checkout resolves to {resolved_env_root} — using the "
-                        "checkout's own record for compose project identity.",
-                        flush=True,
-                    )
-                repo_root = resolved_env_root.resolve()
-                os.environ["REPO_ROOT"] = str(repo_root)
-            elif env_repo_root:
-                # No local marker to trust; keep the bootstrapped environment.
-                repo_root = Path(env_repo_root).resolve()
-            else:
-                raise WorkspaceEnvError(
-                    "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
-                )
+        repo_root = resolve_env_root(working_dir, define_root, GLOBAL_CONFIG_DEFAULTS)
+        os.environ["REPO_ROOT"] = str(repo_root)
 
         # ---- Global chain only (no stack config in shipped mode) ----
         print("[SHIPPED 2/4] Rendering global configuration...", flush=True)
@@ -2153,9 +2103,7 @@ def secrets_command(args: argparse.Namespace) -> int:
             update_cert_permission=False,
             required_keys=REQUIRED_KEYS_CORE,
         )
-        repo_root = Path(
-            str(args.define_root.resolve()) if args.define_root else os.environ.get("REPO_ROOT", str(working_dir))
-        ).resolve()
+        repo_root = resolve_env_root(working_dir, args.define_root, GLOBAL_CONFIG_DEFAULTS)
 
         global_config = config_model.render_global_chain(working_dir, repo_root)
         stack_config = config_model.render_stack(working_dir, global_config, preserve_state=True)

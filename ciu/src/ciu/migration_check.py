@@ -389,7 +389,7 @@ def document(repo_root: Path, findings: list[Finding]) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    """``ciu migration-check [--define-root PATH] [--json]`` (S13.7).
+    """``ciu migration-check [--root-folder PATH] [--json]`` (S13.7).
 
     Exit code is **0 when there are no findings and non-zero when there are
     any**, regardless of severity. That is deliberately NOT ``ciu check``'s
@@ -403,7 +403,7 @@ def main(argv: list[str]) -> int:
     parser = CiuArgumentParser(
         prog="ciu migration-check", add_help=False, allow_abbrev=False
     )
-    parser.add_argument("--define-root", "--root-folder", dest="define_root",
+    parser.add_argument("--root-folder", dest="define_root",
                         default=None)
     parser.add_argument("--json", dest="json_output", action="store_true",
                         default=False)

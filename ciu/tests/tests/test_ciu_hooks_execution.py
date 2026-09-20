@@ -89,7 +89,7 @@ def _set_env(tmp_path: Path) -> None:
     os.environ["CIU_SKIP_DOOD_PREFLIGHT"] = "1"
 
 
-def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
+def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch, write_instance_facts):
     stack = _write_repo(tmp_path)
     _set_env(tmp_path)
     # Avoid generating ciu.env (machine detection) and skip the network step.
@@ -102,6 +102,14 @@ def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
             )
         )
         + "\n"
+    )
+    write_instance_facts(
+        tmp_path,
+        repo_name="hooks-test",
+        instance_id="abc123",
+        network="hooks-test-net",
+        repo_root=str(tmp_path),
+        physical_repo_root=str(tmp_path),
     )
     monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
 
@@ -123,7 +131,7 @@ def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
     assert state.get("state", {}).get("seeded") is True
 
 
-def test_engine_skip_hooks_bypasses_hook(tmp_path, monkeypatch):
+def test_engine_skip_hooks_bypasses_hook(tmp_path, monkeypatch, write_instance_facts):
     stack = _write_repo(tmp_path)
     _set_env(tmp_path)
     (tmp_path / "ciu.env").write_text(
@@ -135,6 +143,14 @@ def test_engine_skip_hooks_bypasses_hook(tmp_path, monkeypatch):
             )
         )
         + "\n"
+    )
+    write_instance_facts(
+        tmp_path,
+        repo_name="hooks-test",
+        instance_id="abc123",
+        network="hooks-test-net",
+        repo_root=str(tmp_path),
+        physical_repo_root=str(tmp_path),
     )
     monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
 

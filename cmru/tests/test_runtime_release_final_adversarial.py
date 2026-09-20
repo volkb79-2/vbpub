@@ -87,5 +87,12 @@ class TestRetentionAtomicity:
         path = repo / ".worktrees" / "b"; path.mkdir()
         monkeypatch.setattr("cmru.transaction._common_git_dir", lambda p: repo / ".git")
         monkeypatch.setattr("cmru.transaction._git", lambda p, *a, **k: "cmru/build/x" if a == ("branch", "--show-current") else "sha")
+        monkeypatch.setattr(
+            "cmru.transaction._shared_worktree",
+            lambda: SimpleNamespace(
+                discover_git_context=lambda _path: (repo, repo / ".git", "cmru/build/x", "sha"),
+                list_workspaces=lambda _common: [],
+            ),
+        )
         ws = discard_build_workspace(repo, path, dry_run=True)
         assert ws.path == path and path.exists()

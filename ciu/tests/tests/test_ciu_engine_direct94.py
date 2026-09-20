@@ -26,7 +26,8 @@ def _prepare(monkeypatch, stack: Path, global_config: dict):
     monkeypatch.setattr(engine, "to_physical_path", lambda path, **_kwargs: path)
 
 
-def test_shipped_without_define_root_requires_bootstrapped_repo_root(monkeypatch, tmp_path: Path):
+@pytest.mark.ciu_no_auto_root
+def test_shipped_without_define_root_requires_committed_root_marker(monkeypatch, tmp_path: Path):
     """Shipped mode cannot guess a repository if bootstrap did not establish one."""
 
     stack = tmp_path / "stack"
@@ -39,12 +40,14 @@ def test_shipped_without_define_root_requires_bootstrapped_repo_root(monkeypatch
         lambda *_args: pytest.fail("must reject before global rendering"),
     )
 
-    with pytest.raises(engine.WorkspaceEnvError, match="REPO_ROOT not set"):
+    with pytest.raises(engine.WorkspaceEnvError, match=r"\[no-ciu-root\]"):
         engine.run_shipped(stack)
 
 
 def test_shipped_override_uses_scoped_project_guard_and_returns_interrupted(monkeypatch, tmp_path: Path):
     """A supplied network choice wins and an interrupted compose is represented, not raised."""
+
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
 
     stack = tmp_path / "stack"
     stack.mkdir()
@@ -76,6 +79,8 @@ def test_shipped_override_uses_scoped_project_guard_and_returns_interrupted(monk
 
 def test_shipped_compose_error_propagates_as_typed_runtime_failure(monkeypatch, tmp_path: Path):
     """A failed shipped compose cannot become a successful result dictionary."""
+
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
 
     stack = tmp_path / "stack"
     stack.mkdir()

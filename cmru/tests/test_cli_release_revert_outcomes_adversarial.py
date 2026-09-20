@@ -5,6 +5,15 @@ import pytest
 from cmru import cli, transaction
 
 
+@pytest.fixture(autouse=True)
+def fake_git_family(monkeypatch):
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
 def _loaded(tmp_path):
     project = cli.ProjectConfig("alpha", {}, {}, project_root=tmp_path / "alpha", prefix="alpha-v", github_token="token")
     return (

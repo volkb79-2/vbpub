@@ -36,6 +36,8 @@ owner_type = "org"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo project"
@@ -61,7 +63,7 @@ commands = [{label = "push", argv = ["echo", "ok"], cwd = "."}]
 
 
 def central_project_toml() -> str:
-    return "schema_version = 1\n[project]\n" + project_toml().split("[project]\n", 1)[1]
+    return "schema_version = 1\n[runtime]\nkind = \"none\"\n[project]\n" + project_toml().split("[project]\n", 1)[1]
 
 
 def orch_toml(entry: str = 'config = "demo/cmru.toml"', order: str = '["demo"]') -> str:

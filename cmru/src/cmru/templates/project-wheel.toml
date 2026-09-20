@@ -3,6 +3,9 @@
 # Secrets never belong here (gitignored cmru.secret.toml overlays supply them).
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 @@NOTES_ENV_KEY@@ = "## @@PROJECT_ID@@ wheel\n\n<release notes markdown>"
 

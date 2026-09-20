@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from cmru import cli, transaction, version
 
 
@@ -90,10 +92,13 @@ def test_status_without_project_delegates_all_ordered_projects(monkeypatch, tmp_
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
+    monkeypatch.setattr(cli.transaction, "project_git_family_groups", lambda root, projects: {root: list(projects)})
     seen = []
     monkeypatch.setattr(version, "status_cmd", lambda *args, **kwargs: seen.append(args[1]))
     cli.main(["status", "--_transaction-child", "--config", str(tmp_path / "cmru.toml")])
-    assert seen == [{"demo": config[1]["demo"]}]
+    assert len(seen) == 1
+    assert seen[0]["demo"].name == "demo"
+    assert seen[0]["demo"].project_root == tmp_path
 
 
 def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, tmp_path):

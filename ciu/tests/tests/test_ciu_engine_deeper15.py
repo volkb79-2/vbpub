@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine  # noqa: E402
 
 
+@pytest.mark.ciu_no_auto_root
 def test_cli_rejects_bootstrap_without_repo_root_before_render_or_deployment(tmp_path, monkeypatch, capsys):
     """S2/S10.3: no resolved workspace root is an environment failure, not a deploy.
 
@@ -41,5 +42,5 @@ def test_cli_rejects_bootstrap_without_repo_root_before_render_or_deployment(tmp
     )
 
     assert engine.main(["--dry-run", "-d", str(tmp_path)]) == 3
-    assert "REPO_ROOT not set" in capsys.readouterr().out
+    assert "[no-ciu-root]" in capsys.readouterr().out
     assert list(tmp_path.iterdir()) == []

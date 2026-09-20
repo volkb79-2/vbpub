@@ -42,12 +42,12 @@ def test_config_orchestration_dependency_order_rejects_late_provider(tmp_path):
     for name in ("consumer", "provider"):
         document = (
             "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
-            "[targets]\nhost='github'\nregistry=[]\n[project]\nid='" + name + "'\n"
+            "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='" + name + "'\n"
             "description='demo'\nprefix='" + name + "-v'\nartifacts=['bundle']\n"
             "[project.version]\nstrategy='scm'\nbump='patch'\n[project.release]\n"
             "git_tag=false\nbuild_step='build'\nartifact_dirs=['dist']\n"
         )
-        document = "schema_version=1\n[project]\n" + document.split("[project]\n", 1)[1]
+        document = "schema_version=1\n[runtime]\nkind='none'\n[project]\n" + document.split("[project]\n", 1)[1]
         (tmp_path / name / "cmru.toml").write_text(document, encoding="utf-8")
     with pytest.raises(SystemExit) as error:
         config.load_forge_config(path, require_orchestration=True)
@@ -58,7 +58,7 @@ def test_config_project_and_orchestration_tables_fail_closed(tmp_path, capsys):
     project = tmp_path / "cmru.toml"
     project.write_text(
         "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
-        "[targets]\nhost='github'\nregistry=[]\n[project]\nid='demo'\n"
+        "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n[project]\nid='demo'\n"
         "description='demo'\nprefix='demo-v'\nartifacts=['wheel']\n"
         "[project.version]\nstrategy='scm'\nbump='patch'\n"
         "[project.release]\ngit_tag=false\nbuild_step='build'\nartifact_dirs=[]\n",
@@ -145,7 +145,7 @@ def test_config_missing_project_table_and_empty_project_path_fail_closed(tmp_pat
     project = tmp_path / "cmru.toml"
     project.write_text(
         "schema_version=1\n[github]\nowner='o'\nrepo='r'\nowner_type='org'\n"
-        "[targets]\nhost='github'\nregistry=[]\n",
+        "[targets]\nhost='github'\nregistry=[]\n[runtime]\nkind='none'\n",
         encoding="utf-8",
     )
     with pytest.raises(SystemExit) as error:

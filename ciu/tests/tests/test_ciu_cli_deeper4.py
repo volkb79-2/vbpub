@@ -76,7 +76,7 @@ def test_dev_forwards_all_public_options_and_handler_exit(monkeypatch, tmp_path)
 
     assert _run(
         monkeypatch,
-        ["dev", "web", "--profile", "laptop", "--no-prebuild", "--define-root", "/source"],
+        ["dev", "web", "--profile", "laptop", "--no-prebuild", "--root-folder", "/source"],
     ) == 19
     assert calls == [("web", resolved, "laptop", True)]
 

@@ -354,6 +354,9 @@ owner_type = "user"
 host = "github"
 registry = ["ghcr.io"]
 
+[runtime]
+kind = "none"
+
 [project]
 id = "p"
 description = "test product"

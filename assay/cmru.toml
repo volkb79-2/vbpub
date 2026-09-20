@@ -1,5 +1,8 @@
 schema_version = 1
 
+[runtime]
+kind = "none"
+
 [env]
 ASSAY_RELEASE_NOTES = "## assay wheel + zipapp\n\nDeclared test lanes and machine-readable verdicts for a commit.\n\n**Install (wheel)**\n```bash\npipx install assay-*.whl\n```\n\n**No package manager? Use the zipapp**\n```bash\nchmod +x assay-*.pyz && ./assay-*.pyz --help\n```"
 

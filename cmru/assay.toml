@@ -3,23 +3,62 @@
 # the existing project test command, rather than recursively invoking CMRU's
 # tester-gate wrapper.
 #
-# R0 is the only honest Assay declaration in this monorepo today.  The
-# published R1+ snapshot substrate deliberately refuses Topos's tracked
-# absolute-symlink security fixtures before it can run CMRU's isolated
-# snapshot.  A project-scoped snapshot is a versioned Assay product decision,
-# not a consumer-side bypass.  CMRU's outer tester-unified gate separately
-# enforces whole-source line and branch coverage at 100% until that capability
-# is released and pinned here.
+# CMRU uses the same source-backed tester-unified Assay lane for the complete
+# Python rigor ladder.  The repository-minus-unsafe-symlinks selection is the
+# estate-approved monorepo boundary: it omits only the three tracked Topos
+# fixture links that cannot be materialised safely, while preserving every
+# other tracked path from the judged commit.
 schema_version = 2
 
 [lanes.cmru]
 scope = "S1"
-rigor = ["R0"]
+rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"]
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
 # These are project test facts, not ambient conveniences: pytest must import
 # the source snapshot it is judging, and it must not create bytecode there.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = []
-budget = "20m"
+budget = "8h"
 allow_argv_append = false
+
+[lanes.cmru.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cmru.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "main"
+
+[lanes.cmru.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.cmru.judge.mutation]
+# Keep mutation candidates serial: the baseline already uses the project's
+# normal test process, and the host shares capacity with production services.
+jobs = 1
+max_mutants = 10000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "5m"
+
+[lanes.cmru.judge.canary]
+# Import-break proves that the complete declared gate rejects a known-bad
+# source snapshot, independent of the mutation campaign's individual tests.
+mechanism = "import-break"
+target = "src/cmru/config.py"
+budget_per_attempt = "20m"

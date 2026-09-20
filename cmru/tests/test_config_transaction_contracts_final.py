@@ -40,6 +40,8 @@ owner_type = "org"
 [targets]
 host = "github"
 registry = []
+[runtime]
+kind = "none"
 [project]
 id = "{name}"
 description = "test"

@@ -1,16 +1,87 @@
 # CIU and CMRU shared workspace-instance plan
 
-Status: proposal after first adversarial review; open decisions remain  
-Prepared: 2026-09-19  
-Base commit: `c22fa2f40edd3ab90ede20160b2edd0a85bba02e`  
-Worktree: `.worktrees/ciu-cmru-workspace-instance`  
+Status: implemented; adversarial review and local closure evidence are in
+[`REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md`](REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md)
+Prepared: 2026-09-19
+Updated: 2026-09-20
+Base commit: `467a889f70e5eac6fd6472c4fcdcbc0d95ba777a`
+Worktree: `.worktrees/ciu-cmru-workspace-instance`
 Branch: `feat/ciu-cmru-workspace-instance`
 
-This document is the design contract to review before implementation. It records
-the problem, the intended ownership boundaries, the observable behavior, and the
-proof needed to decide whether the change is safe. It is deliberately separate
-from the implementation commits so that a reviewer can reject an unsafe seam
-without first untangling a large patch.
+This document began as the design contract for review before implementation. It
+records the problem, the intended ownership boundaries, the observable
+behavior, and the proof needed to decide whether the change is safe. The
+implementation and the sibling adversarial-review ledger now preserve that
+contract as an inspectable worktree diff.
+
+The original proposal is committed at `0e126afd`; the review edits after that
+commit are retained as the rationale for the implementation. The current
+worktree contains the implementation, adapted tests, and closure evidence.
+
+## Response to the review
+
+The following decisions are now part of the proposal:
+
+- The shared project lives at `libraries/worktree` as an internal dependency.
+  It is not a separately registered CMRU project or independently released
+  wheel. CIU and CMRU package and test the same library source in their own
+  release transactions, so a released pair is based on one estate commit and
+  does not need a third release order or compatibility tag.
+- The user-facing root override is `--root-folder`. The proposal does not
+  introduce a second spelling called `--define-root`.
+- `ciu worktree create` is a workspace operation. It discovers and prepares all
+  committed CIU roots in the selected Git worktree by default. There is no
+  worktree verb whose normal meaning is “prepare only one nested root”. A
+  root-specific operation is an ordinary stack verb run from that root.
+- Ordinary stack verbs select the nearest root above `pwd` (or `--dir`). An
+  explicit `--root-folder` is an override for the containing root. Ambient
+  `REPO_ROOT`, `PHYSICAL_REPO_ROOT`, and identity variables are ignored as
+  selectors.
+- The existing `add` spelling has no distinct lifecycle meaning: it is an old
+  synonym for `create`. The new contract uses `create`, `adopt`, `ensure`,
+  `inspect`, `list`, `rm`, `up`, `exec`, `lease`, `branches`, and `reap`; the
+  implementation will remove `add` rather than preserve two names for one
+  operation. `create` allocates a new linked checkout, `adopt` records an
+  already-existing checkout, and `ensure` resumes or repairs the record for a
+  checkout that is already allocated; those are the distinct lifecycle states
+  the names need to communicate.
+- Workspace and root identities are six-character, lower-case base-36 values
+  derived from canonical physical paths. A workspace identity normally uses the
+  worktree directory; an adapter that must expose the identity in a name that
+  contains it supplies an explicit canonical allocation path, which the shared
+  record persists and rechecks. A nested CIU root gets a different identity from
+  its own path. Runtime names include both the workspace identity and the root
+  identity, so a container remains traceable to its enclosing worktree even
+  when the CIU root is below it. A detected collision refuses and reports both
+  paths; it never silently lengthens or replaces an identity.
+- A recursive scan is useful only for discovering committed root markers. It
+  cannot use `ciu.global.instance.toml.j2` as the marker: that file is optional,
+  gitignored, and user-owned, so it may be absent in a new worktree and must not
+  be overwritten with derived identity. The scan therefore enumerates the
+  committed root marker grammar and writes each root's generated facts through
+  `ciu env generate`.
+- `--profile` is removed from `ciu worktree create`. Creation prepares every
+  committed root in the selected Git worktree with that root's declared
+  defaults; a non-prepared root cannot be safely started. Profile selection
+  remains a root-scoped option for ordinary verbs, with the root selected from
+  the nearest root above the invocation directory or an explicit
+  `--root-folder`.
+- The project-level runtime declaration is explicit (`[runtime] kind =
+  "none"` or `"ciu"`); CMRU does not infer a runtime from Docker or Compose.
+- Successful releases continue to retain logs and artifacts by default. The
+  existing explicit discard options remain the only opt-outs.
+- A CMRU root may be outside or above one or more Git repositories. Each
+  registered project gets its own Git-family workspace context, so a CMRU
+  transaction may coordinate several Git families without pretending that one
+  worktree contains them all. A project path equal to the CMRU root is valid;
+  containment is inclusive. The known limitation is that publication across
+  independent repositories cannot be one Git atomic commit, so transaction
+  state and recovery evidence must identify each project's promotion result.
+
+The implementation is now present in this worktree. The sibling review ledger
+records the remaining qualification boundary: local suites and coverage are
+green, while the real tester-unified admission requires the host-provided gate
+cgroup and cannot be substituted by cockpit execution.
 
 ## Why this change is needed
 
@@ -34,7 +105,7 @@ devcontainer has ambient `REPO_ROOT=/workspaces/dstdns`, while the operator is i
 `/workspaces/vbpub`. The checkout's ignored `ciu.env` contains the correct
 `/workspaces/vbpub` value, but `ciu worktree` resolves the root before it has a
 workspace context and can therefore select the unrelated ambient repository. A
-manual `--define-root` currently repairs the invocation, but every verb must not
+manual `--root-folder` currently repairs the invocation, but every verb must not
 depend on an operator remembering that repair.
 
 There is a second source of confusion in the current contract. `ciu.env` is a
@@ -95,10 +166,11 @@ invocation directory
 
 ### Shared workspace-instance library
 
-The library is a first-party package with a releaseable API. Its final package
-name is an open decision; the recommended role is a neutral name such as
-`workspace-instance`, rather than putting shared behavior in CIU and making CMRU
-depend on CIU's product package.
+The library is an internal first-party package under `libraries/worktree`. It
+is deliberately neutral rather than putting shared behavior in CIU and making
+CMRU depend on CIU's product package. CIU and CMRU include the same source in
+their own wheels and release gates; it has no independent registration or
+release transaction.
 
 It owns:
 
@@ -121,13 +193,19 @@ It does not:
 - use an ambient `REPO_ROOT` as a fallback.
 
 The library must expose a typed context rather than requiring consumers to
-reconstruct facts from environment variables. The exact public names are to be
-fixed before implementation, but the shape is:
+reconstruct facts from environment variables. `source_git_root` is the top
+level of the checkout selected as the base for the operation; `worktree_path`
+is the top level of the checkout being created or operated on. They are equal
+for a primary checkout and different for a linked worktree. Neither is the
+worktree-family lock key: `git_common_dir` is the shared object/ref-store
+anchor returned by Git and is what serializes the family. The exact public
+names are to be fixed before implementation, but the shape is:
 
 ```text
 WorkspaceContext
-  git_root: LogicalPath
+  source_git_root: LogicalPath
   worktree_path: LogicalPath
+  git_common_dir: LogicalPath
   physical_worktree_path: PhysicalPath
   workspace_id: str
   branch: str
@@ -149,18 +227,25 @@ scopes are not interchangeable:
 ```text
 InvocationContext
   invocation_dir
-  git_root                 # Git object/worktree family, if any
+  source_git_root          # checkout selected as the Git source, if any
+  git_common_dir           # Git object/ref family lock anchor, if any
+  worktree_path            # selected/allocated checkout, if any
   cmru_root                # nearest orchestration file, if any
   ciu_root                 # selected CIU root, if any
   physical_* paths         # explicit host namespace translations
 ```
 
 The library must distinguish a workspace identity from a root-local identity.
-One Git worktree can contain several CIU roots. The workspace identity identifies
-the checkout; the root instance identity includes the root offset so that two
-roots do not share a network or collide merely because they contain stacks with
-the same basename. CMRU uses the workspace identity; CIU uses the root identity
-for CIU-owned runtime resources.
+One Git worktree can contain several CIU roots. Each identity is the first six
+characters of a collision-checked lower-case base-36 digest of its canonical
+physical path: the workspace digest uses the worktree directory and the root
+digest uses the CIU-root directory. This retains CIU's existing path-derived
+identity idea while expanding its alphabet from hexadecimal. A collision is a
+hard refusal naming both paths. The workspace identity identifies the
+checkout; the root instance identity identifies the nested root. CMRU uses the
+workspace identity. CIU resource names include both identities (omitting the
+duplicated component when the paths are identical), so a nested-root container
+still visibly belongs to its enclosing worktree.
 
 ### CIU adapter
 
@@ -200,11 +285,12 @@ not become a dumping ground for release policy.
 
 CMRU's existing promise that a central orchestration file may sit above several
 repositories must be made explicit. A read-only `resolve` can operate on each
-registered project independently. A single source-first release transaction can
-only use one Git common directory unless CMRU gains a separate multi-repository
-candidate/promotion model. The recommended first implementation refuses a
-selected release set spanning multiple Git families before allocating anything;
-it must not treat the CMRU root as a Git root by accident.
+registered project independently, and a release transaction creates one
+workspace context per selected project/Git family. The transaction may
+coordinate several Git families, but it must never treat the CMRU root as a Git
+root or pretend that independent repositories share one worktree. Promotion
+and recovery evidence is recorded per project because Git cannot make those
+independent commits atomic.
 
 ## Root and identity resolution contract
 
@@ -213,15 +299,20 @@ it must not treat the CMRU root as a Git root by accident.
 For `up`, `down`, `render`, `check`, `graph`, `health`, `clean`, `profiles`,
 `env`, and other single-root verbs:
 
-1. An explicit `--define-root`/`--root-folder` wins and is canonicalized.
+1. An explicit `--root-folder` wins and is canonicalized.
 2. Otherwise walk upward from the invocation directory (or the explicit `--dir`
    stack target) to the nearest CIU root marker.
 3. If no marker is found, refuse with a typed `no-ciu-root` diagnostic naming
    the marker and the valid override. Do not use ambient `REPO_ROOT` and do not
    silently treat the current directory as a CIU root.
-4. Read that root's generated facts at the exact path
-   `<ciu-root>/ciu.instance.generated.toml`. A missing or malformed record is a
-   repair/refusal case, not an invitation to read a sibling or ambient file.
+4. For read-only and inspection verbs, read that root's generated facts at the
+   exact path `<ciu-root>/ciu.instance.generated.toml`. A missing or malformed
+   record is a refusal, not an invitation to read a sibling or ambient file.
+   For a runtime-start verb such as `up`, first derive the physical facts and
+   perform the equivalent of `ciu env generate`, atomically refreshing the
+   selected root's generated record; if derivation fails, refuse before any
+   runtime resource is started. This automatic refresh is the only start-time
+   repair path and is also available explicitly at any time.
 
 `REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `INSTANCE_ID`, and network variables are
 outputs in the child process after context selection. They are never root
@@ -233,29 +324,26 @@ or ignored according to the verb; it cannot redirect a destructive operation.
 `ciu worktree create`, `ensure`, `inspect`, `list`, `rm`, and related operations
 need the Git family before they know which nested CIU root is active:
 
-1. An explicit root is canonicalized and used as the containing Git repository.
+1. An explicit `--root-folder` identifies and canonicalizes the containing Git
+   repository. It does not reduce the operation to one nested CIU root.
 2. Otherwise derive the Git top level from the invocation directory using Git.
-3. Determine the CIU-root selection. If the invocation is below one root, that
-   nearest root is the default. If the Git tree contains multiple roots, the
-   command must either receive an explicit root selector or use an explicit
-   “all roots” mode. It must not select an arbitrary marker by directory scan
-   order. The marker set for the selected base commit is verified with
-   `git ls-tree <base>` before the worktree is allocated.
+3. Enumerate every committed CIU root in that Git worktree using the closed
+   marker grammar. The all-roots behavior is implicit and deterministic; there
+   is no `--all` switch and no root selector on a worktree lifecycle verb. The
+   marker set for the selected base commit is verified with `git ls-tree <base>`
+   before the worktree is allocated.
 4. Create or adopt one Git worktree through the shared library.
-5. In the new worktree, recreate the selected relative offset(s) and prepare
-   each root independently. An explicit “all roots” request may prepare every
-   committed root, but the resulting list must be deterministic and must not
-   include test fixtures or ignored personal markers accidentally.
+5. In the new worktree, recreate and prepare every discovered root
+   independently. A root-specific repair or profile operation is performed by
+   an ordinary CIU verb from that root, using its nearest-root resolver.
 
 The discovery set must be based on tracked/committed marker files from the
 selected base commit. Ignored personal configuration must not silently turn into
-a new runtime root. The marker grammar must be closed and documented; the
-current `ciu.global.defaults.toml.j2` marker appears in test fixtures in this
-repository, so a recursive glob alone is insufficient. The recommendation is a
-small committed root marker or an explicit root declaration in the global
-defaults file, with a test proving that fixtures are not adopted. A repository
-with no CIU markers can still use the generic library and CMRU, but `ciu
-worktree` must say that there are no CIU roots to prepare.
+a new runtime root. A recursive scan is sufficient only when restricted to
+tracked paths and validated against the closed marker grammar; the ignored,
+optional `ciu.global.instance.toml.j2` is not a root marker. A repository with
+no CIU markers can still use the generic library and CMRU, but `ciu worktree`
+must say that there are no CIU roots to prepare.
 
 ### CMRU invocation context
 
@@ -294,16 +382,18 @@ machine-facts document. There must not be an undocumented third source.
 
 `ciu env generate` may continue to write `ciu.env` so existing manual shell
 workflows remain useful, but no CIU internal code may load that file to select a
-root, seed identity, or repair a generated record. Machine facts that are needed
-internally must have an explicit generated-file owner and exact-path read.
+root, seed identity, or repair a generated record. A runtime-start verb invokes
+the same generator and may overwrite derived facts for its selected root after
+physical-fact derivation succeeds. Machine facts that are needed internally
+must have an explicit generated-file owner and exact-path read.
 
 The generated schema must define required keys, schema version, atomic write,
 permissions, missing/corrupt behavior, repair authorization, and the exact
 translation used by `ciu env print`. Values such as TLS paths may be facts, but
 secret contents must never be copied into the generated record. A malformed
 `ciu.env` must have no effect on product execution; a malformed generated record
-must refuse the operation or enter an explicit repair command, never fall back to
-ambient shell state.
+must be regenerated by a runtime-start verb from physical facts or refused when
+the verb cannot regenerate it, never falling back to ambient shell state.
 
 The migration must inventory and remove or narrow every internal `ciu.env` read,
 including bootstrap helpers, child-environment construction, compose environment
@@ -338,12 +428,12 @@ idempotent and resumable per root. A failure in root 2 must not cause root 1 to
 be silently forgotten; cleanup must inspect all root states before removing the
 Git worktree.
 
-`--profile` is currently a single-root concept. For a multi-root worktree command,
-the implementation must either require an explicit root/profile mapping or refuse
-an unqualified profile with a diagnostic. It must not apply one profile to all
-roots by accident. The recommended grammar is a repeatable root-qualified form,
-for example `--root-profile ciu-root1=dev --root-profile ciu-root2=ci`, but this
-needs a final CLI decision before code is written.
+`--profile` is a single-root option. The resolver selects the nearest CIU root
+above the invocation directory and interprets the profile name against that
+root's own profile table. `ciu worktree create` does not accept `--profile`:
+creation prepares every root with its declared defaults, and a later ordinary
+root-scoped command can select a profile for one root without applying it to
+another root accidentally.
 
 ## Locks and concurrency
 
@@ -407,14 +497,13 @@ release attempt. CIU-generated container and network names should use the same
 workspace/root identity. CMRU must not independently append an unrelated UUID to
 the Docker-facing namespace.
 
-The existing CMRU branch/worktree `uuid8` is therefore subject to a deliberate
-replacement decision. Recommended direction: use the shared workspace identity
-in the visible branch/worktree/resource name, retain an internal collision check,
-and refuse/retry if an existing name is present. If the shared identity cannot
-provide adequate collision freedom for two same-second attempts, retain a
-transaction-only nonce in CMRU metadata while keeping Docker-facing names tied to
-the shared identity. This decision must be resolved by an acceptance probe before
-the allocator API is frozen.
+The existing CMRU branch/worktree `uuid8` is replaced by the six-character
+shared workspace identity in the visible branch, worktree, and resource name.
+The allocator retains a collision check and refuses with both paths if the
+identity is already claimed; it does not add an unrelated UUID. The allocation
+identity is stable because its canonical input is recorded in the shared
+workspace record, while the CMRU transaction record still carries its full
+branch and source metadata for recovery.
 
 ## Verb consistency
 
@@ -424,11 +513,11 @@ that erases legitimate differences.
 
 | Tool | Verb family | Default context | Explicit override | Refusal |
 |---|---|---|---|---|
-| CIU | stack verbs | nearest CIU root above cwd/`--dir` | `--define-root` | no marker / malformed generated facts |
-| CIU | worktree verbs | Git root plus the cwd-selected nested root | explicit root selector or explicit `all` / path / base | no Git root / ambiguous root / collision / partial root preparation |
-| CIU | `env generate` | selected CIU root | explicit root | missing physical facts or ambiguous root |
+| CIU | stack verbs | nearest CIU root above cwd/`--dir` | `--root-folder` | no marker / failed start-time generation / malformed facts on non-start verbs |
+| CIU | worktree verbs | Git root plus all committed nested roots | `--root-folder` selects the containing Git family; no nested-root selector | no Git root / invalid marker / collision / partial root preparation |
+| CIU | `env generate` | selected CIU root | `--root-folder` | missing physical facts or ambiguous root |
 | CMRU | project-aware verbs | nearest CMRU orchestration root; omitted target means cwd project or configured estate | explicit config and positional target list | no central config / unregistered project / path escape |
-| CMRU | release/build transaction | selected CMRU root plus Git root for each project | explicit orchestration/config | non-fast-forward, runner/runtime declaration error |
+| CMRU | release/build transaction | selected CMRU root plus one Git-family context per project | explicit orchestration/config | non-fast-forward, runner/runtime declaration error |
 
 All CIU and CMRU parser/configuration diagnostics retain the estate version
 headline as line 1. `--version` is accepted as a top-level compatibility spelling
@@ -453,8 +542,8 @@ The change should land in small, reviewable commits. A suggested sequence is:
    enumerate committed roots, write root-local records, lock roots in order, and
    resume partial preparation safely.
 5. **CMRU allocator migration.** Use the shared workspace allocator for release
-   and build transactions, add identity labels/evidence, and resolve the visible
-   name/nonce decision.
+   and build transactions, add identity labels/evidence, and run the path-ID
+   collision and namespace acceptance probes.
 6. **CMRU runtime declaration.** Add and validate `none`/`ciu`, refuse unsupported
    project-owned multi-container runtimes, and document the known limitation.
 7. **Docs and compatibility.** Update CIU and CMRU SPEC, README, DESIGN-GUIDE,
@@ -476,17 +565,17 @@ The final review must be able to point from every behavior to a real oracle.
 
 | Behavior | Required oracle | Negative case |
 |---|---|---|
-| cwd wins over stale ambient root | invoke from `/workspaces/vbpub` with `REPO_ROOT=/workspaces/dstdns` | selected root is dstdns |
-| explicit root wins | pass `--define-root` from an unrelated cwd | explicit root is ignored |
+| cwd wins over stale ambient root | invoke from `/workspaces/vbpub` with `REPO_ROOT=/workspaces/dstdns` | selected root is dstdns or the command refuses despite a valid cwd root |
+| explicit root wins | pass `--root-folder` from an unrelated cwd | explicit root is ignored |
 | no silent fallback | invoke with no marker and no explicit root | cwd/ambient root is invented |
 | `ciu.env` is export-only | sibling `ciu.env` has a different identity | sibling identity is adopted |
 | generated facts are exact-path authority | remove/mangle selected facts | another checkout is read |
-| nested root discovery | two committed markers below one Git root | only the first marker is prepared |
+| nested root discovery | two committed markers below one Git root | an untracked/ignored overlay is adopted as a third root |
 | root isolation | same stack basename below two roots | both attach to one network/project |
 | multi-root rollback/resume | fail preparation of root 2, then resume | root 1 is lost or duplicated |
 | lock scope | concurrent operations on different roots | all roots serialize unnecessarily or deadlock |
 | Git lock scope | concurrent worktree allocation in one Git family | duplicate branch/worktree is admitted |
-| CMRU/CIU identity relationship | release worktree starts a CIU root | runtime names cannot be traced to release worktree |
+| CMRU/CIU identity relationship | release worktree starts a nested CIU root | runtime names omit the enclosing workspace identity |
 | CMRU non-CIU safety | project runs arbitrary multi-container Docker | CMRU silently rewrites/cleans unknown resources |
 | runtime declaration | `none`, `ciu`, unknown, missing | unknown falls through to Docker default |
 | path containment | orchestration/project/root paths use `..` or symlinks | path escapes selected root |
@@ -509,8 +598,9 @@ comments:
   path facts; CIU's current `dev` and deploy resolvers have intentionally
   different legacy behavior that must be cut over together.
 - Recursive marker discovery cannot select an arbitrary root in this monorepo.
-  Worktree creation needs a cwd-bound or explicit root selector, an explicit
-  `all` mode, and base-commit validation with `git ls-tree` before allocation.
+  Worktree creation therefore prepares all committed roots deterministically,
+  validates the marker set with `git ls-tree` before allocation, and leaves
+  root-specific operations to ordinary verbs selected by cwd.
 - `[ciu.instance.generated]` currently covers identity only. The plan now
   requires a versioned machine-facts authority and explicit missing/corrupt
   behavior before claiming that `ciu.env` is export-only.
@@ -524,45 +614,43 @@ installation/versioning, `ciu.env` compatibility, and runtime cleanup/evidence
 as contract items. They are represented below as acceptance cases or open
 decisions. The reviewer made no product edits and ran no cockpit tests.
 
-## Open decisions requiring review
+## Decisions closed; implementation evidence
 
-These are product/contract decisions, not implementation details:
+The five decisions raised by the adversarial review are closed:
 
-1. **Shared package name and release ownership.** Should the library be a new
-   first-party project with its own CMRU entry, or a versioned internal package
-   shipped by one existing tool? The recommendation is a new neutral project so
-   CMRU never depends on CIU's product package.
-2. **Identity and collision algorithm.** Can the existing CIU path-derived ID
-   safely replace CMRU's `uuid8` for every visible name, or must CMRU retain a
-   transaction-only nonce? Decide from a same-second concurrent allocation probe.
-3. **Multi-root selection.** Should the default for a Git-root worktree command
-   be the cwd-selected root, with explicit `--all-roots` for recursive creation?
-   The command must never choose a marker by scan order.
-4. **Multi-root profile grammar.** Require explicit `root=profile` mappings,
-   support one profile per root, or keep profile selection out of multi-root
-   worktree creation and require a later root-scoped command.
-5. **Root marker.** Is the committed
-   `ciu.global.defaults.toml.j2` marker sufficient, or should CIU add a small
-   unambiguous root marker that does not require rendering a config template?
-6. **Generated-facts migration.** Should old generated records be repaired
-   automatically on first use, or should the tool refuse and require an explicit
-   `ciu env generate`? The safer default is refusal for destructive/runtime verbs
-   and an explicit repair command that records what it changed.
-7. **CMRU runtime declaration location.** Put the runtime under each project's
-   `cmru.toml`, under a dedicated `[runtime]` table, or per runner step? The
-   recommendation is project-level `[runtime]` with an explicit kind and no
-   inference, while allowing a step to state which declared runtime it consumes.
-8. **CMRU release transaction identity.** Which metadata must survive after a
-   successful release so an operator can map retained logs/evidence to the source
-   worktree once the branch is deleted?
-9. **Cross-Git orchestration.** Preserve central-config discovery across
-   repositories for read-only/project-local operations, but refuse one aggregate
-   release spanning multiple Git common directories until a multi-repository
-   candidate model exists, or design that model now.
+1. `libraries/worktree` is an internal dependency included and tested by CIU
+   and CMRU; it has no independent project registration, wheel, or release
+   order.
+2. `ciu worktree create` has no `--profile` and prepares every discovered root
+   with its declared defaults. A root that was not prepared cannot be safely
+   started. Ordinary root-scoped verbs select the nearest root from cwd or
+   `--dir`, with `--root-folder` as the explicit override.
+3. The existing committed root-marker grammar is sufficient. No dedicated
+   marker file is introduced; the ignored instance overlay remains user-owned.
+4. Six-character lower-case base-36 path-derived IDs, collision refusal, and
+   the logical-to-physical namespace contract are accepted.
+5. Starting CIU automatically runs the equivalent of `ciu env generate` and
+   deliberately refreshes/overrides derived facts. `ciu env generate` remains
+   available for manual refresh at any time. Internal resolution still ignores
+   `ciu.env`.
 
-No implementation agent should resolve these by intuition. The adversarial
-review and the acceptance probes must either close each item or return it here as
-a blocking product decision.
+The implementation probes are closed by the sibling review and its executable
+oracles:
+
+- same-host allocation/collision, path translation, tracked-marker discovery,
+  generated-facts refresh, lifecycle vocabulary, ambient-selector refusal, and
+  CIU/CMRU wheel-content checks are covered by the CIU, CMRU, and library test
+  slices listed in the review ledger;
+- the neutral lifecycle is used by both consumers, including the legacy-adopt
+  bridge, and the packaged shared modules are byte-identical;
+- CIU, CMRU, and library local full-suite equivalents report 100% line and
+  branch coverage, with Hypothesis property suites green.
+
+The remaining qualification risk is external rather than a product decision:
+the current cockpit has no host-provided `$CGROUP_PARENT_DEV_GATES`, so the
+tester-unified run-gate lanes refuse before launch. No fallback slice is safe.
+Both checked-in Assay declarations now cover `R0/R1/R2/R3`; this work does not
+claim green tester-unified execution evidence because host admission is absent.
 
 ## Out of scope
 
@@ -573,4 +661,5 @@ a blocking product decision.
 - A redesign of CIU's existing Compose, secret, governance, or shared-infra
   semantics beyond replacing their root/identity input path.
 - Running gates from this devcontainer or treating local cockpit tests as proof.
-- A release or merge before the adversarial review closes the open decisions.
+- A release or merge before the adversarial review closes the remaining product
+  decisions and acceptance probes.

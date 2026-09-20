@@ -137,7 +137,12 @@ def _write_ciu_env(tmp_path: Path) -> None:
 
 
 def _write_identity_facts(tmp_path: Path) -> None:
-    from ciu.workspace_env import write_generated_facts
+    from ciu.workspace_env import MACHINE_FACT_ENV_KEYS, write_generated_facts
+
+    machine = {
+        key: os.environ.get(env_key, "")
+        for key, env_key in MACHINE_FACT_ENV_KEYS.items()
+    }
 
     write_generated_facts(
         tmp_path,
@@ -149,6 +154,7 @@ def _write_identity_facts(tmp_path: Path) -> None:
             "repo_root": os.environ["REPO_ROOT"],
             "public_fqdn": "",
         },
+        machine_facts=machine,
     )
 
 

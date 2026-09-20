@@ -143,7 +143,7 @@ def _wire_main(monkeypatch, tmp_path, *, protected: bool):
     }]
     monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **_kw: None)
     monkeypatch.setattr(deploy, "enforce_standalone_root", lambda _cwd: None)
-    monkeypatch.setattr(deploy, "resolve_repo_root", lambda _root: tmp_path)
+    monkeypatch.setattr(deploy, "resolve_repo_root", lambda _root, _start=None: tmp_path)
     monkeypatch.setattr(deploy, "load_global_config", lambda _root: profile.config)
     monkeypatch.setattr(deploy, "resolve_profiles", lambda _config, _names: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda _profile, _phases: selection)

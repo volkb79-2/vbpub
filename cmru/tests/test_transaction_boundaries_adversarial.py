@@ -48,7 +48,7 @@ def test_transaction_copy_secret_overlays_preserves_private_mode_and_rejects_out
     assert (child / "cmru.secret.toml").read_text() == "token=secret\n"
     assert (child / "demo" / "cmru.secret.toml").read_text() == "project=true\n"
     assert oct((child / "cmru.secret.toml").stat().st_mode & 0o777) == "0o600"
-    with pytest.raises(RuntimeError, match="outside repository"):
+    with pytest.raises(RuntimeError, match="outside selected Git workspace"):
         transaction.copy_secret_overlays(repo, ws, [tmp_path / "outside" / "cmru.toml"])
 
 

@@ -39,7 +39,7 @@ def _complete_gitignore(root: Path) -> None:
 
 
 def _complete_identity(root: Path) -> None:
-    lines = [GENERATED_FACTS_HEADER]
+    lines = [GENERATED_FACTS_HEADER, "schema_version = 2"]
     lines += [f'{key} = "x"' for key in GENERATED_FACTS_KEYS]
     root.joinpath(INSTANCE_GENERATED_FACTS).write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
@@ -50,6 +50,7 @@ def _clean_repo(tmp_path: Path) -> Path:
     """A checkout every v1 rule is satisfied by."""
     root = tmp_path / "repo"
     root.mkdir()
+    root.joinpath("ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     _complete_gitignore(root)
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
     _complete_identity(root)
@@ -214,7 +215,7 @@ def test_identity_rule_fires_when_the_generated_table_is_incomplete(
     root.mkdir()
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
     root.joinpath(INSTANCE_GENERATED_FACTS).write_text(
-        f'{GENERATED_FACTS_HEADER}\nrepo_name = "x"\n', encoding="utf-8"
+        f'{GENERATED_FACTS_HEADER}\nschema_version = 2\nrepo_name = "x"\n', encoding="utf-8"
     )
 
     findings = migration_check.detect_stale_identity_facts(root)
@@ -355,7 +356,7 @@ def test_verb_exits_zero_and_says_so_when_clean(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _clean_repo(tmp_path)
-    assert migration_check.main(["--define-root", str(root)]) == 0
+    assert migration_check.main(["--root-folder", str(root)]) == 0
     assert "no stale artifacts" in capsys.readouterr().out
 
 
@@ -369,9 +370,10 @@ def test_verb_exits_non_zero_on_a_WARN_only_run(
     """
     root = tmp_path / "repo"
     root.mkdir()
+    root.joinpath("ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
 
-    assert migration_check.main(["--define-root", str(root)]) != 0
+    assert migration_check.main(["--root-folder", str(root)]) != 0
     err = capsys.readouterr().err
     assert "[WARN] stale-identity-facts" in err
     assert "fix:" in err
@@ -382,9 +384,10 @@ def test_verb_json_is_a_versioned_envelope(
 ) -> None:
     root = tmp_path / "repo"
     root.mkdir()
+    root.joinpath("ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
 
-    code = migration_check.main(["--define-root", str(root), "--json"])
+    code = migration_check.main(["--root-folder", str(root), "--json"])
     document = json.loads(capsys.readouterr().out)
 
     assert code != 0
@@ -399,25 +402,23 @@ def test_verb_json_passes_cleanly(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _clean_repo(tmp_path)
-    assert migration_check.main(["--define-root", str(root), "--json"]) == 0
+    assert migration_check.main(["--root-folder", str(root), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "pass"
 
 
-def test_verb_refuses_a_define_root_that_disagrees_with_REPO_ROOT(
+def test_verb_ignores_ambient_repo_root_when_explicit_root_is_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """CIU-54's established root-resolution convention, not a bespoke one."""
+    """S1.1: ambient identity is not a root selector."""
     monkeypatch.setenv("REPO_ROOT", str(tmp_path / "elsewhere"))
-    with pytest.raises(SystemExit) as excinfo:
-        migration_check.main(["--define-root", str(_clean_repo(tmp_path))])
-    assert excinfo.value.code == 2
+    assert migration_check.main(["--root-folder", str(_clean_repo(tmp_path))]) == 0
 
 
 def test_cli_routes_the_verb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from ciu import cli
 
     root = _clean_repo(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["ciu", "migration-check", "--define-root", str(root)])
+    monkeypatch.setattr(sys, "argv", ["ciu", "migration-check", "--root-folder", str(root)])
     with pytest.raises(SystemExit) as excinfo:
         cli.main()
     assert excinfo.value.code == 0

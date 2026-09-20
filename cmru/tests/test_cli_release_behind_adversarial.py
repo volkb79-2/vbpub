@@ -5,6 +5,15 @@ import pytest
 from cmru import cli, transaction
 
 
+@pytest.fixture(autouse=True)
+def fake_git_family(monkeypatch):
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+
+
 def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_path, capsys):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
@@ -37,7 +46,7 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
             "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
     assert exc.value.code == 0
-    assert workspace_args == {"base": "b" * 40, "scope": "demo"}
+    assert workspace_args == {"base": "b" * 40, "scope": "demo", "source_git_root": tmp_path}
     output = capsys.readouterr().out
     assert "1 commit(s) behind origin/main" in output
     assert "Release transaction complete" in output

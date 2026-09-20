@@ -38,6 +38,8 @@ CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"
 CMRU_TESTER_CGROUP_PROBE_IMAGE = "debian:test"
+[runtime]
+kind = "none"
 [project]
 id = "demo"
 description = "demo"

@@ -94,8 +94,8 @@ def test_child_release_args_removes_caller_paths_and_adds_snapshot_relative_conf
         config, tmp_path,
     )
     assert args == ["demo", "--config", "cmru.toml"]
-    with pytest.raises(ValueError, match="tracked inside"):
-        cli._child_release_args([], tmp_path.parent / "outside.toml", tmp_path)
+    outside = tmp_path.parent / "outside.toml"
+    assert cli._child_release_args([], outside, tmp_path) == ["--config", str(outside.resolve())]
 
 
 def test_worktree_change_detection_and_generated_commit_are_scoped(tmp_path):

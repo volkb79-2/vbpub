@@ -92,6 +92,8 @@ ghcr_delete_packages = []
         """schema_version = 1
 [env]
 CMRU_TESTER_CPUS = \"2\"
+[runtime]
+kind = "none"
 [project]
 id = \"alpha\"
 description = \"alpha\"
