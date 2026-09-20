@@ -15,7 +15,7 @@ variable "PLAYWRIGHT_DISTRO" {
   default = "noble"
 }
 
-// @playwright/mcp pin (bundled MCP HTTP/SSE server).
+// @playwright/mcp pin (bundled MCP Streamable HTTP server).
 variable "PLAYWRIGHT_MCP_VERSION" {
   default = "0.0.76"
 }

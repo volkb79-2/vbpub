@@ -9,7 +9,7 @@ The unified image `ghcr.io/volkb79-2/pwmcp` bundles the Playwright `run-server`,
 | Endpoint | Port | Purpose |
 |---|---|---|
 | `ws://pwmcp:3000/` | 3000 | Native Playwright `connect()` — full API, test suites |
-| `http://pwmcp:8931/mcp` | 8931 | `@playwright/mcp` (HTTP/SSE) — AI clients (VS Code Copilot, etc.) |
+| `http://pwmcp:8931/mcp` | 8931 | `@playwright/mcp` (Streamable HTTP) — AI clients (VS Code Copilot, etc.) |
 | `http://pwmcp:8932/mcp` | 8932 | `chrome-devtools-mcp` (CDP profiling via mcp-proxy) — performance tracing |
 | `http://pwmcp:8933/mcp` | 8933 | `lighthouse-mcp` (Lighthouse audit server via mcp-proxy) — audit scores + opportunities |
 

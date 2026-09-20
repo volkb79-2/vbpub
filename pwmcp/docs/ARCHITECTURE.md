@@ -53,7 +53,7 @@ remains isolated and launches its own browser per audit.
 - **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>` (ships browser binaries)
 - **Layers added**:
   - `playwright@<playwright_version>` JS package installed globally via npm (needed for `run-server`)
-  - `@playwright/mcp@<version>` installed globally via npm (MCP HTTP/SSE server; pinned for reproducibility)
+  - `@playwright/mcp@<version>` installed globally via npm (MCP Streamable HTTP server; pinned for reproducibility)
   - `chrome-devtools-mcp@1.5.0` installed globally via npm (CDP-based MCP server; stdio-only, wrapped by mcp-proxy)
   - `lighthouse@13.4.0` installed globally via npm (Node API for programmatic audits)
   - `mcp-proxy@6.5.2` installed globally via npm (stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp)
@@ -62,7 +62,7 @@ remains isolated and launches its own browser per audit.
   - `/etc/pwmcp-chromium-path.txt` — baked chromium binary path (see below)
 - **Process manager**: `supervisord --nodaemon` as PID 1; manages the gateway, loopback run-server, `mcp`, `devtools-mcp`, and `lighthouse-mcp`
 - **Entrypoint**: `/usr/local/bin/pwmcp-entrypoint.sh` — exports `PWMCP_CHROMIUM_PATH` then execs supervisord
-- **Ports**: 3000 (WebSocket) + 8931 (HTTP/SSE @playwright/mcp) + 8932 (HTTP/SSE chrome-devtools-mcp via mcp-proxy) + 8933 (HTTP/SSE lighthouse-mcp via mcp-proxy)
+- **Ports**: 3000 (WebSocket) + 8931 (Streamable HTTP @playwright/mcp) + 8932 (Streamable HTTP chrome-devtools-mcp via mcp-proxy) + 8933 (Streamable HTTP lighthouse-mcp via mcp-proxy)
 - **Built from**: `containers/pwmcp/Dockerfile`
 
 ### Chromium Path Resolution
@@ -135,7 +135,7 @@ sha256sum -c pwmcp-<version>.tar.xz.sha256
 - Consumers must `pip install playwright==<playwright_version>` to match the wire protocol
 
 Additional npm package pins (see `docker-bake.hcl`):
-- `@playwright/mcp@<version>` — MCP HTTP/SSE server
+- `@playwright/mcp@<version>` — MCP Streamable HTTP server
 - `chrome-devtools-mcp@1.5.0` — CDP profiling MCP server
 - `mcp-proxy@6.5.2` — stdio→streamable-HTTP proxy (used by both chrome-devtools-mcp and lighthouse-mcp)
 - `lighthouse@13.4.0` — Node API for programmatic Lighthouse audits

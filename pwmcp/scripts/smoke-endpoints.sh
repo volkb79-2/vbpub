@@ -163,6 +163,19 @@ mcp_initialize_assert_fail() {
     return 1
 }
 
+# The legacy HTTP+SSE transport is intentionally disabled. A disabled route
+# may answer 404 (not found) or 405 (method not allowed), but it must never
+# establish the old long-lived SSE connection or return a successful status.
+mcp_legacy_sse_assert_disabled() {
+    local url="$1"
+    local host="$2"
+    local sse_url="${url%/mcp}/sse"
+    local status
+    status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+        -H "Host: ${host}" "$sse_url") || return 1
+    [ "$status" = "404" ] || [ "$status" = "405" ]
+}
+
 # Drive a real MCP tool end-to-end over the stateful streamable-HTTP session:
 #   initialize (capture Mcp-Session-Id) -> notifications/initialized -> tools/call.
 # Args: <url> <host> <tool-name> <arguments-json>. Prints the tool-result JSON
@@ -306,6 +319,15 @@ else
     record_fail "Forged Host was not rejected by @playwright/mcp"
 fi
 
+# 2c: Legacy /sse endpoint is disabled; /mcp is the only supported transport.
+total=$((total + 1))
+echo -n "  CHECK ${total}: Legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}"; then
+    record_pass
+else
+    record_fail "Legacy /sse endpoint is still available"
+fi
+
 echo ""
 
 # ── 3. MCP chrome-devtools-mcp endpoint (port 8932 via mcp-proxy) ──────────
@@ -333,7 +355,16 @@ else
     record_fail "DevTools MCP failed unexpectedly"
 fi
 
-# 3c: Drive Chromium end-to-end via a real tool call (new_page to a data: URL).
+# 3c: mcp-proxy is explicitly stream-only; its legacy /sse route is disabled.
+total=$((total + 1))
+echo -n "  CHECK ${total}: DevTools legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}"; then
+    record_pass
+else
+    record_fail "DevTools legacy /sse endpoint is still available"
+fi
+
+# 3d: Drive Chromium end-to-end via a real tool call (new_page to a data: URL).
 # This proves the server actually launched and controlled the browser, not just
 # answered initialize. Uses the full stateful MCP session handshake.
 if [ "${1:-}" != "--quick" ]; then
@@ -368,7 +399,16 @@ else
     record_fail "Lighthouse MCP initialize failed or JSON-RPC body not valid"
 fi
 
-# 4b: Forged Host header → note: mcp-proxy has NO host allowlist enforcement.
+# 4b: mcp-proxy is explicitly stream-only; its legacy /sse route is disabled.
+total=$((total + 1))
+echo -n "  CHECK ${total}: Lighthouse legacy /sse endpoint is disabled ... "
+if mcp_legacy_sse_assert_disabled "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}"; then
+    record_pass
+else
+    record_fail "Lighthouse legacy /sse endpoint is still available"
+fi
+
+# 4c: Forged Host header → note: mcp-proxy has NO host allowlist enforcement.
 #     Same gap as devtools-mcp (see SECURITY.md).
 total=$((total + 1))
 echo -n "  CHECK ${total}: Lighthouse MCP with forged Host header (expect SUCCESS — no host allowlist, see SECURITY.md) ... "
@@ -379,7 +419,7 @@ else
     record_fail "Lighthouse MCP failed unexpectedly"
 fi
 
-# 4c: Drive a real lighthouse_audit tool call against an in-network HTTP URL.
+# 4d: Drive a real lighthouse_audit tool call against an in-network HTTP URL.
 #
 # The MCP JSON-RPC endpoints (8931/8932/8933) are not audit-able HTML pages —
 # Lighthouse scores them null (unrenderable body), giving a false "categories

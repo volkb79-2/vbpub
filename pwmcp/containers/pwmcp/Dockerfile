@@ -1,7 +1,7 @@
 # pwmcp unified image
 # ====================
 # Bundles the native Playwright run-server (connect() WS, port 3000),
-# @playwright/mcp HTTP/SSE server (MCP surface, port 8931),
+# @playwright/mcp Streamable HTTP server (MCP surface, port 8931),
 # chrome-devtools-mcp (CDP-based profiling, port 8932 via mcp-proxy), AND
 # lighthouse-mcp (Lighthouse audit server, port 8933 via mcp-proxy) into
 # a single container under a single hostname.

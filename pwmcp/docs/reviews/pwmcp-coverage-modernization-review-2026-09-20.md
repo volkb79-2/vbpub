@@ -65,25 +65,18 @@ work with PWMCP's supervisor commands. Do not upgrade all four pins as a side
 effect of raising Python coverage. The compatibility change needs a build and
 live endpoint acceptance run.
 
-### 3. Transport documentation needs an explicit modern policy
+### 3. Transport policy is now modern Streamable HTTP only
 
-PWMCP documentation calls the port 8931 service “HTTP/SSE” and describes
-`/sse`, while the runtime smoke script already exercises the streamable HTTP
-`/mcp` route. Current MCP proxy documentation describes streamable HTTP as the
-modern transport and SSE as legacy for the current protocol line; some MCP
-features also do not cross the proxy boundary.
+PWMCP documentation previously called the port 8931 service “HTTP/SSE” and
+advertised `/sse`, while the runtime smoke script already exercised the
+streamable-HTTP `/mcp` route. The operator selected `/mcp` as the only
+supported contract. The two mcp-proxy services now pass `--server stream`; the
+old commands remain commented with a deprecation note, and the smoke lane
+checks that each legacy `/sse` route is unavailable.
 
-The follow-up compatibility change should choose and document one of these
-policies:
-
-1. make streamable HTTP at `/mcp` the supported contract and retain `/sse`
-   only as a tested compatibility route; or
-2. remove the legacy route and update consumers and deployment docs together.
-
-Until that decision is tested against the selected package versions, the
-existing routes remain part of the acceptance surface. The coverage work will
-test the resolver and Python behavior, and will not claim that an upstream
-pin bump is safe merely because unit tests pass.
+The coverage work will test the resolver and Python behavior, while the
+modernization gate will verify the transport choice against the selected image
+and package versions.
 
 ### 4. Coverage is weak in behaviorally important boundaries
 
@@ -127,21 +120,79 @@ modernization pass should either commit and install the lockfile or make the
 resolved versions explicit, then include the resulting MCP protocol behavior
 in the container acceptance lane.
 
-## Review decision
+## Revised modernization plan
 
-Proceed with coverage improvements in this worktree. Keep upstream package
-bumps out of the first coverage commit unless a compatibility test requires a
-small source change. After R1 is green, prepare a separate modernization
-commit with:
+The 14-day rule is not a PWMCP-local policy. CMRU already owns the decided
+FEAT-03 contract for central version selection in
+`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`: a repository-wide age window, language
+resolvers, explicit pins and holds with reasons, resolved state, and explicit
+refresh/check operations. PWMCP will consume that mechanism.
 
-1. one authoritative Playwright version coordinate and generated consistency
-   checks;
-2. explicit runtime compatibility checks for the selected MCP CLI flags and
-   browser revision;
-3. streamable HTTP and legacy SSE acceptance coverage, if both are retained;
-4. a fresh image build and endpoint smoke run through the PWMCP container
-   lane;
-5. updated README, architecture, deployment, usage, and consumer examples.
+CMRU should perform generic version selection and alignment. A project declares
+version coordinates rather than embedding package-specific selection logic in a
+`steps.prepare` command. A coordinate has an ecosystem/source, package or image
+name, version constraint, and an optional alignment group. An alignment group
+expresses facts such as “the npm package, PyPI package, and Playwright image tag
+must use one common version.” CMRU resolves the newest stable candidate whose
+publication timestamp clears the central age window, then projects the resolved
+state into the declared native files. CMRU remains generic because the package
+names, sources, groups, and output mappings are configuration data.
 
-This separation makes a failed upstream compatibility experiment diagnosable
-without confusing it with ordinary Python branch coverage.
+PWMCP therefore keeps a project-specific compatibility check, but its resolver
+does not independently decide which versions are current. The Playwright
+coordinate remains one alignment group spanning npm, PyPI, and the Microsoft
+image. `@playwright/mcp`, `chrome-devtools-mcp`, `mcp-proxy`, Lighthouse, and
+the Lighthouse MCP SDK dependencies are separate coordinates unless a declared
+compatibility relation couples them.
+
+Transitive dependencies may also be declared as managed coordinates when the
+project deliberately owns them. For npm this means the project declares the
+package explicitly or through `overrides`, and commits the resulting
+`package-lock.json`; the image build then uses `npm ci --omit=dev`. Unmanaged
+transitives remain governed by the lockfile but are not independently selected
+by CMRU.
+
+The runtime transport policy is now Streamable HTTP at `/mcp` only. The
+`mcp-proxy` commands use `--server stream`, which disables its legacy `/sse`
+endpoint. The previous commands remain commented in the supervisor files with
+a deprecated note. The old active `/sse` documentation line is retained only
+as a disabled documentation comment. The container acceptance lane must assert
+that `/mcp` works and `/sse` is unavailable for every exposed MCP service.
+
+External authentication remains the existing TLS plus Traefik BasicAuth
+configuration. Bearer-token authentication is a separate future feature owned
+by `tls-edge`: its current documentation describes a `forwardAuth` verifier
+pattern, but no such middleware is shipped yet. PWMCP will document the
+dependency without embedding a second authentication mechanism.
+
+The implementation sequence is:
+
+1. carve and implement CMRU FEAT-03 as a generic coordinate/source resolver;
+2. add PWMCP coordinate declarations and Playwright alignment metadata;
+3. move PWMCP’s generated version writes under CMRU’s resolved-state projection;
+4. add the Lighthouse lockfile and managed direct SDK coordinates;
+5. keep the PWMCP compatibility validator and live endpoint acceptance lane;
+6. run the container build and smoke lane through `tester-unified`.
+
+## Remaining decisions
+
+The product decisions are now settled: central default policy, explicit
+project/image overrides, stable releases only, explicit pins/holds, synchronized
+Playwright sources, `/mcp` as the only supported transport, and BasicAuth for
+external access. The remaining design work is limited to the generic CMRU
+schema: the exact coordinate/output mapping shape, whether a per-image policy
+override means a stricter age window or only an explicit pin/hold, and how a
+managed transitive npm coordinate is represented (`dependencies` versus
+`overrides`).
+
+The existing CMRU FEAT-03 backlog is the version-policy backlog. PWMCP has no
+separate backlog file; the bearer-token feature belongs in the existing
+`tls-edge/KNOWN_ISSUES.md` roadmap when it is carved, with PWMCP retaining only
+the consumer-side security note.
+
+## Previous review decision
+
+The coverage work remains separate from the upstream modernization. Coverage
+tests and resolver fail-closed hardening are already committed in this
+worktree. Upstream compatibility still requires a fresh image build and live
+endpoint acceptance after CMRU-generated pins are introduced.

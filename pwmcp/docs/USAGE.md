@@ -117,14 +117,15 @@ browser = await p.chromium.connect(
 
 ## MCP — AI Clients
 
-The `pwmcp` service provides an MCP-compatible HTTP/SSE interface for AI clients such as VS Code Copilot at port 8931.
+The `pwmcp` service provides an MCP-compatible streamable-HTTP interface for AI clients such as VS Code Copilot at port 8931.
 
 ### Endpoint
 
 - Internal: `http://pwmcp:8931/mcp`
 - External (tls-edge): `https://<unified_host>/mcp`
 
-SSE streaming is also available at `/sse`.
+<!-- DEPRECATED and disabled: the legacy HTTP+SSE `/sse` endpoint is not part of
+the PWMCP contract. Use the streamable-HTTP `/mcp` endpoint. -->
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and DNS-rebinding protection
 
