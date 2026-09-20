@@ -98,6 +98,21 @@ add behavioral tests for both the successful and refusing directions. The
 Assay whole-target contract remains in force; narrowing the target list would
 hide gaps rather than fix them.
 
+### 5. The resolver has two fail-open hardening candidates
+
+The text rewrites in `update_toml_j2()` and `update_bake_hcl()` do not verify
+that the expected keys were found. A template rename can therefore produce a
+successful-looking prepare step with stale release inputs. Similarly,
+`read_current_distro()` returns `noble` when the template does not contain
+`image_distro`, even though the template is the authoritative source for the
+selected MCR tag family.
+
+These should become explicit refusal paths in the compatibility hardening
+change, with tests that construct a missing-key template and assert that the
+resolver names the missing input. The coverage tests exercise the current
+success and fallback behavior so the present implementation remains measured;
+the follow-up can then change the contract deliberately rather than silently.
+
 ## Review decision
 
 Proceed with coverage improvements in this worktree. Keep upstream package
