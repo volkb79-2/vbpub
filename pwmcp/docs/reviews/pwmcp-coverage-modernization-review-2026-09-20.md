@@ -125,32 +125,41 @@ in the container acceptance lane.
 The 14-day rule is not a PWMCP-local policy. CMRU already owns the decided
 FEAT-03 contract for central version selection in
 `cmru/KNOWN_ISSUES_TODO_BACKLOG.md`: a repository-wide age window, language
-resolvers, explicit pins and holds with reasons, resolved state, and explicit
-refresh/check operations. PWMCP will consume that mechanism.
+resolvers, explicit exact-version overrides with reasons and expiry where they
+bypass the normal window, resolved state, and explicit refresh/check operations.
+PWMCP will consume that mechanism.
 
 CMRU should perform generic version selection and alignment. A project declares
-version coordinates rather than embedding package-specific selection logic in a
-`steps.prepare` command. A coordinate has an ecosystem/source, package or image
-name, version constraint, and an optional alignment group. An alignment group
-expresses facts such as “the npm package, PyPI package, and Playwright image tag
-must use one common version.” CMRU resolves the newest stable candidate whose
-publication timestamp clears the central age window, then projects the resolved
-state into the declared native files. CMRU remains generic because the package
-names, sources, groups, and output mappings are configuration data.
+version targets rather than embedding package-specific selection logic in a
+`steps.prepare` command. The target table name is the identity, and its direct
+source children (`.npm`, `.pypi`, `.oci`, and so on) carry source-specific
+coordinates. A target with `mode = "aligned"` expresses facts such as “the npm
+package, PyPI package, and Playwright image tag must use one common version.”
+CMRU resolves the newest stable candidate whose publication timestamp clears the
+effective age window, then projects the resolved state into the declared native
+files. CMRU remains generic because the package names, sources, targets, and
+output mappings are configuration data.
+
+The repository-wide `versions.age_window_days` belongs in
+`cmru.orchestration.toml`. PWMCP-specific targets such as
+`versions.targets."pwmcp.playwright"` belong in `pwmcp/cmru.toml`, together with
+project-local overrides and generated resolution state. CMRU reconstructs the
+effective document from the root and project file for every invocation; an
+estate-wide run repeats that merge independently for each project, so one
+project's values cannot leak into the next project's environment or resolver.
 
 PWMCP therefore keeps a project-specific compatibility check, but its resolver
 does not independently decide which versions are current. The Playwright
-coordinate remains one alignment group spanning npm, PyPI, and the Microsoft
-image. `@playwright/mcp`, `chrome-devtools-mcp`, `mcp-proxy`, Lighthouse, and
-the Lighthouse MCP SDK dependencies are separate coordinates unless a declared
+target remains one alignment target spanning npm, PyPI, and the Microsoft image.
+`@playwright/mcp`, `chrome-devtools-mcp`, `mcp-proxy`, Lighthouse, and the
+Lighthouse MCP SDK dependencies are separate targets unless a declared
 compatibility relation couples them.
 
-Transitive dependencies may also be declared as managed coordinates when the
-project deliberately owns them. For npm this means the project declares the
-package explicitly or through `overrides`, and commits the resulting
-`package-lock.json`; the image build then uses `npm ci --omit=dev`. Unmanaged
-transitives remain governed by the lockfile but are not independently selected
-by CMRU.
+Transitive dependencies may also be declared as managed targets when the project
+deliberately owns them. For npm this means the project declares the package
+explicitly or through `overrides`, and commits the resulting `package-lock.json`;
+the image build then uses `npm ci --omit=dev`. Unmanaged transitives remain
+governed by the lockfile but are not independently selected by CMRU.
 
 The runtime transport policy is now Streamable HTTP at `/mcp` only. The
 `mcp-proxy` commands use `--server stream`, which disables its legacy `/sse`
@@ -168,7 +177,7 @@ dependency without embedding a second authentication mechanism.
 The implementation sequence is:
 
 1. carve and implement CMRU FEAT-03 as a generic coordinate/source resolver;
-2. add PWMCP coordinate declarations and Playwright alignment metadata;
+2. add PWMCP project-local coordinate declarations and Playwright alignment metadata;
 3. move PWMCP’s generated version writes under CMRU’s resolved-state projection;
 4. add the Lighthouse lockfile and managed direct SDK coordinates;
 5. keep the PWMCP compatibility validator and live endpoint acceptance lane;
@@ -177,22 +186,26 @@ The implementation sequence is:
 ## Schema proposal
 
 The alignment relationship should be structural rather than a repeated field.
-The preferred CMRU shape is a named target table with source subtables:
+The preferred CMRU shape is a named target table with direct source subtables:
 
 ```toml
+# pwmcp/cmru.toml
+[versions]
+age_window_days = 21
+
 [versions.targets."pwmcp.playwright"]
 mode = "aligned"
 constraint = ">=1.60,<2"
 
-[versions.targets."pwmcp.playwright".sources.npm]
+[versions.targets."pwmcp.playwright".npm]
 name = "playwright"
 registry = "https://registry.npmjs.org"
 
-[versions.targets."pwmcp.playwright".sources.pypi]
+[versions.targets."pwmcp.playwright".pypi]
 name = "playwright"
 registry = "https://pypi.org"
 
-[versions.targets."pwmcp.playwright".sources.oci]
+[versions.targets."pwmcp.playwright".oci]
 image = "mcr.microsoft.com/playwright"
 tag = "v{version}-{image_distro}"
 
@@ -200,7 +213,7 @@ tag = "v{version}-{image_distro}"
 mode = "single"
 constraint = ">=1.8,<2"
 
-[versions.targets."pwmcp.chrome-devtools-mcp".sources.npm]
+[versions.targets."pwmcp.chrome-devtools-mcp".npm]
 name = "chrome-devtools-mcp"
 registry = "https://registry.npmjs.org"
 ```
@@ -212,12 +225,52 @@ available and old enough at every declared source; `mode = "single"` resolves
 one source independently. The same structure handles Python, npm, Go, OCI,
 and future ecosystems without hard-coding PWMCP names into CMRU.
 
+The root and project documents are merged recursively for one invocation. Tables
+merge by key, scalars replace inherited values, and arrays replace inherited
+arrays. A project override is authoritative for that project, including a
+different `age_window_days`; CMRU does not impose a separate “only stricter”
+rule. Project-specific target declarations and their generated state remain in
+the project document, so the root does not acquire PWMCP package knowledge.
+
+An exact override is written directly on the target:
+
+```toml
+[versions.targets."pwmcp.playwright"]
+mode = "aligned"
+version = "1.64.0"
+reason = "Required for security fix"
+expires = "2026-10-01"
+```
+
+`version` means “use this exact operator-selected value”; `reason` is required,
+and `expires` is required when the value bypasses the normal age policy. The
+override can intentionally select an older or newer version.
+
+Resolved state uses a separate child of the same target, so the input override
+and generated result cannot be confused:
+
+```toml
+[versions.targets."pwmcp.playwright".resolved]
+version = "1.63.0"
+resolved_at = "2026-09-20T14:00:00Z"
+age_cutoff = "2026-09-06"
+
+[versions.targets."pwmcp.playwright".resolved.npm]
+version = "1.63.0"
+
+[versions.targets."pwmcp.playwright".resolved.pypi]
+version = "1.63.0"
+
+[versions.targets."pwmcp.playwright".resolved.oci]
+version = "1.63.0"
+```
+
 The alternatives were considered as follows:
 
 | Shape | Benefit | Cost | Decision |
 | --- | --- | --- | --- |
 | Flat coordinates plus `alignment_group` | Small parser and easy programmatic input | Repeated group names, typo risk, weak human visibility | Reject |
-| One table per target with source subtables | Relationship is structural, readable, supports aligned and single-source targets | Requires a small target/source schema | **Recommend** |
+| One table per target with direct source subtables | Relationship is structural, readable, supports aligned and single-source targets | Requires a small target/source schema | **Recommend** |
 | One table per ecosystem only | Fits the original FEAT-03 sketch | Cross-ecosystem alignment becomes an extra side table or field | Reject for aligned targets |
 | Consumer-owned resolver scripts | Minimal CMRU implementation | Every project reimplements age filtering, provenance, and alignment | Reject |
 
@@ -237,49 +290,24 @@ project-type templates and inspect known manifests where a fact can be derived:
 
 A Python project should not need to write its own resolver. It should be able
 to run `cmru versions init`, review the generated inputs, and then use
-`cmru versions refresh`. CMRU creates the version files the project consumes;
+`cmru versions resolve`. CMRU creates the version files the project consumes;
 the project keeps its semantic dependency declarations and gates consume the
 committed generated artifact.
 
 For PWMCP, CMRU would generate the Playwright npm/PyPI/image values and the
-independent MCP package values into the declared templates. PWMCP’s remaining
-custom code would validate browser/protocol compatibility and live endpoints.
+independent MCP package values into the project-owned declarations and native
+artifacts. PWMCP’s remaining custom code would validate browser/protocol
+compatibility and live endpoints.
 
 ## Remaining decisions
 
-The product decisions are settled: central default policy, explicit
-project/image overrides, stable releases only, explicit pins/holds, synchronized
-Playwright sources, `/mcp` as the only supported transport, and BasicAuth for
-external access. The implementation questions are now bounded to:
-
-1. whether the final CMRU spelling is `versions.targets` or another equivalent
-   named-target table;
-2. whether a per-image override may only make the age window stricter, with a
-   newer version requiring an explicit pin/hold;
-3. the exact native output templates for Python constraints, npm lockfiles, and
-   Jinja/HCL projections.
-
-For point 2, the recommended behavior is:
-
-```toml
-# Repository default
-[versions]
-age_window_days = 14
-
-# A target may be stricter
-[versions.targets."pwmcp.playwright".policy]
-age_window_days = 21
-
-# A known urgent fix may bypass the window, but must explain and expire
-[versions.targets."pwmcp.playwright".pin]
-version = "1.63.0"
-reason = "Security fix required before the normal vetting window"
-expires = "2026-10-01"
-```
-
-A target setting `age_window_days = 7` would be refused because it weakens the
-repository policy. A temporary hold would keep an eligible version out of the
-selection with the same required reason and expiry fields.
+The product decisions are settled: central default policy, project-scoped
+targets and overrides, recursive root-plus-project reconstruction per
+invocation, stable releases only, direct exact-version overrides with reasons
+and expiry where they bypass the normal window, synchronized Playwright sources,
+`/mcp` as the only supported transport, and BasicAuth for external access. The
+remaining implementation questions are the exact native output templates for
+Python constraints, npm lockfiles, and Jinja/HCL projections.
 
 The version-policy backlog remains CMRU FEAT-03. The bearer-token feature is
 owned by [tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md](../../../tls-edge/KNOWN_ISSUES_TODO_BACKLOG.md)
