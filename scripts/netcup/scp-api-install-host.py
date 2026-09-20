@@ -16,9 +16,10 @@ was purely additive and non-breaking for the endpoints this script uses: new
 
 Get API access / Authentication:
 
-Run `%(prog)s login` - it automates the whole OAuth2 device-code dance below
-and writes the resulting refresh token straight into .env. See _run_login()'s
-own docstring for the manual curl-by-curl equivalent (useful if you ever
+Run `scp-api.py login` - it automates the whole OAuth2 device-code dance below
+and writes the resulting refresh token straight into .env. See the shared
+`netcup_scp_client.run_device_code_login()` helper's docstring for the manual
+curl-by-curl equivalent (useful if you ever
 need to debug the flow itself, or the automated version breaks).
 
 Once a refresh token exists (in .env or $NETCUP_SCP_API_REFRESH_TOKEN), this
@@ -61,7 +62,6 @@ from netcup_scp_client import (
     _write_env_file,
     get_access_token,
     load_env_file,
-    run_device_code_login as _run_login,
 )
 
 
@@ -327,21 +327,6 @@ def _strip_jsonc_comments(text: str) -> str:
 
     return "".join(out)
 
-def _resolve_env_path() -> Path:
-    """Which .env file is (or would be) in effect - same search order as
-    load_env_file(), but returns a path even when none of the candidates
-    exist yet: the canonical scripts/netcup/.env, so `login` has somewhere
-    sensible to create it.
-    """
-    script_dir = Path(__file__).resolve().parent
-    candidates = [
-        Path.cwd() / ".env",
-        script_dir / ".env",
-        script_dir.parent.parent / ".env",
-    ]
-    return next((p for p in candidates if p.exists()), script_dir / ".env")
-
-
 # Load .env file if it exists
 load_env_file()
 
@@ -369,7 +354,7 @@ BASE_URL = SETTINGS["api.base_url"]
 KEYCLOAK_URL = SETTINGS["api.keycloak_url"]
 # netcup_scp_client's own functions/NetcupSCPClient read these as module
 # globals, not parameters (see its own module docstring) -- must be set
-# before get_access_token()/_run_login()/NetcupSCPClient(...) are used.
+# before get_access_token()/NetcupSCPClient(...) are used.
 netcup_scp_client.BASE_URL = BASE_URL
 netcup_scp_client.KEYCLOAK_URL = KEYCLOAK_URL
 
@@ -462,9 +447,6 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands (positional, optional; default is the install flow below):
-  login               Automate the OAuth2 device-code login flow and write
-                       the resulting refresh token to .env. No other flags
-                       needed.
   configure           Interactive wizard: resolve the latest Debian UEFI
                        image flavour (and other account/image-level
                        defaults) for $NETCUP_SCP_API_SERVER_NAME and save
@@ -484,7 +466,7 @@ Modes (pick one; default is interactive gather+install):
 
 Examples:
   # First-time setup: log in, then build a default recipe:
-  %(prog)s login
+  ./scp-api.py login
   %(prog)s configure
 
   # Preview everything (server lookup, image flavour, payload) without
@@ -538,7 +520,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("login", "configure", "build-customscript"),
+        choices=("configure", "build-customscript"),
         default=None,
         help="Optional one-shot command; omit for the normal install flow (see Modes above).",
     )
@@ -1986,9 +1968,6 @@ def main():
     global args
     args = parse_args()
     netcup_scp_client.DEBUG = netcup_scp_client.DEBUG or getattr(args, "debug", False)
-
-    if getattr(args, "command", None) == "login":
-        sys.exit(_run_login(_resolve_env_path()))
 
     if getattr(args, "command", None) == "build-customscript":
         # Purely local (identity-file generation only) - no Netcup API call,

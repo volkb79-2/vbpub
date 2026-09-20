@@ -1,6 +1,6 @@
-# scp-api-explore.toml
+# scp-api.toml
 #
-# Settings for scp-api-explore.py. Deliberately its own small file, not
+# Settings for scp-api.py. Deliberately its own small file, not
 # shared with scp-api-install-host.toml: that file's schema is CLOSED
 # (extra/missing keys are hard errors) and carries a lot of install-only
 # keys (ssh.*) this tool has no use for. The two values below are

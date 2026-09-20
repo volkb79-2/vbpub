@@ -8,7 +8,7 @@ Server Control Panel API and feed them the `debian-install-v2` bootstrap.
 From this directory, create the OAuth refresh token with the wizard:
 
 ```bash
-python3 scp-api-install-host.py login
+python3 scp-api.py login
 ```
 
 The browser device-code flow writes `NETCUP_SCP_API_REFRESH_TOKEN` to the
@@ -56,26 +56,36 @@ the interactive create option is selected, the controller key is registered
 before the final install request.
 
 `scp-api-install-host.py --help` documents the payload, attach-only, poweroff,
-and wizard modes. `scp-api-explore.py` provides read-only account/server
+and wizard modes. `scp-api.py` provides read-only account/server
 inspection and explicitly gated reversible actions. Read-only resource commands
 enumerate every server when no ID is supplied, because the SCP API exposes
 image flavours, ISO images, disks, rescue status, snapshots, and ISO attachment
 status below each server. Results from an account-wide query include the source
-server ID/name. Use a server ID to inspect only one server; mutating options
-such as `--detach`, `--deactivate`, `--create`, and `--dryrun` still require it.
+server ID/name. Use a server ID to inspect only one server; mutating actions
+such as `detach`, `deactivate`, `create`, and `dryrun` are positional and still
+require it. `servers` lists the account inventory; use `server-details SERVER_ID`
+for one server's full record.
 
 An image flavour is a server-compatible reinstallable OS/image variant (for
 example a Debian 13 UEFI amd64 image), not a VM template. ISO images are
 bootable installer or recovery media. Useful first queries are:
 
 ```bash
-./scp-api-explore.py servers
-./scp-api-explore.py imageflavours --filter debian
-./scp-api-explore.py isoimages --filter rescue
-./scp-api-explore.py isoimages 799611 --filter debian --json
-./scp-api-explore.py disks
-./scp-api-explore.py snapshots
-./scp-api-explore.py tasks
+./scp-api.py servers
+./scp-api.py server-details 799611
+./scp-api.py imageflavours --filter debian
+./scp-api.py iso-bootable --filter rescue
+./scp-api.py iso-bootable 799611 --filter debian --json
+./scp-api.py iso-attached
+./scp-api.py disks
+./scp-api.py snapshots
+./scp-api.py tasks
+
+# Explicit, confirmed actions:
+./scp-api.py iso-attached 799611 detach
+./scp-api.py rescuesystem 799611 deactivate
+./scp-api.py snapshots 799611 create --name before-upgrade
+./scp-api.py power-cycle 799611
 ```
 
 `--filter` is case-insensitive and searches the returned fields, including an

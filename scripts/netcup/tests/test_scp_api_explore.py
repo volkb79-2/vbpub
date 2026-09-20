@@ -1,4 +1,4 @@
-"""Tests for scp-api-explore.py: presentation helpers, the confirm-gate on
+"""Tests for scp-api.py: presentation helpers, the confirm-gate on
 mutating actions, and dispatch against a FakeClient - all local, no live
 netcup calls."""
 from __future__ import annotations
@@ -130,15 +130,15 @@ def _ns(**kw):
 def test_cmd_servers_list(explore_mod, fake_client, capsys):
     client = fake_client(get_responses=[[{"id": 1, "hostname": "h", "nickname": "n", "name": "x", "disabled": False}]])
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_servers(client, _ns(server_id=None), pal)
+    explore_mod.cmd_servers(client, _ns(), pal)
     assert client.calls == [("get", "/api/v1/servers", None)]
     assert "h" in capsys.readouterr().out
 
 
-def test_cmd_servers_one(explore_mod, fake_client, capsys):
+def test_cmd_server_details(explore_mod, fake_client, capsys):
     client = fake_client(get_responses=[{"id": 1, "hostname": "h"}])
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_servers(client, _ns(server_id=1), pal)
+    explore_mod.cmd_server_details(client, _ns(server_id=1), pal)
     assert client.calls == [("get", "/api/v1/servers/1", None)]
     assert "hostname" in capsys.readouterr().out
 
@@ -174,32 +174,32 @@ def test_cmd_imageflavours_without_id_enumerates_and_filters_all_servers(explore
     assert "Windows 2022" not in out
 
 
-def test_cmd_isoimages_without_id_enumerates_all_servers(explore_mod, fake_client, capsys):
+def test_cmd_iso_bootable_without_id_enumerates_all_servers(explore_mod, fake_client, capsys):
     client = fake_client(get_responses=[
         [{"id": 1, "name": "first"}, {"id": 2, "name": "second"}],
         [{"id": 10, "name": "debian-installer", "description": "Debian", "architecture": "AMD64"}],
         [{"id": 11, "name": "rescue", "description": "Recovery", "architecture": "AMD64"}],
     ])
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_isoimages(client, _ns(server_id=None, filter=None), pal)
+    explore_mod.cmd_iso_bootable(client, _ns(server_id=None, filter=None), pal)
     out = capsys.readouterr().out
     assert "first" in out and "second" in out
     assert "debian-installer" in out and "rescue" in out
     assert "serverId" in out
 
 
-def test_cmd_iso_detach_declined_never_calls_delete(explore_mod, fake_client, monkeypatch):
+def test_cmd_attached_iso_detach_declined_never_calls_delete(explore_mod, fake_client, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     client = fake_client(allow=())  # any get/post/patch/put/delete raises
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_iso(client, _ns(server_id=1, detach=True, yes=False), pal)
+    explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=False), pal)
     assert client.calls == []
 
 
-def test_cmd_iso_detach_with_yes_calls_delete(explore_mod, fake_client):
+def test_cmd_attached_iso_detach_with_yes_calls_delete(explore_mod, fake_client):
     client = fake_client(allow=("delete",))
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_iso(client, _ns(server_id=1, detach=True, yes=True), pal)
+    explore_mod.cmd_attached_iso(client, _ns(server_id=1, action="detach", yes=True), pal)
     assert client.calls == [("delete", "/api/v1/servers/1/iso", None)]
 
 
@@ -207,21 +207,21 @@ def test_cmd_rescuesystem_deactivate_gated_by_confirm(explore_mod, fake_client, 
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_rescuesystem(client, _ns(server_id=1, deactivate=True, yes=False), pal)
+    explore_mod.cmd_rescuesystem(client, _ns(server_id=1, action="deactivate", yes=False), pal)
     assert client.calls == []
 
 
 def test_cmd_tasks_cancel_with_yes(explore_mod, fake_client):
     client = fake_client(allow=("put",))
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_tasks(client, _ns(uuid="abc", cancel=True, yes=True), pal)
+    explore_mod.cmd_tasks(client, _ns(uuid="abc", action="cancel", yes=True), pal)
     assert client.calls == [("put", "/api/v1/tasks/abc:cancel", None, None)]
 
 
 def test_cmd_snapshots_dryrun_uses_post(explore_mod, fake_client):
     client = fake_client(allow=("post",))
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_snapshots(client, _ns(server_id=1, dryrun=True, create=False, name=None, yes=False), pal)
+    explore_mod.cmd_snapshots(client, _ns(server_id=1, action="dryrun", name=None, yes=False), pal)
     assert client.calls == [("post", "/api/v1/servers/1/snapshots:dryrun", {})]
 
 
@@ -229,7 +229,7 @@ def test_cmd_snapshots_create_declined_never_posts(explore_mod, fake_client, mon
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_snapshots(client, _ns(server_id=1, dryrun=False, create=True, name=None, yes=False), pal)
+    explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name=None, yes=False), pal)
     assert client.calls == []
 
 
@@ -239,7 +239,7 @@ def test_cmd_snapshots_create_without_name_gets_a_default(explore_mod, fake_clie
     # finding, 2026-09-09).
     client = fake_client(allow=("post",))
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_snapshots(client, _ns(server_id=1, dryrun=False, create=True, name=None, yes=True), pal)
+    explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name=None, yes=True), pal)
     assert len(client.calls) == 1
     _, endpoint, payload = client.calls[0]
     assert endpoint == "/api/v1/servers/1/snapshots"
@@ -249,7 +249,7 @@ def test_cmd_snapshots_create_without_name_gets_a_default(explore_mod, fake_clie
 def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
     client = fake_client(allow=("post",))
     pal = explore_mod._Palette(enabled=False)
-    explore_mod.cmd_snapshots(client, _ns(server_id=1, dryrun=False, create=True, name="pre-upgrade", yes=True), pal)
+    explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name="pre-upgrade", yes=True), pal)
     assert client.calls == [("post", "/api/v1/servers/1/snapshots", {"name": "pre-upgrade"})]
 
 
@@ -257,14 +257,41 @@ def test_cmd_tasks_cancel_without_uuid_errors_instead_of_silently_listing(explor
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
     with pytest.raises(SystemExit):
-        explore_mod.cmd_tasks(client, _ns(uuid=None, cancel=True, yes=True), pal)
+        explore_mod.cmd_tasks(client, _ns(uuid=None, action="cancel", yes=True), pal)
     assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("command", "payload", "params"),
+    [
+        ("power-on", {"state": "ON"}, None),
+        ("power-off", {"state": "OFF"}, {"stateOption": "POWEROFF"}),
+        ("power-cycle", {"state": "ON"}, {"stateOption": "POWERCYCLE"}),
+        ("reset", {"state": "ON"}, {"stateOption": "RESET"}),
+    ],
+)
+def test_cmd_power_actions_are_confirmed_and_use_server_patch(
+    explore_mod, fake_client, monkeypatch, command, payload, params
+):
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    declined = fake_client(allow=())
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_power(
+        declined,
+        _ns(command=command, server_id=42, yes=False),
+        pal,
+    )
+    assert declined.calls == []
+
+    client = fake_client(allow=("patch",))
+    explore_mod.cmd_power(client, _ns(command=command, server_id=42, yes=True), pal)
+    assert client.calls == [("patch", "/api/v1/servers/42", payload, params)]
 
 
 # --- main()/--help must not require a working settings file -------------------
 
 def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py", "--help"])
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "--help"])
     monkeypatch.setattr(
         explore_mod, "_configure",
         lambda: (_ for _ in ()).throw(AssertionError("_configure() must not run for --help")),
@@ -278,7 +305,7 @@ def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
 
 
 def test_no_argument_prints_top_level_usage_without_required_command_error(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py"])
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py"])
     with pytest.raises(SystemExit) as exc:
         explore_mod.parse_args()
     assert exc.value.code == 2
@@ -291,18 +318,18 @@ def test_no_argument_prints_top_level_usage_without_required_command_error(explo
 # --- CLI wiring ----------------------------------------------------------------
 
 def test_parse_args_servers_no_id(explore_mod, monkeypatch):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py", "servers"])
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "servers"])
     args = explore_mod.parse_args()
     assert args.command == "servers"
-    assert args.server_id is None
+    assert not hasattr(args, "server_id")
 
 
-def test_parse_args_iso_detach_yes(explore_mod, monkeypatch):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api-explore.py", "iso", "42", "--detach", "--yes"])
+def test_parse_args_iso_attached_detach_yes(explore_mod, monkeypatch):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "iso-attached", "42", "detach", "--yes"])
     args = explore_mod.parse_args()
-    assert args.command == "iso"
+    assert args.command == "iso-attached"
     assert args.server_id == 42
-    assert args.detach is True
+    assert args.action == "detach"
     assert args.yes is True
 
 
@@ -310,9 +337,21 @@ def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypat
     monkeypatch.setattr(
         explore_mod.sys,
         "argv",
-        ["scp-api-explore.py", "isoimages", "--filter", "debian", "--json"],
+        ["scp-api.py", "iso-bootable", "--filter", "debian", "--json"],
     )
     args = explore_mod.parse_args()
     assert args.server_id is None
     assert args.filter == "debian"
     assert args.json is True
+
+
+def test_subcommand_help_separates_actions_from_options(explore_mod, monkeypatch, capsys):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "snapshots", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        explore_mod.parse_args()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "actions:" in out
+    assert "{create,dryrun}" in out
+    assert "--create" not in out
+    assert "--yes" in out

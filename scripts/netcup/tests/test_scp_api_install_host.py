@@ -877,15 +877,14 @@ def test_write_env_file_appends_new_key(install_host_mod, tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_resolve_env_path_prefers_cwd_then_falls_back_to_script_dir(install_host_mod, tmp_path, monkeypatch):
+def test_shared_env_path_prefers_cwd_then_falls_back_to_script_dir(install_host_mod, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    # Nothing exists yet: falls back to the canonical script-dir path.
-    resolved = install_host_mod._resolve_env_path()
-    assert resolved == Path(install_host_mod.__file__).resolve().parent / ".env"
+    resolved = install_host_mod.netcup_scp_client.resolve_env_path()
+    assert resolved == Path(install_host_mod.netcup_scp_client.__file__).resolve().parent / ".env"
 
     cwd_env = tmp_path / ".env"
     cwd_env.write_text("X=1\n")
-    assert install_host_mod._resolve_env_path() == cwd_env
+    assert install_host_mod.netcup_scp_client.resolve_env_path() == cwd_env
 
 
 # --- login (device-code OAuth flow) -----------------------------------------
@@ -906,13 +905,14 @@ def test_run_login_writes_refresh_token_on_first_poll(install_host_mod, tmp_path
             return FakeHTTPResponse(device_response)
         return FakeHTTPResponse(token_response)
 
-    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", lambda s: None)
 
     env_path = tmp_path / ".env"
-    rc = install_host_mod._run_login(env_path)
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(env_path)
     assert rc == 0
     assert install_host_mod._load_env_file(env_path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "brand-new-refresh-token"
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
 def test_run_login_keeps_polling_through_authorization_pending(install_host_mod, tmp_path, monkeypatch):
@@ -934,11 +934,11 @@ def test_run_login_keeps_polling_through_authorization_pending(install_host_mod,
             )
         return FakeHTTPResponse(token_response)
 
-    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", lambda s: None)
 
     env_path = tmp_path / ".env"
-    rc = install_host_mod._run_login(env_path)
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(env_path)
     assert rc == 0
     assert install_host_mod._load_env_file(env_path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "eventual-token"
     assert calls["n"] == 4
@@ -960,10 +960,10 @@ def test_run_login_fails_on_access_denied(install_host_mod, tmp_path, monkeypatc
             io.BytesIO(json.dumps({"error": "access_denied"}).encode()),
         )
 
-    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", lambda s: None)
 
-    rc = install_host_mod._run_login(tmp_path / ".env")
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1
     assert not (tmp_path / ".env").exists()
 
@@ -973,9 +973,9 @@ def test_run_login_fails_cleanly_when_device_code_missing(install_host_mod, tmp_
     must not raise an unhandled KeyError."""
     device_response = json.dumps({"interval": 0, "expires_in": 60}).encode()
     monkeypatch.setattr(
-        install_host_mod.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(device_response)
+        install_host_mod.netcup_scp_client.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(device_response)
     )
-    rc = install_host_mod._run_login(tmp_path / ".env")
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1
     assert not (tmp_path / ".env").exists()
 
@@ -984,9 +984,9 @@ def test_run_login_fails_cleanly_on_malformed_device_response(install_host_mod, 
     """Adversarial-review regression: a non-JSON body from the device-code
     endpoint must not raise an unhandled JSONDecodeError."""
     monkeypatch.setattr(
-        install_host_mod.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(b"not json")
+        install_host_mod.netcup_scp_client.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(b"not json")
     )
-    rc = install_host_mod._run_login(tmp_path / ".env")
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1
 
 
@@ -1006,10 +1006,10 @@ def test_run_login_fails_cleanly_on_non_json_error_body(install_host_mod, tmp_pa
             return FakeHTTPResponse(device_response)
         raise urllib.error.HTTPError(req.full_url, 502, "bad gateway", None, io.BytesIO(b"<html>502</html>"))
 
-    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", lambda s: None)
 
-    rc = install_host_mod._run_login(tmp_path / ".env")
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1
     assert not (tmp_path / ".env").exists()
 
@@ -1029,10 +1029,10 @@ def test_run_login_fails_cleanly_on_malformed_token_response(install_host_mod, t
             return FakeHTTPResponse(device_response)
         return FakeHTTPResponse(b"not json")
 
-    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", lambda s: None)
 
-    rc = install_host_mod._run_login(tmp_path / ".env")
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
     assert rc == 1
 
 
@@ -1127,9 +1127,11 @@ def test_main_configure_dispatch_never_touches_ssh_identity(install_host_mod, tm
 # --- command positional argument --------------------------------------------
 
 
-def test_parse_args_accepts_login_and_configure_commands(install_host_mod, monkeypatch):
+def test_parse_args_rejects_login_and_accepts_installer_commands(install_host_mod, monkeypatch):
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "login"])
-    assert install_host_mod.parse_args().command == "login"
+    with pytest.raises(SystemExit) as exc:
+        install_host_mod.parse_args()
+    assert exc.value.code == 2
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "configure"])
     assert install_host_mod.parse_args().command == "configure"
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "build-customscript"])

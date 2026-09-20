@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only(-ish) exploration of the netcup SCP API account/server surface.
+"""Explore and safely modify the netcup SCP API account/server surface.
 
 First-class exploration, not manual curl+jq: this is exactly what
 scp-api-install-host.py used to do ad hoc for imageflavours only (query,
 filter, print a numbered list) -- generalized to the rest of the
-"pre-install recon" resource set (servers, imageflavours, isoimages, disks,
+"pre-install recon" resource set (servers, imageflavours, iso-bootable, disks,
 rescuesystem status, snapshots, tasks), plus a handful of paired SAFE
 mutating actions (task cancel, ISO detach, rescue-system deactivate,
 snapshot create/dryrun-check) named explicitly because they're reversible/
@@ -15,33 +15,43 @@ actions.
 
 Auth/settings: shares netcup_scp_client.py with scp-api-install-host.py
 (same .env-sourced NETCUP_SCP_API_REFRESH_TOKEN, same OAuth2 device-code
-`login` support) but its own tiny scp-api-explore.toml for
+`login` support) but its own tiny scp-api.toml for
 base_url/keycloak_url (see that file's own comment for why it's not
 shared with scp-api-install-host.toml).
 
 Usage:
-  scp-api-explore.py login                          # same device-code flow as scp-api-install-host.py
-  scp-api-explore.py servers [--json]
-  scp-api-explore.py servers <id> [--json]
-  scp-api-explore.py imageflavours [<id>] [--filter TEXT] [--json]
-  scp-api-explore.py isoimages [<id>] [--filter TEXT] [--json]
-  scp-api-explore.py iso [<id>] [--json] [--detach [--yes]]
-  scp-api-explore.py disks [<id>] [--json] [--supported-drivers]
-  scp-api-explore.py rescuesystem [<id>] [--json] [--deactivate [--yes]]
-  scp-api-explore.py snapshots [<id>] [--json] [--create [--yes]] [--dryrun]
-  scp-api-explore.py tasks [uuid] [--json] [--cancel [--yes]]
+  scp-api.py login
+  scp-api.py servers [--json]
+  scp-api.py server-details <server_id> [--json]
+  scp-api.py imageflavours [server_id] [--filter TEXT] [--json]
+  scp-api.py iso-bootable [server_id] [--filter TEXT] [--json]
+  scp-api.py iso-attached [server_id] [detach] [--yes]
+  scp-api.py disks [server_id] [supported-drivers]
+  scp-api.py rescuesystem [server_id] [deactivate] [--yes]
+  scp-api.py snapshots [server_id] [create|dryrun] [--name NAME] [--yes]
+  scp-api.py tasks [uuid] [cancel] [--yes]
+  scp-api.py {power-on,power-off,power-cycle,reset} <server_id> [--yes]
 
 Examples:
-  scp-api-explore.py login
-  scp-api-explore.py servers
-  scp-api-explore.py servers 799611 --json
-  scp-api-explore.py imageflavours --filter debian
-  scp-api-explore.py isoimages --filter rescue
-  scp-api-explore.py iso 799611
-  scp-api-explore.py disks 799611 --supported-drivers
-  scp-api-explore.py rescuesystem 799611
-  scp-api-explore.py snapshots 799611
-  scp-api-explore.py tasks
+  scp-api.py login
+  scp-api.py servers
+  scp-api.py server-details 799611 --json
+  scp-api.py imageflavours --filter debian
+  scp-api.py iso-bootable --filter rescue
+  scp-api.py iso-attached 799611
+  scp-api.py disks 799611 supported-drivers
+  scp-api.py rescuesystem 799611
+  scp-api.py snapshots 799611
+  scp-api.py tasks
+  scp-api.py power-cycle 799611
+
+Verb groups:
+  authentication: login
+  exploration: servers, server-details, imageflavours, iso-bootable,
+                iso-attached, disks, rescuesystem, snapshots, tasks
+  modification: iso-attached <server_id> detach, rescuesystem <server_id>
+               deactivate, snapshots <server_id> create, tasks <uuid> cancel,
+               power-on, power-off, power-cycle, reset
 
 Every subcommand accepts --json for raw machine output; without it, output
 is a pretty, optionally-colored table/summary sized for a terminal. Color
@@ -69,7 +79,7 @@ from netcup_scp_client import (
     run_device_code_login,
 )
 
-SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api-explore.toml"
+SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api.toml"
 
 
 def _configure() -> None:
@@ -194,7 +204,7 @@ def confirm(prompt: str, yes: bool, pal: _Palette) -> bool:
 def build_client() -> NetcupSCPClient:
     refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
     if not refresh_token:
-        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN -- run: scp-api-explore.py login", file=sys.stderr)
+        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN -- run: scp-api.py login", file=sys.stderr)
         sys.exit(1)
     try:
         access_token = get_access_token(refresh_token)
@@ -258,12 +268,13 @@ def _require_server_id(args, action: str) -> int:
 # --- subcommands -------------------------------------------------------------
 
 def cmd_servers(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.server_id is None:
-        servers = _api_call(client.get, "/api/v1/servers")
-        emit(servers, args.json, lambda d: print_table(
-            d, ["id", "hostname", "nickname", "name", "disabled"], pal, "no servers on this account"
-        ))
-        return
+    servers = _api_call(client.get, "/api/v1/servers")
+    emit(servers, args.json, lambda d: print_table(
+        d, ["id", "hostname", "nickname", "name", "disabled"], pal, "no servers on this account"
+    ))
+
+
+def cmd_server_details(client: NetcupSCPClient, args, pal: _Palette) -> None:
     server = _api_call(client.get, f"/api/v1/servers/{args.server_id}")
     emit(server, args.json, lambda d: print_kv(d, pal))
 
@@ -296,7 +307,7 @@ def cmd_imageflavours(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(flavours, args.json, table)
 
 
-def cmd_isoimages(client: NetcupSCPClient, args, pal: _Palette) -> None:
+def cmd_iso_bootable(client: NetcupSCPClient, args, pal: _Palette) -> None:
     targets = _server_targets(client, args.server_id)
     aggregate = args.server_id is None
     images: List[Dict[str, Any]] = []
@@ -310,9 +321,9 @@ def cmd_isoimages(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(images, args.json, lambda d: print_table(d, columns, pal, f"no ISO images available {scope}"))
 
 
-def cmd_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.detach:
-        server_id = _require_server_id(args, "--detach")
+def cmd_attached_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    if args.action == "detach":
+        server_id = _require_server_id(args, "detach")
         if not confirm(f"Detach the ISO currently attached to server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -334,8 +345,8 @@ def cmd_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.supported_drivers:
-        server_id = _require_server_id(args, "--supported-drivers")
+    if args.action == "supported-drivers":
+        server_id = _require_server_id(args, "supported-drivers")
         drivers = _api_call(client.get, f"/api/v1/servers/{server_id}/disks/supported-drivers")
         emit(drivers, args.json, lambda d: print(", ".join(d) if d else pal.dim("none reported")))
         return
@@ -355,8 +366,8 @@ def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.deactivate:
-        server_id = _require_server_id(args, "--deactivate")
+    if args.action == "deactivate":
+        server_id = _require_server_id(args, "deactivate")
         if not confirm(f"Deactivate the rescue system for server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -377,13 +388,13 @@ def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.dryrun:
-        server_id = _require_server_id(args, "--dryrun")
+    if args.action == "dryrun":
+        server_id = _require_server_id(args, "dryrun")
         result = _api_call(client.post, f"/api/v1/servers/{server_id}/snapshots:dryrun", {})
         emit(result, args.json, lambda d: print_kv(d, pal))
         return
-    if args.create:
-        server_id = _require_server_id(args, "--create")
+    if args.action == "create":
+        server_id = _require_server_id(args, "create")
         if not confirm(f"Create a new snapshot of server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -413,8 +424,8 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
-    if args.cancel and args.uuid is None:
-        print("ERROR: --cancel requires a task uuid", file=sys.stderr)
+    if args.action == "cancel" and args.uuid is None:
+        print("ERROR: cancel requires a task uuid", file=sys.stderr)
         sys.exit(2)
     if args.uuid is None:
         tasks = _api_call(client.get, "/api/v1/tasks")
@@ -422,7 +433,7 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
             d, ["uuid", "name", "state", "startedAt", "finishedAt"], pal, "no tasks found"
         ))
         return
-    if args.cancel:
+    if args.action == "cancel":
         if not confirm(f"Cancel task {args.uuid}?", args.yes, pal):
             print("aborted")
             return
@@ -433,15 +444,38 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(task, args.json, lambda d: print_kv(d, pal))
 
 
+_POWER_ACTIONS = {
+    "power-on": ("ON", None, "Power on"),
+    "power-off": ("OFF", "POWEROFF", "Power off"),
+    "power-cycle": ("ON", "POWERCYCLE", "Power-cycle"),
+    "reset": ("ON", "RESET", "Reset"),
+}
+
+
+def cmd_power(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    state, state_option, label = _POWER_ACTIONS[args.command]
+    if not confirm(f"{label} server {args.server_id}?", args.yes, pal):
+        print("aborted")
+        return
+    params = {"stateOption": state_option} if state_option else None
+    result = _api_call(
+        client.patch,
+        f"/api/v1/servers/{args.server_id}",
+        {"state": state},
+        params=params,
+    )
+    emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.green(f"{label.lower()} requested")))
+
+
 def cmd_login(args) -> int:
-    return run_device_code_login(Path(__file__).resolve().parent / ".env")
+    return run_device_code_login(netcup_scp_client.resolve_env_path())
 
 
 # --- argument parsing --------------------------------------------------------
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Explore the netcup SCP API account/server surface (read-only + a few safe paired actions).",
+        description="Explore and safely modify the netcup SCP API account/server surface.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
         add_help=False,
@@ -450,12 +484,11 @@ def parse_args():
     parser.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, metavar="VERB")
 
     def add_subcommand(name: str, help_text: str, description: str = ""):
         command_parser = sub.add_parser(
             name,
-            help=help_text,
             description=description or help_text,
             formatter_class=argparse.RawDescriptionHelpFormatter,
             add_help=False,
@@ -474,59 +507,124 @@ def parse_args():
         )
         return command_parser
 
-    add_subcommand("login", "OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)")
+    def add_actions(command_parser, choices, help_text: str):
+        action_group = command_parser.add_argument_group("actions")
+        action_group.add_argument(
+            "action",
+            nargs="?",
+            choices=choices,
+            metavar="{" + ",".join(choices) + "}",
+            help=help_text,
+        )
 
-    p = add_subcommand("servers", "list servers, or show one server's detail")
-    p.add_argument("server_id", nargs="?", type=int, default=None)
+    add_subcommand(
+        "login",
+        "OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)",
+        "Obtain the long-lived refresh token through the browser device-code flow.\n\n"
+        "Example:\n  ./scp-api.py login",
+    )
+
+    add_subcommand(
+        "servers",
+        "list all known servers",
+        "List the account's server inventory.\n\nExample:\n  ./scp-api.py servers",
+    )
+    p = add_subcommand(
+        "server-details",
+        "show detailed information for one server",
+        "Show the complete API record for one server.\n\nExample:\n  ./scp-api.py server-details 799611",
+    )
+    p.add_argument("server_id", type=int, metavar="server_id")
 
     for name, help_text, description in [
         (
             "imageflavours",
             "list reinstallable OS/image flavours (all servers unless an ID is given)",
             "An image flavour is a server-compatible reinstallable OS/image variant, "
-            "for example a Debian 13 UEFI amd64 image. It is not a VM template.",
+            "for example a Debian 13 UEFI amd64 image. It is not a VM template.\n\n"
+            "Example:\n  ./scp-api.py imageflavours --filter debian",
         ),
         (
-            "isoimages",
+            "iso-bootable",
             "list available ISO images (all servers unless an ID is given)",
             "ISO images are bootable installer/recovery media exposed by SCP. "
-            "Use --filter debian or --filter rescue to narrow the names and descriptions.",
+            "Use --filter debian or --filter rescue to narrow the names and descriptions.\n\n"
+            "Example:\n  ./scp-api.py iso-bootable --filter rescue",
         ),
     ]:
         p = add_subcommand(name, help_text, description)
-        p.add_argument("server_id", nargs="?", type=int, default=None)
+        p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
         p.add_argument("--filter", metavar="TEXT", help="case-insensitive text filter across returned fields")
 
-    p = add_subcommand("iso", "show ISO attachments for all servers, or one server")
-    p.add_argument("server_id", nargs="?", type=int, default=None)
-    p.add_argument("--detach", action="store_true", help="detach the currently-attached ISO (safe/reversible)")
+    p = add_subcommand(
+        "iso-attached",
+        "show attached ISOs for all servers, or one server",
+        "Show the ISO currently attached to each server; add the detach action to remove one.\n\n"
+        "Example:\n  ./scp-api.py iso-attached 799611",
+    )
+    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    add_actions(p, ("detach",), "detach: remove the currently-attached ISO (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = add_subcommand("disks", "list disks for all servers, or one server")
-    p.add_argument("server_id", nargs="?", type=int, default=None)
-    p.add_argument("--supported-drivers", action="store_true")
+    p = add_subcommand(
+        "disks",
+        "list disks for all servers, or one server",
+        "List disk capacity/allocation and storage drivers.\n\n"
+        "Example:\n  ./scp-api.py disks 799611",
+    )
+    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    add_actions(p, ("supported-drivers",), "supported-drivers: list storage drivers for one server")
 
-    p = add_subcommand("rescuesystem", "show rescue-system status for all servers, or one server")
-    p.add_argument("server_id", nargs="?", type=int, default=None)
-    p.add_argument("--deactivate", action="store_true", help="deactivate the rescue system (safe/reversible)")
+    p = add_subcommand(
+        "rescuesystem",
+        "show rescue-system status for all servers, or one server",
+        "Show whether the rescue system is active; add deactivate to turn it off.\n\n"
+        "Example:\n  ./scp-api.py rescuesystem 799611",
+    )
+    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    add_actions(p, ("deactivate",), "deactivate: turn off the rescue system (safe/reversible)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = add_subcommand("snapshots", "list snapshots for all servers, or act on one server")
-    p.add_argument("server_id", nargs="?", type=int, default=None)
-    p.add_argument("--create", action="store_true", help="create a new snapshot (additive, does not touch existing ones)")
-    p.add_argument("--dryrun", action="store_true", help="check whether creating a snapshot is currently possible")
-    p.add_argument("--name", default=None, help="optional name for --create")
+    p = add_subcommand(
+        "snapshots",
+        "list snapshots for all servers, or act on one server",
+        "List snapshots, or use create/dryrun for one server.\n\n"
+        "Example:\n  ./scp-api.py snapshots 799611",
+    )
+    p.add_argument("server_id", nargs="?", type=int, default=None, metavar="server_id")
+    add_actions(
+        p,
+        ("create", "dryrun"),
+        "create: create a snapshot; dryrun: check whether snapshot creation is possible",
+    )
+    p.add_argument("--name", default=None, help="optional name for the create action")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
-    p = add_subcommand("tasks", "list tasks, show one, or cancel one")
+    p = add_subcommand(
+        "tasks",
+        "list tasks, show one, or cancel one",
+        "List tasks, show one by UUID, or use cancel with a UUID.\n\n"
+        "Example:\n  ./scp-api.py tasks",
+    )
     p.add_argument("uuid", nargs="?", default=None)
-    p.add_argument("--cancel", action="store_true", help="cancel a running task (does not undo whatever it already did)")
+    add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+
+    for command, description in [
+        ("power-on", "Power on one server.\n\nExample:\n  ./scp-api.py power-on 799611"),
+        ("power-off", "Power off one server.\n\nExample:\n  ./scp-api.py power-off 799611"),
+        ("power-cycle", "Power-cycle one server.\n\nExample:\n  ./scp-api.py power-cycle 799611"),
+        ("reset", "Reset one server.\n\nExample:\n  ./scp-api.py reset 799611"),
+    ]:
+        p = add_subcommand(command, description)
+        p.add_argument("server_id", type=int, metavar="server_id")
+        p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     # With no command the most useful response is the top-level usage, not
-    # argparse's implementation detail about a required subparser.
+    # argparse's implementation detail about a required subparser. Print the
+    # full help so a bare invocation is a useful discovery command.
     if len(sys.argv) == 1:
-        parser.print_usage(sys.stderr)
+        parser.print_help(sys.stderr)
         parser.exit(2)
 
     return parser.parse_args()
@@ -544,13 +642,18 @@ def main() -> int:
 
     dispatch = {
         "servers": cmd_servers,
+        "server-details": cmd_server_details,
         "imageflavours": cmd_imageflavours,
-        "isoimages": cmd_isoimages,
-        "iso": cmd_iso,
+        "iso-bootable": cmd_iso_bootable,
+        "iso-attached": cmd_attached_iso,
         "disks": cmd_disks,
         "rescuesystem": cmd_rescuesystem,
         "snapshots": cmd_snapshots,
         "tasks": cmd_tasks,
+        "power-on": cmd_power,
+        "power-off": cmd_power,
+        "power-cycle": cmd_power,
+        "reset": cmd_power,
     }
     try:
         dispatch[args.command](client, args, pal)

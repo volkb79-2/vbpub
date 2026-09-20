@@ -16,7 +16,7 @@ import pytest
 NETCUP_DIR = Path(__file__).resolve().parent.parent
 INSTALL_HOST_PATH = NETCUP_DIR / "scp-api-install-host.py"
 MONITOR_TASK_PATH = NETCUP_DIR / "scp-api-monitor-task.py"
-EXPLORE_PATH = NETCUP_DIR / "scp-api-explore.py"
+EXPLORE_PATH = NETCUP_DIR / "scp-api.py"
 
 
 def _load_module(path: Path, name: str) -> types.ModuleType:

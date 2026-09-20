@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared Netcup SCP API client: OAuth2 device-code login, token refresh,
 the authenticated HTTP client, and the small settings/.env helpers both
-`scp-api-install-host.py` and `scp-api-explore.py` need.
+`scp-api-install-host.py` and `scp-api.py` need.
 
 Extracted 2026-09-09 from scp-api-install-host.py (DRY, per operator
 request) -- not a redesign, a straight lift. Preserves that file's own
@@ -95,6 +95,21 @@ def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
     os.chmod(path, 0o600)
 
 
+def resolve_env_path() -> Path:
+    """Return the existing .env selected by the shared search order.
+
+    If no candidate exists yet, return the canonical file next to the Netcup
+    tools so the login command has a deterministic, credential-safe destination.
+    """
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / ".env",
+        script_dir / ".env",
+        script_dir.parent.parent / ".env",
+    ]
+    return next((p for p in candidates if p.exists()), script_dir / ".env")
+
+
 def load_env_file() -> None:
     """Load environment variables from a local .env file (no external deps).
 
@@ -106,15 +121,8 @@ def load_env_file() -> None:
     This makes it safe to run either script from repo root while keeping
     the canonical .env next to the netcup tooling.
     """
-    script_dir = Path(__file__).resolve().parent
-    candidates = [
-        Path.cwd() / ".env",
-        script_dir / ".env",
-        script_dir.parent.parent / ".env",
-    ]
-
-    env_file: Optional[Path] = next((p for p in candidates if p.exists()), None)
-    if env_file is None:
+    env_file = resolve_env_path()
+    if not env_file.exists():
         return
 
     try:

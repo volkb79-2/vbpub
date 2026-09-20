@@ -40,7 +40,7 @@ the operator explicitly selects the create-new choice.
 ## Account-wide API exploration
 
 The SCP API makes most inventory endpoints server-scoped: there is no
-account-level `GET /imageflavours` or `GET /isoimages`. The explorer therefore
+account-level `GET /imageflavours` or `GET /isoimages`. `scp-api.py` therefore
 lists `/servers` first and queries each server when a read-only command has no
 ID. It adds the source server to those rows so identical image names from two
 VMs cannot be mistaken for one result. An explicit ID remains available for a
