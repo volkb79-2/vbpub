@@ -279,3 +279,23 @@ def test_notify_credentials_written_to_fixed_path_under_systemd_credential_mode(
     )
     assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_bot_token"] == "123:token\n"
     assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_chat_id"] == "456\n"
+
+
+def test_mattermost_webhook_credentials_written_to_fixed_and_state_paths(tmp_path):
+    _, actions = install_dry(
+        tmp_path,
+        notify_backend="mattermost",
+        mattermost_webhook_url="https://mattermost.example.test/hooks/secret",
+    )
+    assert actions.dry_run_writes["/etc/vbpub/credentials/notify_backend"] == "mattermost\n"
+    assert actions.dry_run_writes["/etc/vbpub/credentials/mattermost_webhook_url"] == (
+        "https://mattermost.example.test/hooks/secret\n"
+    )
+    state_dir_webhook = f"{tmp_path / 'state'}/credentials/mattermost_webhook_url"
+    assert actions.dry_run_writes[state_dir_webhook].endswith("hooks/secret\n")
+
+
+def test_none_backend_overwrites_stale_helper_marker(tmp_path):
+    _, actions = install_dry(tmp_path, notify_backend="none")
+    assert actions.dry_run_writes["/etc/vbpub/credentials/notify_backend"] == "none\n"
+    assert actions.dry_run_writes[f"{tmp_path / 'state'}/credentials/notify_backend"] == "none\n"

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
-from debian_install_v2.installer import Installer, _split_for_telegram
+from debian_install_v2.installer import (
+    Installer,
+    _split_for_mattermost,
+    _split_for_telegram,
+    _telegram_html_to_mattermost_markdown,
+)
 from debian_install_v2.state import StateStore
 
 
@@ -33,6 +40,13 @@ def test_split_hard_splits_when_no_boundary_exists():
     chunks = _split_for_telegram(message, limit=limit)
     assert "".join(chunks) == message
     assert all(len(c) <= limit for c in chunks)
+
+
+def test_mattermost_translation_preserves_escaped_data():
+    message = "<b>Host</b><br><code>&lt;tag&gt;</code><pre>literal &lt;b&gt;</pre>"
+    translated = _telegram_html_to_mattermost_markdown(message)
+    assert translated == "**Host**\n`<tag>`\n```\nliteral <b>\n```"
+    assert all(len(chunk) <= 20 for chunk in _split_for_mattermost("A" * 40, limit=20))
 
 
 # --- _notify: chunking + thread_id ----------------------------------------
@@ -103,6 +117,38 @@ def test_notify_skips_entirely_without_credentials(tmp_path, monkeypatch):
 
     monkeypatch.setattr("debian_install_v2.installer.urllib.request.urlopen", fail_urlopen)
     installer._notify("hello")  # must not raise, must not call urlopen
+
+
+def test_mattermost_notify_posts_markdown_json_without_leaking_webhook(tmp_path, monkeypatch):
+    installer = make_installer(
+        tmp_path,
+        notify_backend="mattermost",
+        telegram_bot_token="",
+        telegram_chat_id="",
+        mattermost_webhook_url="https://mattermost.example.test/hooks/secret",
+    )
+    installer.actions.dry_run = False
+    captured = {}
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    def fake_urlopen(request, timeout=15):
+        captured["url"] = request.full_url
+        captured["body"] = request.data.decode("utf-8")
+        return FakeResp()
+
+    monkeypatch.setattr("debian_install_v2.installer.urllib.request.urlopen", fake_urlopen)
+    installer._notify("<b>Hello</b><br>world")
+    assert captured["url"] == "https://mattermost.example.test/hooks/secret"
+    assert "secret" in captured["url"]  # the request target is never printed
+    assert json.loads(captured["body"]) == {"text": "**Hello**\nworld"}
 
 
 # --- Hook-point wiring: install()/resume() call _notify at the right times

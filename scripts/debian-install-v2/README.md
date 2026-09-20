@@ -102,15 +102,17 @@ through the same journal).
 ### Orchestration / observability
 
 `state.json` under `state_dir` tracks per-step status across stage1 → reboot
-→ stage2, so a re-run resumes rather than repeats. Telegram progress +
-completion notifications (`telegram_bot_token`/`telegram_chat_id`,
-`telegram_verbose_progress`) including host facts. An ephemeral controller
+→ stage2, so a re-run resumes rather than repeats. Optional Telegram or
+Mattermost progress + completion notifications (`notify_backend`, Telegram's
+`telegram_bot_token`/`telegram_chat_id`, or Mattermost's
+`mattermost_webhook_url`; `telegram_verbose_progress` also controls verbose
+progress for the selected backend) include host facts. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
 during the run and removed again only *after* the stage2-done marker is
 written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
-`credential_mode` (`root-storage` / `systemd`) selects how the Telegram
-token and controller pubkey are stored on disk.
+`credential_mode` (`root-storage` / `systemd`) selects how the selected
+notification credential and controller pubkey are stored on disk.
 
 ## Not yet in v2 (v1 had some of this)
 

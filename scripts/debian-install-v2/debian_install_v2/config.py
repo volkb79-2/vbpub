@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, fields
 import json
 import re
 from typing import Any, Literal
+import urllib.parse
 
 
 SCHEMA_VERSION = 1
@@ -81,8 +82,13 @@ class Config:
     docker_cleanup_max_age_hours: int = 240
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
     reboot_window_time: str = "03:00"
+    # Keep Telegram as the compatibility default for existing v2 JSON that
+    # already supplies its pair. `none` is explicit silence; Mattermost is
+    # selected deliberately because its webhook URL is itself a credential.
+    notify_backend: Literal["telegram", "mattermost", "none"] = "telegram"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
+    mattermost_webhook_url: str = field(default="", repr=False)
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
     # A one-line `authorized_keys` entry (type + base64 + comment) for the
@@ -152,12 +158,13 @@ def _validate(config: Config) -> None:
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{name} must be an integer")
-        string_names = [
-            "log_dir", "state_dir", "stage2_output",
-            "telegram_bot_token", "telegram_chat_id",
-            "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
-            "reboot_window_time", "controller_ssh_pubkey",
-        ]
+    string_names = [
+        "log_dir", "state_dir", "stage2_output",
+        "notify_backend", "telegram_bot_token", "telegram_chat_id",
+        "mattermost_webhook_url",
+        "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
+        "reboot_window_time", "controller_ssh_pubkey",
+    ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
             raise ConfigError(f"{name} must be a string")
@@ -201,8 +208,29 @@ def _validate(config: Config) -> None:
         raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
     if not _HHMM_RE.fullmatch(config.reboot_window_time):
         raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
+    if config.notify_backend not in {"telegram", "mattermost", "none"}:
+        raise ConfigError("notify_backend must be telegram, mattermost, or none")
+    telegram_configured = bool(config.telegram_bot_token) or bool(config.telegram_chat_id)
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
+    if config.mattermost_webhook_url:
+        parsed_webhook = urllib.parse.urlparse(config.mattermost_webhook_url)
+        if (
+            parsed_webhook.scheme != "https"
+            or not parsed_webhook.netloc
+            or any(char.isspace() for char in config.mattermost_webhook_url)
+        ):
+            raise ConfigError("mattermost_webhook_url must be an https:// URL without whitespace")
+    if config.notify_backend == "telegram":
+        if config.mattermost_webhook_url:
+            raise ConfigError("mattermost_webhook_url requires notify_backend=mattermost")
+    elif config.notify_backend == "mattermost":
+        if telegram_configured:
+            raise ConfigError("Telegram credentials require notify_backend=telegram")
+        if not config.mattermost_webhook_url:
+            raise ConfigError("notify_backend=mattermost requires mattermost_webhook_url")
+    elif telegram_configured or config.mattermost_webhook_url:
+        raise ConfigError("notify_backend=none cannot have notification credentials")
     if config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):

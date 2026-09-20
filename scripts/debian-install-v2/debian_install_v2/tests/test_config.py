@@ -39,6 +39,29 @@ def test_telegram_pair_is_required_together():
         load_config(raw_json='{"telegram_bot_token":"x"}')
 
 
+def test_mattermost_webhook_is_valid_configuration():
+    config = load_config(raw_json=json.dumps({
+        "notify_backend": "mattermost",
+        "mattermost_webhook_url": "https://mattermost.example.test/hooks/secret",
+    }))
+    assert config.notify_backend == "mattermost"
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"notify_backend": "unknown"}, "notify_backend"),
+        ({"notify_backend": "mattermost"}, "requires mattermost_webhook_url"),
+        ({"notify_backend": "mattermost", "mattermost_webhook_url": "http://example.test/hooks/x"}, "https://"),
+        ({"notify_backend": "mattermost", "mattermost_webhook_url": "https://example.test/hooks/x", "telegram_bot_token": "x", "telegram_chat_id": "y"}, "Telegram"),
+        ({"notify_backend": "none", "telegram_bot_token": "x", "telegram_chat_id": "y"}, "cannot have"),
+    ],
+)
+def test_notification_backend_is_strictly_validated(data, message):
+    with pytest.raises(ConfigError, match=message):
+        load_config(raw_json=json.dumps(data))
+
+
 def test_non_fresh_install_refused():
     data = dict(BASE, fresh_install=False)
     with pytest.raises(ConfigError, match="fresh_install=true"):

@@ -26,6 +26,35 @@ rerun `configure` to regenerate it. It contains placeholders for secrets and
 for the bootstrap source; the controller expands those only in the API
 request, never by modifying the saved recipe.
 
+### Notifications
+
+The installer supports one selected notification backend: `telegram`,
+`mattermost`, or `none`. Telegram remains the compatibility default. For the
+public Mattermost deployment described by
+[`nyxloom/mattermost/CONSUMER.md`](../../nyxloom/mattermost/CONSUMER.md), use
+the producer's incoming-webhook secret in the local `.env`. The externally
+reachable host is `mattermost.gstammtisch.dchive.de`:
+
+```dotenv
+NOTIFY_BACKEND=mattermost
+MATTERMOST_WEBHOOK_URL=https://mattermost.example.test/hooks/REDACTED
+```
+
+From this checkout, the local secret file can provide the value without
+committing it:
+
+```bash
+webhook_url=$(cat ../../nyxloom/mattermost/.ciu/secrets/installer_webhook_url)
+sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
+```
+
+Use the public Mattermost hostname in the webhook URL; an external Netcup VM
+cannot use the Mattermost stack's internal Docker hostname. The webhook is
+post-only and channel-bound, so this integration does not need a Mattermost
+PAT or REST client. Notification failures are logged as warnings and do not
+turn a successful Debian install into a failed one. The wizard asks which
+backend to use and only prompts for that backend's credentials.
+
 ## Install workflow
 
 Preview an installation without mutating the Netcup account:

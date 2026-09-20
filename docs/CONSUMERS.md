@@ -18,6 +18,7 @@ Create `/root/install.json` on the target:
   "swap_disk_total_gb": 32,
   "swap_file_count": 8,
   "zswap_compressor": "zstd",
+  "notify_backend": "none",
   "telegram_bot_token": "",
   "telegram_chat_id": "",
   "auto_reboot_after_stage1": true,
@@ -27,7 +28,24 @@ Create `/root/install.json` on the target:
 
 The committed equivalent is
 [`scripts/debian-install-v2/known-shape.json`](../scripts/debian-install-v2/known-shape.json).
-Fill both Telegram values only if notifications are wanted; supply neither or both.
+The committed shape explicitly disables notifications. For Telegram, set
+`notify_backend` to `telegram` and fill both Telegram values. Mattermost uses
+an incoming webhook instead:
+
+```json
+{
+  "schema_version": 1,
+  "fresh_install": true,
+  "notify_backend": "mattermost",
+  "mattermost_webhook_url": "https://mattermost.example.test/hooks/REDACTED"
+}
+```
+
+Do not commit a real webhook URL. The Mattermost webhook is post-only and
+bound to its configured channel; the installer uses the public Mattermost URL
+from outside the Mattermost host. Telegram and Mattermost credentials are
+mutually exclusive, and notification failures are warnings rather than
+installer failures.
 
 ### Install and rehearse
 
@@ -66,6 +84,24 @@ python3 scp-api-install-host.py --payload target-host.jsonc --monitor
 ```
 
 `scp-api.py login` writes the refresh token to the local `.env` with mode `0600`.
+
+The Netcup installer can report to Mattermost instead of Telegram. The
+consumer deployment's public host is
+`mattermost.gstammtisch.dchive.de`; copy only its incoming-webhook URL (not a
+Mattermost password or PAT) into `.env`:
+
+```bash
+cd scripts/netcup
+cp .env.example .env
+python3 scp-api.py login
+sed -i 's/^NOTIFY_BACKEND=.*/NOTIFY_BACKEND=mattermost/' .env
+webhook_url=$(cat ../../nyxloom/mattermost/.ciu/secrets/installer_webhook_url)
+sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
+```
+
+The webhook is bound to the producer's configured channel and is post-only;
+the remote Debian host must reach the public Mattermost URL, not an internal
+Docker service name. Keep `.env` at mode `0600` and never commit it.
 
 The interactive install lists existing Netcup account SSH keys and uses the
 first selected key by default; choosing one does not register a new account

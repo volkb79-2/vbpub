@@ -66,7 +66,9 @@ filters such as `scp-api.py imageflavours --filter debian`. It also exposes
 confirmed ISO attachment, firewall assignment, and grouped power actions
 (`scp-api.py power on|off|cycle|reset SERVER_ID`); validated firewall policy
 create/PUT and account user-ISO upload (`scp-api.py user-iso upload FILE`) are
-also available through the CLI. See the
+also available through the CLI. Debian-install-v2 progress can use Telegram,
+the public nyxloom Mattermost incoming webhook, or no notifications; the
+webhook URL is kept as a local secret and is never committed. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 
 ## Repository setup and initial CMRU build

@@ -50,6 +50,22 @@ def test_expand_payload_placeholders_substitutes_controller_ssh_pubkey(install_h
     assert expanded["customScript"] == "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral' python3 -"
 
 
+def test_expand_payload_placeholders_substitutes_mattermost_backend(install_host_mod, monkeypatch):
+    monkeypatch.setenv("NOTIFY_BACKEND", "mattermost")
+    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://mattermost.example.test/hooks/secret")
+    payload = {
+        "customScript": (
+            "NOTIFY_BACKEND='{{NOTIFY_BACKEND}}' "
+            "MATTERMOST_WEBHOOK_URL='{{MATTERMOST_WEBHOOK_URL}}' python3 -"
+        )
+    }
+    expanded = install_host_mod._expand_payload_placeholders(payload)
+    assert expanded["customScript"] == (
+        "NOTIFY_BACKEND='mattermost' "
+        "MATTERMOST_WEBHOOK_URL='https://mattermost.example.test/hooks/secret' python3 -"
+    )
+
+
 def test_expand_payload_placeholders_warns_when_controller_ssh_pubkey_missing(install_host_mod, monkeypatch, capsys):
     monkeypatch.delenv("CONTROLLER_SSH_PUBKEY", raising=False)
     payload = {"customScript": "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -"}
@@ -1245,6 +1261,7 @@ def test_build_customscript_expands_every_placeholder(install_host_mod):
     assert "REPO_BRANCH=main" in snippet
     assert "TELEGRAM_BOT_TOKEN=123:tok" in snippet
     assert "TELEGRAM_CHAT_ID=-100555" in snippet
+    assert "NOTIFY_BACKEND=telegram" in snippet
     assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral'" in snippet
     assert snippet.startswith("curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/")
     assert snippet.endswith("python3 -")
@@ -1263,6 +1280,22 @@ def test_build_customscript_omits_blank_optional_fields(install_host_mod):
     assert "TELEGRAM_BOT_TOKEN" not in snippet
     assert "TELEGRAM_CHAT_ID" not in snippet
     assert "CONTROLLER_SSH_PUBKEY" not in snippet
+    assert "NOTIFY_BACKEND=telegram" in snippet
+
+
+def test_build_customscript_supports_mattermost(install_host_mod):
+    snippet = install_host_mod._build_customscript(
+        auto_reboot_after_stage1=True,
+        never_reboot=False,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        controller_pubkey="",
+        notify_backend="mattermost",
+        mattermost_webhook_url="https://mattermost.example.test/hooks/secret",
+    )
+    assert "NOTIFY_BACKEND=mattermost" in snippet
+    assert "MATTERMOST_WEBHOOK_URL=https://mattermost.example.test/hooks/secret" in snippet
+    assert "TELEGRAM_BOT_TOKEN" not in snippet
 
 
 def test_build_customscript_shell_quotes_operator_supplied_values(install_host_mod):
@@ -1286,7 +1319,8 @@ def test_build_customscript_shell_quotes_operator_supplied_values(install_host_m
 
 
 def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod, capsys, monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")  # decline every yes/no, blank every text
+    responses = iter(["n", "n", "1", "", "", "n"])
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     rc = install_host_mod._run_build_customscript()
     assert rc == 0
     out = capsys.readouterr().out
@@ -1295,8 +1329,8 @@ def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod,
 
 
 def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp_path, monkeypatch, capsys):
-    # auto_reboot, never_reboot, tg token, tg chat, include ssh key, host label
-    responses = iter(["y", "n", "", "", "y", "test-server"])
+    # auto_reboot, never_reboot, backend, tg token, tg chat, include ssh key, host label
+    responses = iter(["y", "n", "1", "", "", "y", "test-server"])
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # must not be required
     identity_path = tmp_path / "id_ed25519"
@@ -1319,7 +1353,7 @@ def test_run_build_customscript_requires_host_label_for_ssh_key(install_host_mod
     label typed, every invocation would otherwise silently collapse onto
     the same "unknown-host" key regardless of target -- must refuse
     instead."""
-    responses = iter(["y", "n", "", "", "y", ""])  # blank host label
+    responses = iter(["y", "n", "1", "", "", "y", ""])  # blank host label
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
 

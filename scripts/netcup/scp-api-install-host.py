@@ -373,8 +373,10 @@ netcup_scp_client.KEYCLOAK_URL = KEYCLOAK_URL
 #  }
 
 SERVER_NAME = os.environ.get("NETCUP_SCP_API_SERVER_NAME")    # v1001.vxxu.de
+NOTIFY_BACKEND = os.environ.get("NOTIFY_BACKEND", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+MATTERMOST_WEBHOOK_URL = os.environ.get("MATTERMOST_WEBHOOK_URL")
 
 
 def _bootstrap_source() -> Dict[str, str]:
@@ -425,7 +427,9 @@ INSTALLATION_CONFIG = {
         "curl -fsSL {{BOOTSTRAP_URL}} | "
         "REPO_URL={{BOOTSTRAP_REPO_URL}} REPO_BRANCH={{BOOTSTRAP_REPO_BRANCH}} "
         "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
+        "NOTIFY_BACKEND='{{NOTIFY_BACKEND}}' "
         "TELEGRAM_BOT_TOKEN='{{TELEGRAM_BOT_TOKEN}}' TELEGRAM_CHAT_ID='{{TELEGRAM_CHAT_ID}}' "
+        "MATTERMOST_WEBHOOK_URL='{{MATTERMOST_WEBHOOK_URL}}' "
         "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' "
         "python3 -"
     ),
@@ -455,8 +459,8 @@ Commands (positional, optional; default is the install flow below):
   build-customscript  Interactive wizard: build a ready-to-paste customScript
                        snippet (no Netcup API calls) for manual use in a
                        web-hoster's own management UI - covers
-                       AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/TELEGRAM_BOT_TOKEN/
-                       TELEGRAM_CHAT_ID/CONTROLLER_SSH_PUBKEY only.
+                       AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/notification backend/
+                       Telegram or Mattermost credentials/CONTROLLER_SSH_PUBKEY only.
 
 Modes (pick one; default is interactive gather+install):
   (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
@@ -504,8 +508,10 @@ Environment Variables (see .env.example):
   NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
   NETCUP_SCP_API_SSH_USER          Overrides scp-api-install-host.toml's ssh.user for --ssh-user.
   NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides scp-api-install-host.toml's ssh.identity_file for --ssh-identity-file.
-  TELEGRAM_BOT_TOKEN               Optional: forwarded into the bootstrap customScript.
-  TELEGRAM_CHAT_ID                 Optional: forwarded into the bootstrap customScript.
+  NOTIFY_BACKEND                   Optional: telegram, mattermost, or none; forwarded into the bootstrap.
+  TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
+                                   Optional together: forwarded for Telegram notifications.
+  MATTERMOST_WEBHOOK_URL           Optional: HTTPS incoming-webhook credential for Mattermost notifications.
   NETCUP_SCP_API_DEBUG             Enable verbose request/response logging (yes/true/1); same as --debug.
   NETCUP_SCP_API_BOOTSTRAP_URL     Optional direct override for the remote bootstrap URL.
   NETCUP_SCP_API_BOOTSTRAP_REPO_URL/REPO_BRANCH
@@ -1410,6 +1416,8 @@ def _build_customscript(
     telegram_bot_token: str,
     telegram_chat_id: str,
     controller_pubkey: str,
+    notify_backend: str = "telegram",
+    mattermost_webhook_url: str = "",
 ) -> str:
     """Build a fully-expanded (no {{PLACEHOLDER}} tokens), one-line
     customScript shell command - the same shape as
@@ -1425,17 +1433,42 @@ def _build_customscript(
     # wizard's whole point is a value a human just typed going straight
     # into a real shell command that will actually execute as cloud-init
     # on a live host.
+    notify_backend = notify_backend.strip().lower()
+    if notify_backend not in {"telegram", "mattermost", "none"}:
+        raise ValueError("notify_backend must be telegram, mattermost, or none")
+    telegram_configured = bool(telegram_bot_token) or bool(telegram_chat_id)
+    if bool(telegram_bot_token) != bool(telegram_chat_id):
+        raise ValueError("telegram_bot_token and telegram_chat_id must be supplied together")
+    if notify_backend == "telegram" and mattermost_webhook_url:
+        raise ValueError("mattermost_webhook_url requires notify_backend=mattermost")
+    if notify_backend == "mattermost":
+        if telegram_configured:
+            raise ValueError("Telegram credentials require notify_backend=telegram")
+        if not mattermost_webhook_url:
+            raise ValueError("notify_backend=mattermost requires mattermost_webhook_url")
+        parsed_webhook = urllib.parse.urlparse(mattermost_webhook_url)
+        if (
+            parsed_webhook.scheme != "https"
+            or not parsed_webhook.netloc
+            or any(char.isspace() for char in mattermost_webhook_url)
+        ):
+            raise ValueError("mattermost_webhook_url must be an https:// URL without whitespace")
+    if notify_backend == "none" and (telegram_configured or mattermost_webhook_url):
+        raise ValueError("notify_backend=none cannot have notification credentials")
+
     bootstrap = _bootstrap_source()
     env_parts = [
         f"REPO_URL={shlex.quote(bootstrap['repo_url'])}",
         f"REPO_BRANCH={shlex.quote(bootstrap['repo_branch'])}",
         f"AUTO_REBOOT_AFTER_STAGE1={'yes' if auto_reboot_after_stage1 else 'no'}",
         f"NEVER_REBOOT={'yes' if never_reboot else 'no'}",
+        f"NOTIFY_BACKEND={notify_backend}",
     ]
-    if telegram_bot_token:
+    if notify_backend == "telegram" and telegram_bot_token:
         env_parts.append(f"TELEGRAM_BOT_TOKEN={shlex.quote(telegram_bot_token)}")
-    if telegram_chat_id:
         env_parts.append(f"TELEGRAM_CHAT_ID={shlex.quote(telegram_chat_id)}")
+    if notify_backend == "mattermost":
+        env_parts.append(f"MATTERMOST_WEBHOOK_URL={shlex.quote(mattermost_webhook_url)}")
     if controller_pubkey:
         env_parts.append(f"CONTROLLER_SSH_PUBKEY={shlex.quote(controller_pubkey)}")
     return f"curl -fsSL {shlex.quote(bootstrap['remote_url'])} | " + " ".join(env_parts) + " python3 -"
@@ -1447,7 +1480,7 @@ def _run_build_customscript() -> int:
     server-reinstall dialog) - covers only the handful of settings
     INSTALLATION_CONFIG's own customScript template already parameterizes
     today (bootstrap URL/repository, AUTO_REBOOT_AFTER_STAGE1,
-    NEVER_REBOOT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    NEVER_REBOOT, notification backend, Telegram or Mattermost credentials,
     CONTROLLER_SSH_PUBKEY) - not the full ~25 env vars
     bootstrap-remote.py documents. For anything else, append your own
     KEY=VALUE pairs (or VBPUB_CONFIG_EXTRA_JSON=...) to the printed snippet
@@ -1459,8 +1492,33 @@ def _run_build_customscript() -> int:
 
     auto_reboot = _prompt_yes_no("Auto-reboot after stage1?", True)
     never_reboot = _prompt_yes_no("Never reboot (overrides the reboot schedule entirely)?", False)
-    telegram_bot_token = _prompt_text("Telegram bot token (blank to skip)", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
-    telegram_chat_id = _prompt_text("Telegram chat id (blank to skip)", os.environ.get("TELEGRAM_CHAT_ID", ""))
+    configured_backend = os.environ.get("NOTIFY_BACKEND", "").strip().lower()
+    backend_default = configured_backend if configured_backend in {"telegram", "mattermost", "none"} else "telegram"
+    backend_items = [
+        "Telegram (bot token + chat ID)",
+        "Mattermost (incoming webhook URL)",
+        "None (disable notifications)",
+    ]
+    backend_index = _prompt_choice(
+        backend_items,
+        {"telegram": 0, "mattermost": 1, "none": 2}[backend_default],
+        "Notification backend",
+    )
+    notify_backend = ("telegram", "mattermost", "none")[backend_index]
+    telegram_bot_token = ""
+    telegram_chat_id = ""
+    mattermost_webhook_url = ""
+    if notify_backend == "telegram":
+        telegram_bot_token = _prompt_text(
+            "Telegram bot token (blank to skip)", os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        )
+        telegram_chat_id = _prompt_text(
+            "Telegram chat id (blank to skip)", os.environ.get("TELEGRAM_CHAT_ID", "")
+        )
+    elif notify_backend == "mattermost":
+        mattermost_webhook_url = _prompt_text(
+            "Mattermost incoming-webhook URL", os.environ.get("MATTERMOST_WEBHOOK_URL", "")
+        )
 
     controller_pubkey = ""
     if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
@@ -1483,13 +1541,19 @@ def _run_build_customscript() -> int:
         controller_pubkey = _read_public_key_for_identity(identity_file)
         print(f"   ✓ Using identity: {identity_file}")
 
-    snippet = _build_customscript(
-        auto_reboot_after_stage1=auto_reboot,
-        never_reboot=never_reboot,
-        telegram_bot_token=telegram_bot_token,
-        telegram_chat_id=telegram_chat_id,
-        controller_pubkey=controller_pubkey,
-    )
+    try:
+        snippet = _build_customscript(
+            auto_reboot_after_stage1=auto_reboot,
+            never_reboot=never_reboot,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+            controller_pubkey=controller_pubkey,
+            notify_backend=notify_backend,
+            mattermost_webhook_url=mattermost_webhook_url,
+        )
+    except ValueError as exc:
+        print(f"ERROR: invalid notification configuration: {exc}", file=sys.stderr)
+        return 2
     print()
     print("Paste this into the customScript field:")
     print("-" * 70)
@@ -1779,7 +1843,11 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
 
     # Expand placeholders only for the API request, while keeping the loaded
     # payload safe-to-print/save.
-    installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+    try:
+        installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+    except ValueError as exc:
+        print(f"❌ ERROR: invalid notification/bootstrap placeholder configuration: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # Display payload summary.
     print("=" * 70)
@@ -1859,23 +1927,61 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    mattermost_webhook = os.environ.get("MATTERMOST_WEBHOOK_URL", "")
+    requested_backend = os.environ.get("NOTIFY_BACKEND", "").strip().lower()
+    # Keep old recipes useful: before the selector existed, setting a
+    # Mattermost webhook is an unambiguous request for Mattermost; otherwise
+    # preserve the v2 compatibility default of Telegram.
+    notify_backend = requested_backend or ("mattermost" if mattermost_webhook else "telegram")
     server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
     controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "")
 
-    if "{{TELEGRAM_BOT_TOKEN}}" in cs and not token:
+    if "{{NOTIFY_BACKEND}}" in cs or "{{MATTERMOST_WEBHOOK_URL}}" in cs:
+        if notify_backend not in {"telegram", "mattermost", "none"}:
+            raise ValueError("NOTIFY_BACKEND must be telegram, mattermost, or none")
+        telegram_configured = bool(token) or bool(chat_id)
+        if bool(token) != bool(chat_id):
+            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be supplied together")
+        if notify_backend == "telegram" and mattermost_webhook:
+            raise ValueError("MATTERMOST_WEBHOOK_URL requires NOTIFY_BACKEND=mattermost")
+        if notify_backend == "mattermost":
+            if telegram_configured:
+                raise ValueError("Telegram credentials require NOTIFY_BACKEND=telegram")
+            parsed_webhook = urllib.parse.urlparse(mattermost_webhook)
+            if (
+                not mattermost_webhook
+                or parsed_webhook.scheme != "https"
+                or not parsed_webhook.netloc
+                or any(char.isspace() for char in mattermost_webhook)
+            ):
+                raise ValueError("MATTERMOST_WEBHOOK_URL must be an https:// URL without whitespace")
+        if notify_backend == "none" and (telegram_configured or mattermost_webhook):
+            raise ValueError("NOTIFY_BACKEND=none cannot have notification credentials")
+
+    if "{{TELEGRAM_BOT_TOKEN}}" in cs and notify_backend == "telegram" and not token:
         print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
-    if "{{TELEGRAM_CHAT_ID}}" in cs and not chat_id:
+    if "{{TELEGRAM_CHAT_ID}}" in cs and notify_backend == "telegram" and not chat_id:
         print("⚠ WARNING: TELEGRAM_CHAT_ID not set; notifications will be disabled")
+    if "{{MATTERMOST_WEBHOOK_URL}}" in cs and notify_backend == "mattermost" and not mattermost_webhook:
+        print("⚠ WARNING: MATTERMOST_WEBHOOK_URL not set; the bootstrap will refuse this configuration")
     if "{{CONTROLLER_SSH_PUBKEY}}" in cs and not controller_pubkey:
         print(
             "⚠ WARNING: CONTROLLER_SSH_PUBKEY not set; debian-install-v2 will rely "
             "solely on netcup's own sshKeyIds injection for SSH access"
         )
 
-    cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", token)
-    cs = cs.replace("{{TELEGRAM_CHAT_ID}}", chat_id)
+    # The generated recipe wraps credential placeholders in single quotes.
+    # Escape a literal single quote without allowing a secret to terminate
+    # that shell word; normal tokens/URLs remain byte-for-byte unchanged.
+    def shell_single_quote_contents(value: str) -> str:
+        return value.replace("'", "'\"'\"'")
+
+    cs = cs.replace("{{NOTIFY_BACKEND}}", notify_backend)
+    cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", shell_single_quote_contents(token))
+    cs = cs.replace("{{TELEGRAM_CHAT_ID}}", shell_single_quote_contents(chat_id))
+    cs = cs.replace("{{MATTERMOST_WEBHOOK_URL}}", shell_single_quote_contents(mattermost_webhook))
     cs = cs.replace("{{SERVER_NAME}}", server_name)
-    cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", controller_pubkey)
+    cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", shell_single_quote_contents(controller_pubkey))
 
     bootstrap_tokens = (
         "{{BOOTSTRAP_URL}}",
@@ -2295,7 +2401,11 @@ def main():
 
         # Expand placeholders only for the API request, while keeping the
         # payload safe-to-print/save.
-        installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+        try:
+            installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+        except ValueError as exc:
+            print(f"❌ ERROR: invalid notification/bootstrap placeholder configuration: {exc}", file=sys.stderr)
+            sys.exit(1)
 
         # 7. Display summary
         print("=" * 70)

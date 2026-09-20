@@ -11,6 +11,9 @@ from typing import Any
 from .config import Config
 
 
+_SECRET_CONFIG_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
+
+
 class StateError(RuntimeError):
     pass
 
@@ -45,7 +48,10 @@ class StateStore:
             "run_id": os.urandom(8).hex(),
             "phase": "stage1",
             "status": "running",
-            "config": {key: value for key, value in asdict(config).items() if not key.startswith("telegram_bot_token")},
+            "config": {
+                key: value for key, value in asdict(config).items()
+                if key not in _SECRET_CONFIG_FIELDS
+            },
             "steps": {},
             "telegram_thread_id": "",
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -66,7 +72,10 @@ class StateStore:
     def _without_secrets(state: dict[str, Any]) -> dict[str, Any]:
         config = state.get("config")
         if isinstance(config, dict):
-            state["config"] = {key: value for key, value in config.items() if not key.startswith("telegram_bot_token")}
+            state["config"] = {
+                key: value for key, value in config.items()
+                if key not in _SECRET_CONFIG_FIELDS
+            }
         return state
 
     def save_new(self, state: dict[str, Any]) -> None:

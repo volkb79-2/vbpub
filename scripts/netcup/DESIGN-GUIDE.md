@@ -22,6 +22,31 @@ controller sends the API request. The configured repository branch is passed
 both to the raw bootstrap URL and to `bootstrap-remote.py`; otherwise a
 feature-branch wrapper could silently fetch `main`'s installer subtree.
 
+## Notification backend and Mattermost boundary
+
+The installer carries an explicit `NOTIFY_BACKEND` selector with
+`telegram`, `mattermost`, and `none` values. The selector prevents a stale
+credential in `.env` from silently choosing a different service, while the
+Telegram default keeps existing v2 recipes compatible. Telegram credentials
+must be supplied as a pair; Mattermost requires an HTTPS incoming-webhook URL
+and rejects Telegram credentials in the same request.
+
+Mattermost is intentionally integrated through its post-only incoming webhook,
+not through a PAT or a REST client. The public consumer contract in
+`nyxloom/mattermost/CONSUMER.md` gives the external hostname, producer
+identity, channel binding, and secret-file location. A Netcup VM must use that
+public URL. The remote bootstrap is a dependency-free `curl | python3 -`
+entrypoint, so importing nyxloom's tightly coupled notification module would
+be the wrong boundary. The small payload translation is kept local and the
+notification path is best-effort: a webhook outage must not fail disk
+partitioning or stage completion.
+
+There is no `libraries/mattermost-client` extraction in this change. A Python
+import package would need an underscore name such as `mattermost_client`; a
+hyphen is suitable for a distribution/project name, not for an import. An
+extraction becomes worthwhile only if another dependency-free consumer needs a
+stable, tested webhook contract.
+
 ## SSH identity timing
 
 The normal install path creates a per-host, per-date identity only after it
