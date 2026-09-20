@@ -50,6 +50,14 @@ def test_runner_run_step_requires_one_project_and_declared_step(monkeypatch, tmp
     cfg = tmp_path / "cmru.toml"
     project = SimpleNamespace(project_root=tmp_path, runner_steps={}, env={}, build_metadata=None)
     loaded = (tmp_path, {"a": project, "b": project}, (), {}, {}, "", (), {}, SimpleNamespace(), {})
+    # `run_step` first resolves the nearest orchestration context so a project
+    # path can inherit central settings. Keep this test focused on the
+    # project-local cardinality contract by pinning that resolver to the
+    # synthetic local config path.
+    monkeypatch.setattr(
+        "cmru.config.resolve_invocation_context",
+        lambda **_: SimpleNamespace(config_path=cfg),
+    )
     monkeypatch.setattr("cmru.cli.load_config", lambda _: loaded)
     monkeypatch.setattr("cmru.cli.apply_project_release_env", lambda *args: None)
     with pytest.raises(RuntimeError, match="project-local"):

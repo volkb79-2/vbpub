@@ -15,7 +15,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Iterable, Mapping, Optional
 
-from cmru.config_names import PROJECT_CONFIG_FILENAME
+from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 
 
 
@@ -516,12 +516,29 @@ def run_step(project_config_path: Path, step_name: str) -> None:
     shell-evaluation adapter, or inferred release config to drift from it.
     """
     from cmru.cli import apply_project_release_env, load_config
+    from cmru.config import resolve_invocation_context
 
+    project_config_path = project_config_path.expanduser().resolve()
+    context = resolve_invocation_context(cwd=project_config_path.parent)
+    selected_config = context.config_path
     (repo_root, projects, _order, _defaults, _steps, _mode, _step_order,
-     _cleanup, github, env) = load_config(project_config_path)
-    if len(projects) != 1:
-        raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
-    project = next(iter(projects.values()))
+     _cleanup, github, env) = load_config(selected_config)
+    if selected_config.name == ORCHESTRATION_CONFIG_FILENAME:
+        matches = [
+            candidate for candidate in projects.values()
+            if candidate.project_root is not None
+            and candidate.project_root.resolve() == project_config_path.parent
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"nearest {ORCHESTRATION_CONFIG_FILENAME} does not register "
+                f"exactly one project at {project_config_path.parent}"
+            )
+        project = matches[0]
+    else:
+        if len(projects) != 1:
+            raise RuntimeError(f"run-step requires a project-local {PROJECT_CONFIG_FILENAME}")
+        project = next(iter(projects.values()))
     apply_project_release_env(github, env, project)
     step = project.runner_steps.get(step_name) if project.runner_steps else None
     if step is None:

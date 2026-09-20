@@ -13,6 +13,11 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The assay baseline loads the wizard by absolute path from a Python process
+# whose sys.path starts at this tests directory.  Make the wizard's sibling
+# source directory explicit so its source-tree import of ``mdt_cli`` works in
+# every runner, including assay's isolated snapshot.
+sys.path.insert(0, str(ROOT))
 
 
 def load_module(path: Path, name: str):

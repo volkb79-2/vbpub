@@ -11,6 +11,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.4.1] - 2026-09-19
+<!-- cmru: generated -->
+<!-- cmru: source-end=39c2a8f94c42965ad3bd07570580a2811ab34426 -->
+
+### Fixed
+- fix(cmru): resolve central config for project runner steps (06f1d19c)
+
+### Testing
+- test(cmru): cover central runner project mismatch (39c2a8f9)
+- test(cmru): pin runner context in local config contract (1ebacd54)
+
 ## [5.4.0] - 2026-09-19
 <!-- cmru: generated -->
 <!-- cmru: source-end=240caa0f7776390a902f58e7c1c32ee69e176902 -->

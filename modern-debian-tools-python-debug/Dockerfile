@@ -120,6 +120,7 @@ COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
 COPY package-manifests-versioned /tmp/package-manifests-versioned
 COPY customization /tmp/customization
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
+COPY scripts/mdt_cli.py /tmp/mdt_cli.py
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
 
