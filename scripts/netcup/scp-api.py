@@ -578,7 +578,12 @@ def _ssh_key_matches_server(path: Path, server: Dict[str, Any]) -> bool:
     }
     hostname = server.get("hostname")
     if isinstance(hostname, str):
-        labels.update(part for part in hostname.split(".") if part)
+        # The first label is the host-specific part. Do not add shared domain
+        # components such as `vxxu` or `de`: they would make unrelated keys
+        # look server-specific and defeat the priority ordering.
+        host_label = hostname.split(".", 1)[0].strip()
+        if host_label:
+            labels.add(host_label)
     labels.add(_server_name(server))
     for label in labels:
         folded = label.casefold()

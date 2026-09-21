@@ -321,6 +321,7 @@ def test_ssh_key_candidates_prioritize_server_named_keys(explore_mod, tmp_path):
         tmp_path / "generic-ed25519",
         tmp_path / "v2202503209318326780-ed25519",
         tmp_path / "vm.example-root",
+        tmp_path / "shared-vxxu-key",
     ]
     ordered = explore_mod._ssh_key_candidates(
         {
@@ -335,6 +336,7 @@ def test_ssh_key_candidates_prioritize_server_named_keys(explore_mod, tmp_path):
         "v2202503209318326780-ed25519",
         "vm.example-root",
         "generic-ed25519",
+        "shared-vxxu-key",
     ]
 
 
