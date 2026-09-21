@@ -489,6 +489,7 @@ class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
 def parse_args():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
         description="Netcup Server Control Panel - Automated Debian Installation",
         formatter_class=_WideHelpFormatter,
         epilog="""
