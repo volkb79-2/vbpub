@@ -4239,3 +4239,111 @@ one-shot post-deploy `renice` cannot do by construction.
 
 Not yet started; filed as a proposal, not claimed to be scoped for a
 specific release.
+
+## CIU-109 — `ciu profiles`, a read-only listing verb, PERSISTS `ciu.global.toml` at the resolved repo root; inside a registered worktree that silently repoints every consumer that resolves a container name from it
+
+Found 2026-09-21 in a consumer (dstdns), where it cost four assay mutation
+lanes and one composite gate. Confirmed by live reproduction, not inferred.
+
+**The behaviour.** `ciu profiles` prints the host profile table and exits 0.
+It also writes a ~25 KB `ciu.global.toml` into whatever repo root it resolves
+from its CWD. Reproduced directly:
+
+```
+$ cd /workspaces/dstdns/.worktrees/p194-b2-io-fault && ls ciu.global.toml
+ls: cannot access 'ciu.global.toml': No such file or directory
+$ ciu profiles > /dev/null; echo "exit=$?"
+exit=0
+$ grep -E '^(project_name|environment_tag)' ciu.global.toml
+project_name = "p194-b2-io-fault"
+environment_tag = "24c7ce"
+```
+
+No container is started — the verb only lists. The file is a side effect.
+
+**Why it matters.** That directory is a *registered* ciu worktree instance
+(its own `ciu.env`, `REPO_NAME=p194-b2-io-fault`, `INSTANCE_ID=24c7ce`) whose
+package deliberately runs in **Mode A** — it gates against the PRIMARY
+checkout's shared stack and has no stack of its own. The rendered file
+therefore carries an identity for infrastructure that does not exist.
+
+`run-gate` resolves its persistent runner from `ciu.global.toml`'s
+`deploy.project_name` + `environment_tag`, preferring the **judged worktree's**
+copy and falling back to the repo root's only when there is none. The instant
+this file appeared, every lane in that checkout began addressing
+`p194-b2-io-fault-24c7ce-test-runner` — a container that has never existed.
+
+The blast radius was four assay mutation lanes and one composite gate, all
+exiting 2 **without executing a single test**. The failure text names a missing
+container, but in a package whose deliverable was mutation testing, "four R2
+lanes went red" reads as "the lanes found something". It is the opposite:
+nothing ran. The same checkout's R1 lane had passed 100 seconds earlier,
+because it resolved its container *before* the file appeared — so the two runs
+differed only in which file `run-gate` read, which its own banner records:
+
+| when | container resolved | banner |
+|---|---|---|
+| before | `dstdns-98535c-test-runner` | `(repo: /workspaces/dstdns/ciu.global.toml)` |
+| after | `p194-b2-io-fault-24c7ce-test-runner` | `(judged worktree: .../ciu.global.toml)` |
+
+Six sibling worktrees of the same repo, registered the same way, had no
+`ciu.global.toml` and resolved correctly. One verb in one directory was the
+whole difference.
+
+**Why ciu owns this.** `run-gate`'s behaviour is defensible and its diagnostics
+were good — it named the exact file it read and REFUSED rather than guessing at
+a container. The questionable half is a listing verb persisting rendered
+deployment identity for a stack it did not deploy.
+
+ciu already treats this as an invariant it must not break.
+`src/ciu/worktree.py` (~:1104) documents `write_rendered=False` as "mandatory
+and load-bearing" precisely because it "keeps CIU from writing
+``ciu.global.toml`` into a checkout it does not own", and every reader call site
+honours it (`worktree.py:1119`, `:3370`, `:4417`, and S16.3's
+`_resolve_budget_candidates` at `:4560`). But
+`config_model.render_global_chain(working_dir, repo_root, *, write_rendered=True, ...)`
+**defaults to `True`**, and the sole writer (`config_model.py:775-777`) is gated
+only by that flag — so the invariant is enforced call site by call site, and the
+`ciu up`/`ciu render` pipeline that `profiles` shares (`engine.py:1404/1408`,
+STEP 2 of 17) omits it, correctly for `up` and as a side effect for `profiles`.
+
+**Proposed fix.**
+
+1. Verbs that only REPORT should render with `write_rendered=False`. `profiles`
+   is the confirmed case; `status`, `diagnose` and any other listing verb
+   sharing the `main_execution` prologue should be audited in the same pass —
+   the ask is the enumeration, not the one verb.
+2. Preferably make it structural rather than per-call-site: either invert the
+   default to `write_rendered=False`, or split the API into a pure
+   `read_global_chain()` and an explicit `render_and_write_global_chain()`, so a
+   reader cannot persist by omission. The current arrangement means any new
+   read-only verb reintroduces this by writing the obvious code.
+
+**Behavioral oracles.**
+
+- **O1** From inside a registered worktree with no deployed stack, run `ciu
+  profiles`; assert no `ciu.global.toml` exists afterwards. Controlled wrong
+  implementation: today's build creates one and must FAIL O1.
+- **O2** Assert the whole checkout is byte-identical before/after a reporting
+  verb (directory hash), not merely that the one filename is absent — the class
+  is "a reader persisted something", not "this file appeared".
+- **O3** `ciu up` / `ciu render` run from that same worktree MUST still write it.
+  The distinction is the verb's contract, not the directory, and a fix that
+  suppresses the write everywhere would break legitimate Mode-B rendering.
+
+**Provenance.** dstdns package P194 (B2-IO-FAULT). Narrative, sibling census and
+banner comparison: `dstdns/nyxloom-trove/reports/dstdns-P194-LOG.md` entries 18
+and 19 (dstdns@af4a23e2 and successor). Observed against ciu **7.15.0**,
+run-gate 23.9.1. The stray artifact is preserved at
+`/tmp/claude-1003/p194-worktree-ciu.global.toml.bak` on that host.
+
+**Two hypotheses were falsified before this one was confirmed**, and both are
+recorded because each would have sent a maintainer to the wrong module: (a)
+`ciu up --dir <stack>` run from the PRIMARY checkout — refuted by tracing every
+`render_global_chain` call site, since `repo_root` derives only from
+`--define-root`/`REPO_ROOT` via `resolve_env_root`'s upward walk and never from
+the worktree registry, and a stale ambient `REPO_ROOT` makes
+`config_model.chain_dirs` raise `ValueError` rather than write silently; (b) a
+worktree-record-enumerating path inside `ciu up` — refuted, the only such path
+(S16.3 `_resolve_budget_candidates`) passes `write_rendered=False`. Nothing in
+`CHANGES.md` covers this at or after 7.14/7.15.
