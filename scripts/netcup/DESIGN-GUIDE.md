@@ -4,8 +4,21 @@
 
 The SCP API needs a long-lived OAuth refresh token, but obtaining it is a
 browser-mediated device-code flow. `login` performs that flow and writes the
-token to `.env`; it does not create an SSH key or contact a server. This keeps
-authentication usable before a target host has been selected.
+token to `.env`. Afterward, in an interactive terminal, it performs one
+read-only server inventory request and offers only SCP internal names matching
+`v<digits>` for a local protected-server denylist. It does not create an SSH
+key. Non-interactive login still saves the token and leaves the denylist
+unchanged.
+
+The denylist is intentionally local rather than a claimed provider-side lock:
+the SCP API has no account/server “lock” operation. Mutating server commands
+fetch server details immediately before acting and refuse a matching name or
+recorded ID. Login persists both the selected name and ID; the ID prevents a
+rename from becoming a fail-open. Invalid policy syntax or an indeterminate
+target response fails closed. Account-level user-ISO storage and firewall
+policy definition are not server mutations; attaching media, assigning a
+policy, power operations, task cancellation, and Debian image installation
+are guarded.
 
 `configure` is also local recipe setup after one read-only server/image lookup.
 It likewise does not generate an SSH identity. The normal install path is the

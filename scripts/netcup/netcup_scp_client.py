@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import http.client
 import os
+import re
 import sys
 import time
 import tomllib
@@ -31,7 +32,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # --- module-level config, set by each importer before use ----------------
 
@@ -157,6 +158,125 @@ def load_env_file() -> None:
         return
 
 
+# --- local protected-server policy -----------------------------------------
+
+PROTECTED_SERVER_NAME_RE = re.compile(r"^v[0-9]+$")
+PROTECTED_SERVER_NAMES_ENV = "NETCUP_SCP_API_PROTECTED_SERVERS"
+PROTECTED_SERVER_IDS_ENV = "NETCUP_SCP_API_PROTECTED_SERVER_IDS"
+
+
+class ProtectedServerError(RuntimeError):
+    """A local safety policy refuses or cannot safely authorize a mutation."""
+
+
+def is_protectable_server_name(value: Any) -> bool:
+    """Return whether *value* is an SCP internal server name we can select.
+
+    The login wizard intentionally only offers the stable-looking SCP names
+    such as ``v2202503209318326780``.  Hostnames and nicknames are not a safe
+    substitute: operators commonly change them during an installation.
+    """
+    return isinstance(value, str) and PROTECTED_SERVER_NAME_RE.fullmatch(value) is not None
+
+
+def _parse_protected_csv(raw: str, *, kind: str) -> List[str]:
+    """Parse a strict comma-separated policy value from the environment."""
+    if not raw.strip():
+        return []
+    values = [item.strip() for item in raw.split(",")]
+    if any(not item for item in values):
+        raise ValueError(f"{kind} contains an empty item; remove stray commas")
+    if kind == "protected server names":
+        invalid = [item for item in values if not is_protectable_server_name(item)]
+        if invalid:
+            raise ValueError(
+                f"protected server names must match v<digits>; invalid value(s): {', '.join(invalid)}"
+            )
+    else:
+        invalid = [item for item in values if not item.isdigit() or int(item) <= 0]
+        if invalid:
+            raise ValueError(
+                f"protected server IDs must be positive integers; invalid value(s): {', '.join(invalid)}"
+            )
+    duplicates = sorted({item for item in values if values.count(item) > 1})
+    if duplicates:
+        raise ValueError(f"{kind} contains duplicate value(s): {', '.join(duplicates)}")
+    return values
+
+
+def protected_server_policy() -> Tuple[Set[str], Set[int]]:
+    """Read and validate the local protected-server denylist.
+
+    An empty policy is disabled.  A non-empty policy is deliberately strict:
+    configuration errors are raised before a command can reach the API.
+    """
+    names = set(_parse_protected_csv(
+        os.environ.get(PROTECTED_SERVER_NAMES_ENV, ""),
+        kind="protected server names",
+    ))
+    ids = {
+        int(value)
+        for value in _parse_protected_csv(
+            os.environ.get(PROTECTED_SERVER_IDS_ENV, ""),
+            kind="protected server IDs",
+        )
+    }
+    if not names and not ids:
+        return set(), set()
+    return names, ids
+
+
+def protected_server_policy_configured() -> bool:
+    """Whether either denylist setting contains a configured value."""
+    names, ids = protected_server_policy()
+    return bool(names or ids)
+
+
+def write_protected_server_policy(path: Path, names: List[str], ids: List[int]) -> None:
+    """Persist a validated denylist and its login-selected server IDs."""
+    clean_names = list(dict.fromkeys(names))
+    clean_ids = list(dict.fromkeys(ids))
+    invalid_names = [name for name in clean_names if not is_protectable_server_name(name)]
+    if invalid_names:
+        raise ValueError(f"protected server names must match v<digits>; invalid value(s): {', '.join(invalid_names)}")
+    if any(not isinstance(server_id, int) or isinstance(server_id, bool) or server_id <= 0 for server_id in clean_ids):
+        raise ValueError("protected server IDs must be positive integers")
+    _write_env_file(path, {
+        PROTECTED_SERVER_NAMES_ENV: ",".join(clean_names),
+        PROTECTED_SERVER_IDS_ENV: ",".join(str(server_id) for server_id in clean_ids),
+    })
+
+
+def assert_server_mutation_allowed(server_id: Any, server_name: Any, operation: str) -> None:
+    """Refuse a mutation targeting a protected or indeterminate server.
+
+    The ID companion set is authoritative for servers selected by the login
+    wizard, so a rename remains protected.  When names are configured without
+    a matching ID, a missing/malformed response name is indeterminate and is
+    refused rather than silently treated as an unprotected server.
+    """
+    names, ids = protected_server_policy()
+    if not names and not ids:
+        return
+    if not isinstance(server_id, int) or isinstance(server_id, bool) or server_id <= 0:
+        raise ProtectedServerError(
+            f"refusing {operation}: API returned an invalid server ID while the local protected-server policy is active"
+        )
+    if server_id in ids:
+        shown_name = server_name if isinstance(server_name, str) and server_name else "<unnamed>"
+        raise ProtectedServerError(
+            f"refusing {operation}: server {shown_name!r} (id {server_id}) is protected by the local denylist"
+        )
+    if names:
+        if not isinstance(server_name, str) or not server_name.strip():
+            raise ProtectedServerError(
+                f"refusing {operation}: could not determine the server name for id {server_id} "
+                "while the local protected-server policy is active"
+            )
+        if server_name in names:
+            raise ProtectedServerError(
+                f"refusing {operation}: server {server_name!r} (id {server_id}) is protected by the local denylist"
+            )
 # --- settings (TOML) --------------------------------------------------------
 
 def _flatten_toml(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:

@@ -122,6 +122,43 @@ def test_build_client_happy_path(explore_mod, monkeypatch):
     assert client.refresh_token == "rt"
 
 
+def test_protected_policy_requires_v_digit_names_and_positive_ids(explore_mod, monkeypatch):
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", "42")
+    assert explore_mod.netcup_scp_client.protected_server_policy() == (
+        {"v2202503209318326780"},
+        {42},
+    )
+
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "my-host")
+    with pytest.raises(ValueError, match="v<digits>"):
+        explore_mod.netcup_scp_client.protected_server_policy()
+
+
+def test_login_offers_v_named_servers_and_persists_mode_0600(
+    explore_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    env_path = tmp_path / ".env"
+    client = fake_client(get_responses=[[
+        {"id": 42, "name": "v2202503209318326780", "hostname": "vm.example"},
+        {"id": 43, "name": "friendly-name", "hostname": "other.example"},
+    ]])
+    monkeypatch.setattr(explore_mod.netcup_scp_client, "resolve_env_path", lambda: env_path)
+    monkeypatch.setattr(explore_mod, "run_device_code_login", lambda path: 0)
+    monkeypatch.setattr(explore_mod, "load_env_file", lambda: None)
+    monkeypatch.setattr(explore_mod, "build_client", lambda: client)
+    monkeypatch.setattr(explore_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(explore_mod.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a: "1")
+
+    assert explore_mod.cmd_login(types.SimpleNamespace()) == 0
+    content = env_path.read_text()
+    assert "NETCUP_SCP_API_PROTECTED_SERVERS=v2202503209318326780" in content
+    assert "NETCUP_SCP_API_PROTECTED_SERVER_IDS=42" in content
+    assert env_path.stat().st_mode & 0o777 == 0o600
+    assert "friendly-name" not in capsys.readouterr().out
+
+
 # --- subcommands against a FakeClient ------------------------------------------
 
 def _ns(**kw):
@@ -660,6 +697,63 @@ def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_snapshots(client, _ns(server_id=1, action="create", name="pre-upgrade", yes=True), pal)
     assert client.calls == [("post", "/api/v1/servers/1/snapshots", {"name": "pre-upgrade"})]
+
+
+@pytest.mark.parametrize(
+    "command,args",
+    [
+        ("attached", {"server_id": 1, "action": "detach", "yes": True}),
+        ("attach", {"server_id": 1, "iso_id": 10, "user_iso_name": None,
+                     "change_boot_device_to_cdrom": False, "yes": True}),
+        ("rescue", {"server_id": 1, "action": "deactivate", "yes": True}),
+        ("snapshot", {"server_id": 1, "action": "create", "name": "before", "yes": True}),
+        ("firewall", {"server_id": 1, "mac": "aa:bb:cc:dd:ee:ff", "action": "set",
+                       "consistency_check": False, "copied_policy_ids": [],
+                       "user_policy_ids": [], "active": True, "yes": True}),
+        ("power", {"server_id": 1, "action": "cycle", "yes": True}),
+    ],
+)
+def test_protected_server_blocks_every_server_mutation_before_request(
+    explore_mod, fake_client, monkeypatch, command, args
+):
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    client = fake_client(get_responses=[{"id": 1, "name": "v2202503209318326780"}])
+    pal = explore_mod._Palette(enabled=False)
+    dispatch = {
+        "attached": explore_mod.cmd_attached_iso,
+        "attach": explore_mod.cmd_attach_iso,
+        "rescue": explore_mod.cmd_rescuesystem,
+        "snapshot": explore_mod.cmd_snapshots,
+        "firewall": explore_mod.cmd_firewall,
+        "power": explore_mod.cmd_power,
+    }
+    with pytest.raises(explore_mod.netcup_scp_client.ProtectedServerError):
+        dispatch[command](client, _ns(**args), pal)
+    assert len(client.calls) == 1
+    assert client.calls[0][0] == "get"
+
+
+def test_protected_task_cancel_requires_and_verifies_server(explore_mod, fake_client, monkeypatch):
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    pal = explore_mod._Palette(enabled=False)
+    missing_server = fake_client(allow=())
+    with pytest.raises(SystemExit):
+        explore_mod.cmd_tasks(missing_server, _ns(uuid="task-1", action="cancel", server_filter_id=None, yes=True), pal)
+    assert missing_server.calls == []
+
+    client = fake_client(
+        get_responses=[
+            {"id": 2, "name": "v2202503209318326781"},
+            [{"uuid": "task-1"}],
+        ],
+        allow=("get", "put"),
+    )
+    explore_mod.cmd_tasks(client, _ns(uuid="task-1", action="cancel", server_filter_id=2, yes=True), pal)
+    assert client.calls == [
+        ("get", "/api/v1/servers/2", None),
+        ("get", "/api/v1/tasks", {"q": "task-1", "serverId": 2}),
+        ("put", "/api/v1/tasks/task-1:cancel", None, None),
+    ]
 
 
 def test_cmd_tasks_cancel_without_uuid_errors_instead_of_silently_listing(explore_mod, fake_client):

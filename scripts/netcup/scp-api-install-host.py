@@ -271,6 +271,24 @@ def _ensure_netcup_ssh_key_id_for_identity(
     return int(created["id"])
 
 
+def _protected_server_policy_configured() -> bool:
+    """Validate the local policy and turn malformed configuration into a clean CLI error."""
+    try:
+        return netcup_scp_client.protected_server_policy_configured()
+    except ValueError as exc:
+        print(f"ERROR: invalid protected-server denylist: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _ensure_server_mutation_allowed(server_id: Any, server_name: Any, operation: str) -> None:
+    """Apply the shared local denylist without exposing a traceback."""
+    try:
+        netcup_scp_client.assert_server_mutation_allowed(server_id, server_name, operation)
+    except (ValueError, netcup_scp_client.ProtectedServerError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def _strip_jsonc_comments(text: str) -> str:
     """Strip // and /* */ comments from JSON-with-comments (JSONC).
 
@@ -1819,8 +1837,26 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     try:
         server_details = client.get(f"/api/v1/servers/{server_id}")
         ip_address = _extract_primary_ipv4(server_details)
-    except Exception:
-        pass
+    except Exception as exc:
+        if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
+            print(
+                f"ERROR: cannot verify server {server_id} against the protected-server denylist: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+    if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
+        if not isinstance(server_details, dict):
+            print(
+                f"ERROR: cannot verify server {server_id} against the protected-server denylist: "
+                "the server-details response was not an object",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        _ensure_server_mutation_allowed(
+            server_id,
+            server_details.get("name"),
+            "Debian image installation",
+        )
 
     # Fill in any fields the payload left out by querying the API and, when
     # interactive, letting the operator pick - rather than silently guessing.
@@ -2088,6 +2124,11 @@ def main():
         # unset produced a real "unknown-host"-labeled key for no reason).
         sys.exit(_run_configure(_build_authenticated_client()))
 
+    # Refuse malformed safety configuration before rendering a local key or
+    # doing any installer-side API work.  A malformed denylist is never
+    # treated as an empty policy.
+    _protected_server_policy_configured()
+
     attach_only = getattr(args, "attach_only", False)
     client: Optional["NetcupSCPClient"] = None
     server_lookup: Optional[List[Dict[str, Any]]] = None
@@ -2211,6 +2252,17 @@ def main():
         server_id = servers[0]["id"]
         print(f"   ✓ Server ID: {server_id}")
         print()
+
+        # Check before either poweroff or the later SSH-key/install work.  In
+        # particular, a protected install must not create an account SSH key
+        # before it is refused.
+        if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
+            server_record = servers[0] if isinstance(servers[0], dict) else {}
+            _ensure_server_mutation_allowed(
+                server_id,
+                server_record.get("name"),
+                "Netcup server poweroff/install",
+            )
 
         if getattr(args, "poweroff", False):
             print("=" * 70)

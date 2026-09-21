@@ -17,8 +17,31 @@ vi .env                               # set NETCUP_SCP_API_SERVER_NAME
 
 The browser device-code flow writes `NETCUP_SCP_API_REFRESH_TOKEN` to the
 loaded `.env` file and enforces mode `0600` because it contains a long-lived
-credential. The login command belongs to `scp-api.py`; it does not create an
-SSH key or contact a server.
+credential. After a successful login, an interactive terminal also lists
+servers whose SCP internal name matches `v<digits>` (for example
+`v2202503209318326780`) and offers a numbered selection for the local
+protected-server denylist. It does not create an SSH key.
+
+### Local protected-server denylist
+
+The login selection is a local safety guard for this checkout, not a Netcup
+account lock. It is saved in `.env` as
+`NETCUP_SCP_API_PROTECTED_SERVERS`; the wizard also records the selected server
+IDs in `NETCUP_SCP_API_PROTECTED_SERVER_IDS` so a later server rename cannot
+silently remove protection. The `.env` writer enforces mode `0600`.
+
+The guarded server mutations are ISO attach/detach, rescue deactivation,
+snapshot creation, task cancellation, firewall assignment, power operations,
+and Debian image installation/poweroff. Read-only queries, snapshot `dryrun`,
+and installer `--dry-run` remain available. Account-level user-ISO upload and
+firewall-policy create/PUT are not server-targeted; applying a policy with
+`firewall SERVER set` is guarded. Task cancellation needs
+`--server-id` while the denylist is configured so the task can be checked
+against the protected target.
+
+To change the selection, run login again and choose additional servers. For a
+non-interactive login, the token is still saved but selection is skipped; set
+the validated `v<digits>` names in `.env` or run login from a terminal.
 
 ### Quickstart: inspect and install a Debian VM
 

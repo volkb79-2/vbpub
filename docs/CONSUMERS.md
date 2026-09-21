@@ -85,6 +85,24 @@ vi .env                               # set NETCUP_SCP_API_SERVER_NAME
 
 `scp-api.py login` writes the refresh token to the local `.env` with mode `0600`.
 
+In an interactive terminal, login then lists SCP server names matching
+`v<digits>` (for example `v2202503209318326780`). Enter comma-separated list
+numbers, `all`, or an empty response. Selected names are saved locally in
+`NETCUP_SCP_API_PROTECTED_SERVERS`; the wizard also saves their verified IDs in
+`NETCUP_SCP_API_PROTECTED_SERVER_IDS`. This is a local denylist for this
+checkout, not a Netcup-side lock. It refuses server-targeting mutations,
+including Debian image install, ISO attach/detach, firewall assignment, power,
+snapshot creation, and task cancellation. Read-only commands and dry-runs are
+still available. Account-level user-ISO upload and firewall-policy definition
+are not server-targeted; applying a policy is guarded.
+
+When protection is configured, cancel a task with its server ID so the CLI can
+verify the task target before issuing the cancel request:
+
+```bash
+python3 scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes
+```
+
 The smallest live-install path is:
 
 ```bash

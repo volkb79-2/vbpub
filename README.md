@@ -70,6 +70,8 @@ also available through the CLI. Debian-install-v2 progress can use Telegram,
 the public nyxloom Mattermost incoming webhook, or no notifications; the
 webhook URL is kept as a local secret and is never committed. See the
 [`Netcup tools README`](scripts/netcup/README.md).
+After login, the wizard can also add `v<digits>` SCP server names to a local
+protected-server denylist; guarded mutating commands refuse those servers.
 
 ## Repository setup and initial CMRU build
 

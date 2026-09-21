@@ -114,6 +114,12 @@ def _configure() -> None:
     circuits via argparse's own SystemExit before this ever runs.
     """
     load_env_file()
+    # Validate the local safety policy before loading credentials or making
+    # any authenticated request.  A typo must never turn protection off.
+    try:
+        netcup_scp_client.protected_server_policy()
+    except ValueError as exc:
+        raise SystemExit(f"ERROR: invalid protected-server denylist: {exc}") from exc
     settings = _load_settings(SETTINGS_PATH, {"api.base_url", "api.keycloak_url"})
     netcup_scp_client.BASE_URL = settings["api.base_url"]
     netcup_scp_client.KEYCLOAK_URL = settings["api.keycloak_url"]
@@ -245,6 +251,15 @@ def _api_call(fn, *a, **kw):
         if e.body:
             print(e.body[:2000], file=sys.stderr)
         sys.exit(1)
+
+
+def _guard_server_mutation(client: NetcupSCPClient, server_id: int, operation: str) -> None:
+    """Apply the local denylist immediately before a server mutation."""
+    if not netcup_scp_client.protected_server_policy_configured():
+        return
+    endpoint = f"/api/v1/servers/{server_id}"
+    details = _response_dict(_api_call(client.get, endpoint), f"GET {endpoint}")
+    netcup_scp_client.assert_server_mutation_allowed(server_id, details.get("name"), operation)
 
 
 def _server_targets(client: NetcupSCPClient, server_id: Any) -> List[Dict[str, Any]]:
@@ -630,6 +645,7 @@ def cmd_iso_bootable(client: NetcupSCPClient, args, pal: _Palette) -> None:
 def cmd_attached_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "detach":
         server_id = _require_server_id(args, "detach")
+        _guard_server_mutation(client, server_id, "detach ISO")
         if not confirm(f"Detach the ISO currently attached to server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -664,6 +680,7 @@ def cmd_attach_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.change_boot_device_to_cdrom:
         data["changeBootDeviceToCdrom"] = True
 
+    _guard_server_mutation(client, args.server_id, "attach ISO")
     if not confirm(f"Attach the selected ISO to server {args.server_id}?", args.yes, pal):
         print("aborted")
         return
@@ -707,6 +724,7 @@ def cmd_disks(client: NetcupSCPClient, args, pal: _Palette) -> None:
 def cmd_rescuesystem(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "deactivate":
         server_id = _require_server_id(args, "deactivate")
+        _guard_server_mutation(client, server_id, "deactivate rescue system")
         if not confirm(f"Deactivate the rescue system for server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -743,6 +761,7 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
         return
     if args.action == "create":
         server_id = _require_server_id(args, "create")
+        _guard_server_mutation(client, server_id, "create snapshot")
         if not confirm(f"Create a new snapshot of server {args.server_id}?", args.yes, pal):
             print("aborted")
             return
@@ -781,6 +800,7 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
 
 
 def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    server_filter_id = getattr(args, "server_filter_id", None)
     params = {}
     if getattr(args, "query", None):
         params["q"] = args.query
@@ -794,9 +814,14 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
         params["offset"] = args.offset
     params = params or None
 
-    if args.uuid is not None and params is not None:
-        print("ERROR: task filters are only valid when listing tasks, not with a task UUID", file=sys.stderr)
-        raise SystemExit(2)
+    if args.uuid is not None:
+        other_filters = any(
+            getattr(args, name, None) is not None
+            for name in ("query", "state", "limit", "offset")
+        )
+        if other_filters or (server_filter_id is not None and args.action != "cancel"):
+            print("ERROR: task filters are only valid when listing tasks, except --server-id with cancel", file=sys.stderr)
+            raise SystemExit(2)
     if args.action == "cancel" and args.uuid is None:
         print("ERROR: cancel requires a task uuid", file=sys.stderr)
         sys.exit(2)
@@ -807,6 +832,28 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
         ))
         return
     if args.action == "cancel":
+        protected = netcup_scp_client.protected_server_policy_configured()
+        if protected and server_filter_id is None:
+            print(
+                "ERROR: task cancellation requires --server-id when the protected-server denylist is configured; "
+                "the API task record does not identify its server reliably",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if server_filter_id is not None:
+            _guard_server_mutation(client, server_filter_id, "cancel task")
+            verification = _response_rows(
+                _api_call(
+                    client.get,
+                    "/api/v1/tasks",
+                    params={"q": args.uuid, "serverId": server_filter_id},
+                ),
+                "GET /api/v1/tasks task/server verification",
+            )
+            if not any(row.get("uuid") == args.uuid for row in verification):
+                raise netcup_scp_client.ProtectedServerError(
+                    f"refusing cancel task: API did not verify task {args.uuid!r} belongs to server {server_filter_id}"
+                )
         if not confirm(f"Cancel task {args.uuid}?", args.yes, pal):
             print("aborted")
             return
@@ -1078,6 +1125,7 @@ def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
         "userPolicies": [{"id": policy_id} for policy_id in user_policy_ids],
         "active": active,
     }
+    _guard_server_mutation(client, args.server_id, "set firewall assignment")
     if not confirm(
         f"Replace firewall policy assignments on {args.server_id}/{mac}?",
         args.yes,
@@ -1099,6 +1147,7 @@ _POWER_ACTIONS = {
 
 def cmd_power(client: NetcupSCPClient, args, pal: _Palette) -> None:
     state, state_option, label = _POWER_ACTIONS[args.action]
+    _guard_server_mutation(client, args.server_id, f"{label.lower()} server")
     if not confirm(f"{label} server {args.server_id}?", args.yes, pal):
         print("aborted")
         return
@@ -1112,8 +1161,107 @@ def cmd_power(client: NetcupSCPClient, args, pal: _Palette) -> None:
     emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.green(f"{label.lower()} requested")))
 
 
+def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int:
+    """Offer an interactive, local denylist selection after successful login."""
+    try:
+        result = _response_rows(
+            _api_call(client.get, "/api/v1/servers"),
+            "GET /api/v1/servers",
+        )
+    except Exception as exc:
+        print(
+            f"WARNING: login succeeded, but protected-server selection could not read the server list: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    eligible: List[Dict[str, Any]] = []
+    for index, server in enumerate(result):
+        name = server.get("name")
+        if not netcup_scp_client.is_protectable_server_name(name):
+            continue
+        server_id = server.get("id")
+        if not isinstance(server_id, int) or isinstance(server_id, bool) or server_id <= 0:
+            print(
+                f"ERROR: GET /api/v1/servers: v-name {name!r} at item {index} has no valid positive integer id",
+                file=sys.stderr,
+            )
+            return 1
+        eligible.append({"name": name, "id": server_id})
+
+    existing_names, existing_ids = netcup_scp_client.protected_server_policy()
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(
+            "Login succeeded. Protected-server selection was skipped because this is not an interactive terminal. "
+            "Run `scp-api.py login` from a terminal, or set NETCUP_SCP_API_PROTECTED_SERVERS to comma-separated "
+            "v<digits> names in .env.",
+        )
+        return 0
+    if not eligible:
+        print("Login succeeded. No servers with an SCP v<digits> name are available for the local denylist.")
+        return 0
+
+    print("\nLocal protected-server denylist")
+    print("This is a local safety guard, not a Netcup-side lock.")
+    print("Select servers whose mutating API operations this checkout must refuse:")
+    for number, server in enumerate(eligible, start=1):
+        marker = " [already protected]" if server["name"] in existing_names else ""
+        print(f"  {number}. {server['name']} (id {server['id']}){marker}")
+
+    while True:
+        try:
+            answer = input("Add servers to the local protected-server denylist? [numbers, all, or Enter for none] ")
+        except EOFError:
+            print("\nNo selection made; existing protected-server denylist unchanged.")
+            return 0
+        answer = answer.strip()
+        if not answer:
+            print("Protected-server denylist unchanged.")
+            return 0
+        if answer.lower() == "all":
+            selected = eligible
+            break
+        tokens = [token.strip() for token in answer.split(",")]
+        if not tokens or any(not token.isdigit() for token in tokens):
+            print("ERROR: enter comma-separated list numbers such as 1,3, or `all`.", file=sys.stderr)
+            continue
+        numbers = [int(token) for token in tokens]
+        if any(number < 1 or number > len(eligible) for number in numbers):
+            print(f"ERROR: choose numbers from 1 to {len(eligible)}.", file=sys.stderr)
+            continue
+        selected = [eligible[number - 1] for number in dict.fromkeys(numbers)]
+        break
+
+    names = list(existing_names)
+    ids = list(existing_ids)
+    for server in selected:
+        if server["name"] not in names:
+            names.append(server["name"])
+        if server["id"] not in ids:
+            ids.append(server["id"])
+    try:
+        netcup_scp_client.write_protected_server_policy(env_path, names, ids)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: could not save protected-server denylist: {exc}", file=sys.stderr)
+        return 1
+    print(f"Protected {len(selected)} server(s) locally in {env_path} (mode 0600).")
+    return 0
+
+
 def cmd_login(args) -> int:
-    return run_device_code_login(netcup_scp_client.resolve_env_path())
+    env_path = netcup_scp_client.resolve_env_path()
+    result = run_device_code_login(env_path)
+    if result != 0:
+        return result
+    # The login helper has just written the token to this same .env. Reload it
+    # before creating the client used to populate the optional denylist.
+    load_env_file()
+    try:
+        client = build_client()
+        return _configure_protected_servers(env_path, client)
+    except netcup_scp_client.ProtectedServerError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 # --- argument parsing --------------------------------------------------------
@@ -1172,8 +1320,10 @@ def parse_args():
 
     add_subcommand(
         "login",
-        "OAuth2 device-code login (writes NETCUP_SCP_API_REFRESH_TOKEN to .env)",
-        "Obtain the long-lived refresh token through the browser device-code flow.\n\n"
+        "OAuth2 login and optional protected-server selection",
+        "Obtain the long-lived refresh token through the browser device-code flow. "
+        "Afterwards, an interactive terminal offers servers named v<digits> for the local protected-server denylist. "
+        "The denylist is enforced by mutating commands in this checkout; it is not a provider-side lock.\n\n"
         "Examples:\n  ./scp-api.py login",
     )
 
@@ -1309,7 +1459,7 @@ def parse_args():
         "Examples:\n"
         "  ./scp-api.py tasks --state RUNNING\n"
         "  ./scp-api.py tasks TASK_UUID\n"
-        "  ./scp-api.py tasks TASK_UUID cancel --yes",
+        "  ./scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes",
     )
     p.add_argument(
         "uuid", nargs="?", type=_nonempty_text, default=None, metavar="task_uuid",
@@ -1321,7 +1471,10 @@ def parse_args():
         "--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT",
         help="list tasks whose name, UUID, or server fields contain TEXT (API q filter)",
     )
-    task_filters.add_argument("--server-id", dest="server_filter_id", type=_positive_int, metavar="ID", help="list tasks for one server")
+    task_filters.add_argument(
+        "--server-id", dest="server_filter_id", type=_positive_int, metavar="ID",
+        help="list tasks for one server; required with cancel when the protected-server denylist is configured",
+    )
     task_filters.add_argument(
         "--state",
         choices=_TASK_STATES,

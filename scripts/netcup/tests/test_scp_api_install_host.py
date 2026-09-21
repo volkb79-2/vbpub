@@ -583,6 +583,33 @@ def test_install_from_payload_dry_run_never_posts(install_host_mod, tmp_path, fa
     assert "dry-run" in out.lower()
 
 
+def test_install_from_payload_refuses_protected_server_before_account_key_work(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    payload = {
+        "serverId": 12345,
+        "hostname": "test.example.com",
+        "imageFlavourId": 128,
+        "diskName": "vda",
+        "sshKeyIds": [1],
+        "customScript": "echo hi",
+    }
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text(json.dumps(payload))
+    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    client = fake_client(
+        get_responses=[{"id": 12345, "name": "v2202503209318326780"}],
+        allow=("get",),
+    )
+    args = types.SimpleNamespace(dry_run=False, yes=True, ssh_identity_file=None)
+
+    with pytest.raises(SystemExit) as exc:
+        install_host_mod.install_from_payload(client, str(payload_path), args)
+    assert exc.value.code == 2
+    assert [call for call in client.calls if call[0] == "post"] == []
+    assert "protected" in capsys.readouterr().err.lower()
+
+
 def test_install_from_payload_cli_ssh_key_ids_override_payload(
     install_host_mod, tmp_path, fake_client, capsys
 ):
