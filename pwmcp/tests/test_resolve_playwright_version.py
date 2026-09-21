@@ -747,6 +747,14 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
     )
     with pytest.raises(SystemExit):
         resolver.main(["--check"])
+    files["bake"].write_text(
+        files["bake"].read_text().replace("bad-digest", DIGEST),
+        encoding="utf-8",
+    )
+    files["dockerfile"].write_text(
+        files["dockerfile"].read_text().replace("bad-digest", DIGEST),
+        encoding="utf-8",
+    )
     files["override"].unlink()
     resolver.main(["--check"])
 
