@@ -27,17 +27,37 @@ policy definition are not server mutations; attaching media, assigning a
 policy, power operations, task cancellation, and Debian image installation
 are guarded.
 
-`configure` is also local recipe setup after one read-only server/image lookup.
-It likewise does not generate an SSH identity. The normal install path is the
-only API-install path that needs a per-host controller key for SSH monitoring;
-the optional `build-customscript` wizard can also create one after the
-operator explicitly asks to include it in a manually pasted script.
+The interactive `wizard` is the API-backed gather-and-install path. It resolves
+the target through the same picker as normal installation, writes a complete
+`target-host.jsonc`, asks for final confirmation, and starts the image install.
+`configure` is only a compatibility alias for that wizard; it is not a
+server-dependent default-recipe mode. A bare invocation prints usage and does
+not authenticate or touch SSH state.
 
-## Generated recipe and source selection
+The file-driven `install` path reads exactly `target-host.jsonc` by default, or
+the file supplied with `--config`. It validates the complete target locally
+before authentication and key work, then submits the saved payload and follows
+the task by default. `--no-monitor` is the explicit task-creation-only mode.
+`sshKeyIds` and `customScript` are optional in the file: the former means no
+persistent account keys are injected, and the latter means no Debian-specific
+cloud-init hook is sent.
 
-`default-recipe.jsonc` is an operator-local cache, not a portable repository
-configuration. It is ignored because image IDs and account-level choices are
-facts resolved by `configure`, not estate-wide constants.
+The Debian v2 bootstrap is therefore an optional customScript hook rather than
+a hard requirement of the Netcup API installer. The wizard includes the
+placeholder-based hook by default and `--no-custom-script` omits it. A saved
+file is authoritative: `install` never loads a hidden recipe or invents a
+customScript. The normal API-install path only needs a per-host controller key
+when the selected customScript consumes `{{CONTROLLER_SSH_PUBKEY}}`; a plain
+image install can complete without generating one. The optional
+`build-customscript` wizard can still create a hook after the operator
+explicitly asks for controller access.
+
+## Generated target and source selection
+
+`target-host.jsonc` is an operator-local reviewed request, not a portable
+repository configuration. It is ignored because image IDs, account-key
+choices, and target identity are account-specific facts. `wizard` writes it;
+`install` reads it. There is no hidden `default-recipe.jsonc` fallback.
 
 The customScript keeps the bootstrap location as a placeholder until the
 controller sends the API request. The configured repository branch is passed
@@ -72,8 +92,10 @@ stable, tested webhook contract.
 ## SSH identity timing
 
 The normal install path creates a per-host, per-date identity only after it
-knows which host it is targeting. `login`, `configure`, and `build-customscript`
-must not create one merely because the script was invoked. The generated
+knows which host it is targeting and only when the selected customScript needs
+one. `login`, `wizard`, `configure`, and `build-customscript` must not create
+one merely because the script was invoked; the wizard creates one only after
+the operator keeps the Debian v2 hook enabled. The generated
 controller public key is passed through the bootstrap and removed by stage2;
 the operator's persistent access key remains independent.
 

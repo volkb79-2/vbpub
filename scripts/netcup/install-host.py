@@ -458,24 +458,19 @@ def _bootstrap_source() -> Dict[str, str]:
 
 
 # Installation settings (hostname will be set dynamically from server info).
-# customScript targets debian-install-v2's remote bootstrap entrypoint
-# (scripts/debian-install-v2/bootstrap-remote.py), piped to `python3 -` (not
-# `bash` - v2's CLI is a different interpreter/contract than v1's bootstrap.sh).
-# `volkb79-2/vbpub` is v2's own documented default org (bootstrap-remote.py's
-# REPO_URL_DEFAULT) - not a typo for v1's `volkb79`, a deliberate separate repo.
-# AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT are passed explicitly because v2 has no
-# "auto" tristate (unlike v1) and rejects it outright - yes/no only. Every
-# other v2 knob (SWAP_*/ZSWAP_*/DOCKER_*/RUN_* stage toggles) is deliberately
-# left unset here so v2's own built-in defaults apply; those are exactly what
-# gets tuned by iterating installs against a live host next.
+# The Netcup image-install payload is useful without a customScript.  The
+# Debian v2 bootstrap is an explicit wizard choice (or a customScript already
+# present in a saved target config), not an implicit dependency of this API
+# frontend.
 INSTALLATION_CONFIG = {
     "locale": "en_US.UTF-8",
     "timezone": "Europe/Berlin",
-    "customScript": netcup_install_plan.placeholder_customscript(),
     "rootPartitionFullDiskSize": False,
     "sshPasswordAuthentication": False,
     "emailToExecutingUser": True,
 }
+
+DEFAULT_TARGET_CONFIG_NAME = "target-host.jsonc"
 
 # Debug mode: NETCUP_SCP_API_DEBUG env var, OR'd with --debug in main().
 # log_debug() (imported from netcup_scp_client) reads netcup_scp_client's
@@ -497,12 +492,15 @@ def parse_args():
         description="Netcup Server Control Panel - Automated Debian Installation",
         formatter_class=_WideHelpFormatter,
         epilog="""
-Commands (positional, optional; default is the install flow below):
-  configure           Interactive wizard: resolve the latest Debian UEFI
-                       image flavour (and other account/image-level
-                       defaults) for $NETCUP_SCP_API_SERVER_NAME and save
-                       them as scripts/netcup/default-recipe.jsonc, used as
-                       the base for every future interactive-gather install.
+Commands:
+  wizard              Interactive API-backed gather-and-install wizard. It
+                       resolves a target, image and keys, optionally adds the
+                       Debian v2 customScript, saves target-host.jsonc, asks
+                       for confirmation, and starts the install.
+  configure           Alias for wizard (kept for users of the old command).
+  install             Install exactly the validated target config file. The
+                       default is target-host.jsonc; use --config FILE for a
+                       different file. This does no image/key gathering.
   build-customscript  Interactive wizard: build a ready-to-paste customScript
                        snippet (no Netcup API calls) for manual use in a
                        web-hoster's own management UI - covers
@@ -510,32 +508,37 @@ Commands (positional, optional; default is the install flow below):
                        Telegram or Mattermost credentials, controller-key
                        inclusion, and successful-stage2 host-key retention.
 
-  Modes (pick one; default is interactive gather+install):
-  (no mode flags)     Interactive: authenticate, choose a server when needed,
-                       gather its facts, prompt, and install.
-  --payload FILE      Direct install from a JSON/JSONC payload file (no gathering).
+  Modes (pick one):
+  --config FILE       Config file for install, or output file for wizard.
+  --payload FILE      Deprecated alias for --config.
   --attach-only       SSH-attach + tail bootstrap logs only; no Netcup API calls.
 
 Examples:
-  # First-time setup: log in, then build a default recipe:
+  # First-time setup: log in, then gather a target and prepare an install:
   ./scp-api.py login
+  %(prog)s wizard
+
+  # `configure` is the same wizard, for compatibility:
   %(prog)s configure
 
-  # Preview everything (server lookup, image flavour, payload) without
-  # calling any mutating API:
-  %(prog)s --payload=target-host.jsonc --dry-run
+  # Install the previously reviewed target config and monitor the task:
+  %(prog)s install
 
-  # Interactive mode (gather information and prompt for confirmation):
-  %(prog)s
+  # Install another reviewed config:
+  %(prog)s install --config target-host-r1002.jsonc
+
+  # Preview a target config without calling the image-install API:
+  %(prog)s install --config=target-host.jsonc --dry-run
+
+  # Include or omit the optional Debian v2 customScript in the wizard:
+  %(prog)s wizard --debian-install-v2
+  %(prog)s wizard --no-custom-script
 
   # Pin an already-registered account key in a payload; no account-key creation occurs:
-  %(prog)s --payload=target-host.jsonc --ssh-key-id=123 --monitor
-
-  # Direct installation from payload file, then watch it to completion:
-  %(prog)s --payload=target-host.jsonc --monitor
+  %(prog)s install --config=target-host.jsonc --ssh-key-id=123
 
   # Non-interactive (e.g. driven by another script/agent) - auto-confirms:
-  %(prog)s --payload=target-host.jsonc --yes --monitor
+  %(prog)s install --config=target-host.jsonc --yes
 
   # Reattach SSH log tailing to an already-installing/installed host:
   %(prog)s --attach-only --ssh-host=1.2.3.4
@@ -549,9 +552,8 @@ Settings (install-host.toml, next to this script):
 
 Environment Variables (see .env.example):
   NETCUP_SCP_API_REFRESH_TOKEN     Required (not needed for --attach-only): OAuth2 refresh token.
-  NETCUP_SCP_API_SERVER_NAME       Optional in an interactive terminal; without it the installer
-                                   presents an API-backed server picker. Required in non-interactive
-                                   normal mode unless --server-id or --payload supplies a target.
+  NETCUP_SCP_API_SERVER_NAME       Optional for wizard; without it the installer presents an
+                                   API-backed server picker. Not needed when --config supplies serverId.
   NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
   NETCUP_SCP_API_SSH_USER          Overrides install-host.toml's ssh.user for --ssh-user.
   NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides install-host.toml's ssh.identity_file for --ssh-identity-file.
@@ -573,14 +575,38 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("configure", "build-customscript"),
+        choices=("wizard", "configure", "install", "build-customscript"),
         default=None,
-        help="Optional one-shot command; omit for the normal install flow (see Modes above).",
+        help="Command; use wizard, configure, or install explicitly (see the examples above).",
+    )
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        metavar="FILE",
+        help=(
+            "Install config to read, or wizard output file to write "
+            f"(default for install/wizard: {DEFAULT_TARGET_CONFIG_NAME})."
+        ),
     )
     parser.add_argument(
         "--payload",
+        dest="config_path",
         metavar="FILE",
-        help="Path to JSON payload file for direct installation (skips interactive gathering)"
+        help="Deprecated alias for --config.",
+    )
+    custom_script_group = parser.add_mutually_exclusive_group()
+    custom_script_group.add_argument(
+        "--debian-install-v2",
+        dest="debian_install_v2",
+        action="store_true",
+        default=None,
+        help="Wizard: include the generated Debian v2 bootstrap customScript (default: yes).",
+    )
+    custom_script_group.add_argument(
+        "--no-custom-script",
+        dest="debian_install_v2",
+        action="store_false",
+        help="Wizard: omit customScript and perform only the Netcup image installation.",
     )
     parser.add_argument(
         "--dry-run",
@@ -654,6 +680,11 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         "--monitor",
         action="store_true",
         help="After starting an installation, poll /api/v1/tasks/{uuid} until finished."
+    )
+    parser.add_argument(
+        "--no-monitor",
+        action="store_true",
+        help="Install: return after the image-install task is created instead of monitoring it.",
     )
 
     parser.add_argument(
@@ -741,17 +772,27 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         parser.error("--ssh-key-id values must be positive integers")
     if args.ssh_key_ids is not None and len(set(args.ssh_key_ids)) != len(args.ssh_key_ids):
         parser.error("--ssh-key-id values must not contain duplicates")
-    if args.command and any(
-        value
-        for value in (args.payload, args.attach_only, args.server_id, args.ssh_key_ids)
+    if args.command == "build-customscript" and any(
+        value for value in (args.config_path, args.attach_only, args.server_id, args.ssh_key_ids)
     ):
-        parser.error("configure/build-customscript cannot be combined with install mode options")
-    if args.attach_only and any((args.payload, args.server_id, args.ssh_key_ids, args.monitor)):
-        parser.error("--attach-only cannot be combined with --payload, --server-id, --ssh-key-id, or --monitor")
-    if args.payload and args.server_id is not None:
-        parser.error("--payload supplies its own target; do not combine it with --server-id")
+        parser.error("build-customscript cannot be combined with install or target options")
+    if args.command == "install" and args.server_id is not None:
+        parser.error("install reads the target from --config/target-host.jsonc; do not combine it with --server-id")
+    if args.command == "install" and args.debian_install_v2 is not None:
+        parser.error("--debian-install-v2/--no-custom-script are wizard options; put customScript in the install config")
+    if args.config_path and args.command not in {"wizard", "configure"} and args.debian_install_v2 is not None:
+        parser.error("--debian-install-v2/--no-custom-script cannot modify a file-driven install config")
+    if args.attach_only and any((args.config_path, args.server_id, args.ssh_key_ids, args.monitor, args.no_monitor)):
+        parser.error("--attach-only cannot be combined with --config/--payload, --server-id, --ssh-key-id, or monitoring options")
+    if args.config_path and args.server_id is not None and args.command not in {"wizard", "configure"}:
+        parser.error("--config/--payload supplies its own target; do not combine it with --server-id")
+    if args.no_monitor and args.monitor:
+        parser.error("--monitor and --no-monitor cannot be combined")
     if args.host_controller_key == "retain" and args.local_controller_key == "remove":
         parser.error("host retain/local remove is not a valid controller-key retention policy")
+    if not sys.argv[1:]:
+        parser.print_help()
+        parser.exit(0)
     return args
 
 
@@ -763,6 +804,13 @@ def is_noninteractive(args: argparse.Namespace) -> bool:
         return not sys.stdin.isatty()
     except Exception:
         return True
+
+
+def _should_monitor(args: argparse.Namespace) -> bool:
+    """Whether a started task should be followed by this process."""
+    return not getattr(args, "no_monitor", False) and (
+        getattr(args, "monitor", False) or is_noninteractive(args)
+    )
 
 
 def _fmt_ts(ts: Optional[str]) -> str:
@@ -1396,103 +1444,6 @@ def save_payload_with_comments(
         f.write("\n".join(lines) + "\n")
 
 
-DEFAULT_RECIPE_PATH = Path(__file__).resolve().parent / "default-recipe.jsonc"
-
-
-def save_recipe_with_comments(recipe: Dict[str, Any], filepath: str, image_name: str) -> None:
-    """Save a `configure`-produced default recipe to JSONC, with comments.
-
-    Same visual convention as save_payload_with_comments(), for a different
-    (server-independent) field set: no serverId/hostname/sshKeyIds here -
-    those stay per-run, resolved fresh each install.
-    """
-    lines: List[str] = [
-        "// Default install recipe - generated by `%s configure`." % Path(__file__).name,
-        "// Used as the base payload for interactive-gather installs when present;",
-        "// delete this file (or re-run `configure`) to reset to built-in defaults.",
-        "{",
-    ]
-    items = list(recipe.items())
-    for idx, (key, value) in enumerate(items):
-        if key == "imageFlavourId":
-            lines.append(f"  // Image: {image_name}")
-        if isinstance(value, bool):
-            value_str = str(value).lower()
-        else:
-            value_str = json.dumps(value)
-        suffix = "," if idx < len(items) - 1 else ""
-        lines.append(f'  "{key}": {value_str}{suffix}')
-    lines.append("}")
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-def _load_default_recipe(recipe_path: Optional[Path] = None) -> Dict[str, Any]:
-    """The base install config: a `configure`-produced recipe if one exists
-    (see save_recipe_with_comments()), else the script's own built-in
-    INSTALLATION_CONFIG defaults.
-
-    recipe_path defaults to DEFAULT_RECIPE_PATH looked up at CALL time (not
-    bound as a mutable default argument) so tests can monkeypatch the
-    module-level constant and have callers like main() pick it up.
-    """
-    recipe_path = recipe_path or DEFAULT_RECIPE_PATH
-    if recipe_path.is_file():
-        return json.loads(_strip_jsonc_comments(recipe_path.read_text(encoding="utf-8")))
-    return dict(INSTALLATION_CONFIG)
-
-
-def _run_configure(client: "NetcupSCPClient") -> int:
-    """Interactive wizard: resolve account/image-level defaults (currently
-    just the latest Debian UEFI image flavour, queried live) and write them
-    to DEFAULT_RECIPE_PATH for every future interactive-gather install to
-    use as its base - see _load_default_recipe(). Per-run fields (serverId,
-    hostname, sshKeyIds) are deliberately never part of this recipe.
-    """
-    if not SERVER_NAME:
-        print(
-            "ERROR: missing $NETCUP_SCP_API_SERVER_NAME (needed to query that "
-            "server's available image flavours)",
-            file=sys.stderr,
-        )
-        return 1
-
-    print("=" * 70)
-    print("CONFIGURE (write a default install recipe)")
-    print("=" * 70)
-
-    servers = client.get("/api/v1/servers", params={"name": SERVER_NAME})
-    if not servers:
-        print(f"ERROR: server '{SERVER_NAME}' not found", file=sys.stderr)
-        return 1
-    server_id = servers[0]["id"]
-
-    try:
-        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=True)
-    except RuntimeError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
-    locale = _prompt_text("Locale", INSTALLATION_CONFIG["locale"])
-    timezone = _prompt_text("Timezone", INSTALLATION_CONFIG["timezone"])
-    root_full_disk = _prompt_yes_no(
-        "Full-disk root partition (rootPartitionFullDiskSize)?",
-        INSTALLATION_CONFIG["rootPartitionFullDiskSize"],
-    )
-
-    recipe = {
-        "locale": locale,
-        "timezone": timezone,
-        "customScript": INSTALLATION_CONFIG["customScript"],
-        "rootPartitionFullDiskSize": root_full_disk,
-        "sshPasswordAuthentication": INSTALLATION_CONFIG["sshPasswordAuthentication"],
-        "emailToExecutingUser": INSTALLATION_CONFIG["emailToExecutingUser"],
-        "imageFlavourId": flavour["id"],
-    }
-    save_recipe_with_comments(recipe, str(DEFAULT_RECIPE_PATH), flavour["name"])
-    print(f"✓ Wrote default recipe to {DEFAULT_RECIPE_PATH}")
-    return 0
-
-
 def _build_customscript(
     *,
     auto_reboot_after_stage1: bool,
@@ -1516,6 +1467,31 @@ def _build_customscript(
         mattermost_webhook_url=mattermost_webhook_url,
         retain_controller_ssh_key=retain_controller_ssh_key,
     )
+
+
+def _wizard_wants_debian_bootstrap(args: argparse.Namespace) -> bool:
+    """Resolve the wizard's optional Debian v2 customScript choice.
+
+    The non-interactive default preserves the historical installer behavior so
+    an automated wizard still produces a Debian v2 payload.  ``install`` never
+    calls this helper: a file-driven install uses exactly the customScript
+    present in its config, including no customScript for a plain image install.
+    """
+    explicit = getattr(args, "debian_install_v2", None)
+    if explicit is not None:
+        return bool(explicit)
+    if is_noninteractive(args):
+        return True
+    return _prompt_yes_no(
+        "Include the Debian install-v2 cloud-init customScript?",
+        True,
+    )
+
+
+def _payload_needs_controller_key(payload: Optional[Dict[str, Any]]) -> bool:
+    """Whether a payload's customScript consumes the controller public key."""
+    custom_script = payload.get("customScript") if isinstance(payload, dict) else None
+    return isinstance(custom_script, str) and "{{CONTROLLER_SSH_PUBKEY}}" in custom_script
 
 
 def _run_build_customscript() -> int:
@@ -1777,24 +1753,29 @@ def _resolve_ssh_key_ids(
         return chosen_ids
 
 
-def _validate_installation_payload(payload: Any) -> List[str]:
+def _validate_installation_payload(payload: Any, *, require_complete: bool = False) -> List[str]:
     """Local, offline structural checks for an install-image payload.
 
     This cannot catch invalid IDs (those only fail once netcup validates them),
     but it catches missing/mistyped fields before we ever call the API - the
     kind of mistake that otherwise only surfaces as an opaque 422 or 404.
 
-    'imageFlavourId' and 'sshKeyIds' may be absent - install_from_payload()
-    resolves those interactively (or auto-selects, non-interactively) when
-    they're missing, rather than requiring them upfront.
+    The interactive wizard may omit ``imageFlavourId`` and ``sshKeyIds`` while
+    it is gathering them live.  A file-driven ``install`` uses
+    ``require_complete=True`` and therefore requires the image flavour as
+    well; account ``sshKeyIds`` remain optional because a customScript may
+    provide the temporary controller access or the operator may intentionally
+    install without injected account keys.
     """
     errors: List[str] = []
 
     if not isinstance(payload, dict):
         return [f"top level must be a JSON object, got {type(payload).__name__}"]
 
-    if "serverId" not in payload and not payload.get("hostname"):
-        errors.append("must contain either 'serverId' (int) or a resolvable 'hostname'")
+    if "serverId" not in payload:
+        hostname = payload.get("hostname")
+        if not isinstance(hostname, str) or not hostname.strip():
+            errors.append("must contain either 'serverId' (int) or a non-empty 'hostname'")
     if "serverId" in payload and (
         isinstance(payload["serverId"], bool)
         or not isinstance(payload["serverId"], int)
@@ -1802,7 +1783,10 @@ def _validate_installation_payload(payload: Any) -> List[str]:
     ):
         errors.append("'serverId' must be a positive integer (not a boolean)")
 
-    if "imageFlavourId" in payload and (
+    if "imageFlavourId" not in payload:
+        if require_complete:
+            errors.append("missing required 'imageFlavourId' (run wizard or provide it in the config)")
+    elif (
         isinstance(payload["imageFlavourId"], bool)
         or not isinstance(payload["imageFlavourId"], int)
         or payload["imageFlavourId"] <= 0
@@ -1828,7 +1812,13 @@ def _validate_installation_payload(payload: Any) -> List[str]:
     return errors
 
 
-def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argparse.Namespace):
+def install_from_payload(
+    client: NetcupSCPClient,
+    payload_path: str,
+    args: argparse.Namespace,
+    *,
+    require_complete: bool = False,
+):
     """Install directly from a payload JSON file.
 
     The payload file may contain placeholders like {{TELEGRAM_BOT_TOKEN}} so it
@@ -1855,7 +1845,10 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     print("✓ Payload loaded successfully")
     print()
 
-    validation_errors = _validate_installation_payload(installation_payload)
+    validation_errors = _validate_installation_payload(
+        installation_payload,
+        require_complete=require_complete,
+    )
     if validation_errors:
         print("❌ ERROR: payload failed preflight validation:", file=sys.stderr)
         for err in validation_errors:
@@ -1874,11 +1867,11 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
                 print(f"  - {err}", file=sys.stderr)
             sys.exit(2)
 
-    if not installation_payload.get("customScript"):
-        installation_payload["customScript"] = _load_default_recipe().get("customScript")
-        if not isinstance(installation_payload["customScript"], str):
-            print("ERROR: payload has no customScript and the default recipe has none", file=sys.stderr)
-            sys.exit(2)
+    if "customScript" in installation_payload and installation_payload["customScript"] == "":
+        # An empty string is equivalent to omitting the optional hook, but do
+        # not silently load a Debian-specific default behind the operator's
+        # back.  The API receives no customScript below.
+        installation_payload.pop("customScript")
 
     # Resolve server ID.
     server_id = None
@@ -1928,12 +1921,12 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     # Fill in any fields the payload left out by querying the API and, when
     # interactive, letting the operator pick - rather than silently guessing.
     interactive = not is_noninteractive(args)
-    if "imageFlavourId" not in installation_payload:
+    if not require_complete and "imageFlavourId" not in installation_payload:
         print("imageFlavourId not set in payload:")
         flavour = _resolve_image_flavour(client, int(server_id), None, interactive=interactive)
         installation_payload["imageFlavourId"] = flavour["id"]
         print()
-    if "sshKeyIds" not in installation_payload:
+    if not require_complete and "sshKeyIds" not in installation_payload:
         print("sshKeyIds not set in payload:")
         user_id = client.get_user_info()["id"]
         installation_payload["sshKeyIds"] = _resolve_ssh_key_ids(
@@ -1997,7 +1990,7 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
             print()
             print("Monitor progress with:")
             print(f"  python3 monitor-task.py {task_uuid}")
-            if getattr(args, "monitor", False) or is_noninteractive(args):
+            if _should_monitor(args):
                 task_result = monitor_task(
                     client,
                     task_uuid,
@@ -2138,9 +2131,8 @@ def _refuse_unrendered_attach_only_identity(identity_file: str) -> None:
 def _build_authenticated_client() -> "NetcupSCPClient":
     """Refresh-token check + access-token fetch + client construction.
 
-    Factored out so both the early `configure` dispatch and the normal flow
-    can build a client without duplicating this (previously the only copy
-    of) error handling.
+    Factored out so the wizard and file-driven install can build a client
+    without duplicating refresh-token error handling.
     """
     try:
         netcup_scp_client.configure_api()
@@ -2216,10 +2208,10 @@ def _apply_local_controller_retention(
 
 
 def _peek_payload_host_label(payload_path: str) -> Optional[str]:
-    """Cheap, local, no-API-call peek at a --payload file's own "hostname"
+    """Cheap, local, no-API-call peek at a config file's own "hostname"
     (or "serverId", as "netcup<id>") so the per-host SSH identity file gets
     a meaningful label before any network call happens - exactly the fields
-    a `configure`/interactive-gather-produced payload already bakes in.
+    a wizard-produced payload already bakes in.
     Returns None (falls back to SERVER_NAME / _UNKNOWN_HOST_LABEL) if the
     file can't be read/parsed or has neither field.
     """
@@ -2243,7 +2235,11 @@ def _peek_payload_host_label(payload_path: str) -> Optional[str]:
     return None
 
 
-def _load_payload_for_target(payload_path: str) -> Dict[str, Any]:
+def _load_payload_for_target(
+    payload_path: str,
+    *,
+    require_complete: bool = False,
+) -> Dict[str, Any]:
     """Load and validate a payload before any controller key work."""
     try:
         raw = Path(payload_path).read_text(encoding="utf-8")
@@ -2254,7 +2250,7 @@ def _load_payload_for_target(payload_path: str) -> Dict[str, Any]:
         raise SystemExit(f"ERROR: cannot read payload file {payload_path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise SystemExit(f"ERROR: invalid JSON/JSONC in payload file {payload_path}: {exc}") from exc
-    errors = _validate_installation_payload(payload)
+    errors = _validate_installation_payload(payload, require_complete=require_complete)
     if errors:
         print("ERROR: payload failed preflight validation:", file=sys.stderr)
         for error in errors:
@@ -2326,6 +2322,21 @@ def main():
     netcup_scp_client.DEBUG = netcup_scp_client.DEBUG or getattr(args, "debug", False)
     _set_controller_retention_environment(args)
 
+    command = getattr(args, "command", None)
+    config_path = getattr(args, "config_path", None) or getattr(args, "payload", None)
+    if command == "install" and not config_path:
+        config_path = DEFAULT_TARGET_CONFIG_NAME
+    input_config_path = config_path if command in {None, "install"} else None
+    if input_config_path:
+        # Keep the existing internal payload attribute for helper/test callers;
+        # the public spelling is now --config.
+        args.payload = input_config_path
+        if command == "install" and not getattr(args, "no_monitor", False):
+            # File-driven installation is an end-to-end operation by default:
+            # create the task and follow it.  --no-monitor is the explicit
+            # escape hatch for callers that only need task creation.
+            args.monitor = True
+
     identity_explicit = bool(os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE")) or any(
         item == "--ssh-identity-file" or item.startswith("--ssh-identity-file=")
         for item in sys.argv[1:]
@@ -2333,16 +2344,11 @@ def main():
 
     if getattr(args, "command", None) == "build-customscript":
         # Purely local (identity-file generation only) - no Netcup API call,
-        # no refresh token needed, unlike configure.
+        # no refresh token needed, unlike wizard/install.
         sys.exit(_run_build_customscript())
 
-    if getattr(args, "command", None) == "configure":
-        # Doesn't touch SSH identity at all (just writes a recipe file) -
-        # dispatch before the identity-rendering block below so it can't
-        # generate a throwaway keypair as a side effect (confirmed live
-        # 2026-09-08: running `configure` with $NETCUP_SCP_API_SERVER_NAME
-        # unset produced a real "unknown-host"-labeled key for no reason).
-        sys.exit(_run_configure(_build_authenticated_client()))
+    if command == "configure":
+        print("[compat] configure is the interactive installer wizard; use `wizard` for the same flow.")
 
     # Refuse malformed safety configuration before rendering a local key or
     # doing any installer-side API work.  A malformed denylist is never
@@ -2395,11 +2401,22 @@ def main():
             follower.stop()
         return
 
+    # Parse/validate a file-driven request locally before authentication.  A
+    # typo in a saved config should not be masked by a missing/expired token,
+    # and it must never reach controller-key handling.
+    payload_for_target = (
+        _load_payload_for_target(
+            input_config_path,
+            require_complete=command == "install",
+        )
+        if input_config_path
+        else None
+    )
+
     # Authentication and target/protection checks deliberately precede every
     # controller-key read or generation.
     client = _build_authenticated_client()
     try:
-        payload_for_target = _load_payload_for_target(args.payload) if args.payload else None
         server_id, target_record = _target_server(client, args, payload_for_target)
         server_details = (
             target_record
@@ -2430,17 +2447,41 @@ def main():
         or merged_target.get("name")
         or f"netcup{server_id}"
     )
-    args.ssh_identity_file = _resolve_or_create_controller_identity(
-        args.ssh_identity_file,
-        str(host_label),
-        explicit=identity_explicit,
-        controller_fqdn=SETTINGS["ssh.controller_fqdn"],
-    )
-    CONTROLLER_SSH_PUBLIC_KEY = _read_public_key_for_identity(args.ssh_identity_file)
+
+    # A plain Netcup image install does not need a controller key.  Generate or
+    # reuse one only when the selected customScript consumes it, or when the
+    # operator explicitly supplied an existing identity for post-install SSH.
+    wizard_debian_bootstrap: Optional[bool] = None
+    needs_controller_key = _payload_needs_controller_key(payload_for_target)
+    if not input_config_path and command in {None, "wizard", "configure"}:
+        wizard_debian_bootstrap = _wizard_wants_debian_bootstrap(args)
+        needs_controller_key = wizard_debian_bootstrap
+        if needs_controller_key:
+            # The wizard's generated placeholder is added to the payload below.
+            pass
+    if needs_controller_key:
+        args.ssh_identity_file = _resolve_or_create_controller_identity(
+            args.ssh_identity_file,
+            str(host_label),
+            explicit=identity_explicit,
+            controller_fqdn=SETTINGS["ssh.controller_fqdn"],
+        )
+        CONTROLLER_SSH_PUBLIC_KEY = _read_public_key_for_identity(args.ssh_identity_file)
+    elif identity_explicit:
+        _validate_existing_identity(args.ssh_identity_file)
+        CONTROLLER_SSH_PUBLIC_KEY = ""
+    else:
+        args.ssh_identity_file = None
+        CONTROLLER_SSH_PUBLIC_KEY = ""
 
     # If payload file is provided, use direct installation mode
-    if args.payload:
-        install_from_payload(client, args.payload, args)
+    if input_config_path:
+        install_from_payload(
+            client,
+            input_config_path,
+            args,
+            require_complete=command == "install",
+        )
         return
 
     print("=" * 70)
@@ -2621,20 +2662,19 @@ def main():
         )
         print()
 
-        # 6. Prepare installation payload
-        # Recipe fields go FIRST (defaults only) and the freshly, live-
-        # resolved fields below win by coming last -- a recipe's own
-        # imageFlavourId (if `configure` was ever run against a stale
-        # image catalog) must never override the imageFlavourId this run
-        # just resolved live two steps above.
+        # 6. Prepare installation payload.  The optional Debian v2 hook is
+        # deliberately added only for the wizard; file-driven installs use
+        # exactly the customScript in their config, if any.
         installation_payload = {
-            **_load_default_recipe(),
+            **INSTALLATION_CONFIG,
             "serverId": server_id,  # Include for --payload mode
             "hostname": hostname,  # Use reverse DNS hostname from server info
             "imageFlavourId": image_flavour_id,
             "diskName": disk_dev,
             "sshKeyIds": ssh_key_ids,
         }
+        if wizard_debian_bootstrap:
+            installation_payload["customScript"] = netcup_install_plan.placeholder_customscript()
         if ssh_key_ids is None:
             installation_payload.pop("sshKeyIds")
 
@@ -2656,7 +2696,8 @@ def main():
         if getattr(args, "dry_run", False):
             print("=" * 70)
             print(
-                "[dry-run] NOT saving to target-host.jsonc (would overwrite any existing "
+                f"[dry-run] NOT saving to {getattr(args, 'config_path', None) or DEFAULT_TARGET_CONFIG_NAME} "
+                "(would overwrite any existing "
                 "file, and any not-yet-created SSH key above is only a placeholder id)."
             )
             print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
@@ -2664,16 +2705,17 @@ def main():
             return
 
         # 8. Save payload to file with comments
+        output_config_path = getattr(args, "config_path", None) or DEFAULT_TARGET_CONFIG_NAME
         save_payload_with_comments(
             installation_payload,
-            "target-host.jsonc",
+            output_config_path,
             SERVER_NAME,
             image_flavour_name,
             user_id,
             ssh_key_names=None,
             hostname_method=hostname_method
         )
-        print("✓ Installation payload saved to:  target-host.jsonc")
+        print(f"✓ Installation payload saved to:  {output_config_path}")
         print()
 
         # 9. Ask for confirmation (unless non-interactive)
@@ -2705,7 +2747,7 @@ def main():
                 print()
                 print("Monitor progress with:")
                 print(f"  python3 monitor-task.py {task_uuid}")
-                if getattr(args, "monitor", False) or is_noninteractive(args):
+                if _should_monitor(args):
                     ssh_identity = getattr(args, "ssh_identity_file", None)
                     task_result = monitor_task(
                         client,
@@ -2733,7 +2775,7 @@ def main():
                         print("⚠ Server is locked (installation already running).")
                         print(f"✓ Monitoring existing task instead: {task_uuid}")
 
-                        if getattr(args, "monitor", False) or is_noninteractive(args):
+                        if _should_monitor(args):
                             ssh_identity = getattr(args, "ssh_identity_file", None)
                             task_result = monitor_task(
                                 client,

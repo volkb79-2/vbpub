@@ -2,24 +2,28 @@
 
 ## 1. Modes and boundaries
 
-`install-host.py` has three distinct responsibilities:
+`install-host.py` has four distinct responsibilities:
 
-1. `configure`: create/update the local installer recipe. It may perform
-   read-only API queries because image flavours are server-scoped, but it does
-   not generate keys or mutate a server.
-2. Normal installation: resolve a target, gather and validate an installation
-   plan, build the Netcup image payload, confirm, submit the image install,
-   and optionally monitor the v2 bootstrap.
-3. `build-customscript`: render the same bootstrap command for an operator who
-   will paste it into a provider UI. It does not perform Netcup API calls.
+1. `wizard`: resolve a target, gather and validate an installation plan, write
+   a reviewed `target-host.jsonc`, confirm, submit the image install, and
+   optionally monitor the v2 bootstrap.
+2. `configure`: compatibility alias for `wizard`; it is not a separate
+   server-dependent recipe command.
+3. `install`: read and strictly validate a target config (default
+   `target-host.jsonc`, override with `--config`), submit exactly that image
+   payload, and monitor the resulting task by default.
+4. `build-customscript`: render the optional bootstrap command for an operator
+   who will paste it into a provider UI. It does not perform Netcup API calls.
+
+A bare invocation prints usage and performs no authentication or SSH work.
 
 `scp-api.py` owns account/server API exploration and general reversible API
 operations, including power control. `install-host.py` may import shared API
 library functions, but it does not call the CLI executable.
 
 Invalid combinations are rejected before authentication or key work. In
-particular, `--attach-only` cannot be combined with `--payload`, normal install
-flags, or configuration commands. `--poweroff` is removed from
+particular, `--attach-only` cannot be combined with `--config`/`--payload`, normal
+install flags, or configuration commands. `--poweroff` is removed from
 `install-host.py`; operators use `scp-api.py power off SERVER_ID`.
 
 ## 2. Normal installation sequence
@@ -33,7 +37,7 @@ is side-effect free with respect to local key material:
 3. Obtain an authenticated API client. If the refresh token is absent, fail
    with the exact remedy: run `./scp-api.py login`.
 4. Resolve the target:
-   - a payload supplies its own `serverId`/hostname;
+   - an install config supplies its own `serverId`/hostname;
    - an explicit `--server-id` or configured
      `NETCUP_SCP_API_SERVER_NAME` is used when supplied;
    - otherwise, in an interactive terminal, list all account servers with
@@ -50,8 +54,10 @@ is side-effect free with respect to local key material:
 8. Resolve the controller key. Search for an existing host-targeted key first;
    generate a new key only when no suitable key exists and the plan needs
    controller access.
-9. Build the bootstrap customScript and complete payload from the same shared
-   plan/builder used by `build-customscript`.
+9. If the wizard was asked to include Debian v2, build the bootstrap
+   customScript and complete payload from the same shared plan/builder used by
+   `build-customscript`. File-driven `install` sends the config's
+   customScript as-is, including no customScript for a plain image install.
 10. Print a redacted, complete summary and write/review the JSONC payload as
     appropriate.
 11. Ask for final confirmation, then POST the image installation.
@@ -146,8 +152,9 @@ for:
 
 Normal API installation uses the builder with placeholders retained until the
 request is sent. `build-customscript` uses the same builder with all values
-resolved for manual pasting. There must be no second hand-maintained list of
-bootstrap environment variables.
+resolved for manual pasting. The builder is optional for the API installer;
+there must be no second hand-maintained list of bootstrap environment
+variables.
 
 ## 6. API configuration and client boundary
 

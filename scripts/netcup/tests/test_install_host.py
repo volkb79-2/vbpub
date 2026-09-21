@@ -703,6 +703,8 @@ def _write_fake_identity(tmp_path):
 
 
 def _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args):
+    if not hasattr(args, "command"):
+        args.command = "wizard"
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
@@ -768,22 +770,18 @@ def test_main_interactive_dry_run_does_not_create_target_host_jsonc(
     assert not (tmp_path / "target-host.jsonc").exists(), "dry-run must not create target-host.jsonc"
 
 
-def test_main_interactive_recipe_never_overrides_freshly_resolved_image_flavour(
+def test_main_wizard_uses_built_in_defaults_and_can_omit_bootstrap(
     install_host_mod, tmp_path, fake_client, monkeypatch, capsys
 ):
-    """Regression: a default-recipe.jsonc's own (possibly stale)
-    imageFlavourId must never win over the imageFlavourId this run just
-    resolved live -- see the reordering fix in main()'s interactive-gather
-    payload construction."""
+    """The wizard no longer reads a hidden server-dependent recipe, and its
+    Debian v2 customScript is an explicit optional choice."""
     monkeypatch.chdir(tmp_path)
-    recipe_path = tmp_path / "default-recipe.jsonc"
-    recipe_path.write_text('{\n  "imageFlavourId": 999,\n  "locale": "de_DE.UTF-8"\n}\n')
-    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", recipe_path)
 
     identity_file = _write_fake_identity(tmp_path)
     client = _fake_gather_client(fake_client)
     args = types.SimpleNamespace(
-        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        command="wizard", attach_only=False, payload=None, config_path=None,
+        poweroff=False, dry_run=True, yes=True, debian_install_v2=False,
         ssh_identity_file=str(identity_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
@@ -794,8 +792,9 @@ def test_main_interactive_recipe_never_overrides_freshly_resolved_image_flavour(
     summary = out.split("INSTALLATION PARAMETERS SUMMARY")[1]
     json_text = summary.split("{", 1)[1].rsplit("}", 1)[0]
     payload = json.loads("{" + json_text + "}")
-    assert payload["imageFlavourId"] == 2  # freshly resolved, not the recipe's stale 999
-    assert payload["locale"] == "de_DE.UTF-8"  # non-conflicting recipe defaults still apply
+    assert payload["imageFlavourId"] == 2
+    assert payload["locale"] == install_host_mod.INSTALLATION_CONFIG["locale"]
+    assert "customScript" not in payload
 
 
 def _fix_datetime_to(install_host_mod, monkeypatch, year, month, day):
@@ -938,6 +937,7 @@ def test_main_payload_mode_uses_payload_hostname_for_identity_label(
         '  "hostname": "r1002.vxxu.de",\n'
         '  "diskName": "vda",\n'
         '  "imageFlavourId": 128,\n'
+        "  \"customScript\": \"CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -\",\n"
         '  "sshKeyIds": [22556]\n'
         '}\n'
     )
@@ -1182,108 +1182,98 @@ def test_run_login_fails_cleanly_on_malformed_token_response(install_host_mod, t
     assert rc == 1
 
 
-# --- configure (default recipe wizard) --------------------------------------
+# --- wizard/configure/strict install configuration --------------------------
 
 
-def test_load_default_recipe_falls_back_to_installation_config(install_host_mod, tmp_path, monkeypatch):
-    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "missing.jsonc")
-    recipe = install_host_mod._load_default_recipe()
-    assert recipe == install_host_mod.INSTALLATION_CONFIG
+def test_strict_install_config_requires_image_flavour(install_host_mod):
+    errors = install_host_mod._validate_installation_payload(
+        {"serverId": 42, "diskName": "vda"},
+        require_complete=True,
+    )
+    assert "imageFlavourId" in " ".join(errors)
 
 
-def test_load_default_recipe_reads_existing_jsonc_with_comments(install_host_mod, tmp_path):
-    path = tmp_path / "default-recipe.jsonc"
-    path.write_text('// a comment\n{\n  "locale": "de_DE.UTF-8" // inline\n}\n')
-    recipe = install_host_mod._load_default_recipe(path)
-    assert recipe == {"locale": "de_DE.UTF-8"}
+def test_strict_install_config_allows_plain_image_without_customscript(install_host_mod):
+    assert install_host_mod._validate_installation_payload(
+        {"serverId": 42, "imageFlavourId": 128, "diskName": "vda"},
+        require_complete=True,
+    ) == []
 
 
-def test_run_configure_writes_recipe_with_resolved_flavour(install_host_mod, tmp_path, fake_client, monkeypatch):
+def test_file_install_without_customscript_does_not_generate_controller_key(
+    install_host_mod, tmp_path, fake_client, monkeypatch
+):
+    config = tmp_path / "plain-image.jsonc"
+    config.write_text('{"serverId": 42, "imageFlavourId": 128, "diskName": "vda"}\n')
+    client = fake_client(
+        get_responses=[
+            {"id": 42, "name": "v4200000000000000000", "hostname": "plain.example"},
+            {"id": 42, "name": "v4200000000000000000", "hostname": "plain.example"},
+        ],
+        allow=("get",),
+    )
+    args = types.SimpleNamespace(
+        command="install", config_path=str(config), payload=None, debug=False,
+        attach_only=False, dry_run=True, yes=True, no_monitor=False,
+        monitor=False, ssh_identity_file=None, ssh_key_ids=None,
+        host_controller_key="remove", local_controller_key="retain",
+    )
+    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+    monkeypatch.setattr(
+        install_host_mod,
+        "_resolve_or_create_controller_identity",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("plain image must not create a controller key")),
+    )
+
+    install_host_mod.main()
+
+
+def test_main_configure_is_the_same_target_picker_flow_as_wizard(
+    install_host_mod, tmp_path, fake_client, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
-    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")  # accept every default
-    servers = [{"id": 42}]
-    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
-    client = fake_client(get_responses=[servers, flavours], allow=("get",))
-
-    rc = install_host_mod._run_configure(client)
-    assert rc == 0
-    recipe = install_host_mod._load_default_recipe(tmp_path / "default-recipe.jsonc")
-    assert recipe["imageFlavourId"] == 2
-    assert recipe["locale"] == install_host_mod.INSTALLATION_CONFIG["locale"]
-    assert recipe["timezone"] == install_host_mod.INSTALLATION_CONFIG["timezone"]
-
-
-def test_run_configure_requires_server_name(install_host_mod, fake_client, monkeypatch):
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
-    rc = install_host_mod._run_configure(fake_client(allow=()))
-    assert rc == 1
-
-
-def test_run_configure_fails_cleanly_with_no_debian_flavours(install_host_mod, tmp_path, fake_client, monkeypatch):
-    """Adversarial-review regression: _resolve_image_flavour() raises a bare
-    RuntimeError when no Debian UEFI images are available -- _run_configure()
-    must turn that into a clean stderr message + rc=1, not an uncaught
-    traceback."""
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
-    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
-    servers = [{"id": 42}]
-    no_debian_flavours = [{"id": 9, "image": {"name": "Ubuntu 24.04 UEFI amd64"}}]
-    client = fake_client(get_responses=[servers, no_debian_flavours], allow=("get",))
-
-    rc = install_host_mod._run_configure(client)
-    assert rc == 1
-    assert not (tmp_path / "default-recipe.jsonc").exists()
-
-
-def test_main_configure_dispatch_never_touches_ssh_identity(install_host_mod, tmp_path, fake_client, monkeypatch):
-    """Regression, found live 2026-09-08: `configure` doesn't need an SSH
-    identity at all (it only writes a recipe file), but main()'s identity-
-    rendering block used to run unconditionally BEFORE the `configure`
-    dispatch check -- generating a real, pointless "unknown-host"-labeled
-    keypair as a side effect whenever $NETCUP_SCP_API_SERVER_NAME was unset.
-    `configure` must now dispatch before that block runs at all."""
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # the exact trigger condition
-    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
 
-    def _fail_if_called(*a, **kw):
-        raise AssertionError("configure must never touch SSH identity machinery")
-
-    monkeypatch.setattr(install_host_mod, "_ensure_local_identity_file_exists", _fail_if_called)
-    monkeypatch.setattr(install_host_mod, "_read_public_key_for_identity", _fail_if_called)
-    monkeypatch.setattr(install_host_mod, "_render_identity_file_path", _fail_if_called)
-
-    args = types.SimpleNamespace(command="configure", debug=False)
+    args = types.SimpleNamespace(
+        command="configure", config_path=None, payload=None, debug=False,
+        attach_only=False, dry_run=True, yes=True, debian_install_v2=False,
+        ssh_identity_file=None, ssh_key_ids=None, no_monitor=False,
+        monitor=False, host_controller_key="remove", local_controller_key="retain",
+    )
     monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
-
-    servers = [{"id": 42}]
-    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")  # _run_configure's own requirement
-    client = fake_client(get_responses=[servers, flavours], allow=("get",))
+    client = _fake_gather_client(fake_client)
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
 
-    with pytest.raises(SystemExit) as exc_info:
-        install_host_mod.main()
-    assert exc_info.value.code == 0
+    install_host_mod.main()
+    assert not any(call[0] == "post" for call in client.calls)
 
 
 # --- command positional argument --------------------------------------------
 
 
-def test_parse_args_rejects_login_and_accepts_installer_commands(install_host_mod, monkeypatch):
+def test_parse_args_accepts_installer_commands_and_bare_invocation_prints_help(install_host_mod, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["install-host.py", "login"])
     with pytest.raises(SystemExit) as exc:
         install_host_mod.parse_args()
     assert exc.value.code == 2
     monkeypatch.setattr("sys.argv", ["install-host.py", "configure"])
     assert install_host_mod.parse_args().command == "configure"
+    monkeypatch.setattr("sys.argv", ["install-host.py", "wizard"])
+    assert install_host_mod.parse_args().command == "wizard"
+    monkeypatch.setattr("sys.argv", ["install-host.py", "install"])
+    assert install_host_mod.parse_args().command == "install"
     monkeypatch.setattr("sys.argv", ["install-host.py", "build-customscript"])
     assert install_host_mod.parse_args().command == "build-customscript"
     monkeypatch.setattr("sys.argv", ["install-host.py"])
-    assert install_host_mod.parse_args().command is None
+    with pytest.raises(SystemExit) as exc:
+        install_host_mod.parse_args()
+    assert exc.value.code == 0
+    assert "usage: install-host.py" in capsys.readouterr().out
 
 
 def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monkeypatch):

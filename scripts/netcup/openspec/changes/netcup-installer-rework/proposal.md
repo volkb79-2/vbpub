@@ -8,7 +8,9 @@ Scope: `scripts/netcup/` and the controller-key retention contract in
 ## Summary
 
 Make `install-host.py` a deliberate installation workflow rather than an
-implicit collection of API, key-generation, and bootstrap side effects.
+implicit collection of API, key-generation, and bootstrap side effects. The
+interactive workflow is exposed as `wizard`; a separate `install` command
+submits a reviewed target config without hidden gathering or defaults.
 
 The installer will authenticate and resolve its target before doing any SSH
 work, offer an interactive server picker when no target is configured, inject
@@ -50,8 +52,9 @@ and one shared API configuration will be used by all Netcup tools.
 4. Reuse an existing host-targeted local controller key; generate one only
    when no suitable key exists.
 5. Keep controller-key retention independent on the host and locally.
-6. Generate the normal API payload and the manual customScript from one shared
-   builder.
+6. Generate the optional Debian v2 API customScript and the manual
+   customScript from one shared builder; allow plain image installs without
+   that hook.
 7. Establish one API configuration source and one shared API client boundary.
 8. Remove installer-owned power control and direct operators to `scp-api.py`.
 9. Update tests, README, DESIGN-GUIDE, and consumer-facing examples together
@@ -64,3 +67,5 @@ and one shared API configuration will be used by all Netcup tools.
 - Do not register the temporary controller key as a persistent account key.
 - Do not make `install-host.py` shell out to `scp-api.py`.
 - Do not make the manual customScript wizard a second installer implementation.
+- Do not make Debian v2 a hard dependency of the generic Netcup image install;
+  it remains the optional cloud-init customScript hook.

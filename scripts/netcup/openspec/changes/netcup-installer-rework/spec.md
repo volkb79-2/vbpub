@@ -8,6 +8,15 @@ The normal installer MUST obtain a valid API client before generating,
 reading, or deleting a controller SSH key. Missing or invalid refresh-token
 configuration MUST fail with a remedy referring to `./scp-api.py login`.
 
+### Requirement: explicit installer modes
+
+`install-host.py` with no arguments MUST print usage and perform no API or SSH
+work. `wizard` MUST expose the API-backed gather-and-install flow.
+`configure` MUST be a compatibility alias for `wizard`. `install` MUST read
+`target-host.jsonc` by default, or the file supplied with `--config` (with
+`--payload` retained as a deprecated alias), and MUST not gather missing
+values interactively.
+
 ### Requirement: interactive target picker
 
 When normal interactive mode has no payload target, explicit server ID, or
@@ -78,9 +87,24 @@ semantics.
 
 ### Requirement: normal payload
 
-The normal installer MUST include a generated `customScript` that invokes the
-configured `debian-install-v2` bootstrap. It MUST not rely on a manually
-maintained second command template.
+The wizard MUST offer the generated `customScript` that invokes the configured
+`debian-install-v2` bootstrap, enabled by default but omittable explicitly.
+The file-driven `install` command MUST treat `customScript` as optional and
+send exactly the value in the selected file. A config without a customScript
+MUST not cause a hidden Debian-specific default or controller-key generation.
+The installer MUST not rely on a manually maintained second command template.
+
+### Requirement: complete file-driven config
+
+`install` MUST validate its JSON/JSONC config before authentication or key
+work. It MUST require a positive `serverId` (or non-empty resolvable
+`hostname`), positive `imageFlavourId`, and non-empty `diskName`.
+`sshKeyIds` and `customScript` MAY be omitted intentionally.
+
+### Requirement: install monitoring
+
+`install` MUST monitor the created task by default. `--no-monitor` MUST be the
+explicit task-creation-only escape hatch.
 
 ### Requirement: manual mode boundary
 

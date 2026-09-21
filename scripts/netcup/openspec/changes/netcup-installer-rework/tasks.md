@@ -53,6 +53,22 @@
 - [x] Run the Netcup and Debian-install-v2 gates with
       `CGROUP_PARENT_DEV_GATES` explicitly set.
 
+## Follow-up: explicit wizard and file-driven install boundary
+
+- [x] Make a bare `install-host.py` invocation print usage without API or SSH
+      side effects; expose the existing gather/install flow as `wizard`.
+- [x] Make `configure` an alias for `wizard`, removing the server-name-only
+      default-recipe path that failed before the shared target picker.
+- [x] Add `install` with strict default `target-host.jsonc` loading and a
+      `--config FILE` override; retain `--payload` as a compatibility alias.
+- [x] Make `install` monitor its task by default with an explicit
+      `--no-monitor` escape hatch.
+- [x] Make Debian v2 `customScript` optional: wizard opt-out, authoritative
+      file-driven payload, and no controller-key generation for plain image
+      installs.
+- [x] Update README, DESIGN-GUIDE, specification, help examples, and tests
+      for the mode and bootstrap boundary.
+
 ## Phase 5: documentation and handoff
 
 - [x] Update `scripts/netcup/README.md` with the target-picker quickstart,

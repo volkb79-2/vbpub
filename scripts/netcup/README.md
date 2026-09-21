@@ -1,7 +1,8 @@
 # Netcup SCP installation tools
 
-These scripts provision disposable or fresh Debian hosts through the Netcup
-Server Control Panel API and feed them the `debian-install-v2` bootstrap.
+These scripts provision disposable or fresh hosts through the Netcup Server
+Control Panel API. They can optionally feed a Debian host the
+`debian-install-v2` bootstrap through Netcup's cloud-init `customScript` hook.
 
 ## First-time setup
 
@@ -48,27 +49,37 @@ the validated `v<digits>` names in `.env` or run login from a terminal.
 
 ### Quickstart: inspect and install a Debian VM
 
-The normal installer gathers server-specific facts live. `configure` is
-optional: it saves local locale/timezone/partition defaults, while the normal
-interactive install still resolves the current Debian UEFI image every time.
+The installer has two separate workflows. `wizard` gathers server-specific
+facts live and writes a complete local target config. `install` consumes that
+reviewed file without gathering or silently filling values. `configure` is a
+compatibility alias for `wizard`; it is no longer a separate server-dependent
+recipe command.
 
 ```bash
 ./scp-api.py status
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
 
-# Optional local defaults wizard; it needs a configured target.
+# Gather and save a complete target config, then ask before installing.
+./install-host.py wizard
+
+# Equivalent compatibility spelling:
 ./install-host.py configure
+
+# Review the generated file, then install exactly that file and monitor it.
+./install-host.py install
 
 # Preview the gathered payload and account-key decision. Authentication,
 # target lookup, and the protected-server check happen before the local
 # controller key is reused/generated. No mutating API call is made and no
 # target-host.jsonc is saved.
-./install-host.py --dry-run
+./install-host.py wizard --dry-run
 
-# Gather again, save target-host.jsonc, ask for final confirmation, install,
-# and follow the task plus Debian bootstrap logs.
-./install-host.py --monitor
+# Or install a plain image without the Debian v2 hook:
+./install-host.py wizard --no-custom-script --no-monitor
+
+# A different reviewed config can be selected explicitly.
+./install-host.py install --config target-host-r1002.jsonc
 ```
 
 The installer writes `target-host.jsonc` before its final install confirmation
@@ -85,30 +96,34 @@ and host `retain`, local `retain`. Host `retain`, local `remove` is rejected.
 Use `--host-controller-key` and `--local-controller-key`; local removal is
 performed only after the monitor has observed `stage2_done`.
 
-If the dry-run looks correct, the second command can be made non-interactive:
+If the dry-run looks correct, the file-driven install can be made
+non-interactive:
 
 ```bash
-./install-host.py --yes --monitor
+./install-host.py install --config target-host.jsonc --yes
 ```
 
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
 the selected bootstrap source.
 
-To save or repeat a gathered request explicitly, use the generated file:
+The wizard includes the Debian v2 cloud-init `customScript` by default. That
+hook is optional: omit it with `--no-custom-script` for a plain Netcup image
+installation. A file-driven install never invents or loads a customScript; it
+sends the one in the selected file, if present. A file with no customScript
+also does not create a temporary controller key.
+
+To preview or repeat a gathered request explicitly, use the generated file:
 
 ```bash
-./install-host.py --payload target-host.jsonc --dry-run
-./install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+./install-host.py install --config target-host.jsonc --dry-run
+./install-host.py install --config target-host.jsonc --ssh-key-id 123
 ```
 
-Direct payload mode does not load `default-recipe.jsonc`: for a Debian install,
-the payload must contain `serverId` (or a resolvable `hostname`), `diskName`,
-and the `customScript` that should be sent to Netcup. `imageFlavourId` and
-`sshKeyIds` may be omitted and are resolved live. The normal interactive flow
-is the easiest way to create a complete payload. `default-recipe.jsonc` is
-deliberately local and gitignored; delete it or rerun `configure` to reset
-those interactive defaults. Its secret and bootstrap placeholders are expanded
-only in the API request, never by modifying the saved file.
+The `install` command validates that the config is a JSON/JSONC object with a
+positive `serverId` (or a resolvable hostname), positive `imageFlavourId`, and
+non-empty `diskName` before authenticating or generating any key. `sshKeyIds`
+and `customScript` are intentionally optional. The deprecated `--payload FILE`
+spelling remains an alias for `--config FILE`.
 
 ### Notifications
 
@@ -148,21 +163,22 @@ a manual web-host UI install, run:
 
 ## Install workflow
 
-Preview an installation without mutating the Netcup account:
+Preview the reviewed file without mutating the Netcup account:
 
 ```bash
-./install-host.py --dry-run
+./install-host.py install --config target-host.jsonc --dry-run
 ```
 
-Run an interactive installation and follow stage2:
+Run the gather-and-install wizard and follow stage2:
 
 ```bash
-./install-host.py --monitor
+./install-host.py wizard --monitor
 ```
 
-Use `--payload target-host.jsonc` only after the normal flow has generated the
-file, or when supplying a separately prepared complete payload. To monitor a
-task after the installer has exited, use the standalone task watcher:
+Use `install --config FILE` for a separately prepared complete payload. The
+file-driven command monitors the task by default; `--no-monitor` returns after
+task creation. To monitor a task after the installer has exited, use the
+standalone task watcher:
 
 ```bash
 ./monitor-task.py TASK_UUID
@@ -179,7 +195,7 @@ registering a new account key. To pin an existing key in a direct payload run,
 pass its ID (and repeat the option for multiple IDs):
 
 ```bash
-python3 install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+python3 install-host.py install --config target-host.jsonc --ssh-key-id 123
 ```
 
 The local `--ssh-identity-file` is a separate controller key used for
@@ -189,8 +205,9 @@ older dated installer filenames; only then is a new key generated. An
 explicit missing or invalid path is an error. `--ssh-key-id` refers only to a
 key already registered in the Netcup account.
 
-`install-host.py --help` documents the payload, attach-only,
-and wizard modes. `scp-api.py` provides read-only account/server
+`install-host.py` with no arguments prints usage and performs no API or SSH
+work. Its `wizard`, `configure`, `install`, and `build-customscript` commands
+are documented by `install-host.py --help`. `scp-api.py` provides read-only account/server
 inspection and explicitly gated reversible actions. Read-only resource commands
 enumerate every server when no ID is supplied, because the SCP API exposes
 image flavours, ISO images, disks, rescue status, snapshots, and ISO attachment
@@ -386,7 +403,7 @@ test downloads the wrapper and the installer subtree from the same branch:
 
 ```bash
 NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration \
-  python3 install-host.py --payload target-host.jsonc --dry-run
+  python3 install-host.py install --config target-host.jsonc --dry-run
 ```
 
 For a nonstandard wrapper location, set
@@ -394,6 +411,6 @@ For a nonstandard wrapper location, set
 install until that branch is pushed and the dry-run payload shows the intended
 source.
 
-The rationale for the separate login/configure/build-customscript commands,
-the local recipe, and the branch-pinned bootstrap is in
+The rationale for the wizard/file-driven split, optional bootstrap hook, and
+the branch-pinned bootstrap is in
 [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md).
