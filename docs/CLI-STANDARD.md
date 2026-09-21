@@ -1,0 +1,337 @@
+# User-facing Python CLI standard
+
+This document defines the common command-line contract for user-facing Python
+CLIs in this repository. It applies to installed commands, repository scripts,
+and executable Python entrypoints. A tool may add domain-specific behavior, but
+must not silently contradict this contract. If a compatibility requirement
+requires an exception, the exception is documented in that tool's own guide
+and tested at its boundary.
+
+The standard is deliberately about observable behavior: what an operator sees,
+what an automation caller can rely on, and which side effects are permitted
+before a command is understood.
+
+## 1. Identity and version
+
+Every CLI has one authoritative version source. It must be derived from the
+tool's package metadata, declared version module, or another checked-in source
+of truth. A CLI must not invent a fallback version that can silently become
+false.
+
+The first line of every human-facing help or usage document is the product's
+short name, version, and long name:
+
+```text
+CIU 7.15.0 — Container Infrastructure Utility
+```
+
+The same identity line appears on command-specific help and argument or
+configuration diagnostics when the CLI owns the diagnostic. A command must not
+print multiple competing identity lines.
+
+`version` and `--version` are mandatory and are side-effect free. Both print
+exactly the short identity and exit successfully:
+
+```text
+ciu 7.15.0
+```
+
+The long name belongs in help/usage, not in the output of `version` or
+`--version`. Version and help must work without a config file, credentials,
+network access, Docker, SSH, or other runtime dependencies.
+
+## 2. Invocation and help
+
+The canonical top-level grammar is:
+
+```text
+tool <verb> [options]
+tool help [verb]
+tool version
+```
+
+The following forms are required:
+
+```text
+tool --help
+tool help
+tool <verb> --help
+tool help <verb>
+tool --version
+tool version
+```
+
+`help <verb>` and `<verb> --help` must render the same command-specific help.
+Help is a discovery operation: it must not authenticate, read secrets, make
+network calls, mutate files, start services, or otherwise perform the verb's
+action.
+
+`--help` is the only documented help option. The short `-h` spelling is not
+part of this standard and must not be added to new CLIs. Existing `-h` support
+is removed as each CLI is migrated, unless a separately documented external
+compatibility promise prevents that removal.
+
+When invoked without a verb, a CLI must print its complete top-level usage to
+stdout and exit `0`. It must not let argparse expose an implementation detail
+such as “the following arguments are required”. The only exception is a CLI
+whose documented purpose is specifically a no-argument action; that action must
+still have a separate `--help` path.
+
+Unknown verbs, missing required values, and malformed options print a concise,
+identity-headed diagnostic to stderr and exit `2`. They may include the
+relevant usage synopsis, but must not print a raw traceback.
+
+## 3. Top-level usage document
+
+The top-level usage document is one coherent document, not a parser-generated
+verb list followed by a second handwritten list. A tool may render it from
+structured verb metadata, but every public verb must appear exactly once.
+
+The recommended layout is:
+
+```text
+TOOL 1.2.3 — Long Tool Name
+
+Usage: tool <verb> [options]
+       tool help [verb]
+       tool version
+
+GETTING STARTED
+  ...the shortest useful workflow...
+
+EXPLORATION
+  ...read-only verbs...
+
+MODIFICATION
+  ...verbs whose default operation changes state...
+
+MIXED OPERATIONS
+  ...verbs with both read-only and mutating actions...
+
+AUTHENTICATION / SETUP
+  ...login, init, configure, or prerequisite verbs...
+
+MAINTENANCE
+  ...cleanup, repair, migration, or administrative verbs...
+
+GLOBAL OPTIONS
+  --help       show this help and exit
+  --version    print the short version and exit
+  --debug      show additional diagnostic information
+```
+
+The sections are semantic, not implementation layers. A small CLI may omit
+empty sections. A larger CLI should use groups when they materially improve
+discovery. Group order should follow the operator's likely workflow, with
+alphabetical order inside a group unless a documented workflow order is more
+useful.
+
+An entry has the form:
+
+```text
+  verb [required arguments] [important options]
+      one-line explanation of the observable operation
+```
+
+Top-level entries should say whether they are read-only, mutating, interactive,
+or potentially expensive. A mixed verb appears once under `MIXED OPERATIONS`;
+its help entry lists its read-only default and its mutating actions together.
+For example:
+
+```text
+  firewall SERVER [MAC] get|set
+      inspect or replace the interface assignment; set is confirmed
+```
+
+Nested actions are actions, not top-level verbs and not boolean options. They
+are written as positional action names (`snapshots SERVER create`), not as
+misleading flags (`snapshots SERVER --create`).
+
+## 4. Getting Started and examples
+
+A `GETTING STARTED` section is included when a first-time operator benefits
+from an on-ramp. It should contain the smallest safe sequence that gets useful
+output, for example authentication followed by a read-only status command.
+
+Every verb with non-obvious behavior has at least one pasteable example in its
+command-specific help. Every mutating verb has:
+
+- a read-only inspection or dry-run example when one exists;
+- an explicit confirmation example using the normal prompt; and
+- a `--yes` example only where unattended acceptance is a supported use case.
+
+Examples must use valid argument names and current closed-vocabulary values.
+They must not contain fake defaults that the implementation does not actually
+derive or accept.
+
+## 5. Common options
+
+Common options are shown in semantic sections rather than one undifferentiated
+list. A CLI only advertises options that apply to the selected command.
+
+### Help and version
+
+```text
+help
+--help
+version
+--version
+```
+
+### Debugging
+
+```text
+--debug    emit additional diagnostic information useful for debugging
+```
+
+`--debug` may enable request details, retry decisions, subprocess commands,
+timing, or other diagnostic context, subject to the tool's secret-redaction
+policy. It must not turn a handled failure into a raw traceback, turn a
+successful operation into a failure, or bypass normal safety checks. Sensitive
+values remain redacted. An unexpected exception may retain its traceback
+because it is uncaught; `--debug` may add context around it but does not change
+that distinction.
+
+### Output control
+
+Where supported, output options are grouped together:
+
+```text
+--json       emit machine-readable output
+--no-color   disable terminal colour
+```
+
+Human-readable output is for operators. JSON output is for consumers and must
+contain no banners, progress text, warnings, or diagnostics on stdout. Errors
+and diagnostics always go to stderr. If a JSON schema is versioned, the JSON
+document carries its schema version.
+
+### Confirmation
+
+```text
+--yes        accept confirmation prompts without waiting for input
+```
+
+`--yes` is valid for commands that can ask for confirmation. It pre-defaults
+user acceptance; it does not bypass validation, authentication, protected
+target deny-lists, explicit target requirements, dry-run rules, or other safety
+guards. A command must still refuse an unsafe or incomplete request with a
+meaningful diagnostic.
+
+The normal interactive prompt must clearly state what will change. A declined
+prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
+
+Other recurring option groups should be named according to meaning, for
+example:
+
+- `target selection`: server, project, host, or resource selectors;
+- `filters`: query, state, time range, pagination, or name filters;
+- `input`: file, JSON, config, or stdin sources;
+- `stop conditions`: timeout, polling, retry, or completion conditions;
+- `authentication`: credential, identity, or trust inputs;
+- `modification`: fields that replace, create, delete, or otherwise change state.
+
+Global options may be accepted before the verb. A tool may also accept them
+after the verb for ergonomics, but the accepted placement must be consistent
+within that CLI and documented in its help.
+
+## 6. Errors, exceptions, and cancellation
+
+The CLI distinguishes expected operator errors from programming failures.
+
+- Expected validation, configuration, authentication, API, filesystem, and
+  subprocess failures are caught at the CLI boundary and rendered as concise,
+  meaningful messages that state the failed operation and, where possible, a
+  corrective action.
+- Expected failures do not print Python tracebacks.
+- `KeyboardInterrupt` is always handled as intentional cancellation. It prints
+  a short cancellation message, never a traceback, and exits `130`.
+- An exception that is not handled by the CLI boundary is an unexpected
+  programming or environment failure and may print its traceback to stderr.
+  This distinction must not be hidden by a broad `except Exception` that turns
+  every bug into an uninformative message.
+- `--debug` may add diagnostic context for handled failures, but normal
+  operation still uses the same meaningful error and exit status. It does not
+  authorize raw tracebacks for exceptions the CLI has deliberately handled.
+
+Error messages must not claim a stronger conclusion than the check performed.
+For example, “not reachable” must not be rendered as “no keys match”, and a
+failed API lookup must not be rendered as an empty resource list.
+
+## 7. Exit-status contract
+
+Unless a tool documents a stricter domain-specific status, the common meanings
+are:
+
+| Status | Meaning |
+|---:|---|
+| `0` | requested operation completed, or help/version was printed |
+| `1` | expected runtime failure: API, filesystem, subprocess, or external state |
+| `2` | invocation, validation, configuration, or safety refusal |
+| `130` | operator cancelled with Ctrl-C |
+
+Pipelines, wrappers, and background launchers must preserve and report the
+status of the operation being judged, not the status of a pager, logging pipe,
+or wrapper.
+
+## 8. Formatting and terminal behavior
+
+Help and human output must be readable in a wide terminal and remain usable
+when redirected. The formatter should derive its width from the terminal and
+use a documented wide fallback (recommended: `120` columns), rather than
+hard-wrapping all prose at `80` columns. Long option descriptions should wrap
+at word boundaries and preserve indentation.
+
+Colours are optional presentation. They must be disabled when stdout is not a
+TTY, when `NO_COLOR` is set, or when the CLI provides `--no-color`. Semantic
+meaning must remain available in plain text.
+
+Tables must preserve stable column meaning, sanitize external values before
+printing, and use explicit placeholders for unknown values. “Could not check”
+must remain distinct from “empty” or “not present”.
+
+## 9. Implementation and test requirements
+
+Each CLI should centralize these concerns in a small shared helper or base
+parser rather than reimplementing identity, version, errors, and width rules in
+each verb.
+
+The test suite for every adopted CLI must prove at least:
+
+1. no arguments print complete help, perform no side effects, and exit `0`;
+2. `--help`, `help`, `verb --help`, and `help verb` behave as specified;
+3. `version` and `--version` print the exact short version and perform no side
+   effects;
+4. every public verb appears exactly once in the grouped top-level help;
+5. no top-level help output contains an ungrouped duplicate parser verb list;
+6. `--yes` suppresses only the intended confirmation prompt;
+7. expected failures are meaningful and traceback-free;
+8. Ctrl-C at every interactive prompt exits `130` without a traceback;
+9. unexpected exceptions remain distinguishable from handled failures, with
+   `--debug` providing additional diagnostics;
+10. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
+11. help/version paths work without credentials, configuration, network, or
+    runtime services.
+
+Tests should exercise the real entrypoint or module invocation, not only helper
+functions. A controlled bad input must demonstrate that each safety/error
+oracle actually goes red before the fix.
+
+## 10. Adoption inventory
+
+This is an adoption plan, not a claim that all current tools already conform.
+
+| CLI | Main adoption work |
+|---|---|
+| `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
+| `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
+| `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
+| `scp-api.py` | add version/help verbs, remove duplicate verb list, add identity header, align `--yes`/errors |
+| `install-host.py` | add identity/version/help verb, grouped options, and common error/debug behavior |
+| `monitor-task.py` | make bare/help invocations side-effect free; prevent `help` from being parsed as a UUID |
+| other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
+
+The first migration target is `scp-api.py`, `install-host.py`, and
+`monitor-task.py`, because the audit found both discoverability defects and a
+real unsafe `monitor-task.py help` path. The standard itself is repository-wide
+and does not require every CLI to be migrated in one change.
