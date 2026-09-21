@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -229,3 +230,19 @@ def test_main_dispatches_selected_operation(
     monkeypatch.setattr(build_push.sys, "argv", ["build-push.py", flag])
     build_push.main()
     assert calls == [expected]
+
+
+def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover the script entrypoint used by CMRU's ``python3 build-push.py``."""
+    monkeypatch.setattr(
+        build_push.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
+    )
+    monkeypatch.setattr(
+        build_push.subprocess,
+        "check_output",
+        lambda *args, **kwargs: "4294967296 12884901888 128 400000 100000",
+    )
+    monkeypatch.setattr(build_push.sys, "argv", ["build-push.py", "--build"])
+    runpy.run_path(str(MODULE_PATH), run_name="__main__")
