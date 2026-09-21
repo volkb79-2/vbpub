@@ -251,9 +251,9 @@ The default is `info`. `--quiet` is an alias for `--log-level=error`, and
 verbosity in addition to disabling supported redaction. The level controls
 diagnostic/progress messages, not the command's primary result: a successful
 query still returns its result at `--quiet`, while warnings and errors remain
-visible. A CLI may accept `--verbose` as a compatibility alias for debug, but
-new interfaces should not invent a numeric `--verbose` scale alongside
-`--log-level`.
+visible. `--verbose` is accepted by the common helper as a compatibility alias
+for debug. New interfaces should not invent a numeric `--verbose` scale
+alongside `--log-level`.
 
 The level options are mutually exclusive. If more than one is supplied, the
 CLI reports the conflict and prints the relevant help rather than silently
@@ -359,7 +359,8 @@ stdout is not a TTY, when `NO_COLOR` is set, or when the CLI provides
 `--no-color`. Semantic meaning must remain available in plain text. If both
 explicit colour controls are exposed, `--no-color` wins over automatic colour
 and `--color` may explicitly override `NO_COLOR`; JSON output never uses ANSI
-colour.
+colour. Supplying both explicit controls is an invocation error rather than a
+last-option-wins rule.
 
 ### Progress
 
@@ -447,8 +448,8 @@ It should be a focused contract layer, not a replacement for every possible
 CLI framework. It may use or adapt an established parser/renderer, but its
 narrow API should cover:
 
-The recommended home is `libraries/vbpub-cli/`, with distribution name
-`vbpub-cli` and Python import name `vbpub_cli`. It must be independently
+The recommended home is `libraries/cli-extended/`, with distribution name
+`cli-extended` and Python import name `cli_extended`. It must be independently
 packageable so installed CLIs do not depend on importing from the repository
 root.
 

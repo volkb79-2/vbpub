@@ -77,3 +77,19 @@ python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
 The dry run must show the intended branch before a real Netcup API install is
 confirmed. See [`scripts/netcup/README.md`](../scripts/netcup/README.md) for
 attach-only, exploration, and bootstrap-source details.
+
+## Shared CLI contract
+
+For a new or migrating user-facing Python CLI, install the shared contract
+layer from the checkout:
+
+```bash
+python3 -m pip install --editable ./libraries/cli-extended
+PYTHONPATH=libraries/cli-extended/src pytest -q libraries/cli-extended/tests
+```
+
+Use `cli_extended.CliIdentity`, `ExtendedArgumentParser`, `HelpCatalog`, and
+`run_cli` for the parser shell; use `CliOutput` or `CliRuntime.output` for
+stderr diagnostics and stdout results. The package README contains a complete
+pasteable parser example, while its design guide explains the argparse-first
+compatibility choice.
