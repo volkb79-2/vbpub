@@ -256,6 +256,16 @@ def test_fetch_json_fails_after_network_retry_budget(
     assert calls == resolver.RETRIES
 
 
+def test_fetch_json_zero_retry_budget_exercises_defensive_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(resolver, "RETRIES", 0)
+    monkeypatch.setattr(resolver, "fail", messages.append)
+    assert resolver._fetch_json("https://example.test", "example") == {}
+    assert messages == ["example fetch failed after 0 attempts: None"]
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [("1.2.3", (1, 2, 3)), (" 10.0.0 ", (10, 0, 0)), ("1.2", None), ("1.2.3-beta", None)],
