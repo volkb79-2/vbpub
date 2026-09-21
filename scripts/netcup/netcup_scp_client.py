@@ -24,6 +24,7 @@ import json
 import http.client
 import os
 import re
+import socket
 import sys
 import time
 import tomllib
@@ -39,6 +40,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 DEBUG = False
 BASE_URL: Optional[str] = None
 KEYCLOAK_URL: Optional[str] = None
+
+
+def reverse_dns(ip: str) -> Optional[str]:
+    """Return the PTR hostname for *ip*, or ``None`` when it has no PTR.
+
+    Reverse DNS is presentation data and must never prevent an API operation;
+    callers use the absence of a result to show ``-``.  Keeping the resolver
+    here gives the API explorer and installer the same behavior.
+    """
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return None
 
 
 def log_debug(message: str) -> None:

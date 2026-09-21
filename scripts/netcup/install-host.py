@@ -126,10 +126,7 @@ def _detect_public_ip(timeout: float = 5.0) -> Optional[str]:
 
 
 def _reverse_dns(ip: str) -> Optional[str]:
-    try:
-        return socket.gethostbyaddr(ip)[0]
-    except Exception:
-        return None
+    return netcup_scp_client.reverse_dns(ip)
 
 
 def _resolve_controller_fqdn(controller_fqdn: str) -> str:
@@ -462,11 +459,19 @@ INSTALLATION_CONFIG = {
 netcup_scp_client.DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
 
 
+class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keep the install workflow's examples readable in a wide terminal."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("width", 120)
+        super().__init__(*args, **kwargs)
+
+
 def parse_args():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
         description="Netcup Server Control Panel - Automated Debian Installation",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_WideHelpFormatter,
         epilog="""
 Commands (positional, optional; default is the install flow below):
   configure           Interactive wizard: resolve the latest Debian UEFI

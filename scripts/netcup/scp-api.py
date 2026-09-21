@@ -1,81 +1,63 @@
 #!/usr/bin/env python3
-"""Explore and safely modify the netcup SCP API account/server surface.
+"""Inspect and safely operate the Netcup SCP account and its servers.
 
-First-class exploration, not manual curl+jq: this is exactly what
-install-host.py used to do ad hoc for imageflavours only (query,
-filter, print a numbered list) -- generalized to the rest of the
-"pre-install recon" resource set (servers, imageflavours, iso-bootable, disks,
-rescuesystem status, snapshots, tasks, metrics, guest-agent status, and
-firewall assignment), plus explicitly confirmed actions (ISO attach/detach,
-task cancel, rescue-system deactivate, snapshot create/dryrun-check, power
-operations, firewall policy create/PUT, firewall assignment, and user-ISO
-upload). Deliberately does NOT expose: disk format, image setup (server
-reinstall), or snapshot revert.
+Start with ``./scp-api.py login`` to obtain the OAuth refresh token and, in an
+interactive terminal, select ``v<digits>`` servers for this checkout's local
+mutation denylist.  Then use ``status`` for a compact live inventory or
+``servers`` and ``server-details`` when you need the raw account records.
 
-Auth/settings: shares netcup_scp_client.py with install-host.py and monitor-task.py
-(same .env-sourced NETCUP_SCP_API_REFRESH_TOKEN, same OAuth2 device-code
-`login` support) but its own tiny scp-api.toml for
-base_url/keycloak_url (see that file's own comment for why it's not
-shared with install-host.toml).
+The CLI separates read-only exploration from explicitly confirmed
+modification.  Server-scoped reads enumerate every server when no
+``server_id`` is supplied; mutating actions always require an explicit target.
+The API explorer intentionally does not expose destructive disk formatting,
+server image installation, or snapshot revert.  ``install-host.py`` owns the
+Debian installation workflow and uses this module's shared client.
 
-Usage:
-  scp-api.py login
-  scp-api.py servers [--json]
-  scp-api.py server-details <server_id> [--json]
-  scp-api.py imageflavours [server_id] [--filter TEXT] [--json]
-  scp-api.py iso-bootable [server_id] [--filter TEXT] [--json]
-  scp-api.py iso-attached [server_id] [detach] [--yes]
-  scp-api.py attach-iso <server_id> (--iso-id ID | --user-iso-name NAME) [--yes]
-  scp-api.py disks [server_id] [supported-drivers]
-  scp-api.py rescuesystem [server_id] [deactivate] [--yes]
-  scp-api.py snapshots [server_id] [create|dryrun] [--name NAME] [--yes]
-  scp-api.py tasks [uuid] [cancel] [--query TEXT] [--server-id ID]
-                  [--state STATE] [--limit N] [--offset N]
-  scp-api.py metrics <server_id> {cpu,disk,network,network-packet} [--hours N]
-  scp-api.py guest-agent-status <server_id>
-  scp-api.py user-iso [upload FILE] [--name KEY] [--multipart]
-  scp-api.py firewall-policies [create|put] [policy_id] [--policy-json JSON | --policy-file PATH]
-  scp-api.py firewall <server_id> [mac] [get|set] [options]
-  scp-api.py power {on,off,cycle,reset} <server_id> [--yes]
+Exploration (read-only; does not change the account or servers):
+  status [server_id]                         compact live server table
+  servers                                    account server inventory
+  server-details server_id                   complete server API record
+  imageflavours [server_id] [--filter TEXT]  reinstallable OS/image choices
+  iso-bootable [server_id] [--filter TEXT]   provider bootable ISO choices
+  iso-attached [server_id]                   currently attached ISO
+  disks [server_id]                          disk capacity and drivers
+  rescuesystem [server_id]                   provider rescue-system state
+  snapshots [server_id]                     snapshot inventory
+  tasks [task_uuid] [filters]                task inventory or one task
+  metrics server_id metric                   CPU, disk, or network samples
+  guest-agent-status server_id               QEMU guest-agent availability
+  user-iso                                   account user-ISO inventory
+  firewall-policies                          account firewall-policy inventory
+  firewall server_id [mac] get               interface firewall assignment
+
+Modification (changes provider state; confirmation is required unless
+``--yes`` is supplied):
+  attach-iso server_id                       attach provider or uploaded ISO
+  iso-attached server_id detach              detach the current ISO
+  rescuesystem server_id deactivate           deactivate provider rescue mode
+  snapshots server_id create|dryrun           create/check a snapshot
+  tasks task_uuid cancel                      cancel a task (use --server-id)
+  user-iso upload FILE                       upload an account user ISO
+  firewall-policies create|put                create or replace a policy
+  firewall server_id [mac] set               replace interface assignments
+  power on|off|cycle|reset server_id          control server power state
+
+Authentication:
+  login                                      device-code login and denylist wizard
 
 Examples:
-  scp-api.py login
-  scp-api.py servers
-  scp-api.py server-details 799611 --json
-  scp-api.py imageflavours --filter debian
-  scp-api.py iso-bootable --filter rescue
-  scp-api.py iso-attached 799611
-  scp-api.py attach-iso 799611 --iso-id 1234
-  scp-api.py disks 799611 supported-drivers
-  scp-api.py rescuesystem 799611
-  scp-api.py snapshots 799611
-  scp-api.py tasks --state RUNNING --server-id 799611
-  scp-api.py metrics 799611 cpu --hours 24
-  scp-api.py guest-agent-status 799611
-  scp-api.py user-iso
-  scp-api.py user-iso upload ./custom.iso --yes
-  scp-api.py firewall-policies
-  scp-api.py firewall-policies create --policy-file firewall-policy.json --yes
-  scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff get
-  scp-api.py firewall 799611 aa:bb:cc:dd:ee:ff set --user-policy-id 12 --active
-  scp-api.py power cycle 799611
+  ./scp-api.py status
+  ./scp-api.py iso-bootable --filter debian
+  ./scp-api.py attach-iso 799611 --iso-id 1234 --yes
+  ./scp-api.py firewall 799611 get --consistency-check
+  ./scp-api.py power cycle 799611 --yes
 
-Verb groups:
-  authentication: login
-  exploration: servers, server-details, imageflavours, iso-bootable,
-                iso-attached, disks, rescuesystem, snapshots, tasks,
-                metrics, guest-agent-status, user-iso, firewall-policies,
-                firewall get
-  modification: attach-iso, iso-attached <server_id> detach,
-               rescuesystem <server_id> deactivate, snapshots <server_id>
-               create, tasks <uuid> cancel, user-iso upload,
-               firewall-policies create/put, firewall <server_id> [mac] set,
-               power {on,off,cycle,reset}
-
-Every subcommand accepts --json for raw machine output; without it, output
-is a pretty, optionally-colored table/summary sized for a terminal. Color
-auto-detects a TTY and respects NO_COLOR (https://no-color.org/) and
---no-color.
+Every verb accepts ``--help``.  ``--json`` prints machine-readable output;
+otherwise the CLI prints a sanitized table or summary.  Color auto-detects a
+TTY and respects ``NO_COLOR`` and ``--no-color``.  The shared
+``netcup_scp_client.py`` module handles token refresh, strict local settings,
+and the protected-server policy for ``scp-api.py``, ``install-host.py``, and
+``monitor-task.py``.
 """
 from __future__ import annotations
 
@@ -290,6 +272,181 @@ def _annotate_server_row(row: Dict[str, Any], server: Dict[str, Any]) -> Dict[st
     annotated["serverName"] = _server_name(server)
     annotated["serverHostname"] = server.get("hostname")
     return annotated
+
+
+def _address_value(value: Any, family: str) -> str | None:
+    """Extract a printable address or prefix from one SCP address object."""
+    if isinstance(value, str):
+        return value or None
+    if not isinstance(value, dict):
+        return None
+    if family == "ipv4":
+        address = value.get("ip")
+    else:
+        address = value.get("ip") or value.get("networkPrefix")
+        prefix_length = value.get("networkPrefixLength")
+        if isinstance(address, str) and "/" not in address and isinstance(prefix_length, int) and not isinstance(prefix_length, bool):
+            address = f"{address}/{prefix_length}"
+    return address if isinstance(address, str) and address else None
+
+
+def _server_address_inventory(*records: Any) -> Dict[str, Any]:
+    """Collect addresses and provider rDNS entries from SCP response shapes.
+
+    ``Server`` has minimal top-level addresses, ``serverLiveInfo`` has string
+    addresses on interfaces, and ``GET /interfaces`` has rich address objects
+    including rDNS.  Accepting all three makes status/login useful across SCP
+    versions while preserving every value the API actually returned.
+    """
+    addresses = {"ipv4": [], "ipv6": []}
+    rdns: Dict[str, str] = {}
+
+    def add_rdns(address: str, value: Any) -> None:
+        if isinstance(value, str) and value:
+            rdns[address] = value
+        elif isinstance(value, dict):
+            for key, hostname in value.items():
+                if isinstance(key, str) and isinstance(hostname, str) and hostname:
+                    rdns[key] = hostname
+
+    def add_address(family: str, value: Any) -> None:
+        address = _address_value(value, family)
+        if address and address not in addresses[family]:
+            addresses[family].append(address)
+        if isinstance(value, dict) and address:
+            add_rdns(address, value.get("rdns"))
+
+    def visit_interface(interface: Any) -> None:
+        if not isinstance(interface, dict):
+            return
+        for value in interface.get("ipv4Addresses", []) if isinstance(interface.get("ipv4Addresses", []), list) else []:
+            add_address("ipv4", value)
+        for value in interface.get("ipv6Addresses", []) if isinstance(interface.get("ipv6Addresses", []), list) else []:
+            add_address("ipv6", value)
+        for value in interface.get("ipv6LinkLocalAddresses", []) if isinstance(interface.get("ipv6LinkLocalAddresses", []), list) else []:
+            add_address("ipv6", value)
+        for value in interface.get("ipv6NetworkPrefixes", []) if isinstance(interface.get("ipv6NetworkPrefixes", []), list) else []:
+            add_address("ipv6", value)
+
+    def visit(record: Any) -> None:
+        if isinstance(record, list):
+            for item in record:
+                visit_interface(item)
+            return
+        if not isinstance(record, dict):
+            return
+        for family in ("ipv4", "ipv6"):
+            field = f"{family}Addresses"
+            values = record.get(field, [])
+            if isinstance(values, list):
+                for value in values:
+                    add_address(family, value)
+        live_info = record.get("serverLiveInfo")
+        if isinstance(live_info, dict):
+            interfaces = live_info.get("interfaces", [])
+            if isinstance(interfaces, list):
+                for interface in interfaces:
+                    visit_interface(interface)
+        interfaces = record.get("interfaces")
+        if isinstance(interfaces, list):
+            for interface in interfaces:
+                visit_interface(interface)
+
+    for record in records:
+        visit(record)
+    return {"ipv4": addresses["ipv4"], "ipv6": addresses["ipv6"], "rdns": rdns}
+
+
+def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
+    """Format configured/API or resolver-derived reverse DNS entries."""
+    entries: List[str] = []
+    seen = set()
+    rdns = inventory.get("rdns", {})
+    for family in ("ipv4", "ipv6"):
+        for address in inventory.get(family, []):
+            lookup_address = address.split("/", 1)[0]
+            hostname = rdns.get(address) or rdns.get(lookup_address)
+            if hostname is None:
+                try:
+                    ipaddress.ip_address(lookup_address)
+                except ValueError:
+                    hostname = None
+                else:
+                    hostname = netcup_scp_client.reverse_dns(lookup_address)
+            entry = f"{lookup_address} -> {hostname or '-'}"
+            if entry not in seen:
+                entries.append(entry)
+                seen.add(entry)
+    for address, hostname in rdns.items():
+        entry = f"{address} -> {hostname or '-'}"
+        if entry not in seen:
+            entries.append(entry)
+            seen.add(entry)
+    return "; ".join(entries)
+
+
+def _mib_to_gib(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "?"
+    return f"{value / 1024:.1f}"
+
+
+def _server_status_row(server: Dict[str, Any], details: Dict[str, Any], interfaces: Any = None) -> Dict[str, Any]:
+    """Build the stable, human-oriented row used by ``status`` and login."""
+    record = dict(server)
+    record.update(details)
+    live_info = record.get("serverLiveInfo")
+    if not isinstance(live_info, dict):
+        live_info = {}
+    inventory = _server_address_inventory(record, interfaces)
+
+    cpu = live_info.get("cpuCount", live_info.get("cpuMaxCount", record.get("maxCpuCount")))
+    memory = live_info.get("currentServerMemoryInMiB", live_info.get("maxServerMemoryInMiB"))
+    disks = live_info.get("disks", record.get("disks", []))
+    disk_mib = None
+    if isinstance(disks, list):
+        capacities = [
+            disk.get("capacityInMiB")
+            for disk in disks
+            if isinstance(disk, dict) and isinstance(disk.get("capacityInMiB"), (int, float))
+            and not isinstance(disk.get("capacityInMiB"), bool)
+        ]
+        if capacities:
+            disk_mib = sum(capacities)
+
+    return {
+        "vname": _server_name(record) or "?",
+        "reverse DNS": _reverse_dns_summary(inventory) or "-",
+        "state": live_info.get("state", record.get("state")) or "?",
+        "architecture": record.get("architecture") or "?",
+        "#CPU": cpu if cpu is not None else "?",
+        "RAM GB": _mib_to_gib(memory),
+        "disk GB": _mib_to_gib(disk_mib),
+        "IPv4": ", ".join(inventory["ipv4"]) or "-",
+        "IPv6": ", ".join(inventory["ipv6"]) or "-",
+    }
+
+
+def _server_enrichment(client: NetcupSCPClient, server_id: int) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Fetch the detail and rich interface records needed by status output."""
+    details_endpoint = f"/api/v1/servers/{server_id}"
+    interfaces_endpoint = f"/api/v1/servers/{server_id}/interfaces"
+    details = _response_dict(_api_call(client.get, details_endpoint), f"GET {details_endpoint}")
+    interfaces = _response_rows(
+        _api_call(client.get, interfaces_endpoint), f"GET {interfaces_endpoint}"
+    )
+    return details, interfaces
+
+
+def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
+    """Print a compact live status table for one or all account servers."""
+    targets = _server_targets(client, args.server_id)
+    rows = []
+    for server in targets:
+        details, interfaces = _server_enrichment(client, server["id"])
+        rows.append(_server_status_row(server, details, interfaces))
+    columns = ["vname", "reverse DNS", "state", "architecture", "#CPU", "RAM GB", "disk GB", "IPv4", "IPv6"]
+    emit(rows, args.json, lambda data: print_table(data, columns, pal, "no servers on this account"))
 
 
 def _filter_rows(rows: List[Dict[str, Any]], term: str | None) -> List[Dict[str, Any]]:
@@ -1187,7 +1344,28 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
                 file=sys.stderr,
             )
             return 1
-        eligible.append({"name": name, "id": server_id})
+        enriched = {"name": name, "id": server_id}
+        try:
+            enriched["details"] = _response_dict(
+                client.get(f"/api/v1/servers/{server_id}"),
+                f"GET /api/v1/servers/{server_id}",
+            )
+            enriched["interfaces"] = _response_rows(
+                client.get(f"/api/v1/servers/{server_id}/interfaces"),
+                f"GET /api/v1/servers/{server_id}/interfaces",
+            )
+        except Exception as exc:
+            # Login must still let the operator protect a server when an
+            # optional detail/interface response is temporarily unavailable.
+            # The missing enrichment is explicit in the prompt instead of
+            # being mistaken for an empty address set.
+            print(
+                f"WARNING: could not load IP/rDNS details for {name} (id {server_id}): {exc}",
+                file=sys.stderr,
+            )
+            enriched["details"] = enriched.get("details", {})
+            enriched["interfaces"] = enriched.get("interfaces", [])
+        eligible.append(enriched)
 
     existing_names, existing_ids = netcup_scp_client.protected_server_policy()
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -1207,6 +1385,10 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
     for number, server in enumerate(eligible, start=1):
         marker = " [already protected]" if server["name"] in existing_names else ""
         print(f"  {number}. {server['name']} (id {server['id']}){marker}")
+        summary = _server_status_row(server, server["details"], server["interfaces"])
+        print(f"     IPv4: {summary['IPv4']}")
+        print(f"     IPv6: {summary['IPv6']}")
+        print(f"     reverse DNS: {summary['reverse DNS']}")
 
     while True:
         try:
@@ -1266,10 +1448,19 @@ def cmd_login(args) -> int:
 
 # --- argument parsing --------------------------------------------------------
 
+
+class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keep command examples readable in the intended wide terminal view."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("width", 120)
+        super().__init__(*args, **kwargs)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Explore and safely modify the netcup SCP API account/server surface.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Inspect and safely operate the Netcup SCP account and its servers.",
+        formatter_class=_WideHelpFormatter,
         epilog=__doc__,
         add_help=False,
     )
@@ -1279,13 +1470,19 @@ def parse_args():
     output_options.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
     output_options.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
 
-    sub = parser.add_subparsers(dest="command", required=True, title="verbs")
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        title="verbs (exploration and modification; see the grouped map below)",
+        metavar="VERB",
+    )
 
     def add_subcommand(name: str, help_text: str, description: str = ""):
         command_parser = sub.add_parser(
             name,
+            help=help_text,
             description=description or help_text,
-            formatter_class=argparse.RawDescriptionHelpFormatter,
+            formatter_class=_WideHelpFormatter,
             add_help=False,
         )
         help_options = command_parser.add_argument_group("help")
@@ -1331,6 +1528,20 @@ def parse_args():
         "servers",
         "list all known servers",
         "List the account's server inventory.\n\nExamples:\n  ./scp-api.py servers",
+    )
+    p = add_subcommand(
+        "status",
+        "show compact live status for all servers or one server",
+        "Fetch server details and interface data and show vname, reverse DNS, "
+        "run state, architecture, CPU count, RAM, disk capacity, IPv4, and IPv6. "
+        "With no ID, every account server is queried.\n\n"
+        "Examples:\n"
+        "  ./scp-api.py status\n"
+        "  ./scp-api.py status 799611 --json",
+    )
+    p.add_argument(
+        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
+        help="Netcup SCP server ID; omit to show all account servers",
     )
     p = add_subcommand(
         "server-details",
@@ -1652,6 +1863,7 @@ def main() -> int:
 
     dispatch = {
         "servers": cmd_servers,
+        "status": cmd_status,
         "server-details": cmd_server_details,
         "imageflavours": cmd_imageflavours,
         "iso-bootable": cmd_iso_bootable,

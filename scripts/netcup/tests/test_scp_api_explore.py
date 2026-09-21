@@ -142,7 +142,11 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
     client = fake_client(get_responses=[[
         {"id": 42, "name": "v2202503209318326780", "hostname": "vm.example"},
         {"id": 43, "name": "friendly-name", "hostname": "other.example"},
-    ]])
+    ], {
+        "id": 42,
+        "name": "v2202503209318326780",
+        "architecture": "AMD64",
+    }, [{"ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}]}]])
     monkeypatch.setattr(explore_mod.netcup_scp_client, "resolve_env_path", lambda: env_path)
     monkeypatch.setattr(explore_mod, "run_device_code_login", lambda path: 0)
     monkeypatch.setattr(explore_mod, "load_env_file", lambda: None)
@@ -156,7 +160,10 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
     assert "NETCUP_SCP_API_PROTECTED_SERVERS=v2202503209318326780" in content
     assert "NETCUP_SCP_API_PROTECTED_SERVER_IDS=42" in content
     assert env_path.stat().st_mode & 0o777 == 0o600
-    assert "friendly-name" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "friendly-name" not in out
+    assert "198.51.100.42" in out
+    assert "198.51.100.42 -> vm.example" in out
 
 
 # --- subcommands against a FakeClient ------------------------------------------
@@ -178,6 +185,46 @@ def test_cmd_servers_rejects_non_array_api_answer(explore_mod, fake_client):
     pal = explore_mod._Palette(enabled=False)
     with pytest.raises(explore_mod.ResponseShapeError, match="expected a JSON array"):
         explore_mod.cmd_servers(client, _ns(), pal)
+
+
+def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, fake_client, capsys):
+    client = fake_client(get_responses=[
+        [{"id": 42, "name": "v2202503209318326780"}],
+        {
+            "id": 42,
+            "name": "v2202503209318326780",
+            "architecture": "AMD64",
+            "serverLiveInfo": {
+                "state": "RUNNING",
+                "cpuCount": 4,
+                "currentServerMemoryInMiB": 8192,
+                "disks": [{"capacityInMiB": 524288}],
+            },
+        },
+        [{
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}],
+            "ipv6Addresses": [{
+                "networkPrefix": "2001:db8::",
+                "networkPrefixLength": 64,
+                "rdns": {"2001:db8::1": "vm6.example"},
+            }],
+        }],
+    ])
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_status(client, _ns(server_id=None), pal)
+    out = capsys.readouterr().out
+    assert "v2202503209318326780" in out
+    assert "RUNNING" in out
+    assert "4" in out and "8.0" in out and "512.0" in out
+    assert "198.51.100.42" in out
+    assert "2001:db8::/64" in out
+    assert "198.51.100.42 -> vm.example" in out
+    assert client.calls == [
+        ("get", "/api/v1/servers", None),
+        ("get", "/api/v1/servers/42", None),
+        ("get", "/api/v1/servers/42/interfaces", None),
+    ]
 
 
 def test_cmd_server_details(explore_mod, fake_client, capsys):

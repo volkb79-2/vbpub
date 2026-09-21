@@ -56,10 +56,18 @@ netcup_scp_client.DEBUG = DEBUG
 _redact = netcup_scp_client._redact_for_log
 
 
+class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Keep the monitor workflow's examples readable in a wide terminal."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("width", 120)
+        super().__init__(*args, **kwargs)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Monitor a Netcup SCP task until completion.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class=_WideHelpFormatter,
         epilog="""
 Examples:
   # Poll every 5s (default) until FINISHED/ERROR/CANCELED/ROLLBACK:

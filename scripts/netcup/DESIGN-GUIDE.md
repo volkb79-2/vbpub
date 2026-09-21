@@ -10,6 +10,13 @@ read-only server inventory request and offers only SCP internal names matching
 key. Non-interactive login still saves the token and leaves the denylist
 unchanged.
 
+The interactive candidates are enriched with server detail and interface
+records so the operator sees the server ID, addresses, and configured rDNS
+before selecting a name. If the provider or resolver cannot supply optional
+presentation data, the wizard says so and still permits selecting the verified
+name/ID; it never treats missing addresses as evidence that a server has no
+addresses.
+
 The denylist is intentionally local rather than a claimed provider-side lock:
 the SCP API has no account/server “lock” operation. Mutating server commands
 fetch server details immediately before acting and refuse a matching name or
@@ -85,6 +92,13 @@ lists `/servers` first and queries each server when a read-only command has no
 ID. It adds the source server to those rows so identical image names from two
 VMs cannot be mistaken for one result. An explicit ID remains available for a
 focused query, and filters are applied locally to the returned fields.
+
+`status` is the deliberately compact account-wide view. It queries each
+server's full detail and interface records and normalizes provider fields into
+one table: vname, configured/resolver-derived reverse DNS, run state,
+architecture, CPU count, RAM and disk GiB, and IPv4/IPv6 values. The richer
+interface endpoint is used because the minimal server inventory does not carry
+rDNS entries.
 
 Actions that change state cannot safely fan out. ISO detach, rescue-system
 deactivation, snapshot creation, and snapshot dry-run therefore refuse without

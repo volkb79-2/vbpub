@@ -20,7 +20,9 @@ loaded `.env` file and enforces mode `0600` because it contains a long-lived
 credential. After a successful login, an interactive terminal also lists
 servers whose SCP internal name matches `v<digits>` (for example
 `v2202503209318326780`) and offers a numbered selection for the local
-protected-server denylist. It does not create an SSH key.
+protected-server denylist. Each candidate shows its server ID, IP addresses,
+and configured or resolver-derived reverse-DNS entries. It does not create an
+SSH key.
 
 ### Local protected-server denylist
 
@@ -50,6 +52,7 @@ optional: it saves local locale/timezone/partition defaults, while the normal
 interactive install still resolves the current Debian UEFI image every time.
 
 ```bash
+./scp-api.py status
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
 
@@ -185,13 +188,16 @@ status below each server. Results from an account-wide query include the source
 server ID/name. Use a server ID to inspect only one server; mutating actions
 such as `detach`, `deactivate`, `create`, and `dryrun` are positional and still
 require it. `servers` lists the account inventory; use `server-details SERVER_ID`
-for one server's full record.
+for one server's full record. `status` is the compact live view: it queries
+server details and interfaces and prints vname, reverse DNS, run state,
+architecture, CPU count, RAM/disk in GiB, and IPv4/IPv6 addresses.
 
 An image flavour is a server-compatible reinstallable OS/image variant (for
 example a Debian 13 UEFI amd64 image), not a VM template. ISO images are
 bootable installer or recovery media. Useful first queries are:
 
 ```bash
+./scp-api.py status
 ./scp-api.py servers
 ./scp-api.py server-details 799611
 ./scp-api.py imageflavours --filter debian

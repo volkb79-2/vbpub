@@ -37,7 +37,12 @@ def monitor_task_mod():
 
 
 @pytest.fixture()
-def explore_mod():
+def explore_mod(monkeypatch):
+    # A developer's ignored scripts/netcup/.env is real operator state.  Do
+    # not let a local protected-server denylist leak from install-host tests
+    # into explorer tests; individual tests opt into the policy explicitly.
+    monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVERS", raising=False)
+    monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", raising=False)
     return _load_module(EXPLORE_PATH, "scp_api_explore")
 
 
