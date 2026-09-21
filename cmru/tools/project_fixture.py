@@ -12,6 +12,13 @@ ROOT_CMRU_ARTIFACTS = (
     "cmru.project.sample.toml",
 )
 SHARED_LIBRARY = Path("libraries/worktree")
+EXTERNAL_DOC_ARTIFACTS = (
+    Path("wheel-builder/Dockerfile"),
+    Path("docs/ciu-vs-cmru.md"),
+    Path("docs/RELEASE-TOOLING.md"),
+    Path("docs/plan-cmru-release-modes.md"),
+    Path("run-gate-project/CONSUMERS.md"),
+)
 
 
 def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
@@ -27,6 +34,14 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
         if not artifact.is_file() or artifact.is_symlink():
             raise ValueError(f"required root CMRU artifact is not a real file: {artifact}")
         shutil.copy2(artifact, workspace / artifact.name)
+
+    for relative in EXTERNAL_DOC_ARTIFACTS:
+        artifact = repo_root / relative
+        if not artifact.is_file() or artifact.is_symlink():
+            raise ValueError(f"required linked CMRU document is not a real file: {artifact}")
+        destination = workspace / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
 
     library_source = repo_root / SHARED_LIBRARY
     if not library_source.is_dir() or library_source.is_symlink():
