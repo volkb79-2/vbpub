@@ -379,6 +379,11 @@ It should be a focused contract layer, not a replacement for every possible
 CLI framework. It may use or adapt an established parser/renderer, but its
 narrow API should cover:
 
+The recommended home is `libraries/vbpub-cli/`, with distribution name
+`vbpub-cli` and Python import name `vbpub_cli`. It must be independently
+packageable so installed CLIs do not depend on importing from the repository
+root.
+
 1. `CliIdentity` and authoritative version resolution;
 2. structured verb/group metadata and top-level help rendering;
 3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`,
