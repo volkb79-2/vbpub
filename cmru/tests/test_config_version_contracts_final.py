@@ -130,6 +130,15 @@ def test_config_accepts_a_valid_project_without_optional_metadata(tmp_path):
     assert parsed.name == "demo"
 
 
+def test_config_rejects_unknown_runtime_kind_in_a_complete_document(tmp_path, capsys):
+    path = tmp_path / "cmru.toml"
+    path.write_text(project_toml().replace('kind = "none"', 'kind = "future"'), encoding="utf-8")
+    with pytest.raises(SystemExit) as error:
+        config._parse_project_document(path)
+    assert error.value.code == 2
+    assert "runtime.kind must be one of" in capsys.readouterr().err
+
+
 def test_config_orchestration_resolution_refuses_ambiguity_and_accepts_shared_facts(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
     (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")
