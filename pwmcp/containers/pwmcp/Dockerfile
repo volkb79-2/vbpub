@@ -91,6 +91,7 @@ ENV PWMCP_LIGHTHOUSE_ALLOWED_HOSTS="localhost:8933,127.0.0.1:8933"
 # CIU config, but standalone image execution remains safe and bounded.
 ENV PWMCP_RUN_SERVER_PORT=3000 \
     PWMCP_RUN_SERVER_UPSTREAM_PORT=3001 \
+    PWMCP_MCP_UPSTREAM_PORT=8934 \
     PWMCP_RUN_SERVER_ADMIN_PORT=8940 \
     PWMCP_RUN_SERVER_DEFAULT_LEASE_S=1800 \
     PWMCP_RUN_SERVER_MAX_LEASE_S=7200 \
@@ -168,6 +169,11 @@ RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh /usr/local/bin/wait-for-cdp.sh
 # concurrency gateway. The actual run-server is loopback-only on port 3001.
 COPY containers/pwmcp/run-server-gateway/ /opt/pwmcp/run-server-gateway/
 COPY pwmcp.contract.json /opt/pwmcp/contract.json
+
+# The Playwright MCP CLI's --port mode still exposes its legacy /sse listener.
+# Keep that process loopback-only and expose the stream-only /mcp surface through
+# this stdlib gateway, which also preserves the Host allowlist.
+COPY containers/pwmcp/mcp-gateway/ /opt/pwmcp/mcp-gateway/
 
 # Shared-mode admin API (Node stdlib http only -- no new framework dependency).
 COPY containers/pwmcp/admin-server/ /opt/pwmcp/admin-server/

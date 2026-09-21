@@ -245,6 +245,30 @@ wait_for_supervisord() {
     return 1
 }
 
+# A process can be RUNNING before its HTTP listener has completed startup
+# (mcp-proxy prints its "starting server" line after supervisor marks it up).
+# Wait for each externally exercised port so the first MCP request cannot race
+# a healthy but not-yet-listening process.
+wait_for_endpoint_ports() {
+    local port
+    for port in "$MCP_PORT" "$DEVTOOLS_PORT" "$LIGHTHOUSE_PORT"; do
+        local ready=0
+        local i=0
+        while [ $i -lt 30 ]; do
+            if curl -sS --max-time 1 -o /dev/null "http://${PWMCP_HOST}:${port}/"; then
+                ready=1
+                break
+            fi
+            sleep 1
+            i=$((i + 1))
+        done
+        if [ $ready -eq 0 ]; then
+            echo "  Timed out waiting for HTTP port ${port} to accept connections" >&2
+            return 1
+        fi
+    done
+}
+
 echo ""
 echo "============================================"
 echo " PWMCP Smoke Tests — Endpoint Validation"
@@ -294,6 +318,14 @@ if wait_for_supervisord; then
     record_pass
 else
     record_fail "supervisord did not report all four programs RUNNING within 30s"
+fi
+
+total=$((total + 1))
+echo -n "  CHECK ${total}: MCP HTTP listeners accept connections ... "
+if wait_for_endpoint_ports; then
+    record_pass
+else
+    record_fail "one or more MCP HTTP listeners did not become ready within 30s"
 fi
 
 echo ""
@@ -662,24 +694,22 @@ if [ "${MODE}" = "shared" ]; then
         nav_url="data:text/html,<h1>pwmcp-shared-cross-tool</h1>"
         pw_body=$(mcp_session_tool_call "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}" \
             browser_navigate "{\"url\":\"${nav_url}\"}" 2>/dev/null) || pw_body=""
+        pages_body=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
+            list_pages '{}' 2>/dev/null) || pages_body=""
+        page_id=$(printf '%s' "$pages_body" | jq -r '.result.content[0].text // empty' 2>/dev/null \
+            | awk '/^[0-9]+: / {gsub(":", "", $1); print $1; exit}')
         trace_start=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
-            performance_start_trace '{}' 2>/dev/null) || trace_start=""
+            performance_start_trace "{\"pageId\":${page_id:-0}}" 2>/dev/null) || trace_start=""
         trace_stop=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
-            performance_stop_trace '{}' 2>/dev/null) || trace_stop=""
-        # NOTE (self-review 2026-07-13): performance_start_trace defaults to
-        # autoStop:true, so chrome-devtools-mcp records + analyzes the trace
-        # synchronously and returns the full summary (incl. the navigated
-        # URL) from the START call; performance_stop_trace is then a no-op
-        # ack on a fresh MCP session with nothing left to stop, and returns
-        # empty. Assert on EITHER call's body, not stop_trace alone --
-        # observed empirically: with --isolated removed (see
-        # supervisord.shared.conf), trace_start now correctly shows
-        # "URL: data:text/html,...pwmcp-shared-cross-tool..." instead of
-        # "URL: chrome://new-tab-page/".
-        if [ -n "$pw_body" ] && { printf '%s' "$trace_start" | grep -qF "$nav_url" || printf '%s' "$trace_stop" | grep -qF "$nav_url"; }; then
+            performance_stop_trace "{\"pageId\":${page_id:-0}}" 2>/dev/null) || trace_stop=""
+        # performance_start_trace defaults to autoStop:true, so it records and
+        # analyzes synchronously. chrome-devtools-mcp 1.8+ requires the page ID
+        # on page-scoped tools; list_pages obtains the ID after Playwright's
+        # navigation instead of relying on an implicit selected page.
+        if [ -n "$pw_body" ] && [ -n "$page_id" ] && { printf '%s' "$trace_start" | grep -qF "$nav_url" || printf '%s' "$trace_stop" | grep -qF "$nav_url"; }; then
             record_pass
         else
-            record_fail "cross-tool trace did not reference the navigated URL" "nav=$pw_body start=$trace_start stop=$trace_stop"
+            record_fail "cross-tool trace did not reference the navigated URL" "nav=$pw_body pages=$pages_body page_id=$page_id start=$trace_start stop=$trace_stop"
         fi
     fi
 
