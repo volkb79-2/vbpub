@@ -16,7 +16,7 @@ bump = "conventional"
 [project.release]
 git_tag = true
 build_step = "build"
-commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "pwmcp.contract.json"]
+commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json"]
 artifact_dirs = ["dist"]
 evidence_paths = ["coverage.json", ".assay"]
 
