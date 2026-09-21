@@ -83,6 +83,11 @@ Add to your MCP client configuration (e.g. VS Code `settings.json`):
 
 In external mode the URL becomes `https://<unified_host>/mcp`.
 
+Port 8931 exposes only Streamable HTTP at `/mcp`; the legacy `/sse` route is
+disabled. The stream-only gateway enforces the configured
+`PWMCP_MCP_ALLOWED_HOSTS` values before forwarding to the loopback Playwright
+MCP backend.
+
 #### `chrome-devtools-mcp` (port 8932)
 
 For performance profiling, CDP tracing, and CPU/network throttling emulation, add a second MCP server entry:

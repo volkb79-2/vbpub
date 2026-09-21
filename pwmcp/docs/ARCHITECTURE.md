@@ -71,7 +71,11 @@ remains isolated and launches its own browser per audit.
 
 1. During the Docker build, `playwright.chromium.executablePath()` from the globally-installed `playwright@<version>` package is written to `/etc/pwmcp-chromium-path.txt`.
 2. The entrypoint script exports this as `PWMCP_CHROMIUM_PATH`.
-3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to `playwright-mcp` and `chrome-devtools-mcp` (via mcp-proxy), bypassing the bundled chromium discovery.
+3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to
+   the loopback `playwright-mcp` backend and `chrome-devtools-mcp` (via
+   mcp-proxy), bypassing bundled Chromium discovery. The public 8931 listener
+   is the stdlib stream-only gateway, which rejects `/sse` and enforces the
+   configured Host allowlist before forwarding to that backend.
    The lighthouse-mcp server reads `PWMCP_CHROMIUM_PATH` at runtime and passes it to `chrome-launcher` as `chromePath`.
 
 ### Allowed Hosts
@@ -82,7 +86,10 @@ remains isolated and launches its own browser per audit.
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-`supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. The image default (for standalone use) is `localhost:8931,127.0.0.1:8931`.
+The stream-only 8931 gateway enforces `PWMCP_MCP_ALLOWED_HOSTS` before
+forwarding to the loopback `playwright-mcp` backend. The backend also receives
+loopback-only allowed hosts. The image default is
+`localhost:8931,127.0.0.1:8931`.
 
 `chrome-devtools-mcp` (via `mcp-proxy`) does **not** have a native `--allowed-hosts` flag. A parallel `PWMCP_DEVTOOLS_ALLOWED_HOSTS` env var is injected by the ciu compose template for documentation and external-mode Traefik rules:
 

@@ -129,7 +129,12 @@ the PWMCP contract. Use the streamable-HTTP `/mcp` endpoint. -->
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and DNS-rebinding protection
 
-`@playwright/mcp` implements DNS-rebinding protection: every incoming request is checked against an allowlist of permitted `Host` header values. The server's default allowlist contains only its bind address (`0.0.0.0`), which does **not** match the `Host: pwmcp:8931` header sent by a sibling container accessing the service by name. Without correction this returns **HTTP 403** to every internal caller.
+The 8931 stream-only gateway implements DNS-rebinding protection: every
+incoming request is checked against an allowlist of permitted `Host` header
+values before it reaches the loopback `@playwright/mcp` backend. The backend's
+default allowlist contains only its loopback bind address, which would not
+match the `Host: pwmcp:8931` header sent by a sibling container accessing the
+service by name.
 
 The ciu template resolves this by injecting `PWMCP_MCP_ALLOWED_HOSTS` with both ciu-derived names for the container:
 
@@ -137,7 +142,9 @@ The ciu template resolves this by injecting `PWMCP_MCP_ALLOWED_HOSTS` with both 
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-The `supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. This is the preferred fix: it pins the allowlist to known internal names rather than using `*` (which disables the check). The Docker network boundary already controls who can reach the port.
+The gateway reads `PWMCP_MCP_ALLOWED_HOSTS` and pins the allowlist to known
+internal names rather than using `*` (which disables the check). The Docker
+network boundary remains the second access-control layer.
 
 To add extra allowed hosts (e.g. a custom DNS alias), set `extra_args` in `ciu.toml.j2`:
 

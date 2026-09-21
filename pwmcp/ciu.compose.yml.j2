@@ -31,8 +31,9 @@ services:
     shm_size: "{{ pwmcp.hardening.shm_size }}"
     restart: unless-stopped
     environment:
-      # Inject the deployment-specific allowed-hosts for the MCP server.
-      # supervisord reads %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s and passes it to playwright-mcp.
+      # Inject the deployment-specific allowed-hosts for the MCP gateway.
+      # The stream-only gateway reads this value before forwarding to the
+      # loopback playwright-mcp backend.
       # The two values below are always correct for sibling-container access:
       #   short service alias (compose DNS)     : {{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
       #   full container name (Docker hostname) : {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}

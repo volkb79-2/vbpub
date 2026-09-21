@@ -48,16 +48,27 @@ commented deprecated references, and the acceptance smoke checks both sides of
 that contract. Assay R1 and R2 are configured for whole-target 100% branch
 coverage. The earlier R1 passed at `7baef450`; the later R2 at `0f3f0406`
 killed all 76 mutation candidates and retained 100% branch coverage. A final
-R1/R2 pair is being rerun after the managed-builder wrapper change at
-`0d2fb132`.
+R1/R2 pair is being rerun on the complete implementation at `c488571a`.
 
 The old PWMCP-specific `docker-container` builder was also removed. It was
 being killed with exit 137 under host memory pressure, which surfaced to the
 client as BuildKit EOF. PWMCP now verifies the persistent host-managed
 `mdt-managed` remote at `unix:///run/mdt-buildkitd/buildkitd.sock` and refuses
-to create a private worker. A direct wrapper build at `0d2fb132` completed
-successfully through `mdt-buildkitd` in `dev-buildkitd.slice`; the live runtime
-smoke remains the final acceptance item.
+to create a private worker. Direct wrapper builds for the corresponding image
+content completed successfully through `mdt-buildkitd` in `dev-buildkitd.slice`.
+
+The live acceptance now passes outside the cockpit in `tester-unified`:
+
+| Lane | Result | Evidence |
+| --- | --- | --- |
+| per-session smoke | 20/20 | isolated `dev-gates.slice` stack, image `ghcr.io/volkb79-2/pwmcp:1.62.0-r4` |
+| shared-browser smoke | 29/29 | isolated `dev-gates.slice` stack, admin/CDP/crash-restart/cross-tool/state-bleed checks |
+
+The first live pass exposed three real gaps and drove fixes in `c488571a`:
+the Playwright CLI's `--port` mode still exposed `/sse`, listener readiness
+could race supervisor's RUNNING state, and `chrome-devtools-mcp@1.8.0` requires
+`pageId` on page-scoped tools. The loopback backend/gateway, bounded port wait,
+and `list_pages`-derived page ID now cover those contracts.
 
 ## Findings
 
@@ -123,9 +134,10 @@ supported contract. The two mcp-proxy services now pass `--server stream`; the
 old commands remain commented with a deprecation note, and the smoke lane
 checks that each legacy `/sse` route is unavailable.
 
-The coverage work will test the resolver and Python behavior, while the
-modernization gate will verify the transport choice against the selected image
-and package versions.
+The coverage work tests the resolver and Python behavior, while the live
+acceptance verifies the transport choice against the selected image and package
+versions. The per-session and shared smoke lanes both confirm `/sse` is
+unavailable on all three MCP surfaces.
 
 ### 4. Coverage is weak in behaviorally important boundaries
 
@@ -232,7 +244,8 @@ The implementation sequence is:
 3. move PWMCP’s generated version writes under CMRU’s resolved-state projection;
 4. add the Lighthouse lockfile and managed direct SDK coordinates;
 5. keep the PWMCP compatibility validator and live endpoint acceptance lane;
-6. run the container build and smoke lane through `tester-unified`.
+6. run the container build and smoke lanes through `tester-unified` — complete;
+   the final external R1/R2 gate pair remains the last coverage certification.
 
 ## Schema proposal
 

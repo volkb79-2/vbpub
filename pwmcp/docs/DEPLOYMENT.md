@@ -59,7 +59,10 @@ To expose ports to the host for local debugging, set `pwmcp.unified.expose = tru
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and the HTTP 403 on container-name access
 
-`@playwright/mcp` has built-in DNS-rebinding protection: it rejects any request whose `Host` header does not match an allowed host. When bound to `0.0.0.0`, the server's default allowed host is `"0.0.0.0"` — which does **not** match `pwmcp:8931`, the `Host` header a sibling container sends when it reaches the service by name. Without an explicit allowlist this produces **HTTP 403** for every internal caller, silently breaking internal mode.
+The stream-only 8931 gateway has DNS-rebinding protection: it rejects any
+request whose `Host` header does not match an allowed host before forwarding to
+the loopback `@playwright/mcp` backend. The backend is never directly exposed;
+the gateway is the only listener on the container's 8931 interface.
 
 The ciu template fixes this by injecting `PWMCP_MCP_ALLOWED_HOSTS` into the container environment with the two ciu-derived host:port values:
 
@@ -67,7 +70,8 @@ The ciu template fixes this by injecting `PWMCP_MCP_ALLOWED_HOSTS` into the cont
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-`supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`.
+The gateway reads `PWMCP_MCP_ALLOWED_HOSTS` and applies the allowlist before
+forwarding to the backend.
 
 This is the secure approach: the allowlist is pinned to the known internal names rather than using `*` (which disables the check entirely). The network boundary already restricts who can reach the port; `PWMCP_MCP_ALLOWED_HOSTS` pins which `Host` header value the server honours.
 
