@@ -31,7 +31,7 @@ targets = [
   "client/src/pwmcp_client/session.py",
   "scripts/resolve-playwright-version.py",
 ]
-fail_under = 60.0
+fail_under = 100.0
 allow_excluded = false
 require_branch = true
 
@@ -70,7 +70,7 @@ targets = [
   "client/src/pwmcp_client/session.py",
   "scripts/resolve-playwright-version.py",
 ]
-fail_under = 60.0
+fail_under = 100.0
 allow_excluded = false
 require_branch = true
 

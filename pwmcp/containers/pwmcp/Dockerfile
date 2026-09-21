@@ -15,24 +15,24 @@
 #
 # PLAYWRIGHT_VERSION MUST match the base image tag AND the version connect()
 # consumers install (`pip install playwright==<PLAYWRIGHT_VERSION>`).
-ARG PLAYWRIGHT_VERSION=1.61.0
+ARG PLAYWRIGHT_VERSION=1.62.0
 ARG PLAYWRIGHT_DISTRO=noble
 
-# Pin @playwright/mcp (templated ARG, was hardcoded 0.0.76).
-ARG PLAYWRIGHT_MCP_VERSION=0.0.76
+# Pin @playwright/mcp (templated ARG).
+ARG PLAYWRIGHT_MCP_VERSION=0.0.80
 
 # Pin chrome-devtools-mcp (stdio-only CDP MCP server).
-ARG CHROME_DEVTOOLS_MCP_VERSION=1.5.0
+ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0
 
 # Pin mcp-proxy (stdio→streamable-HTTP proxy for chrome-devtools-mcp).
-ARG MCP_PROXY_VERSION=6.5.2
+ARG MCP_PROXY_VERSION=6.7.14
 
 # Pin lighthouse (Node API for programmatic audits). NOT installed globally —
 # the vendored lighthouse-mcp/package.json declares the exact same version as
 # a non-caret dependency (npm resolves the actually-imported copy from THAT
 # local install, not any global one). The build below asserts the two stay
 # in sync; bump both together when updating this pin.
-ARG LIGHTHOUSE_VERSION=13.4.0
+ARG LIGHTHOUSE_VERSION=13.4.1
 
 # --- ksm-optin build stage ---------------------------------------------
 # Compiles containers/pwmcp/ksm-optin.c -- the LD_PRELOAD shim that opts
@@ -54,7 +54,7 @@ RUN apt-get update \
 # Base image digest pinned for reproducibility (resolved via
 # 'docker buildx imagetools inspect mcr.microsoft.com/playwright:v<ver>-<distro>').
 # Multi-arch manifest digest (linux/amd64 + linux/arm64):
-#   mcr.microsoft.com/playwright:v1.61.0-noble@sha256:57b65fdc9ceabe0ef613124c7bbe2babcf9362c4d85e382fe3b03604e84b428a
+#   mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07
 # Update this digest whenever PLAYWRIGHT_VERSION or PLAYWRIGHT_DISTRO changes.
 FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}
 ARG PLAYWRIGHT_VERSION
@@ -119,12 +119,12 @@ ENV HOME=/tmp \
 ENV PWMCP_KSM_OPTIN=1
 
 # Install playwright JS package (run-server needs it; base image ships only
-# browser binaries), @playwright/mcp (MCP HTTP/SSE server), and supervisord
+# browser binaries), @playwright/mcp (MCP Streamable HTTP server), and supervisord
 # (PID-1 process manager that reaps children and forwards SIGTERM).
 #
-# @playwright/mcp is pinned to 0.0.76 (bundles playwright-core for chromium-1226,
-# verified to work with playwright 1.61.0 base images). Track upstream and update
-# this pin when bumping PLAYWRIGHT_VERSION — check the @playwright/mcp changelog.
+# @playwright/mcp is pinned to 0.0.80 (bundles a Playwright 1.63 prerelease
+# client, while the service uses the explicitly selected base-image Chromium).
+# Review this compatibility relationship when bumping PLAYWRIGHT_VERSION.
 #
 # TODO(repro): pin supervisor=<ver> — determine the exact apt package version for
 # ubuntu noble (24.04) by running: apt-cache show supervisor | grep Version
@@ -172,7 +172,7 @@ COPY containers/pwmcp/admin-server/ /opt/pwmcp/admin-server/
 
 # Install vendored lighthouse-mcp server (dependencies: @modelcontextprotocol/sdk, chrome-launcher, lighthouse).
 COPY containers/pwmcp/lighthouse-mcp/ /opt/pwmcp/lighthouse-mcp/
-RUN cd /opt/pwmcp/lighthouse-mcp && npm install --production && npm cache clean --force \
+RUN cd /opt/pwmcp/lighthouse-mcp && npm ci --omit=dev && npm cache clean --force \
  && installed="$(node -e "process.stdout.write(require('./node_modules/lighthouse/package.json').version)")" \
  && if [ "$installed" != "${LIGHTHOUSE_VERSION}" ]; then \
       echo "LIGHTHOUSE_VERSION ARG (${LIGHTHOUSE_VERSION}) drifted from lighthouse-mcp/package.json's installed lighthouse (${installed}) — bump both together." >&2; \

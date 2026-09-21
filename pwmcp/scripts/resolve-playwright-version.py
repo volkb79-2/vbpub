@@ -2,11 +2,12 @@
 """Resolve the newest jointly publishable Playwright version and update pwmcp config files.
 
 Steps:
-  1. Fetch all stable playwright versions from npm, PyPI, and Microsoft's official
-     Playwright image registry.
-  2. Select the highest version common to all three.  A package release is not
-     publishable until its matching ``mcr.microsoft.com/playwright`` base image
-     exists, and pwmcp's Python and npm consumers must agree on one version.
+  1. Fetch stable Playwright versions and publication times from npm and PyPI,
+     plus available tags from Microsoft's official Playwright image registry.
+  2. Select the highest version common to all three whose package publication
+     timestamps clear the temporary 14-day age window.  A package release is
+     not publishable until its matching base-image tag exists, and PWMCP's
+     Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
   4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
   5. Update docker-bake.hcl defaults and write cmru.vars for downstream scripts.
@@ -19,17 +20,19 @@ Outputs:
   docker-bake.hcl      — common-version defaults updated in-place
 
 Consumer contract:
-  - :latest and :latest-npm track the same newest version available from all
+  - :latest and :latest-npm track the same reviewed version available from all
     required upstreams.
   - Use `pip install playwright==<X>` + `image: pwmcp:<X>` for a guaranteed matching pair.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -39,6 +42,7 @@ PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
 MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=10000"
 TIMEOUT_SECONDS = 20
 RETRIES = 3
+TEMPORARY_AGE_WINDOW_DAYS = 14
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DEFAULTS_FILE = PWMCP_DIR / "ciu.defaults.toml.j2"
@@ -46,6 +50,9 @@ TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
+DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
+LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
+LIGHTHOUSE_LOCK_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package-lock.json"
 
 
 def log(msg: str) -> None:
@@ -110,6 +117,31 @@ def fetch_npm_versions() -> set[str]:
     return {str(version) for version in versions if _stable_version(str(version))}
 
 
+def _parse_release_time(value: object, label: str) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail(f"{label} contains an invalid publication timestamp: {value!r}")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def fetch_npm_release_times() -> dict[str, datetime]:
+    payload = _fetch_json(NPM_PLAYWRIGHT_URL, "npm")
+    times = payload.get("time")
+    if not isinstance(times, dict):
+        fail("npm response missing 'time' publication metadata")
+    result: dict[str, datetime] = {}
+    for version, value in times.items():
+        parsed = _parse_release_time(value, "npm publication metadata")
+        if parsed is not None and _stable_version(str(version)):
+            result[str(version)] = parsed
+    return result
+
+
 def fetch_pypi_versions() -> set[str]:
     payload = _fetch_json(PYPI_PLAYWRIGHT_URL, "PyPI")
     releases = payload.get("releases")
@@ -121,6 +153,39 @@ def fetch_pypi_versions() -> set[str]:
         for version, files in releases.items()
         if _stable_version(str(version)) and isinstance(files, list) and files
     }
+
+
+def fetch_pypi_release_times() -> dict[str, datetime]:
+    payload = _fetch_json(PYPI_PLAYWRIGHT_URL, "PyPI")
+    releases = payload.get("releases")
+    if not isinstance(releases, dict):
+        fail("PyPI response missing 'releases' object")
+    result: dict[str, datetime] = {}
+    for version, files in releases.items():
+        if not _stable_version(str(version)) or not isinstance(files, list) or not files:
+            continue
+        timestamps = [
+            _parse_release_time(
+                item.get("upload_time_iso_8601") or item.get("upload_time"),
+                f"PyPI {version} file metadata",
+            )
+            for item in files
+            if isinstance(item, dict)
+        ]
+        valid = [timestamp for timestamp in timestamps if timestamp is not None]
+        if valid:
+            result[str(version)] = max(valid)
+    return result
+
+
+def _filter_by_age(
+    versions: set[str], release_times: dict[str, datetime], cutoff: datetime,
+    label: str, age_window_days: int,
+) -> set[str]:
+    eligible = {version for version in versions if release_times.get(version, datetime.max.replace(tzinfo=timezone.utc)) <= cutoff}
+    if not eligible:
+        fail(f"{label} has no stable version at least {age_window_days} days old")
+    return eligible
 
 
 def fetch_mcr_versions(distro: str) -> set[str]:
@@ -236,6 +301,147 @@ def _read_bake_var(name: str) -> str:
     return m.group(1)
 
 
+def _read_single_value(path: Path, pattern: str, label: str) -> str:
+    content = path.read_text(encoding="utf-8")
+    matches = re.findall(pattern, content, flags=re.DOTALL | re.MULTILINE)
+    if len(matches) != 1 or not matches[0].strip():
+        fail(f"{path.name} must contain exactly one non-empty {label} (found {len(matches)})")
+    return matches[0]
+
+
+def _read_toml_playwright_version(path: Path) -> str:
+    return _read_single_value(
+        path,
+        r'playwright_version\s*=\s*"([^"]+)"',
+        "playwright_version field",
+    )
+
+
+def _read_toml_release_tag(path: Path) -> str:
+    return _read_single_value(
+        path,
+        r'\[pwmcp\.unified\.image\][^\[]*?tag\s*=\s*"([^"]+)"',
+        "[pwmcp.unified.image] tag field",
+    )
+
+
+def _read_docker_arg(name: str) -> str:
+    return _read_single_value(
+        DOCKERFILE,
+        rf"^ARG\s+{re.escape(name)}=([^\s]+)\s*$",
+        f"Dockerfile {name} ARG",
+    )
+
+
+def _assert_same(label: str, values: dict[str, str]) -> str:
+    distinct = set(values.values())
+    if len(distinct) != 1:
+        rendered = ", ".join(f"{source}={value}" for source, value in values.items())
+        fail(f"{label} projections disagree: {rendered}")
+    return next(iter(distinct))
+
+
+def check_committed_inputs() -> None:
+    """Validate the committed release projection without contacting upstreams.
+
+    CMRU FEAT-03 will own upstream selection. Until that resolver is available,
+    PWMCP release preparation must consume the reviewed, committed projection
+    instead of silently selecting whatever is newest at release time.
+    """
+    contract = json.loads(CONTRACT_FILE.read_text(encoding="utf-8"))
+    if (
+        not isinstance(contract, dict)
+        or not isinstance(contract.get("release"), str)
+        or not contract["release"].strip()
+    ):
+        fail(f"{CONTRACT_FILE.name} must contain a non-empty release string")
+    playwright_version = _assert_same(
+        "Playwright version",
+        {
+            DEFAULTS_FILE.name: _read_toml_playwright_version(DEFAULTS_FILE),
+            BAKE_FILE.name: _read_bake_var("PLAYWRIGHT_VERSION"),
+            DOCKERFILE.name: _read_docker_arg("PLAYWRIGHT_VERSION"),
+        },
+    )
+    release_tag = _assert_same(
+        "PWMCP release version",
+        {
+            DEFAULTS_FILE.name: _read_toml_release_tag(DEFAULTS_FILE),
+            BAKE_FILE.name: _read_bake_var("PWMCP_VERSION"),
+            CONTRACT_FILE.name: contract["release"],
+        },
+    )
+    contract_playwright = contract.get("playwright")
+    if not isinstance(contract_playwright, dict):
+        fail(f"{CONTRACT_FILE.name} must contain a playwright object")
+    if contract_playwright.get("python") != playwright_version:
+        fail(
+            f"{CONTRACT_FILE.name} playwright.python={contract_playwright.get('python')!r} "
+            f"does not match committed Playwright version {playwright_version!r}"
+        )
+    expected_protocol = ".".join(playwright_version.split(".")[:2])
+    if contract_playwright.get("protocol") != expected_protocol:
+        fail(
+            f"{CONTRACT_FILE.name} playwright.protocol={contract_playwright.get('protocol')!r} "
+            f"does not match Playwright protocol {expected_protocol!r}"
+        )
+
+    for name in (
+        "PLAYWRIGHT_MCP_VERSION",
+        "CHROME_DEVTOOLS_MCP_VERSION",
+        "MCP_PROXY_VERSION",
+        "LIGHTHOUSE_VERSION",
+    ):
+        _assert_same(name, {"docker-bake.hcl": _read_bake_var(name), "Dockerfile": _read_docker_arg(name)})
+
+    package = json.loads(LIGHTHOUSE_PACKAGE_FILE.read_text(encoding="utf-8"))
+    lock = json.loads(LIGHTHOUSE_LOCK_FILE.read_text(encoding="utf-8"))
+    package_dependencies = package.get("dependencies")
+    lock_root = lock.get("packages", {}).get("")
+    lock_dependencies = lock_root.get("dependencies") if isinstance(lock_root, dict) else None
+    if not isinstance(package_dependencies, dict) or not isinstance(lock_dependencies, dict):
+        fail("Lighthouse package.json and package-lock.json must contain dependency tables")
+    for name, expected in package_dependencies.items():
+        if not re.fullmatch(r"\d+\.\d+\.\d+", str(expected)):
+            fail(f"{LIGHTHOUSE_PACKAGE_FILE.name}: {name} must use an exact version, got {expected!r}")
+        if lock_dependencies.get(name) != expected:
+            fail(
+                f"{LIGHTHOUSE_LOCK_FILE.name}: root dependency {name}={lock_dependencies.get(name)!r} "
+                f"does not match package.json {expected!r}"
+            )
+        installed = lock.get("packages", {}).get(f"node_modules/{name}", {}).get("version")
+        if installed != expected:
+            fail(
+                f"{LIGHTHOUSE_LOCK_FILE.name}: resolved {name}={installed!r} "
+                f"does not match package.json {expected!r}"
+            )
+
+    if TOML_OVERRIDE_FILE.exists():
+        _assert_same(
+            "PWMCP override Playwright version",
+            {DEFAULTS_FILE.name: playwright_version, TOML_OVERRIDE_FILE.name: _read_toml_playwright_version(TOML_OVERRIDE_FILE)},
+        )
+        _assert_same(
+            "PWMCP override release version",
+            {DEFAULTS_FILE.name: release_tag, TOML_OVERRIDE_FILE.name: _read_toml_release_tag(TOML_OVERRIDE_FILE)},
+        )
+
+    distro = read_current_distro()
+    write_release_vars(
+        playwright_version,
+        distro,
+        release_tag,
+        _read_bake_var("PLAYWRIGHT_MCP_VERSION"),
+        _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION"),
+        _read_bake_var("MCP_PROXY_VERSION"),
+        _read_bake_var("LIGHTHOUSE_VERSION"),
+    )
+    log(
+        f"Validated committed release projection: PLAYWRIGHT_VERSION={playwright_version} "
+        f"PWMCP_VERSION={release_tag}"
+    )
+
+
 def write_release_vars(
     playwright_version: str,
     distro: str,
@@ -266,19 +472,31 @@ def read_current_distro() -> str:
     return matches[0]
 
 
-def main() -> None:
+def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS) -> None:
+    if age_window_days < 0:
+        fail("--age-window-days must be non-negative")
     distro = read_current_distro()
-    log("Fetching Playwright versions from npm, PyPI, and the Microsoft Container Registry...")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=age_window_days)
+    log(
+        "Fetching Playwright versions and publication times from npm, PyPI, "
+        "and the Microsoft Container Registry..."
+    )
     npm_versions = fetch_npm_versions()
     pypi_versions = fetch_pypi_versions()
     mcr_versions = fetch_mcr_versions(distro)
+    npm_versions = _filter_by_age(
+        npm_versions, fetch_npm_release_times(), cutoff, "npm", age_window_days
+    )
+    pypi_versions = _filter_by_age(
+        pypi_versions, fetch_pypi_release_times(), cutoff, "PyPI", age_window_days
+    )
     npm_latest = _latest_version(npm_versions, "npm")
     pypi_latest = _latest_version(pypi_versions, "PyPI")
     mcr_latest = _latest_version(mcr_versions, "the Microsoft Container Registry")
     agreed_version = resolve_latest_common_version(npm_versions, pypi_versions, mcr_versions)
     log(
-        f"upstream latest: npm={npm_latest} PyPI={pypi_latest} "
-        f"MCR/{distro}={mcr_latest}; agreed stable version: {agreed_version}"
+        f"eligible latest (cutoff {cutoff.isoformat()}): npm={npm_latest} "
+        f"PyPI={pypi_latest} MCR/{distro}={mcr_latest}; agreed stable version: {agreed_version}"
     )
 
     release_n = compute_release_number(agreed_version)
@@ -310,6 +528,34 @@ def main() -> None:
         f"Done. PLAYWRIGHT_VERSION={agreed_version} PWMCP_VERSION={pwmcp_version}"
     )
     log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Validate the committed PWMCP version projection or explicitly refresh it"
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="validate committed versions and write cmru.vars without contacting upstreams (default)",
+    )
+    mode.add_argument(
+        "--refresh",
+        action="store_true",
+        help="select the newest common upstream version at least 14 days old and rewrite the projection",
+    )
+    parser.add_argument(
+        "--age-window-days",
+        type=int,
+        default=TEMPORARY_AGE_WINDOW_DAYS,
+        help="temporary refresh age window until CMRU FEAT-03 owns version selection (default: 14)",
+    )
+    args = parser.parse_args(argv)
+    if args.refresh:
+        refresh_upstream_projection(args.age_window_days)
+    else:
+        check_committed_inputs()
 
 
 if __name__ == "__main__":

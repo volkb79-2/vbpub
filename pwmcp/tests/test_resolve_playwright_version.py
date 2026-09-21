@@ -347,13 +347,87 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_pypi_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_mcr_versions", lambda distro: {"1.2.3"})
+    old = resolver.datetime(2000, 1, 1, tzinfo=resolver.timezone.utc)
+    monkeypatch.setattr(resolver, "fetch_npm_release_times", lambda: {"1.2.3": old})
+    monkeypatch.setattr(resolver, "fetch_pypi_release_times", lambda: {"1.2.3": old})
     monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
 
-    resolver.main()
+    resolver.main(["--refresh"])
     assert 'playwright_version = "1.2.3"' in defaults.read_text()
     assert 'default = "1.2.3-r4"' in bake.read_text()
     assert "PWMCP_VERSION=1.2.3-r4" in release_vars.read_text()
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
 
     override.unlink()
-    resolver.main()
+    resolver.main(["--refresh"])
+
+
+def test_check_committed_inputs_validates_projection_and_writes_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = tmp_path / "defaults"
+    override = tmp_path / "override"
+    bake = tmp_path / "bake"
+    dockerfile = tmp_path / "Dockerfile"
+    package = tmp_path / "package.json"
+    lock = tmp_path / "package-lock.json"
+    contract = tmp_path / "contract.json"
+    release_vars = tmp_path / "cmru.vars"
+    defaults.write_text(
+        'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
+        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
+    )
+    override.write_text(defaults.read_text(), encoding="utf-8")
+    bake.write_text(
+        'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
+        'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
+        'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
+        'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
+        'variable "MCP_PROXY_VERSION" { default = "6.7.14" }\n'
+        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n', encoding="utf-8"
+    )
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.63.0\n"
+        "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
+        "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
+        "ARG MCP_PROXY_VERSION=6.7.14\n"
+        "ARG LIGHTHOUSE_VERSION=13.4.1\n",
+        encoding="utf-8",
+    )
+    package_payload = {
+        "dependencies": {
+            "@modelcontextprotocol/sdk": "1.30.0",
+            "chrome-launcher": "1.2.1",
+            "lighthouse": "13.4.1",
+        }
+    }
+    package.write_text(json.dumps(package_payload), encoding="utf-8")
+    lock.write_text(
+        json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"dependencies": package_payload["dependencies"]},
+                **{
+                    f"node_modules/{name}": {"version": version}
+                    for name, version in package_payload["dependencies"].items()
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    contract.write_text(
+        json.dumps({"release": "1.63.0-r3", "playwright": {"python": "1.63.0", "protocol": "1.63"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
+    monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
+    monkeypatch.setattr(resolver, "BAKE_FILE", bake)
+    monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
+    monkeypatch.setattr(resolver, "LIGHTHOUSE_PACKAGE_FILE", package)
+    monkeypatch.setattr(resolver, "LIGHTHOUSE_LOCK_FILE", lock)
+    monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
+    monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
+
+    resolver.main(["--check"])
+
+    assert "PWMCP_VERSION=1.63.0-r3" in release_vars.read_text()

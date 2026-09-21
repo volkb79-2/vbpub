@@ -1,7 +1,7 @@
 # PWMCP coverage and upstream compatibility review
 
-Date: 2026-09-20  
-Reviewed commit: `a4bba60d`  
+Date: 2026-09-20; implementation update: 2026-09-21
+Reviewed baseline: `a4bba60d`; implementation worktree: `test/pwmcp-coverage-20260920`
 Reviewer: Codex
 
 ## Scope
@@ -12,23 +12,55 @@ the installable client, the Playwright version resolver, and the runtime
 contracts that the tests need to witness. It also checks whether the pinned
 Playwright and MCP components still describe the current upstream interfaces.
 
+## Implementation update — 2026-09-21
+
+The modernization is implemented in this worktree and is awaiting the
+dedicated `tester-unified` gate. The selected coordinates are the newest
+eligible values at the 2026-09-07 UTC cutoff imposed by the temporary
+14-day policy:
+
+| Coordinate | Selected value | Selection evidence |
+| --- | ---: | --- |
+| Playwright npm/PyPI/official MCR image | `1.62.0` | npm publication 2026-07-24; PyPI publication 2026-07-31; matching `noble` MCR tag |
+| `@playwright/mcp` | `0.0.80` | npm publication 2026-09-01; its bundled prerelease Playwright core is a separate target |
+| `chrome-devtools-mcp` | `1.8.0` | npm publication 2026-08-25 |
+| `mcp-proxy` | `6.7.14` | npm publication 2026-09-06 |
+| `lighthouse` | `13.4.1` | npm publication 2026-07-20 |
+| `@modelcontextprotocol/sdk` | `1.30.0` | npm publication 2026-07-27 |
+| `chrome-launcher` | `1.2.1` | npm publication 2025-09-25 |
+
+The committed projection is `pwmcp-v1.62.0-r4`. Release preparation now runs
+the resolver in `--check` mode, which validates the Dockerfile, bake file,
+CIU templates, contract, and Lighthouse lockfile without contacting upstreams.
+An explicit `--refresh` performs the temporary age-filtered upstream selection;
+CMRU FEAT-03 is intended to replace that project-local selection later. The
+Dockerfile uses the matching Playwright `1.62.0-noble` manifest digest.
+
+The vendored Lighthouse server now has exact direct dependencies and a
+committed npm lockfile, installed with `npm ci --omit=dev`. The active transport
+contract is Streamable HTTP at `/mcp`; the legacy `/sse` commands remain only as
+commented deprecated references, and the acceptance smoke checks both sides of
+that contract. Assay R1 and R2 are configured for whole-target 100% branch
+coverage. Their results are intentionally left to the external gate and are
+not claimed by this document before that gate runs.
+
 ## Findings
 
-### 1. The Playwright coordinate is currently split across sources
+### 1. The reviewed-baseline Playwright coordinate was split across sources
 
 `docker-bake.hcl`, `ciu.defaults.toml.j2`, and `pwmcp.contract.json` carry
 Playwright `1.63.0`, while the Dockerfile default, its image digest comment,
-the README, deployment examples, and usage documentation still describe
-`1.61.0`. The resolver updates the bake file, templates, and contract, but it
-does not update the Dockerfile defaults or the human-facing documentation.
+the README, deployment examples, and usage documentation still described
+`1.61.0`. The implementation makes the Dockerfile and documentation part of
+the checked projection; the current committed coordinate is `1.62.0`.
 
 This is a release correctness issue, independent of test coverage. A direct
 Dockerfile build can therefore use a different base image from the generated
 release coordinate. The coverage work will add regression checks around the
-resolver and release inputs; the pin cleanup should be a separately reviewed
-compatibility change because it changes the image and consumer contract.
+resolver and release inputs. The resulting image and consumer contract are
+covered by the same compatibility review and external acceptance gate.
 
-### 2. The MCP pins are behind current upstream releases
+### 2. The reviewed-baseline MCP pins were behind current upstream releases
 
 The checked-in pins are:
 
@@ -39,10 +71,13 @@ The checked-in pins are:
 | `chrome-devtools-mcp` | 1.5.0 | 1.9.0 | Review `--browser-url`, executable-path, and Chrome argument behavior before bumping. |
 | `mcp-proxy` | 6.5.2 | 6.7.18 | Review proxy flags and transport behavior before bumping. |
 
-The current Playwright release notes and PyPI page identify 1.63.0 as the
-current Python release at this review date. The official MCP package pages
-identify `@playwright/mcp` 0.0.82 and `mcp-proxy` 6.7.18, while the Chrome
-DevTools MCP release page identifies 1.9.0 as latest.
+Those latest values were the upstream values observed during the baseline
+review. The implementation applies the 14-day cutoff, which excludes the
+newer PyPI 1.63.0 and the newest MCP package releases, and selects the values
+recorded in the implementation update above. `@playwright/mcp@0.0.80` remains
+independent because it bundles its own prerelease Playwright core; PWMCP passes
+the baked browser executable explicitly and leaves compatibility to the live
+acceptance check.
 
 The Chrome DevTools MCP 1.9.0 release also changes security-relevant CLI
 defaults, including enabling unrestricted paths by default and adding a switch
@@ -60,10 +95,9 @@ Sources:
 - [`mcp-proxy` on npm](https://www.npmjs.com/package/mcp-proxy)
 - [Chrome DevTools MCP releases](https://github.com/ChromeDevTools/chrome-devtools-mcp/releases)
 
-The observed versions are not, by themselves, proof that the newer packages
-work with PWMCP's supervisor commands. Do not upgrade all four pins as a side
-effect of raising Python coverage. The compatibility change needs a build and
-live endpoint acceptance run.
+The selected versions are not, by themselves, proof that the packages work
+with PWMCP's supervisor commands. The compatibility change therefore needs a
+build and live endpoint acceptance run.
 
 ### 3. Transport policy is now modern Streamable HTTP only
 
@@ -107,13 +141,12 @@ successful-looking prepare step with stale release inputs. Similarly,
 `image_distro`, even though the template is the authoritative source for the
 selected MCR tag family.
 
-These should become explicit refusal paths in the compatibility hardening
-change, with tests that construct a missing-key template and assert that the
-resolver names the missing input. The coverage tests exercise the current
-success and refusal behavior, and the implementation now refuses these
-ambiguous inputs instead of silently proceeding.
+These are now explicit refusal paths in the compatibility hardening change,
+with tests that construct a missing-key template and assert that the resolver
+names the missing input. The external coverage gate must still confirm the
+success and refusal branches.
 
-The vendored Lighthouse MCP package has a related reproducibility issue:
+The vendored Lighthouse MCP package had a related reproducibility issue:
 `@modelcontextprotocol/sdk` and `chrome-launcher` use caret ranges and the
 Dockerfile runs `npm install --production` without a committed lockfile. A
 modernization pass should either commit and install the lockfile or make the

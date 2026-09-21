@@ -59,10 +59,10 @@ The `pwmcp` service exposes the native Playwright remote server protocol on port
 
 ### Install Requirement
 
-The `playwright` Python (or JS) package version **must match** the pinned `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.61.0`). Mismatched versions cause protocol errors.
+The `playwright` Python (or JS) package version **must match** the pinned `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.62.0`). Mismatched versions cause protocol errors.
 
 ```bash
-pip install playwright==1.61.0
+pip install playwright==1.62.0
 ```
 
 ### Python Example
@@ -250,7 +250,7 @@ curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/la
 
 ```bash
 # Pin a specific release:
-VERSION="1.61.0-r2"
+VERSION="1.62.0-r4"
 mkdir -p services/pwmcp
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"

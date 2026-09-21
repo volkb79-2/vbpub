@@ -202,10 +202,11 @@ environment:
 - the playwright JS package baked into the image
 - the version consumers must `pip install playwright==<version>`
 
-The release resolver selects the newest stable version jointly available from
-npm, PyPI, and Microsoft Container Registry for the configured distribution.
-That prevents an npm release from outrunning its matching official base image,
-and gives npm and Python consumers one compatible `pwmcp` image version.
+The committed release projection records the Playwright version jointly
+available from npm, PyPI, and Microsoft Container Registry for the configured
+distribution. Release preparation validates that projection without silently
+selecting a newly published dependency; explicit upstream refresh belongs to
+the version-policy workflow.
 
 ### npm Package Pins
 
@@ -213,13 +214,15 @@ The following npm packages are pinned via `docker-bake.hcl` ARGs (with matching 
 
 | Package | Pin | Source |
 |---|---|---|
-| `@playwright/mcp` | `0.0.76` | MCP HTTP/SSE server for AI clients |
-| `chrome-devtools-mcp` | `1.5.0` | CDP-based performance tracing and DevTools insights |
-| `mcp-proxy` | `6.5.2` | stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp |
-| `lighthouse` | `13.4.0` | Node API for programmatic Lighthouse audits |
+| `@playwright/mcp` | `0.0.80` | MCP Streamable HTTP server for AI clients |
+| `chrome-devtools-mcp` | `1.8.0` | CDP-based performance tracing and DevTools insights |
+| `mcp-proxy` | `6.7.14` | stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp |
+| `lighthouse` | `13.4.1` | Node API for programmatic Lighthouse audits |
 
-`@playwright/mcp` bundles playwright-core for chromium-1226, verified to work with Playwright 1.61.0 base images.
-`chrome-devtools-mcp@1.5.0` targets Chrome/Chromium 130+ (DevTools Protocol compatibility).
+`@playwright/mcp@0.0.80` bundles a Playwright 1.63 prerelease core; PWMCP
+passes the executable path from the selected official base image explicitly.
+`chrome-devtools-mcp@1.8.0` is checked against the bundled Chromium through
+the live container smoke lane.
 `chrome-devtools-mcp` requires Node `^20.19.0 || ^22.12.0 || >=23` (verify compatibility when upgrading the base image).
 
 Lighthouse is used by the vendored in-repo lighthouse-mcp server at `containers/pwmcp/lighthouse-mcp/`.
@@ -240,15 +243,15 @@ Applied in both modes:
 Versioned bundles are published to GitHub Releases under the `pwmcp-v<version>` tag:
 
 ```
-pwmcp-v1.61.0-r2
-  pwmcp-1.61.0-r2.tar.xz          ← the deployment bundle
-  pwmcp-1.61.0-r2.tar.xz.sha256   ← sha256sum-verifiable sidecar
+pwmcp-v1.62.0-r4
+  pwmcp-1.62.0-r4.tar.xz          ← the deployment bundle
+  pwmcp-1.62.0-r4.tar.xz.sha256   ← sha256sum-verifiable sidecar
 ```
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 
 ```bash
-sha256sum -c pwmcp-1.61.0-r2.tar.xz.sha256
+sha256sum -c pwmcp-1.62.0-r4.tar.xz.sha256
 ```
 
 "Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset. Development consumers use that stable manifest URL to rebuild automatically; production consumers may choose an immutable version/digest.
@@ -256,7 +259,7 @@ sha256sum -c pwmcp-1.61.0-r2.tar.xz.sha256
 ### Downloading a specific version
 
 ```bash
-VERSION="1.61.0-r2"
+VERSION="1.62.0-r4"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \

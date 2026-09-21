@@ -31,7 +31,7 @@ cpu_period = 100000
 [steps.prepare]
 quiet = true
 commands = [
-  { label = "pwmcp: resolve and pin publishable Playwright inputs", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "." },
+  { label = "pwmcp: validate committed publishable version inputs", argv = ["python3", "scripts/resolve-playwright-version.py", "--check"], cwd = "." },
 ]
 
 [steps.run-tests]
