@@ -193,12 +193,17 @@ server details and prints vname, hostname (or nickname), run state,
 architecture, CPU count, RAM/disk in GiB, and an `ssh-connect` result. The
 final multiline reverse-DNS column contains only the addresses from the detail
 response's `ipv4Addresses` and `ipv6Addresses`; nested live interface data is
-not merged into that inventory. `ssh-connect` probes every recognizable private
-key in `~/.ssh` plus the configured `install-host.toml` identity (without
-creating a key) and reports the names of keys that authenticate, `no keys
-match`, or `SSH not open/responding`. `no keys found`, `no server IP`, and
-configuration/client errors are reported separately when those are the actual
-local condition.
+not merged into that inventory. Status uses at most four workers, preserves
+server-table order, loads the key list once, and performs reverse-DNS lookups
+concurrently without caching duplicate addresses. `ssh-connect` first does one
+SSH service probe per address until one responds, with a 2-second default timeout, then probes
+every recognizable private key in `~/.ssh` plus the configured
+`install-host.toml` identity (without creating a key). Server-name, hostname,
+and nickname matches in key filenames are tried first. It reports the names of
+keys that authenticate, `no keys match`, or `SSH not open/responding`. `no keys
+found`, `no server IP`, and configuration/client errors are reported separately
+when those are the actual local condition. Use `--ssh-timeout SECONDS` to
+override the 2-second probe timeout.
 
 An image flavour is a server-compatible reinstallable OS/image variant (for
 example a Debian 13 UEFI amd64 image), not a VM template. ISO images are

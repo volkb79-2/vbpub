@@ -101,11 +101,18 @@ containing configured/resolver-derived reverse-DNS entries. The address list
 is deliberately sourced only from the detail record's `ipv4Addresses` and
 `ipv6Addresses`; nested live interface data is not merged because it can add
 link-local addresses, prefixes, or rDNS map keys that are not host addresses
-for this compact view. SSH checks are status-only read probes: they test all
-recognizable local private keys and the configured installer identity, but
-never generate a key or change provider state. A reachable SSH service with
-no successful key is reported as `no keys match`, while transport failure is
-reported as `SSH not open/responding`.
+for this compact view.
+
+Status uses a bounded four-worker pool and retains input order in the table.
+The local SSH settings and key scan are shared across the invocation. Each
+server gets one 2-second SSH service preflight per address until one responds,
+before key authentication is attempted; this avoids multiplying a closed-port
+timeout by the number of keys. Matching server-name/hostname/nickname filenames are attempted first,
+but all keys are still tested so every successful key can be reported. Reverse
+DNS calls run concurrently and are intentionally not memoized across duplicate
+addresses: each displayed address remains an independent live lookup. A
+reachable SSH service with no successful key is reported as `no keys match`,
+while transport failure is reported as `SSH not open/responding`.
 
 Actions that change state cannot safely fan out. ISO detach, rescue-system
 deactivation, snapshot creation, and snapshot dry-run therefore refuse without

@@ -14,7 +14,7 @@ server image installation, or snapshot revert.  ``install-host.py`` owns the
 Debian installation workflow and uses this module's shared client.
 
 Exploration (read-only; does not change the account or servers):
-  status [server_id]                         live table, addresses, and SSH key checks
+  status [server_id]                         parallel live table, addresses, and SSH checks
   servers                                    account server inventory
   server-details server_id                   complete server API record
   imageflavours [server_id] [--filter TEXT]  reinstallable OS/image choices
@@ -62,8 +62,10 @@ and the protected-server policy for ``scp-api.py``, ``install-host.py``, and
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
+import math
 import os
 import re
 import subprocess
@@ -85,6 +87,8 @@ from netcup_scp_client import (
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api.toml"
 INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
+DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
+STATUS_MAX_WORKERS = 4
 
 # Keep this in sync with install-host.py's closed settings schema.  The
 # explorer reads only the SSH values, but validating the complete file keeps a
@@ -392,8 +396,7 @@ def _server_address_inventory(server_info: Any) -> Dict[str, Any]:
 
 def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
     """Format configured/API or resolver-derived reverse DNS entries."""
-    entries: List[str] = []
-    seen = set()
+    entries: List[tuple[str, str | None, bool]] = []
     rdns = inventory.get("rdns", {})
     for family in ("ipv4", "ipv6"):
         for address in inventory.get(family, []):
@@ -402,18 +405,44 @@ def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
             # A network prefix is an address allocation, not a host address;
             # asking the local resolver about it can produce an unrelated PTR
             # result and is not useful in this server inventory.
-            if hostname is None and "/" not in address:
+            needs_lookup = hostname is None and "/" not in address
+            if needs_lookup:
                 try:
                     ipaddress.ip_address(lookup_address)
                 except ValueError:
-                    hostname = None
+                    needs_lookup = False
                 else:
-                    hostname = netcup_scp_client.reverse_dns(lookup_address)
-            entry = f"{address} -> {hostname or '-'}"
-            if entry not in seen:
-                entries.append(entry)
-                seen.add(entry)
-    return "\n".join(entries)
+                    pass
+            entries.append((address, hostname, needs_lookup))
+
+    lookup_addresses = [address.split("/", 1)[0] for address, _, needs_lookup in entries if needs_lookup]
+    if lookup_addresses:
+        # Submit every lookup, including duplicate addresses. The operator
+        # explicitly wants each displayed address to remain an independent
+        # live lookup rather than a hidden cross-row cache.
+        with ThreadPoolExecutor(max_workers=min(STATUS_MAX_WORKERS, len(lookup_addresses))) as executor:
+            lookup_results = [
+                future.result()
+                for future in [
+                    executor.submit(netcup_scp_client.reverse_dns, address)
+                    for address in lookup_addresses
+                ]
+            ]
+    else:
+        lookup_results = []
+
+    resolved_index = 0
+    formatted_entries: List[str] = []
+    seen = set()
+    for address, hostname, needs_lookup in entries:
+        if needs_lookup:
+            hostname = lookup_results[resolved_index]
+            resolved_index += 1
+        entry = f"{address} -> {hostname or '-'}"
+        if entry not in seen:
+            formatted_entries.append(entry)
+            seen.add(entry)
+    return "\n".join(formatted_entries)
 
 
 def _ssh_probe_hosts(server_info: Dict[str, Any]) -> List[str]:
@@ -523,13 +552,9 @@ def _looks_like_private_key(path: Path) -> bool:
     return any(marker in prefix for marker in _SSH_PRIVATE_KEY_MARKERS)
 
 
-def _ssh_key_candidates(server: Dict[str, Any], template: str) -> List[Path]:
-    """Find existing private keys in ~/.ssh plus the configured identity."""
-    configured = _ssh_identity_path(template, server)
+def _local_private_key_candidates() -> List[Path]:
+    """Find recognizable private keys in ~/.ssh once per status invocation."""
     candidates: List[Path] = []
-    if configured.is_file():
-        candidates.append(configured)
-
     ssh_dir = Path.home() / ".ssh"
     if ssh_dir.is_dir():
         try:
@@ -537,9 +562,62 @@ def _ssh_key_candidates(server: Dict[str, Any], template: str) -> List[Path]:
         except OSError:
             entries = []
         for path in entries:
-            if path.is_file() and _looks_like_private_key(path) and path not in candidates:
+            if path.is_file() and _looks_like_private_key(path):
                 candidates.append(path)
     return candidates
+
+
+def _ssh_key_matches_server(path: Path, server: Dict[str, Any]) -> bool:
+    """Return whether a key filename plausibly names this server."""
+    filename = path.name.casefold()
+    normalized_filename = re.sub(r"[^a-z0-9]", "", filename)
+    labels = {
+        str(server.get(field, "")).strip()
+        for field in ("name", "hostname", "nickname")
+        if isinstance(server.get(field), str) and server.get(field, "").strip()
+    }
+    hostname = server.get("hostname")
+    if isinstance(hostname, str):
+        labels.update(part for part in hostname.split(".") if part)
+    labels.add(_server_name(server))
+    for label in labels:
+        folded = label.casefold()
+        normalized = re.sub(r"[^a-z0-9]", "", folded)
+        # Avoid treating a one-character hostname as a meaningful filename
+        # match. Netcup names/hostnames are normally much longer, but this
+        # guard keeps malformed API data from making every key "preferred".
+        if len(normalized) >= 4 and (folded in filename or normalized in normalized_filename):
+            return True
+    return False
+
+
+def _ssh_key_candidates(
+    server: Dict[str, Any],
+    template: str,
+    local_keys: List[Path] | None = None,
+) -> List[Path]:
+    """Find and prioritize private keys for one server.
+
+    Matching server-name/hostname/nickname filenames are tested first. The
+    configured identity is next if it was not already in that group; all
+    remaining local keys follow. Every key is retained because the status
+    output must report all keys that authenticate.
+    """
+    configured = _ssh_identity_path(template, server)
+    candidates = list(local_keys if local_keys is not None else _local_private_key_candidates())
+    if configured.is_file() and configured not in candidates:
+        candidates.append(configured)
+
+    def priority(path: Path) -> tuple[int, int, str]:
+        matches_server = _ssh_key_matches_server(path, server)
+        is_configured = path == configured
+        if matches_server:
+            return (0, 0 if is_configured else 1, path.name.casefold())
+        if is_configured:
+            return (1, 0, path.name.casefold())
+        return (2, 0, path.name.casefold())
+
+    return sorted(candidates, key=priority)
 
 
 def _ssh_key_label(path: Path) -> str:
@@ -561,14 +639,70 @@ def _classify_ssh_probe(returncode: int, stderr: str) -> str:
     return "auth"
 
 
-def _probe_ssh_key(host: str, user: str, key_path: Path) -> str:
+def _probe_ssh_service(
+    host: str,
+    user: str,
+    timeout_seconds: float = DEFAULT_SSH_TIMEOUT_SECONDS,
+) -> str:
+    """Check whether an SSH service responds before trying any key."""
     ssh_host = f"[{host}]" if ":" in host else host
     command = [
         "ssh",
         "-o",
         "BatchMode=yes",
         "-o",
-        "ConnectTimeout=5",
+        f"ConnectTimeout={timeout_seconds:g}",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "PubkeyAuthentication=no",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        "KbdInteractiveAuthentication=no",
+        "-o",
+        "PreferredAuthentications=none",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        f"{user}@{ssh_host}",
+        "true",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "transport"
+    except FileNotFoundError:
+        return "ssh-unavailable"
+    except OSError:
+        return "transport"
+    classification = _classify_ssh_probe(result.returncode, result.stderr or "")
+    return "reachable" if classification in ("success", "auth") else classification
+
+
+def _probe_ssh_key(
+    host: str,
+    user: str,
+    key_path: Path,
+    timeout_seconds: float = DEFAULT_SSH_TIMEOUT_SECONDS,
+) -> str:
+    ssh_host = f"[{host}]" if ":" in host else host
+    command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "-o",
+        f"ConnectTimeout={timeout_seconds:g}",
         "-o",
         "ConnectionAttempts=1",
         "-o",
@@ -595,7 +729,7 @@ def _probe_ssh_key(host: str, user: str, key_path: Path) -> str:
             command,
             capture_output=True,
             text=True,
-            timeout=8,
+            timeout=timeout_seconds,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -607,43 +741,75 @@ def _probe_ssh_key(host: str, user: str, key_path: Path) -> str:
     return _classify_ssh_probe(result.returncode, result.stderr or "")
 
 
-def _ssh_connection_summary(server: Dict[str, Any], details: Dict[str, Any]) -> str:
+def _prepare_ssh_probe_context() -> Dict[str, Any]:
+    """Load SSH settings and scan local keys once for a status run."""
+    try:
+        user, template = _load_ssh_probe_settings()
+    except (OSError, ValueError, SystemExit):
+        return {"error": True}
+    return {
+        "user": user,
+        "template": template,
+        "local_keys": _local_private_key_candidates(),
+    }
+
+
+def _ssh_connection_summary(
+    server: Dict[str, Any],
+    details: Dict[str, Any],
+    *,
+    timeout_seconds: float = DEFAULT_SSH_TIMEOUT_SECONDS,
+    context: Dict[str, Any] | None = None,
+) -> str:
     """Probe configured/local keys and summarize SSH reachability.
 
-    Every candidate key is tested on the first reachable server address.  A
-    success lists the key names; an open SSH service with no successful key is
-    distinct from a transport failure.  This is intentionally a status probe,
-    never a key-generation path.
+    A single service probe finds the first reachable address before any key is
+    attempted; additional addresses are tried only when the previous one does
+    not respond. Every candidate key is then tested on that address. A success
+    lists the key names; an open SSH service with no successful key is distinct
+    from a transport failure. This is intentionally a status probe, never a
+    key-generation path.
     """
     hosts = _ssh_probe_hosts(details)
     if not hosts:
         return "no server IP"
-    try:
-        user, template = _load_ssh_probe_settings()
-        identity_server = dict(server)
-        identity_server.update(details)
-        keys = _ssh_key_candidates(identity_server, template)
-    except (OSError, ValueError, SystemExit):
+    context = context or _prepare_ssh_probe_context()
+    if context.get("error"):
         return "SSH config unavailable"
+    user = context["user"]
+    template = context["template"]
+    identity_server = dict(server)
+    identity_server.update(details)
+    keys = _ssh_key_candidates(identity_server, template, context.get("local_keys", []))
     if not keys:
         return "no keys found"
 
+    reachable_host = None
     for host in hosts:
-        successful: List[str] = []
-        reachable = False
-        for key in keys:
-            result = _probe_ssh_key(host, user, key)
-            if result == "ssh-unavailable":
-                return "SSH client unavailable"
-            if result == "success":
-                reachable = True
-                successful.append(_ssh_key_label(key))
-            elif result == "auth":
-                reachable = True
-        if successful:
-            return "keys: " + ", ".join(successful)
-        if reachable:
-            return "no keys match"
+        result = _probe_ssh_service(host, user, timeout_seconds)
+        if result == "ssh-unavailable":
+            return "SSH client unavailable"
+        if result == "reachable":
+            reachable_host = host
+            break
+    if reachable_host is None:
+        return "SSH not open/responding"
+
+    successful: List[str] = []
+    saw_reachable_key_attempt = False
+    for key in keys:
+        result = _probe_ssh_key(reachable_host, user, key, timeout_seconds)
+        if result == "ssh-unavailable":
+            return "SSH client unavailable"
+        if result == "success":
+            saw_reachable_key_attempt = True
+            successful.append(_ssh_key_label(key))
+        elif result == "auth":
+            saw_reachable_key_attempt = True
+    if successful:
+        return "keys: " + ", ".join(successful)
+    if saw_reachable_key_attempt:
+        return "no keys match"
     return "SSH not open/responding"
 
 
@@ -658,6 +824,8 @@ def _server_status_row(
     details: Dict[str, Any],
     *,
     include_ssh: bool = False,
+    ssh_timeout: float = DEFAULT_SSH_TIMEOUT_SECONDS,
+    ssh_context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Build the stable, human-oriented row used by ``status`` and login."""
     record = dict(server)
@@ -690,7 +858,16 @@ def _server_status_row(
         "#CPU": cpu if cpu is not None else "?",
         "RAM GB": _mib_to_gib(memory),
         "disk GB": _mib_to_gib(disk_mib),
-        "ssh-connect": _ssh_connection_summary(server, details) if include_ssh else "-",
+        "ssh-connect": (
+            _ssh_connection_summary(
+                server,
+                details,
+                timeout_seconds=ssh_timeout,
+                context=ssh_context,
+            )
+            if include_ssh
+            else "-"
+        ),
     }
 
 
@@ -700,13 +877,49 @@ def _server_enrichment(client: NetcupSCPClient, server_id: int) -> Dict[str, Any
     return _response_dict(_api_call(client.get, details_endpoint), f"GET {details_endpoint}")
 
 
+def _status_row_for_server(
+    client: NetcupSCPClient,
+    server: Dict[str, Any],
+    ssh_timeout: float,
+    ssh_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Fetch and format one server; callers preserve the target order."""
+    details = _server_enrichment(client, server["id"])
+    return _server_status_row(
+        server,
+        details,
+        include_ssh=True,
+        ssh_timeout=ssh_timeout,
+        ssh_context=ssh_context,
+    )
+
+
 def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
     """Print a compact live status table for one or all account servers."""
     targets = _server_targets(client, args.server_id)
-    rows = []
-    for server in targets:
-        details = _server_enrichment(client, server["id"])
-        rows.append(_server_status_row(server, details, include_ssh=True))
+    rows: List[Dict[str, Any]] = []
+    if targets:
+        ssh_timeout = getattr(args, "ssh_timeout", DEFAULT_SSH_TIMEOUT_SECONDS)
+        ssh_context = _prepare_ssh_probe_context()
+        worker_count = min(STATUS_MAX_WORKERS, len(targets))
+        if worker_count == 1:
+            rows = [_status_row_for_server(client, targets[0], ssh_timeout, ssh_context)]
+        else:
+            # The API client uses immutable request state for reads. Keep the
+            # pool bounded for provider rate limits, but retain input order in
+            # the rendered table by consuming futures in target order.
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _status_row_for_server,
+                        client,
+                        server,
+                        ssh_timeout,
+                        ssh_context,
+                    )
+                    for server in targets
+                ]
+                rows = [future.result() for future in futures]
     columns = [
         "vname",
         "hostname",
@@ -827,6 +1040,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer") from e
     if number <= 0:
         raise argparse.ArgumentTypeError("must be greater than zero")
+    return number
+
+
+def _positive_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("must be a number") from e
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be finite and greater than zero")
     return number
 
 
@@ -1818,9 +2041,12 @@ def parse_args():
         "multiline reverse-DNS column containing only the detail response's "
         "ipv4Addresses/ipv6Addresses. The SSH column tests every recognizable "
         "private key in ~/.ssh plus the configured install-host identity without "
-        "creating a key. It reports successful key names, `no keys match`, or "
-        "`SSH not open/responding`. "
-        "With no ID, every account server is queried.\n\n"
+        "creating a key. It first performs one SSH service probe per address, "
+        "then tests keys in server-name/hostname filename order. The default "
+        "probe timeout is 2 seconds. It reports successful key names, `no keys "
+        "match`, or `SSH not open/responding`. "
+        "With no ID, every account server is queried using a bounded four-worker pool. "
+        "Reverse-DNS lookups are concurrent but are not cached across duplicate addresses.\n\n"
         "Examples:\n"
         "  ./scp-api.py status\n"
         "  ./scp-api.py status 799611 --json",
@@ -1828,6 +2054,13 @@ def parse_args():
     p.add_argument(
         "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
         help="Netcup SCP server ID; omit to show all account servers",
+    )
+    p.add_argument(
+        "--ssh-timeout",
+        type=_positive_float,
+        default=DEFAULT_SSH_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help="per-address SSH service/key timeout (default: 2 seconds)",
     )
     p = add_subcommand(
         "server-details",

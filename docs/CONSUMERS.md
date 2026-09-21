@@ -124,6 +124,12 @@ without creating anything. It lists successful key names, or distinguishes
 IP` are separate local/data conditions. Its final multiline reverse-DNS column
 uses only the server detail response's `ipv4Addresses` and `ipv6Addresses`,
 not nested live interface addresses or extra IPv6 rDNS-map keys.
+The status work is bounded to four workers and keeps table order. It performs
+one 2-second SSH service preflight before key attempts, loads local keys once,
+and tries filenames containing the server name, hostname, or nickname first.
+Reverse-DNS lookups are concurrent but duplicate addresses are not memoized.
+Use `./scp-api.py status SERVER_ID --ssh-timeout SECONDS` to override the
+default SSH timeout.
 
 The normal flow writes the gathered request to the ignored `target-host.jsonc`
 before its final confirmation. A direct payload run can then repeat that

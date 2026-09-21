@@ -192,7 +192,7 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
     monkeypatch.setattr(
         explore_mod,
         "_ssh_connection_summary",
-        lambda server, details: "keys: id_ed25519",
+        lambda server, details, **kwargs: "keys: id_ed25519",
     )
     client = fake_client(get_responses=[
         [{"id": 42, "name": "v2202503209318326780"}],
@@ -247,10 +247,15 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
 def test_ssh_connection_summary_lists_every_key_that_authenticates(explore_mod, monkeypatch):
     keys = [explore_mod.Path("/tmp/id-a"), explore_mod.Path("/tmp/id-b")]
     monkeypatch.setattr(explore_mod, "_load_ssh_probe_settings", lambda: ("root", "unused"))
-    monkeypatch.setattr(explore_mod, "_ssh_key_candidates", lambda server, template: keys)
+    monkeypatch.setattr(
+        explore_mod,
+        "_ssh_key_candidates",
+        lambda server, template, local_keys=None: keys,
+    )
+    monkeypatch.setattr(explore_mod, "_probe_ssh_service", lambda host, user, timeout: "reachable")
     calls = []
 
-    def fake_probe(host, user, key):
+    def fake_probe(host, user, key, timeout):
         calls.append((host, user, key))
         return "success" if key.name in {"id-a", "id-b"} else "auth"
 
@@ -275,11 +280,29 @@ def test_ssh_connection_summary_distinguishes_auth_and_transport(
     monkeypatch.setattr(
         explore_mod,
         "_ssh_key_candidates",
-        lambda server, template: [explore_mod.Path("/tmp/id-a")],
+        lambda server, template, local_keys=None: [explore_mod.Path("/tmp/id-a")],
     )
-    monkeypatch.setattr(explore_mod, "_probe_ssh_key", lambda host, user, key: probe_result)
+    monkeypatch.setattr(explore_mod, "_probe_ssh_service", lambda host, user, timeout: "reachable")
+    monkeypatch.setattr(explore_mod, "_probe_ssh_key", lambda host, user, key, timeout: probe_result)
     details = {"ipv4Addresses": [{"ip": "198.51.100.42"}]}
     assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == expected
+
+
+def test_ssh_service_failure_skips_all_key_attempts(explore_mod, monkeypatch):
+    monkeypatch.setattr(explore_mod, "_load_ssh_probe_settings", lambda: ("root", "unused"))
+    monkeypatch.setattr(
+        explore_mod,
+        "_ssh_key_candidates",
+        lambda server, template, local_keys=None: [explore_mod.Path("/tmp/id-a")],
+    )
+    monkeypatch.setattr(explore_mod, "_probe_ssh_service", lambda host, user, timeout: "transport")
+    monkeypatch.setattr(
+        explore_mod,
+        "_probe_ssh_key",
+        lambda *args: (_ for _ in ()).throw(AssertionError("key probe must not run")),
+    )
+    details = {"ipv4Addresses": [{"ip": "198.51.100.42"}]}
+    assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == "SSH not open/responding"
 
 
 def test_ssh_probe_hosts_ignores_ipv6_network_prefixes(explore_mod):
@@ -291,6 +314,41 @@ def test_ssh_probe_hosts_ignores_ipv6_network_prefixes(explore_mod):
         ],
     }
     assert explore_mod._ssh_probe_hosts(details) == ["198.51.100.42", "2001:db8::42"]
+
+
+def test_ssh_key_candidates_prioritize_server_named_keys(explore_mod, tmp_path):
+    keys = [
+        tmp_path / "generic-ed25519",
+        tmp_path / "v2202503209318326780-ed25519",
+        tmp_path / "vm.example-root",
+    ]
+    ordered = explore_mod._ssh_key_candidates(
+        {
+            "name": "v2202503209318326780",
+            "hostname": "vm.example",
+            "nickname": "vm",
+        },
+        str(tmp_path / "configured-key"),
+        local_keys=keys,
+    )
+    assert [path.name for path in ordered] == [
+        "v2202503209318326780-ed25519",
+        "vm.example-root",
+        "generic-ed25519",
+    ]
+
+
+def test_reverse_dns_does_not_cache_duplicate_lookup_requests(explore_mod, monkeypatch):
+    calls = []
+
+    def fake_reverse_dns(address):
+        calls.append(address)
+        return "vm.example"
+
+    monkeypatch.setattr(explore_mod.netcup_scp_client, "reverse_dns", fake_reverse_dns)
+    summary = explore_mod._reverse_dns_summary({"ipv4": ["198.51.100.42", "198.51.100.42"], "ipv6": [], "rdns": {}})
+    assert calls == ["198.51.100.42", "198.51.100.42"]
+    assert summary == "198.51.100.42 -> vm.example"
 
 
 def test_cmd_server_details(explore_mod, fake_client, capsys):
@@ -963,6 +1021,16 @@ def test_parse_args_servers_no_id(explore_mod, monkeypatch):
     args = explore_mod.parse_args()
     assert args.command == "servers"
     assert not hasattr(args, "server_id")
+
+
+def test_parse_args_status_has_two_second_ssh_timeout(explore_mod, monkeypatch):
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "status"])
+    args = explore_mod.parse_args()
+    assert args.ssh_timeout == 2.0
+
+    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "status", "--ssh-timeout", "0.5"])
+    args = explore_mod.parse_args()
+    assert args.ssh_timeout == 0.5
 
 
 def test_parse_args_iso_attached_detach_yes(explore_mod, monkeypatch):
