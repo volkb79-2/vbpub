@@ -110,6 +110,8 @@ def _fetch_http(
 def _fetch_json(url: str, label: str) -> dict:
     """Fetch JSON from a URL with retry logic."""
     body, _headers = _fetch_http(url, label)
+    if not body:
+        return {}
     return json.loads(body.decode("utf-8"))
 
 

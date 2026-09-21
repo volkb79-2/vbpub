@@ -475,7 +475,7 @@ def test_update_helpers_rewrite_release_inputs(tmp_path: Path) -> None:
     )
     resolver.update_dockerfile(dockerfile, DIGEST)
     assert f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in dockerfile.read_text()
-    assert f"@{DIGEST}" in dockerfile.read_text()
+    assert "@${PLAYWRIGHT_IMAGE_DIGEST}" in dockerfile.read_text()
 
     contract = tmp_path / "contract.json"
     contract.write_text(json.dumps(_payload()), encoding="utf-8")
@@ -504,6 +504,22 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST)
 
+    bake.write_text(
+        'variable "PLAYWRIGHT_VERSION" { default = "old" }\n'
+        'variable "PLAYWRIGHT_IMAGE_DIGEST" { default = "old" }\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", "not-a-digest")
+    with pytest.raises(SystemExit):
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST)
+
+    dockerfile = tmp_path / "Dockerfile"
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "not-a-digest")
+    dockerfile.write_text("FROM mcr.microsoft.com/playwright:broken\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, DIGEST)
     dockerfile.write_text("ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n", encoding="utf-8")
     with pytest.raises(SystemExit):
         resolver.update_dockerfile(dockerfile, DIGEST)
@@ -721,6 +737,16 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
 
     lock["packages"][""]["dependencies"] = package["dependencies"]
     files["lock"].write_text(json.dumps(lock), encoding="utf-8")
+    files["bake"].write_text(
+        files["bake"].read_text().replace(DIGEST, "bad-digest"),
+        encoding="utf-8",
+    )
+    files["dockerfile"].write_text(
+        files["dockerfile"].read_text().replace(DIGEST, "bad-digest"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
     files["override"].unlink()
     resolver.main(["--check"])
 
