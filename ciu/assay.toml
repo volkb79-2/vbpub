@@ -23,7 +23,10 @@ rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "run-ciu-tests.py"]
 # Assay's Git boundary pins resource-affecting Git options for every child.
-env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", CIU_PYTEST_WORKERS = "auto" }
+# Keep the full suite serial in the mutation container: mutation already runs
+# one candidate at a time, and xdist's automatic process fanout can exhaust
+# the container's task budget while snapshots are being materialized.
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1", CIU_PYTEST_WORKERS = "1" }
 # The suite genuinely reads these from the ambient environment: the four
 # governance tests read CGROUP_PARENT_DEV_BACKGROUND by design (S15.2), xdist
 # worker spawn + git/ssh detection need PATH, and HOME is required for tests
