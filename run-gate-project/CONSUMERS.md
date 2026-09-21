@@ -287,7 +287,7 @@ exit 0 for drift); `required_env` is the mechanism that actually refuses.
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
 run-gate.py does the ORCHESTRATION (environment, mounts, cgroup, optional
-artifact verification, clean tree, detached run), then invokes assay; **assay
+artifact verification, clean `--init` detached run), then invokes assay; **assay
 does the JUDGMENT** — its lane in `assay.toml` owns argv-under-test, coverage
 floors, R-levels, changed-line policy, snapshot isolation. Two files, two
 owners, no duplicated registry. Internal vbpub projects use source mode:

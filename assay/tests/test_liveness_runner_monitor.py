@@ -415,7 +415,7 @@ def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(
     result = runner(("pytest", "-n", "2", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert result.returncode == 0
     assert clock.t == 203.0
-    assert not proc.waited
+    assert proc.waited  # normal completion still cleans the candidate group.
     events = [json.loads(line)["event"] for line in events_path.read_text().splitlines()]
     assert events.count("session_start") == 3
     assert events.count("session_finish") == 3
@@ -468,7 +468,7 @@ def test_xdist_worker_finish_is_ignored_until_owner_finishes(
     # the old finish-only branch and kill at t=31, long before the owner
     # finish and normal process exit.
     assert clock.t == 70.0
-    assert not proc.waited
+    assert proc.waited  # normal completion still cleans the candidate group.
 
 
 # --------------------------------------------------------------------------
@@ -476,9 +476,24 @@ def test_xdist_worker_finish_is_ignored_until_owner_finishes(
 # --------------------------------------------------------------------------
 
 
-def test_normal_completion_returns_completed_process(tmp_path: Path) -> None:
+def test_normal_completion_cleans_descendants_after_leader_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean leader exit must not leave its process group in the gate.
+
+    ``poll()`` reaps the candidate before the runner gets here. The old
+    cleanup path then could not call ``getpgid`` and left a still-running
+    child behind, which accumulated across R2 candidates until the container
+    hit its PID ceiling.
+    """
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4246, returncode=0)  # already "exited".
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        liveness.os,
+        "killpg",
+        lambda pgid, sig: killed.append((pgid, sig)),
+    )
     runner, cwd = _runner(
         tmp_path,
         proc=proc,
@@ -488,7 +503,8 @@ def test_normal_completion_returns_completed_process(tmp_path: Path) -> None:
     result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=60.0)
     assert isinstance(result, subprocess.CompletedProcess)
     assert result.returncode == 0
-    assert not proc.waited  # `poll()` alone is enough; no kill, no reap needed.
+    assert killed == [(4246, liveness.signal.SIGKILL)]
+    assert proc.waited
 
 
 # --------------------------------------------------------------------------

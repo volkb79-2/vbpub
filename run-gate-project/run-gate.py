@@ -4729,7 +4729,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                      worktree, env_source)
         return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
-    return [docker, "run", "--rm", "--cgroup-parent", slice_name,
+    return [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
             *dual_mount_flags(repo, physical_path(repo)),
             env["image"], "bash", "-c", script]
 
@@ -7510,7 +7510,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
-    argv = [docker, "run", "-d", "--name", name,
+    argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}",
             *mounts]

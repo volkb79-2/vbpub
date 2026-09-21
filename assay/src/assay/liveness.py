@@ -1223,15 +1223,44 @@ class LivenessRunner:
         finally:
             stdout_fh.close()
             stderr_fh.close()
-        return self._monitor(
-            proc,
-            argv=argv_tuple,
-            timeout=timeout,
-            events_path=events_path,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            start=start,
-        )
+        try:
+            return self._monitor(
+                proc,
+                argv=argv_tuple,
+                timeout=timeout,
+                events_path=events_path,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                start=start,
+            )
+        finally:
+            # ``start_new_session=True`` makes the candidate pid the process
+            # group id.  The monitor normally kills that group on a hung or
+            # budget-expired candidate, but a candidate can exit cleanly while
+            # a descendant it created is still alive.  In that shape
+            # ``proc.poll()`` has already reaped the leader, so ``_kill`` can
+            # no longer discover the group with ``getpgid``; leaving it behind
+            # leaks descendants into the gate cgroup and eventually consumes
+            # its pids.max.  Always clean the recorded group after monitoring,
+            # including normal completion.
+            self._cleanup_process_group(proc)
+
+    def _cleanup_process_group(self, proc: Any) -> None:
+        """Remove descendants left in this candidate's process group.
+
+        A candidate launched with ``start_new_session=True`` is its own
+        process-group leader, so its pid remains the group id even after the
+        leader has exited.  ``killpg`` is intentionally best-effort: an empty
+        group is the normal completion case, not an infrastructure error.
+        """
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
 
     def _kill(self, proc: Any) -> None:
         """Kill the whole process group and reap, tolerating a process that

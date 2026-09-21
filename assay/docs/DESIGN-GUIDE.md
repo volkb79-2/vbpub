@@ -464,6 +464,15 @@ additive under v11):**
   subclass; every other `process_runner` never raises it, so this code is
   unreachable for R0/R1/R3 and every non-liveness R2 call site.
 
+#### Liveness process-group cleanup
+
+Each native R2 candidate is launched in its own session/process group. The
+monitor kills that group on a hang or budget expiry, and also kills the
+recorded group after normal leader exit. The latter is essential: once
+`poll()` has reaped the leader, looking up its process group can fail while a
+child remains alive. Leaving that child behind accumulates across mutants
+until the gate cgroup reaches `pids.max`.
+
 #### Liveness session-finish grace
 
 RW-57 guards the post-`session_finish` branch with

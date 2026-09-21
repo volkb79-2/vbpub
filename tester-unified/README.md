@@ -23,9 +23,11 @@ that path as `TMPDIR`/`TMP`/`TEMP` (when the workspace itself is rooted at
 `/tmp`, the collision-free target is `/var/tmp/tester-unified`); it mounts the
 Docker socket for nested contract tests,
 selects `/opt/tester-venv`, and verifies uid 1003, the cgroup parent, a 3-CPU
-cap, workdir, environment, and all required mounts. Runs are detached and
-their inspect data, logs, Docker wait status, launch PSI, and job marker are
-kept below the judged worktree's ignored `.assay/tester-unified-runs/`.
+cap, workdir, environment, and all required mounts. Runs are detached with
+Docker's init reaper, so orphaned descendants are reaped before they can
+accumulate against the gate cgroup's PID ceiling. Their inspect data, logs,
+Docker wait status, launch PSI, and job marker are kept below the judged
+worktree's ignored `.assay/tester-unified-runs/`.
 
 The image includes Assay's declared build backend and a writable
 `/opt/tester-venv`. Internal vbpub `run-gate.toml` lanes omit a versioned

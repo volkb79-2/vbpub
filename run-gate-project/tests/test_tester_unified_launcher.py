@@ -173,6 +173,7 @@ def test_launcher_constructs_and_verifies_the_complete_gate_boundary(tmp_path):
     socket_gid = os.stat("/var/run/docker.sock").st_gid
 
     assert "run -d" in calls
+    assert "--init" in calls
     assert "--cgroup-parent dev-gates.slice" in calls
     assert "--cpus=3" in calls
     assert f"--group-add {socket_gid}" in calls

@@ -2190,7 +2190,10 @@ check — assay now:
 3. runs the candidate under an active `LivenessRunner` monitoring loop
    (`Popen(start_new_session=True)`, 1 s sampling) instead of a plain
    blocking wait, watching the plugin's own side-file events AND the
-   process tree's `/proc` CPU time.
+   process tree's `/proc` CPU time. The whole candidate process group is
+   cleaned up after every candidate, including normal leader exit, so leaked
+   descendants cannot accumulate across mutants and exhaust the gate cgroup's
+   PID budget.
 
 **New lane key: `judge.mutation.liveness = "auto" | true | false`**
 (default `"auto"`):
