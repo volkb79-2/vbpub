@@ -288,6 +288,22 @@ def test_ssh_connection_summary_distinguishes_auth_and_transport(
     assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == expected
 
 
+def test_ssh_key_probe_builds_valid_option_argv(explore_mod, monkeypatch):
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return types.SimpleNamespace(returncode=255, stderr="Permission denied (publickey).")
+
+    monkeypatch.setattr(explore_mod.subprocess, "run", fake_run)
+    assert explore_mod._probe_ssh_key("198.51.100.42", "root", Path("/tmp/id-a")) == "auth"
+
+    command = captured["command"]
+    assert not any(left == right == "-o" for left, right in zip(command, command[1:]))
+    assert "ConnectTimeout=2" in command
+    assert command[-4:] == ["-i", "/tmp/id-a", "root@198.51.100.42", "true"]
+
+
 def test_ssh_service_failure_skips_all_key_attempts(explore_mod, monkeypatch):
     monkeypatch.setattr(explore_mod, "_load_ssh_probe_settings", lambda: ("root", "unused"))
     monkeypatch.setattr(

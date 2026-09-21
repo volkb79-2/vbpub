@@ -706,7 +706,6 @@ def _probe_ssh_key(
         "-o",
         "BatchMode=yes",
         "-o",
-        "-o",
         f"ConnectTimeout={timeout_seconds:g}",
         "-o",
         "ConnectionAttempts=1",
