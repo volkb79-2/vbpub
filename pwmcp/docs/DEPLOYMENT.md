@@ -157,8 +157,8 @@ systemd-cgtop system.slice
 Or invoke the same wrapper through the release runner:
 
 ```bash
-cmru build --project pwmcp
-cmru publish --project pwmcp
+cmru build pwmcp
+cmru publish pwmcp
 ```
 
 The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`,
@@ -167,30 +167,32 @@ defaults match `ciu.defaults.toml.j2`, the Dockerfile, and `cmru.vars`.
 
 ## Upgrading the Playwright Version
 
-Run the resolve script to auto-detect the latest npm version, update config files, and compute the next release number:
+The resolver validates the committed release projection by default without
+contacting upstreams:
 
 ```bash
 cd pwmcp
-python3 scripts/resolve-playwright-version.py
+python3 scripts/resolve-playwright-version.py --check
 ```
 
-The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`,
-`docker-bake.hcl`, and the Dockerfile's Playwright manifest digest. Then
-complete the release:
+To deliberately refresh the projection, use the explicit upstream operation.
+It applies the configured temporary age window, updates
+`ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, `docker-bake.hcl`,
+and the Dockerfile's Playwright manifest digest. Then complete the release:
 
 ```bash
-# Build and push the new image + bundle via cmru (run from the repo root):
-cmru build --project pwmcp
-cmru publish --project pwmcp
+# Explicit upstream refresh (normally owned by CMRU FEAT-03):
+python3 scripts/resolve-playwright-version.py --refresh
 
-# Or perform the complete isolated release in one operation:
-./cmru.release.sh --project pwmcp
+# Complete isolated release from the repository root:
+cmru release pwmcp
 ```
 
-The one-shot release commits and pushes resolver-updated PWMCP inputs before
-publishing. Publication must stop if that source push cannot fast-forward;
-otherwise GitHub would create the immutable release tag from an older remote
-tree.
+For build-only inspection use `cmru build pwmcp`; for an already-reviewed
+candidate's low-level publication step use `cmru publish pwmcp`. A release
+commits and pushes the selected inputs before publishing. Publication must
+stop if that source push cannot fast-forward; otherwise GitHub could create
+the immutable release tag from an older remote tree.
 
 Development consumers should follow `pwmcp-latest/latest.json`, verify its
 bundle checksum, and rebuild their test-only layer from the bundled `client/`
