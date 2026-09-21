@@ -5,9 +5,10 @@ Usage:
   python3 build-push.py --build   # Build images locally (docker buildx bake --load)
   python3 build-push.py --push    # Login to GHCR and push images
 
-Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from cmru.vars (written by
-scripts/resolve-playwright-version.py).  CMRU's prepare phase is the sole writer;
-this script refuses an absent or incomplete prepared coordinate.
+Reads the complete Playwright/PWMCP release coordinate, including the pinned
+base-image manifest digest, from cmru.vars (written by
+scripts/resolve-playwright-version.py). CMRU's prepare phase is the sole
+writer; this script refuses an absent or incomplete prepared coordinate.
 
 Credentials for push (from the CMRU environment or explicitly exported):
   GITHUB_USERNAME

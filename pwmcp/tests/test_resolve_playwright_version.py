@@ -13,6 +13,7 @@ from hypothesis import given, strategies as st
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "resolve-playwright-version.py"
+DIGEST = "sha256:" + "a" * 64
 SPEC = importlib.util.spec_from_file_location("pwmcp_resolve_playwright_version", MODULE_PATH)
 assert SPEC and SPEC.loader
 resolver = importlib.util.module_from_spec(SPEC)
@@ -43,6 +44,7 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
     override.write_text(defaults.read_text(), encoding="utf-8")
     bake.write_text(
         'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
+        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
         'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
         'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
         'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
@@ -51,6 +53,8 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
     )
     dockerfile.write_text(
         "ARG PLAYWRIGHT_VERSION=1.63.0\n"
+        f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n"
         "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
         "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
         "ARG MCP_PROXY_VERSION=6.7.14\n"
@@ -160,8 +164,9 @@ def test_common_version_selection_is_the_highest_stable_intersection(
 
 
 class _Response:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, headers: dict[str, str] | None = None) -> None:
         self.payload = json.dumps(payload).encode()
+        self.headers = headers or {}
 
     def __enter__(self) -> "_Response":
         return self
@@ -264,6 +269,38 @@ def test_fetch_json_zero_retry_budget_exercises_defensive_return(
     monkeypatch.setattr(resolver, "fail", messages.append)
     assert resolver._fetch_json("https://example.test", "example") == {}
     assert messages == ["example fetch failed after 0 attempts: None"]
+
+
+def test_fetch_mcr_manifest_digest_reads_and_validates_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_urlopen(request: object, timeout: float) -> _Response:
+        calls.append((request.full_url, request.method, request.get_header("Accept")))
+        return _Response({}, {"Docker-Content-Digest": DIGEST})
+
+    monkeypatch.setattr(resolver.urllib.request, "urlopen", fake_urlopen)
+    assert resolver.fetch_mcr_manifest_digest("1.63.0", "noble") == DIGEST
+    assert calls == [(
+        "https://mcr.microsoft.com/v2/playwright/manifests/v1.63.0-noble",
+        "HEAD",
+        "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json",
+    )]
+
+
+@pytest.mark.parametrize("headers", [{}, {"Docker-Content-Digest": "sha256:bad"}])
+def test_fetch_mcr_manifest_digest_rejects_missing_or_invalid_header(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+) -> None:
+    monkeypatch.setattr(
+        resolver.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response({}, headers),
+    )
+    with pytest.raises(SystemExit):
+        resolver.fetch_mcr_manifest_digest("1.63.0", "noble")
 
 
 @pytest.mark.parametrize(
@@ -421,12 +458,24 @@ def test_update_helpers_rewrite_release_inputs(tmp_path: Path) -> None:
     bake = tmp_path / "docker-bake.hcl"
     bake.write_text(
         'variable "PLAYWRIGHT_VERSION" { default = "1.0.0" }\n'
+        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
         'variable "PWMCP_VERSION" { default = "old-r1" }\n',
         encoding="utf-8",
     )
-    resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
+    resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST)
     assert 'PLAYWRIGHT_VERSION" { default = "1.2.3"' in bake.read_text()
+    assert f'PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}"' in bake.read_text()
     assert 'PWMCP_VERSION" { default = "1.2.3-r4"' in bake.read_text()
+
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=sha256:" + "b" * 64 + "\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
+    resolver.update_dockerfile(dockerfile, DIGEST)
+    assert f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in dockerfile.read_text()
+    assert f"@{DIGEST}" in dockerfile.read_text()
 
     contract = tmp_path / "contract.json"
     contract.write_text(json.dumps(_payload()), encoding="utf-8")
@@ -445,7 +494,7 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
     bake = tmp_path / "docker-bake.hcl"
     bake.write_text('variable "PWMCP_VERSION" { default = "old-r1" }\n', encoding="utf-8")
     with pytest.raises(SystemExit):
-        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST)
 
     toml.write_text('[pwmcp.unified.image]\ntag = "old-r1"\n', encoding="utf-8")
     with pytest.raises(SystemExit):
@@ -453,7 +502,11 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
 
     bake.write_text('variable "PLAYWRIGHT_VERSION" { default = "old" }\n', encoding="utf-8")
     with pytest.raises(SystemExit):
-        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
+        resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4", DIGEST)
+
+    dockerfile.write_text("ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, DIGEST)
 
 
 def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -466,8 +519,9 @@ def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.Monk
 
     output = tmp_path / "cmru.vars"
     monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", output)
-    resolver.write_release_vars("1.2.3", "noble", "1.2.3-r4", "0.0.82", "1.9.0", "6.7.18", "13.4.0")
+    resolver.write_release_vars("1.2.3", "noble", "1.2.3-r4", DIGEST, "0.0.82", "1.9.0", "6.7.18", "13.4.0")
     assert "PLAYWRIGHT_VERSION=1.2.3" in output.read_text()
+    assert f"PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in output.read_text()
     assert "GHCR_PACKAGE_NAMES=pwmcp" in output.read_text()
 
 
@@ -499,6 +553,7 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     defaults = tmp_path / "defaults"
     override = tmp_path / "override"
     bake = tmp_path / "bake"
+    dockerfile = tmp_path / "Dockerfile"
     release_vars = tmp_path / "vars"
     contract = tmp_path / "contract"
     defaults.write_text(
@@ -508,16 +563,23 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     override.write_text(defaults.read_text(), encoding="utf-8")
     bake.write_text(
         'variable "PLAYWRIGHT_VERSION" { default = "old" }\n'
+        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
         'variable "PWMCP_VERSION" { default = "old-r1" }\n'
         'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.82" }\n'
         'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.9.0" }\n'
         'variable "MCP_PROXY_VERSION" { default = "6.7.18" }\n'
         'variable "LIGHTHOUSE_VERSION" { default = "13.4.0" }\n', encoding="utf-8"
     )
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
     contract.write_text(json.dumps(_payload()), encoding="utf-8")
     monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
     monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
     monkeypatch.setattr(resolver, "BAKE_FILE", bake)
+    monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
     monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
     monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
     monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
@@ -526,11 +588,13 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     old = resolver.datetime(2000, 1, 1, tzinfo=resolver.timezone.utc)
     monkeypatch.setattr(resolver, "fetch_npm_release_times", lambda: {"1.2.3": old})
     monkeypatch.setattr(resolver, "fetch_pypi_release_times", lambda: {"1.2.3": old})
+    monkeypatch.setattr(resolver, "fetch_mcr_manifest_digest", lambda version, distro: DIGEST)
     monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
 
     resolver.main(["--refresh"])
     assert 'playwright_version = "1.2.3"' in defaults.read_text()
     assert 'default = "1.2.3-r4"' in bake.read_text()
+    assert DIGEST in bake.read_text()
     assert "PWMCP_VERSION=1.2.3-r4" in release_vars.read_text()
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
 
@@ -556,6 +620,7 @@ def test_check_committed_inputs_validates_projection_and_writes_vars(
     override.write_text(defaults.read_text(), encoding="utf-8")
     bake.write_text(
         'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
+        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
         'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
         'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
         'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
@@ -564,6 +629,8 @@ def test_check_committed_inputs_validates_projection_and_writes_vars(
     )
     dockerfile.write_text(
         "ARG PLAYWRIGHT_VERSION=1.63.0\n"
+        f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n"
         "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
         "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
         "ARG MCP_PROXY_VERSION=6.7.14\n"

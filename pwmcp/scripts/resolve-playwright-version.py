@@ -10,7 +10,8 @@ Steps:
      Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
   4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
-  5. Update docker-bake.hcl defaults and write cmru.vars for downstream scripts.
+  5. Update the Dockerfile and docker-bake.hcl with the matching base-image digest.
+  6. Write cmru.vars for downstream scripts.
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
@@ -40,6 +41,7 @@ from pathlib import Path
 NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright"
 PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
 MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=10000"
+MCR_PLAYWRIGHT_MANIFEST_URL = "https://mcr.microsoft.com/v2/playwright/manifests"
 TIMEOUT_SECONDS = 20
 RETRIES = 3
 TEMPORARY_AGE_WINDOW_DAYS = 14
@@ -64,18 +66,27 @@ def fail(msg: str) -> None:
     raise SystemExit(1)
 
 
-def _fetch_json(url: str, label: str) -> dict:
-    """Fetch JSON from a URL with retry logic."""
+def _fetch_http(
+    url: str,
+    label: str,
+    *,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+) -> tuple[bytes, object]:
+    """Fetch an HTTP response body and headers with retry logic."""
     last_exc: Exception | None = None
     for attempt in range(1, RETRIES + 1):
         try:
             req = urllib.request.Request(
                 url,
-                headers={"User-Agent": "pwmcp/resolve-playwright-version"},
-                method="GET",
+                headers={
+                    "User-Agent": "pwmcp/resolve-playwright-version",
+                    **(headers or {}),
+                },
+                method=method,
             )
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                return resp.read(), getattr(resp, "headers", {})
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if exc.code in {429, 500, 502, 503, 504} and attempt < RETRIES:
@@ -93,7 +104,13 @@ def _fetch_json(url: str, label: str) -> dict:
                 continue
             fail(f"{label} fetch failed: {exc.reason}")
     fail(f"{label} fetch failed after {RETRIES} attempts: {last_exc}")
-    return {}  # unreachable
+    return b"", {}  # unreachable
+
+
+def _fetch_json(url: str, label: str) -> dict:
+    """Fetch JSON from a URL with retry logic."""
+    body, _headers = _fetch_http(url, label)
+    return json.loads(body.decode("utf-8"))
 
 
 def _stable_version(value: str) -> tuple[int, int, int] | None:
@@ -201,6 +218,31 @@ def fetch_mcr_versions(distro: str) -> set[str]:
     }
 
 
+def fetch_mcr_manifest_digest(version: str, distro: str) -> str:
+    """Return the immutable multi-arch manifest digest for a Playwright tag."""
+    url = f"{MCR_PLAYWRIGHT_MANIFEST_URL}/v{version}-{distro}"
+    _body, headers = _fetch_http(
+        url,
+        f"Microsoft Container Registry manifest for v{version}-{distro}",
+        headers={
+            "Accept": (
+                "application/vnd.docker.distribution.manifest.list.v2+json, "
+                "application/vnd.oci.image.index.v1+json"
+            )
+        },
+        method="HEAD",
+    )
+    digest = headers.get("Docker-Content-Digest") if hasattr(headers, "get") else None
+    if not isinstance(digest, str):
+        fail(f"Microsoft Container Registry manifest for v{version}-{distro} did not return Docker-Content-Digest")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+        fail(
+            f"Microsoft Container Registry returned an invalid manifest digest for "
+            f"v{version}-{distro}: {digest!r}"
+        )
+    return digest
+
+
 def resolve_latest_common_version(
     npm_versions: set[str], pypi_versions: set[str], mcr_versions: set[str],
 ) -> str:
@@ -261,7 +303,12 @@ def update_toml_j2(path: Path, pw_version: str, image_tag: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def update_bake_hcl(path: Path, playwright_version: str, pwmcp_version: str) -> None:
+def update_bake_hcl(
+    path: Path,
+    playwright_version: str,
+    pwmcp_version: str,
+    image_digest: str,
+) -> None:
     content = path.read_text(encoding="utf-8")
 
     content, playwright_matches = re.subn(
@@ -272,6 +319,19 @@ def update_bake_hcl(path: Path, playwright_version: str, pwmcp_version: str) -> 
     )
     if playwright_matches != 1:
         fail(f"{path.name} must contain exactly one PLAYWRIGHT_VERSION variable (found {playwright_matches})")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        fail(f"{path.name} base-image digest is not a sha256 digest: {image_digest!r}")
+    content, digest_matches = re.subn(
+        r'(variable\s+"PLAYWRIGHT_IMAGE_DIGEST"\s*\{[^}]*default\s*=\s*)"[^"]+"',
+        rf'\g<1>"{image_digest}"',
+        content,
+        flags=re.DOTALL,
+    )
+    if digest_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one PLAYWRIGHT_IMAGE_DIGEST variable "
+            f"(found {digest_matches})"
+        )
     content, pwmcp_matches = re.subn(
         r'(variable\s+"PWMCP_VERSION"\s*\{[^}]*default\s*=\s*)"[^"]+"',
         f'\\1"{pwmcp_version}"',
@@ -280,6 +340,37 @@ def update_bake_hcl(path: Path, playwright_version: str, pwmcp_version: str) -> 
     )
     if pwmcp_matches != 1:
         fail(f"{path.name} must contain exactly one PWMCP_VERSION variable (found {pwmcp_matches})")
+    path.write_text(content, encoding="utf-8")
+
+
+def update_dockerfile(path: Path, image_digest: str) -> None:
+    """Update the authoritative base-image digest in Dockerfile ARG and FROM."""
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        fail(f"Dockerfile base-image digest is not a sha256 digest: {image_digest!r}")
+    content = path.read_text(encoding="utf-8")
+    content, arg_matches = re.subn(
+        r"(^ARG PLAYWRIGHT_IMAGE_DIGEST=)[^\s]+$",
+        rf"\g<1>{image_digest}",
+        content,
+        flags=re.MULTILINE,
+    )
+    if arg_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one PLAYWRIGHT_IMAGE_DIGEST ARG "
+            f"(found {arg_matches})"
+        )
+    content, from_matches = re.subn(
+        r"(^FROM mcr\.microsoft\.com/playwright:v\$\{PLAYWRIGHT_VERSION\}-\$\{PLAYWRIGHT_DISTRO\})"
+        r"@\$\{PLAYWRIGHT_IMAGE_DIGEST\}$",
+        r"\g<1>@${PLAYWRIGHT_IMAGE_DIGEST}",
+        content,
+        flags=re.MULTILINE,
+    )
+    if from_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one Playwright base FROM with a replaceable digest "
+            f"(found {from_matches})"
+        )
     path.write_text(content, encoding="utf-8")
 
 
@@ -333,6 +424,16 @@ def _read_docker_arg(name: str) -> str:
     )
 
 
+def _read_docker_base_digest() -> str:
+    _read_single_value(
+        DOCKERFILE,
+        r"^FROM mcr\.microsoft\.com/playwright:v\$\{PLAYWRIGHT_VERSION\}-\$\{PLAYWRIGHT_DISTRO\}@"
+        r"\$\{PLAYWRIGHT_IMAGE_DIGEST\}\s*$",
+        "Playwright base-image FROM digest argument",
+    )
+    return _read_docker_arg("PLAYWRIGHT_IMAGE_DIGEST")
+
+
 def _assert_same(label: str, values: dict[str, str]) -> str:
     distinct = set(values.values())
     if len(distinct) != 1:
@@ -363,6 +464,16 @@ def check_committed_inputs() -> None:
             DOCKERFILE.name: _read_docker_arg("PLAYWRIGHT_VERSION"),
         },
     )
+    image_digest = _assert_same(
+        "Playwright base-image digest",
+        {
+            BAKE_FILE.name: _read_bake_var("PLAYWRIGHT_IMAGE_DIGEST"),
+            DOCKERFILE.name: _read_docker_arg("PLAYWRIGHT_IMAGE_DIGEST"),
+            f"{DOCKERFILE.name} FROM": _read_docker_base_digest(),
+        },
+    )
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
+        fail(f"Playwright base-image digest is not a sha256 digest: {image_digest!r}")
     release_tag = _assert_same(
         "PWMCP release version",
         {
@@ -431,6 +542,7 @@ def check_committed_inputs() -> None:
         playwright_version,
         distro,
         release_tag,
+        image_digest,
         _read_bake_var("PLAYWRIGHT_MCP_VERSION"),
         _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION"),
         _read_bake_var("MCP_PROXY_VERSION"),
@@ -446,6 +558,7 @@ def write_release_vars(
     playwright_version: str,
     distro: str,
     pwmcp_version: str,
+    image_digest: str,
     playwrght_mcp_version: str,
     chrome_devtools_mcp_version: str,
     mcp_proxy_version: str,
@@ -454,6 +567,7 @@ def write_release_vars(
     RELEASE_VARS_FILE.write_text(
         f"PLAYWRIGHT_VERSION={playwright_version}\n"
         f"PLAYWRIGHT_DISTRO={distro}\n"
+        f"PLAYWRIGHT_IMAGE_DIGEST={image_digest}\n"
         f"PLAYWRIGHT_MCP_VERSION={playwrght_mcp_version}\n"
         f"CHROME_DEVTOOLS_MCP_VERSION={chrome_devtools_mcp_version}\n"
         f"MCP_PROXY_VERSION={mcp_proxy_version}\n"
@@ -494,6 +608,7 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     pypi_latest = _latest_version(pypi_versions, "PyPI")
     mcr_latest = _latest_version(mcr_versions, "the Microsoft Container Registry")
     agreed_version = resolve_latest_common_version(npm_versions, pypi_versions, mcr_versions)
+    image_digest = fetch_mcr_manifest_digest(agreed_version, distro)
     log(
         f"eligible latest (cutoff {cutoff.isoformat()}): npm={npm_latest} "
         f"PyPI={pypi_latest} MCR/{distro}={mcr_latest}; agreed stable version: {agreed_version}"
@@ -511,7 +626,10 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
         update_toml_j2(TOML_OVERRIDE_FILE, agreed_version, pwmcp_version)
 
     log(f"Updating {BAKE_FILE.name}...")
-    update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version)
+    update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version, image_digest)
+
+    log(f"Updating {DOCKERFILE.name} with base-image digest {image_digest}...")
+    update_dockerfile(DOCKERFILE, image_digest)
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
@@ -521,7 +639,7 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     cdt_mcp_ver = _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION")
     mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
     lh_ver = _read_bake_var("LIGHTHOUSE_VERSION")
-    write_release_vars(agreed_version, distro, pwmcp_version,
+    write_release_vars(agreed_version, distro, pwmcp_version, image_digest,
                        pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver)
 
     log(

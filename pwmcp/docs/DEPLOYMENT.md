@@ -161,7 +161,9 @@ cmru build --project pwmcp
 cmru publish --project pwmcp
 ```
 
-The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `cmru.vars`.
+The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`,
+`PLAYWRIGHT_IMAGE_DIGEST`, and `PWMCP_VERSION` from the prepared environment;
+defaults match `ciu.defaults.toml.j2`, the Dockerfile, and `cmru.vars`.
 
 ## Upgrading the Playwright Version
 
@@ -172,7 +174,9 @@ cd pwmcp
 python3 scripts/resolve-playwright-version.py
 ```
 
-The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, and `docker-bake.hcl`. Then complete the release:
+The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`,
+`docker-bake.hcl`, and the Dockerfile's Playwright manifest digest. Then
+complete the release:
 
 ```bash
 # Build and push the new image + bundle via cmru (run from the repo root):

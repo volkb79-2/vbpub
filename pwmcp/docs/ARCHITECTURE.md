@@ -50,7 +50,7 @@ remains isolated and launches its own browser per audit.
 
 ### Unified Image: `ghcr.io/volkb79-2/pwmcp:<version>`
 
-- **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>` (ships browser binaries)
+- **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>@<manifest_digest>` (ships browser binaries; the digest is pinned in the Dockerfile and bake projection)
 - **Layers added**:
   - `playwright@<playwright_version>` JS package installed globally via npm (needed for `run-server`)
   - `@playwright/mcp@<version>` installed globally via npm (MCP Streamable HTTP server; pinned for reproducibility)

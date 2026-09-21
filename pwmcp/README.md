@@ -198,7 +198,7 @@ environment:
 ### Playwright Version
 
 `pwmcp.playwright_version` in `ciu.defaults.toml.j2` is the single source of truth. It pins:
-- the base image tag (`mcr.microsoft.com/playwright:v<version>-<distro>`)
+- the base image tag and immutable multi-arch manifest digest (`mcr.microsoft.com/playwright:v<version>-<distro>@<digest>`)
 - the playwright JS package baked into the image
 - the version consumers must `pip install playwright==<version>`
 
@@ -207,6 +207,11 @@ available from npm, PyPI, and Microsoft Container Registry for the configured
 distribution. Release preparation validates that projection without silently
 selecting a newly published dependency; explicit upstream refresh belongs to
 the version-policy workflow.
+
+The selected MCR manifest digest is committed in the Dockerfile and
+`docker-bake.hcl` and is also written to the transaction-local `cmru.vars`.
+The resolver refreshes the digest from the exact MCR tag whenever it refreshes
+the version, and `--check` refuses a missing or inconsistent digest.
 
 ### npm Package Pins
 

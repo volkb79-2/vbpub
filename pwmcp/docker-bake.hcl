@@ -15,6 +15,12 @@ variable "PLAYWRIGHT_DISTRO" {
   default = "noble"
 }
 
+// Multi-arch manifest digest for the selected Playwright base image.
+// The resolver refreshes this together with PLAYWRIGHT_VERSION.
+variable "PLAYWRIGHT_IMAGE_DIGEST" {
+  default = "sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07"
+}
+
 // @playwright/mcp pin (bundled MCP Streamable HTTP server).
 variable "PLAYWRIGHT_MCP_VERSION" {
   default = "0.0.80"
@@ -57,6 +63,7 @@ target "pwmcp-latest" {
   args = {
     PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION}"
     PLAYWRIGHT_DISTRO           = "${PLAYWRIGHT_DISTRO}"
+    PLAYWRIGHT_IMAGE_DIGEST     = "${PLAYWRIGHT_IMAGE_DIGEST}"
     PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
     CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
     MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
