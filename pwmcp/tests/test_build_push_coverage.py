@@ -4,6 +4,7 @@ import importlib.util
 import runpy
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,12 @@ def test_sync_visibility_mirrors_each_normalized_package(monkeypatch: pytest.Mon
     monkeypatch.setattr(build_push, "GitHubPackages", FakePackages)
     build_push.sync_ghcr_package_visibility([" pwmcp ", "", "bundle"])
     assert calls == [("pwmcp", "private"), ("bundle", "private")]
+
+
+def test_builder_config_is_frozen() -> None:
+    config = _config()
+    with pytest.raises(FrozenInstanceError):
+        config.name = "changed"  # type: ignore[misc]
 
 
 def test_run_uses_pwmcp_directory_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -293,5 +300,6 @@ def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_main_requires_an_operation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_push.sys, "argv", ["build-push.py"])
+    monkeypatch.setattr(build_push, "do_push", lambda: pytest.fail("missing operation must be rejected by argparse"))
     with pytest.raises(SystemExit):
         build_push.main()

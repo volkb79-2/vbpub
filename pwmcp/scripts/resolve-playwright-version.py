@@ -181,7 +181,11 @@ def fetch_pypi_release_times() -> dict[str, datetime]:
         fail("PyPI response missing 'releases' object")
     result: dict[str, datetime] = {}
     for version, files in releases.items():
-        if not _stable_version(str(version)) or not isinstance(files, list) or not files:
+        if not _stable_version(str(version)):
+            continue
+        if not isinstance(files, list):
+            continue
+        if not files:
             continue
         timestamps = [
             _parse_release_time(

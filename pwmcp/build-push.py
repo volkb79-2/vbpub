@@ -53,15 +53,15 @@ def sync_ghcr_package_visibility(package_names: list[str]) -> None:
     repo = os.environ.get("GITHUB_REPO", "").strip()
     token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
     owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
-    if not username or not repo or not token or not owner_type:
-        missing = [
-            name for name, value in {
-                "GITHUB_USERNAME": username,
-                "GITHUB_REPO": repo,
-                "GITHUB_PUSH_PAT": token,
-                "GITHUB_OWNER_TYPE": owner_type,
-            }.items() if not value
-        ]
+    missing = [
+        name for name, value in {
+            "GITHUB_USERNAME": username,
+            "GITHUB_REPO": repo,
+            "GITHUB_PUSH_PAT": token,
+            "GITHUB_OWNER_TYPE": owner_type,
+        }.items() if not value
+    ]
+    if missing:
         fail(
             "GHCR visibility sync requires " + ", ".join(missing) +
             "; run through CMRU or export the release identity explicitly"
