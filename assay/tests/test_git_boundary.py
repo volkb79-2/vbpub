@@ -15,6 +15,7 @@ but AUTHORING's own "test the private function directly" precedent
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from pathlib import Path
@@ -199,3 +200,34 @@ def test_every_git_child_disables_optional_index_preload_threads(
     assert len(captured) == 2
     for argv in captured:
         assert ("-c", "core.preloadIndex=false") in tuple(zip(argv, argv[1:]))
+
+
+def test_p22_git_child_retries_transient_resource_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A transient tester-cgroup ``fork`` refusal is retried under P22's budget."""
+    attempts = 0
+    sleeps: list[float] = []
+    child = object()
+
+    def fake_popen(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError(errno.EAGAIN, "temporarily unavailable")
+        return child
+
+    monkeypatch.setattr(git_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(git_module.time, "sleep", sleeps.append)
+
+    result = git_module._p22_spawn(
+        ["git", "status"],
+        cwd=tmp_path,
+        identity=False,
+        stdin=git_module.subprocess.DEVNULL,
+        deadline=git_module._P22Deadline(10),
+    )
+
+    assert result is child
+    assert attempts == 3
+    assert sleeps == [git_module._P22_SPAWN_RETRY_SECONDS] * 2

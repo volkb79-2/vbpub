@@ -81,6 +81,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import errno
 import math
 import os
 import selectors
@@ -1173,8 +1174,13 @@ def _p22_argv(
     return argv
 
 
+_P22_SPAWN_RETRY_ATTEMPTS = 60
+_P22_SPAWN_RETRY_SECONDS = 0.5
+
+
 def _p22_spawn(
-    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int
+    argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int,
+    deadline: _P22Deadline,
 ) -> subprocess.Popen[bytes]:
     """Launch one P22 child in its OWN process group.
 
@@ -1183,15 +1189,32 @@ def _p22_spawn(
     running with the pipe still open. Assay owns the whole group and kills
     the group.
     """
-    return subprocess.Popen(
-        list(argv),
-        cwd=str(cwd),
-        env=_p22_env(identity=identity),
-        stdin=stdin,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    for attempt in range(_P22_SPAWN_RETRY_ATTEMPTS):
+        try:
+            return subprocess.Popen(
+                list(argv),
+                cwd=str(cwd),
+                env=_p22_env(identity=identity),
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            # A busy tester cgroup can transiently reject fork/clone with
+            # EAGAIN while a prior snapshot child is being reaped.  This is
+            # not a Git result and must not be silently converted into a
+            # passing candidate; retry only this documented transient under
+            # the same lane deadline, then re-raise the real startup error.
+            if exc.errno != errno.EAGAIN or attempt + 1 == _P22_SPAWN_RETRY_ATTEMPTS:
+                raise
+            remaining = deadline.remaining("starting a private Git child")
+            time.sleep(
+                _P22_SPAWN_RETRY_SECONDS
+                if remaining is None
+                else min(_P22_SPAWN_RETRY_SECONDS, remaining)
+            )
+    raise AssertionError("unreachable")
 
 
 def _p22_kill(proc: subprocess.Popen[bytes] | None) -> None:
@@ -1323,7 +1346,7 @@ def _p22_git(
             err.extend(chunk[:remaining])
 
     proc = _p22_spawn(
-        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE
+        argv, cwd=cwd, identity=identity, stdin=subprocess.PIPE, deadline=deadline
     )
     assert proc.stdin is not None and proc.stdout is not None
     assert proc.stderr is not None
@@ -1391,7 +1414,8 @@ def _p22_stream_pack(
         args=("index-pack", "--stdin"),
     )
     producer = _p22_spawn(
-        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE
+        producer_argv, cwd=source_cwd, identity=False, stdin=subprocess.PIPE,
+        deadline=deadline,
     )
     consumer: subprocess.Popen[bytes] | None = None
     counted = 0
@@ -1399,7 +1423,8 @@ def _p22_stream_pack(
     consumer_err = bytearray()
     try:
         consumer = _p22_spawn(
-            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE
+            consumer_argv, cwd=seed_git_dir, identity=False, stdin=subprocess.PIPE,
+            deadline=deadline,
         )
         assert producer.stdin is not None and producer.stdout is not None
         assert producer.stderr is not None
@@ -1511,7 +1536,7 @@ def _p22_init_private(
         *args,
     ]
     proc = _p22_spawn(
-        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL
+        argv, cwd=template, identity=False, stdin=subprocess.DEVNULL, deadline=deadline
     )
     assert proc.stdout is not None and proc.stderr is not None
     err = bytearray()
