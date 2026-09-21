@@ -216,12 +216,56 @@ secrets may be exposed and must not be copied into shared logs. Raw mode must
 remain opt-in per invocation; it must not be enabled by a persistent default,
 ordinary debug environment variable, or a config-file default.
 
+### Severity and verbosity
+
+Human-readable diagnostic and progress messages use a small, stable severity
+vocabulary:
+
+```text
+[INFO]  normal progress or an informative result
+[WARN]  the operation can continue, but needs attention
+[ERROR] the requested operation failed or was refused
+[DEBUG] additional diagnostic detail
+```
+
+The severity tag remains present when colour is disabled or output is
+redirected. Colour is only presentation: a typical palette is dim/cyan for
+`INFO`, yellow for `WARN`, red for `ERROR`, and dim for `DEBUG`. A tool may
+choose a different accessible palette, but must not communicate severity by
+colour alone.
+
+Actionable follow-up is a hint, not a severity. It is rendered as a separate
+line such as `Hint: run tool login first` or `Next: inspect tool status`, and
+must prescribe a factually valid remedy rather than inventing a default.
+Hints are omitted from machine-readable stdout and may be represented as
+structured fields when the command has a JSON schema.
+
+The canonical verbosity control is:
+
+```text
+--log-level {error,warn,info,debug}
+```
+
+The default is `info`. `--quiet` is an alias for `--log-level=error`, and
+`--debug` is an alias for `--log-level=debug`. `--debug-raw` implies debug
+verbosity in addition to disabling supported redaction. The level controls
+diagnostic/progress messages, not the command's primary result: a successful
+query still returns its result at `--quiet`, while warnings and errors remain
+visible. A CLI may accept `--verbose` as a compatibility alias for debug, but
+new interfaces should not invent a numeric `--verbose` scale alongside
+`--log-level`.
+
+The level options are mutually exclusive. If more than one is supplied, the
+CLI reports the conflict and prints the relevant help rather than silently
+using argument order as policy.
+
 ### Output control
 
 Where supported, output options are grouped together:
 
 ```text
 --json       emit machine-readable output
+--color      force terminal colour where supported
 --no-color   disable terminal colour
 ```
 
@@ -310,9 +354,31 @@ use a documented wide fallback (recommended: `120` columns), rather than
 hard-wrapping all prose at `80` columns. Long option descriptions should wrap
 at word boundaries and preserve indentation.
 
-Colours are optional presentation. They must be disabled when stdout is not a
-TTY, when `NO_COLOR` is set, or when the CLI provides `--no-color`. Semantic
-meaning must remain available in plain text.
+Colours are optional presentation. Automatic colour must be disabled when
+stdout is not a TTY, when `NO_COLOR` is set, or when the CLI provides
+`--no-color`. Semantic meaning must remain available in plain text. If both
+explicit colour controls are exposed, `--no-color` wins over automatic colour
+and `--color` may explicitly override `NO_COLOR`; JSON output never uses ANSI
+colour.
+
+### Progress
+
+Long-running verbs that provide progress should expose the following modes:
+
+```text
+--progress {auto,tty,plain,quiet,rawjson}
+```
+
+`auto` uses an interactive spinner/redraw only for a TTY and uses one
+newline-delimited event per update otherwise. `tty` requests interactive
+terminal presentation, `plain` requests stable newline-delimited text,
+`quiet` suppresses progress while retaining the final result and diagnostics,
+and `rawjson` emits newline-delimited structured progress events without
+colour or terminal control sequences. Human progress goes to stderr so that
+normal stdout remains a result stream; `rawjson` is a machine mode and owns
+stdout for the progress event stream. A command must document whether it
+combines a final result with `rawjson` events or represents completion as a
+final event.
 
 Tables must preserve stable column meaning, sanitize external values before
 printing, and use explicit placeholders for unknown values. “Could not check”
@@ -338,8 +404,10 @@ The test suite for every adopted CLI must prove at least:
 9. unexpected exceptions remain distinguishable from handled failures, with
    `--debug` providing additional diagnostics and `--debug-raw` explicitly
    proving the redaction boundary is disabled only when requested;
-10. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
-11. help/version paths work without credentials, configuration, network, or
+10. severity tags, hints, colour/`NO_COLOR`, and each supported log level
+    remain meaningful when output is redirected;
+11. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
+12. help/version paths work without credentials, configuration, network, or
     runtime services.
 
 Tests should exercise the real entrypoint or module invocation, not only helper
@@ -387,9 +455,12 @@ root.
 1. `CliIdentity` and authoritative version resolution;
 2. structured verb/group metadata and top-level help rendering;
 3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`,
-   `--debug-raw`, and command-help-on-error;
-4. the outer exception and Ctrl-C boundary; and
-5. reusable contract-test helpers for side-effect-free help/version, output
+   `--debug-raw`, `--log-level`, colour/progress controls, and
+   command-help-on-error;
+4. severity-tagged diagnostics, hints, TTY-aware colour, and progress
+   rendering with a plain fallback;
+5. the outer exception and Ctrl-C boundary; and
+6. reusable contract-test helpers for side-effect-free help/version, output
    streams, exit statuses, and prompt behavior.
 
 Domain verbs, API clients, configuration loading, and destructive-operation
