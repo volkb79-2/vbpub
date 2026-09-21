@@ -193,6 +193,7 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
         {
             "id": 42,
             "name": "v2202503209318326780",
+            "hostname": "vm.example",
             "architecture": "AMD64",
             "serverLiveInfo": {
                 "state": "RUNNING",
@@ -215,11 +216,16 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
     explore_mod.cmd_status(client, _ns(server_id=None), pal)
     out = capsys.readouterr().out
     assert "v2202503209318326780" in out
+    assert "hostname" in out and "vm.example" in out
     assert "RUNNING" in out
     assert "4" in out and "8.0" in out and "512.0" in out
     assert "198.51.100.42" in out
     assert "2001:db8::/64" in out
     assert "198.51.100.42 -> vm.example" in out
+    assert "reverse DNS" in out
+    assert "IPv4" not in out.splitlines()[0]
+    assert "IPv6" not in out.splitlines()[0]
+    assert out.index("198.51.100.42 -> vm.example") < out.index("2001:db8::/64 -> -")
     assert client.calls == [
         ("get", "/api/v1/servers", None),
         ("get", "/api/v1/servers/42", None),
@@ -852,6 +858,17 @@ def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
     help_out = capsys.readouterr().out
     assert "--help" in help_out
     assert "[-h]" not in help_out
+
+
+def test_main_turns_ctrl_c_into_clean_cancellation(explore_mod, monkeypatch, capsys):
+    def interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(explore_mod, "_main", interrupt)
+    assert explore_mod.main() == 130
+    captured = capsys.readouterr()
+    assert "Cancelled." in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_main_rejects_invalid_policy_before_configure(explore_mod, monkeypatch, capsys):

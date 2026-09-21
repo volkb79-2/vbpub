@@ -95,8 +95,9 @@ focused query, and filters are applied locally to the returned fields.
 
 `status` is the deliberately compact account-wide view. It queries each
 server's full detail and interface records and normalizes provider fields into
-one table: vname, configured/resolver-derived reverse DNS, run state,
-architecture, CPU count, RAM and disk GiB, and IPv4/IPv6 values. The richer
+one table: vname, hostname (or nickname), run state, architecture, CPU count,
+RAM and disk GiB, and a final multiline column containing configured/resolver-
+derived reverse-DNS entries with their IPv4/IPv6 addresses. The richer
 interface endpoint is used because the minimal server inventory does not carry
 rDNS entries.
 

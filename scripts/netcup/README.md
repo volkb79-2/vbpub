@@ -189,8 +189,9 @@ server ID/name. Use a server ID to inspect only one server; mutating actions
 such as `detach`, `deactivate`, `create`, and `dryrun` are positional and still
 require it. `servers` lists the account inventory; use `server-details SERVER_ID`
 for one server's full record. `status` is the compact live view: it queries
-server details and interfaces and prints vname, reverse DNS, run state,
-architecture, CPU count, RAM/disk in GiB, and IPv4/IPv6 addresses.
+server details and interfaces and prints vname, hostname (or nickname), run
+state, architecture, CPU count, and RAM/disk in GiB. Its final multiline
+reverse-DNS column contains each IPv4/IPv6 address and its DNS entry.
 
 An image flavour is a server-compatible reinstallable OS/image variant (for
 example a Debian 13 UEFI amd64 image), not a VM template. ISO images are

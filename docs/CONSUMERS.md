@@ -108,7 +108,7 @@ python3 scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes
 The smallest live-install path is:
 
 ```bash
-./scp-api.py status
+./scp-api.py status                 # final column lists IP -> reverse DNS entries
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
 ./install-host.py --dry-run

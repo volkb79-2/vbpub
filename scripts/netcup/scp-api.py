@@ -143,14 +143,22 @@ class _Palette:
 # operator's own account: strip C0 controls (incl. \n/\t) and DEL before
 # ever printing a value in the pretty (non-JSON) path -- an unsanitized
 # ESC sequence in e.g. a hostname would otherwise reach the terminal raw
-# (screen-clear/color/cursor-move codes), and an embedded newline breaks
-# table column alignment across rows, not just cosmetically. --json mode
-# is unaffected either way: json.dumps already \u-escapes control bytes.
+# (screen-clear/color/cursor-move codes). Ordinary table cells also remove
+# newlines so one hostile value cannot break row alignment. The status table's
+# explicitly designated reverse-DNS column is the one intentional exception:
+# its values are sanitized and rendered as separate physical lines.
+# --json mode is unaffected either way: json.dumps already \u-escapes control
+# bytes.
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_MULTILINE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 
 
 def _sanitize(text: str) -> str:
     return _CONTROL_CHARS_RE.sub("", text)
+
+
+def _sanitize_multiline(text: str) -> str:
+    return _MULTILINE_CONTROL_CHARS_RE.sub("", text)
 
 
 def _stringify(value: Any) -> str:
@@ -164,18 +172,50 @@ def _stringify(value: Any) -> str:
     return _sanitize(str(value))
 
 
-def print_table(rows: List[Dict[str, Any]], columns: List[str], pal: _Palette, empty_message: str) -> None:
+def _stringify_multiline(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, dict):
+        return _sanitize_multiline(json.dumps(value, separators=(",", ":")))
+    return _sanitize_multiline(str(value))
+
+
+def print_table(
+    rows: List[Dict[str, Any]],
+    columns: List[str],
+    pal: _Palette,
+    empty_message: str,
+    multiline_columns: set[str] | None = None,
+) -> None:
     rows = _response_rows(rows, "formatted table")
     if not rows:
         print(pal.dim(empty_message))
         return
-    cells = [[_stringify(row.get(col)) for col in columns] for row in rows]
-    widths = [max(len(columns[i]), *(len(r[i]) for r in cells)) for i in range(len(columns))]
+    multiline_columns = multiline_columns or set()
+    cells = [
+        [
+            (_stringify_multiline(row.get(col)) if col in multiline_columns else _stringify(row.get(col))).splitlines() or [""]
+            for col in columns
+        ]
+        for row in rows
+    ]
+    widths = [
+        max(len(columns[i]), *(len(line) for row in cells for line in row[i]))
+        for i in range(len(columns))
+    ]
     header = "  ".join(pal.bold(columns[i].ljust(widths[i])) for i in range(len(columns)))
     print(header)
     print(pal.dim("  ".join("-" * widths[i] for i in range(len(columns)))))
     for r in cells:
-        print("  ".join(r[i].ljust(widths[i]) for i in range(len(columns))))
+        for line_number in range(max(len(cell) for cell in r)):
+            print(
+                "  ".join(
+                    (r[i][line_number] if line_number < len(r[i]) else "").ljust(widths[i])
+                    for i in range(len(columns))
+                )
+            )
 
 
 def print_kv(data: Dict[str, Any], pal: _Palette, indent: int = 0) -> None:
@@ -373,7 +413,7 @@ def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
                     hostname = None
                 else:
                     hostname = netcup_scp_client.reverse_dns(lookup_address)
-            entry = f"{lookup_address} -> {hostname or '-'}"
+            entry = f"{address} -> {hostname or '-'}"
             if entry not in seen:
                 entries.append(entry)
                 seen.add(entry)
@@ -382,7 +422,7 @@ def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
         if entry not in seen:
             entries.append(entry)
             seen.add(entry)
-    return "; ".join(entries)
+    return "\n".join(entries)
 
 
 def _mib_to_gib(value: Any) -> str:
@@ -416,14 +456,13 @@ def _server_status_row(server: Dict[str, Any], details: Dict[str, Any], interfac
 
     return {
         "vname": _server_name(record) or "?",
+        "hostname": record.get("hostname") or record.get("nickname") or "?",
         "reverse DNS": _reverse_dns_summary(inventory) or "-",
         "state": live_info.get("state", record.get("state")) or "?",
         "architecture": record.get("architecture") or "?",
         "#CPU": cpu if cpu is not None else "?",
         "RAM GB": _mib_to_gib(memory),
         "disk GB": _mib_to_gib(disk_mib),
-        "IPv4": ", ".join(inventory["ipv4"]) or "-",
-        "IPv6": ", ".join(inventory["ipv6"]) or "-",
     }
 
 
@@ -445,8 +484,18 @@ def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
     for server in targets:
         details, interfaces = _server_enrichment(client, server["id"])
         rows.append(_server_status_row(server, details, interfaces))
-    columns = ["vname", "reverse DNS", "state", "architecture", "#CPU", "RAM GB", "disk GB", "IPv4", "IPv6"]
-    emit(rows, args.json, lambda data: print_table(data, columns, pal, "no servers on this account"))
+    columns = ["vname", "hostname", "state", "architecture", "#CPU", "RAM GB", "disk GB", "reverse DNS"]
+    emit(
+        rows,
+        args.json,
+        lambda data: print_table(
+            data,
+            columns,
+            pal,
+            "no servers on this account",
+            multiline_columns={"reverse DNS"},
+        ),
+    )
 
 
 def _filter_rows(rows: List[Dict[str, Any]], term: str | None) -> List[Dict[str, Any]]:
@@ -1386,9 +1435,13 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
         marker = " [already protected]" if server["name"] in existing_names else ""
         print(f"  {number}. {server['name']} (id {server['id']}){marker}")
         summary = _server_status_row(server, server["details"], server["interfaces"])
-        print(f"     IPv4: {summary['IPv4']}")
-        print(f"     IPv6: {summary['IPv6']}")
-        print(f"     reverse DNS: {summary['reverse DNS']}")
+        inventory = _server_address_inventory(server, server["details"], server["interfaces"])
+        print(f"     IPv4: {', '.join(inventory['ipv4']) or '-'}")
+        print(f"     IPv6: {', '.join(inventory['ipv6']) or '-'}")
+        reverse_dns_entries = summary["reverse DNS"].splitlines() or ["-"]
+        print(f"     reverse DNS: {reverse_dns_entries[0]}")
+        for entry in reverse_dns_entries[1:]:
+            print(f"                  {entry}")
 
     while True:
         try:
@@ -1532,8 +1585,9 @@ def parse_args():
     p = add_subcommand(
         "status",
         "show compact live status for all servers or one server",
-        "Fetch server details and interface data and show vname, reverse DNS, "
-        "run state, architecture, CPU count, RAM, disk capacity, IPv4, and IPv6. "
+        "Fetch server details and interface data and show vname, hostname, run state, "
+        "architecture, CPU count, RAM, disk capacity, and a final multiline reverse-DNS "
+        "column containing the IP entries. "
         "With no ID, every account server is queried.\n\n"
         "Examples:\n"
         "  ./scp-api.py status\n"
@@ -1838,7 +1892,7 @@ def parse_args():
     return args
 
 
-def main() -> int:
+def _main() -> int:
     args = parse_args()  # --help exits here, before _configure() ever runs
     # Validate local write/upload inputs before loading settings, refreshing a
     # token, or contacting the API. This makes a typo in a policy/file a local
@@ -1894,6 +1948,15 @@ def main() -> int:
             traceback.print_exc()
         return 1
     return 0
+
+
+def main() -> int:
+    """Run the CLI and turn an intentional Ctrl-C into a clean exit."""
+    try:
+        return _main()
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
