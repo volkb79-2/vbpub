@@ -60,6 +60,74 @@ def test_create_resume_and_remove_workspace_are_real_git_lifecycle(tmp_path):
     assert not workspace.path.exists()
 
 
+def test_create_workspace_captures_reset_diagnostics_and_cleans_failed_allocation(
+    monkeypatch, tmp_path
+):
+    """A failed materialization must preserve either stderr or stdout.
+
+    The reset is the first command in the newly allocated worktree. Its
+    captured diagnostic is the only actionable explanation an operator gets;
+    the allocation must also be removed before the error escapes.
+    """
+    class FakeShared:
+        WorkspaceError = RuntimeError
+
+        def __init__(self):
+            self.removed = []
+
+        def workspace_id_for_path(self, path):
+            return "abcdef"
+
+        def create_workspace(self, *args, **kwargs):
+            return object()
+
+        def remove_workspace(self, context, *, force=False):
+            self.removed.append((context, force))
+
+    shared = FakeShared()
+
+    def fake_run(argv, **kwargs):
+        if kwargs.get("capture_output"):
+            return subprocess.CompletedProcess(argv, 1, stdout="reset fallback", stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout=None, stderr=None)
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="reset fallback"):
+        transaction.create_workspace(tmp_path, base="a" * 40, purpose="build")
+    assert shared.removed and shared.removed[0][1] is True
+
+
+def test_resume_workspace_refuses_fetch_failure_before_reopening(tmp_path):
+    """A failed refresh cannot be mistaken for a successfully resumed tree."""
+    root = _repo(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    retained = tmp_path / "legacy"
+    _git(root, "worktree", "add", "-q", "-b", "cmru/release/legacy", str(retained), base)
+    try:
+        with pytest.raises(subprocess.CalledProcessError):
+            transaction.resume_workspace(root, retained)
+    finally:
+        _git(root, "worktree", "remove", "--force", str(retained))
+        _git(root, "branch", "-D", "cmru/release/legacy")
+
+
+def test_remove_legacy_workspace_forces_cleanup(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeShared:
+        def remove_unrecorded_workspace(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(transaction, "_shared_worktree", lambda: FakeShared())
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "child", "cmru/build/legacy", "a" * 40,
+    )
+    transaction.remove_workspace(workspace)
+    assert calls and calls[0][1]["force"] is True
+
+
 def test_scope_and_result_records_fail_closed_on_corrupt_json(tmp_path):
     root = _repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root, "cmru/release/token", "a" * 40)
