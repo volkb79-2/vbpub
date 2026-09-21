@@ -39,8 +39,6 @@ done
 set -- "${ARGS[@]:-}"
 if [ "${1:-}" = "" ] && [ ${#ARGS[@]} -eq 0 ]; then set --; fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PWMCP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="${PROJECT:-pwmcp}"
 ENV="${ENV:-dev}"
 STACK_NAME="${PROJECT}-${ENV}"
