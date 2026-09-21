@@ -353,7 +353,8 @@ FEAT-01; PWMCP only documents its future use.
 
 ## Previous review decision
 
-The coverage work remains separate from the upstream modernization. Coverage
-tests and resolver fail-closed hardening are already committed in this
-worktree. Upstream compatibility still requires a fresh image build and live
-endpoint acceptance after CMRU-generated pins are introduced.
+The coverage work and upstream modernization are committed in the dedicated
+worktrees. Coverage tests, resolver fail-closed hardening, the enforced base
+image digest, and the CMRU gate invocation are covered by the external R1
+pass. R2 mutation evidence, a fresh image build, and live endpoint acceptance
+remain the release checks after the long-running lane completes.
