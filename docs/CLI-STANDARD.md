@@ -81,6 +81,19 @@ Unknown verbs, missing required values, and malformed options print a concise,
 identity-headed diagnostic to stderr and exit `2`. They may include the
 relevant usage synopsis, but must not print a raw traceback.
 
+Once a known verb has been identified, a command-local invocation error also
+prints that verb's complete help immediately. This includes missing required
+positional arguments, missing required options, invalid choices, invalid
+values, and invalid option combinations. The operator should not have to type
+the same command again with `--help` to discover the remedy. The output must
+contain the failed-operation diagnostic and the same command help available
+from `tool <verb> --help`, and must still exit `2`.
+
+An error before a known verb can be identified prints the top-level help. A
+parser must not let argument ordering hide a more useful command-local error;
+for example, `tool extract` should explain that its session log is missing and
+show `extract` help, rather than only printing a generic parser synopsis.
+
 ## 3. Top-level usage document
 
 The top-level usage document is one coherent document, not a parser-generated
@@ -220,6 +233,10 @@ meaningful diagnostic.
 
 The normal interactive prompt must clearly state what will change. A declined
 prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
+When stdin is not interactive, a command must not attempt a prompt that will
+fail with EOF. It must either have a documented non-interactive default or
+refuse with an actionable message naming `--yes` or the required input. EOF is
+handled as a clean refusal/cancellation, never as an uncaught traceback.
 
 Other recurring option groups should be named according to meaning, for
 example:
@@ -317,7 +334,80 @@ Tests should exercise the real entrypoint or module invocation, not only helper
 functions. A controlled bad input must demonstrate that each safety/error
 oracle actually goes red before the fix.
 
-## 10. Adoption inventory
+## 10. Implementation guidance
+
+The standard does not require a third-party CLI framework. Python's standard
+library is sufficient for the contract:
+
+- `argparse` supplies typed options, subcommands, required values, option
+  groups, and version actions;
+- a small `ArgumentParser` subclass supplies identity-headed errors, dynamic
+  width, and command-help-on-error;
+- a thin dispatcher handles `help [verb]`, `version`, and the no-argument
+  path before ordinary parsing;
+- `importlib.metadata` or a declared version module supplies the authoritative
+  version;
+- `shutil.get_terminal_size`, `textwrap`, `signal`, `contextlib`, and
+  `traceback` cover terminal sizing, cancellation, cleanup, and unexpected
+  failures; and
+- `dataclasses` or typed dictionaries can hold the one verb/group/option
+  metadata table used to render top-level help and validate its tests.
+
+The repository has enough repeated behavior across CIU, CMRU, nyxloom, and the
+Netcup tools that a small custom library is worthwhile once migration begins.
+It should be a dependency-free contract helper, not a replacement CLI
+framework. Its narrow API should cover:
+
+1. `CliIdentity` and authoritative version resolution;
+2. structured verb/group metadata and top-level help rendering;
+3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`, and
+   command-help-on-error;
+4. the outer exception and Ctrl-C boundary; and
+5. reusable contract-test helpers for side-effect-free help/version, output
+   streams, exit statuses, and prompt behavior.
+
+Domain verbs, API clients, configuration loading, and destructive-operation
+policy must remain in each owning project. The helper must not import CIU,
+CMRU, nyxloom, Netcup, Docker, or any project-specific configuration. It must
+also be packaged or otherwise made available to installed tools; relying on a
+repository-root import path would make a standalone CLI work only from this
+checkout.
+
+Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
+nyxloom's parser classes) are useful migration evidence, but keeping three
+independent implementations will eventually recreate the drift this standard
+is intended to prevent. A later implementation change should first build the
+helper and migrate the three Netcup entrypoints, then migrate the larger CLIs
+with compatibility tests.
+
+## 11. Further contract areas
+
+The following areas should be covered by the standard or explicitly marked
+tool-specific before a CLI is considered fully adopted:
+
+- **stdin and prompts:** prompt defaults, EOF, non-TTY behavior, and whether
+  `--yes` is required or merely optional for each mutation;
+- **configuration precedence:** the documented order among command-line
+  options, environment, config files, and derived facts, with no silent
+  shadowing defaults;
+- **secret handling:** redaction in human output, debug output, exceptions,
+  JSON, temporary files, and subprocess arguments;
+- **output stability:** table column vocabulary, unknown versus unavailable
+  values, locale/time-zone assumptions, deterministic ordering, and JSON
+  schema/version policy;
+- **progress and cancellation:** whether progress uses stderr, how long
+  operations report liveness, and how SIGINT/SIGTERM/closed-pipe conditions
+  terminate;
+- **pagination and limits:** whether a list is complete, paginated, truncated,
+  or filtered, and how that fact is disclosed;
+- **aliases and deprecation:** compatibility names, warning destination,
+  removal policy, and tests that keep aliases from silently changing meaning;
+- **pass-through arguments:** an explicit `--` boundary wherever a verb runs a
+  child command, so child options cannot be mistaken for CLI options; and
+- **completion and automation:** shell completion, stable machine-readable
+  output, and whether prompts are forbidden in CI/non-TTY contexts.
+
+## 12. Adoption inventory
 
 This is an adoption plan, not a claim that all current tools already conform.
 
