@@ -39,18 +39,16 @@ the file supplied with `--config`. It validates the complete target locally
 before authentication and key work, then submits the saved payload and follows
 the task by default. `--no-monitor` is the explicit task-creation-only mode.
 `sshKeyIds` and `customScript` are optional in the file: the former means no
-persistent account keys are injected, and the latter means no Debian-specific
-cloud-init hook is sent.
+persistent account keys are injected, and the latter means no cloud-init hook
+is sent.
 
-The Debian v2 bootstrap is therefore an optional customScript hook rather than
-a hard requirement of the Netcup API installer. The wizard includes the
-placeholder-based hook by default and `--no-custom-script` omits it. A saved
-file is authoritative: `install` never loads a hidden recipe or invents a
-customScript. The normal API-install path only needs a per-host controller key
-when the selected customScript consumes `{{CONTROLLER_SSH_PUBKEY}}`; a plain
-image install can complete without generating one. The optional
-`build-customscript` wizard can still create a hook after the operator
-explicitly asks for controller access.
+The operating-system installer owns customScript generation. Netcup's wizard
+can consume a plain command or a JSON bundle from that producer with
+`--custom-script-file`; file-driven installs send the reviewed `customScript`
+as-is. Netcup only expands the provider-neutral
+`{{CONTROLLER_SSH_PUBKEY}}` marker and optionally waits for a declared
+`completionMarker`. A plain image install can therefore complete without any
+temporary controller key.
 
 ## Generated target and source selection
 
@@ -59,19 +57,18 @@ repository configuration. It is ignored because image IDs, account-key
 choices, and target identity are account-specific facts. `wizard` writes it;
 `install` reads it. There is no hidden `default-recipe.jsonc` fallback.
 
-The customScript keeps the bootstrap location as a placeholder until the
-controller sends the API request. The configured repository branch is passed
-both to the raw bootstrap URL and to `bootstrap-remote.py`; otherwise a
-feature-branch wrapper could silently fetch `main`'s installer subtree.
+The customScript source is intentionally outside `install-host.toml`. A
+producer such as Debian v2 renders its URL, repository branch, strict JSON
+configuration, credentials, and remote retention policy into a bundle. This
+prevents the Netcup frontend from acquiring an operating-system-specific
+environment-variable list or a second bootstrap template.
 
 ## Notification backend and Mattermost boundary
 
-The installer carries an explicit `NOTIFY_BACKEND` selector with
-`telegram`, `mattermost`, and `none` values. The selector prevents a stale
-credential in `.env` from silently choosing a different service, while the
-Telegram default keeps existing v2 recipes compatible. Telegram credentials
-must be supplied as a pair; Mattermost requires an HTTPS incoming-webhook URL
-and rejects Telegram credentials in the same request.
+The Debian-v2 producer carries an explicit `NOTIFY_BACKEND` selector with
+`telegram`, `mattermost`, and `none` values. Those values and credentials are
+validated by Debian v2 and embedded in its generated JSON; Netcup does not
+read or rewrite them.
 
 Mattermost is intentionally integrated through its post-only incoming webhook,
 not through a PAT or a REST client. The public consumer contract in
@@ -79,9 +76,8 @@ not through a PAT or a REST client. The public consumer contract in
 identity, channel binding, and secret-file location. A Netcup VM must use that
 public URL. The remote bootstrap is a dependency-free `curl | python3 -`
 entrypoint, so importing nyxloom's tightly coupled notification module would
-be the wrong boundary. The small payload translation is kept local and the
-notification path is best-effort: a webhook outage must not fail disk
-partitioning or stage completion.
+be the wrong boundary. The notification path is best-effort: a webhook outage
+must not fail disk partitioning or stage completion.
 
 There is no `libraries/mattermost-client` extraction in this change. A Python
 import package would need an underscore name such as `mattermost_client`; a
@@ -93,11 +89,10 @@ stable, tested webhook contract.
 
 The normal install path creates a per-host, per-date identity only after it
 knows which host it is targeting and only when the selected customScript needs
-one. `login`, `wizard`, `configure`, and `build-customscript` must not create
-one merely because the script was invoked; the wizard creates one only after
-the operator keeps the Debian v2 hook enabled. The generated
-controller public key is passed through the bootstrap and removed by stage2;
-the operator's persistent access key remains independent.
+one. `login`, `wizard`, and `configure` must not create one merely because the
+frontend was invoked. The generated controller public key is passed through
+the opaque hook; the hook's own producer decides whether the remote key is
+removed. The operator's persistent access key remains independent.
 
 The Netcup account-level `sshKeyIds` choice is separate from that local
 controller identity. Existing account keys are shown during the interactive
@@ -106,15 +101,14 @@ pins existing keys for direct payload runs. The installer never registers the
 temporary controller key as an account key and never creates account keys as a
 side effect of an install.
 
-The controller key has two independent successful-completion policies. The
-default is host removal/local retention, which closes the installed host's
-temporary access while preserving the reusable local host-specific key. Host
-removal/local removal and host retention/local retention are also valid. Host
-retention/local removal is rejected. On failure, both forms are retained for
-diagnosis; local removal requires observed `stage2_done`.
+The local controller key is retained by default so it can be reused for a
+later installation. A producer may declare a generic completion marker; only
+after that marker is observed can `--local-controller-key remove` delete the
+local key. Without the marker, the key remains for diagnosis and reuse. The
+remote key policy is not a Netcup concern.
 
 `netcup.toml` is the one API endpoint configuration source. `install-host.toml`
-contains installer/bootstrap/SSH policy only, and `monitor-task.toml` contains
+contains installer/SSH policy only, and `monitor-task.toml` contains
 monitor polling only. Frontends import `netcup_scp_client`; they do not shell
 out to `scp-api.py` or duplicate token/configuration setup.
 

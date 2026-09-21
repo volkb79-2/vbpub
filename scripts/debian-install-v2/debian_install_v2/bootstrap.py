@@ -8,6 +8,7 @@ import sys
 
 from .actions import HostActions
 from .config import Config, ConfigError, load_config
+from .customscript import build_customscript_bundle
 from .installer import Installer
 from .state import StateError, StateStore
 from . import __version__
@@ -34,19 +35,53 @@ class DebianInstallArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = DebianInstallArgumentParser(prog=PROG)
+    parser = DebianInstallArgumentParser(prog=PROG, add_help=False)
+    parser.add_argument("--help", action="help", help="show this help message and exit")
     parser.add_argument(
         "--version", action="version", version=f"{PROG} {__version__}"
     )
     parser.add_argument(
         "--action",
-        choices=("install", "resume", "status", "verify", "disable-stage2", "show-plan"),
+        choices=(
+            "install",
+            "resume",
+            "status",
+            "verify",
+            "disable-stage2",
+            "show-plan",
+            "build-customscript",
+        ),
         required=True,
     )
     config_group = parser.add_mutually_exclusive_group()
     config_group.add_argument("--config", metavar="FILE")
     config_group.add_argument("--config-json", metavar="JSON")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--repo-url",
+        default="https://github.com/volkb79-2/vbpub",
+        metavar="URL",
+        help="build-customscript: repository fetched by bootstrap-remote.py",
+    )
+    parser.add_argument(
+        "--repo-branch",
+        default="main",
+        metavar="BRANCH",
+        help="build-customscript: repository branch (default: main)",
+    )
+    parser.add_argument(
+        "--bootstrap-url",
+        metavar="URL",
+        help="build-customscript: explicit bootstrap-remote.py URL; otherwise derive it for canonical vbpub",
+    )
+    parser.add_argument(
+        "--controller-ssh-placeholder",
+        action="store_true",
+        help=(
+            "build-customscript: put {{CONTROLLER_SSH_PUBKEY}} in the v2 JSON "
+            "for a provider integration to replace before submission"
+        ),
+    )
     return parser
 
 
@@ -75,6 +110,22 @@ def main(argv: list[str] | None = None) -> int:
         print(VERSION_HEADLINE, file=sys.stderr)
         print(f"{PROG}: {exc}", file=sys.stderr)
         return 2
+
+    if args.action == "build-customscript":
+        try:
+            bundle = build_customscript_bundle(
+                config,
+                repo_url=args.repo_url,
+                repo_branch=args.repo_branch,
+                bootstrap_url=args.bootstrap_url,
+                controller_ssh_placeholder=args.controller_ssh_placeholder,
+            )
+        except ValueError as exc:
+            print(f"{VERSION_HEADLINE}", file=sys.stderr)
+            print(f"{PROG}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(bundle, indent=2, sort_keys=True))
+        return 0
 
     actions = HostActions(dry_run=args.dry_run)
     installer = Installer(config, actions)

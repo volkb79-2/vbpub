@@ -39,14 +39,12 @@ import threading
 import time
 import tomllib
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Optional, Dict, Any, List, Set
 from datetime import datetime
 from pathlib import Path
 
 import netcup_scp_client
-import netcup_install_plan
 # _load_env_file/_write_env_file have no call site left in this file's own
 # code (load_env_file() below covers the real runtime need) -- they stay
 # imported anyway because tests/test_scp_api_install_host.py calls them as
@@ -196,8 +194,8 @@ def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str)
     shared file reused across every install (confirmed live 2026-09-08: that
     let SSH monitoring for one host silently pick up a key netcup had
     actually registered for a different one). The key's *comment* embeds a
-    stable "vbpub-controller-ephemeral" marker (so debian-install-v2's own
-    end-of-stage2 authorized_keys cleanup - and any human auditing a host's
+    stable "vbpub-controller-ephemeral" marker (so the consumed hook's own
+    cleanup - and any human auditing a host's
     authorized_keys - can identify it unambiguously), the same host/date
     labels as the filename, and `controller_fqdn` (resolved via
     _resolve_controller_fqdn - "automatic" or an explicit value) so anyone
@@ -385,17 +383,13 @@ load_env_file()
 
 
 _SETTINGS_EXPECTED_KEYS = {
-    "bootstrap.raw_url_template",
-    "bootstrap.repo_url",
-    "bootstrap.repo_branch",
     "ssh.identity_file",
     "ssh.user",
     "ssh.controller_fqdn",
     "ssh.poll_interval",
     "ssh.attach_initial_delay",
     "ssh.attach_max_wait_seconds",
-    "ssh.stage2_wait_seconds",
-    "ssh.controller_host_key_retention",
+    "ssh.completion_wait_seconds",
     "ssh.controller_local_key_retention",
 }
 
@@ -418,50 +412,14 @@ netcup_scp_client.configure_api(load_environment=False)
 #  }
 
 SERVER_NAME = os.environ.get("NETCUP_SCP_API_SERVER_NAME")    # v1001.vxxu.de
-NOTIFY_BACKEND = os.environ.get("NOTIFY_BACKEND", "")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MATTERMOST_WEBHOOK_URL = os.environ.get("MATTERMOST_WEBHOOK_URL")
-CONTROLLER_HOST_KEY_RETENTION = str(SETTINGS["ssh.controller_host_key_retention"])
 CONTROLLER_LOCAL_KEY_RETENTION = str(SETTINGS["ssh.controller_local_key_retention"])
 CONTROLLER_SSH_PUBLIC_KEY = ""
 
 
-def _bootstrap_source() -> Dict[str, str]:
-    """Resolve the wrapper URL and the repo source it will fetch.
-
-    The URL is a payload placeholder rather than a Python literal so a saved
-    JSONC recipe remains portable between main and a feature branch. The
-    wrapper also receives the same repo URL/branch explicitly; otherwise a
-    feature-branch wrapper would silently download main's installer subtree.
-    """
-    def setting_or_env(env_name: str, setting_key: str) -> str:
-        value = os.environ.get(env_name, "").strip()
-        return value or str(SETTINGS[setting_key]).strip()
-
-    repo_url = setting_or_env("NETCUP_SCP_API_BOOTSTRAP_REPO_URL", "bootstrap.repo_url").rstrip("/")
-    repo_branch = setting_or_env("NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH", "bootstrap.repo_branch")
-    remote_url = os.environ.get("NETCUP_SCP_API_BOOTSTRAP_URL", "").strip()
-    if not remote_url:
-        template = str(SETTINGS["bootstrap.raw_url_template"])
-        if "{branch}" not in template:
-            raise ValueError("bootstrap.raw_url_template must contain the {branch} placeholder")
-        remote_url = template.replace("{branch}", urllib.parse.quote(repo_branch, safe="/"))
-
-    if not repo_url.startswith("https://") or any(char.isspace() for char in repo_url):
-        raise ValueError("bootstrap repo URL must be an https:// URL without whitespace")
-    if not remote_url.startswith("https://") or any(char.isspace() for char in remote_url):
-        raise ValueError("bootstrap URL must be an https:// URL without whitespace")
-    if not repo_branch or any(char.isspace() for char in repo_branch):
-        raise ValueError("bootstrap repo branch must be non-empty and contain no whitespace")
-    return {"remote_url": remote_url, "repo_url": repo_url, "repo_branch": repo_branch}
-
-
 # Installation settings (hostname will be set dynamically from server info).
-# The Netcup image-install payload is useful without a customScript.  The
-# Debian v2 bootstrap is an explicit wizard choice (or a customScript already
-# present in a saved target config), not an implicit dependency of this API
-# frontend.
+# The Netcup image-install payload is useful without a customScript.  A hook is
+# an opaque provider payload supplied by the caller; this frontend neither
+# builds nor interprets an operating-system installer hook.
 INSTALLATION_CONFIG = {
     "locale": "en_US.UTF-8",
     "timezone": "Europe/Berlin",
@@ -495,24 +453,27 @@ def parse_args():
         epilog="""
 Commands:
   wizard              Interactive API-backed gather-and-install wizard. It
-                       resolves a target, image and keys, optionally adds the
-                       Debian v2 customScript, saves target-host.jsonc, asks
-                       for confirmation, and starts the install.
+                       resolves a target, image and keys, optionally consumes
+                       a customScript file, saves target-host.jsonc, asks for
+                       confirmation, and starts the install.
   configure           Alias for wizard (kept for users of the old command).
   install             Install exactly the validated target config file. The
                        default is target-host.jsonc; use --config FILE for a
                        different file. This does no image/key gathering.
-  build-customscript  Interactive wizard: build a ready-to-paste customScript
-                       snippet (no Netcup API calls) for manual use in a
-                       web-hoster's own management UI - covers
-                       AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/notification backend/
-                       Telegram or Mattermost credentials, controller-key
-                       inclusion, and successful-stage2 host-key retention.
 
   Modes (pick one):
   --config FILE       Config file for install, or output file for wizard.
   --payload FILE      Deprecated alias for --config.
-  --attach-only       SSH-attach + tail bootstrap logs only; no Netcup API calls.
+  --custom-script-file FILE
+                       Wizard: consume an opaque customScript string, or a
+                       JSON object containing a customScript field. The file
+                       may be produced by an operating-system installer. A
+                       JSON bundle may also declare completionMarker.
+  --completion-marker PATH
+                       Optional absolute remote path written by the opaque
+                       customScript when its post-install work is complete.
+  --attach-only       SSH-attach + tail Netcup's customScript output only; no
+                       Netcup API calls.
 
 Examples:
   # First-time setup: log in, then gather a target and prepare an install:
@@ -531,9 +492,8 @@ Examples:
   # Preview a target config without calling the image-install API:
   %(prog)s install --config=target-host.jsonc --dry-run
 
-  # Include or omit the optional Debian v2 customScript in the wizard:
-  %(prog)s wizard --debian-install-v2
-  %(prog)s wizard --no-custom-script
+  # Consume a customScript bundle produced by another installer:
+  %(prog)s wizard --custom-script-file debian-install-v2-customscript.json
 
   # Pin an already-registered account key in a payload; no account-key creation occurs:
   %(prog)s install --config=target-host.jsonc --ssh-key-id=123
@@ -545,11 +505,10 @@ Examples:
   %(prog)s --attach-only --ssh-host=1.2.3.4
 
 Settings (install-host.toml, next to this script):
-  Every operational default (SSH identity path/user, poll interval, attach/
-  stage2 wait timeouts, and controller-key retention) lives there. Shared API
-  base URLs are in netcup.toml. CLI flags below override installer settings
-  per-run; nothing in this script falls back to a bare literal if a setting is
-  missing.
+  Every operational default (SSH identity path/user, poll interval, attach
+  timeout, and local controller-key retention) lives there. Shared API base
+  URLs are in netcup.toml. CLI flags below override installer settings per-run;
+  nothing in this script falls back to a bare literal if a setting is missing.
 
 Environment Variables (see .env.example):
   NETCUP_SCP_API_REFRESH_TOKEN     Required (not needed for --attach-only): OAuth2 refresh token.
@@ -558,15 +517,7 @@ Environment Variables (see .env.example):
   NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
   NETCUP_SCP_API_SSH_USER          Overrides install-host.toml's ssh.user for --ssh-user.
   NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides install-host.toml's ssh.identity_file for --ssh-identity-file.
-  NOTIFY_BACKEND                   Optional: telegram, mattermost, or none; forwarded into the bootstrap.
-  TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
-                                   Optional together: forwarded for Telegram notifications.
-  MATTERMOST_WEBHOOK_URL           Optional: HTTPS incoming-webhook credential for Mattermost notifications.
   NETCUP_SCP_API_DEBUG             Enable verbose request/response logging (yes/true/1); same as --debug.
-  NETCUP_SCP_API_BOOTSTRAP_URL     Optional direct override for the remote bootstrap URL.
-  NETCUP_SCP_API_BOOTSTRAP_REPO_URL/REPO_BRANCH
-                                    Optional overrides for the source fetched by bootstrap-remote.py;
-                                    set REPO_BRANCH with the URL when testing a feature branch.
 
 These can be set in a .env file in the current directory (see scripts/netcup/.env.example).
 """,
@@ -576,7 +527,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("wizard", "configure", "install", "build-customscript"),
+        choices=("wizard", "configure", "install"),
         default=None,
         help="Command; use wizard, configure, or install explicitly (see the examples above).",
     )
@@ -595,19 +546,18 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         metavar="FILE",
         help="Deprecated alias for --config.",
     )
-    custom_script_group = parser.add_mutually_exclusive_group()
-    custom_script_group.add_argument(
-        "--debian-install-v2",
-        dest="debian_install_v2",
-        action="store_true",
-        default=None,
-        help="Wizard: include the generated Debian v2 bootstrap customScript (default: yes).",
+    parser.add_argument(
+        "--custom-script-file",
+        metavar="FILE",
+        help=(
+            "Wizard only: read an opaque customScript command from FILE. FILE may be "
+            "the JSON bundle emitted by an external installer or a plain text command."
+        ),
     )
-    custom_script_group.add_argument(
-        "--no-custom-script",
-        dest="debian_install_v2",
-        action="store_false",
-        help="Wizard: omit customScript and perform only the Netcup image installation.",
+    parser.add_argument(
+        "--completion-marker",
+        metavar="PATH",
+        help="Optional absolute remote completion marker for the consumed customScript.",
     )
     parser.add_argument(
         "--dry-run",
@@ -629,7 +579,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         "--attach-only",
         action="store_true",
         help=(
-            "Do not call Netcup APIs. Only SSH-attach to a host and stream stage1/stage2 bootstrap logs, "
+            "Do not call Netcup APIs. Only SSH-attach to a host and stream Netcup's customScript output, "
             "reconnecting across disconnects/reboots."
         ),
     )
@@ -663,15 +613,11 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         help="In --attach-only mode, wait up to N seconds for SSH to become usable (default: from install-host.toml).",
     )
     parser.add_argument(
-        "--stage2-wait-seconds",
+        "--completion-wait-seconds",
         type=float,
-        default=SETTINGS["ssh.stage2_wait_seconds"],
-        help=(
-            "In --attach-only mode, also wait for /var/lib/vbpub/bootstrap/stage2_done "
-            "(default: from install-host.toml). Set to 0 to disable waiting."
-        ),
+        default=SETTINGS["ssh.completion_wait_seconds"],
+        help="Maximum wait for --completion-marker after the provider task finishes (default: from install-host.toml).",
     )
-
     parser.add_argument(
         "--yes",
         action="store_true",
@@ -701,17 +647,17 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     )
 
     parser.add_argument(
-        "--attach-bootstrap",
-        dest="attach_bootstrap",
+        "--attach-custom-script",
+        dest="attach_custom_script",
         action="store_true",
         default=True,
-        help="When monitoring, attempt to SSH in once cloud-init starts and tail bootstrap logs. (default: enabled)"
+        help="When monitoring, SSH in and tail Netcup's /root/custom_script.output (default: enabled).",
     )
     parser.add_argument(
-        "--no-attach-bootstrap",
-        dest="attach_bootstrap",
+        "--no-attach-custom-script",
+        dest="attach_custom_script",
         action="store_false",
-        help="Disable SSH attach/bootstrap log tailing while monitoring."
+        help="Disable SSH attachment while monitoring.",
     )
     parser.add_argument(
         "--ssh-host",
@@ -729,11 +675,11 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         help=(
             "Path to LOCAL SSH identity file used for attach/monitoring (default: from "
             "install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
-            "the ephemeral controller bootstrap key, one per (host, date) - the default is a "
+            "the ephemeral controller key, one per (host, date) - the default is a "
             "'{host}'/'{date}' TEMPLATE rendered automatically for a real install, but "
             "--attach-only requires an explicit, already-resolved path here (it will refuse "
             "an unrendered template rather than silently generate a key that can't match the "
-            "host). Not the host-generated per-host production key from bootstrap stage2."
+            "host). Not a host-generated production key from the consumed customScript."
         )
     )
     parser.add_argument(
@@ -749,22 +695,13 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         ),
     )
     parser.add_argument(
-        "--host-controller-key",
-        choices=("remove", "retain"),
-        default=os.environ.get(
-            "NETCUP_SCP_API_CONTROLLER_KEY_HOST_RETENTION",
-            str(SETTINGS["ssh.controller_host_key_retention"]),
-        ),
-        help="After observed successful stage2, remove or retain the temporary controller key on the host (default: remove).",
-    )
-    parser.add_argument(
         "--local-controller-key",
         choices=("remove", "retain"),
         default=os.environ.get(
             "NETCUP_SCP_API_CONTROLLER_KEY_LOCAL_RETENTION",
             str(SETTINGS["ssh.controller_local_key_retention"]),
         ),
-        help="After observed successful stage2, remove or retain the local controller key (default: retain).",
+        help="After the declared customScript completion marker, remove or retain the local controller key (default: retain).",
     )
     args = parser.parse_args()
     if args.server_id is not None and args.server_id <= 0:
@@ -773,24 +710,20 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         parser.error("--ssh-key-id values must be positive integers")
     if args.ssh_key_ids is not None and len(set(args.ssh_key_ids)) != len(args.ssh_key_ids):
         parser.error("--ssh-key-id values must not contain duplicates")
-    if args.command == "build-customscript" and any(
-        value for value in (args.config_path, args.attach_only, args.server_id, args.ssh_key_ids)
-    ):
-        parser.error("build-customscript cannot be combined with install or target options")
     if args.command == "install" and args.server_id is not None:
         parser.error("install reads the target from --config/target-host.jsonc; do not combine it with --server-id")
-    if args.command == "install" and args.debian_install_v2 is not None:
-        parser.error("--debian-install-v2/--no-custom-script are wizard options; put customScript in the install config")
-    if args.config_path and args.command not in {"wizard", "configure"} and args.debian_install_v2 is not None:
-        parser.error("--debian-install-v2/--no-custom-script cannot modify a file-driven install config")
+    if args.custom_script_file and args.command not in {"wizard", "configure"}:
+        parser.error("--custom-script-file is only valid with wizard/configure")
+    try:
+        args.completion_marker = _validate_completion_marker(args.completion_marker)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.attach_only and any((args.config_path, args.server_id, args.ssh_key_ids, args.monitor, args.no_monitor)):
         parser.error("--attach-only cannot be combined with --config/--payload, --server-id, --ssh-key-id, or monitoring options")
     if args.config_path and args.server_id is not None and args.command not in {"wizard", "configure"}:
         parser.error("--config/--payload supplies its own target; do not combine it with --server-id")
     if args.no_monitor and args.monitor:
         parser.error("--monitor and --no-monitor cannot be combined")
-    if args.host_controller_key == "retain" and args.local_controller_key == "remove":
-        parser.error("host retain/local remove is not a valid controller-key retention policy")
     if not sys.argv[1:]:
         parser.print_help()
         parser.exit(0)
@@ -847,29 +780,34 @@ def _tcp_port_open(host: str, port: int = 22, timeout: float = 2.0) -> bool:
         return False
 
 
-def _wait_for_stage2_done(
+def _validate_completion_marker(marker: Optional[str]) -> Optional[str]:
+    if marker is None:
+        return None
+    marker = marker.strip()
+    if not marker:
+        return None
+    if not marker.startswith("/") or any(char in marker for char in "\r\n\x00"):
+        raise ValueError("completion marker must be an absolute remote path")
+    return marker
+
+
+def _wait_for_completion_marker(
     *,
     host: str,
     user: str,
     identity_file: Optional[str],
     poll_interval: float,
     max_wait_seconds: float,
+    marker: str,
     monitor_log_path: Path,
 ) -> None:
-    """Wait for vbpub stage2 completion on the newly installed host.
-
-    Uses a marker file written by bootstrap stage2:
-      /var/lib/vbpub/bootstrap/stage2_done
-
-    Handles reboots/disconnects by retrying SSH.
-    """
-
+    """Wait for an opaque customScript's declared completion marker."""
     start = time.monotonic()
     poll = max(1.0, float(poll_interval))
 
     def _emit(line: str) -> None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        out = f"[{now}] [stage2-wait] {line}"
+        out = f"[{now}] [customScript-wait] {line}"
         print(out)
         try:
             with open(monitor_log_path, "a", encoding="utf-8") as mf:
@@ -877,57 +815,38 @@ def _wait_for_stage2_done(
         except Exception:
             pass
 
-    _emit(f"Waiting for stage2 completion marker on {user}@{host} (timeout {max_wait_seconds:.0f}s)")
-
+    _emit(
+        f"Waiting for customScript completion marker on {user}@{host}: {marker} "
+        f"(timeout {max_wait_seconds:.0f}s)"
+    )
     last_status = None
     while True:
-        if (time.monotonic() - start) > max_wait_seconds:
-            raise TimeoutError(f"Timed out waiting for stage2_done after {max_wait_seconds:.0f}s")
-
+        if time.monotonic() - start > max_wait_seconds:
+            raise TimeoutError(
+                f"timed out waiting for customScript completion marker {marker!r} "
+                f"after {max_wait_seconds:.0f}s"
+            )
         if not _tcp_port_open(host, 22, timeout=2.0):
             time.sleep(poll)
             continue
-
-        cmd = (
-            "bash -lc 'set -euo pipefail; "
-            "S=/var/lib/vbpub/bootstrap/stage2_done; "
-            "if [ -f \"$S\" ]; then echo STAGE2_DONE; else echo STAGE2_NOT_DONE; fi; "
-            "if command -v systemctl >/dev/null 2>&1; then "
-            "  systemctl is-active vbpub-bootstrap-stage2.service 2>/dev/null || true; "
-            "  systemctl show -p ActiveState -p SubState -p Result vbpub-bootstrap-stage2.service 2>/dev/null || true; "
-            "fi'"
-        )
-
-        cmd_ssh = _build_ssh_cmd_base(host, user, identity_file) + [cmd]
+        command = f"test -f {shlex.quote(marker)}"
         try:
-            r = subprocess.run(cmd_ssh, text=True, capture_output=True, timeout=15)
-        except Exception as e:
-            status = f"ssh-error: {type(e).__name__}: {e}"
-            if status != last_status:
-                _emit(status)
-                last_status = status
-            time.sleep(poll)
-            continue
-
-        out = (r.stdout or "").strip()
-        err = (r.stderr or "").strip()
-        status = f"ssh-exit={r.returncode}"
-        if err:
-            status += f" err={err.splitlines()[-1]}"
-
-        if out:
-            # Keep the output small; it can be multi-line.
-            summary = out.splitlines()[:6]
-            status += " out=" + " | ".join(summary)
-
+            result = subprocess.run(
+                _build_ssh_cmd_base(host, user, identity_file) + [command],
+                text=True,
+                capture_output=True,
+                timeout=15,
+            )
+            status = f"ssh-exit={result.returncode}"
+        except Exception as exc:
+            status = f"ssh-error: {type(exc).__name__}: {exc}"
+            result = None
         if status != last_status:
             _emit(status)
             last_status = status
-
-        if r.returncode == 0 and "STAGE2_DONE" in out:
-            _emit("Stage2 completion marker present (stage2_done).")
+        if result is not None and result.returncode == 0:
+            _emit("customScript completion marker present.")
             return
-
         time.sleep(poll)
 
 
@@ -1019,7 +938,7 @@ def _server_short_name_from_details(server_details: Optional[Dict[str, Any]]) ->
     return None
 
 
-class _SSHBootstrapFollower:
+class _SSHCustomScriptFollower:
     def __init__(
         self,
         task_uuid: str,
@@ -1048,8 +967,7 @@ class _SSHBootstrapFollower:
         self._proc: Optional[subprocess.Popen[str]] = None
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.local_log_path = Path.cwd() / f"ssh-tail-{task_uuid}-{ts}.log"
-        self.local_stage1_log_path = Path.cwd() / f"ssh-tail-stage1-{task_uuid}-{ts}.log"
-        self.local_stage2_log_path = Path.cwd() / f"ssh-tail-stage2-{task_uuid}-{ts}.log"
+        self.local_custom_script_log_path = Path.cwd() / f"ssh-tail-custom-script-{task_uuid}-{ts}.log"
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -1089,15 +1007,13 @@ class _SSHBootstrapFollower:
 
         with (
             open(self.local_log_path, "a", encoding="utf-8") as lf,
-            open(self.local_stage1_log_path, "a", encoding="utf-8") as lf_stage1,
-            open(self.local_stage2_log_path, "a", encoding="utf-8") as lf_stage2,
+            open(self.local_custom_script_log_path, "a", encoding="utf-8") as lf_custom,
         ):
             _log("=" * 70, lf)
             _log(banner, lf)
             _log("=" * 70, lf)
             _log(f"[attach] Local capture: {self.local_log_path}", lf)
-            _log(f"[attach] Stage1 capture: {self.local_stage1_log_path}", lf)
-            _log(f"[attach] Stage2 capture: {self.local_stage2_log_path}", lf)
+            _log(f"[attach] customScript capture: {self.local_custom_script_log_path}", lf)
             _log(f"[attach] Identity: {identity_hint}", lf)
 
             if self.initial_delay > 0:
@@ -1154,34 +1070,23 @@ class _SSHBootstrapFollower:
                 first_attach = False
                 _log("[attach] SSH reachable; starting remote tail.", lf)
 
-                # Tail both stage1 and stage2 logs in one SSH session.
-                # - stage1: /root/custom_script.output (netcup customScript)
-                # - stage2: systemd journal for vbpub-bootstrap-stage2.service (survives cloud-init being disabled)
+                # Netcup writes the provider customScript output here.  The
+                # command itself is opaque to this frontend, so there is no
+                # second, Debian-specific service or completion marker to tail.
                 tail_remote = (
                     "bash -lc 'set -euo pipefail; "
-                    "echo "
-                    "  \"[attach] Streaming stage1+stage2 logs (one SSH session)\"; "
-                    "prefix(){ tag=\"$1\"; while IFS= read -r line; do printf \"[%s] %s\\n\" \"$tag\" \"$line\"; done; }; "
-                    "tail_stage1(){ "
-                    "  P=/root/custom_script.output; "
-                    "  if [ ! -f \"$P\" ]; then "
-                    "    echo \"[attach] Waiting for log to appear: $P\"; "
-                    "    for i in $(seq 1 300); do [ -f \"$P\" ] && break; sleep 1; done; "
-                    "  fi; "
-                    "  if [ -f \"$P\" ]; then "
-                    "    echo \"[attach] Tailing: $P\"; "
-                    "    tail -n 200 -F \"$P\" 2>&1 | prefix stage1; "
-                    "  else "
-                    "    echo \"[attach] No stage1 log at $P\" | prefix stage1; "
-                    "  fi; "
-                    "}; "
-                    "tail_stage2(){ "
-                    "  if ! command -v journalctl >/dev/null 2>&1; then echo \"[attach] journalctl not available\" | prefix stage2; return 0; fi; "
-                    "  echo \"[attach] Tailing: journalctl -u vbpub-bootstrap-stage2.service\" | prefix stage2; "
-                    "  for i in $(seq 1 600); do journalctl -u vbpub-bootstrap-stage2.service -n 1 --no-pager >/dev/null 2>&1 && break; sleep 1; done; "
-                    "  journalctl -u vbpub-bootstrap-stage2.service -n 200 -f --no-pager 2>&1 | prefix stage2; "
-                    "}; "
-                    "tail_stage1 & tail_stage2 & wait'"
+                    "echo \"[attach] Streaming Netcup customScript output\"; "
+                    "P=/root/custom_script.output; "
+                    "if [ ! -f \"$P\" ]; then "
+                    "  echo \"[attach] Waiting for log to appear: $P\"; "
+                    "  for i in $(seq 1 300); do [ -f \"$P\" ] && break; sleep 1; done; "
+                    "fi; "
+                    "if [ -f \"$P\" ]; then "
+                    "  echo \"[attach] Tailing: $P\"; "
+                    "  tail -n 200 -F \"$P\" 2>&1; "
+                    "else "
+                    "  echo \"[attach] No customScript log at $P\"; "
+                    "fi'"
                 )
 
                 cmd_tail = _build_ssh_cmd_base(self.host, self.user, self.identity_file) + [tail_remote]
@@ -1230,14 +1135,8 @@ class _SSHBootstrapFollower:
                         lf.write(out_line)
                         lf.flush()
 
-                        # Also split into stage-specific files based on the prefixes added
-                        # by the remote tail command (sed in tail_remote).
-                        if "[stage1]" in out_line:
-                            lf_stage1.write(out_line)
-                            lf_stage1.flush()
-                        elif "[stage2]" in out_line:
-                            lf_stage2.write(out_line)
-                            lf_stage2.flush()
+                        lf_custom.write(out_line)
+                        lf_custom.flush()
                 except Exception as e:
                     _log(f"[attach] Failed while capturing remote output: {e}", lf)
 
@@ -1263,14 +1162,16 @@ def monitor_task(
     ssh_host: Optional[str] = None,
     ssh_user: str = "root",
     ssh_identity_file: Optional[str] = None,
-    attach_bootstrap: bool = True,
+    attach_custom_script: bool = True,
+    completion_marker: Optional[str] = None,
+    completion_wait_seconds: float = 1800.0,
 ) -> Dict[str, Any]:
-    """Poll task endpoint until it reaches a terminal state."""
+    """Poll the provider task until it reaches a terminal state."""
     last_progress = None
     last_state = None
     last_step_states = {}
 
-    follower: Optional[_SSHBootstrapFollower] = None
+    follower: Optional[_SSHCustomScriptFollower] = None
     attach_started = False
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1281,7 +1182,7 @@ def monitor_task(
     print("=" * 70)
     print(f"Monitor capture: {monitor_log_path}")
 
-    if attach_bootstrap and not ssh_identity_file:
+    if attach_custom_script and not ssh_identity_file:
         print(
             "[attach] NOTE: no --ssh-identity-file provided; attempting SSH attach using default ssh identities/agent. "
             "For deterministic behavior, pass --ssh-identity-file (or set NETCUP_SCP_API_SSH_IDENTITY_FILE)."
@@ -1289,9 +1190,9 @@ def monitor_task(
 
     # Start attach early (about 10s after installation kickoff) and retry until SSH becomes usable.
     # This avoids relying on SCP step names / Cloudinit timing.
-    if attach_bootstrap and not attach_started and ssh_host:
+    if attach_custom_script and not attach_started and ssh_host:
         attach_started = True
-        follower = _SSHBootstrapFollower(
+        follower = _SSHCustomScriptFollower(
             task_uuid=task_uuid,
             host=ssh_host,
             user=ssh_user,
@@ -1368,23 +1269,21 @@ def monitor_task(
             last_progress = progress
 
         if state in ("FINISHED", "ERROR", "CANCELED", "ROLLBACK"):
-            # If the SCP task finished successfully, stage2 may still be running after the reboot.
-            # Keep SSH attach alive and explicitly wait for the stage2_done marker.
-            if state == "FINISHED" and ssh_host and attach_bootstrap:
+            if state == "FINISHED" and ssh_host and completion_marker:
                 try:
-                    _wait_for_stage2_done(
+                    _wait_for_completion_marker(
                         host=ssh_host,
                         user=ssh_user,
                         identity_file=ssh_identity_file,
                         poll_interval=poll_interval,
-                        max_wait_seconds=60 * 60,  # 60 minutes
+                        max_wait_seconds=completion_wait_seconds,
+                        marker=completion_marker,
                         monitor_log_path=monitor_log_path,
                     )
-                    task["vbpub_stage2_done"] = True
-                except Exception as e:
-                    task["vbpub_stage2_done"] = False
-                    task["vbpub_stage2_wait_error"] = str(e)
-
+                    task["custom_script_completed"] = True
+                except Exception as exc:
+                    task["custom_script_completed"] = False
+                    task["custom_script_completion_error"] = str(exc)
             if follower:
                 follower.stop()
             # Print responseError if present
@@ -1445,155 +1344,38 @@ def save_payload_with_comments(
         f.write("\n".join(lines) + "\n")
 
 
-def _build_customscript(
-    *,
-    auto_reboot_after_stage1: bool,
-    never_reboot: bool,
-    telegram_bot_token: str,
-    telegram_chat_id: str,
-    controller_pubkey: str,
-    notify_backend: str = "telegram",
-    mattermost_webhook_url: str = "",
-    retain_controller_ssh_key: bool = False,
-) -> str:
-    """Build the same bootstrap command used by the API installation path."""
-    return netcup_install_plan.build_customscript(
-        bootstrap=_bootstrap_source(),
-        auto_reboot_after_stage1=auto_reboot_after_stage1,
-        never_reboot=never_reboot,
-        telegram_bot_token=telegram_bot_token,
-        telegram_chat_id=telegram_chat_id,
-        controller_pubkey=controller_pubkey,
-        notify_backend=notify_backend,
-        mattermost_webhook_url=mattermost_webhook_url,
-        retain_controller_ssh_key=retain_controller_ssh_key,
-    )
-
-
-def _wizard_wants_debian_bootstrap(args: argparse.Namespace) -> bool:
-    """Resolve the wizard's optional Debian v2 customScript choice.
-
-    The non-interactive default preserves the historical installer behavior so
-    an automated wizard still produces a Debian v2 payload.  ``install`` never
-    calls this helper: a file-driven install uses exactly the customScript
-    present in its config, including no customScript for a plain image install.
-    """
-    explicit = getattr(args, "debian_install_v2", None)
-    if explicit is not None:
-        return bool(explicit)
-    if is_noninteractive(args):
-        return True
-    return _prompt_yes_no(
-        "Include the Debian install-v2 cloud-init customScript?",
-        True,
-    )
-
-
 def _payload_needs_controller_key(payload: Optional[Dict[str, Any]]) -> bool:
-    """Whether a payload's customScript consumes the controller public key."""
+    """Whether an opaque customScript consumes the generic controller key."""
     custom_script = payload.get("customScript") if isinstance(payload, dict) else None
     return isinstance(custom_script, str) and "{{CONTROLLER_SSH_PUBKEY}}" in custom_script
 
 
-def _run_build_customscript() -> int:
-    """Interactive wizard: build a ready-to-paste customScript snippet for
-    manual use in a web-hoster's own management UI (e.g. netcup SCP's
-    server-reinstall dialog) - covers only the handful of settings
-    INSTALLATION_CONFIG's own customScript template already parameterizes
-    today (bootstrap URL/repository, AUTO_REBOOT_AFTER_STAGE1,
-    NEVER_REBOOT, notification backend, Telegram or Mattermost credentials,
-    CONTROLLER_SSH_PUBKEY) - not the full ~25 env vars
-    bootstrap-remote.py documents. For anything else, append your own
-    KEY=VALUE pairs (or VBPUB_CONFIG_EXTRA_JSON=...) to the printed snippet
-    by hand before the trailing `python3 -`.
-    """
-    print("=" * 70)
-    print("BUILD CUSTOMSCRIPT (for pasting into a web-hoster management UI)")
-    print("=" * 70)
-
-    auto_reboot = _prompt_yes_no("Auto-reboot after stage1?", True)
-    never_reboot = _prompt_yes_no("Never reboot (overrides the reboot schedule entirely)?", False)
-    configured_backend = os.environ.get("NOTIFY_BACKEND", "").strip().lower()
-    backend_default = configured_backend if configured_backend in {"telegram", "mattermost", "none"} else "telegram"
-    backend_items = [
-        "Telegram (bot token + chat ID)",
-        "Mattermost (incoming webhook URL)",
-        "None (disable notifications)",
-    ]
-    backend_index = _prompt_choice(
-        backend_items,
-        {"telegram": 0, "mattermost": 1, "none": 2}[backend_default],
-        "Notification backend",
-    )
-    notify_backend = ("telegram", "mattermost", "none")[backend_index]
-    telegram_bot_token = ""
-    telegram_chat_id = ""
-    mattermost_webhook_url = ""
-    if notify_backend == "telegram":
-        telegram_bot_token = _prompt_text(
-            "Telegram bot token (blank to skip)", os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        )
-        telegram_chat_id = _prompt_text(
-            "Telegram chat id (blank to skip)", os.environ.get("TELEGRAM_CHAT_ID", "")
-        )
-    elif notify_backend == "mattermost":
-        mattermost_webhook_url = _prompt_text(
-            "Mattermost incoming-webhook URL", os.environ.get("MATTERMOST_WEBHOOK_URL", "")
-        )
-
-    controller_pubkey = ""
-    retain_controller_ssh_key = _prompt_choice(
-        [
-            "Remove the controller key from the host after successful stage2",
-            "Retain the controller key on the host after successful stage2",
-        ],
-        0 if os.environ.get(
-            "NETCUP_SCP_API_CONTROLLER_KEY_HOST_RETENTION",
-            str(SETTINGS["ssh.controller_host_key_retention"]),
-        ) == "remove" else 1,
-        "Successful stage2 host-key policy",
-    ) == 1
-    if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
-        # Adversarial-review finding, 2026-09-08: this command is explicitly
-        # meant to be usable without $NETCUP_SCP_API_SERVER_NAME set (a
-        # manual web-UI install may never touch this script's own .env at
-        # all) -- silently falling back to SERVER_NAME (possibly None,
-        # rendering to the generic "unknown-host" label) would collapse
-        # every host built this way, on the same calendar day, onto the
-        # SAME keypair -- exactly the failure mode the per-host redesign
-        # exists to prevent, and it would happen with no visible warning.
-        # Always ask, defaulting to SERVER_NAME only if it's already set.
-        host_label = _prompt_text("Target hostname/server name (for a unique per-host key)", SERVER_NAME or "")
-        if not host_label:
-            print("ERROR: a target hostname is required to generate a per-host key", file=sys.stderr)
-            return 1
-        identity_template = os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"])
-        identity_file = _render_identity_file_path(identity_template, host_label)
-        _ensure_local_identity_file_exists(identity_file, SETTINGS["ssh.controller_fqdn"])
-        controller_pubkey = _read_public_key_for_identity(identity_file)
-        print(f"   ✓ Using identity: {identity_file}")
-
+def _load_custom_script_file(path: str) -> tuple[str, Optional[str]]:
+    """Read an opaque customScript command or a generator JSON bundle."""
     try:
-        snippet = _build_customscript(
-            auto_reboot_after_stage1=auto_reboot,
-            never_reboot=never_reboot,
-            telegram_bot_token=telegram_bot_token,
-            telegram_chat_id=telegram_chat_id,
-            controller_pubkey=controller_pubkey,
-            notify_backend=notify_backend,
-            mattermost_webhook_url=mattermost_webhook_url,
-            retain_controller_ssh_key=retain_controller_ssh_key,
+        raw = Path(path).read_text(encoding="utf-8").strip()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"ERROR: customScript file not found: {path}") from exc
+    except OSError as exc:
+        raise SystemExit(f"ERROR: cannot read customScript file {path}: {exc}") from exc
+    if not raw:
+        raise SystemExit(f"ERROR: customScript file is empty: {path}")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw, None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("customScript"), str):
+        raise SystemExit(
+            "ERROR: customScript JSON must be an object containing a string customScript field"
         )
-    except ValueError as exc:
-        print(f"ERROR: invalid notification configuration: {exc}", file=sys.stderr)
-        return 2
-    print()
-    print("Paste this into the customScript field:")
-    print("-" * 70)
-    print(snippet)
-    print("-" * 70)
-    print("Note: this manual snippet cannot observe stage2 or remove a local key automatically.")
-    return 0
+    custom_script = parsed["customScript"].strip()
+    if not custom_script:
+        raise SystemExit(f"ERROR: customScript field is empty: {path}")
+    try:
+        completion_marker = _validate_completion_marker(parsed.get("completionMarker"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SystemExit(f"ERROR: invalid completionMarker in {path}: {exc}") from exc
+    return custom_script, completion_marker
 
 
 def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str) -> int:
@@ -1822,8 +1604,9 @@ def install_from_payload(
 ):
     """Install directly from a payload JSON file.
 
-    The payload file may contain placeholders like {{TELEGRAM_BOT_TOKEN}} so it
-    can be stored safely. Placeholders are expanded only for the API request.
+    The payload file may contain the generic {{CONTROLLER_SSH_PUBKEY}} marker
+    emitted by an external customScript producer. It is expanded only for the
+    API request; all other customScript content is opaque here.
     """
     print("=" * 70)
     print("DIRECT INSTALLATION MODE" + ("  [DRY RUN]" if getattr(args, "dry_run", False) else ""))
@@ -1945,7 +1728,7 @@ def install_from_payload(
     try:
         installation_payload_to_send = _expand_payload_placeholders(installation_payload)
     except ValueError as exc:
-        print(f"❌ ERROR: invalid notification/bootstrap placeholder configuration: {exc}", file=sys.stderr)
+        print(f"❌ ERROR: invalid customScript placeholder configuration: {exc}", file=sys.stderr)
         sys.exit(1)
 
     # Display payload summary.
@@ -1964,7 +1747,11 @@ def install_from_payload(
     # Ask for confirmation (unless non-interactive)
     if not is_noninteractive(args):
         print("=" * 70)
-        response = input("Do you want to start the installation now? (y/n): ")
+        try:
+            response = input("Do you want to start the installation now? (y/n): ")
+        except KeyboardInterrupt:
+            print("\nInstallation cancelled.")
+            return
         if response.lower() not in ("y", "yes"):
             print("Installation cancelled.")
             return
@@ -1999,7 +1786,9 @@ def install_from_payload(
                     ssh_host=(getattr(args, "ssh_host", None) or ip_address),
                     ssh_user=args.ssh_user,
                     ssh_identity_file=getattr(args, "ssh_identity_file", None),
-                    attach_bootstrap=getattr(args, "attach_bootstrap", True),
+                    attach_custom_script=getattr(args, "attach_custom_script", True),
+                    completion_marker=getattr(args, "completion_marker", None),
+                    completion_wait_seconds=getattr(args, "completion_wait_seconds", 1800.0),
                 )
                 _apply_local_controller_retention(getattr(args, "ssh_identity_file", None), task_result)
     except HTTPStatusError as e:
@@ -2014,95 +1803,39 @@ def install_from_payload(
 
 
 def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of payload with supported placeholders expanded.
+    """Expand only the provider-neutral controller-key marker.
 
-    This is used to keep payloads safe-to-print/save (placeholders), while
-    still ensuring the API request sends real values.
+    The producer of a customScript owns every operating-system-specific
+    setting, source URL, notification credential, and retention policy.  An
+    unresolved marker is rejected instead of being silently sent to cloud-init.
     """
-
     expanded: Dict[str, Any] = json.loads(json.dumps(payload))
     cs = expanded.get("customScript")
-    if not isinstance(cs, str) or "{{" not in cs or "}}" not in cs:
+    if not isinstance(cs, str):
         return expanded
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    mattermost_webhook = os.environ.get("MATTERMOST_WEBHOOK_URL", "")
-    requested_backend = os.environ.get("NOTIFY_BACKEND", "").strip().lower()
-    # Keep old recipes useful: before the selector existed, setting a
-    # Mattermost webhook is an unambiguous request for Mattermost; otherwise
-    # preserve the v2 compatibility default of Telegram.
-    notify_backend = requested_backend or ("mattermost" if mattermost_webhook else "telegram")
-    server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
     controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "") or CONTROLLER_SSH_PUBLIC_KEY
-    retain_controller_key = os.environ.get(
-        "RETAIN_CONTROLLER_SSH_KEY",
-        "yes" if CONTROLLER_HOST_KEY_RETENTION == "retain" else "no",
-    ).strip().lower()
-    if retain_controller_key not in {"yes", "no"}:
-        raise ValueError("RETAIN_CONTROLLER_SSH_KEY must be yes or no")
 
-    if "{{NOTIFY_BACKEND}}" in cs or "{{MATTERMOST_WEBHOOK_URL}}" in cs:
-        if notify_backend not in {"telegram", "mattermost", "none"}:
-            raise ValueError("NOTIFY_BACKEND must be telegram, mattermost, or none")
-        telegram_configured = bool(token) or bool(chat_id)
-        if bool(token) != bool(chat_id):
-            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be supplied together")
-        if notify_backend == "telegram" and mattermost_webhook:
-            raise ValueError("MATTERMOST_WEBHOOK_URL requires NOTIFY_BACKEND=mattermost")
-        if notify_backend == "mattermost":
-            if telegram_configured:
-                raise ValueError("Telegram credentials require NOTIFY_BACKEND=telegram")
-            parsed_webhook = urllib.parse.urlparse(mattermost_webhook)
-            if (
-                not mattermost_webhook
-                or parsed_webhook.scheme != "https"
-                or not parsed_webhook.netloc
-                or any(char.isspace() for char in mattermost_webhook)
-            ):
-                raise ValueError("MATTERMOST_WEBHOOK_URL must be an https:// URL without whitespace")
-        if notify_backend == "none" and (telegram_configured or mattermost_webhook):
-            raise ValueError("NOTIFY_BACKEND=none cannot have notification credentials")
-
-    if "{{TELEGRAM_BOT_TOKEN}}" in cs and notify_backend == "telegram" and not token:
-        print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
-    if "{{TELEGRAM_CHAT_ID}}" in cs and notify_backend == "telegram" and not chat_id:
-        print("⚠ WARNING: TELEGRAM_CHAT_ID not set; notifications will be disabled")
-    if "{{MATTERMOST_WEBHOOK_URL}}" in cs and notify_backend == "mattermost" and not mattermost_webhook:
-        print("⚠ WARNING: MATTERMOST_WEBHOOK_URL not set; the bootstrap will refuse this configuration")
-    if "{{CONTROLLER_SSH_PUBKEY}}" in cs and not controller_pubkey:
-        print(
-            "⚠ WARNING: CONTROLLER_SSH_PUBKEY not set; debian-install-v2 will rely "
-            "solely on netcup's own sshKeyIds injection for SSH access"
-        )
-
-    # The generated recipe wraps credential placeholders in single quotes.
-    # Escape a literal single quote without allowing a secret to terminate
-    # that shell word; normal tokens/URLs remain byte-for-byte unchanged.
     def shell_single_quote_contents(value: str) -> str:
         return value.replace("'", "'\"'\"'")
 
-    cs = cs.replace("{{NOTIFY_BACKEND}}", notify_backend)
-    cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", shell_single_quote_contents(token))
-    cs = cs.replace("{{TELEGRAM_CHAT_ID}}", shell_single_quote_contents(chat_id))
-    cs = cs.replace("{{MATTERMOST_WEBHOOK_URL}}", shell_single_quote_contents(mattermost_webhook))
-    cs = cs.replace("{{SERVER_NAME}}", server_name)
-    cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", shell_single_quote_contents(controller_pubkey))
-    cs = cs.replace("{{RETAIN_CONTROLLER_SSH_KEY}}", retain_controller_key)
+    if "{{CONTROLLER_SSH_PUBKEY}}" in cs:
+        if not controller_pubkey:
+            raise ValueError(
+                "customScript requires {{CONTROLLER_SSH_PUBKEY}}, but no controller identity is available"
+            )
+        cs = cs.replace(
+            "{{CONTROLLER_SSH_PUBKEY}}",
+            shell_single_quote_contents(controller_pubkey),
+        )
 
-    bootstrap_tokens = (
-        "{{BOOTSTRAP_URL}}",
-        "{{BOOTSTRAP_REPO_URL}}",
-        "{{BOOTSTRAP_REPO_BRANCH}}",
-    )
-    if any(token in cs for token in bootstrap_tokens):
-        bootstrap = _bootstrap_source()
-        cs = cs.replace("{{BOOTSTRAP_URL}}", shlex.quote(bootstrap["remote_url"]))
-        cs = cs.replace("{{BOOTSTRAP_REPO_URL}}", shlex.quote(bootstrap["repo_url"]))
-        cs = cs.replace("{{BOOTSTRAP_REPO_BRANCH}}", shlex.quote(bootstrap["repo_branch"]))
-
+    unresolved = sorted(set(re.findall(r"\{\{[^{}]+\}\}", cs)))
+    if unresolved:
+        raise ValueError(
+            "unsupported or unresolved customScript placeholder(s): "
+            + ", ".join(unresolved)
+        )
     expanded["customScript"] = cs
-
     return expanded
 
 
@@ -2154,23 +1887,15 @@ def _build_authenticated_client() -> "NetcupSCPClient":
 
 
 def _validate_controller_retention(args: argparse.Namespace) -> None:
-    host = getattr(args, "host_controller_key", SETTINGS["ssh.controller_host_key_retention"])
     local = getattr(args, "local_controller_key", SETTINGS["ssh.controller_local_key_retention"])
-    args.host_controller_key = host
     args.local_controller_key = local
-    if host not in {"remove", "retain"} or local not in {"remove", "retain"}:
-        raise SystemExit("ERROR: controller-key retention values must be remove or retain")
-    if host == "retain" and local == "remove":
-        raise SystemExit(
-            "ERROR: host retain/local remove is not a valid controller-key policy; "
-            "the local key would be deleted while the host still trusts it"
-        )
+    if local not in {"remove", "retain"}:
+        raise SystemExit("ERROR: local controller-key retention must be remove or retain")
 
 
 def _set_controller_retention_environment(args: argparse.Namespace) -> None:
-    global CONTROLLER_HOST_KEY_RETENTION, CONTROLLER_LOCAL_KEY_RETENTION
+    global CONTROLLER_LOCAL_KEY_RETENTION
     _validate_controller_retention(args)
-    CONTROLLER_HOST_KEY_RETENTION = args.host_controller_key
     CONTROLLER_LOCAL_KEY_RETENTION = args.local_controller_key
 
 
@@ -2198,10 +1923,11 @@ def _apply_local_controller_retention(
 ) -> None:
     if (local_retention or CONTROLLER_LOCAL_KEY_RETENTION).strip().lower() != "remove":
         return
-    if not isinstance(task, dict) or task.get("vbpub_stage2_done") is not True:
+    if not isinstance(task, dict) or task.get("custom_script_completed") is not True:
         print(
-            "[ssh] Local controller key retained: successful stage2 was not observed; "
-            "remove it manually only after checking the host.",
+            "[ssh] Local controller key retained: the declared customScript "
+            "completion marker was not observed; remove it manually only after "
+            "checking the host.",
             file=sys.stderr,
         )
         return
@@ -2343,11 +2069,6 @@ def main():
         for item in sys.argv[1:]
     )
 
-    if getattr(args, "command", None) == "build-customscript":
-        # Purely local (identity-file generation only) - no Netcup API call,
-        # no refresh token needed, unlike wizard/install.
-        sys.exit(_run_build_customscript())
-
     if command == "configure":
         print("[compat] configure is the interactive installer wizard; use `wizard` for the same flow.")
 
@@ -2370,7 +2091,7 @@ def main():
             args.ssh_identity_file = None
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         attach_task_uuid = getattr(args, "attach_task_uuid", None) or f"attach-only-{ts}"
-        follower = _SSHBootstrapFollower(
+        follower = _SSHCustomScriptFollower(
             task_uuid=attach_task_uuid,
             host=getattr(args, "ssh_host"),
             user=args.ssh_user,
@@ -2382,20 +2103,9 @@ def main():
         )
         follower.start()
         try:
-            wait_seconds = float(args.stage2_wait_seconds or 0.0)
-            if wait_seconds > 0:
-                _wait_for_stage2_done(
-                    host=getattr(args, "ssh_host"),
-                    user=args.ssh_user,
-                    identity_file=getattr(args, "ssh_identity_file", None),
-                    poll_interval=args.poll_interval,
-                    max_wait_seconds=wait_seconds,
-                    monitor_log_path=follower.local_log_path,
-                )
-            else:
-                print("[attach-only] Streaming until Ctrl-C (stage2 wait disabled).")
-                while True:
-                    time.sleep(1)
+            print("[attach-only] Streaming until Ctrl-C.")
+            while True:
+                time.sleep(1)
         except KeyboardInterrupt:
             print("\nInterrupted; stopping attach.")
         finally:
@@ -2413,6 +2123,14 @@ def main():
         if input_config_path
         else None
     )
+    wizard_custom_script = (
+        _load_custom_script_file(args.custom_script_file)
+        if not input_config_path and getattr(args, "custom_script_file", None)
+        else (None, None)
+    )
+    wizard_custom_script_text, wizard_completion_marker = wizard_custom_script
+    if wizard_completion_marker and not getattr(args, "completion_marker", None):
+        args.completion_marker = wizard_completion_marker
 
     # Authentication and target/protection checks deliberately precede every
     # controller-key read or generation.
@@ -2452,14 +2170,9 @@ def main():
     # A plain Netcup image install does not need a controller key.  Generate or
     # reuse one only when the selected customScript consumes it, or when the
     # operator explicitly supplied an existing identity for post-install SSH.
-    wizard_debian_bootstrap: Optional[bool] = None
     needs_controller_key = _payload_needs_controller_key(payload_for_target)
-    if not input_config_path and command in {None, "wizard", "configure"}:
-        wizard_debian_bootstrap = _wizard_wants_debian_bootstrap(args)
-        needs_controller_key = wizard_debian_bootstrap
-        if needs_controller_key:
-            # The wizard's generated placeholder is added to the payload below.
-            pass
+    if wizard_custom_script_text:
+        needs_controller_key = "{{CONTROLLER_SSH_PUBKEY}}" in wizard_custom_script_text
     if needs_controller_key:
         args.ssh_identity_file = _resolve_or_create_controller_identity(
             args.ssh_identity_file,
@@ -2663,9 +2376,9 @@ def main():
         )
         print()
 
-        # 6. Prepare installation payload.  The optional Debian v2 hook is
-        # deliberately added only for the wizard; file-driven installs use
-        # exactly the customScript in their config, if any.
+        # 6. Prepare installation payload.  A wizard customScript is opaque:
+        # it was produced by another tool and is passed through unchanged
+        # apart from the generic controller-key marker expansion below.
         installation_payload = {
             **INSTALLATION_CONFIG,
             "serverId": server_id,  # Include for --payload mode
@@ -2674,8 +2387,8 @@ def main():
             "diskName": disk_dev,
             "sshKeyIds": ssh_key_ids,
         }
-        if wizard_debian_bootstrap:
-            installation_payload["customScript"] = netcup_install_plan.placeholder_customscript()
+        if wizard_custom_script_text:
+            installation_payload["customScript"] = wizard_custom_script_text
         if ssh_key_ids is None:
             installation_payload.pop("sshKeyIds")
 
@@ -2684,7 +2397,7 @@ def main():
         try:
             installation_payload_to_send = _expand_payload_placeholders(installation_payload)
         except ValueError as exc:
-            print(f"❌ ERROR: invalid notification/bootstrap placeholder configuration: {exc}", file=sys.stderr)
+            print(f"❌ ERROR: invalid customScript placeholder configuration: {exc}", file=sys.stderr)
             sys.exit(1)
 
         # 7. Display summary
@@ -2722,7 +2435,11 @@ def main():
         # 9. Ask for confirmation (unless non-interactive)
         if not is_noninteractive(args):
             print("=" * 70)
-            response = input("Do you want to start the installation now? (y/n): ")
+            try:
+                response = input("Do you want to start the installation now? (y/n): ")
+            except KeyboardInterrupt:
+                print("\nInstallation cancelled.")
+                return
             if response.lower() not in ("y", "yes"):
                 print("Installation cancelled.")
                 return
@@ -2757,7 +2474,9 @@ def main():
                         ssh_host=(getattr(args, "ssh_host", None) or ip_address),
                         ssh_user=args.ssh_user,
                         ssh_identity_file=ssh_identity,
-                        attach_bootstrap=getattr(args, "attach_bootstrap", True),
+                        attach_custom_script=getattr(args, "attach_custom_script", True),
+                        completion_marker=getattr(args, "completion_marker", None),
+                        completion_wait_seconds=getattr(args, "completion_wait_seconds", 1800.0),
                     )
                     _apply_local_controller_retention(ssh_identity, task_result)
         except HTTPStatusError as e:
@@ -2785,7 +2504,9 @@ def main():
                                 ssh_host=(getattr(args, "ssh_host", None) or ip_address),
                                 ssh_user=args.ssh_user,
                                 ssh_identity_file=ssh_identity,
-                                attach_bootstrap=getattr(args, "attach_bootstrap", True),
+                                attach_custom_script=getattr(args, "attach_custom_script", True),
+                                completion_marker=getattr(args, "completion_marker", None),
+                                completion_wait_seconds=getattr(args, "completion_wait_seconds", 1800.0),
                             )
                             _apply_local_controller_retention(ssh_identity, task_result)
                             return

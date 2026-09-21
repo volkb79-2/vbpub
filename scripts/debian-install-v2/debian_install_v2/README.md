@@ -25,6 +25,32 @@ by `debian_install_v2.__version__`. Its usage and configuration diagnostics
 begin with `DEBIAN-INSTALL-V2 2 — Debian host installer` as line 1; normal
 installation output is unchanged.
 
+### Build a provider customScript bundle
+
+The installer owns the translation from its strict JSON configuration to the
+remote `bootstrap-remote.py` command. A provider integration can consume the
+JSON object and the command without knowing v2's environment-variable mapping:
+
+```bash
+./debian-install-v2.py --action build-customscript \
+  --config /path/to/debian-v2.json \
+  --controller-ssh-placeholder > debian-v2-customscript.json
+```
+
+The output is a JSON object with `config`, `customScript`, and
+`completionMarker`. `customScript` carries the complete validated v2 config
+through `VBPUB_CONFIG_EXTRA_JSON`; it does not require a second hand-maintained
+list of `KEY=VALUE` translations. `--controller-ssh-placeholder` puts the
+provider-neutral `{{CONTROLLER_SSH_PUBKEY}}` marker in the generated config.
+The consuming provider replaces that marker with its temporary controller
+public key before submission. Without that option, supply a real
+`controller_ssh_pubkey` in the v2 config if the hook needs one.
+
+The `completionMarker` is an optional consumer contract. A provider may wait
+for it before deleting its local temporary key. It is not sent as a provider
+API field. The Netcup consumer accepts this bundle with
+`install-host.py wizard --custom-script-file FILE`.
+
 `bootstrap-remote.py` is a curl-to-stdin transport adapter that fetches this
 front door and then executes it; it has no separate command-line parser or
 version identity. `inuse_partition_editor.py` is an internal partition helper

@@ -35,8 +35,8 @@ and one shared API configuration will be used by all Netcup tools.
   account key, conflating two different access roles.
 - The normal key prompt selects only one account key even though the API
   accepts multiple `sshKeyIds`.
-- The normal and manual custom-script paths assemble equivalent bootstrap
-  commands independently.
+- `install-host.py` owns Debian-v2 customScript generation and therefore knows
+  operating-system-specific source, credentials, and configuration details.
 - API URLs are duplicated in `install-host.toml`, `scp-api.toml`, and
   `monitor-task.toml`.
 - The v2 bootstrap always removes the controller key after success and offers
@@ -52,9 +52,9 @@ and one shared API configuration will be used by all Netcup tools.
 4. Reuse an existing host-targeted local controller key; generate one only
    when no suitable key exists.
 5. Keep controller-key retention independent on the host and locally.
-6. Generate the optional Debian v2 API customScript and the manual
-   customScript from one shared builder; allow plain image installs without
-   that hook.
+6. Keep the Netcup frontend agnostic: an external producer, currently Debian
+   v2, generates a validated JSON/customScript bundle and Netcup only consumes
+   it.
 7. Establish one API configuration source and one shared API client boundary.
 8. Remove installer-owned power control and direct operators to `scp-api.py`.
 9. Update tests, README, DESIGN-GUIDE, and consumer-facing examples together
@@ -69,3 +69,5 @@ and one shared API configuration will be used by all Netcup tools.
 - Do not make the manual customScript wizard a second installer implementation.
 - Do not make Debian v2 a hard dependency of the generic Netcup image install;
   it remains the optional cloud-init customScript hook.
+- Do not duplicate Debian-v2 environment-variable translation, source URLs,
+  notification validation, or remote retention policy in `scripts/netcup/`.

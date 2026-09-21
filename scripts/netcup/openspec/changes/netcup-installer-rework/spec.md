@@ -61,38 +61,33 @@ When the operator supplies an explicit controller identity path, a missing or
 invalid path MUST be an error; the installer MUST NOT silently substitute or
 generate another key.
 
-### Requirement: separate retention controls
+### Requirement: safe local retention
 
-The installer MUST expose independent host and local retention controls. It
-MUST accept exactly these successful-install outcomes:
-
-- host remove / local retain (default);
-- host remove / local remove;
-- host retain / local retain.
-
-Host retain / local remove MUST be rejected before installation.
-
-On failed installation, both controller-key forms MUST be retained for
-diagnosis. Local removal MUST occur only after successful stage2 completion is
-observed.
+The installer MUST retain the local controller key by default so it can be
+reused. If `--local-controller-key remove` is requested, removal MUST occur
+only after the consumed customScript's declared generic completion marker is
+observed. Without that marker, or on failed installation, the key MUST be
+retained for diagnosis.
 
 ## Bootstrap/customScript
 
-### Requirement: one builder
+### Requirement: producer-owned customScript
 
-The normal API payload and manual `build-customscript` output MUST be produced
-by one shared builder. They MUST use the same bootstrap source, repository
-branch, notification validation, controller-key expansion, and retention
-semantics.
+`install-host.py` MUST NOT build a Debian-specific customScript. A producer
+such as Debian v2 MUST own its bootstrap source, repository branch, strict JSON
+configuration, notification validation, controller-key configuration, and
+remote retention semantics. The producer's bundle MUST contain a
+`customScript` string and MAY contain a `completionMarker`.
 
 ### Requirement: normal payload
 
-The wizard MUST offer the generated `customScript` that invokes the configured
-`debian-install-v2` bootstrap, enabled by default but omittable explicitly.
+The wizard MUST consume a customScript command or producer JSON bundle when
+given with `--custom-script-file`; without one it MUST not invent a hook.
 The file-driven `install` command MUST treat `customScript` as optional and
 send exactly the value in the selected file. A config without a customScript
-MUST not cause a hidden Debian-specific default or controller-key generation.
-The installer MUST not rely on a manually maintained second command template.
+MUST not cause a hidden operating-system-specific default or controller-key
+generation. The installer MAY expand only the provider-neutral
+`{{CONTROLLER_SSH_PUBKEY}}` marker.
 
 ### Requirement: complete file-driven config
 
@@ -106,12 +101,12 @@ work. It MUST require a positive `serverId` (or non-empty resolvable
 `install` MUST monitor the created task by default. `--no-monitor` MUST be the
 explicit task-creation-only escape hatch.
 
-### Requirement: manual mode boundary
+### Requirement: external builder boundary
 
-`build-customscript` MUST perform no Netcup API calls. It MAY generate a local
-controller key only after the operator explicitly requests controller access
-and supplies/chooses a target label. It MUST disclose that local retention
-cannot be automated without an observing monitor process.
+The Debian-v2 `build-customscript` action MUST perform no Netcup API calls and
+MUST emit validated JSON plus the cloud-init command. Netcup MUST consume that
+bundle without importing Debian-v2 code or duplicating its configuration
+translation.
 
 ## API/configuration boundary
 

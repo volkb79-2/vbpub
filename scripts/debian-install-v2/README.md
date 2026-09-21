@@ -12,6 +12,23 @@ Design/status docs elsewhere in this tree, not duplicated here:
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
 `testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
 
+## Build a provider customScript bundle
+
+When a provider accepts a cloud-init command, let v2 build the command and
+the strict JSON it carries:
+
+```bash
+./debian-install-v2.py --action build-customscript \
+  --config /path/to/debian-v2.json \
+  --controller-ssh-placeholder > debian-v2-customscript.json
+```
+
+The JSON output contains `config`, `customScript`, and `completionMarker`.
+The command uses `VBPUB_CONFIG_EXTRA_JSON`, so its complete configuration stays
+owned and validated by v2. A consumer such as the Netcup installer replaces
+the generic `{{CONTROLLER_SSH_PUBKEY}}` marker and may wait for the declared
+completion marker before removing its local temporary key.
+
 ## What it actually does today
 
 ### Disk / swap

@@ -6,14 +6,14 @@
 
 1. `wizard`: resolve a target, gather and validate an installation plan, write
    a reviewed `target-host.jsonc`, confirm, submit the image install, and
-   optionally monitor the v2 bootstrap.
+   optionally monitor the provider task/customScript contract.
 2. `configure`: compatibility alias for `wizard`; it is not a separate
    server-dependent recipe command.
 3. `install`: read and strictly validate a target config (default
    `target-host.jsonc`, override with `--config`), submit exactly that image
    payload, and monitor the resulting task by default.
-4. `build-customscript`: render the optional bootstrap command for an operator
-   who will paste it into a provider UI. It does not perform Netcup API calls.
+4. There is no customScript builder in this frontend. A producer such as
+   Debian v2 emits a JSON bundle; `wizard --custom-script-file` consumes it.
 
 A bare invocation prints usage and performs no authentication or SSH work.
 
@@ -54,16 +54,14 @@ is side-effect free with respect to local key material:
 8. Resolve the controller key. Search for an existing host-targeted key first;
    generate a new key only when no suitable key exists and the plan needs
    controller access.
-9. If the wizard was asked to include Debian v2, build the bootstrap
-   customScript and complete payload from the same shared plan/builder used by
-   `build-customscript`. File-driven `install` sends the config's
-   customScript as-is, including no customScript for a plain image install.
+9. If the wizard was given a customScript bundle, pass its opaque command
+   through. File-driven `install` sends the config's customScript as-is,
+   including no customScript for a plain image install.
 10. Print a redacted, complete summary and write/review the JSONC payload as
     appropriate.
 11. Ask for final confirmation, then POST the image installation.
-12. If monitoring is enabled, use the controller key through stage2 and apply
-    local retention only after a successful stage2 completion has been
-    observed.
+12. If monitoring is enabled and the consumed bundle declares a completion
+    marker, wait for that marker before applying local-key removal.
 
 The account-key list and target/server details are read-only API operations.
 The image POST is the first server mutation in the normal installer.
@@ -82,10 +80,9 @@ still be monitored through the controller key.
 ### Temporary controller key
 
 The controller private key remains local to the checkout. Its public key is
-passed as `CONTROLLER_SSH_PUBKEY` in the bootstrap script. The v2 installer
-adds it to root’s `authorized_keys` during stage1 and removes only that exact
-line during the configured successful stage2 cleanup; operator keys are never
-removed.
+passed as `CONTROLLER_SSH_PUBKEY` in the opaque customScript. The customScript
+producer decides how that key is installed and removed; operator keys are
+outside this frontend's contract.
 
 The controller key is not uploaded to the Netcup account and is not placed in
 `sshKeyIds`.
@@ -106,55 +103,20 @@ generating a different key.
 
 ## 4. Controller-key retention
 
-Retention is evaluated only after a successful install completion. The two
-independent controls are:
+The local controller key is retained by default so it can be reused for a
+later installation. A producer may declare a generic completion marker; only
+after that marker is observed can `--local-controller-key remove` delete the
+local key. Without the marker, the key remains for diagnosis and reuse. The
+remote key policy is not a Netcup concern.
 
-- host retention: whether v2 leaves the controller public-key line in
-  `/root/.ssh/authorized_keys`;
-- local retention: whether the controller private key and adjacent `.pub` file
-  remain in the local SSH directory.
+## 5. CustomScript producer/consumer boundary
 
-The valid successful-install outcomes are:
-
-| Host key | Local key | Meaning |
-|---|---|---|
-| remove | retain | Default: close host access, preserve the reusable local key |
-| remove | remove | Close host access and erase local controller material |
-| retain | retain | Keep both for deliberate ongoing controller access |
-| retain | remove | Rejected as meaningless and unsafe |
-
-On install failure, both sides are retained for diagnosis regardless of the
-requested success policy. If local removal was requested but monitoring was
-not run through successful stage2 completion, the key is retained and the
-operator receives a clear cleanup instruction; the tool must not delete the
-only key before it knows whether the host succeeded.
-
-The host-side choice is translated to the v2 bootstrap’s strict boolean
-setting (for example `RETAIN_CONTROLLER_SSH_KEY=yes|no`). The local choice is
-handled by the controller after successful monitoring and is never sent to the
-host.
-
-The manual `build-customscript` path can render the host-retention choice, but
-cannot observe stage2 or delete local files automatically. Its output must
-state that local cleanup is an explicit operator action.
-
-## 5. Shared customScript builder
-
-Create one dependency-free installation-plan/customScript module responsible
-for:
-
-- bootstrap URL, repository URL, and branch expansion;
-- notification backend and credential validation;
-- controller public-key expansion;
-- host-retention setting;
-- strict shell quoting;
-- redacted payload presentation.
-
-Normal API installation uses the builder with placeholders retained until the
-request is sent. `build-customscript` uses the same builder with all values
-resolved for manual pasting. The builder is optional for the API installer;
-there must be no second hand-maintained list of bootstrap environment
-variables.
+The producer owns source URLs, strict JSON configuration, credentials, remote
+retention, and shell quoting. Debian v2's `build-customscript` action emits a
+bundle containing `config`, `customScript`, and `completionMarker`. Netcup
+consumes that bundle and only expands the provider-neutral controller-key
+marker. No Netcup module imports Debian-v2 code or duplicates its environment
+variable mapping.
 
 ## 6. API configuration and client boundary
 

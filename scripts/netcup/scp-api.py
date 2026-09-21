@@ -90,21 +90,17 @@ INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.tom
 DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
 STATUS_MAX_WORKERS = 4
 
-# Keep this in sync with install-host.py's closed settings schema.  The
-# explorer reads only the SSH values, but validating the complete file keeps a
-# typo or stale key from silently changing the install workflow's meaning.
+# Keep this in sync with install-host.py's closed SSH settings schema. The
+# explorer reads only SSH values; producer-owned customScript settings do not
+# belong in the Netcup frontend's config.
 _INSTALL_HOST_SETTINGS_EXPECTED_KEYS = {
-    "bootstrap.raw_url_template",
-    "bootstrap.repo_url",
-    "bootstrap.repo_branch",
     "ssh.identity_file",
     "ssh.user",
     "ssh.controller_fqdn",
     "ssh.poll_interval",
     "ssh.attach_initial_delay",
     "ssh.attach_max_wait_seconds",
-    "ssh.stage2_wait_seconds",
-    "ssh.controller_host_key_retention",
+    "ssh.completion_wait_seconds",
     "ssh.controller_local_key_retention",
 }
 

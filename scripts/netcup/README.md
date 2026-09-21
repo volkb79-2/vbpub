@@ -1,8 +1,9 @@
 # Netcup SCP installation tools
 
 These scripts provision disposable or fresh hosts through the Netcup Server
-Control Panel API. They can optionally feed a Debian host the
-`debian-install-v2` bootstrap through Netcup's cloud-init `customScript` hook.
+Control Panel API. They can optionally pass an operator-supplied cloud-init
+`customScript` hook to the provider. The hook may come from
+`debian-install-v2`, but this Netcup frontend does not build or interpret it.
 
 ## First-time setup
 
@@ -75,8 +76,11 @@ recipe command.
 # target-host.jsonc is saved.
 ./install-host.py wizard --dry-run
 
-# Or install a plain image without the Debian v2 hook:
-./install-host.py wizard --no-custom-script --no-monitor
+# Build a Debian-v2 hook in its own project, then let the Netcup wizard consume
+# the resulting JSON bundle (the wizard remains provider-agnostic):
+../debian-install-v2/debian-install-v2.py --action build-customscript \
+  --config debian-v2.json --controller-ssh-placeholder > debian-v2-customscript.json
+./install-host.py wizard --custom-script-file debian-v2-customscript.json
 
 # A different reviewed config can be selected explicitly.
 ./install-host.py install --config target-host-r1002.jsonc
@@ -90,11 +94,10 @@ installer never creates an account key. The separate local controller
 identity is generated/reused for bootstrap monitoring and is never registered
 in the Netcup account.
 
-The successful-install controller-key policy defaults to host `remove`, local
-`retain`. The other supported combinations are host `remove`, local `remove`,
-and host `retain`, local `retain`. Host `retain`, local `remove` is rejected.
-Use `--host-controller-key` and `--local-controller-key`; local removal is
-performed only after the monitor has observed `stage2_done`.
+The generic controller-key policy defaults to local `retain`. The consumed
+customScript owns any remote key cleanup. If its JSON bundle declares a
+`completionMarker`, the Netcup monitor can safely wait for that marker before
+applying `--local-controller-key remove`; without one, the local key is kept.
 
 If the dry-run looks correct, the file-driven install can be made
 non-interactive:
@@ -104,13 +107,13 @@ non-interactive:
 ```
 
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
-the selected bootstrap source.
+the selected customScript source.
 
-The wizard includes the Debian v2 cloud-init `customScript` by default. That
-hook is optional: omit it with `--no-custom-script` for a plain Netcup image
-installation. A file-driven install never invents or loads a customScript; it
-sends the one in the selected file, if present. A file with no customScript
-also does not create a temporary controller key.
+The wizard does not invent a customScript. Use `--custom-script-file` to
+consume a plain command or a JSON bundle with `customScript` (and optionally
+`completionMarker`). A file-driven install never loads a hidden recipe; it
+sends the one in the selected target file, if present. A file with no
+customScript also does not create a temporary controller key.
 
 To preview or repeat a gathered request explicitly, use the generated file:
 
@@ -151,14 +154,17 @@ sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .
 Use the public Mattermost hostname in the webhook URL; an external Netcup VM
 cannot use the Mattermost stack's internal Docker hostname. The webhook is
 post-only and channel-bound, so this integration does not need a Mattermost
-PAT or REST client. Notification failures are logged as warnings and do not
-turn a successful Debian install into a failed one. The `build-customscript`
-wizard asks which backend to use; normal API installs read `NOTIFY_BACKEND` and
-the matching credentials from `.env`. To generate a fully expanded script for
-a manual web-host UI install, run:
+PAT or REST client. Notification settings belong in the customScript
+producer's v2 JSON; `install-host.py` does not read or rewrite Telegram or
+Mattermost values.
+
+For Debian v2, build the bundle in that project and review its generated
+`config` object and `customScript` before handing it to this tool:
 
 ```bash
-./install-host.py build-customscript
+../debian-install-v2/debian-install-v2.py --action build-customscript \
+  --config debian-v2.json --controller-ssh-placeholder \
+  > debian-v2-customscript.json
 ```
 
 ## Install workflow
@@ -169,7 +175,7 @@ Preview the reviewed file without mutating the Netcup account:
 ./install-host.py install --config target-host.jsonc --dry-run
 ```
 
-Run the gather-and-install wizard and follow stage2:
+Run the gather-and-install wizard and monitor the provider task:
 
 ```bash
 ./install-host.py wizard --monitor
@@ -199,15 +205,15 @@ python3 install-host.py install --config target-host.jsonc --ssh-key-id 123
 ```
 
 The local `--ssh-identity-file` is a separate controller key used for
-bootstrap access and monitoring. If it is omitted, an existing valid key whose
+customScript access and monitoring. If it is omitted, an existing valid key whose
 filename contains the selected hostname/nickname is reused first, including
 older dated installer filenames; only then is a new key generated. An
 explicit missing or invalid path is an error. `--ssh-key-id` refers only to a
 key already registered in the Netcup account.
 
 `install-host.py` with no arguments prints usage and performs no API or SSH
-work. Its `wizard`, `configure`, `install`, and `build-customscript` commands
-are documented by `install-host.py --help`. `scp-api.py` provides read-only account/server
+work. Its `wizard`, `configure`, and `install` commands are documented by
+`install-host.py --help`. `scp-api.py` provides read-only account/server
 inspection and explicitly gated reversible actions. Read-only resource commands
 enumerate every server when no ID is supplied, because the SCP API exposes
 image flavours, ISO images, disks, rescue status, snapshots, and ISO attachment
@@ -394,23 +400,23 @@ egress. The WireGuard example exposes only the outer UDP handshake and drops
 other provider-level ingress; a guest `wg0` interface is not a separate SCP
 NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
 
-## Bootstrap source
+## CustomScript source
 
-The generated customScript contains `{{BOOTSTRAP_URL}}`; the controller
-resolves it from `[bootstrap]` in `install-host.toml`. The matching
-`REPO_URL` and `REPO_BRANCH` are passed to `bootstrap-remote.py`, so a branch
-test downloads the wrapper and the installer subtree from the same branch:
+The customScript producer is responsible for its remote URL, repository
+branch, JSON configuration, notification credentials, and remote controller-key
+policy. For Debian v2, use its `build-customscript` action and pass the JSON
+bundle to `wizard --custom-script-file`, or copy the bundle's `customScript`
+string into a reviewed `target-host.jsonc`. Netcup only validates the generic
+controller-key marker and submits the resulting opaque command.
+
+If the bundle declares `completionMarker`, the wizard carries it into task
+monitoring. For a file-driven target, provide the same generic contract
+explicitly, for example:
 
 ```bash
-NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration \
-  python3 install-host.py install --config target-host.jsonc --dry-run
+./install-host.py install --config target-host.jsonc \
+  --completion-marker /var/lib/example/install-done
 ```
 
-For a nonstandard wrapper location, set
-`NETCUP_SCP_API_BOOTSTRAP_URL` too. The URL must be HTTPS. Do not run a live
-install until that branch is pushed and the dry-run payload shows the intended
-source.
-
-The rationale for the wizard/file-driven split, optional bootstrap hook, and
-the branch-pinned bootstrap is in
+The rationale for this producer/consumer boundary is in
 [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md).

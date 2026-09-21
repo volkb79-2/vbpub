@@ -7,9 +7,10 @@
       construction without per-frontend global setup duplication.
 - [x] Remove `[api]` from `install-host.toml`, `monitor-task.toml`, and the
       obsolete duplicate API config; update settings tests and help text.
-- [x] Extract the shared installation-plan/customScript builder from
-      `install-host.py`; make normal install and `build-customscript` consume
-      it.
+- [x] Remove the Debian-v2 customScript builder from `install-host.py`; make
+      Netcup consume an external customScript command or JSON bundle.
+- [x] Add Debian-v2 `build-customscript` output containing validated JSON,
+      the cloud-init command, and a generic completion-marker contract.
 
 ## Phase 2: target and mode flow
 
@@ -33,10 +34,11 @@
 - [x] Make explicitly supplied missing identity paths fail clearly.
 - [x] Add host/local retention settings, validation, summary output, and the
       three valid outcome combinations.
-- [x] Add v2 bootstrap support for host retention and preserve failure-safe
-      retention.
-- [x] Remove local controller key material only after observed successful
-      stage2 completion; otherwise disclose why it remains.
+- [x] Keep remote key-retention policy in the customScript producer and retain
+      the local key unless a declared generic completion marker is observed.
+- [x] Remove local controller key material only after the consumed hook's
+      declared generic completion marker is observed; otherwise disclose why
+      it remains.
 
 ## Phase 4: validation and tests
 
@@ -47,7 +49,8 @@
 - [x] Add tests for zero/one/multiple persistent account-key selection.
 - [x] Add tests for host-key reuse, dated-key compatibility, explicit-path
       refusal, and retention matrix validation.
-- [x] Add tests for v2 host retention and failure behavior.
+- [x] Add tests for producer bundle rendering and generic local-key completion
+      behavior.
 - [x] Add payload tests for non-object JSON, bool-as-int, non-positive IDs,
       malformed key lists, and clean diagnostics.
 - [x] Run the Netcup and Debian-install-v2 gates with
@@ -63,9 +66,9 @@
       `--config FILE` override; retain `--payload` as a compatibility alias.
 - [x] Make `install` monitor its task by default with an explicit
       `--no-monitor` escape hatch.
-- [x] Make Debian v2 `customScript` optional: wizard opt-out, authoritative
-      file-driven payload, and no controller-key generation for plain image
-      installs.
+- [x] Make customScript producer-owned: wizard consumption via
+      `--custom-script-file`, authoritative file-driven payload, and no
+      controller-key generation for plain image installs.
 - [x] Update README, DESIGN-GUIDE, specification, help examples, and tests
       for the mode and bootstrap boundary.
 

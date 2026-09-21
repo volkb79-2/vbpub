@@ -51,50 +51,22 @@ def test_expand_payload_placeholders_substitutes_controller_ssh_pubkey(install_h
     assert expanded["customScript"] == "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral' python3 -"
 
 
-def test_expand_payload_placeholders_substitutes_mattermost_backend(install_host_mod, monkeypatch):
-    monkeypatch.setenv("NOTIFY_BACKEND", "mattermost")
-    monkeypatch.setenv("MATTERMOST_WEBHOOK_URL", "https://mattermost.example.test/hooks/secret")
-    payload = {
-        "customScript": (
-            "NOTIFY_BACKEND='{{NOTIFY_BACKEND}}' "
-            "MATTERMOST_WEBHOOK_URL='{{MATTERMOST_WEBHOOK_URL}}' python3 -"
-        )
-    }
-    expanded = install_host_mod._expand_payload_placeholders(payload)
-    assert expanded["customScript"] == (
-        "NOTIFY_BACKEND='mattermost' "
-        "MATTERMOST_WEBHOOK_URL='https://mattermost.example.test/hooks/secret' python3 -"
-    )
+def test_expand_payload_placeholders_rejects_producer_specific_markers(install_host_mod):
+    payload = {"customScript": "NOTIFY_BACKEND='{{NOTIFY_BACKEND}}' python3 -"}
+    with pytest.raises(ValueError, match="unsupported or unresolved"):
+        install_host_mod._expand_payload_placeholders(payload)
 
 
 def test_expand_payload_placeholders_warns_when_controller_ssh_pubkey_missing(install_host_mod, monkeypatch, capsys):
     monkeypatch.delenv("CONTROLLER_SSH_PUBKEY", raising=False)
     payload = {"customScript": "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -"}
-    install_host_mod._expand_payload_placeholders(payload)
-    assert "CONTROLLER_SSH_PUBKEY not set" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="no controller identity"):
+        install_host_mod._expand_payload_placeholders(payload)
 
 
-def test_expand_payload_placeholders_renders_bootstrap_source(install_host_mod, monkeypatch):
-    monkeypatch.setenv("NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH", "netcup-v2-livetest")
-    payload = {
-        "customScript": (
-            "curl -fsSL {{BOOTSTRAP_URL}} | "
-            "REPO_URL={{BOOTSTRAP_REPO_URL}} "
-            "REPO_BRANCH={{BOOTSTRAP_REPO_BRANCH}} python3 -"
-        )
-    }
-    expanded = install_host_mod._expand_payload_placeholders(payload)
-    script = expanded["customScript"]
-    assert "https://raw.githubusercontent.com/volkb79-2/vbpub/netcup-v2-livetest/" in script
-    assert "REPO_URL=https://github.com/volkb79-2/vbpub" in script
-    assert "REPO_BRANCH=netcup-v2-livetest" in script
-    assert "{{" not in script and "}}" not in script
-
-
-def test_bootstrap_url_override_rejects_whitespace(install_host_mod, monkeypatch):
-    monkeypatch.setenv("NETCUP_SCP_API_BOOTSTRAP_URL", "https://bootstrap.example.test/a path.py")
-    with pytest.raises(ValueError, match="without whitespace"):
-        install_host_mod._bootstrap_source()
+def test_expand_payload_placeholders_leaves_opaque_script_unchanged(install_host_mod):
+    payload = {"customScript": "echo hello | python3 -"}
+    assert install_host_mod._expand_payload_placeholders(payload) == payload
 
 
 def test_normalize_ssh_public_key_drops_comment(install_host_mod):
@@ -290,7 +262,7 @@ def test_real_settings_file_is_valid(install_host_mod):
     """The committed install-host.toml must itself satisfy the schema."""
     assert install_host_mod.SETTINGS["ssh.user"] == "root"
     assert install_host_mod.SETTINGS["ssh.controller_fqdn"] == "automatic"
-    assert install_host_mod.SETTINGS["bootstrap.repo_branch"] == "main"
+    assert install_host_mod.SETTINGS["ssh.completion_wait_seconds"] == 1800.0
 
 
 # --- local identity key auto-generation -----------------------------------
@@ -681,6 +653,38 @@ def test_install_from_payload_missing_file_exits_cleanly(install_host_mod, tmp_p
     assert str(missing_path) in err
 
 
+def test_install_confirmation_ctrl_c_is_a_clean_cancel(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    payload_path = tmp_path / "target.jsonc"
+    payload_path.write_text(
+        json.dumps({"serverId": 42, "imageFlavourId": 128, "diskName": "vda"})
+    )
+    client = fake_client(
+        get_responses=[{"id": 42, "name": "v4200000000000000000"}],
+        allow=("get",),
+    )
+    args = types.SimpleNamespace(
+        dry_run=False,
+        yes=False,
+        ssh_key_ids=None,
+        ssh_identity_file=None,
+    )
+    monkeypatch.setattr(install_host_mod, "is_noninteractive", lambda _args: False)
+
+    def cancel(_prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", cancel)
+    install_host_mod.install_from_payload(client, str(payload_path), args, require_complete=True)
+
+    output = capsys.readouterr()
+    assert "Installation cancelled." in output.out
+    assert "Traceback" not in output.out
+    assert "Traceback" not in output.err
+    assert not any(call[0] == "post" for call in client.calls)
+
+
 # --- main() interactive-gather path: --dry-run must never touch disk -----
 #
 # Regression coverage for a real bug found 2026-09-08 live-testing against a
@@ -828,6 +832,10 @@ def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_n
 
     expected_identity = tmp_path / "vbpub-scp_installer-v1001.vxxu.de-20260908-ed25519"
     _write_fake_identity_at(expected_identity)
+    custom_script_file = tmp_path / "customscript.json"
+    custom_script_file.write_text(
+        json.dumps({"customScript": "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -"})
+    )
 
     servers = [{"id": 804027, "hostname": "v1001.vxxu.de"}]
     server_details = {
@@ -844,7 +852,7 @@ def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_n
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=identity_template,
+        ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -864,13 +872,15 @@ def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
 
     expected_identity = tmp_path / "vbpub-scp_installer-target.example-20260908-ed25519"
     _write_fake_identity_at(expected_identity)
+    custom_script_file = tmp_path / "customscript.txt"
+    custom_script_file.write_text("CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -\n")
 
     client = _fake_gather_client(fake_client)  # servers = [{"id": 42}], no "hostname"
     client._get_responses[0] = [{"id": 804027}]
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=identity_template,
+        ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -1241,9 +1251,9 @@ def test_main_configure_is_the_same_target_picker_flow_as_wizard(
 
     args = types.SimpleNamespace(
         command="configure", config_path=None, payload=None, debug=False,
-        attach_only=False, dry_run=True, yes=True, debian_install_v2=False,
+        attach_only=False, dry_run=True, yes=True, custom_script_file=None,
         ssh_identity_file=None, ssh_key_ids=None, no_monitor=False,
-        monitor=False, host_controller_key="remove", local_controller_key="retain",
+        monitor=False, local_controller_key="retain",
     )
     monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
     client = _fake_gather_client(fake_client)
@@ -1267,8 +1277,11 @@ def test_parse_args_accepts_installer_commands_and_bare_invocation_prints_help(i
     assert install_host_mod.parse_args().command == "wizard"
     monkeypatch.setattr("sys.argv", ["install-host.py", "install"])
     assert install_host_mod.parse_args().command == "install"
-    monkeypatch.setattr("sys.argv", ["install-host.py", "build-customscript"])
-    assert install_host_mod.parse_args().command == "build-customscript"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["install-host.py", "wizard", "--custom-script-file", "bundle.json"],
+    )
+    assert install_host_mod.parse_args().custom_script_file == "bundle.json"
     monkeypatch.setattr("sys.argv", ["install-host.py"])
     with pytest.raises(SystemExit) as exc:
         install_host_mod.parse_args()
@@ -1291,19 +1304,16 @@ def test_parse_args_rejects_removed_poweroff_option(install_host_mod, monkeypatc
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize(
-    ("host", "local"),
-    [("remove", "retain"), ("remove", "remove"), ("retain", "retain")],
-)
-def test_controller_retention_accepts_supported_outcomes(install_host_mod, host, local):
-    args = types.SimpleNamespace(host_controller_key=host, local_controller_key=local)
+@pytest.mark.parametrize("local", ["remove", "retain"])
+def test_controller_retention_accepts_local_outcomes(install_host_mod, local):
+    args = types.SimpleNamespace(local_controller_key=local)
     install_host_mod._validate_controller_retention(args)
-    assert (args.host_controller_key, args.local_controller_key) == (host, local)
+    assert args.local_controller_key == local
 
 
-def test_controller_retention_rejects_host_retain_local_remove(install_host_mod):
-    args = types.SimpleNamespace(host_controller_key="retain", local_controller_key="remove")
-    with pytest.raises(SystemExit, match="not a valid controller-key policy"):
+def test_controller_retention_rejects_invalid_local_value(install_host_mod):
+    args = types.SimpleNamespace(local_controller_key="later")
+    with pytest.raises(SystemExit, match="local controller-key retention"):
         install_host_mod._validate_controller_retention(args)
 
 
@@ -1317,122 +1327,27 @@ def test_parse_args_exposes_only_long_help(install_host_mod, monkeypatch, capsys
     assert "[-h]" not in help_out
 
 
-# --- build-customscript wizard -----------------------------------------------
-
-
-def test_build_customscript_expands_every_placeholder(install_host_mod):
-    snippet = install_host_mod._build_customscript(
-        auto_reboot_after_stage1=True,
-        never_reboot=False,
-        telegram_bot_token="123:tok",
-        telegram_chat_id="-100555",
-        controller_pubkey="ssh-ed25519 AAAAtest vbpub-controller-ephemeral",
+def test_load_custom_script_file_accepts_generator_bundle(install_host_mod, tmp_path):
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps({
+        "config": {"schema_version": 1},
+        "customScript": "echo install",
+        "completionMarker": "/run/example/done",
+    }))
+    assert install_host_mod._load_custom_script_file(str(path)) == (
+        "echo install",
+        "/run/example/done",
     )
-    assert "{{" not in snippet and "}}" not in snippet
-    assert "AUTO_REBOOT_AFTER_STAGE1=yes" in snippet
-    assert "NEVER_REBOOT=no" in snippet
-    assert "REPO_URL=https://github.com/volkb79-2/vbpub" in snippet
-    assert "REPO_BRANCH=main" in snippet
-    assert "TELEGRAM_BOT_TOKEN=123:tok" in snippet
-    assert "TELEGRAM_CHAT_ID=-100555" in snippet
-    assert "NOTIFY_BACKEND=telegram" in snippet
-    assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral'" in snippet
-    assert snippet.startswith("curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/")
-    assert snippet.endswith("python3 -")
 
 
-def test_build_customscript_omits_blank_optional_fields(install_host_mod):
-    snippet = install_host_mod._build_customscript(
-        auto_reboot_after_stage1=False,
-        never_reboot=True,
-        telegram_bot_token="",
-        telegram_chat_id="",
-        controller_pubkey="",
-    )
-    assert "AUTO_REBOOT_AFTER_STAGE1=no" in snippet
-    assert "NEVER_REBOOT=yes" in snippet
-    assert "TELEGRAM_BOT_TOKEN" not in snippet
-    assert "TELEGRAM_CHAT_ID" not in snippet
-    assert "CONTROLLER_SSH_PUBKEY" not in snippet
-    assert "NOTIFY_BACKEND=telegram" in snippet
+def test_load_custom_script_file_accepts_plain_command(install_host_mod, tmp_path):
+    path = tmp_path / "customscript.sh"
+    path.write_text("echo install\n")
+    assert install_host_mod._load_custom_script_file(str(path)) == ("echo install", None)
 
 
-def test_build_customscript_supports_mattermost(install_host_mod):
-    snippet = install_host_mod._build_customscript(
-        auto_reboot_after_stage1=True,
-        never_reboot=False,
-        telegram_bot_token="",
-        telegram_chat_id="",
-        controller_pubkey="",
-        notify_backend="mattermost",
-        mattermost_webhook_url="https://mattermost.example.test/hooks/secret",
-    )
-    assert "NOTIFY_BACKEND=mattermost" in snippet
-    assert "MATTERMOST_WEBHOOK_URL=https://mattermost.example.test/hooks/secret" in snippet
-    assert "TELEGRAM_BOT_TOKEN" not in snippet
-
-
-def test_build_customscript_shell_quotes_operator_supplied_values(install_host_mod):
-    """_prompt_text() does no validation at all, and this snippet is meant
-    to be pasted verbatim as a real shell command that executes as
-    cloud-init on a live host -- a value containing shell metacharacters
-    must stay a single quoted argument (shlex.quote), never become a
-    separate shell statement when the snippet is actually run."""
-    import shlex as _shlex
-
-    malicious = "123:tok; rm -rf /"
-    snippet = install_host_mod._build_customscript(
-        auto_reboot_after_stage1=True,
-        never_reboot=False,
-        telegram_bot_token=malicious,
-        telegram_chat_id="-100555",
-        controller_pubkey="",
-    )
-    env_and_cmd = _shlex.split(snippet.split(" | ", 1)[1].rsplit(" python3 -", 1)[0])
-    assert f"TELEGRAM_BOT_TOKEN={malicious}" in env_and_cmd  # one token, not split by shlex
-
-
-def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod, capsys, monkeypatch):
-    responses = iter(["n", "n", "1", "", "", "1", "n"])
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
-    rc = install_host_mod._run_build_customscript()
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "curl -fsSL" in out
-    assert "CONTROLLER_SSH_PUBKEY" not in out
-
-
-def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp_path, monkeypatch, capsys):
-    # auto_reboot, never_reboot, backend, tg token, tg chat, host policy,
-    # include ssh key, host label
-    responses = iter(["y", "n", "1", "", "", "1", "y", "test-server"])
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # must not be required
-    identity_path = tmp_path / "id_ed25519"
-    monkeypatch.setattr(install_host_mod, "SETTINGS", {
-        **install_host_mod.SETTINGS,
-        "ssh.identity_file": str(identity_path),
-        "ssh.controller_fqdn": "controller.example.com",  # avoid a real network call via "automatic"
-    })
-    monkeypatch.setattr(install_host_mod, "_render_identity_file_path", lambda template, server: str(identity_path))
-
-    rc = install_host_mod._run_build_customscript()
-    assert rc == 0
-    assert identity_path.exists()
-    out = capsys.readouterr().out
-    assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519" in out
-
-
-def test_run_build_customscript_requires_host_label_for_ssh_key(install_host_mod, monkeypatch, capsys):
-    """Adversarial-review regression: without SERVER_NAME set and no host
-    label typed, every invocation would otherwise silently collapse onto
-    the same "unknown-host" key regardless of target -- must refuse
-    instead."""
-    responses = iter(["y", "n", "1", "", "", "1", "y", ""])  # blank host label
-    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
-
-    rc = install_host_mod._run_build_customscript()
-    assert rc == 1
-    out = capsys.readouterr().out
-    assert "CONTROLLER_SSH_PUBKEY" not in out
+def test_load_custom_script_file_rejects_invalid_marker(install_host_mod, tmp_path):
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps({"customScript": "echo install", "completionMarker": "relative"}))
+    with pytest.raises(SystemExit, match="absolute remote path"):
+        install_host_mod._load_custom_script_file(str(path))
