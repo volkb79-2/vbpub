@@ -108,7 +108,7 @@ python3 scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes
 The smallest live-install path is:
 
 ```bash
-./scp-api.py status                 # final column lists IP -> reverse DNS entries
+./scp-api.py status                 # SSH key checks + final IP -> reverse DNS column
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
 ./install-host.py --dry-run
@@ -117,9 +117,18 @@ The smallest live-install path is:
 
 `configure` is optional. It saves local locale/timezone/partition defaults;
 the normal interactive installer still resolves the current Debian UEFI image
-live. The normal flow writes the gathered request to the ignored
-`target-host.jsonc` before its final confirmation. A direct payload run can
-then repeat that reviewed request:
+live. `status` also includes an `ssh-connect` column. It checks all
+recognizable private keys in `~/.ssh` and the configured installer identity
+without creating anything. It lists successful key names, or distinguishes
+`no keys match` from `SSH not open/responding`; `no keys found` and `no server
+IP` are separate local/data conditions. Its final multiline reverse-DNS column
+uses only the server detail response's `ipv4Addresses` and `ipv6Addresses`,
+not nested live interface addresses or extra IPv6 rDNS-map keys.
+
+The normal flow writes the gathered request to the ignored `target-host.jsonc`
+before its final confirmation. A direct payload run can then repeat that
+reviewed request:
+
 
 ```bash
 ./install-host.py --payload target-host.jsonc --dry-run

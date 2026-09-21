@@ -14,7 +14,7 @@ server image installation, or snapshot revert.  ``install-host.py`` owns the
 Debian installation workflow and uses this module's shared client.
 
 Exploration (read-only; does not change the account or servers):
-  status [server_id]                         compact live server table
+  status [server_id]                         live table, addresses, and SSH key checks
   servers                                    account server inventory
   server-details server_id                   complete server API record
   imageflavours [server_id] [--filter TEXT]  reinstallable OS/image choices
@@ -66,6 +66,7 @@ import ipaddress
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
 from datetime import datetime, timezone
@@ -83,6 +84,25 @@ from netcup_scp_client import (
 )
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api.toml"
+INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
+
+# Keep this in sync with install-host.py's closed settings schema.  The
+# explorer reads only the SSH values, but validating the complete file keeps a
+# typo or stale key from silently changing the install workflow's meaning.
+_INSTALL_HOST_SETTINGS_EXPECTED_KEYS = {
+    "api.base_url",
+    "api.keycloak_url",
+    "bootstrap.raw_url_template",
+    "bootstrap.repo_url",
+    "bootstrap.repo_branch",
+    "ssh.identity_file",
+    "ssh.user",
+    "ssh.controller_fqdn",
+    "ssh.poll_interval",
+    "ssh.attach_initial_delay",
+    "ssh.attach_max_wait_seconds",
+    "ssh.stage2_wait_seconds",
+}
 
 
 def _configure() -> None:
@@ -330,13 +350,17 @@ def _address_value(value: Any, family: str) -> str | None:
     return address if isinstance(address, str) and address else None
 
 
-def _server_address_inventory(*records: Any) -> Dict[str, Any]:
-    """Collect addresses and provider rDNS entries from SCP response shapes.
+def _server_address_inventory(server_info: Any) -> Dict[str, Any]:
+    """Collect only the addresses declared by the server detail response.
 
-    ``Server`` has minimal top-level addresses, ``serverLiveInfo`` has string
-    addresses on interfaces, and ``GET /interfaces`` has rich address objects
-    including rDNS.  Accepting all three makes status/login useful across SCP
-    versions while preserving every value the API actually returned.
+    The SCP server detail (``Server``) has the authoritative
+    ``ipv4Addresses``/``ipv6Addresses`` fields.  ``serverLiveInfo.interfaces``
+    and ``GET /interfaces`` describe other views of the network, including
+    link-local addresses and individual IPv6 rDNS map keys.  Those are useful
+    API data, but mixing them into the compact status inventory makes one
+    server appear to have duplicate or extra addresses.  Keep this helper
+    intentionally narrow so every displayed address is traceable to the
+    server detail response.
     """
     addresses = {"ipv4": [], "ipv6": []}
     rdns: Dict[str, str] = {}
@@ -356,44 +380,13 @@ def _server_address_inventory(*records: Any) -> Dict[str, Any]:
         if isinstance(value, dict) and address:
             add_rdns(address, value.get("rdns"))
 
-    def visit_interface(interface: Any) -> None:
-        if not isinstance(interface, dict):
-            return
-        for value in interface.get("ipv4Addresses", []) if isinstance(interface.get("ipv4Addresses", []), list) else []:
-            add_address("ipv4", value)
-        for value in interface.get("ipv6Addresses", []) if isinstance(interface.get("ipv6Addresses", []), list) else []:
-            add_address("ipv6", value)
-        for value in interface.get("ipv6LinkLocalAddresses", []) if isinstance(interface.get("ipv6LinkLocalAddresses", []), list) else []:
-            add_address("ipv6", value)
-        for value in interface.get("ipv6NetworkPrefixes", []) if isinstance(interface.get("ipv6NetworkPrefixes", []), list) else []:
-            add_address("ipv6", value)
-
-    def visit(record: Any) -> None:
-        if isinstance(record, list):
-            for item in record:
-                visit_interface(item)
-            return
-        if not isinstance(record, dict):
-            return
+    if isinstance(server_info, dict):
         for family in ("ipv4", "ipv6"):
             field = f"{family}Addresses"
-            values = record.get(field, [])
+            values = server_info.get(field, [])
             if isinstance(values, list):
                 for value in values:
                     add_address(family, value)
-        live_info = record.get("serverLiveInfo")
-        if isinstance(live_info, dict):
-            interfaces = live_info.get("interfaces", [])
-            if isinstance(interfaces, list):
-                for interface in interfaces:
-                    visit_interface(interface)
-        interfaces = record.get("interfaces")
-        if isinstance(interfaces, list):
-            for interface in interfaces:
-                visit_interface(interface)
-
-    for record in records:
-        visit(record)
     return {"ipv4": addresses["ipv4"], "ipv6": addresses["ipv6"], "rdns": rdns}
 
 
@@ -406,7 +399,10 @@ def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
         for address in inventory.get(family, []):
             lookup_address = address.split("/", 1)[0]
             hostname = rdns.get(address) or rdns.get(lookup_address)
-            if hostname is None:
+            # A network prefix is an address allocation, not a host address;
+            # asking the local resolver about it can produce an unrelated PTR
+            # result and is not useful in this server inventory.
+            if hostname is None and "/" not in address:
                 try:
                     ipaddress.ip_address(lookup_address)
                 except ValueError:
@@ -417,12 +413,238 @@ def _reverse_dns_summary(inventory: Dict[str, Any]) -> str:
             if entry not in seen:
                 entries.append(entry)
                 seen.add(entry)
-    for address, hostname in rdns.items():
-        entry = f"{address} -> {hostname or '-'}"
-        if entry not in seen:
-            entries.append(entry)
-            seen.add(entry)
     return "\n".join(entries)
+
+
+def _ssh_probe_hosts(server_info: Dict[str, Any]) -> List[str]:
+    """Return exact server-info addresses suitable as SSH destinations.
+
+    ``ipv6Addresses`` normally contains an allocated network prefix.  A
+    prefix is deliberately not passed to SSH; only an exact ``ip`` value can
+    identify a host.  IPv4 addresses are already host addresses.
+    """
+    hosts: List[str] = []
+    if not isinstance(server_info, dict):
+        return hosts
+
+    ipv4_values = server_info.get("ipv4Addresses", [])
+    if isinstance(ipv4_values, list):
+        for value in ipv4_values:
+            address = _address_value(value, "ipv4")
+            if not address:
+                continue
+            try:
+                parsed = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if isinstance(parsed, ipaddress.IPv4Address) and address not in hosts:
+                hosts.append(address)
+
+    ipv6_values = server_info.get("ipv6Addresses", [])
+    if isinstance(ipv6_values, list):
+        for value in ipv6_values:
+            # A ServerIpv6.networkPrefix is an allocation, not an SSH host.
+            # Only an explicit ServerIpv6.ip (or an exact string response)
+            # identifies a destination.
+            if isinstance(value, dict):
+                address = value.get("ip")
+            else:
+                address = value
+            if not isinstance(address, str) or not address or "/" in address:
+                continue
+            try:
+                parsed = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if isinstance(parsed, ipaddress.IPv6Address) and address not in hosts:
+                hosts.append(address)
+    return hosts
+
+
+def _ssh_identity_path(template: str, server: Dict[str, Any]) -> Path:
+    """Render the install-host identity template without generating a key."""
+    host_label = _IDENTITY_FILE_LABEL_RE.sub("-", _server_name(server)) or "unknown-host"
+    date_label = datetime.now(timezone.utc).strftime("%Y%m%d")
+    rendered = template.replace("{host}", host_label).replace("{date}", date_label)
+    return Path(rendered).expanduser()
+
+
+_IDENTITY_FILE_LABEL_RE = re.compile(r"[^A-Za-z0-9.\-]")
+_SSH_PRIVATE_KEY_MARKERS = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "-----BEGIN EC PRIVATE KEY-----",
+    "-----BEGIN DSA PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----",
+)
+_SSH_AUTH_FAILURE_MARKERS = (
+    "permission denied",
+    "authentication failed",
+    "publickey",
+    "sign_and_send_pubkey",
+    "no mutual signature algorithm",
+    "too many authentication failures",
+)
+_SSH_TRANSPORT_FAILURE_MARKERS = (
+    "connection refused",
+    "connection timed out",
+    "operation timed out",
+    "no route to host",
+    "network is unreachable",
+    "could not resolve hostname",
+    "temporary failure in name resolution",
+    "connection reset by peer",
+    "connection closed by",
+    "kex_exchange_identification",
+    "banner exchange",
+)
+
+
+def _load_ssh_probe_settings() -> tuple[str, str]:
+    """Return the configured SSH user and rendered identity template."""
+    settings = _load_settings(INSTALL_HOST_SETTINGS_PATH, _INSTALL_HOST_SETTINGS_EXPECTED_KEYS)
+    user = os.environ.get("NETCUP_SCP_API_SSH_USER", "").strip() or str(settings["ssh.user"])
+    template = os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", "").strip() or str(
+        settings["ssh.identity_file"]
+    )
+    if not user:
+        raise ValueError("install-host.toml [ssh].user is empty")
+    if not template:
+        raise ValueError("install-host.toml [ssh].identity_file is empty")
+    return user, template
+
+
+def _looks_like_private_key(path: Path) -> bool:
+    """Recognize private-key files without invoking ssh-keygen or prompting."""
+    try:
+        prefix = path.read_text(encoding="utf-8", errors="ignore")[:512]
+    except OSError:
+        return False
+    return any(marker in prefix for marker in _SSH_PRIVATE_KEY_MARKERS)
+
+
+def _ssh_key_candidates(server: Dict[str, Any], template: str) -> List[Path]:
+    """Find existing private keys in ~/.ssh plus the configured identity."""
+    configured = _ssh_identity_path(template, server)
+    candidates: List[Path] = []
+    if configured.is_file():
+        candidates.append(configured)
+
+    ssh_dir = Path.home() / ".ssh"
+    if ssh_dir.is_dir():
+        try:
+            entries = sorted(ssh_dir.iterdir(), key=lambda path: path.name)
+        except OSError:
+            entries = []
+        for path in entries:
+            if path.is_file() and _looks_like_private_key(path) and path not in candidates:
+                candidates.append(path)
+    return candidates
+
+
+def _ssh_key_label(path: Path) -> str:
+    """Use a concise, non-secret name for a status-table key result."""
+    return path.name
+
+
+def _classify_ssh_probe(returncode: int, stderr: str) -> str:
+    if returncode == 0:
+        return "success"
+    message = stderr.casefold()
+    if any(marker in message for marker in _SSH_TRANSPORT_FAILURE_MARKERS):
+        return "transport"
+    if any(marker in message for marker in _SSH_AUTH_FAILURE_MARKERS):
+        return "auth"
+    # An SSH process that reached a non-transport error is safer to classify
+    # as reachable-but-not-authenticated than to claim that the service is
+    # offline.  The explicit transport markers above are the offline verdict.
+    return "auth"
+
+
+def _probe_ssh_key(host: str, user: str, key_path: Path) -> str:
+    ssh_host = f"[{host}]" if ":" in host else host
+    command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        "KbdInteractiveAuthentication=no",
+        "-o",
+        "PreferredAuthentications=publickey",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-i",
+        str(key_path),
+        f"{user}@{ssh_host}",
+        "true",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "transport"
+    except FileNotFoundError:
+        return "ssh-unavailable"
+    except OSError:
+        return "transport"
+    return _classify_ssh_probe(result.returncode, result.stderr or "")
+
+
+def _ssh_connection_summary(server: Dict[str, Any], details: Dict[str, Any]) -> str:
+    """Probe configured/local keys and summarize SSH reachability.
+
+    Every candidate key is tested on the first reachable server address.  A
+    success lists the key names; an open SSH service with no successful key is
+    distinct from a transport failure.  This is intentionally a status probe,
+    never a key-generation path.
+    """
+    hosts = _ssh_probe_hosts(details)
+    if not hosts:
+        return "no server IP"
+    try:
+        user, template = _load_ssh_probe_settings()
+        identity_server = dict(server)
+        identity_server.update(details)
+        keys = _ssh_key_candidates(identity_server, template)
+    except (OSError, ValueError, SystemExit):
+        return "SSH config unavailable"
+    if not keys:
+        return "no keys found"
+
+    for host in hosts:
+        successful: List[str] = []
+        reachable = False
+        for key in keys:
+            result = _probe_ssh_key(host, user, key)
+            if result == "ssh-unavailable":
+                return "SSH client unavailable"
+            if result == "success":
+                reachable = True
+                successful.append(_ssh_key_label(key))
+            elif result == "auth":
+                reachable = True
+        if successful:
+            return "keys: " + ", ".join(successful)
+        if reachable:
+            return "no keys match"
+    return "SSH not open/responding"
 
 
 def _mib_to_gib(value: Any) -> str:
@@ -431,14 +653,19 @@ def _mib_to_gib(value: Any) -> str:
     return f"{value / 1024:.1f}"
 
 
-def _server_status_row(server: Dict[str, Any], details: Dict[str, Any], interfaces: Any = None) -> Dict[str, Any]:
+def _server_status_row(
+    server: Dict[str, Any],
+    details: Dict[str, Any],
+    *,
+    include_ssh: bool = False,
+) -> Dict[str, Any]:
     """Build the stable, human-oriented row used by ``status`` and login."""
     record = dict(server)
     record.update(details)
     live_info = record.get("serverLiveInfo")
     if not isinstance(live_info, dict):
         live_info = {}
-    inventory = _server_address_inventory(record, interfaces)
+    inventory = _server_address_inventory(details)
 
     cpu = live_info.get("cpuCount", live_info.get("cpuMaxCount", record.get("maxCpuCount")))
     memory = live_info.get("currentServerMemoryInMiB", live_info.get("maxServerMemoryInMiB"))
@@ -463,18 +690,14 @@ def _server_status_row(server: Dict[str, Any], details: Dict[str, Any], interfac
         "#CPU": cpu if cpu is not None else "?",
         "RAM GB": _mib_to_gib(memory),
         "disk GB": _mib_to_gib(disk_mib),
+        "ssh-connect": _ssh_connection_summary(server, details) if include_ssh else "-",
     }
 
 
-def _server_enrichment(client: NetcupSCPClient, server_id: int) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Fetch the detail and rich interface records needed by status output."""
+def _server_enrichment(client: NetcupSCPClient, server_id: int) -> Dict[str, Any]:
+    """Fetch the server detail used by status output."""
     details_endpoint = f"/api/v1/servers/{server_id}"
-    interfaces_endpoint = f"/api/v1/servers/{server_id}/interfaces"
-    details = _response_dict(_api_call(client.get, details_endpoint), f"GET {details_endpoint}")
-    interfaces = _response_rows(
-        _api_call(client.get, interfaces_endpoint), f"GET {interfaces_endpoint}"
-    )
-    return details, interfaces
+    return _response_dict(_api_call(client.get, details_endpoint), f"GET {details_endpoint}")
 
 
 def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
@@ -482,9 +705,19 @@ def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
     targets = _server_targets(client, args.server_id)
     rows = []
     for server in targets:
-        details, interfaces = _server_enrichment(client, server["id"])
-        rows.append(_server_status_row(server, details, interfaces))
-    columns = ["vname", "hostname", "state", "architecture", "#CPU", "RAM GB", "disk GB", "reverse DNS"]
+        details = _server_enrichment(client, server["id"])
+        rows.append(_server_status_row(server, details, include_ssh=True))
+    columns = [
+        "vname",
+        "hostname",
+        "state",
+        "architecture",
+        "#CPU",
+        "RAM GB",
+        "disk GB",
+        "ssh-connect",
+        "reverse DNS",
+    ]
     emit(
         rows,
         args.json,
@@ -1399,13 +1632,9 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
                 client.get(f"/api/v1/servers/{server_id}"),
                 f"GET /api/v1/servers/{server_id}",
             )
-            enriched["interfaces"] = _response_rows(
-                client.get(f"/api/v1/servers/{server_id}/interfaces"),
-                f"GET /api/v1/servers/{server_id}/interfaces",
-            )
         except Exception as exc:
-            # Login must still let the operator protect a server when an
-            # optional detail/interface response is temporarily unavailable.
+            # Login must still let the operator protect a server when its
+            # optional detail response is temporarily unavailable.
             # The missing enrichment is explicit in the prompt instead of
             # being mistaken for an empty address set.
             print(
@@ -1413,7 +1642,6 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
                 file=sys.stderr,
             )
             enriched["details"] = enriched.get("details", {})
-            enriched["interfaces"] = enriched.get("interfaces", [])
         eligible.append(enriched)
 
     existing_names, existing_ids = netcup_scp_client.protected_server_policy()
@@ -1434,8 +1662,8 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
     for number, server in enumerate(eligible, start=1):
         marker = " [already protected]" if server["name"] in existing_names else ""
         print(f"  {number}. {server['name']} (id {server['id']}){marker}")
-        summary = _server_status_row(server, server["details"], server["interfaces"])
-        inventory = _server_address_inventory(server, server["details"], server["interfaces"])
+        summary = _server_status_row(server, server["details"])
+        inventory = _server_address_inventory(server["details"])
         print(f"     IPv4: {', '.join(inventory['ipv4']) or '-'}")
         print(f"     IPv6: {', '.join(inventory['ipv6']) or '-'}")
         reverse_dns_entries = summary["reverse DNS"].splitlines() or ["-"]
@@ -1585,9 +1813,13 @@ def parse_args():
     p = add_subcommand(
         "status",
         "show compact live status for all servers or one server",
-        "Fetch server details and interface data and show vname, hostname, run state, "
-        "architecture, CPU count, RAM, disk capacity, and a final multiline reverse-DNS "
-        "column containing the IP entries. "
+        "Fetch each server detail and show vname, hostname, run state, architecture, "
+        "CPU count, RAM, disk capacity, SSH authentication result, and a final "
+        "multiline reverse-DNS column containing only the detail response's "
+        "ipv4Addresses/ipv6Addresses. The SSH column tests every recognizable "
+        "private key in ~/.ssh plus the configured install-host identity without "
+        "creating a key. It reports successful key names, `no keys match`, or "
+        "`SSH not open/responding`. "
         "With no ID, every account server is queried.\n\n"
         "Examples:\n"
         "  ./scp-api.py status\n"

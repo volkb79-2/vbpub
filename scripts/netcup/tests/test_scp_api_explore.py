@@ -146,7 +146,8 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
         "id": 42,
         "name": "v2202503209318326780",
         "architecture": "AMD64",
-    }, [{"ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}]}]])
+        "ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}],
+    }])
     monkeypatch.setattr(explore_mod.netcup_scp_client, "resolve_env_path", lambda: env_path)
     monkeypatch.setattr(explore_mod, "run_device_code_login", lambda path: 0)
     monkeypatch.setattr(explore_mod, "load_env_file", lambda: None)
@@ -187,7 +188,12 @@ def test_cmd_servers_rejects_non_array_api_answer(explore_mod, fake_client):
         explore_mod.cmd_servers(client, _ns(), pal)
 
 
-def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, fake_client, capsys):
+def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, fake_client, capsys, monkeypatch):
+    monkeypatch.setattr(
+        explore_mod,
+        "_ssh_connection_summary",
+        lambda server, details: "keys: id_ed25519",
+    )
     client = fake_client(get_responses=[
         [{"id": 42, "name": "v2202503209318326780"}],
         {
@@ -195,22 +201,24 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
             "name": "v2202503209318326780",
             "hostname": "vm.example",
             "architecture": "AMD64",
-            "serverLiveInfo": {
-                "state": "RUNNING",
-                "cpuCount": 4,
-                "currentServerMemoryInMiB": 8192,
-                "disks": [{"capacityInMiB": 524288}],
-            },
-        },
-        [{
-            "mac": "aa:bb:cc:dd:ee:ff",
             "ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}],
             "ipv6Addresses": [{
                 "networkPrefix": "2001:db8::",
                 "networkPrefixLength": 64,
                 "rdns": {"2001:db8::1": "vm6.example"},
             }],
-        }],
+            "serverLiveInfo": {
+                "state": "RUNNING",
+                "cpuCount": 4,
+                "currentServerMemoryInMiB": 8192,
+                "disks": [{"capacityInMiB": 524288}],
+                "interfaces": [{
+                    "ipv4Addresses": ["192.0.2.99"],
+                    "ipv6LinkLocalAddresses": ["fe80::1"],
+                    "ipv6NetworkPrefixes": ["2001:db8:1::/64"],
+                }],
+            },
+        },
     ])
     pal = explore_mod._Palette(enabled=False)
     explore_mod.cmd_status(client, _ns(server_id=None), pal)
@@ -221,7 +229,11 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
     assert "4" in out and "8.0" in out and "512.0" in out
     assert "198.51.100.42" in out
     assert "2001:db8::/64" in out
+    assert "keys: id_ed25519" in out
     assert "198.51.100.42 -> vm.example" in out
+    assert "2001:db8::1" not in out
+    assert "192.0.2.99" not in out
+    assert "fe80::1" not in out
     assert "reverse DNS" in out
     assert "IPv4" not in out.splitlines()[0]
     assert "IPv6" not in out.splitlines()[0]
@@ -229,8 +241,56 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
     assert client.calls == [
         ("get", "/api/v1/servers", None),
         ("get", "/api/v1/servers/42", None),
-        ("get", "/api/v1/servers/42/interfaces", None),
     ]
+
+
+def test_ssh_connection_summary_lists_every_key_that_authenticates(explore_mod, monkeypatch):
+    keys = [explore_mod.Path("/tmp/id-a"), explore_mod.Path("/tmp/id-b")]
+    monkeypatch.setattr(explore_mod, "_load_ssh_probe_settings", lambda: ("root", "unused"))
+    monkeypatch.setattr(explore_mod, "_ssh_key_candidates", lambda server, template: keys)
+    calls = []
+
+    def fake_probe(host, user, key):
+        calls.append((host, user, key))
+        return "success" if key.name in {"id-a", "id-b"} else "auth"
+
+    monkeypatch.setattr(explore_mod, "_probe_ssh_key", fake_probe)
+    details = {"ipv4Addresses": [{"ip": "198.51.100.42"}]}
+    result = explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details)
+    assert result == "keys: id-a, id-b"
+    assert calls == [
+        ("198.51.100.42", "root", keys[0]),
+        ("198.51.100.42", "root", keys[1]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("probe_result", "expected"),
+    [("auth", "no keys match"), ("transport", "SSH not open/responding")],
+)
+def test_ssh_connection_summary_distinguishes_auth_and_transport(
+    explore_mod, monkeypatch, probe_result, expected
+):
+    monkeypatch.setattr(explore_mod, "_load_ssh_probe_settings", lambda: ("root", "unused"))
+    monkeypatch.setattr(
+        explore_mod,
+        "_ssh_key_candidates",
+        lambda server, template: [explore_mod.Path("/tmp/id-a")],
+    )
+    monkeypatch.setattr(explore_mod, "_probe_ssh_key", lambda host, user, key: probe_result)
+    details = {"ipv4Addresses": [{"ip": "198.51.100.42"}]}
+    assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == expected
+
+
+def test_ssh_probe_hosts_ignores_ipv6_network_prefixes(explore_mod):
+    details = {
+        "ipv4Addresses": [{"ip": "198.51.100.42"}],
+        "ipv6Addresses": [
+            {"networkPrefix": "2001:db8::", "networkPrefixLength": 64},
+            {"ip": "2001:db8::42"},
+        ],
+    }
+    assert explore_mod._ssh_probe_hosts(details) == ["198.51.100.42", "2001:db8::42"]
 
 
 def test_cmd_server_details(explore_mod, fake_client, capsys):

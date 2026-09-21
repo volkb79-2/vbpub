@@ -62,7 +62,8 @@ installer can select an existing account SSH key (or explicitly register a
 new one), preview, or monitor a Debian-install-v2 run. The companion explorer
 enumerates server-scoped inventory account-wide by default, provides
 `scp-api.py status` for a compact live table with hostname, state, resources,
-and a multiline IP/reverse-DNS column, diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`,
+an SSH key-authentication result, and a multiline IP/reverse-DNS column (using
+only the server detail address fields), diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`,
 and filters such as `scp-api.py imageflavours --filter debian`. It also exposes
 confirmed ISO attachment, firewall assignment, and grouped power actions
 (`scp-api.py power on|off|cycle|reset SERVER_ID`); validated firewall policy

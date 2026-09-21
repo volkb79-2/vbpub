@@ -94,12 +94,18 @@ VMs cannot be mistaken for one result. An explicit ID remains available for a
 focused query, and filters are applied locally to the returned fields.
 
 `status` is the deliberately compact account-wide view. It queries each
-server's full detail and interface records and normalizes provider fields into
-one table: vname, hostname (or nickname), run state, architecture, CPU count,
-RAM and disk GiB, and a final multiline column containing configured/resolver-
-derived reverse-DNS entries with their IPv4/IPv6 addresses. The richer
-interface endpoint is used because the minimal server inventory does not carry
-rDNS entries.
+server's detail record and normalizes provider fields into one table: vname,
+hostname (or nickname), run state, architecture, CPU count, RAM and disk GiB,
+an SSH-connectivity/authentication result, and a final multiline column
+containing configured/resolver-derived reverse-DNS entries. The address list
+is deliberately sourced only from the detail record's `ipv4Addresses` and
+`ipv6Addresses`; nested live interface data is not merged because it can add
+link-local addresses, prefixes, or rDNS map keys that are not host addresses
+for this compact view. SSH checks are status-only read probes: they test all
+recognizable local private keys and the configured installer identity, but
+never generate a key or change provider state. A reachable SSH service with
+no successful key is reported as `no keys match`, while transport failure is
+reported as `SSH not open/responding`.
 
 Actions that change state cannot safely fan out. ISO detach, rescue-system
 deactivation, snapshot creation, and snapshot dry-run therefore refuse without
