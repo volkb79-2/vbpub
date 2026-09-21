@@ -195,6 +195,7 @@ version
 
 ```text
 --debug    emit additional diagnostic information useful for debugging
+--debug-raw emit diagnostic/API data without secret redaction (dangerous)
 ```
 
 `--debug` may enable request details, retry decisions, subprocess commands,
@@ -204,6 +205,16 @@ successful operation into a failure, or bypass normal safety checks. Sensitive
 values remain redacted. An unexpected exception may retain its traceback
 because it is uncaught; `--debug` may add context around it but does not change
 that distinction.
+
+`--debug-raw` is an explicit opt-in escape hatch for diagnosing a provider or
+subprocess response whose secret-bearing fields are themselves relevant. It
+implies `--debug`, disables presentation redaction for supported diagnostic and
+raw-response paths, and must not change the request or mutation being made.
+The CLI prints a prominent warning to stderr before emitting raw data. The
+warning must say that credentials, tokens, passwords, private keys, or other
+secrets may be exposed and must not be copied into shared logs. Raw mode must
+remain opt-in per invocation; it must not be enabled by a persistent default,
+ordinary debug environment variable, or a config-file default.
 
 ### Output control
 
@@ -325,7 +336,8 @@ The test suite for every adopted CLI must prove at least:
 7. expected failures are meaningful and traceback-free;
 8. Ctrl-C at every interactive prompt exits `130` without a traceback;
 9. unexpected exceptions remain distinguishable from handled failures, with
-   `--debug` providing additional diagnostics;
+   `--debug` providing additional diagnostics and `--debug-raw` explicitly
+   proving the redaction boundary is disabled only when requested;
 10. JSON mode keeps stdout machine-readable and diagnostics on stderr; and
 11. help/version paths work without credentials, configuration, network, or
     runtime services.
@@ -336,8 +348,8 @@ oracle actually goes red before the fix.
 
 ## 10. Implementation guidance
 
-The standard does not require a third-party CLI framework. Python's standard
-library is sufficient for the contract:
+The standard does not require a particular CLI framework. Python's standard
+library is sufficient for the baseline contract:
 
 - `argparse` supplies typed options, subcommands, required values, option
   groups, and version actions;
@@ -353,15 +365,24 @@ library is sufficient for the contract:
 - `dataclasses` or typed dictionaries can hold the one verb/group/option
   metadata table used to render top-level help and validate its tests.
 
+The shared helper is free to reuse established Python libraries where they
+materially improve correctness, presentation, terminal handling, structured
+output, or testing. Such dependencies must be deliberate and documented; the
+helper must wrap them behind this repository's observable contract so a library
+upgrade cannot silently change help layout, error semantics, redaction, or exit
+statuses. A CLI should not acquire multiple overlapping parser/rendering
+frameworks merely because each project chose a different one.
+
 The repository has enough repeated behavior across CIU, CMRU, nyxloom, and the
 Netcup tools that a small custom library is worthwhile once migration begins.
-It should be a dependency-free contract helper, not a replacement CLI
-framework. Its narrow API should cover:
+It should be a focused contract layer, not a replacement for every possible
+CLI framework. It may use or adapt an established parser/renderer, but its
+narrow API should cover:
 
 1. `CliIdentity` and authoritative version resolution;
 2. structured verb/group metadata and top-level help rendering;
-3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`, and
-   command-help-on-error;
+3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`,
+   `--debug-raw`, and command-help-on-error;
 4. the outer exception and Ctrl-C boundary; and
 5. reusable contract-test helpers for side-effect-free help/version, output
    streams, exit statuses, and prompt behavior.
