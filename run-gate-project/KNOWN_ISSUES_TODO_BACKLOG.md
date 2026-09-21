@@ -4968,3 +4968,41 @@ Both are genuine, reproducible, PRE-EXISTING defects — neither is new,
 neither touches code this package's diff modified, and both were
 confirmed non-deterministic (pass on a retry) before being recorded here
 rather than "fixed" by silently retrying past them without a trace.
+
+### Update 2026-09-18 (same wave, sixth package) — a fifth data point corroborating the ORIGINAL queue-wait-inside-the-budget-clock hypothesis, with a nuance: partial real progress before the aggregate clock still tripped
+
+A sixth package in the same wave (`p199-b2-io-main`) hit
+`BUDGET_EXCEEDED/LANE_TIMEOUT` on its `worker_io_main_r2_compare` lane
+(`python:compare-swap` over two small target files, only 8 total
+candidates — nowhere near `max_mutants=200`, so this was never a
+candidate-volume problem). The verdict bucketed **2 killed, 1 survived,
+5 `budget_exceeded`** — i.e. real, individual candidate execution
+genuinely happened and completed for 3 of the 8 (one of them a genuine,
+non-equivalent surviving mutant, later fixed with a new test), yet the
+LANE still tripped `LANE_TIMEOUT` overall. The lane's declared aggregate
+`budget` was `"60m"`; the invoking host-side `run-gate` process itself
+had been launched (and left legitimately queued on the shared
+container's exec lock, `/tmp/run-gate-exec-<container>.lock`, contended
+by five OTHER concurrently-dispatched packages in this same wave) hours
+before assay ever got a chance to execute a single candidate. Re-running
+the SAME lane once the exec lock actually freed up (assay's own
+`--resume` picking up from `.assay/mutation-state/`, only re-testing the
+one candidate whose source had changed via the fix) completed normally,
+comfortably inside budget.
+
+This is a straightforward, low-ambiguity corroboration of the entry's
+ORIGINAL 2026-09-18 hypothesis (queue-wait counted inside the lane-wide
+deadline, not just execution time) — it does not by itself distinguish
+between "the deadline clock starts at host-side process launch" vs.
+"starts at container-exec-lock acquisition", since both readings predict
+the observed outcome here equally well. The nuance worth recording
+separately from the other data points in this thread: **partial genuine
+completion (3/8 candidates individually judged, including a real
+survivor) can still end in an aggregate `LANE_TIMEOUT`** — so seeing SOME
+real candidate outcomes in a `BUDGET_EXCEEDED` verdict's bucket counts is
+not, by itself, evidence against the queue-wait-inside-budget mechanism;
+a reader should not conclude "the lane was genuinely almost done" just
+because a few candidates completed before the clock tripped. Not fixed
+by this package's diff (same reasoning as every other update in this
+thread) — filed as a note per the standing convention (a second/Nth
+reproduction of the SAME underlying defect goes here, not a new entry).
