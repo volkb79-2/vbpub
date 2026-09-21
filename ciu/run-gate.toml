@@ -17,3 +17,7 @@ budget = "8h"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
+
+[lanes.ciu.resources]
+memory = "2g"
+memory_swap = "16g"

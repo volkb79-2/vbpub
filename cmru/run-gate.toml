@@ -4,13 +4,15 @@
 # policy lives in assay.toml [lanes.cmru] (R0-R3: full Python rigor ladder).
 # The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.test] points at it and owns NO test logic itself.
+# The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
+# current run-gate revision has no cgroup-v2 memory.high placement actuator;
+# this file therefore records only limits it can actually pass and verify.
 # See run-gate-project/SPEC.md.
 #
 # RG-20 resources: every container lane declares its RAM so gate admission
-# can sum concurrent gates against the dev-tier slice budget. Values mirror
-# the proven CMRU_TESTER_MEMORY=1g / _MEMORY_SWAP=16g pattern: a tight RAM
-# cap keeps bursts from cascading into co-resident live services, ample swap
-# absorbs transients without OOM kills.
+# can sum concurrent gates against the dev-tier slice budget. The 2g hard cap
+# leaves room for the mutation campaign while 16g of swap absorbs transients
+# without OOM kills.
 # =============================================================================
 schema_version = 1
 
@@ -24,7 +26,7 @@ budget = "8h"
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.assay.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 [lanes.coverage]
@@ -35,7 +37,7 @@ budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.coverage.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 # Mutation base = the PREVIOUS cmru release tag, resolved at gate time — NOT
@@ -55,7 +57,7 @@ budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 [lanes.canary]
@@ -66,7 +68,7 @@ budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 
 [lanes.canary.resources]
-memory = "1g"
+memory = "2g"
 memory_swap = "16g"
 
 # KI-25: get.py enroll's security-critical container oracles (O2/O3) -- real
