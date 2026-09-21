@@ -14,8 +14,8 @@ Playwright and MCP components still describe the current upstream interfaces.
 
 ## Implementation update — 2026-09-21
 
-The modernization is implemented in this worktree and is awaiting the
-dedicated `tester-unified` gate. The selected coordinates are the newest
+The modernization is implemented in the dedicated worktrees. The selected
+coordinates are the newest
 eligible values at the 2026-09-07 UTC cutoff imposed by the temporary
 14-day policy:
 
@@ -29,7 +29,11 @@ eligible values at the 2026-09-07 UTC cutoff imposed by the temporary
 | `@modelcontextprotocol/sdk` | `1.30.0` | npm publication 2026-07-27 |
 | `chrome-launcher` | `1.2.1` | npm publication 2025-09-25 |
 
-The committed projection is `pwmcp-v1.62.0-r4`. Release preparation now runs
+The committed projection is `pwmcp-v1.62.0-r4`. The selected Playwright base
+manifest is pinned as
+`sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07`
+in the Dockerfile and bake projection; refresh resolves that digest from the
+exact MCR tag and check mode verifies all copies. Release preparation now runs
 the resolver in `--check` mode, which validates the Dockerfile, bake file,
 CIU templates, contract, and Lighthouse lockfile without contacting upstreams.
 An explicit `--refresh` performs the temporary age-filtered upstream selection;
@@ -41,8 +45,9 @@ committed npm lockfile, installed with `npm ci --omit=dev`. The active transport
 contract is Streamable HTTP at `/mcp`; the legacy `/sse` commands remain only as
 commented deprecated references, and the acceptance smoke checks both sides of
 that contract. Assay R1 and R2 are configured for whole-target 100% branch
-coverage. Their results are intentionally left to the external gate and are
-not claimed by this document before that gate runs.
+coverage. External `tester-unified` R1 has now passed at commit `7baef450`
+with 100% whole-target branch coverage; R2 mutation evidence and the image/live
+smoke remain pending.
 
 ## Findings
 
@@ -143,8 +148,8 @@ selected MCR tag family.
 
 These are now explicit refusal paths in the compatibility hardening change,
 with tests that construct a missing-key template and assert that the resolver
-names the missing input. The external coverage gate must still confirm the
-success and refusal branches.
+names the missing input. The external R1 gate confirmed the success and refusal
+branches, including the digest projection checks.
 
 The vendored Lighthouse MCP package had a related reproducibility issue:
 `@modelcontextprotocol/sdk` and `chrome-launcher` use caret ranges and the
