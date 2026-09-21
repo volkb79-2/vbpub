@@ -111,8 +111,9 @@ timeout by the number of keys. Matching server-name/hostname/nickname filenames 
 but all keys are still tested so every successful key can be reported. Reverse
 DNS calls run concurrently and are intentionally not memoized across duplicate
 addresses: each displayed address remains an independent live lookup. A
-reachable SSH service with no successful key is reported as `no keys match`,
-while transport failure is reported as `SSH not open/responding`.
+reachable SSH service for which every tested key fails public-key
+authentication is reported as `no keys match`. An SSH-level/session refusal is
+reported as `rejected`, while transport failure is reported as `no answer`.
 
 Actions that change state cannot safely fan out. ISO detach, rescue-system
 deactivation, snapshot creation, and snapshot dry-run therefore refuse without

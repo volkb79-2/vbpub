@@ -212,12 +212,15 @@ def print_table(
     pal: _Palette,
     empty_message: str,
     multiline_columns: set[str] | None = None,
+    column_headers: Dict[str, str] | None = None,
 ) -> None:
     rows = _response_rows(rows, "formatted table")
     if not rows:
         print(pal.dim(empty_message))
         return
     multiline_columns = multiline_columns or set()
+    column_headers = column_headers or {}
+    headers = [column_headers.get(column, column) for column in columns]
     cells = [
         [
             (_stringify_multiline(row.get(col)) if col in multiline_columns else _stringify(row.get(col))).splitlines() or [""]
@@ -226,10 +229,10 @@ def print_table(
         for row in rows
     ]
     widths = [
-        max(len(columns[i]), *(len(line) for row in cells for line in row[i]))
+        max(len(headers[i]), *(len(line) for row in cells for line in row[i]))
         for i in range(len(columns))
     ]
-    header = "  ".join(pal.bold(columns[i].ljust(widths[i])) for i in range(len(columns)))
+    header = "  ".join(pal.bold(headers[i].ljust(widths[i])) for i in range(len(columns)))
     print(header)
     print(pal.dim("  ".join("-" * widths[i] for i in range(len(columns)))))
     for r in cells:
@@ -514,6 +517,14 @@ _SSH_AUTH_FAILURE_MARKERS = (
     "no mutual signature algorithm",
     "too many authentication failures",
 )
+_SSH_REJECTION_MARKERS = (
+    "administratively prohibited",
+    "channel open failed",
+    "connection closed by",
+    "kex_exchange_identification",
+    "not allowed",
+    "prohibited",
+)
 _SSH_TRANSPORT_FAILURE_MARKERS = (
     "connection refused",
     "connection timed out",
@@ -523,8 +534,6 @@ _SSH_TRANSPORT_FAILURE_MARKERS = (
     "could not resolve hostname",
     "temporary failure in name resolution",
     "connection reset by peer",
-    "connection closed by",
-    "kex_exchange_identification",
     "banner exchange",
 )
 
@@ -636,11 +645,14 @@ def _classify_ssh_probe(returncode: int, stderr: str) -> str:
     message = stderr.casefold()
     if any(marker in message for marker in _SSH_TRANSPORT_FAILURE_MARKERS):
         return "transport"
+    if any(marker in message for marker in _SSH_REJECTION_MARKERS):
+        return "rejected"
     if any(marker in message for marker in _SSH_AUTH_FAILURE_MARKERS):
         return "auth"
-    # An SSH process that reached a non-transport error is safer to classify
-    # as reachable-but-not-authenticated than to claim that the service is
-    # offline.  The explicit transport markers above are the offline verdict.
+    # An SSH process that reached an unknown non-transport error is safer to
+    # classify as reachable-but-not-authenticated than to claim that the
+    # service is offline. The explicit transport markers above are the offline
+    # verdict.
     return "auth"
 
 
@@ -789,6 +801,7 @@ def _ssh_connection_summary(
         return "no keys found"
 
     reachable_host = None
+    saw_rejection = False
     for host in hosts:
         result = _probe_ssh_service(host, user, timeout_seconds)
         if result == "ssh-unavailable":
@@ -796,11 +809,14 @@ def _ssh_connection_summary(
         if result == "reachable":
             reachable_host = host
             break
+        if result == "rejected":
+            saw_rejection = True
     if reachable_host is None:
-        return "SSH not open/responding"
+        return "rejected" if saw_rejection else "no answer"
 
     successful: List[str] = []
     saw_reachable_key_attempt = False
+    saw_rejection = False
     for key in keys:
         result = _probe_ssh_key(reachable_host, user, key, timeout_seconds)
         if result == "ssh-unavailable":
@@ -808,13 +824,17 @@ def _ssh_connection_summary(
         if result == "success":
             saw_reachable_key_attempt = True
             successful.append(_ssh_key_label(key))
+        elif result == "rejected":
+            saw_rejection = True
         elif result == "auth":
             saw_reachable_key_attempt = True
     if successful:
         return "keys: " + ", ".join(successful)
+    if saw_rejection:
+        return "rejected"
     if saw_reachable_key_attempt:
         return "no keys match"
-    return "SSH not open/responding"
+    return "no answer"
 
 
 def _mib_to_gib(value: Any) -> str:
@@ -944,6 +964,7 @@ def cmd_status(client: NetcupSCPClient, args, pal: _Palette) -> None:
             pal,
             "no servers on this account",
             multiline_columns={"reverse DNS"},
+            column_headers={"architecture": "Arch", "RAM GB": "RAM", "disk GB": "disk"},
         ),
     )
 
@@ -2048,7 +2069,10 @@ def parse_args():
         "creating a key. It first performs one SSH service probe per address, "
         "then tests keys in server-name/hostname filename order. The default "
         "probe timeout is 2 seconds. It reports successful key names, `no keys "
-        "match`, or `SSH not open/responding`. "
+        "match`, `rejected`, or `no answer`. `no keys match` means the service "
+        "answered but every tested key failed public-key authentication; "
+        "`rejected` means the SSH endpoint refused the session itself; "
+        "`no answer` means no address responded. "
         "With no ID, every account server is queried using a bounded four-worker pool. "
         "Reverse-DNS lookups are concurrent but are not cached across duplicate addresses.\n\n"
         "Examples:\n"

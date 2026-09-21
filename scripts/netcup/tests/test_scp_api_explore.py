@@ -226,6 +226,11 @@ def test_cmd_status_prints_live_inventory_with_addresses_and_rdns(explore_mod, f
     assert "v2202503209318326780" in out
     assert "hostname" in out and "vm.example" in out
     assert "RUNNING" in out
+    header = out.splitlines()[0]
+    assert "Arch" in header
+    assert "architecture" not in header
+    assert "RAM" in header and "RAM GB" not in header
+    assert "disk" in header and "disk GB" not in header
     assert "4" in out and "8.0" in out and "512.0" in out
     assert "198.51.100.42" in out
     assert "2001:db8::/64" in out
@@ -271,7 +276,7 @@ def test_ssh_connection_summary_lists_every_key_that_authenticates(explore_mod, 
 
 @pytest.mark.parametrize(
     ("probe_result", "expected"),
-    [("auth", "no keys match"), ("transport", "SSH not open/responding")],
+    [("auth", "no keys match"), ("rejected", "rejected"), ("transport", "no answer")],
 )
 def test_ssh_connection_summary_distinguishes_auth_and_transport(
     explore_mod, monkeypatch, probe_result, expected
@@ -318,7 +323,7 @@ def test_ssh_service_failure_skips_all_key_attempts(explore_mod, monkeypatch):
         lambda *args: (_ for _ in ()).throw(AssertionError("key probe must not run")),
     )
     details = {"ipv4Addresses": [{"ip": "198.51.100.42"}]}
-    assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == "SSH not open/responding"
+    assert explore_mod._ssh_connection_summary({"id": 42, "name": "v42"}, details) == "no answer"
 
 
 def test_ssh_probe_hosts_ignores_ipv6_network_prefixes(explore_mod):
