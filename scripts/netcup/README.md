@@ -54,16 +54,16 @@ interactive install still resolves the current Debian UEFI image every time.
 ./scp-api.py imageflavours --filter debian
 
 # Optional local defaults wizard; requires NETCUP_SCP_API_SERVER_NAME in .env.
-./scp-api-install-host.py configure
+./install-host.py configure
 
 # Preview the gathered payload and account-key decision. This does not call a
 # mutating Netcup API, but it may create the local controller key used for SSH
 # monitoring. It does not save target-host.jsonc.
-./scp-api-install-host.py --dry-run
+./install-host.py --dry-run
 
 # Gather again, save target-host.jsonc, ask for final confirmation, install,
 # and follow the task plus Debian bootstrap logs.
-./scp-api-install-host.py --monitor
+./install-host.py --monitor
 ```
 
 The installer writes `target-host.jsonc` before its final install confirmation
@@ -77,7 +77,7 @@ needed for the bootstrap/monitoring path and is not the account key.
 If the dry-run looks correct, the second command can be made non-interactive:
 
 ```bash
-./scp-api-install-host.py --yes --monitor
+./install-host.py --yes --monitor
 ```
 
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
@@ -86,8 +86,8 @@ the selected bootstrap source.
 To save or repeat a gathered request explicitly, use the generated file:
 
 ```bash
-./scp-api-install-host.py --payload target-host.jsonc --dry-run
-./scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+./install-host.py --payload target-host.jsonc --dry-run
+./install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
 ```
 
 Direct payload mode does not load `default-recipe.jsonc`: for a Debian install,
@@ -132,7 +132,7 @@ the matching credentials from `.env`. To generate a fully expanded script for
 a manual web-host UI install, run:
 
 ```bash
-./scp-api-install-host.py build-customscript
+./install-host.py build-customscript
 ```
 
 ## Install workflow
@@ -140,13 +140,13 @@ a manual web-host UI install, run:
 Preview an installation without mutating the Netcup account:
 
 ```bash
-./scp-api-install-host.py --dry-run
+./install-host.py --dry-run
 ```
 
 Run an interactive installation and follow stage2:
 
 ```bash
-./scp-api-install-host.py --monitor
+./install-host.py --monitor
 ```
 
 Use `--payload target-host.jsonc` only after the normal flow has generated the
@@ -154,8 +154,8 @@ file, or when supplying a separately prepared complete payload. To monitor a
 task after the installer has exited, use the standalone task watcher:
 
 ```bash
-./scp-api-monitor-task.py TASK_UUID
-./scp-api-monitor-task.py TASK_UUID --json
+./monitor-task.py TASK_UUID
+./monitor-task.py TASK_UUID --json
 ```
 
 Avoid `--raw` unless the response is being handled as a secret: task payloads
@@ -167,7 +167,7 @@ account key. To pin an existing key in a direct payload run, pass its ID (and
 repeat the option for multiple IDs):
 
 ```bash
-python3 scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+python3 install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
 ```
 
 The local `--ssh-identity-file` is a separate ephemeral controller key used
@@ -176,7 +176,7 @@ for bootstrap access and monitoring and is still generated when needed;
 account key exists, or the interactive create option is selected, the new
 account key is registered during gathering, before the final confirmation.
 
-`scp-api-install-host.py --help` documents the payload, attach-only, poweroff,
+`install-host.py --help` documents the payload, attach-only, poweroff,
 and wizard modes. `scp-api.py` provides read-only account/server
 inspection and explicitly gated reversible actions. Read-only resource commands
 enumerate every server when no ID is supplied, because the SCP API exposes
@@ -348,13 +348,13 @@ NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
 ## Bootstrap source
 
 The generated customScript contains `{{BOOTSTRAP_URL}}`; the controller
-resolves it from `[bootstrap]` in `scp-api-install-host.toml`. The matching
+resolves it from `[bootstrap]` in `install-host.toml`. The matching
 `REPO_URL` and `REPO_BRANCH` are passed to `bootstrap-remote.py`, so a branch
 test downloads the wrapper and the installer subtree from the same branch:
 
 ```bash
 NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration \
-  python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
+  python3 install-host.py --payload target-host.jsonc --dry-run
 ```
 
 For a nonstandard wrapper location, set

@@ -1,10 +1,10 @@
 # scp-api.toml
 #
 # Settings for scp-api.py. Deliberately its own small file, not
-# shared with scp-api-install-host.toml: that file's schema is CLOSED
+# shared with install-host.toml: that file's schema is CLOSED
 # (extra/missing keys are hard errors) and carries a lot of install-only
 # keys (ssh.*) this tool has no use for. The two values below are
-# duplicated from scp-api-install-host.toml's own [api] section -- they're
+# duplicated from install-host.toml's own [api] section -- they're
 # the same Netcup account/API, just not worth a bigger shared-config
 # refactor to deduplicate two lines. The secret (refresh token) is NOT
 # duplicated -- both tools read it from the same .env via

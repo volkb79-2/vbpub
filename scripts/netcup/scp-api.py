@@ -2,7 +2,7 @@
 """Explore and safely modify the netcup SCP API account/server surface.
 
 First-class exploration, not manual curl+jq: this is exactly what
-scp-api-install-host.py used to do ad hoc for imageflavours only (query,
+install-host.py used to do ad hoc for imageflavours only (query,
 filter, print a numbered list) -- generalized to the rest of the
 "pre-install recon" resource set (servers, imageflavours, iso-bootable, disks,
 rescuesystem status, snapshots, tasks, metrics, guest-agent status, and
@@ -12,11 +12,11 @@ operations, firewall policy create/PUT, firewall assignment, and user-ISO
 upload). Deliberately does NOT expose: disk format, image setup (server
 reinstall), or snapshot revert.
 
-Auth/settings: shares netcup_scp_client.py with scp-api-install-host.py
+Auth/settings: shares netcup_scp_client.py with install-host.py and monitor-task.py
 (same .env-sourced NETCUP_SCP_API_REFRESH_TOKEN, same OAuth2 device-code
 `login` support) but its own tiny scp-api.toml for
 base_url/keycloak_url (see that file's own comment for why it's not
-shared with scp-api-install-host.toml).
+shared with install-host.toml).
 
 Usage:
   scp-api.py login
@@ -107,7 +107,7 @@ def _configure() -> None:
     """Load .env + settings and wire netcup_scp_client's module globals.
 
     Deliberately NOT run at import time (unlike the pre-existing pattern in
-    scp-api-install-host.py, which does this eagerly and consequently can't
+    install-host.py, which does this eagerly and consequently can't
     serve --help without a working settings file present -- confirmed live,
     2026-09-09, not fixed there since it's a separate, already-proven
     script). Called from main() after parse_args(), so --help short-
@@ -1674,7 +1674,7 @@ def main() -> int:
         # e.g. a bare RuntimeError from _http_json on a network/DNS
         # failure -- _api_call() only catches HTTPStatusError, so anything
         # else reaching here would otherwise dump a raw traceback instead
-        # of a clean message (matches scp-api-install-host.py's own
+        # of a clean message (matches install-host.py's own
         # top-level Exception handling in main()).
         print(f"ERROR: {e}", file=sys.stderr)
         if netcup_scp_client.DEBUG:

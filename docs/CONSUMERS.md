@@ -108,8 +108,8 @@ The smallest live-install path is:
 ```bash
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
-./scp-api-install-host.py --dry-run
-./scp-api-install-host.py --monitor
+./install-host.py --dry-run
+./install-host.py --monitor
 ```
 
 `configure` is optional. It saves local locale/timezone/partition defaults;
@@ -119,8 +119,8 @@ live. The normal flow writes the gathered request to the ignored
 then repeat that reviewed request:
 
 ```bash
-./scp-api-install-host.py --payload target-host.jsonc --dry-run
-./scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+./install-host.py --payload target-host.jsonc --dry-run
+./install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
 ```
 
 Direct payload mode does not merge `default-recipe.jsonc`; for a Debian install,
@@ -151,7 +151,7 @@ first selected key by default; choosing one does not register a new account
 key. For a direct payload run, pin an existing key explicitly:
 
 ```bash
-python3 scp-api-install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+python3 install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
 ```
 
 The local controller identity used for monitoring is separate. A new account
@@ -166,7 +166,7 @@ payload:
 
 ```bash
 export NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration
-python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
+python3 install-host.py --payload target-host.jsonc --dry-run
 ```
 
 The dry run must show the intended branch before a real Netcup API install is
@@ -201,8 +201,8 @@ After an install has returned a task UUID, the standalone watcher is useful
 when the original terminal is gone:
 
 ```bash
-./scp-api-monitor-task.py TASK_UUID
-./scp-api-monitor-task.py TASK_UUID --json
+./monitor-task.py TASK_UUID
+./monitor-task.py TASK_UUID --json
 ```
 
 Do not use `--raw` casually: task responses may include generated credentials.

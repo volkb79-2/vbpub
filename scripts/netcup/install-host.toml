@@ -1,6 +1,6 @@
-# scp-api-install-host.toml
+# install-host.toml
 #
-# Settings for scp-api-install-host.py. Every key here is REQUIRED - the
+# Settings for install-host.py. Every key here is REQUIRED - the
 # script refuses to start if any key is missing, and also refuses to start
 # if this file contains any key NOT listed here (typo/stale-key protection).
 # There is no Python-side fallback for any of these: this file is the single

@@ -261,7 +261,7 @@ class Installer:
             # exists on disk: this used to run inside _stage2() itself,
             # BEFORE this marker was ever touched. Live-confirmed
             # 2026-09-09 (v1001 round 12, the first fully successful
-            # install this whole effort): scp-api-install-host.py's own
+            # install this whole effort): install-host.py's own
             # completion poller authenticates with this exact controller
             # key, so revoking it before the marker exists created a race
             # where a successful install could permanently strand its own

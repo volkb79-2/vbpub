@@ -133,7 +133,7 @@ def _reverse_dns(ip: str) -> Optional[str]:
 
 
 def _resolve_controller_fqdn(controller_fqdn: str) -> str:
-    """Resolve scp-api-install-host.toml's [ssh] controller_fqdn setting.
+    """Resolve install-host.toml's [ssh] controller_fqdn setting.
 
     The key this produces a comment for lives in *authorized_keys on the
     installed host* - so what's actually meaningful there is how that host
@@ -214,7 +214,7 @@ def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str)
         resolved_fqdn.endswith(suffix) for suffix in _PLACEHOLDER_CONTROLLER_FQDN_SUFFIXES
     ):
         raise SystemExit(
-            "ERROR: scp-api-install-host.toml's [ssh] controller_fqdn is still the "
+            "ERROR: install-host.toml's [ssh] controller_fqdn is still the "
             "placeholder - set it to this controller's own real hostname (or \"automatic\") "
             f"before a new identity key can be generated (would-be key: {identity_path})."
         )
@@ -364,7 +364,7 @@ _SETTINGS_EXPECTED_KEYS = {
     "ssh.stage2_wait_seconds",
 }
 
-SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api-install-host.toml"
+SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 SETTINGS = _load_settings(SETTINGS_PATH, _SETTINGS_EXPECTED_KEYS)
 
 # Configuration
@@ -513,7 +513,7 @@ Examples:
   # Power off the configured server:
   %(prog)s --poweroff
 
-Settings (scp-api-install-host.toml, next to this script):
+Settings (install-host.toml, next to this script):
   Every operational default (SSH identity path/user, poll interval, attach/
   stage2 wait timeouts, API base URLs) lives there, not in this script - see
   that file's comments. CLI flags below override it per-run; nothing in this
@@ -524,8 +524,8 @@ Environment Variables (see .env.example):
   NETCUP_SCP_API_SERVER_NAME       Required for interactive mode and --poweroff; NOT required
                                    for --payload or --attach-only (no default - must be set).
   NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
-  NETCUP_SCP_API_SSH_USER          Overrides scp-api-install-host.toml's ssh.user for --ssh-user.
-  NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides scp-api-install-host.toml's ssh.identity_file for --ssh-identity-file.
+  NETCUP_SCP_API_SSH_USER          Overrides install-host.toml's ssh.user for --ssh-user.
+  NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides install-host.toml's ssh.identity_file for --ssh-identity-file.
   NOTIFY_BACKEND                   Optional: telegram, mattermost, or none; forwarded into the bootstrap.
   TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
                                    Optional together: forwarded for Telegram notifications.
@@ -592,13 +592,13 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         "--attach-initial-delay",
         type=float,
         default=SETTINGS["ssh.attach_initial_delay"],
-        help="In --attach-only mode, wait N seconds before the first SSH probe (default: from scp-api-install-host.toml).",
+        help="In --attach-only mode, wait N seconds before the first SSH probe (default: from install-host.toml).",
     )
     parser.add_argument(
         "--attach-max-wait-seconds",
         type=float,
         default=SETTINGS["ssh.attach_max_wait_seconds"],
-        help="In --attach-only mode, wait up to N seconds for SSH to become usable (default: from scp-api-install-host.toml).",
+        help="In --attach-only mode, wait up to N seconds for SSH to become usable (default: from install-host.toml).",
     )
     parser.add_argument(
         "--stage2-wait-seconds",
@@ -606,7 +606,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         default=SETTINGS["ssh.stage2_wait_seconds"],
         help=(
             "In --attach-only mode, also wait for /var/lib/vbpub/bootstrap/stage2_done "
-            "(default: from scp-api-install-host.toml). Set to 0 to disable waiting."
+            "(default: from install-host.toml). Set to 0 to disable waiting."
         ),
     )
 
@@ -630,7 +630,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         "--poll-interval",
         type=float,
         default=SETTINGS["ssh.poll_interval"],
-        help="Polling interval in seconds for --monitor (default: from scp-api-install-host.toml)."
+        help="Polling interval in seconds for --monitor (default: from install-host.toml)."
     )
     parser.add_argument(
         "--debug",
@@ -659,14 +659,14 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     parser.add_argument(
         "--ssh-user",
         default=os.environ.get("NETCUP_SCP_API_SSH_USER", SETTINGS["ssh.user"]),
-        help="SSH user for attaching to the freshly installed system (default: from scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_USER)."
+        help="SSH user for attaching to the freshly installed system (default: from install-host.toml; override via NETCUP_SCP_API_SSH_USER)."
     )
     parser.add_argument(
         "--ssh-identity-file",
         default=os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"]),
         help=(
             "Path to LOCAL SSH identity file used for attach/monitoring (default: from "
-            "scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
+            "install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
             "the ephemeral controller bootstrap key, one per (host, date) - the default is a "
             "'{host}'/'{date}' TEMPLATE rendered automatically for a real install, but "
             "--attach-only requires an explicit, already-resolved path here (it will refuse "
@@ -1927,7 +1927,7 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
             print(f"Task UUID: {task_uuid}")
             print()
             print("Monitor progress with:")
-            print(f"  python3 scp-api-monitor-task.py {task_uuid}")
+            print(f"  python3 monitor-task.py {task_uuid}")
             if getattr(args, "monitor", False) or is_noninteractive(args):
                 monitor_task(
                     client,
@@ -2139,7 +2139,7 @@ def main():
             # netcup id (confirmed live 2026-09-08: e.g.
             # "v2202511209318406253" gave every generated key an unreadable
             # filename with no way to tell which host it belonged to at a
-            # glance - see scp-api-install-host.toml's [ssh] comments).
+            # glance - see install-host.toml's [ssh] comments).
             host_label = SERVER_NAME
             if args.payload:
                 host_label = _peek_payload_host_label(args.payload) or SERVER_NAME
@@ -2517,7 +2517,7 @@ def main():
                 print(f"Task UUID: {task_uuid}")
                 print()
                 print("Monitor progress with:")
-                print(f"  python3 scp-api-monitor-task.py {task_uuid}")
+                print(f"  python3 monitor-task.py {task_uuid}")
                 if getattr(args, "monitor", False) or is_noninteractive(args):
                     ssh_identity = getattr(args, "ssh_identity_file", None)
                     monitor_task(
@@ -2559,7 +2559,7 @@ def main():
                             return
 
                         print("Monitor progress with:")
-                        print(f"  python3 scp-api-monitor-task.py {task_uuid}")
+                        print(f"  python3 monitor-task.py {task_uuid}")
                         return
             raise
 

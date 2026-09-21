@@ -1,6 +1,6 @@
 """Shared fixtures for scripts/netcup's pytest suite.
 
-Both scp-api-install-host.py and scp-api-monitor-task.py are hyphenated
+Both install-host.py and monitor-task.py are hyphenated
 top-level scripts (not importable packages), so they're loaded by path via
 importlib - same pattern as
 debian-install-v2/debian_install_v2/tests/test_bootstrap_remote.py.
@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 NETCUP_DIR = Path(__file__).resolve().parent.parent
-INSTALL_HOST_PATH = NETCUP_DIR / "scp-api-install-host.py"
-MONITOR_TASK_PATH = NETCUP_DIR / "scp-api-monitor-task.py"
+INSTALL_HOST_PATH = NETCUP_DIR / "install-host.py"
+MONITOR_TASK_PATH = NETCUP_DIR / "monitor-task.py"
 EXPLORE_PATH = NETCUP_DIR / "scp-api.py"
 
 

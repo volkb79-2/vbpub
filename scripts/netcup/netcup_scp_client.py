@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Shared Netcup SCP API client: OAuth2 device-code login, token refresh,
 the authenticated HTTP client, and the small settings/.env helpers both
-`scp-api-install-host.py` and `scp-api.py` need.
+`install-host.py`, `monitor-task.py`, and `scp-api.py` need.
 
-Extracted 2026-09-09 from scp-api-install-host.py (DRY, per operator
+Extracted 2026-09-09 from install-host.py (DRY, per operator
 request) -- not a redesign, a straight lift. Preserves that file's own
 idiom of simple, mutable module-level globals (BASE_URL/KEYCLOAK_URL/
 DEBUG) rather than dependency injection: every importer must set

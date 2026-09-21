@@ -1,4 +1,4 @@
-"""Tests for scp-api-install-host.py: pure logic, settings loader, identity
+"""Tests for install-host.py: pure logic, settings loader, identity
 auto-gen, the interactive fill-in helpers, and the HTTP client - all mocked/
 local, no live netcup calls."""
 from __future__ import annotations
@@ -286,7 +286,7 @@ def test_load_settings_unknown_key_errors(install_host_mod, tmp_path):
 
 
 def test_real_settings_file_is_valid(install_host_mod):
-    """The committed scp-api-install-host.toml must itself satisfy the schema."""
+    """The committed install-host.toml must itself satisfy the schema."""
     assert install_host_mod.SETTINGS["ssh.user"] == "root"
     assert install_host_mod.SETTINGS["ssh.controller_fqdn"] == "automatic"
     assert install_host_mod.SETTINGS["bootstrap.repo_branch"] == "main"
@@ -1240,28 +1240,28 @@ def test_main_configure_dispatch_never_touches_ssh_identity(install_host_mod, tm
 
 
 def test_parse_args_rejects_login_and_accepts_installer_commands(install_host_mod, monkeypatch):
-    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "login"])
+    monkeypatch.setattr("sys.argv", ["install-host.py", "login"])
     with pytest.raises(SystemExit) as exc:
         install_host_mod.parse_args()
     assert exc.value.code == 2
-    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "configure"])
+    monkeypatch.setattr("sys.argv", ["install-host.py", "configure"])
     assert install_host_mod.parse_args().command == "configure"
-    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "build-customscript"])
+    monkeypatch.setattr("sys.argv", ["install-host.py", "build-customscript"])
     assert install_host_mod.parse_args().command == "build-customscript"
-    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py"])
+    monkeypatch.setattr("sys.argv", ["install-host.py"])
     assert install_host_mod.parse_args().command is None
 
 
 def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
-        ["scp-api-install-host.py", "--ssh-key-id", "10", "--ssh-key-id", "20"],
+        ["install-host.py", "--ssh-key-id", "10", "--ssh-key-id", "20"],
     )
     assert install_host_mod.parse_args().ssh_key_ids == [10, 20]
 
 
 def test_parse_args_exposes_only_long_help(install_host_mod, monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "--help"])
+    monkeypatch.setattr("sys.argv", ["install-host.py", "--help"])
     with pytest.raises(SystemExit) as exc:
         install_host_mod.parse_args()
     assert exc.value.code == 0

@@ -1,4 +1,4 @@
-"""Tests for scp-api-monitor-task.py: redaction, settings loader, the
+"""Tests for monitor-task.py: redaction, settings loader, the
 get_access_token error-handling fix (regression test for the bug found this
 session), the 401-retry-refresh flow, and the poll loop reaching a terminal
 state - all mocked (urllib), no live netcup calls."""
@@ -45,12 +45,13 @@ def test_real_settings_file_is_valid(monitor_task_mod):
 
 
 def test_no_argument_prints_usage(monitor_task_mod, monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["scp-api-monitor-task.py"])
+    monkeypatch.setattr(sys, "argv", ["monitor-task.py"])
     with pytest.raises(SystemExit) as exc:
         monitor_task_mod.parse_args()
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "usage:" in err
+    assert "Monitor a Netcup SCP task" in err
     assert "required: uuid" not in err
 
 
@@ -83,7 +84,7 @@ def test_client_get_retries_after_401(monitor_task_mod, monkeypatch):
         return FakeHTTPResponse(json.dumps({"state": "FINISHED"}).encode())
 
     monkeypatch.setattr(monitor_task_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(monitor_task_mod, "get_access_token", lambda rt: "new-token")
+    monkeypatch.setattr(monitor_task_mod.netcup_scp_client, "get_access_token", lambda rt: "new-token")
 
     client = monitor_task_mod.NetcupSCPClient("old-token", refresh_token="rt")
     result = client.get("/api/v1/tasks/x")
@@ -98,7 +99,7 @@ def test_main_dry_run_confirms_task_and_exits(monitor_task_mod, monkeypatch, cap
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "rt")
     monkeypatch.setattr(mod, "get_access_token", lambda rt: "at")
     monkeypatch.setattr(mod.NetcupSCPClient, "get", lambda self, endpoint, params=None: {"state": "RUNNING"})
-    monkeypatch.setattr(sys, "argv", ["scp-api-monitor-task.py", "00000000-0000-0000-0000-000000000000", "--dry-run"])
+    monkeypatch.setattr(sys, "argv", ["monitor-task.py", "00000000-0000-0000-0000-000000000000", "--dry-run"])
 
     mod.main()
 
@@ -118,6 +119,6 @@ def test_main_poll_loop_reaches_finished(monitor_task_mod, monkeypatch):
 
     monkeypatch.setattr(mod.NetcupSCPClient, "get", fake_get)
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
-    monkeypatch.setattr(sys, "argv", ["scp-api-monitor-task.py", "00000000-0000-0000-0000-000000000000"])
+    monkeypatch.setattr(sys, "argv", ["monitor-task.py", "00000000-0000-0000-0000-000000000000"])
 
     mod.main()  # must return once FINISHED is reached, not loop forever
