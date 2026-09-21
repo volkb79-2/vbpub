@@ -18,14 +18,20 @@ sys.modules[SPEC.name] = build_push
 SPEC.loader.exec_module(build_push)
 
 
+REMOTE_INSPECT = """Name:           test-builder
+Driver:        remote
+Nodes:
+Name:           test-builder
+Endpoint:       unix:///run/test-buildkit.sock
+Status:         running
+BuildKit:       v0.32.2
+"""
+
+
 def _config() -> build_push.BuilderConfig:
     return build_push.BuilderConfig(
         name="test-builder",
-        memory="4g",
-        memory_swap="12g",
-        cpu_shares=128,
-        cpu_quota=400000,
-        cpu_period=100000,
+        endpoint="unix:///run/test-buildkit.sock",
     )
 
 
@@ -124,89 +130,55 @@ def test_run_accepts_explicit_working_directory(monkeypatch: pytest.MonkeyPatch,
     assert calls == [str(tmp_path)]
 
 
-def test_create_builder_declares_all_governed_limits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(build_push, "run", calls.append)
-    build_push._create_builder(_config())
-    assert calls == [[
-        "docker", "buildx", "create", "--name", "test-builder",
-        "--driver", "docker-container",
-        "--driver-opt", "memory=4g",
-        "--driver-opt", "memory-swap=12g",
-        "--driver-opt", "cpu-shares=128",
-        "--driver-opt", "cpu-quota=400000",
-        "--driver-opt", "cpu-period=100000",
-    ]]
+def test_assert_remote_builder_accepts_configured_endpoint() -> None:
+    build_push._assert_remote_builder(_config(), REMOTE_INSPECT)
 
 
-def test_ensure_builder_creates_missing_builder(monkeypatch: pytest.MonkeyPatch) -> None:
-    probe = subprocess.CompletedProcess([], 1)
-    probes: list[dict[str, object]] = []
-
-    def fake_probe(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[None]:
-        probes.append(kwargs)
-        return probe
-
-    monkeypatch.setattr(build_push.subprocess, "run", fake_probe)
-    inspect_calls: list[dict[str, object]] = []
-    calls: list[list[str]] = []
-    monkeypatch.setattr(build_push, "run", calls.append)
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "check_output",
-        lambda *args, **kwargs: (inspect_calls.append(kwargs) or "4294967296 12884901888 128 400000 100000"),
-    )
-
-    build_push.ensure_builder(_config())
-    assert probes == [{"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": False}]
-    assert inspect_calls == [{"text": True}]
-    assert calls[0][0:4] == ["docker", "buildx", "create", "--name"]
-    assert calls[-1] == ["docker", "buildx", "inspect", "test-builder", "--bootstrap"]
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Driver:        docker-container\nEndpoint:      unix:///run/test-buildkit.sock\n",
+        "Driver:        remote\nEndpoint:      unix:///run/other.sock\n",
+        "Driver:        remote\n",
+    ],
+)
+def test_assert_remote_builder_rejects_driver_or_endpoint(output: str) -> None:
+    with pytest.raises(SystemExit):
+        build_push._assert_remote_builder(_config(), output)
 
 
-def test_ensure_builder_recreates_builder_when_limits_drift(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_inspect_builder_reports_command_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         build_push.subprocess,
         "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="socket missing"),
     )
-    outputs = iter([
-        "1 2 3 4 5",
-        "4294967296 12884901888 128 400000 100000",
+    with pytest.raises(SystemExit):
+        build_push._inspect_builder(_config(), bootstrap=False)
+
+
+def test_ensure_builder_verifies_registration_and_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout=REMOTE_INSPECT, stderr="")
+
+    monkeypatch.setattr(build_push.subprocess, "run", fake_run)
+    build_push.ensure_builder(_config())
+    assert [argv for argv, _ in calls] == [
+        ["docker", "buildx", "inspect", "test-builder"],
+        ["docker", "buildx", "inspect", "test-builder", "--bootstrap"],
+    ]
+    assert all(kwargs == {"capture_output": True, "text": True, "check": False} for _, kwargs in calls)
+
+
+def test_ensure_builder_refuses_bootstrap_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = iter([
+        subprocess.CompletedProcess([], 0, stdout=REMOTE_INSPECT, stderr=""),
+        subprocess.CompletedProcess([], 1, stdout="", stderr="connection lost"),
     ])
-    inspect_calls: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "check_output",
-        lambda *args, **kwargs: (inspect_calls.append(kwargs) or next(outputs)),
-    )
-    calls: list[list[str]] = []
-    monkeypatch.setattr(build_push, "run", calls.append)
-
-    build_push.ensure_builder(_config())
-    assert inspect_calls == [{"text": True}, {"text": True}]
-    assert ["docker", "buildx", "rm", "test-builder"] in calls
-    assert sum(call[:4] == ["docker", "buildx", "create", "--name"] for call in calls) == 1
-
-
-def test_ensure_builder_refuses_persistent_limit_drift(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
-    )
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "check_output",
-        lambda *args, **kwargs: "1 2 3 4 5",
-    )
-    monkeypatch.setattr(build_push, "run", lambda argv, cwd=None: None)
+    monkeypatch.setattr(build_push.subprocess, "run", lambda *args, **kwargs: next(responses))
     with pytest.raises(SystemExit):
         build_push.ensure_builder(_config())
 
@@ -231,10 +203,10 @@ def test_do_push_requires_credentials_after_preflight(monkeypatch: pytest.Monkey
     monkeypatch.setattr(build_push, "load_vars", lambda: {})
     monkeypatch.setattr(build_push, "load_builder_config", _config)
     monkeypatch.setattr(build_push, "ensure_builder", lambda config: None)
-    for name in ("GITHUB_USERNAME", "GITHUB_PUSH_PAT"):
+    for missing in ("GITHUB_USERNAME", "GITHUB_PUSH_PAT"):
         monkeypatch.setenv("GITHUB_USERNAME", "owner")
         monkeypatch.setenv("GITHUB_PUSH_PAT", "secret")
-        monkeypatch.delenv(name)
+        monkeypatch.delenv(missing)
         with pytest.raises(SystemExit):
             build_push.do_push()
 
@@ -283,16 +255,13 @@ def test_main_dispatches_selected_operation(
 
 def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> None:
     """Cover the script entrypoint used by CMRU's ``python3 build-push.py``."""
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
-    )
-    monkeypatch.setattr(
-        build_push.subprocess,
-        "check_output",
-        lambda *args, **kwargs: "4294967296 12884901888 128 400000 100000",
-    )
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[:3] == ["docker", "buildx", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=REMOTE_INSPECT, stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(build_push.subprocess, "run", fake_run)
     monkeypatch.setattr(sys.modules["_vars"], "load_vars", lambda: {})
     monkeypatch.setattr(build_push.sys, "argv", ["build-push.py", "--build"])
     runpy.run_path(str(MODULE_PATH), run_name="__main__")

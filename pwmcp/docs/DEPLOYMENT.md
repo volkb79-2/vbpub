@@ -135,24 +135,26 @@ python3 build-push.py --build
 GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> python3 build-push.py --push
 ```
 
-`build-push.py` reads `[project_metadata.builder]` from `cmru.toml`, creates or repairs the
-named `docker-container` BuildKit builder, verifies the applied Docker limits,
-and passes that builder explicitly to Bake. The defaults permit 4 GiB RAM,
-12 GiB combined RAM+swap (therefore up to 8 GiB swap), and four CPUs. Edit the
-TOML when the build needs different limits; do not bypass the wrapper for a
-release.
+`build-push.py` reads `[env]` from `cmru.toml`, verifies that the named builder
+uses the configured `remote` driver and exact managed Unix socket, and passes
+that builder explicitly to Bake. The host setup owns the BuildKit service,
+cache, and resource limits; a project release must not create a private
+`docker-container` worker or invent a second set of limits.
 
-The Docker CLI and `dockerd` remain in `system.slice`, while the expensive
-executor work is charged to the `buildx_buildkit_<builder>0` container's cgroup.
-Accordingly, some `dockerd` CPU in `top` is normal coordination, registry, and
-snapshotter work. Attribute the actual build with:
+Verify the managed service before a direct build with:
 
 ```bash
-docker stats buildx_buildkit_pwmcp-governed-v10
-docker inspect buildx_buildkit_pwmcp-governed-v10 \
-  --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuQuota}}/{{.HostConfig.CpuPeriod}}'
-systemd-cgtop system.slice
+docker buildx inspect mdt-managed --bootstrap
+docker inspect mdt-buildkitd --format '{{.State.Status}} {{.HostConfig.CgroupParent}}'
+systemctl status mdt-buildkitd.service
+systemd-cgtop dev-buildkitd.slice
 ```
+
+The Docker CLI and `dockerd` remain separate coordination processes. The
+expensive executor work is charged to the host-managed `mdt-buildkitd` service,
+so a private `buildx_buildkit_*` container is not expected to exist. If the
+socket or builder verification fails, repair host setup before attempting the
+release; the wrapper refuses to fall back to an ungoverned builder.
 
 Or invoke the same wrapper through the release runner:
 

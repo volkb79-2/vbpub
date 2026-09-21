@@ -103,17 +103,24 @@ See [SECURITY.md](SECURITY.md) for the host-allowlist gap analysis.
 ### Build execution boundary
 
 The release plane is separate from the runtime container. `build-push.py`
-selects the named BuildKit `docker-container` builder from `cmru.toml` and
-verifies its memory, combined memory+swap, CPU-share, and CPU-quota settings
-before Bake runs. Build executors therefore appear as descendants of the
-`buildx_buildkit_pwmcp-governed-v10` container cgroup under `system.slice`.
-`docker.service` is a sibling: CPU shown against `dockerd` is expected control,
-content-store, networking, and snapshotter work and is not evidence that the
-executor escaped its limits.
+selects the declared `mdt-managed` BuildKit remote from `cmru.toml` and
+verifies both its `remote` driver and its exact Unix socket endpoint before
+Bake runs. The host `mdt-buildkitd` service owns the executor and its
+persistent cache under the host's `dev-buildkitd.slice`; the wrapper never
+creates an ephemeral `docker-container` worker. `docker.service` remains the
+Docker control plane, content store, networking, and snapshotter, so its CPU
+activity is expected and is not the executor's cgroup accounting.
 
-The builder is intentionally persistent so BuildKit can reuse its cache. The
-limits govern concurrent build work; the published PWMCP service has its own
-Compose runtime limits and lease/session policy.
+The managed service's host slice governs concurrent build work. The published
+PWMCP service has its own Compose runtime limits and lease/session policy.
+The release environment declares the same builder identity for direct wrapper
+use and CMRU use:
+
+```toml
+[env]
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+```
 
 Versioned bundles are published to GitHub Releases following the monorepo-wide scheme:
 

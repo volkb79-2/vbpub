@@ -1,6 +1,8 @@
 schema_version = 1
 
 [env]
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
 
 [project]
 id = "pwmcp"
@@ -19,14 +21,6 @@ build_step = "build"
 commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json"]
 artifact_dirs = ["dist"]
 evidence_paths = ["coverage.json", ".assay"]
-
-[project_metadata.builder]
-name = "pwmcp-governed-v1"
-memory = "4g"
-memory_swap = "12g"
-cpu_shares = 128
-cpu_quota = 400000
-cpu_period = 100000
 
 [steps.prepare]
 quiet = true
