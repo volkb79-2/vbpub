@@ -37,7 +37,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "pwmcp: Assay R1 tester gate", argv = ["./run-gate.py", "r1", "--worktree", "."], cwd = "." },
+  { label = "pwmcp: Assay R1 tester gate", argv = ["./run-gate.py", "r1", "--worktree", ".."], cwd = "." },
 ]
 
 [steps.build]
