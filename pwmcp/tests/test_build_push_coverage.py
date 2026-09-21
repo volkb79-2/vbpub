@@ -244,5 +244,6 @@ def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> 
         "check_output",
         lambda *args, **kwargs: "4294967296 12884901888 128 400000 100000",
     )
+    monkeypatch.setattr(sys.modules["_vars"], "load_vars", lambda: {})
     monkeypatch.setattr(build_push.sys, "argv", ["build-push.py", "--build"])
     runpy.run_path(str(MODULE_PATH), run_name="__main__")
