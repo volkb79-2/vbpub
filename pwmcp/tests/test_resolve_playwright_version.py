@@ -248,6 +248,7 @@ def test_fetch_json_fails_after_network_retry_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
+    sleeps: list[float] = []
 
     def fake_urlopen(*_args: object, **_kwargs: object) -> _Response:
         nonlocal calls
@@ -255,10 +256,30 @@ def test_fetch_json_fails_after_network_retry_budget(
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(resolver.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(resolver.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(resolver.time, "sleep", sleeps.append)
     with pytest.raises(SystemExit):
         resolver._fetch_json("https://example.test", "example")
     assert calls == resolver.RETRIES
+    assert sleeps == [1, 2]
+
+
+def test_fetch_json_does_not_sleep_after_last_transient_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def fake_urlopen(*_args: object, **_kwargs: object) -> _Response:
+        nonlocal calls
+        calls += 1
+        raise urllib.error.HTTPError("https://example.test", 503, "busy", {}, None)
+
+    monkeypatch.setattr(resolver.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(resolver.time, "sleep", sleeps.append)
+    with pytest.raises(SystemExit):
+        resolver._fetch_json("https://example.test", "example")
+    assert calls == resolver.RETRIES
+    assert sleeps == [1, 2]
 
 
 def test_fetch_json_zero_retry_budget_exercises_defensive_return(
@@ -385,6 +406,20 @@ def test_fetch_pypi_release_times_handles_file_metadata_shapes(
         resolver.fetch_pypi_release_times()
 
 
+def test_fetch_pypi_versions_requires_nonempty_file_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *_args: {
+        "releases": {
+            "1.2.3": [],
+            "1.2.4": "not-a-list",
+            "1.2.5": [{"filename": "playwright.whl"}],
+            "1.2.6-beta": [{"filename": "preview.whl"}],
+        },
+    })
+    assert resolver.fetch_pypi_versions() == {"1.2.5"}
+
+
 def test_age_filter_refuses_when_no_version_is_old_enough() -> None:
     cutoff = resolver.datetime(2026, 1, 1, tzinfo=resolver.timezone.utc)
     with pytest.raises(SystemExit):
@@ -395,6 +430,13 @@ def test_age_filter_refuses_when_no_version_is_old_enough() -> None:
             "npm",
             14,
         )
+
+
+def test_age_filter_includes_a_version_published_exactly_at_cutoff() -> None:
+    cutoff = resolver.datetime(2026, 1, 1, tzinfo=resolver.timezone.utc)
+    assert resolver._filter_by_age(
+        {"1.2.3"}, {"1.2.3": cutoff}, cutoff, "npm", 14
+    ) == {"1.2.3"}
 
 
 @pytest.mark.parametrize(
@@ -419,12 +461,19 @@ def test_fetch_upstream_rejects_wrong_payload_shape(
 
 
 def test_list_git_tags_handles_failure_and_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[None]:
+        calls.append(kwargs)
+        return subprocess.CompletedProcess([], 1, stdout="")
+
     monkeypatch.setattr(
         resolver.subprocess,
         "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess([], 1, stdout=""),
+        fake_run,
     )
     assert resolver.list_git_tags("pwmcp-*") == []
+    assert calls == [{"capture_output": True, "text": True, "check": False, "cwd": str(resolver.PWMCP_DIR)}]
     monkeypatch.setattr(
         resolver.subprocess,
         "run",
@@ -762,6 +811,23 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
 def test_refresh_rejects_negative_age_window() -> None:
     with pytest.raises(SystemExit):
         resolver.refresh_upstream_projection(-1)
+
+
+def test_refresh_accepts_zero_age_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    old = resolver.datetime(2000, 1, 1, tzinfo=resolver.timezone.utc)
+    monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
+    monkeypatch.setattr(resolver, "fetch_pypi_versions", lambda: {"1.2.3"})
+    monkeypatch.setattr(resolver, "fetch_mcr_versions", lambda distro: {"1.2.3"})
+    monkeypatch.setattr(resolver, "fetch_npm_release_times", lambda: {"1.2.3": old})
+    monkeypatch.setattr(resolver, "fetch_pypi_release_times", lambda: {"1.2.3": old})
+    monkeypatch.setattr(resolver, "fetch_mcr_manifest_digest", lambda version, distro: DIGEST)
+    monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
+    resolver.refresh_upstream_projection(0)
+    assert "PWMCP_VERSION=1.2.3-r4" in files["release_vars"].read_text()
 
 
 def test_resolver_module_entrypoint_runs_committed_check(monkeypatch: pytest.MonkeyPatch) -> None:

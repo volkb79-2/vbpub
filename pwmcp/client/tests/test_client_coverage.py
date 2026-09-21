@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from urllib.error import URLError
 
@@ -92,6 +93,13 @@ def test_cli_contract_prints_normalized_json(tmp_path: Path, capsys: pytest.Capt
     assert output["ws_url"] == "ws://pwmcp:3000/"
 
 
+def test_cli_contract_prints_keys_in_sorted_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "contract.json"
+    path.write_text(json.dumps(_payload()), encoding="utf-8")
+    cli_module.main(["contract", "--contract", str(path)])
+    assert capsys.readouterr().out.splitlines()[1].strip() == '"endpoints": {'
+
+
 def test_cli_doctor_reports_verified_client(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -121,10 +129,20 @@ def test_verify_playwright_rejects_missing_distribution(monkeypatch: pytest.Monk
         session.verify_installed_playwright(_contract())
 
 
+def test_contract_dataclass_is_frozen() -> None:
+    contract = _contract()
+    with pytest.raises(FrozenInstanceError):
+        contract.release = "changed"  # type: ignore[misc]
+
+
 @pytest.mark.parametrize("value", ["1", "invalid.63"])
 def test_major_minor_rejects_malformed_version(value: str) -> None:
     with pytest.raises((session.VersionMismatch, ValueError)):
         session._major_minor(value)
+
+
+def test_major_minor_accepts_a_two_component_version() -> None:
+    assert session._major_minor("1.63") == (1, 63)
 
 
 def test_verify_playwright_rejects_protocol_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,6 +159,18 @@ def test_verify_playwright_accepts_patch_difference(monkeypatch: pytest.MonkeyPa
 def test_tcp_preflight_rejects_invalid_url() -> None:
     with pytest.raises(session.PwmcpUnavailable, match="invalid"):
         session._tcp_preflight("not-a-websocket-url", 1.0)
+
+
+def test_tcp_preflight_rejects_missing_port_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        session.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("socket must not be called without a port"),
+    )
+    with pytest.raises(session.PwmcpUnavailable, match="invalid pwmcp WebSocket URL"):
+        session._tcp_preflight("ws://pwmcp/", 1.0)
 
 
 def test_tcp_preflight_wraps_socket_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,6 +280,25 @@ def test_browser_lease_connect_uses_explicit_lease_and_label(monkeypatch: pytest
         "X-PWMCP-Lease-Seconds": "17",
         "X-PWMCP-Session-Label": "explicit",
     }
+
+
+def test_browser_lease_connect_uses_environment_endpoint_and_contract_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = _contract()
+    contract_sources: list[str] = []
+    monkeypatch.setattr(
+        session,
+        "load_contract",
+        lambda source, timeout: (contract_sources.append(str(source)) or contract),
+    )
+    monkeypatch.setattr(session, "verify_installed_playwright", lambda value: "1.63.4")
+    monkeypatch.setattr(session, "_tcp_preflight", lambda endpoint, timeout: None)
+    monkeypatch.setenv("DSTDNS_PWMCP_WS", "ws://environment:3020/")
+    calls, _stopped, _closed = _install_fake_playwright(monkeypatch)
+    session.BrowserLease.connect(contract_url="https://contract.example/contract")
+    assert contract_sources == ["https://contract.example/contract"]
+    assert calls[0]["endpoint"] == "ws://environment:3020/"
 
 
 def test_browser_lease_connect_stops_playwright_when_connect_fails(

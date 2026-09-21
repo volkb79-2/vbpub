@@ -28,6 +28,15 @@ def _config() -> build_push.BuilderConfig:
     )
 
 
+def test_log_and_fail_flush_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(build_push, "print", lambda *args, **kwargs: calls.append(kwargs))
+    build_push.log("message")
+    with pytest.raises(SystemExit):
+        build_push.fail("failure")
+    assert calls == [{"flush": True}, {"file": sys.stderr, "flush": True}]
+
+
 def test_sync_visibility_is_noop_without_package_names(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(build_push, "GitHubPackages", lambda *args: pytest.fail("not called"))
     build_push.sync_ghcr_package_visibility([])
@@ -46,6 +55,22 @@ def test_sync_visibility_reports_all_missing_identity_fields(
     error = capsys.readouterr().err
     assert "GITHUB_USERNAME" in error
     assert "GITHUB_OWNER_TYPE" in error
+
+
+@pytest.mark.parametrize("missing", ["GITHUB_USERNAME", "GITHUB_REPO", "GITHUB_PUSH_PAT", "GITHUB_OWNER_TYPE"])
+def test_sync_visibility_refuses_each_missing_identity_field(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    for name, value in {
+        "GITHUB_USERNAME": "owner",
+        "GITHUB_REPO": "repo",
+        "GITHUB_PUSH_PAT": "secret",
+        "GITHUB_OWNER_TYPE": "User",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv(missing)
+    with pytest.raises(SystemExit):
+        build_push.sync_ghcr_package_visibility(["pwmcp"])
 
 
 def test_sync_visibility_mirrors_each_normalized_package(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,16 +136,25 @@ def test_create_builder_declares_all_governed_limits(
 
 def test_ensure_builder_creates_missing_builder(monkeypatch: pytest.MonkeyPatch) -> None:
     probe = subprocess.CompletedProcess([], 1)
-    monkeypatch.setattr(build_push.subprocess, "run", lambda *args, **kwargs: probe)
+    probes: list[dict[str, object]] = []
+
+    def fake_probe(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[None]:
+        probes.append(kwargs)
+        return probe
+
+    monkeypatch.setattr(build_push.subprocess, "run", fake_probe)
+    inspect_calls: list[dict[str, object]] = []
     calls: list[list[str]] = []
     monkeypatch.setattr(build_push, "run", calls.append)
     monkeypatch.setattr(
         build_push.subprocess,
         "check_output",
-        lambda *args, **kwargs: "4294967296 12884901888 128 400000 100000",
+        lambda *args, **kwargs: (inspect_calls.append(kwargs) or "4294967296 12884901888 128 400000 100000"),
     )
 
     build_push.ensure_builder(_config())
+    assert probes == [{"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": False}]
+    assert inspect_calls == [{"text": True}]
     assert calls[0][0:4] == ["docker", "buildx", "create", "--name"]
     assert calls[-1] == ["docker", "buildx", "inspect", "test-builder", "--bootstrap"]
 
@@ -137,11 +171,17 @@ def test_ensure_builder_recreates_builder_when_limits_drift(
         "1 2 3 4 5",
         "4294967296 12884901888 128 400000 100000",
     ])
-    monkeypatch.setattr(build_push.subprocess, "check_output", lambda *args, **kwargs: next(outputs))
+    inspect_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        build_push.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (inspect_calls.append(kwargs) or next(outputs)),
+    )
     calls: list[list[str]] = []
     monkeypatch.setattr(build_push, "run", calls.append)
 
     build_push.ensure_builder(_config())
+    assert inspect_calls == [{"text": True}, {"text": True}]
     assert ["docker", "buildx", "rm", "test-builder"] in calls
     assert sum(call[:4] == ["docker", "buildx", "create", "--name"] for call in calls) == 1
 
@@ -184,10 +224,12 @@ def test_do_push_requires_credentials_after_preflight(monkeypatch: pytest.Monkey
     monkeypatch.setattr(build_push, "load_vars", lambda: {})
     monkeypatch.setattr(build_push, "load_builder_config", _config)
     monkeypatch.setattr(build_push, "ensure_builder", lambda config: None)
-    monkeypatch.delenv("GITHUB_USERNAME", raising=False)
-    monkeypatch.delenv("GITHUB_PUSH_PAT", raising=False)
-    with pytest.raises(SystemExit):
-        build_push.do_push()
+    for name in ("GITHUB_USERNAME", "GITHUB_PUSH_PAT"):
+        monkeypatch.setenv("GITHUB_USERNAME", "owner")
+        monkeypatch.setenv("GITHUB_PUSH_PAT", "secret")
+        monkeypatch.delenv(name)
+        with pytest.raises(SystemExit):
+            build_push.do_push()
 
 
 def test_do_push_logs_in_bakes_and_syncs_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,10 +239,10 @@ def test_do_push_logs_in_bakes_and_syncs_visibility(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("GITHUB_USERNAME", "owner")
     monkeypatch.setenv("GITHUB_PUSH_PAT", "secret")
     monkeypatch.setenv("GHCR_PACKAGE_NAMES", "pwmcp, bundle")
-    login: list[tuple[list[str], bytes]] = []
+    login: list[tuple[list[str], bytes, bool]] = []
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[None]:
-        login.append((argv, kwargs["input"]))
+        login.append((argv, kwargs["input"], kwargs["check"]))
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(build_push.subprocess, "run", fake_run)
@@ -212,7 +254,7 @@ def test_do_push_logs_in_bakes_and_syncs_visibility(monkeypatch: pytest.MonkeyPa
     build_push.do_push()
     assert login == [([
         "docker", "login", "ghcr.io", "-u", "owner", "--password-stdin",
-    ], b"secret")]
+    ], b"secret", True)]
     assert bake == [(
         ["docker", "buildx", "bake", "--builder", "test-builder", "all", "--push"],
         build_push.PWMCP_DIR,
@@ -247,3 +289,9 @@ def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(sys.modules["_vars"], "load_vars", lambda: {})
     monkeypatch.setattr(build_push.sys, "argv", ["build-push.py", "--build"])
     runpy.run_path(str(MODULE_PATH), run_name="__main__")
+
+
+def test_main_requires_an_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(build_push.sys, "argv", ["build-push.py"])
+    with pytest.raises(SystemExit):
+        build_push.main()
