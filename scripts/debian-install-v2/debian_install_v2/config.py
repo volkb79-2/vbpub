@@ -100,6 +100,9 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Keep the temporary controller access line after successful stage2.
+    # Failure paths always retain it for diagnosis.
+    retain_controller_ssh_key: bool = False
     # Runs the kernel's own official iocost calibration tool
     # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
     # a throwaway partition carved from the same free space swap will use,

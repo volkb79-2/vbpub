@@ -270,7 +270,10 @@ class Installer:
             # up to its full timeout (an hour, by default) and then
             # reporting a spurious TimeoutError for an install that had
             # actually already succeeded.
-            self._remove_controller_ssh_key()
+            if self.config.retain_controller_ssh_key:
+                self._mark_step("controller_ssh_key_retained", "success", "configured to retain after successful stage2")
+            else:
+                self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))

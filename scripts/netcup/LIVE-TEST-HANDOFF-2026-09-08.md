@@ -1,5 +1,11 @@
 # debian-install-v2 live-test handoff — 2026-09-08
 
+> Historical handoff snapshot. The installer/key lifecycle described below
+> predates the `netcup-installer-rework` change. For the current commands and
+> safety behavior, use [`README.md`](README.md) and
+> [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md); the historical incident record is
+> retained here for context.
+
 Written at the end of a session that hit two real incidents (see below).
 Operator asked to write up everything before handing off to a fresh
 session, rather than continue in this one. This file is that write-up.

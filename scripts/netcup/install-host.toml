@@ -8,10 +8,6 @@
 # env vars documented in --help override these values per-run; nothing below
 # is meant to be edited per-run.
 
-[api]
-base_url = "https://www.servercontrolpanel.de/scp-core"
-keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
-
 [bootstrap]
 # The controller expands {{BOOTSTRAP_URL}} in the customScript payload from
 # this template. Keeping the branch in one setting also feeds REPO_BRANCH to
@@ -81,3 +77,7 @@ poll_interval = 5.0
 attach_initial_delay = 0.0
 attach_max_wait_seconds = 300.0
 stage2_wait_seconds = 1800.0
+# Successful stage2 policy for the temporary controller key. The local key is
+# retained by default so the same host-specific key can be reused later.
+controller_host_key_retention = "remove"
+controller_local_key_retention = "retain"

@@ -41,12 +41,11 @@ _UUID_RE = re.compile(
 load_env_file()
 
 
-_SETTINGS_EXPECTED_KEYS = {"api.base_url", "api.keycloak_url", "monitor.poll_interval"}
+_SETTINGS_EXPECTED_KEYS = {"monitor.poll_interval"}
 SETTINGS_PATH = Path(__file__).resolve().parent / "monitor-task.toml"
 SETTINGS = _load_settings(SETTINGS_PATH, _SETTINGS_EXPECTED_KEYS)
 
-netcup_scp_client.BASE_URL = SETTINGS["api.base_url"]
-netcup_scp_client.KEYCLOAK_URL = SETTINGS["api.keycloak_url"]
+netcup_scp_client.configure_api(load_environment=False)
 
 # Debug mode: NETCUP_SCP_API_DEBUG env var, OR'd with --debug in main().
 DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
@@ -86,9 +85,9 @@ Examples:
   # exists, print its current state, and exit without entering the poll loop:
   %(prog)s <uuid> --dry-run
 
-Settings (monitor-task.toml, next to this script):
-  poll_interval and the API base URLs default from there, not a Python
-  literal - see that file's comments. --poll overrides it per-run.
+Settings (monitor-task.toml and netcup.toml, next to this script):
+  poll_interval and the shared API base URLs default from those files, not a
+  Python literal - see their comments. --poll overrides it per-run.
 
 Environment Variables:
   NETCUP_SCP_API_REFRESH_TOKEN   Required: Netcup API refresh token (or in .env in this folder).

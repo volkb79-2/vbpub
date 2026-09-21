@@ -108,9 +108,13 @@ Mattermost progress + completion notifications (`notify_backend`, Telegram's
 `mattermost_webhook_url`; `telegram_verbose_progress` also controls verbose
 progress for the selected backend) include host facts. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
-during the run and removed again only *after* the stage2-done marker is
-written (removing it earlier can strand an external poller mid-install with
+during the run. By default it is removed only *after* the stage2-done marker
+is written (removing it earlier can strand an external poller mid-install with
 no way back in — a real bug found and fixed live, 2026-09-09).
+`retain_controller_ssh_key=true` deliberately leaves that exact line in
+`authorized_keys` after successful stage2; failure paths retain it for
+diagnosis regardless of this setting. The operator's persistent account key
+is never removed.
 `credential_mode` (`root-storage` / `systemd`) selects how the selected
 notification credential and controller pubkey are stored on disk.
 

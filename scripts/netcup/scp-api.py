@@ -85,7 +85,7 @@ from netcup_scp_client import (
     run_device_code_login,
 )
 
-SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api.toml"
+SETTINGS_PATH = Path(__file__).resolve().parent / "netcup.toml"
 INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
 STATUS_MAX_WORKERS = 4
@@ -94,8 +94,6 @@ STATUS_MAX_WORKERS = 4
 # explorer reads only the SSH values, but validating the complete file keeps a
 # typo or stale key from silently changing the install workflow's meaning.
 _INSTALL_HOST_SETTINGS_EXPECTED_KEYS = {
-    "api.base_url",
-    "api.keycloak_url",
     "bootstrap.raw_url_template",
     "bootstrap.repo_url",
     "bootstrap.repo_branch",
@@ -106,6 +104,8 @@ _INSTALL_HOST_SETTINGS_EXPECTED_KEYS = {
     "ssh.attach_initial_delay",
     "ssh.attach_max_wait_seconds",
     "ssh.stage2_wait_seconds",
+    "ssh.controller_host_key_retention",
+    "ssh.controller_local_key_retention",
 }
 
 
@@ -126,9 +126,7 @@ def _configure() -> None:
         netcup_scp_client.protected_server_policy()
     except ValueError as exc:
         raise SystemExit(f"ERROR: invalid protected-server denylist: {exc}") from exc
-    settings = _load_settings(SETTINGS_PATH, {"api.base_url", "api.keycloak_url"})
-    netcup_scp_client.BASE_URL = settings["api.base_url"]
-    netcup_scp_client.KEYCLOAK_URL = settings["api.keycloak_url"]
+    netcup_scp_client.configure_api(load_environment=False)
     netcup_scp_client.DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import stat
+import subprocess
 import types
 import urllib.error
 from pathlib import Path
@@ -312,6 +313,31 @@ def test_ensure_local_identity_generates_key_when_missing(install_host_mod, tmp_
     assert "key@controller.example.com" in comment
 
 
+def test_controller_identity_reuses_existing_dated_host_key(install_host_mod, tmp_path, monkeypatch):
+    _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 21)
+    existing = tmp_path / "vbpub-scp_installer-r1002.vxxu.de-20260901-ed25519"
+    _write_fake_identity_at(existing)
+    template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
+
+    resolved = install_host_mod._resolve_or_create_controller_identity(
+        template,
+        "r1002.vxxu.de",
+        explicit=False,
+        controller_fqdn="controller.example.com",
+    )
+    assert resolved == str(existing)
+    assert not (tmp_path / "vbpub-scp_installer-r1002.vxxu.de-20260921-ed25519").exists()
+
+
+def test_controller_identity_rejects_stale_public_key_pair(install_host_mod, tmp_path):
+    private = tmp_path / "controller-key"
+    private.write_text("not-a-private-key\n")
+    private.with_suffix(".pub").write_text("ssh-ed25519 AAAA-stale comment\n")
+    assert not install_host_mod._identity_is_reusable(private)
+    with pytest.raises(SystemExit, match="does not exist|not a readable private key"):
+        install_host_mod._validate_existing_identity(str(private))
+
+
 def test_resolve_controller_fqdn_passes_through_explicit_value(install_host_mod):
     assert install_host_mod._resolve_controller_fqdn("controller.example.com") == "controller.example.com"
 
@@ -423,47 +449,36 @@ def test_resolve_ssh_key_ids_uses_preselected(install_host_mod, fake_client):
     assert install_host_mod._resolve_ssh_key_ids(client, 1, [42], None, interactive=False) == [42]
 
 
-def test_resolve_ssh_key_ids_auto_selects_first_noninteractive(install_host_mod, fake_client):
+def test_resolve_ssh_key_ids_auto_selects_all_noninteractive(install_host_mod, fake_client):
     keys = [{"id": 10, "name": "a"}, {"id": 20, "name": "b"}]
     client = fake_client(get_responses=[keys])
-    assert install_host_mod._resolve_ssh_key_ids(client, 1, None, None, interactive=False) == [10]
+    assert install_host_mod._resolve_ssh_key_ids(client, 1, None, None, interactive=False) == [10, 20]
 
 
-def test_resolve_ssh_key_ids_uses_existing_key_before_creating_controller_key(
+def test_resolve_ssh_key_ids_selects_existing_account_key_without_creation(
     install_host_mod, fake_client, monkeypatch
 ):
     keys = [{"id": 10, "name": "persistent"}, {"id": 20, "name": "backup"}]
     client = fake_client(get_responses=[keys])
     monkeypatch.setattr("builtins.input", lambda prompt="": "2")
-    monkeypatch.setattr(
-        install_host_mod,
-        "_ensure_netcup_ssh_key_id_for_identity",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not create a key")),
-    )
 
     assert install_host_mod._resolve_ssh_key_ids(
         client, 1, None, "/tmp/controller-key", interactive=True
     ) == [20]
+    assert not any(call[0] == "post" for call in client.calls)
 
 
-def test_resolve_ssh_key_ids_can_explicitly_create_controller_key(
+def test_resolve_ssh_key_ids_can_select_no_persistent_account_key(
     install_host_mod, fake_client, monkeypatch
 ):
     keys = [{"id": 10, "name": "persistent"}]
     client = fake_client(get_responses=[keys])
-    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
-    calls = []
-
-    def create(*args, **kwargs):
-        calls.append((args, kwargs))
-        return 99
-
-    monkeypatch.setattr(install_host_mod, "_ensure_netcup_ssh_key_id_for_identity", create)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "none")
 
     assert install_host_mod._resolve_ssh_key_ids(
         client, 1, None, "/tmp/controller-key", interactive=True
-    ) == [99]
-    assert calls
+    ) is None
+    assert not any(call[0] == "post" for call in client.calls)
 
 
 def test_resolve_ssh_key_ids_none_when_no_keys(install_host_mod, fake_client):
@@ -678,9 +693,11 @@ def test_install_from_payload_missing_file_exits_cleanly(install_host_mod, tmp_p
 
 def _write_fake_identity(tmp_path):
     identity = tmp_path / "id_ed25519"
-    identity.write_text("fake-private-key-material\n")
-    identity.with_suffix(identity.suffix + ".pub").write_text(
-        "ssh-ed25519 AAAAFAKEFAKEFAKE test@fake\n"
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(identity), "-C", "test@fake"],
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return identity
 
@@ -791,8 +808,12 @@ def _fix_datetime_to(install_host_mod, monkeypatch, year, month, day):
 
 
 def _write_fake_identity_at(path):
-    path.write_text("fake-private-key-material\n")
-    path.with_suffix(path.suffix + ".pub").write_text("ssh-ed25519 AAAAFAKEFAKEFAKE test@fake\n")
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(path), "-C", "test@fake"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_name(
@@ -838,12 +859,11 @@ def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_n
 def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
     install_host_mod, tmp_path, fake_client, monkeypatch, capsys
 ):
-    """When the live /api/v1/servers response carries no "hostname" field,
-    fall back to "netcup<id>" rather than SERVER_NAME's opaque string."""
+    """The identity label uses the validated server details hostname."""
     monkeypatch.chdir(tmp_path)
     _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
 
-    expected_identity = tmp_path / "vbpub-scp_installer-netcup804027-20260908-ed25519"
+    expected_identity = tmp_path / "vbpub-scp_installer-target.example-20260908-ed25519"
     _write_fake_identity_at(expected_identity)
 
     client = _fake_gather_client(fake_client)  # servers = [{"id": 42}], no "hostname"
@@ -863,18 +883,9 @@ def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
 def test_main_interactive_recovers_from_labeling_lookup_failure(
     install_host_mod, tmp_path, monkeypatch, capsys
 ):
-    """Adversarial-review regression, 2026-09-08: the early identity-
-    labeling /api/v1/servers lookup used to be unguarded -- any failure
-    (transient HTTP error, malformed response) propagated straight out of
-    main() uncaught, instead of the file's normal, existing HTTPStatusError
-    handling. It must now fall back to the raw SERVER_NAME label and let
-    step 1's own (necessarily repeated) call surface the real error
-    cleanly."""
+    """Target lookup failure is reported before any identity side effect."""
     monkeypatch.chdir(tmp_path)
     _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
-
-    expected_identity = tmp_path / "vbpub-scp_installer-test-server-20260908-ed25519"
-    _write_fake_identity_at(expected_identity)
 
     class _AlwaysRaisingClient:
         def __init__(self):
@@ -901,13 +912,11 @@ def test_main_interactive_recovers_from_labeling_lookup_failure(
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert "❌ HTTP Error" in captured.err
-    # identity file still got a sane (fallback) label instead of crashing
-    # before ever reaching that point
-    assert args.ssh_identity_file == str(expected_identity)
-    # the labeling attempt was swallowed; step 1 retried for real and that
-    # second failure is the one actually reported
-    assert len(client.calls) == 2
+    assert "target lookup failed" in captured.err
+    # Authentication/target resolution failed before identity discovery or
+    # generation, and the API was called only once.
+    assert not list(tmp_path.glob("vbpub-scp_installer-*-20260908-ed25519"))
+    assert len(client.calls) == 1
 
 
 def test_main_payload_mode_uses_payload_hostname_for_identity_label(
@@ -1044,6 +1053,31 @@ def test_run_login_keeps_polling_through_authorization_pending(install_host_mod,
     assert rc == 0
     assert install_host_mod._load_env_file(env_path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "eventual-token"
     assert calls["n"] == 4
+
+
+def test_run_login_ctrl_c_returns_clean_cancel(install_host_mod, tmp_path, monkeypatch, capsys):
+    device_response = json.dumps({
+        "device_code": "dc123", "interval": 0, "expires_in": 60,
+        "verification_uri_complete": "https://example.com/verify",
+    }).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        return FakeHTTPResponse(device_response)
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client.time, "sleep", interrupt)
+
+    rc = install_host_mod.netcup_scp_client.run_device_code_login(tmp_path / ".env")
+    assert rc == 130
+    assert calls["n"] == 1
+    captured = capsys.readouterr()
+    assert "Login cancelled." in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_run_login_fails_on_access_denied(install_host_mod, tmp_path, monkeypatch):
@@ -1260,6 +1294,29 @@ def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monk
     assert install_host_mod.parse_args().ssh_key_ids == [10, 20]
 
 
+def test_parse_args_rejects_removed_poweroff_option(install_host_mod, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["install-host.py", "--poweroff"])
+    with pytest.raises(SystemExit) as exc:
+        install_host_mod.parse_args()
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("host", "local"),
+    [("remove", "retain"), ("remove", "remove"), ("retain", "retain")],
+)
+def test_controller_retention_accepts_supported_outcomes(install_host_mod, host, local):
+    args = types.SimpleNamespace(host_controller_key=host, local_controller_key=local)
+    install_host_mod._validate_controller_retention(args)
+    assert (args.host_controller_key, args.local_controller_key) == (host, local)
+
+
+def test_controller_retention_rejects_host_retain_local_remove(install_host_mod):
+    args = types.SimpleNamespace(host_controller_key="retain", local_controller_key="remove")
+    with pytest.raises(SystemExit, match="not a valid controller-key policy"):
+        install_host_mod._validate_controller_retention(args)
+
+
 def test_parse_args_exposes_only_long_help(install_host_mod, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["install-host.py", "--help"])
     with pytest.raises(SystemExit) as exc:
@@ -1346,7 +1403,7 @@ def test_build_customscript_shell_quotes_operator_supplied_values(install_host_m
 
 
 def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod, capsys, monkeypatch):
-    responses = iter(["n", "n", "1", "", "", "n"])
+    responses = iter(["n", "n", "1", "", "", "1", "n"])
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     rc = install_host_mod._run_build_customscript()
     assert rc == 0
@@ -1356,8 +1413,9 @@ def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod,
 
 
 def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp_path, monkeypatch, capsys):
-    # auto_reboot, never_reboot, backend, tg token, tg chat, include ssh key, host label
-    responses = iter(["y", "n", "1", "", "", "y", "test-server"])
+    # auto_reboot, never_reboot, backend, tg token, tg chat, host policy,
+    # include ssh key, host label
+    responses = iter(["y", "n", "1", "", "", "1", "y", "test-server"])
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # must not be required
     identity_path = tmp_path / "id_ed25519"
@@ -1380,7 +1438,7 @@ def test_run_build_customscript_requires_host_label_for_ssh_key(install_host_mod
     label typed, every invocation would otherwise silently collapse onto
     the same "unknown-host" key regardless of target -- must refuse
     instead."""
-    responses = iter(["y", "n", "1", "", "", "y", ""])  # blank host label
+    responses = iter(["y", "n", "1", "", "", "1", "y", ""])  # blank host label
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
 

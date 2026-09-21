@@ -79,10 +79,22 @@ the operator's persistent access key remains independent.
 
 The Netcup account-level `sshKeyIds` choice is separate from that local
 controller identity. Existing account keys are shown during the interactive
-key step and the first is the default; selecting one prevents a new account
-key from being registered. `--ssh-key-id ID` pins an existing key for direct
-payload runs. A new account key is created only when no account key exists or
-the operator explicitly selects the create-new choice.
+key step and the operator may select zero, one, or several; `--ssh-key-id ID`
+pins existing keys for direct payload runs. The installer never registers the
+temporary controller key as an account key and never creates account keys as a
+side effect of an install.
+
+The controller key has two independent successful-completion policies. The
+default is host removal/local retention, which closes the installed host's
+temporary access while preserving the reusable local host-specific key. Host
+removal/local removal and host retention/local retention are also valid. Host
+retention/local removal is rejected. On failure, both forms are retained for
+diagnosis; local removal requires observed `stage2_done`.
+
+`netcup.toml` is the one API endpoint configuration source. `install-host.toml`
+contains installer/bootstrap/SSH policy only, and `monitor-task.toml` contains
+monitor polling only. Frontends import `netcup_scp_client`; they do not shell
+out to `scp-api.py` or duplicate token/configuration setup.
 
 ## Account-wide API exploration
 

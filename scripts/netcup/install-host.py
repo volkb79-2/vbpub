@@ -46,6 +46,7 @@ from datetime import datetime
 from pathlib import Path
 
 import netcup_scp_client
+import netcup_install_plan
 # _load_env_file/_write_env_file have no call site left in this file's own
 # code (load_env_file() below covers the real runtime need) -- they stay
 # imported anyway because tests/test_scp_api_install_host.py calls them as
@@ -66,29 +67,22 @@ from netcup_scp_client import (
 
 
 def _normalize_ssh_public_key(public_key: str) -> str:
-    """Normalize an OpenSSH public key for comparison.
-
-    Keeps only the key type and base64 payload (drops comment).
-    """
+    """Normalize key material for diagnostics; the installer never registers it."""
     parts = public_key.strip().split()
-    if len(parts) >= 2:
-        return f"{parts[0]} {parts[1]}"
-    return public_key.strip()
+    return f"{parts[0]} {parts[1]}" if len(parts) >= 2 else public_key.strip()
 
 
 def _read_public_key_for_identity(identity_file: str) -> str:
     """Read/derive the public key for a private key identity file.
 
-    Prefers an adjacent .pub file (preserves comment), otherwise falls back to
-    `ssh-keygen -y -f` to derive the public key material.
+    Derive the public key from the private key itself.  An adjacent ``.pub``
+    file is not authoritative: it can be stale or can exist next to a file
+    which is not a private key at all.  The derived key is therefore what we
+    use for explicit-key validation and host-key discovery.
     """
     identity_path = Path(identity_file).expanduser()
     if not identity_path.exists():
         raise FileNotFoundError(f"SSH identity file not found: {identity_path}")
-
-    pub_path = identity_path.with_suffix(identity_path.suffix + ".pub")
-    if pub_path.exists():
-        return pub_path.read_text(encoding="utf-8").strip()
 
     result = subprocess.run(
         ["ssh-keygen", "-y", "-f", str(identity_path)],
@@ -97,7 +91,15 @@ def _read_public_key_for_identity(identity_file: str) -> str:
         text=True,
         timeout=15,
     )
-    return result.stdout.strip()
+    derived = result.stdout.strip()
+    pub_path = identity_path.with_suffix(identity_path.suffix + ".pub")
+    if pub_path.is_file():
+        adjacent = pub_path.read_text(encoding="utf-8").strip()
+        adjacent_parts = adjacent.split()
+        derived_parts = derived.split()
+        if len(adjacent_parts) >= 2 and len(derived_parts) >= 2 and adjacent_parts[:2] == derived_parts[:2]:
+            return adjacent
+    return derived
 
 
 _PLACEHOLDER_CONTROLLER_FQDN_SUFFIXES = (".invalid", ".example.invalid")
@@ -232,40 +234,76 @@ def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str)
     print(f"[ssh] Generated new identity: {identity_path}")
 
 
-def _ensure_netcup_ssh_key_id_for_identity(
-    client: "NetcupSCPClient",
-    identity_file: str,
+def _validate_existing_identity(identity_file: str) -> None:
+    """Require an explicitly selected private key instead of replacing it."""
+    path = Path(identity_file).expanduser()
+    if not path.is_file():
+        raise SystemExit(f"ERROR: SSH identity file does not exist: {path}")
+    try:
+        _read_public_key_for_identity(str(path))
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise SystemExit(f"ERROR: SSH identity file is not a readable private key: {path}: {exc}") from exc
+
+
+def _identity_is_reusable(path: Path) -> bool:
+    if not path.is_file() or path.name.endswith(".pub") or path.name.endswith(".known_hosts"):
+        return False
+    try:
+        _read_public_key_for_identity(str(path))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return True
+
+
+def _resolve_or_create_controller_identity(
+    identity_template: str,
+    host_label: str,
     *,
-    dry_run: bool = False,
-) -> int:
-    """Return a netcup sshKeyId matching the given identity file.
+    explicit: bool,
+    controller_fqdn: str,
+) -> str:
+    """Reuse a valid host-targeted key, or create one after preflight.
 
-    If no matching key exists in the account, create one (unless dry_run).
+    Existing dated filenames from the previous template are intentionally
+    considered. An explicit path is authoritative and never substituted.
     """
-    user_id = client.get_user_info()["id"]
-    public_key = _read_public_key_for_identity(identity_file)
-    normalized = _normalize_ssh_public_key(public_key)
+    rendered = Path(_render_identity_file_path(identity_template, host_label)).expanduser()
+    if explicit:
+        _validate_existing_identity(str(rendered))
+        return str(rendered)
 
-    ssh_keys = client.get(f"/api/v1/users/{user_id}/ssh-keys") or []
-    for key in ssh_keys:
-        existing_key = key.get("key")
-        if isinstance(existing_key, str) and _normalize_ssh_public_key(existing_key) == normalized:
-            return int(key["id"])
+    # A literal configured path is already a complete operator choice.  It
+    # cannot contain the selected host label, so handle it before the
+    # host-targeted filename search below.
+    if "{host}" not in identity_template and "{date}" not in identity_template:
+        if _identity_is_reusable(rendered):
+            print(f"[ssh] Reusing configured controller identity: {rendered}")
+            return str(rendered)
+        if rendered.exists():
+            raise SystemExit(
+                f"ERROR: local SSH identity path exists but is not a usable private key: {rendered}"
+            )
 
-    if dry_run:
-        print(f"[dry-run] Would create a new netcup SSH key for identity file: {identity_file}")
-        return -1
+    host_token = _IDENTITY_FILE_LABEL_RE.sub("-", host_label) or _UNKNOWN_HOST_LABEL
+    candidates: List[Path] = []
+    try:
+        entries = sorted(rendered.parent.iterdir(), key=lambda item: (item.stat().st_mtime, item.name), reverse=True)
+    except OSError:
+        entries = []
+    for candidate in entries:
+        if host_token in candidate.name and _identity_is_reusable(candidate):
+            candidates.append(candidate)
+    if candidates:
+        chosen = candidates[0]
+        print(f"[ssh] Reusing existing host-specific controller identity: {chosen}")
+        return str(chosen)
 
-    # Create a new SSH key in netcup SCP.
-    name_base = Path(identity_file).name
-    created = client.post(
-        f"/api/v1/users/{user_id}/ssh-keys",
-        {
-            "name": f"{name_base} (vbpub) {datetime.now().strftime('%Y%m%d-%H%M%S')}",
-            "key": public_key,
-        },
-    )
-    return int(created["id"])
+    if rendered.exists():
+        raise SystemExit(
+            f"ERROR: local SSH identity path exists but is not a usable private key: {rendered}"
+        )
+    _ensure_local_identity_file_exists(str(rendered), controller_fqdn)
+    return str(rendered)
 
 
 def _protected_server_policy_configured() -> bool:
@@ -347,8 +385,6 @@ load_env_file()
 
 
 _SETTINGS_EXPECTED_KEYS = {
-    "api.base_url",
-    "api.keycloak_url",
     "bootstrap.raw_url_template",
     "bootstrap.repo_url",
     "bootstrap.repo_branch",
@@ -359,19 +395,13 @@ _SETTINGS_EXPECTED_KEYS = {
     "ssh.attach_initial_delay",
     "ssh.attach_max_wait_seconds",
     "ssh.stage2_wait_seconds",
+    "ssh.controller_host_key_retention",
+    "ssh.controller_local_key_retention",
 }
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 SETTINGS = _load_settings(SETTINGS_PATH, _SETTINGS_EXPECTED_KEYS)
-
-# Configuration
-BASE_URL = SETTINGS["api.base_url"]
-KEYCLOAK_URL = SETTINGS["api.keycloak_url"]
-# netcup_scp_client's own functions/NetcupSCPClient read these as module
-# globals, not parameters (see its own module docstring) -- must be set
-# before get_access_token()/NetcupSCPClient(...) are used.
-netcup_scp_client.BASE_URL = BASE_URL
-netcup_scp_client.KEYCLOAK_URL = KEYCLOAK_URL
+netcup_scp_client.configure_api(load_environment=False)
 
 # Server configuration
 # Example server info from `/servers` API:
@@ -392,6 +422,9 @@ NOTIFY_BACKEND = os.environ.get("NOTIFY_BACKEND", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 MATTERMOST_WEBHOOK_URL = os.environ.get("MATTERMOST_WEBHOOK_URL")
+CONTROLLER_HOST_KEY_RETENTION = str(SETTINGS["ssh.controller_host_key_retention"])
+CONTROLLER_LOCAL_KEY_RETENTION = str(SETTINGS["ssh.controller_local_key_retention"])
+CONTROLLER_SSH_PUBLIC_KEY = ""
 
 
 def _bootstrap_source() -> Dict[str, str]:
@@ -438,16 +471,7 @@ def _bootstrap_source() -> Dict[str, str]:
 INSTALLATION_CONFIG = {
     "locale": "en_US.UTF-8",
     "timezone": "Europe/Berlin",
-    "customScript": (
-        "curl -fsSL {{BOOTSTRAP_URL}} | "
-        "REPO_URL={{BOOTSTRAP_REPO_URL}} REPO_BRANCH={{BOOTSTRAP_REPO_BRANCH}} "
-        "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
-        "NOTIFY_BACKEND='{{NOTIFY_BACKEND}}' "
-        "TELEGRAM_BOT_TOKEN='{{TELEGRAM_BOT_TOKEN}}' TELEGRAM_CHAT_ID='{{TELEGRAM_CHAT_ID}}' "
-        "MATTERMOST_WEBHOOK_URL='{{MATTERMOST_WEBHOOK_URL}}' "
-        "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' "
-        "python3 -"
-    ),
+    "customScript": netcup_install_plan.placeholder_customscript(),
     "rootPartitionFullDiskSize": False,
     "sshPasswordAuthentication": False,
     "emailToExecutingUser": True,
@@ -483,13 +507,14 @@ Commands (positional, optional; default is the install flow below):
                        snippet (no Netcup API calls) for manual use in a
                        web-hoster's own management UI - covers
                        AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/notification backend/
-                       Telegram or Mattermost credentials/CONTROLLER_SSH_PUBKEY only.
+                       Telegram or Mattermost credentials, controller-key
+                       inclusion, and successful-stage2 host-key retention.
 
-Modes (pick one; default is interactive gather+install):
-  (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
+  Modes (pick one; default is interactive gather+install):
+  (no mode flags)     Interactive: authenticate, choose a server when needed,
+                       gather its facts, prompt, and install.
   --payload FILE      Direct install from a JSON/JSONC payload file (no gathering).
   --attach-only       SSH-attach + tail bootstrap logs only; no Netcup API calls.
-  --poweroff          Power off $NETCUP_SCP_API_SERVER_NAME and exit.
 
 Examples:
   # First-time setup: log in, then build a default recipe:
@@ -497,13 +522,13 @@ Examples:
   %(prog)s configure
 
   # Preview everything (server lookup, image flavour, payload) without
-  # calling any mutating API (install/poweroff/ssh-key-create):
+  # calling any mutating API:
   %(prog)s --payload=target-host.jsonc --dry-run
 
   # Interactive mode (gather information and prompt for confirmation):
   %(prog)s
 
-  # Pin an already-registered account key in a payload; this skips account-key creation:
+  # Pin an already-registered account key in a payload; no account-key creation occurs:
   %(prog)s --payload=target-host.jsonc --ssh-key-id=123 --monitor
 
   # Direct installation from payload file, then watch it to completion:
@@ -515,19 +540,18 @@ Examples:
   # Reattach SSH log tailing to an already-installing/installed host:
   %(prog)s --attach-only --ssh-host=1.2.3.4
 
-  # Power off the configured server:
-  %(prog)s --poweroff
-
 Settings (install-host.toml, next to this script):
   Every operational default (SSH identity path/user, poll interval, attach/
-  stage2 wait timeouts, API base URLs) lives there, not in this script - see
-  that file's comments. CLI flags below override it per-run; nothing in this
-  script falls back to a bare literal if a setting is missing.
+  stage2 wait timeouts, and controller-key retention) lives there. Shared API
+  base URLs are in netcup.toml. CLI flags below override installer settings
+  per-run; nothing in this script falls back to a bare literal if a setting is
+  missing.
 
 Environment Variables (see .env.example):
   NETCUP_SCP_API_REFRESH_TOKEN     Required (not needed for --attach-only): OAuth2 refresh token.
-  NETCUP_SCP_API_SERVER_NAME       Required for interactive mode and --poweroff; NOT required
-                                   for --payload or --attach-only (no default - must be set).
+  NETCUP_SCP_API_SERVER_NAME       Optional in an interactive terminal; without it the installer
+                                   presents an API-backed server picker. Required in non-interactive
+                                   normal mode unless --server-id or --payload supplies a target.
   NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
   NETCUP_SCP_API_SSH_USER          Overrides install-host.toml's ssh.user for --ssh-user.
   NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides install-host.toml's ssh.identity_file for --ssh-identity-file.
@@ -564,8 +588,14 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         help=(
             "Resolve and validate everything (server lookup, image flavour, SSH keys, payload "
             "shape) and print what would be sent, but do not call any mutating Netcup API "
-            "(install-image POST, poweroff PATCH, ssh-key create POST)."
+            "(install-image POST)."
         ),
+    )
+    parser.add_argument(
+        "--server-id",
+        type=int,
+        default=os.environ.get("NETCUP_SCP_API_SERVER_ID") or None,
+        help="Explicit target server ID; otherwise use NETCUP_SCP_API_SERVER_NAME or the interactive picker.",
     )
 
     parser.add_argument(
@@ -627,11 +657,6 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     )
 
     parser.add_argument(
-        "--poweroff",
-        action="store_true",
-        help="Power off the server via API (state=OFF, stateOption=POWEROFF) and exit."
-    )
-    parser.add_argument(
         "--poll-interval",
         type=float,
         default=SETTINGS["ssh.poll_interval"],
@@ -691,7 +716,43 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
             "listed and selectable when this option is omitted."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--host-controller-key",
+        choices=("remove", "retain"),
+        default=os.environ.get(
+            "NETCUP_SCP_API_CONTROLLER_KEY_HOST_RETENTION",
+            str(SETTINGS["ssh.controller_host_key_retention"]),
+        ),
+        help="After observed successful stage2, remove or retain the temporary controller key on the host (default: remove).",
+    )
+    parser.add_argument(
+        "--local-controller-key",
+        choices=("remove", "retain"),
+        default=os.environ.get(
+            "NETCUP_SCP_API_CONTROLLER_KEY_LOCAL_RETENTION",
+            str(SETTINGS["ssh.controller_local_key_retention"]),
+        ),
+        help="After observed successful stage2, remove or retain the local controller key (default: retain).",
+    )
+    args = parser.parse_args()
+    if args.server_id is not None and args.server_id <= 0:
+        parser.error("--server-id must be a positive integer")
+    if args.ssh_key_ids is not None and any(value <= 0 for value in args.ssh_key_ids):
+        parser.error("--ssh-key-id values must be positive integers")
+    if args.ssh_key_ids is not None and len(set(args.ssh_key_ids)) != len(args.ssh_key_ids):
+        parser.error("--ssh-key-id values must not contain duplicates")
+    if args.command and any(
+        value
+        for value in (args.payload, args.attach_only, args.server_id, args.ssh_key_ids)
+    ):
+        parser.error("configure/build-customscript cannot be combined with install mode options")
+    if args.attach_only and any((args.payload, args.server_id, args.ssh_key_ids, args.monitor)):
+        parser.error("--attach-only cannot be combined with --payload, --server-id, --ssh-key-id, or --monitor")
+    if args.payload and args.server_id is not None:
+        parser.error("--payload supplies its own target; do not combine it with --server-id")
+    if args.host_controller_key == "retain" and args.local_controller_key == "remove":
+        parser.error("host retain/local remove is not a valid controller-key retention policy")
+    return args
 
 
 def is_noninteractive(args: argparse.Namespace) -> bool:
@@ -1441,60 +1502,20 @@ def _build_customscript(
     controller_pubkey: str,
     notify_backend: str = "telegram",
     mattermost_webhook_url: str = "",
+    retain_controller_ssh_key: bool = False,
 ) -> str:
-    """Build a fully-expanded (no {{PLACEHOLDER}} tokens), one-line
-    customScript shell command - the same shape as
-    INSTALLATION_CONFIG["customScript"], but with every value already
-    resolved to a literal. This script's own API-driven install path
-    resolves {{PLACEHOLDER}} tokens itself (_expand_payload_placeholders);
-    a human pasting this into a web-hoster's own reinstall dialog has no
-    such resolution step available, so nothing here can be a placeholder.
-    """
-    # shlex.quote every operator-supplied value -- _prompt_text() does no
-    # validation at all, and unlike the {{PLACEHOLDER}} path (which the
-    # operator never directly types free-form shell text into), this
-    # wizard's whole point is a value a human just typed going straight
-    # into a real shell command that will actually execute as cloud-init
-    # on a live host.
-    notify_backend = notify_backend.strip().lower()
-    if notify_backend not in {"telegram", "mattermost", "none"}:
-        raise ValueError("notify_backend must be telegram, mattermost, or none")
-    telegram_configured = bool(telegram_bot_token) or bool(telegram_chat_id)
-    if bool(telegram_bot_token) != bool(telegram_chat_id):
-        raise ValueError("telegram_bot_token and telegram_chat_id must be supplied together")
-    if notify_backend == "telegram" and mattermost_webhook_url:
-        raise ValueError("mattermost_webhook_url requires notify_backend=mattermost")
-    if notify_backend == "mattermost":
-        if telegram_configured:
-            raise ValueError("Telegram credentials require notify_backend=telegram")
-        if not mattermost_webhook_url:
-            raise ValueError("notify_backend=mattermost requires mattermost_webhook_url")
-        parsed_webhook = urllib.parse.urlparse(mattermost_webhook_url)
-        if (
-            parsed_webhook.scheme != "https"
-            or not parsed_webhook.netloc
-            or any(char.isspace() for char in mattermost_webhook_url)
-        ):
-            raise ValueError("mattermost_webhook_url must be an https:// URL without whitespace")
-    if notify_backend == "none" and (telegram_configured or mattermost_webhook_url):
-        raise ValueError("notify_backend=none cannot have notification credentials")
-
-    bootstrap = _bootstrap_source()
-    env_parts = [
-        f"REPO_URL={shlex.quote(bootstrap['repo_url'])}",
-        f"REPO_BRANCH={shlex.quote(bootstrap['repo_branch'])}",
-        f"AUTO_REBOOT_AFTER_STAGE1={'yes' if auto_reboot_after_stage1 else 'no'}",
-        f"NEVER_REBOOT={'yes' if never_reboot else 'no'}",
-        f"NOTIFY_BACKEND={notify_backend}",
-    ]
-    if notify_backend == "telegram" and telegram_bot_token:
-        env_parts.append(f"TELEGRAM_BOT_TOKEN={shlex.quote(telegram_bot_token)}")
-        env_parts.append(f"TELEGRAM_CHAT_ID={shlex.quote(telegram_chat_id)}")
-    if notify_backend == "mattermost":
-        env_parts.append(f"MATTERMOST_WEBHOOK_URL={shlex.quote(mattermost_webhook_url)}")
-    if controller_pubkey:
-        env_parts.append(f"CONTROLLER_SSH_PUBKEY={shlex.quote(controller_pubkey)}")
-    return f"curl -fsSL {shlex.quote(bootstrap['remote_url'])} | " + " ".join(env_parts) + " python3 -"
+    """Build the same bootstrap command used by the API installation path."""
+    return netcup_install_plan.build_customscript(
+        bootstrap=_bootstrap_source(),
+        auto_reboot_after_stage1=auto_reboot_after_stage1,
+        never_reboot=never_reboot,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        controller_pubkey=controller_pubkey,
+        notify_backend=notify_backend,
+        mattermost_webhook_url=mattermost_webhook_url,
+        retain_controller_ssh_key=retain_controller_ssh_key,
+    )
 
 
 def _run_build_customscript() -> int:
@@ -1544,6 +1565,17 @@ def _run_build_customscript() -> int:
         )
 
     controller_pubkey = ""
+    retain_controller_ssh_key = _prompt_choice(
+        [
+            "Remove the controller key from the host after successful stage2",
+            "Retain the controller key on the host after successful stage2",
+        ],
+        0 if os.environ.get(
+            "NETCUP_SCP_API_CONTROLLER_KEY_HOST_RETENTION",
+            str(SETTINGS["ssh.controller_host_key_retention"]),
+        ) == "remove" else 1,
+        "Successful stage2 host-key policy",
+    ) == 1
     if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
         # Adversarial-review finding, 2026-09-08: this command is explicitly
         # meant to be usable without $NETCUP_SCP_API_SERVER_NAME set (a
@@ -1573,6 +1605,7 @@ def _run_build_customscript() -> int:
             controller_pubkey=controller_pubkey,
             notify_backend=notify_backend,
             mattermost_webhook_url=mattermost_webhook_url,
+            retain_controller_ssh_key=retain_controller_ssh_key,
         )
     except ValueError as exc:
         print(f"ERROR: invalid notification configuration: {exc}", file=sys.stderr)
@@ -1582,6 +1615,7 @@ def _run_build_customscript() -> int:
     print("-" * 70)
     print(snippet)
     print("-" * 70)
+    print("Note: this manual snippet cannot observe stage2 or remove a local key automatically.")
     return 0
 
 
@@ -1683,66 +1717,67 @@ def _resolve_ssh_key_ids(
     interactive: bool,
     dry_run: bool = False,
 ) -> Optional[List[int]]:
-    """Resolve sshKeyIds: use preselected_ids as-is if given (payload already
-    had sshKeyIds), else query and pick/derive.
+    """Resolve persistent Netcup account keys without creating any.
 
-    With an identity file and existing account keys: interactive runs get a
-    numbered prompt whose default is the first existing key and whose final
-    choice explicitly creates a new account key for the controller identity.
-    Non-interactive runs use the first existing key. This keeps an existing
-    account key from being silently shadowed by a newly registered one. If no
-    account key exists, or the operator explicitly chooses creation, the
-    identity key is registered. Without an identity file, existing keys are
-    selected the same way and no key can be created.
+    The account keys are operator access keys. The temporary controller key is
+    deliberately separate and is passed through ``CONTROLLER_SSH_PUBKEY``.
+    Interactive input accepts ``all``, ``none``, or a comma-separated list of
+    displayed numbers. Non-interactive installs use all currently registered
+    account keys unless ``--ssh-key-id`` supplied an explicit selection.
     """
     if preselected_ids is not None:
-        return preselected_ids
+        if not preselected_ids:
+            return None
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in preselected_ids):
+            raise ValueError("--ssh-key-id values must be positive integers")
+        return list(dict.fromkeys(preselected_ids))
 
     ssh_keys = client.get(f"/api/v1/users/{user_id}/ssh-keys") or []
+    if not isinstance(ssh_keys, list) or any(not isinstance(key, dict) for key in ssh_keys):
+        raise RuntimeError("Netcup SSH-key response was not a list of objects")
+    valid_keys: List[Dict[str, Any]] = []
+    for key in ssh_keys:
+        key_id = key.get("id")
+        if isinstance(key_id, bool) or not isinstance(key_id, int) or key_id <= 0:
+            raise RuntimeError("Netcup returned an invalid account SSH-key ID")
+        valid_keys.append(key)
+    ssh_keys = valid_keys
     if ssh_keys:
         print("   Available SSH keys:")
-        for key in ssh_keys:
-            print(f"   - ID: {key['id']:3d} | {key.get('name', '')}")
+        for index, key in enumerate(ssh_keys, start=1):
+            print(f"   [{index}] ID: {key['id']:3d} | {key.get('name', '')}")
     else:
-        print("   ⚠ WARNING: No SSH keys found on this netcup account!")
-
-    if identity_file and ssh_keys:
-        if interactive:
-            descs = [f"ID {k['id']:3d} | {k.get('name', '')}" for k in ssh_keys]
-            descs.append("Create a new key for this install's controller identity")
-            idx = _prompt_choice(descs, default_index=0, prompt_label="   Select SSH key")
-            if idx < len(ssh_keys):
-                chosen_id = int(ssh_keys[idx]["id"])
-                print(f"   ✓ Using existing SSH key ID: {chosen_id}")
-                return [chosen_id]
-        else:
-            chosen_id = int(ssh_keys[0]["id"])
-            print(f"   ✓ Auto-selected existing SSH key ID (non-interactive): {chosen_id}")
-            return [chosen_id]
-
-        print("   Creating a new Netcup SSH key for this install's controller identity...")
-
-    if identity_file:
-        ssh_key_id = _ensure_netcup_ssh_key_id_for_identity(client, identity_file, dry_run=dry_run)
-        print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_id}")
-        return [ssh_key_id]
-
-    if not ssh_keys:
+        print("   No persistent account SSH keys found; continuing with controller key only.")
         return None
 
-    if interactive:
-        descs = [f"ID {k['id']:3d} | {k.get('name', '')}" for k in ssh_keys]
-        idx = _prompt_choice(descs, default_index=0, prompt_label="   Select SSH key")
-        chosen = ssh_keys[idx]
-    else:
-        chosen = ssh_keys[0]
-        print(f"   ✓ Auto-selected first key (non-interactive): {chosen.get('name', '')}")
+    if not interactive:
+        chosen_ids = [int(key["id"]) for key in ssh_keys]
+        print(f"   ✓ Using all {len(chosen_ids)} existing account SSH key(s) (non-interactive)")
+        return chosen_ids
 
-    print(f"   ✓ Using SSH Key ID: {chosen['id']}")
-    return [int(chosen["id"])]
+    while True:
+        raw = input("   Account keys to inject [all, none, or numbers such as 1,2; Enter=all]: ").strip().lower()
+        if not raw or raw == "all":
+            chosen_ids = [int(key["id"]) for key in ssh_keys]
+            print(f"   ✓ Selected {len(chosen_ids)} account SSH key(s)")
+            return chosen_ids
+        if raw in {"none", "0", "-"}:
+            print("   ✓ Selected no persistent account keys")
+            return None
+        try:
+            indexes = [int(part.strip()) for part in raw.split(",")]
+        except ValueError:
+            print("   Please enter all, none, or a comma-separated list of displayed numbers.")
+            continue
+        if not indexes or len(set(indexes)) != len(indexes) or any(index < 1 or index > len(ssh_keys) for index in indexes):
+            print(f"   Please enter numbers between 1 and {len(ssh_keys)} without duplicates.")
+            continue
+        chosen_ids = [int(ssh_keys[index - 1]["id"]) for index in indexes]
+        print(f"   ✓ Selected account SSH key IDs: {', '.join(map(str, chosen_ids))}")
+        return chosen_ids
 
 
-def _validate_installation_payload(payload: Dict[str, Any]) -> List[str]:
+def _validate_installation_payload(payload: Any) -> List[str]:
     """Local, offline structural checks for an install-image payload.
 
     This cannot catch invalid IDs (those only fail once netcup validates them),
@@ -1755,24 +1790,36 @@ def _validate_installation_payload(payload: Dict[str, Any]) -> List[str]:
     """
     errors: List[str] = []
 
+    if not isinstance(payload, dict):
+        return [f"top level must be a JSON object, got {type(payload).__name__}"]
+
     if "serverId" not in payload and not payload.get("hostname"):
         errors.append("must contain either 'serverId' (int) or a resolvable 'hostname'")
-    if "serverId" in payload and not isinstance(payload["serverId"], int):
-        errors.append(f"'serverId' must be an int, got {type(payload['serverId']).__name__}")
+    if "serverId" in payload and (
+        isinstance(payload["serverId"], bool)
+        or not isinstance(payload["serverId"], int)
+        or payload["serverId"] <= 0
+    ):
+        errors.append("'serverId' must be a positive integer (not a boolean)")
 
-    if "imageFlavourId" in payload and not isinstance(payload["imageFlavourId"], int):
-        errors.append(f"'imageFlavourId' must be an int, got {type(payload['imageFlavourId']).__name__}")
+    if "imageFlavourId" in payload and (
+        isinstance(payload["imageFlavourId"], bool)
+        or not isinstance(payload["imageFlavourId"], int)
+        or payload["imageFlavourId"] <= 0
+    ):
+        errors.append("'imageFlavourId' must be a positive integer (not a boolean)")
 
     if "diskName" not in payload:
         errors.append("missing required 'diskName' (e.g. 'vda')")
-    elif not isinstance(payload["diskName"], str):
-        errors.append(f"'diskName' must be a string, got {type(payload['diskName']).__name__}")
+    elif not isinstance(payload["diskName"], str) or not payload["diskName"].strip():
+        errors.append("'diskName' must be a non-empty string")
 
     ssh_key_ids = payload.get("sshKeyIds")
     if ssh_key_ids is not None and not (
-        isinstance(ssh_key_ids, list) and all(isinstance(x, int) for x in ssh_key_ids)
+        isinstance(ssh_key_ids, list)
+        and all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in ssh_key_ids)
     ):
-        errors.append("'sshKeyIds' must be a list of ints (or omitted)")
+        errors.append("'sshKeyIds' must be a list of positive integer IDs (or omitted)")
 
     custom_script = payload.get("customScript")
     if custom_script is not None and not isinstance(custom_script, str):
@@ -1808,18 +1855,30 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     print("✓ Payload loaded successfully")
     print()
 
-    requested_ssh_key_ids = getattr(args, "ssh_key_ids", None)
-    if requested_ssh_key_ids is not None:
-        # A CLI selection is an explicit per-run override, including when a
-        # checked-in/local payload contains a different stale selection.
-        installation_payload["sshKeyIds"] = requested_ssh_key_ids
-
     validation_errors = _validate_installation_payload(installation_payload)
     if validation_errors:
         print("❌ ERROR: payload failed preflight validation:", file=sys.stderr)
         for err in validation_errors:
             print(f"  - {err}", file=sys.stderr)
         sys.exit(1)
+
+    requested_ssh_key_ids = getattr(args, "ssh_key_ids", None)
+    if requested_ssh_key_ids is not None:
+        # A CLI selection is an explicit per-run override, including when a
+        # checked-in/local payload contains a different stale selection.
+        installation_payload["sshKeyIds"] = requested_ssh_key_ids or None
+        validation_errors = _validate_installation_payload(installation_payload)
+        if validation_errors:
+            print("ERROR: command-line SSH key selection failed validation:", file=sys.stderr)
+            for err in validation_errors:
+                print(f"  - {err}", file=sys.stderr)
+            sys.exit(2)
+
+    if not installation_payload.get("customScript"):
+        installation_payload["customScript"] = _load_default_recipe().get("customScript")
+        if not isinstance(installation_payload["customScript"], str):
+            print("ERROR: payload has no customScript and the default recipe has none", file=sys.stderr)
+            sys.exit(2)
 
     # Resolve server ID.
     server_id = None
@@ -1842,6 +1901,9 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     try:
         server_details = client.get(f"/api/v1/servers/{server_id}")
         ip_address = _extract_primary_ipv4(server_details)
+    except HTTPStatusError as exc:
+        print(f"ERROR: could not fetch target server details: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     except Exception as exc:
         if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
             print(
@@ -1880,6 +1942,8 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
             interactive=interactive,
             dry_run=getattr(args, "dry_run", False),
         )
+        if installation_payload["sshKeyIds"] is None:
+            installation_payload.pop("sshKeyIds")
         print()
 
     # Expand placeholders only for the API request, while keeping the loaded
@@ -1934,7 +1998,7 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
             print("Monitor progress with:")
             print(f"  python3 monitor-task.py {task_uuid}")
             if getattr(args, "monitor", False) or is_noninteractive(args):
-                monitor_task(
+                task_result = monitor_task(
                     client,
                     task_uuid,
                     poll_interval=args.poll_interval,
@@ -1943,6 +2007,7 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
                     ssh_identity_file=getattr(args, "ssh_identity_file", None),
                     attach_bootstrap=getattr(args, "attach_bootstrap", True),
                 )
+                _apply_local_controller_retention(getattr(args, "ssh_identity_file", None), task_result)
     except HTTPStatusError as e:
         print(f"❌ HTTP Error: {e}", file=sys.stderr)
         if getattr(e, "body", ""):
@@ -1975,7 +2040,13 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     # preserve the v2 compatibility default of Telegram.
     notify_backend = requested_backend or ("mattermost" if mattermost_webhook else "telegram")
     server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
-    controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "")
+    controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "") or CONTROLLER_SSH_PUBLIC_KEY
+    retain_controller_key = os.environ.get(
+        "RETAIN_CONTROLLER_SSH_KEY",
+        "yes" if CONTROLLER_HOST_KEY_RETENTION == "retain" else "no",
+    ).strip().lower()
+    if retain_controller_key not in {"yes", "no"}:
+        raise ValueError("RETAIN_CONTROLLER_SSH_KEY must be yes or no")
 
     if "{{NOTIFY_BACKEND}}" in cs or "{{MATTERMOST_WEBHOOK_URL}}" in cs:
         if notify_backend not in {"telegram", "mattermost", "none"}:
@@ -2023,6 +2094,7 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     cs = cs.replace("{{MATTERMOST_WEBHOOK_URL}}", shell_single_quote_contents(mattermost_webhook))
     cs = cs.replace("{{SERVER_NAME}}", server_name)
     cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", shell_single_quote_contents(controller_pubkey))
+    cs = cs.replace("{{RETAIN_CONTROLLER_SSH_KEY}}", retain_controller_key)
 
     bootstrap_tokens = (
         "{{BOOTSTRAP_URL}}",
@@ -2070,10 +2142,15 @@ def _build_authenticated_client() -> "NetcupSCPClient":
     can build a client without duplicating this (previously the only copy
     of) error handling.
     """
+    try:
+        netcup_scp_client.configure_api()
+    except (SystemExit, ValueError) as exc:
+        print(f"ERROR: invalid shared Netcup API configuration: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
     refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
     if not refresh_token:
         print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
-        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
+        print("Hint: run ./scp-api.py login first; it stores the refresh token in .env.", file=sys.stderr)
         sys.exit(1)
     try:
         access_token = get_access_token(refresh_token)
@@ -2081,6 +2158,61 @@ def _build_authenticated_client() -> "NetcupSCPClient":
         print(f"❌ Failed to get access token:  {e}", file=sys.stderr)
         sys.exit(1)
     return NetcupSCPClient(access_token, refresh_token=refresh_token)
+
+
+def _validate_controller_retention(args: argparse.Namespace) -> None:
+    host = getattr(args, "host_controller_key", SETTINGS["ssh.controller_host_key_retention"])
+    local = getattr(args, "local_controller_key", SETTINGS["ssh.controller_local_key_retention"])
+    args.host_controller_key = host
+    args.local_controller_key = local
+    if host not in {"remove", "retain"} or local not in {"remove", "retain"}:
+        raise SystemExit("ERROR: controller-key retention values must be remove or retain")
+    if host == "retain" and local == "remove":
+        raise SystemExit(
+            "ERROR: host retain/local remove is not a valid controller-key policy; "
+            "the local key would be deleted while the host still trusts it"
+        )
+
+
+def _set_controller_retention_environment(args: argparse.Namespace) -> None:
+    global CONTROLLER_HOST_KEY_RETENTION, CONTROLLER_LOCAL_KEY_RETENTION
+    _validate_controller_retention(args)
+    CONTROLLER_HOST_KEY_RETENTION = args.host_controller_key
+    CONTROLLER_LOCAL_KEY_RETENTION = args.local_controller_key
+
+
+def _remove_local_controller_identity(identity_file: Optional[str]) -> None:
+    if not identity_file:
+        return
+    path = Path(identity_file).expanduser()
+    for candidate in (path, Path(str(path) + ".pub")):
+        if not candidate.exists():
+            continue
+        if candidate.is_symlink() or not candidate.is_file():
+            print(f"[ssh] Retention requested removal but refusing non-regular path: {candidate}", file=sys.stderr)
+            continue
+        try:
+            candidate.unlink()
+            print(f"[ssh] Removed local controller key material: {candidate}")
+        except OSError as exc:
+            print(f"[ssh] WARNING: could not remove local controller key {candidate}: {exc}", file=sys.stderr)
+
+
+def _apply_local_controller_retention(
+    identity_file: Optional[str],
+    task: Optional[Dict[str, Any]],
+    local_retention: Optional[str] = None,
+) -> None:
+    if (local_retention or CONTROLLER_LOCAL_KEY_RETENTION).strip().lower() != "remove":
+        return
+    if not isinstance(task, dict) or task.get("vbpub_stage2_done") is not True:
+        print(
+            "[ssh] Local controller key retained: successful stage2 was not observed; "
+            "remove it manually only after checking the host.",
+            file=sys.stderr,
+        )
+        return
+    _remove_local_controller_identity(identity_file)
 
 
 def _peek_payload_host_label(payload_path: str) -> Optional[str]:
@@ -2111,10 +2243,93 @@ def _peek_payload_host_label(payload_path: str) -> Optional[str]:
     return None
 
 
+def _load_payload_for_target(payload_path: str) -> Dict[str, Any]:
+    """Load and validate a payload before any controller key work."""
+    try:
+        raw = Path(payload_path).read_text(encoding="utf-8")
+        payload = json.loads(_strip_jsonc_comments(raw))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"ERROR: payload file not found: {payload_path}") from exc
+    except OSError as exc:
+        raise SystemExit(f"ERROR: cannot read payload file {payload_path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ERROR: invalid JSON/JSONC in payload file {payload_path}: {exc}") from exc
+    errors = _validate_installation_payload(payload)
+    if errors:
+        print("ERROR: payload failed preflight validation:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
+        raise SystemExit(2)
+    return payload
+
+
+def _target_server(
+    client: "NetcupSCPClient",
+    args: argparse.Namespace,
+    payload: Optional[Dict[str, Any]],
+) -> tuple[int, Dict[str, Any]]:
+    """Resolve one target server, using the API picker when needed."""
+    requested_name = SERVER_NAME
+    requested_id = getattr(args, "server_id", None)
+    if payload is not None:
+        requested_id = payload.get("serverId")
+        requested_name = payload.get("hostname") if requested_id is None else None
+
+    if requested_id is not None:
+        if isinstance(requested_id, bool) or not isinstance(requested_id, int) or requested_id <= 0:
+            raise SystemExit("ERROR: target server ID must be a positive integer")
+        record = client.get(f"/api/v1/servers/{requested_id}")
+        if not isinstance(record, dict):
+            raise SystemExit(f"ERROR: server-details for server ID {requested_id} was not an object")
+        return requested_id, record
+
+    if requested_name:
+        records = client.get("/api/v1/servers", params={"name": requested_name})
+        if not isinstance(records, list) or not records:
+            raise SystemExit(f"ERROR: server {requested_name!r} was not found")
+        if len(records) != 1:
+            raise SystemExit(f"ERROR: server name {requested_name!r} is ambiguous; use --server-id")
+        record = records[0]
+        if not isinstance(record, dict):
+            raise SystemExit("ERROR: server inventory returned a malformed record")
+        return record.get("id"), record
+
+    if is_noninteractive(args):
+        raise SystemExit(
+            "ERROR: no target server supplied; set NETCUP_SCP_API_SERVER_NAME, use --server-id, "
+            "or provide a payload target"
+        )
+
+    records = client.get("/api/v1/servers")
+    if not isinstance(records, list) or not records:
+        raise SystemExit("ERROR: Netcup returned no selectable servers")
+    choices: List[str] = []
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("id"), int):
+            continue
+        addresses = [
+            item.get("ip") for item in record.get("ipv4Addresses", [])
+            if isinstance(item, dict) and isinstance(item.get("ip"), str)
+        ]
+        label = record.get("hostname") or record.get("nickname") or "-"
+        choices.append(f"{record.get('name', '-')} (id {record['id']}, {label}, {', '.join(addresses) or '-'})")
+    if not choices:
+        raise SystemExit("ERROR: Netcup returned no valid selectable server records")
+    index = _prompt_choice(choices, 0, "Select target server")
+    selected = [record for record in records if isinstance(record, dict) and isinstance(record.get("id"), int)][index]
+    return int(selected["id"]), selected
+
+
 def main():
-    global args
+    global args, SERVER_NAME, CONTROLLER_SSH_PUBLIC_KEY
     args = parse_args()
     netcup_scp_client.DEBUG = netcup_scp_client.DEBUG or getattr(args, "debug", False)
+    _set_controller_retention_environment(args)
+
+    identity_explicit = bool(os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE")) or any(
+        item == "--ssh-identity-file" or item.startswith("--ssh-identity-file=")
+        for item in sys.argv[1:]
+    )
 
     if getattr(args, "command", None) == "build-customscript":
         # Purely local (identity-file generation only) - no Netcup API call,
@@ -2137,58 +2352,15 @@ def main():
     attach_only = getattr(args, "attach_only", False)
     client: Optional["NetcupSCPClient"] = None
     server_lookup: Optional[List[Dict[str, Any]]] = None
-    if getattr(args, "ssh_identity_file", None):
-        if not attach_only:
-            # A real hostname/server-id label, resolved WITHOUT an extra API
-            # call where possible, instead of SERVER_NAME's opaque internal
-            # netcup id (confirmed live 2026-09-08: e.g.
-            # "v2202511209318406253" gave every generated key an unreadable
-            # filename with no way to tell which host it belonged to at a
-            # glance - see install-host.toml's [ssh] comments).
-            host_label = SERVER_NAME
-            if args.payload:
-                host_label = _peek_payload_host_label(args.payload) or SERVER_NAME
-            elif SERVER_NAME:
-                # One early, authenticated lookup - reused as step 1 below
-                # (via `server_lookup`) so this isn't a second/duplicate
-                # call. This lookup is for LABELING ONLY, so any failure
-                # (transient HTTP error, malformed response) must not crash
-                # main() here - leave server_lookup unset and fall back to
-                # the raw SERVER_NAME label; step 1 below will retry the
-                # same call for real, going through its own existing
-                # HTTPStatusError/KeyError/Exception handling instead of
-                # this early, unguarded copy (adversarial-review finding,
-                # 2026-09-08).
-                client = _build_authenticated_client()
-                try:
-                    server_lookup = client.get("/api/v1/servers", params={"name": SERVER_NAME})
-                    if server_lookup:
-                        host_label = server_lookup[0].get("hostname") or f"netcup{server_lookup[0]['id']}"
-                except Exception:
-                    server_lookup = None
-            # Per-host/per-date identity, rendered now that a host label is
-            # known - see _render_identity_file_path(). --attach-only
-            # intentionally skips rendering: it means to reconnect with an
-            # already-known, already-generated key (passed explicitly via
-            # --ssh-identity-file / NETCUP_SCP_API_SSH_IDENTITY_FILE), not to
-            # silently generate a fresh one that would never match anything
-            # on the host it's attaching to.
-            args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, host_label)
-        else:
-            _refuse_unrendered_attach_only_identity(args.ssh_identity_file)
-        _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
-        if not attach_only:
-            # Consumed by _expand_payload_placeholders() (mirrors the
-            # TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID pattern) so debian-install-v2
-            # can install this exact key into authorized_keys itself, rather
-            # than depending solely on netcup's own account-level sshKeyIds
-            # injection actually landing on the host.
-            os.environ["CONTROLLER_SSH_PUBKEY"] = _read_public_key_for_identity(args.ssh_identity_file)
-
     if attach_only:
         if not getattr(args, "ssh_host", None):
             print("ERROR: --attach-only requires --ssh-host (or NETCUP_SCP_API_SSH_HOST)", file=sys.stderr)
             sys.exit(2)
+        if identity_explicit:
+            _refuse_unrendered_attach_only_identity(args.ssh_identity_file)
+            _validate_existing_identity(args.ssh_identity_file)
+        else:
+            args.ssh_identity_file = None
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         attach_task_uuid = getattr(args, "attach_task_uuid", None) or f"attach-only-{ts}"
         follower = _SSHBootstrapFollower(
@@ -2223,19 +2395,53 @@ def main():
             follower.stop()
         return
 
-    client = client or _build_authenticated_client()
+    # Authentication and target/protection checks deliberately precede every
+    # controller-key read or generation.
+    client = _build_authenticated_client()
+    try:
+        payload_for_target = _load_payload_for_target(args.payload) if args.payload else None
+        server_id, target_record = _target_server(client, args, payload_for_target)
+        server_details = (
+            target_record
+            if isinstance(target_record, dict) and "serverLiveInfo" in target_record
+            else client.get(f"/api/v1/servers/{server_id}")
+        )
+    except HTTPStatusError as exc:
+        print(f"ERROR: Netcup target lookup failed: {exc}", file=sys.stderr)
+        if getattr(exc, "body", ""):
+            print(str(exc.body)[:2000], file=sys.stderr)
+        raise SystemExit(1) from exc
+    if isinstance(server_id, bool) or not isinstance(server_id, int) or server_id <= 0:
+        raise SystemExit("ERROR: API returned an invalid target server ID")
+    if not isinstance(server_details, dict):
+        raise SystemExit(f"ERROR: server-details for server ID {server_id} was not an object")
+    merged_target = {**target_record, **server_details}
+    server_lookup = [merged_target]
+    if not getattr(args, "dry_run", False):
+        _ensure_server_mutation_allowed(server_id, merged_target.get("name"), "Debian image installation")
+    SERVER_NAME = str(merged_target.get("name") or SERVER_NAME or f"netcup{server_id}")
+    os.environ["NETCUP_SCP_API_SERVER_NAME"] = SERVER_NAME
+
+    host_label = (
+        (payload_for_target or {}).get("hostname")
+        or
+        merged_target.get("hostname")
+        or merged_target.get("nickname")
+        or merged_target.get("name")
+        or f"netcup{server_id}"
+    )
+    args.ssh_identity_file = _resolve_or_create_controller_identity(
+        args.ssh_identity_file,
+        str(host_label),
+        explicit=identity_explicit,
+        controller_fqdn=SETTINGS["ssh.controller_fqdn"],
+    )
+    CONTROLLER_SSH_PUBLIC_KEY = _read_public_key_for_identity(args.ssh_identity_file)
 
     # If payload file is provided, use direct installation mode
     if args.payload:
         install_from_payload(client, args.payload, args)
         return
-
-    # Only the interactive gather+install path (and --poweroff, below) need a
-    # configured target server name; --attach-only and --payload do not.
-    if not SERVER_NAME:
-        print("ERROR: missing $SERVER_NAME (set it in scripts/netcup/.env)", file=sys.stderr)
-        print("Hint: not required for --attach-only or --payload modes.", file=sys.stderr)
-        sys.exit(1)
 
     print("=" * 70)
     print(f"Gathering installation information for server:   {SERVER_NAME}")
@@ -2258,35 +2464,9 @@ def main():
         print(f"   ✓ Server ID: {server_id}")
         print()
 
-        # Check before either poweroff or the later SSH-key/install work.  In
-        # particular, a protected install must not create an account SSH key
-        # before it is refused.
-        if _protected_server_policy_configured() and not getattr(args, "dry_run", False):
-            server_record = servers[0] if isinstance(servers[0], dict) else {}
-            _ensure_server_mutation_allowed(
-                server_id,
-                server_record.get("name"),
-                "Netcup server poweroff/install",
-            )
-
-        if getattr(args, "poweroff", False):
-            print("=" * 70)
-            print("POWER OFF SERVER")
-            print("=" * 70)
-            if getattr(args, "dry_run", False):
-                print(f"[dry-run] Would PATCH /api/v1/servers/{server_id} state=OFF stateOption=POWEROFF")
-                return
-            result = client.patch(
-                f"/api/v1/servers/{server_id}",
-                {"state": "OFF"},
-                params={"stateOption": "POWEROFF"},
-            )
-            print(json.dumps(_redact_for_log(result), indent=2))
-            return
-
-        # 2. Get server details (for disk info and hostname)
-        print("2. Getting server details...")
-        server_details = client.get(f"/api/v1/servers/{server_id}")
+        # 2. Use the already validated server details (target resolution ran
+        # before controller-key work and intentionally avoids a duplicate GET).
+        print("2. Using validated server details...")
         # Example response:
         # {
         #   "id": 804027,
@@ -2455,6 +2635,8 @@ def main():
             "diskName": disk_dev,
             "sshKeyIds": ssh_key_ids,
         }
+        if ssh_key_ids is None:
+            installation_payload.pop("sshKeyIds")
 
         # Expand placeholders only for the API request, while keeping the
         # payload safe-to-print/save.
@@ -2525,7 +2707,7 @@ def main():
                 print(f"  python3 monitor-task.py {task_uuid}")
                 if getattr(args, "monitor", False) or is_noninteractive(args):
                     ssh_identity = getattr(args, "ssh_identity_file", None)
-                    monitor_task(
+                    task_result = monitor_task(
                         client,
                         task_uuid,
                         poll_interval=args.poll_interval,
@@ -2534,6 +2716,7 @@ def main():
                         ssh_identity_file=ssh_identity,
                         attach_bootstrap=getattr(args, "attach_bootstrap", True),
                     )
+                    _apply_local_controller_retention(ssh_identity, task_result)
         except HTTPStatusError as e:
             status = getattr(e, "status", None)
             if status == 409:
@@ -2552,7 +2735,7 @@ def main():
 
                         if getattr(args, "monitor", False) or is_noninteractive(args):
                             ssh_identity = getattr(args, "ssh_identity_file", None)
-                            monitor_task(
+                            task_result = monitor_task(
                                 client,
                                 task_uuid,
                                 poll_interval=args.poll_interval,
@@ -2561,6 +2744,7 @@ def main():
                                 ssh_identity_file=ssh_identity,
                                 attach_bootstrap=getattr(args, "attach_bootstrap", True),
                             )
+                            _apply_local_controller_retention(ssh_identity, task_result)
                             return
 
                         print("Monitor progress with:")

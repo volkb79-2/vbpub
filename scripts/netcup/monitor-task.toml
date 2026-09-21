@@ -6,9 +6,5 @@
 # There is no Python-side fallback for any of these. CLI flags (--poll)
 # override this per-run.
 
-[api]
-base_url = "https://www.servercontrolpanel.de/scp-core"
-keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
-
 [monitor]
 poll_interval = 5.0

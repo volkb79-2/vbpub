@@ -3,16 +3,10 @@
 the authenticated HTTP client, and the small settings/.env helpers both
 `install-host.py`, `monitor-task.py`, and `scp-api.py` need.
 
-Extracted 2026-09-09 from install-host.py (DRY, per operator
-request) -- not a redesign, a straight lift. Preserves that file's own
-idiom of simple, mutable module-level globals (BASE_URL/KEYCLOAK_URL/
-DEBUG) rather than dependency injection: every importer must set
-`netcup_scp_client.BASE_URL` and `netcup_scp_client.KEYCLOAK_URL` (from its
-own loaded settings) before constructing a client or calling
-get_access_token()/run_device_code_login(); `DEBUG` defaults to False and
-may be set the same way. This mirrors exactly how the pre-extraction
-single-file script already used these three names -- see each importer's
-own top-level code for where it sets them.
+The frontends use :func:`configure_api` so the API endpoint configuration is
+loaded once from ``netcup.toml``. The module-level names remain as a small
+compatibility seam for tests and older callers, but frontends no longer copy
+the configuration setup independently.
 
 Not a pip-installable package: sits alongside its importers in
 scripts/netcup/ and is found via Python's default "importing script's own
@@ -40,6 +34,24 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 DEBUG = False
 BASE_URL: Optional[str] = None
 KEYCLOAK_URL: Optional[str] = None
+
+API_SETTINGS_PATH = Path(__file__).resolve().parent / "netcup.toml"
+
+
+def load_api_settings(path: Optional[Path] = None) -> Dict[str, Any]:
+    """Load the single shared Netcup API configuration file."""
+    return _load_settings(path or API_SETTINGS_PATH, {"api.base_url", "api.keycloak_url"})
+
+
+def configure_api(path: Optional[Path] = None, *, load_environment: bool = True) -> Dict[str, Any]:
+    """Configure the shared client from ``netcup.toml`` and the local env."""
+    if load_environment:
+        load_env_file()
+    settings = load_api_settings(path)
+    global BASE_URL, KEYCLOAK_URL
+    BASE_URL = settings["api.base_url"]
+    KEYCLOAK_URL = settings["api.keycloak_url"]
+    return settings
 
 
 def reverse_dns(ip: str) -> Optional[str]:
@@ -583,57 +595,61 @@ def run_device_code_login(env_path: Path) -> int:
     print("2. Waiting for you to complete login (Ctrl-C to cancel)...")
 
     deadline = time.monotonic() + expires_in
-    while time.monotonic() < deadline:
-        time.sleep(interval)
-        token_req = urllib.request.Request(
-            f"{KEYCLOAK_URL}/token",
-            data=urllib.parse.urlencode(
-                {
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    "device_code": device_code,
-                    "client_id": "scp",
-                }
-            ).encode("utf-8"),
-            method="POST",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        try:
-            with urllib.request.urlopen(token_req, timeout=30) as resp:
-                token_response = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as e:
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(interval)
+            token_req = urllib.request.Request(
+                f"{KEYCLOAK_URL}/token",
+                data=urllib.parse.urlencode(
+                    {
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        "device_code": device_code,
+                        "client_id": "scp",
+                    }
+                ).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
             try:
-                body = json.loads(e.read().decode("utf-8", errors="replace") or "{}")
-            except json.JSONDecodeError:
-                # Non-JSON error body (e.g. an HTML gateway-error page) -
-                # still a clean failure, not a crash.
-                body = {}
-            if not isinstance(body, dict):
-                body = {}
-            error = body.get("error")
-            if error == "authorization_pending":
-                continue
-            if error == "slow_down":
-                interval += 5
-                continue
-            print(f"❌ ERROR: {error or e}: {body.get('error_description', '')}", file=sys.stderr)
-            return 1
-        except urllib.error.URLError as e:
-            print(f"❌ ERROR: token poll network error: {e}", file=sys.stderr)
-            return 1
-        except json.JSONDecodeError as e:
-            print(f"❌ ERROR: token response was not valid JSON: {e}", file=sys.stderr)
-            return 1
+                with urllib.request.urlopen(token_req, timeout=30) as resp:
+                    token_response = json.loads(resp.read().decode("utf-8", errors="replace"))
+            except urllib.error.HTTPError as e:
+                try:
+                    body = json.loads(e.read().decode("utf-8", errors="replace") or "{}")
+                except json.JSONDecodeError:
+                    # Non-JSON error body (e.g. an HTML gateway-error page) -
+                    # still a clean failure, not a crash.
+                    body = {}
+                if not isinstance(body, dict):
+                    body = {}
+                error = body.get("error")
+                if error == "authorization_pending":
+                    continue
+                if error == "slow_down":
+                    interval += 5
+                    continue
+                print(f"❌ ERROR: {error or e}: {body.get('error_description', '')}", file=sys.stderr)
+                return 1
+            except urllib.error.URLError as e:
+                print(f"❌ ERROR: token poll network error: {e}", file=sys.stderr)
+                return 1
+            except json.JSONDecodeError as e:
+                print(f"❌ ERROR: token response was not valid JSON: {e}", file=sys.stderr)
+                return 1
 
-        if not isinstance(token_response, dict):
-            print("❌ ERROR: token response was not a JSON object", file=sys.stderr)
-            return 1
-        refresh_token = token_response.get("refresh_token")
-        if not isinstance(refresh_token, str) or not refresh_token.strip():
-            print("❌ ERROR: token response had no refresh_token", file=sys.stderr)
-            return 1
-        _write_env_file(env_path, {"NETCUP_SCP_API_REFRESH_TOKEN": refresh_token})
-        print(f"✓ Logged in. Wrote NETCUP_SCP_API_REFRESH_TOKEN to {env_path}")
-        return 0
+            if not isinstance(token_response, dict):
+                print("❌ ERROR: token response was not a JSON object", file=sys.stderr)
+                return 1
+            refresh_token = token_response.get("refresh_token")
+            if not isinstance(refresh_token, str) or not refresh_token.strip():
+                print("❌ ERROR: token response had no refresh_token", file=sys.stderr)
+                return 1
+            _write_env_file(env_path, {"NETCUP_SCP_API_REFRESH_TOKEN": refresh_token})
+            print(f"✓ Logged in. Wrote NETCUP_SCP_API_REFRESH_TOKEN to {env_path}")
+            return 0
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.", file=sys.stderr)
+        return 130
 
     print("❌ ERROR: login timed out waiting for browser confirmation", file=sys.stderr)
     return 1

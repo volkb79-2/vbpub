@@ -54,11 +54,11 @@ merged in last (wins over the named vars above):
   SSH:       CONTROLLER_SSH_PUBKEY - a one-line authorized_keys entry for the
              controller's own ephemeral, per-host bootstrap key. Installed as
              the very first stage1 step (before this key's own registration
-             with the provider is even guaranteed to have taken effect) and
-             removed again as the last stage2 step - no further controller
-             access is needed once the install is done. Leave unset to skip
-             entirely; the operator's own persistent access key is never
-             touched by this either way.
+             with the provider is even guaranteed to have taken effect).
+             RETAIN_CONTROLLER_SSH_KEY=yes leaves it after successful stage2;
+             the default no removes only this exact line. Leave the pubkey
+             unset to skip entirely; the operator's own persistent access key
+             is never touched by this either way.
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
 
   DRY_RUN=yes    — pass --dry-run through to the installer
@@ -131,6 +131,7 @@ _BOOL_FIELDS = {
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
     "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
+    "RETAIN_CONTROLLER_SSH_KEY": "retain_controller_ssh_key",
 }
 
 

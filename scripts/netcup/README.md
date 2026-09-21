@@ -5,13 +5,14 @@ Server Control Panel API and feed them the `debian-install-v2` bootstrap.
 
 ## First-time setup
 
-From this directory, create the local secret file and set the target server
-name before logging in:
+From this directory, create the local secret file. A target is optional in an
+interactive terminal: the installer can ask the authenticated API for a
+server list later.
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-vi .env                               # set NETCUP_SCP_API_SERVER_NAME
+vi .env                               # optional target/notification settings
 ./scp-api.py login
 ```
 
@@ -34,7 +35,7 @@ silently remove protection. The `.env` writer enforces mode `0600`.
 
 The guarded server mutations are ISO attach/detach, rescue deactivation,
 snapshot creation, task cancellation, firewall assignment, power operations,
-and Debian image installation/poweroff. Read-only queries, snapshot `dryrun`,
+and Debian image installation. Read-only queries, snapshot `dryrun`,
 and installer `--dry-run` remain available. Account-level user-ISO upload and
 firewall-policy create/PUT are not server-targeted; applying a policy with
 `firewall SERVER set` is guarded. Task cancellation needs
@@ -56,12 +57,13 @@ interactive install still resolves the current Debian UEFI image every time.
 ./scp-api.py servers
 ./scp-api.py imageflavours --filter debian
 
-# Optional local defaults wizard; requires NETCUP_SCP_API_SERVER_NAME in .env.
+# Optional local defaults wizard; it needs a configured target.
 ./install-host.py configure
 
-# Preview the gathered payload and account-key decision. This does not call a
-# mutating Netcup API, but it may create the local controller key used for SSH
-# monitoring. It does not save target-host.jsonc.
+# Preview the gathered payload and account-key decision. Authentication,
+# target lookup, and the protected-server check happen before the local
+# controller key is reused/generated. No mutating API call is made and no
+# target-host.jsonc is saved.
 ./install-host.py --dry-run
 
 # Gather again, save target-host.jsonc, ask for final confirmation, install,
@@ -71,11 +73,17 @@ interactive install still resolves the current Debian UEFI image every time.
 
 The installer writes `target-host.jsonc` before its final install confirmation
 so the exact request can be reviewed or reused. It is local and gitignored.
-Selecting “create a new account key” registers that Netcup account key during
-the gathering step, before the final confirmation; cancelling afterwards does
-not undo that registration. Select an existing key, or use `--ssh-key-id`, to
-avoid creating one. The separate local controller identity is generated when
-needed for the bootstrap/monitoring path and is not the account key.
+Existing Netcup account keys are persistent operator keys: choose `all`,
+`none`, or a comma-separated selection, or repeat `--ssh-key-id`. The
+installer never creates an account key. The separate local controller
+identity is generated/reused for bootstrap monitoring and is never registered
+in the Netcup account.
+
+The successful-install controller-key policy defaults to host `remove`, local
+`retain`. The other supported combinations are host `remove`, local `remove`,
+and host `retain`, local `retain`. Host `retain`, local `remove` is rejected.
+Use `--host-controller-key` and `--local-controller-key`; local removal is
+performed only after the monitor has observed `stage2_done`.
 
 If the dry-run looks correct, the second command can be made non-interactive:
 
@@ -164,22 +172,24 @@ task after the installer has exited, use the standalone task watcher:
 Avoid `--raw` unless the response is being handled as a secret: task payloads
 can contain values such as the generated root password.
 
-During the interactive key step, existing Netcup account keys are listed and
-the first one is the default. Choosing one uses it without registering a new
-account key. To pin an existing key in a direct payload run, pass its ID (and
-repeat the option for multiple IDs):
+During the interactive key step, existing Netcup account keys are listed.
+Enter selects all, `none` selects no persistent account key, and a
+comma-separated list selects specific entries. Choosing keys uses them without
+registering a new account key. To pin an existing key in a direct payload run,
+pass its ID (and repeat the option for multiple IDs):
 
 ```bash
 python3 install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
 ```
 
-The local `--ssh-identity-file` is a separate ephemeral controller key used
-for bootstrap access and monitoring and is still generated when needed;
-`--ssh-key-id` refers to a key already registered in the Netcup account. If no
-account key exists, or the interactive create option is selected, the new
-account key is registered during gathering, before the final confirmation.
+The local `--ssh-identity-file` is a separate controller key used for
+bootstrap access and monitoring. If it is omitted, an existing valid key whose
+filename contains the selected hostname/nickname is reused first, including
+older dated installer filenames; only then is a new key generated. An
+explicit missing or invalid path is an error. `--ssh-key-id` refers only to a
+key already registered in the Netcup account.
 
-`install-host.py --help` documents the payload, attach-only, poweroff,
+`install-host.py --help` documents the payload, attach-only,
 and wizard modes. `scp-api.py` provides read-only account/server
 inspection and explicitly gated reversible actions. Read-only resource commands
 enumerate every server when no ID is supplied, because the SCP API exposes
