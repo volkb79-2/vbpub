@@ -6,18 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
-
-ROOT_CMRU_ARTIFACTS = (
-    "cmru.orchestration.sample.toml",
-    "cmru.orchestration.toml",
-    "cmru.project.sample.toml",
-)
+try:
+    from .project_fixture import copy_project_fixture
+except ImportError:  # direct ``python tools/coverage_canary.py`` execution
+    from project_fixture import copy_project_fixture
 EXPECTED_REASON = "Required test coverage of 100% not reached"
 
 
@@ -36,17 +33,6 @@ def _directory(path: Path, label: str) -> Path:
     if not resolved.is_dir() or resolved.is_symlink():
         raise ValueError(f"{label} must be a real directory: {path}")
     return resolved
-
-
-def _copy_project(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
-    for name in ROOT_CMRU_ARTIFACTS:
-        artifact = repo_root / name
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required root CMRU artifact is not a real file: {artifact}")
-        shutil.copy2(artifact, workspace / name)
-    copied = workspace / project_root.name
-    shutil.copytree(project_root, copied, symlinks=True)
-    return copied
 
 
 def _run(argv: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -88,10 +74,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         raise ValueError(f"--target must be a real source file: {target}")
 
     with tempfile.TemporaryDirectory(prefix="cmru-coverage-canary-") as temporary:
-        copied = _copy_project(repo_root=repo_root, project_root=project_root, workspace=Path(temporary))
+        copied = copy_project_fixture(
+            repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
+        )
         control = _run(test_argv, cwd=copied)
         if control.returncode != 0:
-            raise RuntimeError(f"known-good canary control failed with exit {control.returncode}")
+            raise RuntimeError(
+                f"known-good canary control failed with exit {control.returncode}: "
+                f"{control.stdout[-2000:]}"
+            )
         target_copy = copied / target
         target_copy.write_text(
             target_copy.read_text(encoding="utf-8")
