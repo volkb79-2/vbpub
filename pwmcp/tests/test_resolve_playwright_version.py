@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import subprocess
 import sys
 import urllib.error
@@ -24,6 +25,77 @@ def _payload() -> dict:
         "release": "1.0.0-r1",
         "playwright": {"python": "1.0.0", "protocol": "1.0"},
     }
+
+
+def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
+    defaults = tmp_path / "defaults"
+    override = tmp_path / "override"
+    bake = tmp_path / "bake"
+    dockerfile = tmp_path / "Dockerfile"
+    package = tmp_path / "package.json"
+    lock = tmp_path / "package-lock.json"
+    contract = tmp_path / "contract.json"
+    release_vars = tmp_path / "cmru.vars"
+    defaults.write_text(
+        'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
+        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
+    )
+    override.write_text(defaults.read_text(), encoding="utf-8")
+    bake.write_text(
+        'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
+        'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
+        'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
+        'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
+        'variable "MCP_PROXY_VERSION" { default = "6.7.14" }\n'
+        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n', encoding="utf-8"
+    )
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.63.0\n"
+        "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
+        "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
+        "ARG MCP_PROXY_VERSION=6.7.14\n"
+        "ARG LIGHTHOUSE_VERSION=13.4.1\n", encoding="utf-8"
+    )
+    dependencies = {
+        "@modelcontextprotocol/sdk": "1.30.0",
+        "chrome-launcher": "1.2.1",
+        "lighthouse": "13.4.1",
+    }
+    package.write_text(json.dumps({"dependencies": dependencies}), encoding="utf-8")
+    lock.write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {
+            "": {"dependencies": dependencies},
+            **{f"node_modules/{name}": {"version": version}
+               for name, version in dependencies.items()},
+        },
+    }), encoding="utf-8")
+    contract.write_text(json.dumps({
+        "release": "1.63.0-r3",
+        "playwright": {"python": "1.63.0", "protocol": "1.63"},
+    }), encoding="utf-8")
+    return {
+        "defaults": defaults, "override": override, "bake": bake,
+        "dockerfile": dockerfile, "package": package, "lock": lock,
+        "contract": contract, "release_vars": release_vars,
+    }
+
+
+def _bind_projection_fixture(
+    monkeypatch: pytest.MonkeyPatch, files: dict[str, Path]
+) -> None:
+    for name, path in files.items():
+        constant = {
+            "defaults": "DEFAULTS_FILE",
+            "override": "TOML_OVERRIDE_FILE",
+            "bake": "BAKE_FILE",
+            "dockerfile": "DOCKERFILE",
+            "package": "LIGHTHOUSE_PACKAGE_FILE",
+            "lock": "LIGHTHOUSE_LOCK_FILE",
+            "contract": "CONTRACT_FILE",
+            "release_vars": "RELEASE_VARS_FILE",
+        }[name]
+        monkeypatch.setattr(resolver, constant, path)
 
 
 def test_resolver_uses_newest_version_all_upstreams_can_supply() -> None:
@@ -209,6 +281,75 @@ def test_fetch_upstream_payload_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolver.fetch_mcr_versions("noble") == {"1.2.3"}
 
 
+@pytest.mark.parametrize("value", [None, ""])
+def test_parse_release_time_ignores_missing_metadata(value: object) -> None:
+    assert resolver._parse_release_time(value, "test") is None
+
+
+def test_parse_release_time_normalizes_naive_and_aware_values() -> None:
+    naive = resolver._parse_release_time("2026-01-01T00:00:00", "test")
+    aware = resolver._parse_release_time("2026-01-01T01:00:00+01:00", "test")
+    expected = resolver.datetime(2026, 1, 1, tzinfo=resolver.timezone.utc)
+    assert naive == expected
+    assert aware == expected
+
+
+def test_parse_release_time_rejects_invalid_metadata() -> None:
+    with pytest.raises(SystemExit):
+        resolver._parse_release_time("not-a-time", "test")
+
+
+def test_fetch_npm_release_times_filters_nonstable_and_missing_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *_args: {
+        "time": {
+            "created": "2026-01-01T00:00:00Z",
+            "1.2.3": "2026-01-02T00:00:00Z",
+            "1.2.4-beta": "2026-01-03T00:00:00Z",
+            "1.2.5": None,
+        },
+    })
+    assert set(resolver.fetch_npm_release_times()) == {"1.2.3"}
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *_args: {"time": []})
+    with pytest.raises(SystemExit):
+        resolver.fetch_npm_release_times()
+
+
+def test_fetch_pypi_release_times_handles_file_metadata_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *_args: {
+        "releases": {
+            "1.2.3": [
+                {"upload_time_iso_8601": "2026-01-01T00:00:00Z"},
+                {"upload_time": "2026-01-02T00:00:00Z"},
+                "not-a-file",
+            ],
+            "1.2.4-beta": [{}],
+            "1.2.5": [],
+            "1.2.6": "not-a-file-list",
+            "1.2.7": [{}],
+        },
+    })
+    assert set(resolver.fetch_pypi_release_times()) == {"1.2.3"}
+    monkeypatch.setattr(resolver, "_fetch_json", lambda *_args: {"releases": []})
+    with pytest.raises(SystemExit):
+        resolver.fetch_pypi_release_times()
+
+
+def test_age_filter_refuses_when_no_version_is_old_enough() -> None:
+    cutoff = resolver.datetime(2026, 1, 1, tzinfo=resolver.timezone.utc)
+    with pytest.raises(SystemExit):
+        resolver._filter_by_age(
+            {"1.2.3"},
+            {"1.2.3": resolver.datetime(2026, 1, 2, tzinfo=resolver.timezone.utc)},
+            cutoff,
+            "npm",
+            14,
+        )
+
+
 @pytest.mark.parametrize(
     ("function", "payload", "message"),
     [
@@ -296,6 +437,10 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
 
+    toml.write_text('[pwmcp.unified.image]\ntag = "old-r1"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_toml_j2(toml, "1.2.3", "1.2.3-r4")
+
     bake.write_text('variable "PLAYWRIGHT_VERSION" { default = "old" }\n', encoding="utf-8")
     with pytest.raises(SystemExit):
         resolver.update_bake_hcl(bake, "1.2.3", "1.2.3-r4")
@@ -314,6 +459,15 @@ def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.Monk
     resolver.write_release_vars("1.2.3", "noble", "1.2.3-r4", "0.0.82", "1.9.0", "6.7.18", "13.4.0")
     assert "PLAYWRIGHT_VERSION=1.2.3" in output.read_text()
     assert "GHCR_PACKAGE_NAMES=pwmcp" in output.read_text()
+
+
+def test_projection_helpers_refuse_ambiguous_values(tmp_path: Path) -> None:
+    path = tmp_path / "projection"
+    path.write_text('value = "one"\nvalue = "two"\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver._read_single_value(path, r'value\s*=\s*"([^"]*)"', "value")
+    with pytest.raises(SystemExit):
+        resolver._assert_same("version", {"a": "1.0.0", "b": "2.0.0"})
 
 
 def test_read_current_distro_requires_authoritative_field(
@@ -443,3 +597,62 @@ def test_check_committed_inputs_validates_projection_and_writes_vars(
     resolver.main(["--check"])
 
     assert "PWMCP_VERSION=1.63.0-r3" in release_vars.read_text()
+
+
+def test_check_committed_inputs_refuses_contract_and_lock_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    good_contract = json.loads(files["contract"].read_text())
+
+    for bad_contract in (
+        {},
+        {"release": "1.63.0-r3", "playwright": []},
+        {"release": "1.63.0-r3", "playwright": {"python": "1.61.0", "protocol": "1.63"}},
+        {"release": "1.63.0-r3", "playwright": {"python": "1.63.0", "protocol": "1.61"}},
+    ):
+        files["contract"].write_text(json.dumps(bad_contract), encoding="utf-8")
+        with pytest.raises(SystemExit):
+            resolver.main(["--check"])
+    files["contract"].write_text(json.dumps(good_contract), encoding="utf-8")
+
+    package = json.loads(files["package"].read_text())
+    lock = json.loads(files["lock"].read_text())
+    package["dependencies"]["lighthouse"] = "^13.4.1"
+    files["package"].write_text(json.dumps(package), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    package["dependencies"]["lighthouse"] = "13.4.1"
+    files["package"].write_text(json.dumps(package), encoding="utf-8")
+
+    lock["packages"][""]["dependencies"]["lighthouse"] = "13.4.0"
+    files["lock"].write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    lock["packages"][""]["dependencies"]["lighthouse"] = "13.4.1"
+    lock["packages"]["node_modules/lighthouse"]["version"] = "13.4.0"
+    files["lock"].write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+
+    lock["packages"]["node_modules/lighthouse"]["version"] = "13.4.1"
+    lock["packages"][""]["dependencies"] = None
+    files["lock"].write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+
+    lock["packages"][""]["dependencies"] = package["dependencies"]
+    files["lock"].write_text(json.dumps(lock), encoding="utf-8")
+    files["override"].unlink()
+    resolver.main(["--check"])
+
+
+def test_refresh_rejects_negative_age_window() -> None:
+    with pytest.raises(SystemExit):
+        resolver.refresh_upstream_projection(-1)
+
+
+def test_resolver_module_entrypoint_runs_committed_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["resolve-playwright-version.py", "--check"])
+    runpy.run_path(str(MODULE_PATH), run_name="__main__")
