@@ -123,6 +123,13 @@ def test_config_project_shape_errors_are_reached_from_complete_documents(tmp_pat
         assert diagnostic in capsys.readouterr().err
 
 
+def test_config_accepts_a_valid_project_without_optional_metadata(tmp_path):
+    path = tmp_path / "cmru.toml"
+    path.write_text(project_toml(), encoding="utf-8")
+    parsed, _github, _targets = config._parse_project_document(path)
+    assert parsed.name == "demo"
+
+
 def test_config_orchestration_resolution_refuses_ambiguity_and_accepts_shared_facts(tmp_path):
     project = tmp_path / "demo"; project.mkdir()
     (project / "cmru.toml").write_text(central_project_toml(), encoding="utf-8")

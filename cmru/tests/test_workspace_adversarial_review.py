@@ -128,6 +128,7 @@ def test_create_workspace_removes_shared_allocation_when_reset_fails(monkeypatch
     with pytest.raises(RuntimeError, match="git reset --hard main failed"):
         transaction.create_workspace(tmp_path, base="main", purpose="build")
     assert calls[0]["check"] is False
+    assert calls[0]["text"] is True
     assert removed == [(context, {"force": True})]
 
     shared.remove_workspace = lambda value, **kwargs: (_ for _ in ()).throw(RuntimeError("cleanup"))
