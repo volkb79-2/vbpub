@@ -117,6 +117,8 @@ The release environment declares the same builder identity for direct wrapper
 use and CMRU use:
 
 ```toml
+schema_version = 1
+
 [env]
 BUILDX_BUILDER = "mdt-managed"
 BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"

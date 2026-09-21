@@ -1,7 +1,8 @@
 # PWMCP coverage and upstream compatibility review
 
-Date: 2026-09-20; implementation update: 2026-09-21
+Date: 2026-09-20; implementation updates: 2026-09-21
 Reviewed baseline: `a4bba60d`; implementation worktree: `test/pwmcp-coverage-20260920`
+Current implementation worktree: `fix/pwmcp-digest-pin-20260921`
 Reviewer: Codex
 
 ## Scope
@@ -45,9 +46,18 @@ committed npm lockfile, installed with `npm ci --omit=dev`. The active transport
 contract is Streamable HTTP at `/mcp`; the legacy `/sse` commands remain only as
 commented deprecated references, and the acceptance smoke checks both sides of
 that contract. Assay R1 and R2 are configured for whole-target 100% branch
-coverage. External `tester-unified` R1 has now passed at commit `7baef450`
-with 100% whole-target branch coverage; R2 mutation evidence and the image/live
-smoke remain pending.
+coverage. The earlier R1 passed at `7baef450`; the later R2 at `0f3f0406`
+killed all 76 mutation candidates and retained 100% branch coverage. A final
+R1/R2 pair is being rerun after the managed-builder wrapper change at
+`0d2fb132`.
+
+The old PWMCP-specific `docker-container` builder was also removed. It was
+being killed with exit 137 under host memory pressure, which surfaced to the
+client as BuildKit EOF. PWMCP now verifies the persistent host-managed
+`mdt-managed` remote at `unix:///run/mdt-buildkitd/buildkitd.sock` and refuses
+to create a private worker. A direct wrapper build at `0d2fb132` completed
+successfully through `mdt-buildkitd` in `dev-buildkitd.slice`; the live runtime
+smoke remains the final acceptance item.
 
 ## Findings
 
@@ -132,10 +142,12 @@ branches. The missing behavior is concentrated in:
 - retry, malformed upstream payload, tag selection, release-number, file
   rewrite, and `main()` paths in the resolver.
 
-These are real release and runtime decisions, so the coverage expansion will
-add behavioral tests for both the successful and refusing directions. The
-Assay whole-target contract remains in force; narrowing the target list would
-hide gaps rather than fix them.
+These are real release and runtime decisions, so the coverage expansion added
+behavioral tests for both the successful and refusing directions. The Assay
+whole-target contract remains in force; narrowing the target list would hide
+gaps rather than fix them. The builder tests now cover declaration loading,
+remote-driver and endpoint identity, registration failure, bootstrap failure,
+and Bake command construction.
 
 ### 5. The resolver has two fail-open hardening candidates
 
@@ -149,14 +161,15 @@ selected MCR tag family.
 These are now explicit refusal paths in the compatibility hardening change,
 with tests that construct a missing-key template and assert that the resolver
 names the missing input. The external R1 gate confirmed the success and refusal
-branches, including the digest projection checks.
+branches, including the digest projection checks. The direct dependency lockfile
+and `npm ci --omit=dev` change close the Lighthouse reproducibility issue.
 
 The vendored Lighthouse MCP package had a related reproducibility issue:
-`@modelcontextprotocol/sdk` and `chrome-launcher` use caret ranges and the
-Dockerfile runs `npm install --production` without a committed lockfile. A
-modernization pass should either commit and install the lockfile or make the
-resolved versions explicit, then include the resulting MCP protocol behavior
-in the container acceptance lane.
+`@modelcontextprotocol/sdk` and `chrome-launcher` used caret ranges and the
+Dockerfile ran `npm install --production` without a committed lockfile. The
+modernization pass now declares those direct versions, commits the lockfile,
+and installs with `npm ci --omit=dev`; the resulting protocol behavior remains
+covered by the live container acceptance lane.
 
 ## Revised modernization plan
 
