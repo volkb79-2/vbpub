@@ -97,7 +97,7 @@ def test_cli_contract_prints_keys_in_sorted_order(tmp_path: Path, capsys: pytest
     path = tmp_path / "contract.json"
     path.write_text(json.dumps(_payload()), encoding="utf-8")
     cli_module.main(["contract", "--contract", str(path)])
-    assert capsys.readouterr().out.splitlines()[1].strip() == '"endpoints": {'
+    assert capsys.readouterr().out.splitlines()[1].strip() == '"default_lease_seconds": 10,'
 
 
 def test_cli_doctor_reports_verified_client(

@@ -30,7 +30,7 @@ def _config() -> build_push.BuilderConfig:
 
 def test_log_and_fail_flush_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
-    monkeypatch.setattr(build_push, "print", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: calls.append(kwargs))
     build_push.log("message")
     with pytest.raises(SystemExit):
         build_push.fail("failure")
