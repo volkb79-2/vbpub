@@ -46,6 +46,7 @@ class ProgressRenderer:
         stream: TextIO | None = None,
         color: bool | None = None,
         level: LogLevel | str = LogLevel.INFO,
+        json_mode: bool = False,
     ) -> None:
         requested = ProgressMode.parse(mode) if isinstance(mode, str) else mode
         level = LogLevel.parse(level) if isinstance(level, str) else level
@@ -61,6 +62,8 @@ class ProgressRenderer:
             self.mode = ProgressMode.TTY if _is_tty(stream) else ProgressMode.PLAIN
         else:
             self.mode = requested
+        if json_mode and self.mode is ProgressMode.RAWJSON:
+            self.mode = ProgressMode.QUIET
         if level.numeric > LogLevel.INFO.numeric:
             self.mode = ProgressMode.QUIET
         self._active = False

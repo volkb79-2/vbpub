@@ -48,7 +48,14 @@ persistent default.
 
 The logging adapter accepts ordinary `logging.Logger` records, so a consumer
 can retain its existing logging calls instead of replacing them with a new
-logging API.
+logging API. Installation defaults to a command-named logger rather than the
+root logger and can be scoped with `logging_context`, so a short-lived CLI
+does not permanently change process-wide logging configuration.
+
+The catalog is deliberately paired with parser registration. The helper
+discovers subparsers and refuses a catalog/parser mismatch; the consumer still
+chooses the public vocabulary and descriptions, because those are product
+decisions rather than parser mechanics.
 
 ## Make long operations automation-safe
 
@@ -58,3 +65,11 @@ interactive redraw only for a TTY and plain newline events otherwise;
 start threads, own a signal handler, or decide when an operation is complete:
 the owning command retains control of retries, cancellation, and state
 transitions.
+
+## Markdown is a documentation format
+
+`HelpCatalog.render(output_format="markdown")` renders the same verb metadata
+and common options used by terminal help into a README-friendly page. This
+avoids a second hand-written command list in documentation. It is not the
+default terminal format: shell help stays plain text, while generated Markdown
+is intended for repository docs and operator guides.

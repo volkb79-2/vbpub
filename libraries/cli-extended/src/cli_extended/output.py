@@ -6,7 +6,8 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from enum import Enum
 from typing import Any, TextIO
 
@@ -235,6 +236,9 @@ class CliLoggingHandler(logging.Handler):
     def __init__(self, output: CliOutput) -> None:
         super().__init__()
         self.output = output
+        self._owner_logger: logging.Logger | None = None
+        self._previous_level: int | None = None
+        self._previous_propagate: bool | None = None
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.levelno >= logging.ERROR:
@@ -251,10 +255,64 @@ class CliLoggingHandler(logging.Handler):
 def install_logging(
     output: CliOutput, logger: logging.Logger | None = None
 ) -> CliLoggingHandler:
-    """Install one contract-compatible handler on an application logger."""
+    """Install one handler on a bounded, named application logger.
 
-    logger = logger if logger is not None else logging.getLogger()
+    With no logger supplied, the command name is used instead of the root
+    logger. The selected logger is temporarily made verbose enough for
+    ``CliOutput`` to apply the CLI's level policy, and propagation is disabled
+    to prevent duplicate root-handler output. Call :func:`uninstall_logging`
+    when the invocation ends.
+    """
+
+    logger = (
+        logger
+        if logger is not None
+        else logging.getLogger(output.identity.command_name)
+    )
+    for existing in logger.handlers:
+        if isinstance(existing, CliLoggingHandler) and existing.output is output:
+            return existing
     handler = CliLoggingHandler(output)
+    handler._owner_logger = logger
+    handler._previous_level = logger.level
+    handler._previous_propagate = logger.propagate
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
+    logger.propagate = False
     return handler
+
+
+def uninstall_logging(handler: CliLoggingHandler) -> None:
+    """Remove a handler installed by :func:`install_logging` and restore state."""
+
+    logger = handler._owner_logger
+    if logger is not None:
+        logger.removeHandler(handler)
+        if handler._previous_level is not None:
+            logger.setLevel(handler._previous_level)
+        if handler._previous_propagate is not None:
+            logger.propagate = handler._previous_propagate
+    handler.close()
+
+
+@contextmanager
+def logging_context(
+    output: CliOutput, logger: logging.Logger | None = None
+) -> Iterator[CliLoggingHandler]:
+    """Install contract logging for a bounded invocation and clean it up."""
+
+    logger = (
+        logger
+        if logger is not None
+        else logging.getLogger(output.identity.command_name)
+    )
+    already_installed = any(
+        isinstance(existing, CliLoggingHandler) and existing.output is output
+        for existing in logger.handlers
+    )
+    handler = install_logging(output, logger)
+    try:
+        yield handler
+    finally:
+        if not already_installed:
+            uninstall_logging(handler)

@@ -80,18 +80,27 @@ raise SystemExit(
         parser,
         {"status": handle_status},
         identity=identity,
-        command_parsers={"status": status},
     )
 )
 ```
 
 When called for a `top_level=True` parser, `add_common_options` also adds its
 standard option metadata to the `HelpCatalog`; the grouped top-level help does
-not require a second hand-maintained copy of those options.
+not require a second hand-maintained copy of those options. `run_cli`
+discovers the subparsers for `help VERB` and stream routing and validates that
+the catalog and parser contain the same verbs. The optional
+`command_parsers=` argument is available only when a custom wrapper parser is
+not reachable through the ordinary top-level subparser tree.
+
+For generated documentation, use `catalog.render(output_format="markdown")`.
+Terminal `--help` remains plain text so it stays readable in a shell and when
+redirected.
 
 Callers that already use a project-local parser can adopt the smaller pieces
 individually: `CliIdentity`, `CliOutput`, `ProgressRenderer`,
-`install_logging`, and `redact_value` do not require the dispatcher.
+`install_logging`, `logging_context`, and `redact_value` do not require the
+dispatcher. Logging is installed on the command-named logger by default, not
+the root logger, and `logging_context` restores the logger state afterward.
 
 The observable contract is documented in
 [`docs/CLI-STANDARD.md`](../../docs/CLI-STANDARD.md). The design rationale and

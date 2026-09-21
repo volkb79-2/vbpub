@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import traceback
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -61,6 +60,23 @@ class VerbGroup(str, Enum):
     MAINTENANCE = "MAINTENANCE"
 
 
+class HelpFormat(str, Enum):
+    """Supported generated usage-document formats."""
+
+    TEXT = "text"
+    MARKDOWN = "markdown"
+
+    @classmethod
+    def parse(cls, value: str) -> HelpFormat:
+        try:
+            return cls(value.lower())
+        except ValueError as exc:
+            allowed = ", ".join(item.value for item in cls)
+            raise ValueError(
+                f"invalid help format {value!r}; expected one of: {allowed}"
+            ) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class VerbSpec:
     """One public verb rendered in the grouped top-level help."""
@@ -105,7 +121,19 @@ class HelpCatalog:
         )
         self.global_options += additions
 
-    def render(self, *, width: int | None = None) -> str:
+    def render(
+        self,
+        *,
+        width: int | None = None,
+        output_format: HelpFormat | str = HelpFormat.TEXT,
+    ) -> str:
+        output_format = (
+            HelpFormat.parse(output_format)
+            if isinstance(output_format, str)
+            else output_format
+        )
+        if output_format is HelpFormat.MARKDOWN:
+            return self.render_markdown(width=width)
         width = width or self.width or get_terminal_size((120, 24)).columns
         width = max(60, width)
         lines = [self.identity.headline, "", f"Usage: {self.usage}"]
@@ -153,6 +181,79 @@ class HelpCatalog:
                 lines.extend(wrapper.wrap(description) or [f"  {name}"])
         return "\n".join(lines).rstrip() + "\n"
 
+    def render_markdown(self, *, width: int | None = None) -> str:
+        """Render the same catalog as a documentation-friendly Markdown page."""
+
+        width = width or self.width or 120
+        width = max(60, width)
+        lines = [f"# {self.identity.headline}", "", "## Usage", "", "```text"]
+        lines.extend(
+            (
+                f"Usage: {self.usage}",
+                f"       {self.prog} help [verb]",
+                f"       {self.prog} version",
+                "```",
+                "",
+            )
+        )
+        if self.getting_started:
+            lines.extend(("## Getting started", ""))
+            lines.extend(f"- `{line}`" for line in self.getting_started)
+            lines.append("")
+
+        group_order: list[str] = []
+        for verb in self.verbs:
+            if verb.group not in group_order:
+                group_order.append(verb.group)
+        for group in group_order:
+            lines.extend((f"## {group.title()}", ""))
+            for verb in self.verbs:
+                if verb.group != group:
+                    continue
+                label = f"`{verb.name}"
+                if verb.synopsis:
+                    label += f" {verb.synopsis}"
+                label += "`"
+                wrapper = TextWrapper(
+                    width=max(20, width - 6),
+                    initial_indent=f"- {label} — ",
+                    subsequent_indent="  ",
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+                lines.extend(wrapper.wrap(verb.description) or [f"- {label}"])
+            lines.append("")
+
+        if self.global_options:
+            lines.extend(
+                ("## Global options", "", "| Option | Description |", "| --- | --- |")
+            )
+            for name, description in self.global_options:
+                lines.append(
+                    f"| `{_markdown_cell(name)}` | {_markdown_cell(description)} |"
+                )
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def validate_parser(self, parser: ExtendedArgumentParser) -> None:
+        """Ensure the catalog and top-level argparse verbs cannot drift."""
+
+        parser_verbs = set(discover_command_parsers(parser))
+        catalog_verbs = {verb.name for verb in self.verbs}
+        missing = sorted(parser_verbs - catalog_verbs)
+        undocumented = sorted(catalog_verbs - parser_verbs)
+        if missing or undocumented:
+            details = []
+            if missing:
+                details.append(
+                    "parser verbs missing from catalog: " + ", ".join(missing)
+                )
+            if undocumented:
+                details.append(
+                    "catalog verbs missing from parser: " + ", ".join(undocumented)
+                )
+            raise ValueError("help catalog/parser mismatch; " + "; ".join(details))
+
 
 class ExtendedArgumentParser(argparse.ArgumentParser):
     """ArgumentParser with no ``-h`` and command-help-on-error semantics."""
@@ -189,6 +290,21 @@ class ExtendedArgumentParser(argparse.ArgumentParser):
 
         kwargs.setdefault("parser_class", parser_factory)
         return super().add_subparsers(**kwargs)
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def discover_command_parsers(
+    parser: ExtendedArgumentParser,
+) -> dict[str, ExtendedArgumentParser]:
+    """Discover top-level subparsers so consumers need not duplicate a map."""
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
 
 
 class _HelpAction(argparse.Action):
@@ -360,10 +476,22 @@ class CliRuntime:
     progress_mode: ProgressMode = ProgressMode.AUTO
 
     def progress(self, *, mode: ProgressMode | str | None = None) -> ProgressRenderer:
+        requested_mode = mode or self.progress_mode
+        if isinstance(requested_mode, str):
+            requested_mode = ProgressMode.parse(requested_mode)
+        if self.json_mode and requested_mode is ProgressMode.RAWJSON:
+            requested_mode = ProgressMode.QUIET
+        stream = (
+            self.output.stdout
+            if requested_mode is ProgressMode.RAWJSON
+            else self.output.stderr
+        )
         return ProgressRenderer(
-            mode or self.progress_mode,
+            requested_mode,
+            stream=stream,
             color=self.output.color,
             level=self.output.level,
+            json_mode=self.json_mode,
         )
 
 
@@ -399,6 +527,9 @@ def _runtime_from_args(
         level = LogLevel.INFO
     progress_value = getattr(args, "progress", None) or ProgressMode.AUTO.value
     progress = ProgressMode.parse(progress_value)
+    json_mode = bool(getattr(args, "json", False))
+    if json_mode and progress is ProgressMode.RAWJSON:
+        progress = ProgressMode.QUIET
     if quiet and debug_raw:
         raise CliFailure(
             "--quiet and --debug-raw are contradictory", exit_code=2, show_help=True
@@ -407,7 +538,7 @@ def _runtime_from_args(
         identity,
         level=level,
         color=getattr(args, "color", None),
-        json_mode=bool(getattr(args, "json", False)),
+        json_mode=json_mode,
         debug_raw=debug_raw,
         secrets=secrets,
         stdout=stdout,
@@ -457,7 +588,11 @@ def run_cli(
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
     raw = list(sys.argv[1:] if argv is None else argv)
-    command_parsers = command_parsers or {}
+    discovered_parsers = discover_command_parsers(parser)
+    discovered_parsers.update(command_parsers or {})
+    command_parsers = discovered_parsers
+    if parser.catalog is not None:
+        parser.catalog.validate_parser(parser)
     for command_parser in (parser, *command_parsers.values()):
         command_parser._cli_help_stream = stdout
 
@@ -538,9 +673,7 @@ def run_cli(
             print(f"{identity.headline}\n[ERROR] {exc}", file=stderr, flush=True)
         return 1
     except Exception:
-        # Unexpected programming failures intentionally remain tracebacks. A
-        # caller can use --debug for its own additional context, but the
-        # library must not disguise a bug as a successful-looking diagnostic.
-        if getattr(locals().get("runtime", None), "debug", False):
-            traceback.print_exc(file=stderr)
+        # Unexpected programming failures intentionally remain tracebacks. The
+        # outer Python entrypoint prints one traceback; do not print a second
+        # copy here when --debug is active.
         raise

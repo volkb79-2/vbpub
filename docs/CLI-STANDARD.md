@@ -160,6 +160,12 @@ Nested actions are actions, not top-level verbs and not boolean options. They
 are written as positional action names (`snapshots SERVER create`), not as
 misleading flags (`snapshots SERVER --create`).
 
+The same structured verb metadata may also render a Markdown usage document
+for a README or operator guide. Markdown is a documentation format, not a
+second hand-maintained command list: it must be generated from the same
+metadata used by terminal help. Terminal `--help` remains plain text unless a
+CLI explicitly documents another format.
+
 ## 4. Getting Started and examples
 
 A `GETTING STARTED` section is included when a first-time operator benefits
@@ -379,7 +385,10 @@ colour or terminal control sequences. Human progress goes to stderr so that
 normal stdout remains a result stream; `rawjson` is a machine mode and owns
 stdout for the progress event stream. A command must document whether it
 combines a final result with `rawjson` events or represents completion as a
-final event.
+final event. When `--json` selects the command's primary stdout result,
+`--progress=rawjson` is valid but deliberately muted; use `plain` or `tty` if
+progress is wanted on stderr. This prevents a primary JSON document from
+being mixed with a second machine stream.
 
 Tables must preserve stable column meaning, sanitize external values before
 printing, and use explicit placeholders for unknown values. “Could not check”
