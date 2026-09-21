@@ -117,15 +117,17 @@ def test_create_workspace_removes_shared_allocation_when_reset_fails(monkeypatch
     shared.create_workspace = lambda *args, **kwargs: context
     shared.remove_workspace = lambda value, **kwargs: removed.append((value, kwargs))
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
+    calls = []
     monkeypatch.setattr(
         transaction.subprocess,
         "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
+        lambda *args, **kwargs: calls.append(kwargs) or subprocess.CompletedProcess(
             args[0], 1, stdout="", stderr="reset failed"
         ),
     )
     with pytest.raises(RuntimeError, match="git reset --hard main failed"):
         transaction.create_workspace(tmp_path, base="main", purpose="build")
+    assert calls[0]["check"] is False
     assert removed == [(context, {"force": True})]
 
     shared.remove_workspace = lambda value, **kwargs: (_ for _ in ()).throw(RuntimeError("cleanup"))
@@ -308,9 +310,10 @@ def test_config_git_scope_source_fallback_and_missing_dependency(monkeypatch, tm
 
 def test_config_rejects_an_unknown_runtime_kind(tmp_path):
     path = tmp_path / "cmru.toml"
-    path.write_text('schema_version = 1\n[runtime]\nkind = "future"\n[project]\nid = "demo"\n')
-    with pytest.raises(SystemExit):
+    path.write_text(_project_document().replace('kind = "none"', 'kind = "future"'))
+    with pytest.raises(SystemExit) as excinfo:
         config._parse_project_document(path, require_repository_facts=False)
+    assert excinfo.value.code == 2
 
 
 def _child_forge(source_root: Path, source_config: Path):
@@ -376,6 +379,80 @@ def test_load_config_remaps_child_scope_and_refuses_bad_scope(monkeypatch, tmp_p
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "missing")
     with pytest.raises(ValueError, match="unknown project"):
         cli.load_config(orchestration_path, validate_dependencies=False)
+
+
+def test_load_config_requires_all_child_remapping_facts(monkeypatch, tmp_path):
+    source = tmp_path / "source"
+    source_config = source / "demo" / "cmru.toml"
+    source_config.parent.mkdir(parents=True)
+    source_config.write_text(_project_document())
+    orchestration_path = source / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "load_forge_config", lambda _path: _child_forge(source, source_config))
+
+    # A partial child environment is not ownership evidence.  In particular,
+    # it must not attempt to turn a missing source root into ``Path(None)``.
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(tmp_path / "partial"))
+    monkeypatch.delenv("CMRU_SOURCE_GIT_ROOT", raising=False)
+    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
+    assert loaded[0] == source and loaded[1]["demo"].project_root == source / "demo"
+
+
+def test_load_config_transaction_scope_requires_child_ownership(monkeypatch, tmp_path):
+    source = tmp_path / "source"
+    paths = {name: source / name / "cmru.toml" for name in ("demo", "other")}
+    for path in paths.values():
+        path.parent.mkdir(parents=True)
+        path.write_text(_project_document().replace('id = "demo"', f'id = "{path.parent.name}"'))
+    parsed = {
+        name: SimpleNamespace(
+            template_revision=None, env={}, prefix=f"{name}-v", scm_dist=None,
+            changelog="CHANGES.md", build_metadata={}, artifact_dirs=[], evidence_paths=[],
+            build_step="build", runtime_kind="none", tool_dependencies=[],
+        )
+        for name in paths
+    }
+    forge = SimpleNamespace(
+        repo_root=source,
+        orchestration=SimpleNamespace(
+            project_order=["demo", "other"], default_projects=["demo", "other"],
+            default_steps=["build"], execution_mode="project-first",
+            project_configs=paths, dependencies={},
+        ),
+        projects=parsed, cleanup=None,
+        github=SimpleNamespace(owner="owner", repo="repo", token=None, owner_type="user"),
+        targets=SimpleNamespace(registry=[]), env={}, project_tokens={},
+    )
+    monkeypatch.setattr(cli, "load_forge_config", lambda _path: forge)
+    orchestration_path = source / "cmru.orchestration.toml"
+
+    monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "demo")
+    monkeypatch.delenv(transaction.CHILD_ENV, raising=False)
+    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
+    assert set(loaded[1]) == {"demo", "other"}
+
+    monkeypatch.setenv(transaction.CHILD_ENV, "1")
+    monkeypatch.delenv("CMRU_TRANSACTION_PROJECTS", raising=False)
+    loaded = cli.load_config(orchestration_path, validate_dependencies=False)
+    assert set(loaded[1]) == {"demo", "other"}
+
+
+def test_resolve_invocation_context_keeps_project_git_scope(monkeypatch, tmp_path):
+    source = tmp_path / "source"
+    project_config = source / "demo" / "cmru.toml"
+    project_config.parent.mkdir(parents=True)
+    project_config.write_text(_project_document())
+    orchestration = source / "cmru.orchestration.toml"
+    forge = _child_forge(source, project_config)
+    monkeypatch.setattr(config, "load_forge_config", lambda _path, **_kwargs: forge)
+    monkeypatch.setattr(config, "_refuse_unregistered_project", lambda *_args: None)
+    monkeypatch.setattr(config, "_project_for_directory", lambda *_args: "demo")
+    monkeypatch.setattr(
+        config, "_git_scope", lambda path: {"source_git_root": path, "git_common_dir": path / ".git"}
+    )
+    context = config.resolve_invocation_context(orchestration, cwd=project_config.parent)
+    assert context.project_name == "demo"
+    assert context.source_git_root == project_config.parent
 
 
 def test_load_config_refuses_missing_or_escaping_child_project(monkeypatch, tmp_path):
@@ -466,6 +543,45 @@ def test_dispatch_independent_families_covers_refusal_launcher_and_child_failure
         )
 
 
+def test_dispatch_does_not_split_a_single_project_and_uses_path_launcher(monkeypatch, tmp_path):
+    project = SimpleNamespace(name="demo")
+    called = []
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("single project was split")),
+    )
+    assert cli._dispatch_independent_git_families(
+        "build", [], tmp_path / "cmru.toml", tmp_path, {"demo": project}, ["demo"],
+        original_target=None,
+    ) is None
+
+    monkeypatch.setenv("CMRU_BIN", "")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/found/cmru")
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_args: {tmp_path / "left": [project], tmp_path / "right": [SimpleNamespace(name="other")]},
+    )
+    monkeypatch.setattr(
+        cli.subprocess, "run",
+        lambda argv, **_kwargs: called.append(argv) or subprocess.CompletedProcess(argv, 0),
+    )
+    assert cli._dispatch_independent_git_families(
+        "build", [], tmp_path / "cmru.toml", tmp_path,
+        {"demo": project, "other": SimpleNamespace(name="other")}, ["demo", "other"],
+        original_target=None,
+    ) == 0
+    assert called[0][0] == "/found/cmru"
+
+
+def test_child_release_args_removes_only_the_first_original_target(tmp_path):
+    config_path = tmp_path / "cmru.toml"
+    config_path.write_text("x")
+    assert cli._child_release_args(
+        ["--dry-run", "other", "demo", "demo"], config_path, tmp_path,
+        original_target="demo",
+    ) == ["--dry-run", "other", "demo", "--config", "cmru.toml"]
+
+
 def _main_config_tuple(tmp_path: Path):
     project = cli.ProjectConfig(
         name="demo", env={}, steps={}, project_root=tmp_path / "demo", github_token="token",
@@ -528,6 +644,23 @@ def test_run_project_step_restores_ambient_context(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: None)
     cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
     assert os.environ["CMRU_WORKSPACE_ID"] == "stale"
+
+
+@pytest.mark.parametrize("partial_key", [transaction.CHILD_ENV, "CMRU_WORKSPACE_PATH"])
+def test_run_project_step_does_not_trust_partial_child_context(monkeypatch, tmp_path, partial_key):
+    project = cli.ProjectConfig(
+        name="demo", env={}, steps={}, cwd="demo", project_root=tmp_path / "demo",
+        runner_steps={"build": object()},
+    )
+    (tmp_path / "demo").mkdir()
+    for key in (transaction.CHILD_ENV, "CMRU_WORKSPACE_PATH", "CMRU_SOURCE_GIT_ROOT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(partial_key, "stale-value")
+    seen = []
+    monkeypatch.setattr(cli, "execute_step", lambda *args, **kwargs: seen.append(kwargs["extra_env"]))
+    cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+    assert transaction.CHILD_ENV not in seen[0]
+    assert "CMRU_WORKSPACE_PATH" not in seen[0]
 
 
 def test_run_project_step_preserves_owned_child_context(monkeypatch, tmp_path):

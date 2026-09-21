@@ -177,6 +177,13 @@ _FIXED_CONFIG: tuple[str, ...] = (
     "-c", "core.excludesFile=",
 )
 
+# A tester cgroup may transiently reject fork/clone with EAGAIN while another
+# bounded Git child is being reaped.  Keep the retry at the shared spawn
+# boundary so both ordinary Git calls and P22's explicit-object calls have the
+# same finite policy.
+_GIT_SPAWN_RETRY_ATTEMPTS = 60
+_GIT_SPAWN_RETRY_SECONDS = 0.5
+
 #: The fixed ceiling on how many bytes of a git child's stdout this process
 #: will retain (O4: a FIXED byte bound, never an ambient or elapsed-time
 #: guess). ``subprocess.run(capture_output=True)`` buffers whatever the child
@@ -233,6 +240,27 @@ def _sample_remaining(remaining: Remaining | None) -> float | None:
     return sampled
 
 
+def _spawn_with_eagain_retry(
+    spawn: Callable[[], subprocess.Popen[bytes]],
+    *,
+    remaining: Callable[[], float | None],
+    what: str,
+) -> subprocess.Popen[bytes]:
+    """Run one child launcher, retrying only transient fork exhaustion."""
+    for attempt in range(_GIT_SPAWN_RETRY_ATTEMPTS):
+        try:
+            return spawn()
+        except OSError as exc:
+            if exc.errno != errno.EAGAIN or attempt + 1 == _GIT_SPAWN_RETRY_ATTEMPTS:
+                raise
+            left = remaining()
+            time.sleep(
+                _GIT_SPAWN_RETRY_SECONDS
+                if left is None else min(_GIT_SPAWN_RETRY_SECONDS, left)
+            )
+    raise AssertionError(f"unreachable after {what}")
+
+
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
     """Best-effort SIGKILL of the whole process group, regardless of whether
     the direct child has already exited (P26/A-212).
@@ -281,13 +309,17 @@ def _run_bounded(argv: list[str], *, remaining: Remaining | None = None, stdin=N
     """
     _sample_remaining(remaining)
     try:
-        proc = subprocess.Popen(
-            argv,
-            env=dict(_REPLACEMENT_ENV),
-            **({"stdin": stdin} if stdin is not None else {}),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
+        proc = _spawn_with_eagain_retry(
+            lambda: subprocess.Popen(
+                argv,
+                env=dict(_REPLACEMENT_ENV),
+                **({"stdin": stdin} if stdin is not None else {}),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            ),
+            remaining=lambda: _sample_remaining(remaining),
+            what="bounded Git",
         )
     except OSError as exc:
         raise _git_failed(f"could not start git: {exc}") from exc
@@ -1174,10 +1206,6 @@ def _p22_argv(
     return argv
 
 
-_P22_SPAWN_RETRY_ATTEMPTS = 60
-_P22_SPAWN_RETRY_SECONDS = 0.5
-
-
 def _p22_spawn(
     argv: Sequence[str], *, cwd: Path, identity: bool, stdin: int,
     deadline: _P22Deadline,
@@ -1189,32 +1217,19 @@ def _p22_spawn(
     running with the pipe still open. Assay owns the whole group and kills
     the group.
     """
-    for attempt in range(_P22_SPAWN_RETRY_ATTEMPTS):
-        try:
-            return subprocess.Popen(
-                list(argv),
-                cwd=str(cwd),
-                env=_p22_env(identity=identity),
-                stdin=stdin,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            # A busy tester cgroup can transiently reject fork/clone with
-            # EAGAIN while a prior snapshot child is being reaped.  This is
-            # not a Git result and must not be silently converted into a
-            # passing candidate; retry only this documented transient under
-            # the same lane deadline, then re-raise the real startup error.
-            if exc.errno != errno.EAGAIN or attempt + 1 == _P22_SPAWN_RETRY_ATTEMPTS:
-                raise
-            remaining = deadline.remaining("starting a private Git child")
-            time.sleep(
-                _P22_SPAWN_RETRY_SECONDS
-                if remaining is None
-                else min(_P22_SPAWN_RETRY_SECONDS, remaining)
-            )
-    raise AssertionError("unreachable")
+    return _spawn_with_eagain_retry(
+        lambda: subprocess.Popen(
+            list(argv),
+            cwd=str(cwd),
+            env=_p22_env(identity=identity),
+            stdin=stdin,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        ),
+        remaining=lambda: deadline.remaining("starting a private Git child"),
+        what="private Git",
+    )
 
 
 def _p22_kill(proc: subprocess.Popen[bytes] | None) -> None:

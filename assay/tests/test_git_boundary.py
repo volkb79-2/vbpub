@@ -230,4 +230,4 @@ def test_p22_git_child_retries_transient_resource_exhaustion(
 
     assert result is child
     assert attempts == 3
-    assert sleeps == [git_module._P22_SPAWN_RETRY_SECONDS] * 2
+    assert sleeps == [git_module._GIT_SPAWN_RETRY_SECONDS] * 2
