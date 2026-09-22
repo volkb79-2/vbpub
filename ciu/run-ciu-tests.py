@@ -32,6 +32,21 @@ ROOT = Path(__file__).resolve().parent
 COV_FAIL_UNDER = "100"
 
 
+def pytest_args(workers: str) -> list[str]:
+    """The exact pytest argv shared by the local wrapper and assay lane."""
+    return [
+        "-m", "pytest", "tests",
+        "--cov=ciu",
+        "-n", workers,
+        "--dist", "loadfile",
+        "--cov-branch",
+        "--cov-report=term-missing",
+        "--cov-report=json:coverage.json",
+        f"--cov-fail-under={COV_FAIL_UNDER}",
+        "-rs",
+    ]
+
+
 def main() -> None:
     argv = sys.argv[1:]
     # The normal local gate uses xdist's automatic worker count.  The
@@ -43,23 +58,7 @@ def main() -> None:
     workers = os.environ.get("CIU_PYTEST_WORKERS", "auto")
     if workers != "auto" and (not workers.isdigit() or int(workers) < 0):
         raise SystemExit("CIU_PYTEST_WORKERS must be 'auto' or a non-negative integer")
-    cmd = [
-        sys.executable, "-m", "pytest", "tests",
-        "--cov=ciu",
-        "-n", workers,
-        "--dist", "loadfile",
-        "--cov-branch",
-        "--cov-report=term-missing",
-        "--cov-report=json:coverage.json",
-        f"--cov-fail-under={COV_FAIL_UNDER}",
-        # -rs: name every SKIPPED test in the summary (adversarial review,
-        # ciu-P52) -- a bare "N skipped" count silently hides which oracles
-        # (e.g. a docker-requiring end-to-end test, or a byte-identity check
-        # against an artifact this environment can't build) never actually
-        # ran, letting a gate PASS look stronger than the coverage it earned.
-        "-rs",
-        *argv,
-    ]
+    cmd = [sys.executable, *pytest_args(workers), *argv]
     subprocess.run(cmd, check=True, cwd=str(ROOT))
 
 

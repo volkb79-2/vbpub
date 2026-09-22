@@ -12,6 +12,7 @@ shipped loader and the closed public vocabulary.
 from __future__ import annotations
 
 import re
+import runpy
 import sys
 import tomllib
 from pathlib import Path
@@ -185,4 +186,7 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["judge"]["mutation"]["jobs"] == 1
+    assert lane["judge"]["mutation"]["liveness"] is True
+    helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
+    assert lane["argv"][1:] == helper["pytest_args"]("0")
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
