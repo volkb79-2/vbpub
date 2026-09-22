@@ -155,19 +155,44 @@ def test_assert_remote_builder_ignores_unstructured_lines() -> None:
         "Driver:        remote\n",
     ],
 )
-def test_assert_remote_builder_rejects_driver_or_endpoint(output: str) -> None:
+def test_assert_remote_builder_rejects_driver_or_endpoint(
+    output: str, capsys: pytest.CaptureFixture[str]
+) -> None:
     with pytest.raises(SystemExit):
         build_push._assert_remote_builder(_config(), output)
+    diagnostic = capsys.readouterr().err
+    if "docker-container" in output:
+        assert "driver='docker-container'" in diagnostic
+    elif "other.sock" in output:
+        assert "got 'unix:///run/other.sock'" in diagnostic
+    else:
+        assert "got '<missing>'" in diagnostic
 
 
-def test_inspect_builder_reports_command_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("stderr", "stdout", "expected_detail"),
+    [
+        ("socket missing", "secondary diagnostic", "socket missing"),
+        ("", "stdout diagnostic", "stdout diagnostic"),
+    ],
+)
+def test_inspect_builder_reports_command_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stderr: str,
+    stdout: str,
+    expected_detail: str,
+) -> None:
     monkeypatch.setattr(
         build_push.subprocess,
         "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="socket missing"),
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout=stdout, stderr=stderr
+        ),
     )
     with pytest.raises(SystemExit):
         build_push._inspect_builder(_config(), bootstrap=False)
+    assert expected_detail in capsys.readouterr().err
 
 
 def test_ensure_builder_verifies_registration_and_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
