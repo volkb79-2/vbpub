@@ -789,15 +789,18 @@ def _compute_network_name(
     value is used and a warning names the ignored ambient value.
     """
     repo_name = physical_root.name.lower()
+    from . import workspace as workspace_adapter
+
     if workspace_id is None or root_instance_id is None:
         # Standalone/non-Git bootstrap remains deterministic, but the shared
         # path identity is used even on this fallback so CIU and CMRU do not
         # carry two digest alphabets.
-        from . import workspace as workspace_adapter
         workspace_id = workspace_adapter._shared().workspace_id_for_path(physical_root)
         root_instance_id = workspace_id
     instance_id = root_instance_id
-    identity_suffix = workspace_id if workspace_id == root_instance_id else f"{workspace_id}-{root_instance_id}"
+    identity_suffix = workspace_adapter.root_identity_suffix(
+        workspace_id, root_instance_id
+    )
     network_name = f"{repo_name}-{identity_suffix}-network"
     derived = {
         "REPO_NAME": repo_name,

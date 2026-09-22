@@ -280,15 +280,18 @@ def root_runtime_names(context: RootContext, *, stack: str) -> dict[str, str]:
     """Return deterministic adapter-owned names carrying both identities."""
 
     safe_stack = stack.replace("/", "-").replace("_", "-").lower()
-    identity = (
-        context.workspace_id
-        if context.workspace_id == context.root_instance_id
-        else f"{context.workspace_id}-{context.root_instance_id}"
-    )
+    identity = root_identity_suffix(context.workspace_id, context.root_instance_id)
     return {
         "network": f"ciu-{identity}-network",
         "project": f"ciu-{identity}-{safe_stack}",
     }
+
+
+def root_identity_suffix(workspace_id: str, root_instance_id: str) -> str:
+    """Format the shared-workspace/root identity used in CIU resource names."""
+    if workspace_id == root_instance_id:
+        return workspace_id
+    return f"{workspace_id}-{root_instance_id}"
 
 
 def assert_root_identity_distinct(contexts: list[RootContext]) -> None:

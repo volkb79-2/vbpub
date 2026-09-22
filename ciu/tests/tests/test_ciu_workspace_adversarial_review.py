@@ -224,8 +224,13 @@ def test_tracked_blob_preserves_binary_git_probe_contract(monkeypatch, tmp_path)
 def test_root_names_and_identity_collision_are_distinct():
     same = SimpleNamespace(workspace_id="same", root_instance_id="same")
     different = SimpleNamespace(workspace_id="w", root_instance_id="r")
+    assert workspace.root_identity_suffix("same", "same") == "same"
+    assert workspace.root_identity_suffix("w", "r") == "w-r"
     assert workspace.root_runtime_names(same, stack="App_stack")["network"] == "ciu-same-network"
     assert workspace.root_runtime_names(different, stack="App_stack")["project"] == "ciu-w-r-app-stack"
+    assert workspace_env._compute_network_name(
+        Path("/repo"), workspace_id="w", root_instance_id="r"
+    )["DOCKER_NETWORK_INTERNAL"] == "repo-w-r-network"
     first = SimpleNamespace(root_instance_id="short", physical_ciu_root=Path("/one"))
     second = SimpleNamespace(root_instance_id="short", physical_ciu_root=Path("/two"))
     with pytest.raises(workspace.CiuWorkspaceError, match="identity collision"):

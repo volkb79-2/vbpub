@@ -44,15 +44,19 @@ oracle; a passing cockpit command is not gate evidence.
 - [x] Hypothesis covers CIU, CMRU, and the shared library.
 - [~] R0, R1, R2, and R3 lanes are declared and resumable in both
       `assay.toml` files, with snapshot, coverage, mutation, and canary
-      contracts. No green tester-unified R0-R3 execution claim is made because
-      the lanes could not start in this environment.
+      contracts. CIU has one complete green tester-unified run on commit
+      `20236e43`; after syncing the latest `main`, its merge-commit run was
+      inconclusive (`NO_MUTANTS`) and needs a post-merge-base rerun. CMRU's
+      final tester-unified run is still pending.
 - [x] Full branch coverage is green in the local full-suite equivalents:
       CIU, CMRU, and the shared library each report 100% line and branch
       coverage.
-- [x] A fresh adversarial review finds no remaining code/spec/test blocker;
-      the external gate prerequisite is recorded below.
+- [~] A fresh adversarial review found and closed the mutation-oracle gap, then
+      found an Assay merge-commit boundary that makes the post-sync R2 result
+      inconclusive. The final non-merge feature commit and CMRU gate remain
+      outstanding.
 
-## Final adversarial review (2026-09-20)
+## Adversarial review checkpoint (2026-09-20, before tester-unified execution)
 
 | Area | Final result | Evidence and qualification |
 |---|---|---|
@@ -64,18 +68,60 @@ oracle; a passing cockpit command is not gate evidence.
 | Hypothesis | Pass | Property suites run in CIU, CMRU, and `libraries/worktree`; they cover path/identity/lifecycle invariants rather than only example cases. |
 | Branch coverage | Pass locally | Post-closure full branch coverage is 100% for CIU (11,189 statements / 4,474 branches), CMRU (7,601 / 2,816), and the library (416 / 128). |
 | R0-R3 qualification | Declared; execution unproven here | CIU and CMRU now both declare `R0,R1,R2,R3`, including the approved snapshot boundary, coverage artifact, native mutation policy, and import-break canary. The real tester-unified lanes still could not start in this cockpit, so no green R0-R3 claim is made. CMRU's separate `coverage`, `mutation`, and `canary` run-gate commands remain supplemental release evidence. |
-| Real tester-unified gate | Blocked by host configuration | Both project assay lanes refuse before launch because `$CGROUP_PARENT_DEV_GATES` is unset. No fallback was invented; this is the required fail-closed behavior. |
+| Real tester-unified gate | Not run at this checkpoint | Both project assay lanes refused before launch because `$CGROUP_PARENT_DEV_GATES` was unset. This was the state on 2026-09-20; later execution evidence is recorded below. |
 
-The answer to “are R0–R3 all working?” is therefore **configuration yes,
-execution unproven here**. Both checked-in lanes declare all four levels and
-the local Assay inventory validates their shape, but the real tester-unified
-admission could not be exercised from this cockpit.
+At this checkpoint the answer to “are R0–R3 all working?” was
+**configuration yes, execution unproven**. That historical assessment is
+superseded by the 2026-09-22 evidence below.
+
+## Continuation (2026-09-22)
+
+- CIU tester-unified passed on `20236e437996f45d88c0be2e8331c16dc1ea370d`
+  in container `run-gate-vbpub-ciu-1898737-1790053234`: R0–R3 all PASS,
+  R1 797/797 changed executable lines and 120/120 branches, and R2 killed all
+  65 candidates with no survivor, hang, crash, or budget overrun.
+- After merging current `main` at `d05939b9`, feature merge commit
+  `e2a4a68d0a8d60006d8beee00ed172d866542219` was tested in
+  `run-gate-vbpub-ciu-1960924-1790066446`. R0 and R3 passed; R1 reported
+  0/0; R2 was `INCONCLUSIVE/NO_MUTANTS` (exit 5). The verdict records
+  `base_resolution = "first-parent"` and base `20236e43`, because Assay
+  measures a merge commit's first-parent payload, which contains no changed
+  CIU source here. This run is not accepted as a green for the branch.
+- The `main` sync itself had no merge conflicts. A review-ledger follow-up
+  commit will make `HEAD` non-merge so Assay can resolve the feature fork
+  point, then CIU and CMRU will be rerun on that final tree.
 
 ## Evidence log
 
 Commands and results are appended here after each implementation pass. Never
 replace a previous result: a later green run must not erase an earlier red
 run.
+
+### 2026-09-22 continuation evidence
+
+- CIU gate before latest-main synchronization:
+  `CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py ciu` → container
+  `run-gate-vbpub-ciu-1898737-1790053234`, exit `0`, verdict PASS on
+  `20236e437996f45d88c0be2e8331c16dc1ea370d`. R0 PASS; R1 PASS at
+  797/797 changed executable lines and 120/120 branches; R2 PASS (65 killed,
+  0 survived, 0 hung, 0 crashed, 0 budget exceeded); R3 PASS. The verdict is
+  `ciu/.assay/verdict-ciu.json` (overwritten by the later attempt).
+- Latest-main synchronization: `git merge --no-ff main` created
+  `e2a4a68d0a8d60006d8beee00ed172d866542219`, with first parent
+  `20236e43` and second parent `d05939b9`. Merge was clean.
+- CIU gate on that merge commit:
+  `CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py ciu` → container
+  `run-gate-vbpub-ciu-1960924-1790066446`, exit `5`,
+  `INCONCLUSIVE/NO_MUTANTS`. The exact verdict has R0 PASS, R1 0/0 PASS,
+  R2 INCONCLUSIVE (`NO_MUTANTS`, total 0), R3 PASS; resolved base is the
+  first parent `20236e43`. This is a measurement-boundary failure, not a
+  passing R2 result. Full container log:
+  `/tmp/run-gate/run-gate-vbpub-ciu-1960924-1790066446.log`.
+- That run also emitted a cgroup-admission warning because the private
+  devcontainer namespace did not expose the host slice's `memory.max`; the
+  configured `dev-gates.slice` parent was passed to Docker, and the gate used
+  shared-infrastructure admission. The profiler daemon was absent, so only
+  in-lane sampling was available.
 
 ### Final evidence (2026-09-20)
 
@@ -132,6 +178,13 @@ run.
 
 ### Iteration evidence retained
 
+- The first liveness-enabled CIU gate after adding the workspace mutation lane
+  was red on `245765e0493356c40e81b06dde2623bff2c21738`:
+  container `run-gate-vbpub-ciu-1722982-1790055018`, exit `4`, with 63/67
+  mutants killed, 2 surviving schema-version mutations, and 2 candidates
+  classified hung. The follow-up added `--maxfail=1`, exact integer/version
+  oracles for both generated-facts readers, and one shared schema validator;
+  the next CIU R2 campaign killed all 65 candidates with no hangs or survivors.
 - The first post-refactor CIU full run was `3855 passed, 1 failed`: its only
   failure was an adversarial fake that still exposed the removed raw-Git
   fallback. The fixture was adapted to `remove_unrecorded_workspace`.
