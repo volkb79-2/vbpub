@@ -133,6 +133,22 @@ deployment.
 
 ## Roadmap
 
+### FEAT-01 — bearer-token authentication middleware for routed services
+
+Provide an optional Traefik `forwardAuth` integration for services that need
+`Authorization: Bearer <token>` validation instead of, or in addition to, the
+existing per-route BasicAuth guard. The verifier must receive the original
+request headers, return only an allow/deny decision plus bounded identity
+headers, and never expose token values in Traefik access logs. The feature
+needs a small reference verifier contract, secret delivery guidance, and an
+acceptance test covering allowed, missing, invalid, and expired tokens.
+
+PWMCP currently remains on TLS plus BasicAuth. Its `mcp-proxy`-backed routes
+also have a native `X-API-Key` option, but that is a per-proxy mechanism rather
+than estate-wide bearer authentication. This feature is the planned shared
+edge solution; it is deliberately not enabled by PWMCP until tls-edge ships
+the verifier integration.
+
 ### Middleware template library
 
 Add a set of ready-to-enable middleware definitions in `conf.d/` that consumers

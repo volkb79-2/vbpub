@@ -7,7 +7,7 @@
 # installs a browser into its own devcontainer / CI runner:
 #
 #   ws://pwmcp:3000/              — native Playwright connect() endpoint (FULL API)
-#   http://pwmcp:8931/mcp         — @playwright/mcp MCP surface (HTTP/SSE)
+#   http://pwmcp:8931/mcp         — @playwright/mcp MCP surface (Streamable HTTP)
 #   http://pwmcp:8932/mcp         — chrome-devtools-mcp (CDP profiling via mcp-proxy)
 #   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audits via mcp-proxy)
 #
@@ -32,7 +32,7 @@
 #   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
 #   - the playwright JS package baked into the unified image, and
 #   - the version connect() consumers must install (`pip install playwright==<version>`).
-playwright_version = "1.63.0"
+playwright_version = "1.62.0"
 image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
 
 [pwmcp.network]
@@ -72,7 +72,7 @@ external_default = false
 [pwmcp.unified]
 name = "pwmcp"
 ws_port = 3000                    # Playwright run-server (connect() WebSocket)
-mcp_port = 8931                   # @playwright/mcp HTTP/SSE surface
+mcp_port = 8931                   # @playwright/mcp Streamable HTTP surface
 devtools_port = 8932              # chrome-devtools-mcp (via mcp-proxy)
 lighthouse_port = 8933            # lighthouse-mcp (via mcp-proxy)
 browser = "chromium"
@@ -134,7 +134,7 @@ aliases = ["pwmcp-mcp", "pwmcp-playwright"]
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp"
-tag = "1.63.0-r2"
+tag = "1.62.0-r4"
 
 [pwmcp.hardening]
 # Applied in both internal and external modes.

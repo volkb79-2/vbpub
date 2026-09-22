@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.62.0-r4] - 2026-09-21
+<!-- cmru: generated -->
+
+### Changed
+- Update eligible Playwright/MCP/Lighthouse dependencies and lock the vendored Lighthouse dependency tree.
+- Make release preparation validate the committed version projection; upstream refresh is explicit.
+- Require Streamable HTTP `/mcp` endpoints and keep legacy `/sse` disabled.
+
 ## [1.63.0-r2] - 2026-09-18
 <!-- cmru: generated -->
 <!-- cmru: source-end=3565200ecf3ce69ba8845254704b2e86ee75549e -->

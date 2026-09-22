@@ -67,6 +67,18 @@ trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP"   # nothing this test (or anything it shells out to) does
                         # can write outside its own scratch dir (S14)
 
+# tester-unified owns the gate interpreter and its dependency closure.  The
+# cockpit fallback remains useful when this renderer is run by hand on a host
+# that has no tester image, but a gate must not silently select system Python.
+MDT_TEST_PYTHON="${MDT_TEST_PYTHON:-}"
+if [ -z "$MDT_TEST_PYTHON" ]; then
+  if [ -x /opt/tester-venv/bin/python ]; then
+    MDT_TEST_PYTHON=/opt/tester-venv/bin/python
+  else
+    MDT_TEST_PYTHON="$(command -v python3)"
+  fi
+fi
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "ok: $*"; }
 
@@ -248,7 +260,7 @@ pass "install.sh installs and applies the cgprofile tmpfiles.d entry"
 # ZERO doctests too -- a deleted doctest would not go red. Run with -v and
 # require a non-zero "N passed" count, so an empty doctest run itself fails
 # this assertion.
-DOCTEST_OUT="$(python3 -m doctest -v "$HERE/mdt-host-setup-wizard.py" 2>&1)" \
+DOCTEST_OUT="$($MDT_TEST_PYTHON -m doctest -v "$HERE/mdt-host-setup-wizard.py" 2>&1)" \
   || fail "mdt-host-setup-wizard.py doctest failed (propose_memory_min_guaranteed_suggestion's before/after earmark-sum demonstration, S2):
 $DOCTEST_OUT"
 printf '%s\n' "$DOCTEST_OUT" | grep -qE '^[1-9][0-9]* passed' \
@@ -306,7 +318,7 @@ pass "check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the 
 
 # --- focused BuildKit/config/wizard identity tests --------------------------
 GOVERNANCE_TEST_OUT="$TMP/buildkit-governance-tests.log"
-if python3 "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
+if "$MDT_TEST_PYTHON" "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
   GOV_RC=0
 else
   GOV_RC=$?
@@ -322,7 +334,7 @@ pass "focused BuildKit guard identity, policy, builder idempotency, memory const
 SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
-    *.py) python3 -m py_compile "$s" || fail "py_compile failed: $s" ;;
+    *.py) "$MDT_TEST_PYTHON" -m py_compile "$s" || fail "py_compile failed: $s" ;;
     *)    bash -n "$s" || fail "bash -n failed: $s" ;;
   esac
 done

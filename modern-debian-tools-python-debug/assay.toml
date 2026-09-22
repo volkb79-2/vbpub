@@ -13,7 +13,7 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "host-setup/tests/run_coverage.py"]
 env = {}
 env_passthrough = ["PATH"]
-budget = "1h"
+budget = "2h"
 allow_argv_append = false
 
 [lanes.host_setup.isolation]

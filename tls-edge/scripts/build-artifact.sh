@@ -13,7 +13,7 @@
 #   ciu-stack/ (*.j2 + conf.d/{certs.yml.j2,options.yml,middlewares.yml})
 #   edge-proxy/ (docker-compose.yml, traefik.yml, .env.example, conf.d/*)
 #   consumer-examples/
-#   README.md, ARCHITECTURE.md, CONSUMER_GUIDE.md, KNOWN_ISSUES.md
+#   README.md, ARCHITECTURE.md, CONSUMER_GUIDE.md, KNOWN_ISSUES_TODO_BACKLOG.md
 #
 # EXCLUDE:
 #   scripts/update-rendered.sh (maintainer-only)
@@ -63,7 +63,7 @@ trap 'rm -rf "$STAGE"; rm -f "$TMP_LIST"' EXIT
 
 {
     # Top-level single files
-    for doc in VERSION get.py README.md ARCHITECTURE.md CONSUMER_GUIDE.md KNOWN_ISSUES.md; do
+    for doc in VERSION get.py README.md ARCHITECTURE.md CONSUMER_GUIDE.md KNOWN_ISSUES_TODO_BACKLOG.md; do
         [[ -f "$TLS_EDGE_ROOT/$doc" ]] && echo "$doc"
     done
 
