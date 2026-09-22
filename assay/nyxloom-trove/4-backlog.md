@@ -9893,3 +9893,33 @@ the ceiling by construction) should: FAIL under `DEFAULT_SNAPSHOT_LIMITS` today
 raised/removed `[isolation.limits]` override is set, or (2) the packed-size or
 current-tree-only measurement change lands — proving the fix actually changes
 the accounted quantity, not just silences the symptom on this one fixture.
+
+### Needs an operator design interview before implementation (2026-09-22)
+
+The two proposed dispositions above are NOT interchangeable implementation
+details of one agreed fix — they reflect different judgments about what
+`snapshot_selection = "repository"` isolation is actually FOR, and picking
+between them (or rejecting both in favor of something else) is a design call,
+not something a reporting agent should resolve unilaterally:
+
+- A configurable `[isolation.limits]` override (disposition 1) treats the
+  current full-ancestor-history/uncompressed-bytes accounting as basically
+  correct in kind, just wrongly-sized for a growing project — the fix is to
+  let each consumer raise their own ceiling.
+- Changing what gets measured (disposition 2 — packed size, or the judged
+  commit's own tree only, excluding ancestor history) treats the CURRENT
+  accounting as measuring the wrong thing entirely for this isolation mode's
+  stated purpose (isolating a single test run, not preserving every historical
+  revision of every tracked file). This is a bigger, more invasive change to
+  `isolation.py`'s actual algorithm, not just its config surface.
+
+These lead to materially different amounts of rework and different guarantees
+(a raised limit still eventually gets crossed again by a growing project; a
+measurement-scope change doesn't). There may also be a THIRD option this
+report didn't consider (e.g., is snapshotting reachable history ever actually
+necessary for an R0/R1 coverage-only lane at all, versus only for genuine R2
+mutation lanes that need to safely rewrite files?). Whoever picks this up
+should interview the assay maintainer/operator on what `snapshot_selection =
+"repository"` isolation is actually meant to guarantee before choosing a
+direction, rather than implementing either sketch above as if it were already
+agreed.
