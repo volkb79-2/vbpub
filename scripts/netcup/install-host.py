@@ -1777,7 +1777,7 @@ def install_from_payload(
             print(f"Task UUID: {task_uuid}")
             print()
             print("Monitor progress with:")
-            print(f"  python3 monitor-task.py {task_uuid}")
+            print(f"  python3 monitor-task.py watch {task_uuid}")
             if _should_monitor(args):
                 task_result = monitor_task(
                     client,
@@ -2464,7 +2464,7 @@ def main():
                 print(f"Task UUID: {task_uuid}")
                 print()
                 print("Monitor progress with:")
-                print(f"  python3 monitor-task.py {task_uuid}")
+                print(f"  python3 monitor-task.py watch {task_uuid}")
                 if _should_monitor(args):
                     ssh_identity = getattr(args, "ssh_identity_file", None)
                     task_result = monitor_task(
@@ -2512,7 +2512,7 @@ def main():
                             return
 
                         print("Monitor progress with:")
-                        print(f"  python3 monitor-task.py {task_uuid}")
+                        print(f"  python3 monitor-task.py watch {task_uuid}")
                         return
             raise
 

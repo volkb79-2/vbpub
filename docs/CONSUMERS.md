@@ -73,30 +73,65 @@ pinned at 50.
 
 ## Netcup SCP API provisioning
 
-From the repository root, set up the local secret file and authenticate:
+Use a dedicated Python environment for the scripts. `monitor-task.py` consumes
+the shared `cli-extended` package; install that package into the same
+environment used to invoke the scripts:
 
 ```bash
 cd scripts/netcup
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --editable ../../libraries/cli-extended
+```
+
+Create the local secret file and authenticate with the browser device-code
+flow:
+
+```bash
 cp .env.example .env
 chmod 600 .env
-vi .env                               # set NETCUP_SCP_API_SERVER_NAME
+vi .env                               # optional target/notification settings
 ./scp-api.py login
 ```
 
-`scp-api.py login` writes the refresh token to the local `.env` with mode `0600`.
+Login writes the refresh token to `.env` and enforces mode `0600`. In an
+interactive terminal it offers SCP internal names matching `v<digits>` for a
+local protected-server denylist. Each candidate includes its server ID,
+addresses, and reverse-DNS entries. This denylist is a checkout-local guard,
+not a Netcup account lock.
 
-In an interactive terminal, login then lists SCP server names matching
-`v<digits>` (for example `v2202503209318326780`). Each candidate includes its
-server ID, IP addresses, and configured or resolver-derived reverse-DNS
-entries. Enter comma-separated list numbers, `all`, or an empty response.
-Selected names are saved locally in
-`NETCUP_SCP_API_PROTECTED_SERVERS`; the wizard also saves their verified IDs in
-`NETCUP_SCP_API_PROTECTED_SERVER_IDS`. This is a local denylist for this
-checkout, not a Netcup-side lock. It refuses server-targeting mutations,
-including Debian image install, ISO attach/detach, firewall assignment, power,
-snapshot creation, and task cancellation. Read-only commands and dry-runs are
-still available. Account-level user-ISO upload and firewall-policy definition
-are not server-targeted; applying a policy is guarded.
+Inspect account inventory and available Debian images, then gather the target
+configuration with the wizard. It writes `target-host.jsonc` before the final
+confirmation so the exact request can be reviewed:
+
+```bash
+./scp-api.py status
+./scp-api.py imageflavours --filter debian
+./install-host.py wizard --dry-run
+./install-host.py wizard
+```
+
+The file-driven operation validates and installs the reviewed config. To use a
+different file, pass `--config`:
+
+```bash
+./install-host.py install --config target-host.jsonc --dry-run
+./install-host.py install --config target-host.jsonc
+```
+
+`wizard` gathers server-specific values; `install` consumes a complete file.
+The frontend does not generate an OS-specific `customScript`; for Debian v2,
+generate its JSON bundle in that project and pass it to the wizard with
+`--custom-script-file`. Existing Netcup account SSH keys are selected for
+operator access. A separate local controller key may be generated only when
+the supplied hook needs it; the remote hook controls host-side cleanup, while
+the local key defaults to retention for reuse.
+
+To configure Mattermost notifications, use the public incoming-webhook URL
+from the Mattermost consumer deployment. Keep it only in `.env`; remote hosts
+must use the public hostname, not an internal Docker service name. The complete
+setup and firewall/user-ISO workflows are in the
+[`Netcup quickstart`](../scripts/netcup/README.md).
 
 When protection is configured, cancel a task with its server ID so the CLI can
 verify the task target before issuing the cancel request:
@@ -105,48 +140,12 @@ verify the task target before issuing the cancel request:
 python3 scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes
 ```
 
-The smallest live-install path is:
-
-```bash
-./scp-api.py status                 # SSH key checks + final IP -> reverse DNS column
-./scp-api.py servers
-./scp-api.py imageflavours --filter debian
-./install-host.py --dry-run
-./install-host.py --monitor
-```
-
-`configure` is optional. It saves local locale/timezone/partition defaults;
-the normal interactive installer still resolves the current Debian UEFI image
-live. `status` also includes an `ssh-connect` column. It checks all
-recognizable private keys in `~/.ssh` and the configured installer identity
-without creating anything. It lists successful key names, or distinguishes
-`no keys match` from `SSH not open/responding`; `no keys found` and `no server
-IP` are separate local/data conditions. Its final multiline reverse-DNS column
-uses only the server detail response's `ipv4Addresses` and `ipv6Addresses`,
-not nested live interface addresses or extra IPv6 rDNS-map keys.
-The status work is bounded to four workers and keeps table order. It performs
-one 2-second SSH service preflight before key attempts, loads local keys once,
-and tries filenames containing the server name, hostname, or nickname first.
-Reverse-DNS lookups are concurrent but duplicate addresses are not memoized.
-Use `./scp-api.py status SERVER_ID --ssh-timeout SECONDS` to override the
-default SSH timeout.
-
-The normal flow writes the gathered request to the ignored `target-host.jsonc`
-before its final confirmation. A direct payload run can then repeat that
-reviewed request:
-
-
-```bash
-./install-host.py --payload target-host.jsonc --dry-run
-./install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
-```
-
-Direct payload mode does not merge `default-recipe.jsonc`; for a Debian install,
-use a complete payload generated by the normal flow, or provide
-`serverId`/`hostname`, `diskName`, and `customScript` yourself.
-`imageFlavourId` and `sshKeyIds` can be resolved when omitted. A dry-run makes
-no mutating Netcup API call, though the installer may create its local
-controller identity for later monitoring.
+`status` reports compact server facts and SSH reachability. SSH states include
+`no answer` (no SSH endpoint responded) and `rejected` (the endpoint explicitly
+refused the session); they are distinct from `no keys match` (SSH responded,
+but no tested key authenticated). Key-name matches are tried first. The table's
+reverse-DNS column uses only the server detail response's `ipv4Addresses` and
+`ipv6Addresses`.
 
 The Netcup installer can report to Mattermost instead of Telegram. After the
 first-time setup above, the
@@ -164,39 +163,22 @@ The webhook is bound to the producer's configured channel and is post-only;
 the remote Debian host must reach the public Mattermost URL, not an internal
 Docker service name. Keep `.env` at mode `0600` and never commit it.
 
-The interactive install lists existing Netcup account SSH keys and uses the
-first selected key by default; choosing one does not register a new account
-key. For a direct payload run, pin an existing key explicitly:
+To inspect a task once or resume monitoring from another terminal, use the
+verb-oriented task CLI:
 
 ```bash
-python3 install-host.py --payload target-host.jsonc --ssh-key-id 123 --monitor
+./monitor-task.py show TASK_UUID
+./monitor-task.py show TASK_UUID --json
+./monitor-task.py watch TASK_UUID
+./monitor-task.py watch TASK_UUID --poll 2
 ```
 
-The local controller identity used for monitoring is separate. A new account
-key is registered during gathering, before final install confirmation, only
-when no account key exists or the interactive create-new choice is selected.
-Cancelling after that choice does not undo the account-key registration.
-
-The generated `default-recipe.jsonc` is local and ignored. Its customScript
-uses a controller-side bootstrap placeholder. Set a feature-branch source
-before a live test, then run the normal gather flow or dry-run a generated
-payload:
-
-```bash
-export NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration
-python3 install-host.py --payload target-host.jsonc --dry-run
-```
-
-The dry run must show the intended branch before a real Netcup API install is
-confirmed. See [`scripts/netcup/README.md`](../scripts/netcup/README.md) for
-attach-only, exploration, and bootstrap-source details. To inspect the API
-inventory before choosing a target, use `scp-api.py imageflavours --filter
-debian` or `scp-api.py iso-bootable --filter rescue`; without a server ID these
-enumerate all servers and label each result with its source. An image flavour is
-a reinstallable OS/image variant, while an ISO image is bootable installer or
-recovery media. State-changing explorer options require an explicit server ID
-and use positional actions, for example `scp-api.py snapshots 799611 create`
-or `scp-api.py power cycle 799611`.
+`show` performs one fetch; `watch` polls until `FINISHED`, `ERROR`, `CANCELED`,
+or `ROLLBACK`. Missing task UUIDs and malformed UUIDs print command help. Bare
+invocation, `help`, and version requests do not read `.env`, load API settings,
+or make requests. JSON redacts sensitive response fields; `--debug-raw` is an
+explicit, warning-emitting opt-out for troubleshooting and may reveal root
+passwords or tokens. Progress is sent to stderr, and Ctrl-C exits cleanly.
 
 For server operations and diagnostics:
 
@@ -215,15 +197,8 @@ python3 scp-api.py power cycle 799611
 python3 scp-api.py power reset 799611
 ```
 
-After an install has returned a task UUID, the standalone watcher is useful
-when the original terminal is gone:
-
-```bash
-./monitor-task.py TASK_UUID
-./monitor-task.py TASK_UUID --json
-```
-
-Do not use `--raw` casually: task responses may include generated credentials.
+After an install has returned a task UUID, resume polling from another
+terminal with `./monitor-task.py watch TASK_UUID`.
 
 ISO attachment, ISO upload, and firewall changes are confirmed mutations.
 Firewall `set` replaces the interface's existing copied/user policy assignment.

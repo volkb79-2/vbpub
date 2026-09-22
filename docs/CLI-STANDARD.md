@@ -548,10 +548,14 @@ This is an adoption plan, not a claim that all current tools already conform.
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
 | `scp-api.py` | add version/help verbs, remove duplicate verb list, add identity header, align `--yes`/errors |
 | `install-host.py` | add identity/version/help verb, grouped options, and common error/debug behavior |
-| `monitor-task.py` | make bare/help invocations side-effect free; prevent `help` from being parsed as a UUID |
+| `monitor-task.py` | pilot adoption: explicit `show`/`watch`, generated help/version, side-effect-free discovery, structured common output, and clean cancellation |
+| `debian-install-v2.py` | audit its action model separately; any shared-helper adoption must preserve offline/bootstrap delivery and unattended `resume` semantics |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 
-The first migration target is `scp-api.py`, `install-host.py`, and
-`monitor-task.py`, because the audit found both discoverability defects and a
-real unsafe `monitor-task.py help` path. The standard itself is repository-wide
-and does not require every CLI to be migrated in one change.
+`monitor-task.py` is the first bounded consumer pilot because it had a real
+unsafe `help`-as-task path and cleanly separates one-shot inspection from
+polling. `scp-api.py` and `install-host.py` remain follow-on migrations. The
+Debian installer needs its own delivery-boundary review before it imports this
+library: its remote bootstrap must not assume the repository checkout or an
+online package install exists. The standard itself is repository-wide and does
+not require every CLI to be migrated in one change.

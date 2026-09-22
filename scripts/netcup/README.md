@@ -7,9 +7,20 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 ## First-time setup
 
-From this directory, create the local secret file. A target is optional in an
-interactive terminal: the installer can ask the authenticated API for a
-server list later.
+From the repository root, make an isolated environment for these scripts. The
+remaining setup commands below assume the current directory is `scripts/netcup`.
+The task monitor uses the repository's `cli-extended` package, installed in the
+same environment that runs the scripts:
+
+```bash
+cd scripts/netcup
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --editable ../../libraries/cli-extended
+```
+
+Then create the local secret file. A target is optional in an interactive
+terminal: the installer can ask the authenticated API for a server list later.
 
 ```bash
 cp .env.example .env
@@ -183,16 +194,22 @@ Run the gather-and-install wizard and monitor the provider task:
 
 Use `install --config FILE` for a separately prepared complete payload. The
 file-driven command monitors the task by default; `--no-monitor` returns after
-task creation. To monitor a task after the installer has exited, use the
-standalone task watcher:
+task creation. To inspect or monitor a task after the installer has exited,
+use the standalone task CLI. `show` fetches once; `watch` polls until the
+provider reports a terminal state. Bare invocation prints usage and performs
+no credential or API work.
 
 ```bash
-./monitor-task.py TASK_UUID
-./monitor-task.py TASK_UUID --json
+./monitor-task.py show TASK_UUID
+./monitor-task.py show TASK_UUID --json
+./monitor-task.py watch TASK_UUID
+./monitor-task.py watch TASK_UUID --poll 2
 ```
 
-Avoid `--raw` unless the response is being handled as a secret: task payloads
-can contain values such as the generated root password.
+JSON output redacts response fields such as generated root passwords. The
+explicit `--debug-raw` opt-out prints secret-bearing fields and request/response
+diagnostics; it warns on stderr. `watch` progress also goes to stderr, so it
+does not corrupt machine-readable output. Pressing Ctrl-C cancels cleanly.
 
 During the interactive key step, existing Netcup account keys are listed.
 Enter selects all, `none` selects no persistent account key, and a

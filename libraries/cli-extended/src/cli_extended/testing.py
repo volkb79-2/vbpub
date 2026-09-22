@@ -85,7 +85,7 @@ def assert_cli_contract(
             f"invalid invocation {label!r} lacks an error diagnostic",
         )
         _assert(
-            "usage:" in result.stderr,
+            "usage:" in result.stderr.lower(),
             f"invalid invocation {label!r} did not include command usage/help",
         )
         _assert("Traceback" not in result.stderr, f"{label!r} printed a traceback")

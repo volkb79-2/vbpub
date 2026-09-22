@@ -112,6 +112,34 @@ contains installer/SSH policy only, and `monitor-task.toml` contains
 monitor polling only. Frontends import `netcup_scp_client`; they do not shell
 out to `scp-api.py` or duplicate token/configuration setup.
 
+## Task monitor CLI boundary
+
+The task monitor exposes two different operations as verbs: `show TASK_UUID`
+fetches one snapshot, while `watch TASK_UUID` polls until a terminal provider
+state. JSON is a presentation choice on `show`, not a separate operation;
+cancel remains under `scp-api.py tasks cancel`, the API-owning mutation path.
+The `--poll` interval belongs only to `watch` and defaults from
+`monitor-task.toml`.
+
+The monitor uses `cli-extended` to generate command registration, grouped help,
+common diagnostics, JSON output, progress, clean cancellation, and help/version
+behavior from one structured declaration. This is a pilot consumer, not a
+reason for other Netcup CLIs to import a repository path implicitly: the
+package must be installed in the invoking Python environment. Its family
+version is explicitly sourced from `scripts/netcup/VERSION`; the monitor does
+not borrow the helper package's version.
+
+Help, version, and bare invocation construct the interface only. They do not
+load `.env`, read API endpoint or polling settings, obtain a token, or contact
+Netcup. Authentication and settings load inside the selected handler. The
+monitor validates the task UUID and rejects non-object API responses, while
+treating missing optional task fields as unknown rather than crashing.
+`cli-extended` owns the invocation shell; the Netcup handler still owns
+provider-specific redaction, field interpretation, request semantics, and the
+meaning of terminal states. `--debug-raw` is deliberately conspicuous because
+both JSON output and shared-client request/response diagnostics can then expose
+secret-bearing task data.
+
 ## Account-wide API exploration
 
 The SCP API makes most inventory endpoints server-scoped: there is no

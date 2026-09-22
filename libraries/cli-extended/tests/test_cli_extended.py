@@ -508,7 +508,10 @@ def test_black_box_contract_helper_and_help_paths_do_not_call_handlers():
         invoke,
         IDENTITY,
         ("status", "apply"),
-        invalid_invocations={"missing apply file": ("apply",)},
+        invalid_invocations={
+            "missing apply file": ("apply",),
+            "short help option is unsupported": ("-h",),
+        },
     )
     assert side_effects == []
 

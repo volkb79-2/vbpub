@@ -79,18 +79,20 @@ distinct from `watch`. Keep cancellation in the API-owning CLI if it already
 owns task mutations; do not create two interfaces for the same operation by
 default.
 
-For the Netcup task monitor, the migration split is therefore:
+The Netcup task monitor is the first consumer of this split:
 
-| Current behavior | Verb-oriented interface |
+| Operation | Netcup command |
 | --- | --- |
-| bare UUID polls until terminal | `watch TASK_UUID`; `--poll` belongs to a `STOP CONDITIONS` option group |
-| `--json` fetches once and exits | `show TASK_UUID --json` |
-| `--json --raw` includes secret-bearing response fields | `show TASK_UUID --json --debug-raw`, with the shared warning and explicit redaction opt-out |
-| `--dry-run` only fetches once to prove the task exists | `show TASK_UUID`; add `check` only if it establishes a stronger, separately useful preflight guarantee |
-| cancel a task | keep under `scp-api.py tasks cancel`, which owns API mutations |
+| Fetch one task snapshot | `show TASK_UUID`; add `--json` for the redacted JSON response |
+| Poll until a terminal state | `watch TASK_UUID`; `--poll` belongs to a `STOP CONDITIONS` option group |
+| Inspect secret-bearing response fields | `show TASK_UUID --json --debug-raw`; this prints a warning and disables response redaction |
+| Cancel a task | keep under `scp-api.py tasks cancel`, which owns API mutations |
 
-This keeps presentation choices such as JSON from becoming verbs, while making
-the actual one-shot and polling operations explicit.
+Bare invocation prints generated help. Help and version discovery do not load
+credentials or API settings. The consumer validates UUID syntax and the API's
+top-level response type, but retains ownership of Netcup task fields and
+terminal-state meaning. Do not add a separate `check` verb for a one-fetch
+preflight: `show` already provides that operation.
 
 The registry uses one width-aware formatter for generated top-level and
 command-specific help. Terminal output follows the detected terminal width,

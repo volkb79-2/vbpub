@@ -14,14 +14,14 @@ directory is on sys.path" behavior, same as any other sibling module.
 """
 from __future__ import annotations
 
-import json
 import http.client
+import json
+import logging
 import os
 import re
 import socket
 import sys
 import time
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,9 +29,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import tomllib
+
 # --- module-level config, set by each importer before use ----------------
 
 DEBUG = False
+DEBUG_RAW = False
+DEBUG_LOGGER: logging.Logger | None = None
 BASE_URL: Optional[str] = None
 KEYCLOAK_URL: Optional[str] = None
 
@@ -68,8 +72,11 @@ def reverse_dns(ip: str) -> Optional[str]:
 
 
 def log_debug(message: str) -> None:
-    """Print debug messages if DEBUG is enabled."""
+    """Emit debug messages through a CLI logger or legacy stderr fallback."""
     if DEBUG:
+        if DEBUG_LOGGER is not None:
+            DEBUG_LOGGER.debug(message)
+            return
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[DEBUG] {timestamp} {message}", file=sys.stderr)
 
@@ -369,6 +376,11 @@ def _redact_for_log(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_for_log(v) for v in value]
     return value
+
+
+def _debug_value(value: Any) -> Any:
+    """Apply the shared client's raw-debug opt-out only when explicitly set."""
+    return value if DEBUG_RAW else _redact_for_log(value)
 
 
 # --- low-level HTTP ----------------------------------------------------------
@@ -685,14 +697,14 @@ class NetcupSCPClient:
                 result = _http_json("GET", url, headers=self._auth_headers(), params=params)
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result
 
     def post(self, endpoint: str, data: Optional[Any] = None) -> Any:
         """Make POST request to API"""
         url = f"{self.base_url}{endpoint}"
         log_debug(f"POST {url}")
-        log_debug(f"Payload: {json.dumps(_redact_for_log(data), indent=2)}")
+        log_debug(f"Payload: {json.dumps(_debug_value(data), indent=2)}")
         try:
             result = _http_json("POST", url, headers=self._auth_headers(), json_body=data)
         except HTTPStatusError as e:
@@ -702,14 +714,14 @@ class NetcupSCPClient:
                 result = _http_json("POST", url, headers=self._auth_headers(), json_body=data)
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result
 
     def patch(self, endpoint: str, data: Dict, params: Optional[Dict] = None) -> Any:
         """Make PATCH request to API."""
         url = f"{self.base_url}{endpoint}"
         log_debug(f"PATCH {url} {params or ''}")
-        log_debug(f"Payload: {json.dumps(_redact_for_log(data), indent=2)}")
+        log_debug(f"Payload: {json.dumps(_debug_value(data), indent=2)}")
         headers = self._auth_headers()
         headers["Content-Type"] = "application/merge-patch+json"
         try:
@@ -723,7 +735,7 @@ class NetcupSCPClient:
                 result = _http_json("PATCH", url, headers=headers, params=params, json_body=data)
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result
 
     def put(self, endpoint: str, data: Optional[Any] = None, params: Optional[Dict] = None) -> Any:
@@ -731,7 +743,7 @@ class NetcupSCPClient:
         url = f"{self.base_url}{endpoint}"
         log_debug(f"PUT {url} {params or ''}")
         if data is not None:
-            log_debug(f"Payload: {json.dumps(_redact_for_log(data), indent=2)}")
+            log_debug(f"Payload: {json.dumps(_debug_value(data), indent=2)}")
         try:
             result = _http_json("PUT", url, headers=self._auth_headers(), params=params, json_body=data)
         except HTTPStatusError as e:
@@ -741,7 +753,7 @@ class NetcupSCPClient:
                 result = _http_json("PUT", url, headers=self._auth_headers(), params=params, json_body=data)
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result
 
     def delete(self, endpoint: str, params: Optional[Dict] = None) -> Any:
@@ -757,7 +769,7 @@ class NetcupSCPClient:
                 result = _http_json("DELETE", url, headers=self._auth_headers(), params=params)
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result
 
     def upload_file(self, url: str, path: Path, *, offset: int = 0, size: Optional[int] = None) -> Dict[str, str]:
@@ -782,5 +794,5 @@ class NetcupSCPClient:
                 result = _http_json("GET", url, headers=self._auth_headers())
             else:
                 raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
+        log_debug(f"Response: {json.dumps(_debug_value(result), indent=2)}")
         return result

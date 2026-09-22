@@ -1,10 +1,9 @@
 # monitor-task.toml
 #
-# Settings for monitor-task.py. Every key here is REQUIRED - the
-# script refuses to start if any key is missing, and also refuses to start
-# if this file contains any key NOT listed here (typo/stale-key protection).
-# There is no Python-side fallback for any of these. CLI flags (--poll)
-# override this per-run.
+# Polling settings for `monitor-task.py watch`. `show`, help, and version do
+# not read this file. The watch verb refuses to run if a required key is
+# missing or if this file contains an unknown key (typo/stale-key protection).
+# There is no Python-side fallback; `watch --poll` overrides this value.
 
 [monitor]
 poll_interval = 5.0
