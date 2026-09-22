@@ -11,6 +11,8 @@ The package exposes these stable operations:
 | API | Contract |
 |---|---|
 | `discover_git_context` | Given a path, returns the Git top level, canonical common directory, branch, and HEAD; Git errors are typed refusals. |
+| `discover_git_root` | Returns the Git top level and canonical common directory without requiring a commit, so unborn repositories can still be mapped safely. |
+| `list_git_worktrees` | Returns Git's ordered native worktree inventory from NUL-framed porcelain. Each `GitWorktree` includes its literal absolute path, full HEAD (when present), normalized branch or detached/bare state, primary status, and Git's locked/prunable markers. Parsing never probes or resolves returned paths. |
 | `resolve_invocation` | Given a path and optional `root_folder`, resolves Git facts only. It never guesses a CIU or CMRU root and never reads ambient root variables. |
 | `create_workspace` | Given a source, target, and optional `identity_path`, takes the Git-family lock, validates the branch/path, creates one linked checkout, writes one atomic record, and rolls back the checkout if record creation fails. `identity_path`, when supplied, is the canonical, durable identity input recorded in metadata. |
 | `adopt_workspace` | Given a source, target, and optional `identity_path`, records an already-existing linked checkout only after proving it belongs to the source Git family. |
@@ -27,7 +29,7 @@ identity, durable record path, and opaque resource namespace. Adapters must not
 reconstruct these facts from environment variables.
 
 The package also exports the supporting record and value types used at the
-adapter boundary: `WorkspaceRecord`, `WorkspaceState`, `WorkspaceError`,
+adapter boundary: `GitWorktree`, `WorkspaceRecord`, `WorkspaceState`, `WorkspaceError`,
 `WorkspaceCollisionError`, `Lease`, `ResourceNamespace`, and
 `InvocationContext`. The record constants `CURRENT_RECORD_VERSION` and
 `WORKSPACE_RECORD_DIR` are public so an adapter can diagnose or locate evidence
@@ -36,6 +38,13 @@ operations `canonical_path`, `physical_path`, `workspace_id_for_path`,
 `workspace_lock`, `read_record`, `write_record`, and `list_workspaces` are the
 typed, neutral primitives behind the lifecycle functions above; they do not
 select a product root or read ambient environment state.
+
+`list_git_worktrees` owns native Git worktree inventory for both adapters. It
+uses `--porcelain -z`, preserves whitespace and newline bytes in path names,
+and trusts Git's inventory and `prunable` marker rather than probing a path
+that may belong to another filesystem namespace. The primary is the first
+non-bare Git record; a bare repository has no primary checkout. Malformed
+records and Git errors refuse the whole listing.
 
 ## Identity and paths
 

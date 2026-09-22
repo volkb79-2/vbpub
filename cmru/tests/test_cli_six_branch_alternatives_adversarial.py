@@ -62,16 +62,22 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
 
 
 def test_worktrees_reports_missing_workspace_action(monkeypatch, tmp_path, capsys):
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "missing", "cmru/release/x", "a" * 40)
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "missing", "cmru/release/x", "a" * 40,
+        is_prunable=True,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     assert "action: unavailable here" in capsys.readouterr().out
 
 
 def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch, tmp_path, capsys):
-    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "missing", "cmru/other/x", "a" * 40)
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "missing", "cmru/other/x", "a" * 40,
+        is_prunable=True,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     assert "action: unavailable here" in capsys.readouterr().out
@@ -80,8 +86,10 @@ def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch,
 def test_worktrees_unknown_purpose_existing_path_has_no_action_hint(monkeypatch, tmp_path, capsys):
     path = tmp_path / "existing"
     path.mkdir()
-    workspace = transaction.ReleaseWorkspace(tmp_path, path, "cmru/other/x", "a" * 40)
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"))
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, path, "cmru/other/x", "a" * 40, is_prunable=False
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     assert "other: cmru/other/x" in capsys.readouterr().out

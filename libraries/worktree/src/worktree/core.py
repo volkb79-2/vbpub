@@ -28,6 +28,7 @@ WORKSPACE_RECORD_DIR = ".workspace-instances"
 _LOCK_NAME = "workspace-instance.lock"
 _IDENTITY_PATH_KEY = "workspace.identity_path"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_GIT_OBJECT_ID_RE = re.compile(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _LEASE_MODES = frozenset({"held", "perpetual"})
 _BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 _ID_SPACE = 36**6
@@ -156,6 +157,20 @@ class InvocationContext:
     ciu_root: Path | None = None
     physical_source_git_root: Path | None = None
     physical_worktree_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class GitWorktree:
+    """Git's registered facts for one checkout, without local path probes."""
+
+    path: Path
+    head: str | None
+    branch: str | None
+    is_primary: bool
+    is_detached: bool = False
+    is_bare: bool = False
+    is_prunable: bool = False
+    is_locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -365,15 +380,166 @@ def _git(cwd: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def discover_git_context(path: Path | str) -> tuple[Path, Path, str, str]:
-    """Return ``(top, common_dir, branch, head)`` for *path*."""
+def _git_bytes(cwd: Path, *args: str) -> bytes:
+    """Run a Git command whose NUL-framed output must preserve path bytes."""
 
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, check=False
+        )
+    except OSError as exc:
+        raise WorkspaceError(
+            f"git {' '.join(args)} could not start in {cwd}: {exc}",
+            category="git-error",
+        ) from exc
+    if result.returncode:
+        detail = os.fsdecode(result.stderr or result.stdout).strip()
+        raise WorkspaceError(
+            f"git {' '.join(args)} failed ({result.returncode}): {detail}",
+            category="git-error",
+        )
+    return result.stdout
+
+
+def _parse_git_worktrees(payload: bytes) -> list[GitWorktree]:
+    """Parse `git worktree list --porcelain -z` without probing its paths."""
+
+    if not payload or not payload.endswith(b"\0\0"):
+        raise WorkspaceError(
+            "git worktree list returned empty or unterminated porcelain data",
+            category="git-error",
+        )
+
+    records: list[dict[bytes, bytes]] = []
+    current: dict[bytes, bytes] = {}
+    for token in payload.split(b"\0"):
+        if not token:
+            if current:
+                records.append(current)
+                current = {}
+            continue
+        key, separator, value = token.partition(b" ")
+        if key == b"worktree":
+            if current or not separator or not value:
+                raise WorkspaceError(
+                    "git worktree list returned a malformed worktree path field",
+                    category="git-error",
+                )
+        elif not current:
+            raise WorkspaceError(
+                "git worktree list returned a field before its worktree path",
+                category="git-error",
+            )
+        if key in current:
+            raise WorkspaceError(
+                f"git worktree list returned duplicate {os.fsdecode(key)!r} field",
+                category="git-error",
+            )
+        current[key] = value if separator else b""
+
+    if current or not records:
+        raise WorkspaceError(
+            "git worktree list returned an incomplete or empty inventory",
+            category="git-error",
+        )
+
+    worktrees: list[GitWorktree] = []
+    bare_seen = False
+    for index, fields in enumerate(records):
+        path_bytes = fields.get(b"worktree", b"")
+        path = Path(os.fsdecode(path_bytes))
+        if not path_bytes or not path.is_absolute():
+            raise WorkspaceError(
+                f"git worktree list returned a non-absolute path: {path!s}",
+                category="git-error",
+            )
+
+        bare = b"bare" in fields
+        detached = b"detached" in fields
+        locked = b"locked" in fields
+        prunable = b"prunable" in fields
+        head_bytes = fields.get(b"HEAD")
+        branch_bytes = fields.get(b"branch")
+        if bare:
+            if index != 0 or bare_seen or detached or branch_bytes is not None:
+                raise WorkspaceError(
+                    "git worktree list returned an invalid bare-worktree record",
+                    category="git-error",
+                )
+            if head_bytes is not None and not _GIT_OBJECT_ID_RE.fullmatch(head_bytes):
+                raise WorkspaceError(
+                    f"git worktree list returned an invalid HEAD for bare repository {path}",
+                    category="git-error",
+                )
+            bare_seen = True
+        else:
+            if head_bytes is None or not _GIT_OBJECT_ID_RE.fullmatch(head_bytes):
+                raise WorkspaceError(
+                    f"git worktree list returned an invalid HEAD for {path}",
+                    category="git-error",
+                )
+            if detached == (branch_bytes is not None):
+                raise WorkspaceError(
+                    f"git worktree list returned inconsistent branch state for {path}",
+                    category="git-error",
+                )
+
+        branch: str | None = None
+        if branch_bytes is not None:
+            prefix = b"refs/heads/"
+            if not branch_bytes.startswith(prefix) or len(branch_bytes) == len(prefix):
+                raise WorkspaceError(
+                    f"git worktree list returned an invalid branch for {path}",
+                    category="git-error",
+                )
+            branch = os.fsdecode(branch_bytes[len(prefix):])
+
+        worktrees.append(
+            GitWorktree(
+                path=path,
+                head=os.fsdecode(head_bytes) if head_bytes is not None else None,
+                branch=branch,
+                is_primary=index == 0 and not bare,
+                is_detached=detached,
+                is_bare=bare,
+                is_prunable=prunable,
+                is_locked=locked,
+            )
+        )
+    return worktrees
+
+
+def list_git_worktrees(path: Path | str) -> list[GitWorktree]:
+    """Return Git's ordered worktree inventory using NUL-safe path framing.
+
+    Git lists the primary checkout first. A bare repository has no primary
+    checkout, so its bare record and all linked checkouts are marked non-primary.
+    Paths are taken literally from Git and are never stat'd or resolved here.
+    """
+
+    cwd = canonical_path(path)
+    if not _is_directory(cwd):
+        cwd = cwd.parent
+    return _parse_git_worktrees(
+        _git_bytes(cwd, "worktree", "list", "--porcelain", "-z")
+    )
+
+
+def discover_git_root(path: Path | str) -> tuple[Path, Path]:
+    """Return ``(top, common_dir)`` even for an unborn Git repository."""
     cwd = canonical_path(path)
     if not _is_directory(cwd):
         cwd = cwd.parent
     top = canonical_path(_git(cwd, "rev-parse", "--show-toplevel"))
     common_raw = Path(_git(top, "rev-parse", "--git-common-dir"))
     common = canonical_path(common_raw if common_raw.is_absolute() else top / common_raw)
+    return top, common
+
+
+def discover_git_context(path: Path | str) -> tuple[Path, Path, str, str]:
+    """Return ``(top, common_dir, branch, head)`` for *path*."""
+
+    top, common = discover_git_root(path)
     branch = _git(top, "branch", "--show-current")
     head = _git(top, "rev-parse", "HEAD")
     if not branch:

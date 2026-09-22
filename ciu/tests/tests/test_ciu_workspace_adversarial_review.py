@@ -657,7 +657,7 @@ def _removal_fixture(monkeypatch, tmp_path):
     path = repo / ".worktrees" / "demo"
     path.mkdir(parents=True)
     (path / ".git").write_text("gitdir: x\n", encoding="utf-8")
-    wt = worktree.WorktreeInfo(path, "demo", "a" * 8)
+    wt = worktree.WorktreeInfo(path, "demo", "a" * 8, is_primary=False)
     monkeypatch.setattr(worktree, "find_instance_record", lambda *_args: None)
     monkeypatch.setattr(worktree, "find_worktree", lambda *_args: wt)
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))

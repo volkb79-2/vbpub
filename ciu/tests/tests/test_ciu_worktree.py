@@ -136,26 +136,34 @@ class TestCreateRemoveList:
         assert any(not info.is_primary and info.path.name == "wt1" for info in infos)
 
     def test_list_worktrees_preserves_git_detached_state(self, tmp_path, monkeypatch):
-        output = (
-            f"worktree {tmp_path / 'primary'}\nHEAD 11111111\nbranch refs/heads/main\n\n"
-            f"worktree {tmp_path / 'detached'}\nHEAD 22222222\ndetached\n\n"
-        )
-        monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(["git"], 0, output, ""),
-        )
-        assert [item.branch for item in worktree.list_worktrees(tmp_path)] == [
-            "main",
-            "(detached)",
+        shared = worktree._shared_worktree()
+        output = [
+            shared.GitWorktree(
+                path=tmp_path / "primary", head="1" * 40, branch="main",
+                is_primary=True,
+            ),
+            shared.GitWorktree(
+                path=tmp_path / "detached", head="2" * 40, branch=None,
+                is_primary=False, is_detached=True,
+            ),
         ]
+        monkeypatch.setattr(
+            shared,
+            "list_git_worktrees",
+            lambda *_args: output,
+        )
+        infos = worktree.list_worktrees(tmp_path)
+        assert [item.branch for item in infos] == ["main", "(detached)"]
+        assert [item.head for item in infos] == ["11111111", "22222222"]
+        assert [item.is_primary for item in infos] == [True, False]
 
     def test_list_worktrees_surfaces_git_failure(self, tmp_path, monkeypatch):
+        shared = worktree._shared_worktree()
         monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(
-                ["git"], 1, "", "no repository"
+            shared,
+            "list_git_worktrees",
+            lambda *_args: (_ for _ in ()).throw(
+                shared.WorkspaceError("no repository", category="git-error")
             ),
         )
         with pytest.raises(worktree.WorktreeError, match="no repository"):

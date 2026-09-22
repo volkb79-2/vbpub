@@ -70,3 +70,25 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
 
     assert events == ["prepare", "commit", "plan:PWMCP_VERSION=1.61.2-r3", "preview"]
     assert "preparing external version inputs for dry-run" in capsys.readouterr().out
+
+
+def test_external_version_without_prepare_is_skipped(monkeypatch, tmp_path):
+    project = SimpleNamespace(
+        version=SimpleNamespace(strategy="external:VERSION"),
+        steps={},
+    )
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("a project without prepare must not be prepared")
+
+    monkeypatch.setattr(cli, "apply_project_release_env", unexpected)
+    monkeypatch.setattr(cli, "run_project_step", unexpected)
+    monkeypatch.setattr(cli, "_commit_prepared_generated", unexpected)
+
+    cli._prepare_dry_run_external_versions(
+        tmp_path,
+        {"external": project},
+        ["external"],
+        github_config=SimpleNamespace(),
+        env_config=SimpleNamespace(),
+    )

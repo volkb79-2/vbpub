@@ -232,6 +232,10 @@ cmru worktrees                                   # every retained failed build/r
 cmru cleanup --discard-build-worktree <PATH> --yes
 ```
 
+For a script, use `cmru worktrees --json`; `visible: false` means Git marks the
+registered path prunable from this filesystem view, so run the suggested
+recovery command from the view that owns that checkout instead.
+
 When the central CMRU root registers projects from independent Git repositories, the same
 selection is dispatched as one transaction per Git family. Each repository therefore gets its
 own lock, candidate branch, workspace identity, and promotion result; cross-repository release

@@ -200,8 +200,13 @@ def test_transaction_retain_release_artifacts_writes_authenticated_manifest(tmp_
 def test_transaction_list_workspaces_keeps_missing_recorded_paths_visible(tmp_path):
     root = repo(tmp_path)
     missing = tmp_path / "gone"
-    raw = f"worktree {missing}\nHEAD {'a' * 40}\nbranch refs/heads/cmru/release/old\n"
-    with patch.object(transaction, "_git", return_value=raw):
+    shared = transaction._shared_worktree()
+    entry = shared.GitWorktree(
+        path=missing, head="a" * 40, branch="cmru/release/old",
+        is_primary=False, is_prunable=True,
+    )
+    with patch.object(shared, "list_git_worktrees", return_value=[entry]):
         listed = transaction.list_cmru_workspaces(root)
     assert listed[0].path == missing
     assert listed[0].base == ""
+    assert listed[0].is_prunable

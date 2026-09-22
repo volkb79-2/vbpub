@@ -268,8 +268,8 @@ class TestWorktreeListDispatch:
             wt_mod,
             "list_worktrees",
             lambda repo_root: [
-                wt_mod.WorktreeInfo(primary, "main", "abc12345"),
-                wt_mod.WorktreeInfo(linked, "pkg", "def45678"),
+                wt_mod.WorktreeInfo(primary, "main", "abc12345", is_primary=True),
+                wt_mod.WorktreeInfo(linked, "pkg", "def45678", is_primary=False),
             ],
         )
         assert cli._worktree(["list"]) == 0

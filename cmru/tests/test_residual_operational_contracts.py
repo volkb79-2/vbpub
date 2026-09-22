@@ -12,10 +12,26 @@ from cmru import handlers, release, runner, tester_gate, transaction
 
 def test_transaction_lists_invisible_retained_worktrees_without_mutating_them(monkeypatch, tmp_path):
     missing = tmp_path / "missing-release"
-    porcelain = f"worktree {missing}\nbranch refs/heads/cmru/release/old\n"
-    monkeypatch.setattr(transaction, "_git", lambda *args, **kwargs: porcelain)
+    shared = transaction._shared_worktree()
+    entry = shared.GitWorktree(
+        path=missing,
+        head="a" * 40,
+        branch="cmru/release/old",
+        is_primary=False,
+        is_prunable=True,
+    )
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [entry])
+    monkeypatch.setattr(
+        Path,
+        "is_dir",
+        lambda self: pytest.fail(f"adapter must not stat the Git path {self}"),
+    )
     found = transaction.list_cmru_workspaces(tmp_path)
-    assert found == [transaction.ReleaseWorkspace(tmp_path, missing, "cmru/release/old", "")]
+    assert found == [
+        transaction.ReleaseWorkspace(
+            tmp_path, missing, "cmru/release/old", "", is_prunable=True
+        )
+    ]
 
 
 def test_transaction_discard_build_workspace_refuses_paths_outside_managed_root(tmp_path):

@@ -251,6 +251,17 @@ def test_tester_gate_public_cli_strips_separator_command(monkeypatch, tmp_path):
     assert commands == [["true"]]
 
 
-def test_transaction_worktree_listing_ignores_malformed_records(tmp_path, monkeypatch):
-    monkeypatch.setattr(transaction, "_git", lambda *args, **kwargs: "worktree\n\n")
+def test_transaction_worktree_listing_preserves_shared_inventory_refusals(tmp_path, monkeypatch):
+    shared = transaction._shared_worktree()
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [])
     assert transaction.list_cmru_workspaces(tmp_path) == []
+
+    monkeypatch.setattr(
+        shared,
+        "list_git_worktrees",
+        lambda _root: (_ for _ in ()).throw(
+            shared.WorkspaceError("malformed inventory", category="git-error")
+        ),
+    )
+    with pytest.raises(shared.WorkspaceError, match="malformed inventory"):
+        transaction.list_cmru_workspaces(tmp_path)

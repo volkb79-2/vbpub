@@ -216,25 +216,33 @@ def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, 
 
 
 def test_git_common_dir_returns_none_outside_a_repo(tmp_path, monkeypatch):
+    shared = cli.transaction._shared_worktree()
     monkeypatch.setattr(
-        handlers.subprocess, "run",
-        lambda *_a, **_kw: argparse.Namespace(returncode=128, stdout=""),
+        shared,
+        "discover_git_root",
+        lambda _path: (_ for _ in ()).throw(
+            shared.WorkspaceError("not a git repo", category="git-error")
+        ),
     )
     assert handlers._git_common_dir(tmp_path) is None
 
 
-def test_git_common_dir_resolves_relative_output_against_cwd_parent(tmp_path, monkeypatch):
+def test_git_common_dir_uses_shared_git_context(tmp_path, monkeypatch):
+    shared = cli.transaction._shared_worktree()
     monkeypatch.setattr(
-        handlers.subprocess, "run",
-        lambda *_a, **_kw: argparse.Namespace(returncode=0, stdout=".git\n"),
+        shared,
+        "discover_git_root",
+        lambda _path: (tmp_path, (tmp_path / ".git").resolve()),
     )
     assert handlers._git_common_dir(tmp_path) == (tmp_path / ".git").resolve()
 
 
 def test_git_common_dir_passes_through_an_already_absolute_path(tmp_path, monkeypatch):
+    shared = cli.transaction._shared_worktree()
     monkeypatch.setattr(
-        handlers.subprocess, "run",
-        lambda *_a, **_kw: argparse.Namespace(returncode=0, stdout="/elsewhere/.git\n"),
+        shared,
+        "discover_git_root",
+        lambda _path: (tmp_path, Path("/elsewhere/.git")),
     )
     assert handlers._git_common_dir(tmp_path) == Path("/elsewhere/.git")
 

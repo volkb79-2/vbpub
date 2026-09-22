@@ -64,8 +64,11 @@ clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `ge
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
 `cmru-release-*` and `cmru-build-*` worktree (and legacy nested `cmru/release/*`,
 `cmru/build/*` ones; see S-CLI.5b), including a path not visible through the current
-bind-mount view. It MUST print the exact `--resume` or `--discard-build-worktree` command only
-for a visible path; it MUST never guess a cleanup target.
+bind-mount view. The adapter MUST use `worktree.list_git_worktrees()` and Git's `prunable`
+marker to represent current-view availability; it MUST NOT stat a literal path that may name
+another filesystem namespace. It MUST print the exact `--resume` or `--discard-build-worktree`
+command only when the shared inventory marks the path non-prunable; it MUST never guess a
+cleanup target. JSON `visible` has that same meaning.
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
 working tree. For each selected project it resolves that project's Git family and acquires
@@ -225,8 +228,10 @@ Discovery, resume, and cleanup recognise a transaction branch through predicates
 created here AND the legacy nested `cmru/<purpose>/` prefix, so a worktree retained under either
 the current scheme or the OLDER `cmru/<purpose>/<12-hex>` naming remains just as discoverable
 (`cmru worktrees`, `list_cmru_workspaces`), resumable (`--resume`), and removable — nothing in
-discovery or cleanup parses the directory name; only the branch and whatever `git worktree list
---porcelain` itself reports are load-bearing.
+discovery or cleanup parses the directory name. The shared `worktree.list_git_worktrees()` API
+owns the NUL-safe `git worktree list --porcelain -z` parser; CMRU filters its typed branch and
+HEAD facts by transaction policy and preserves Git's `prunable` state without probing a path
+that may belong to another filesystem namespace.
 
 ### File conventions (all `cmru.`-prefixed)
 

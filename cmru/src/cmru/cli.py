@@ -2244,6 +2244,12 @@ def _config_hint(repo_root: Path) -> str:
     return ""
 
 
+def _current_git_root() -> Path:
+    """Resolve the current repository root through the shared Git API."""
+
+    return transaction._shared_worktree().discover_git_root(Path.cwd())[0]
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
@@ -2294,12 +2300,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         parser.add_argument("--json", action="store_true", help="Emit machine-readable records")
         vargs = parser.parse_args(rest)
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False,
-        )
-        if result.returncode or not result.stdout.strip():
-            parser.error("cmru worktrees must run inside the repository whose worktrees you want to inspect")
-        repo_root = Path(result.stdout.strip()).resolve()
+        shared = transaction._shared_worktree()
+        try:
+            repo_root = _current_git_root()
+        except shared.WorkspaceError as exc:
+            parser.error(
+                "cmru worktrees must run inside the repository whose worktrees "
+                f"you want to inspect: {exc}"
+            )
         workspaces = transaction.list_cmru_workspaces(repo_root)
         if vargs.json:
             print(json.dumps([
@@ -2308,7 +2316,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "branch": workspace.branch,
                     "path": str(workspace.path),
                     "source_commit": workspace.base or None,
-                    "visible": workspace.path.is_dir(),
+                    "visible": not workspace.is_prunable,
                 }
                 for workspace in workspaces
             ], indent=2, sort_keys=True))
@@ -2320,14 +2328,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 purpose = transaction.workspace_purpose(workspace.branch)
                 source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
-                if purpose == "release" and workspace.path.is_dir():
+                if purpose == "release" and not workspace.is_prunable:
                     print(f"  resume: cmru release{config_hint} --resume {shlex.quote(str(workspace.path))}")
-                elif purpose == "build" and workspace.path.is_dir():
+                elif purpose == "build" and not workspace.is_prunable:
                     print(
                         "  discard: cmru cleanup"
                         f"{config_hint} --discard-build-worktree {shlex.quote(str(workspace.path))} --yes"
                     )
-                elif not workspace.path.is_dir():
+                elif workspace.is_prunable:
                     print("  action: unavailable here; inspect or clean it from the filesystem view that created it")
 
     elif verb == "run-step":

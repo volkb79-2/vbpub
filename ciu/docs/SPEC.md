@@ -4308,9 +4308,10 @@ own CIU configuration root's global table:
 max_concurrent_instances = 3
 ```
 
-"Primary Git worktree" (`worktree.primary_worktree_root`, the entry
-`git worktree list` marks primary) and "this process's own CIU configuration
-root" (`REPO_ROOT`, resolved by `dev.py:resolve_repo_root`'s CIU-marker walk)
+"Primary Git worktree" (`worktree.primary_worktree_root`, the primary entry
+reported by `libraries/worktree`'s NUL-safe Git inventory) and "this process's
+own CIU configuration root" (`REPO_ROOT`, resolved by
+`dev.py:resolve_repo_root`'s CIU-marker walk)
 are NOT the same path in a monorepo — the CIU marker can sit below the git
 top-level (this project's own `ciu/` under the `vbpub` git root is exactly
 this shape). `worktree.primary_ciu_root(repo_root)` derives the offset once —
@@ -4355,7 +4356,9 @@ moment it tries to enumerate worktrees for a cap it cannot actually honour,
 rather than silently treating a real ambient request as "no cap".
 
 **The deployment classifier.** Candidates are exclusively the entries in
-`git worktree list --porcelain`; the primary is always included. A candidate
+`worktree.list_git_worktrees()`; its parser consumes Git's
+`--porcelain -z` inventory and marks the primary without probing `.git` paths.
+The primary is always included. A candidate
 is *registered* only when its own
 `<git-worktree>/<ciu-root-offset>/ciu.instance.generated.toml` carries a
 `[ciu.instance.generated]` table that parses and supplies a distinct,

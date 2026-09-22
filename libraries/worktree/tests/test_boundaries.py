@@ -73,6 +73,7 @@ def test_path_math_git_errors_and_invocation_resolution(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="non-negative"):
         core._base36(-1)
     assert core._base36(0) == "0"
+    assert core._absolute_lexical_path("relative/path").is_absolute()
     monkeypatch.setattr(
         core.subprocess,
         "run",
@@ -105,6 +106,16 @@ def test_path_math_git_errors_and_invocation_resolution(monkeypatch, tmp_path):
     invocation = core.resolve_invocation(tmp_path / "nested", root_folder=tmp_path)
     assert invocation.invocation_dir == (tmp_path / "nested").resolve()
     assert invocation.worktree_path == tmp_path
+
+
+def test_git_root_discovery_does_not_require_a_commit(tmp_path):
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+
+    assert core.discover_git_root(repo) == (repo.resolve(), (repo / ".git").resolve())
+    with pytest.raises(WorkspaceError, match="rev-parse HEAD failed"):
+        core.discover_git_context(repo)
 
 
 def test_physical_translation_and_identity_never_resolve_namespace_paths(
@@ -186,12 +197,26 @@ def test_record_io_and_handle_coercion_errors(repository, tmp_path, monkeypatch)
     context.record_path.write_text(json.dumps(mismatched), encoding="utf-8")
     with pytest.raises(WorkspaceError, match="does not match"):
         core.read_record(context.record_path)
+    misplaced = tmp_path / "misplaced.json"
+    misplaced.write_text(json.dumps(record.as_dict()), encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="does not match its Git-family identity"):
+        core.read_record(misplaced)
     monkeypatch.setattr(core.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(WorkspaceError, match="could not write"):
         core.write_record(record)
     monkeypatch.undo()
     core.write_record(record)
     remove_workspace(context, force=True)
+
+
+def test_path_exists_refuses_filesystem_indeterminacy(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        core.os,
+        "lstat",
+        lambda _path: (_ for _ in ()).throw(PermissionError("injected EACCES")),
+    )
+    with pytest.raises(WorkspaceError, match="could not inspect path.*EACCES"):
+        core._path_exists(tmp_path / "unreadable")
 
 
 def test_workspace_record_enumeration_distinguishes_absent_from_unreadable(
@@ -246,6 +271,18 @@ def test_create_workspace_input_and_git_failure_branches(repository, tmp_path, m
         create_workspace(
             repository, tmp_path / "empty-identity", branch="empty-identity",
             identity_path="", purpose="test",
+        )
+    with pytest.raises(WorkspaceError, match="controlled by identity_path"):
+        core._new_record(
+            source_git_root=repository,
+            worktree_path=tmp_path / "target",
+            physical_worktree_path=tmp_path / "target",
+            git_common_dir=repository / ".git",
+            branch="new-record",
+            base_commit="head",
+            purpose="test",
+            labels={},
+            metadata={"workspace.identity_path": "forbidden"},
         )
     common = repository / ".git"
     monkeypatch.setattr(core, "discover_git_context", lambda _path: (tmp_path / "top", common, "main", "head"))

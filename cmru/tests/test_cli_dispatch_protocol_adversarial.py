@@ -23,7 +23,7 @@ def _config_tuple(tmp_path, projects=None, order=None, defaults=None, steps=None
 
 
 def test_worktrees_json_dispatch_emits_machine_readable_records(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=str(tmp_path), stderr=""))
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     workspaces = [transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/abc", "a" * 40)]
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: workspaces)
     cli.main(["worktrees", "--json"])

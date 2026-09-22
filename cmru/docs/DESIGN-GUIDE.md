@@ -62,6 +62,13 @@ an explicit canonical allocation identity path and keeps it in the durable
 record; resume and cleanup validate the same structured fact instead of
 recomputing a second token from a circular final name.
 
+Native worktree inventory also belongs to that neutral layer. Its NUL-framed
+Git parser preserves literal paths and carries Git's `prunable` fact, avoiding
+both duplicate product parsers and filesystem probes against a path recorded
+in a different mount namespace. CMRU applies only its branch policy; it keeps
+prunable records discoverable but withholds an action that would need the
+unavailable checkout.
+
 ## Runtime ownership is declared
 
 `[runtime].kind` is a closed project vocabulary: `none` or `ciu`. CMRU does not

@@ -31,6 +31,27 @@ shell's `REPO_ROOT`, `ciu.env`, or a translated container path as a substitute
 for the typed context. Do not run local filesystem checks against
 `physical_worktree_path` when that path belongs to another namespace.
 
+For native Git inventory, use the shared API instead of parsing porcelain in a
+product adapter:
+
+```python
+for checkout in worktree.list_git_worktrees(source_repo):
+    if checkout.is_prunable:
+        report_unavailable(checkout.path)
+        continue
+    report_checkout(checkout.path, checkout.branch, checkout.head)
+```
+
+The list is Git-ordered with the primary checkout first. Detached entries have
+`branch is None`; bare records have `is_bare` and are not a primary checkout.
+The paths are literal Git facts, not permission to run filesystem probes
+against paths translated from a host/daemon namespace.
+
+Use `worktree.discover_git_root(path)` when only repository placement is needed
+and the repository may not have a commit yet. `discover_git_context(path)` is
+the stronger contract: it also requires a current branch/HEAD suitable for a
+workspace operation.
+
 Identity uses the lexically normalized absolute path string and does not
 resolve symlinks or query the filesystem. When supplying `identity_path`, pass
 the path whose spelling is the shared identity authority; it is recorded in

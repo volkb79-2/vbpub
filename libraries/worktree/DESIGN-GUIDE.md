@@ -37,6 +37,16 @@ Inventory and inspection distinguish absence from indeterminacy. Only a
 genuinely absent record directory is empty; unreadable state is a refusal, and
 an inaccessible checkout is not reported as missing.
 
+Native Git-worktree inventory is centralized too. `list_git_worktrees()` parses
+`git worktree list --porcelain -z`, so a path containing spaces or newlines is
+not reparsed as presentation text. Its `GitWorktree` records carry Git's
+primary, detached, bare, locked, and prunable facts. The shared layer never
+stats those literal paths: a consumer may be running in a different namespace,
+and Git's own `prunable` marker is the evidence to use when visibility matters.
+CIU adapts these records for its CLI; CMRU filters them by its transaction
+branch policy and takes the reported HEAD rather than running a second parser
+or per-worktree `rev-parse`.
+
 CIU and CMRU therefore share mechanics but not policy. CIU maps one workspace
 to one or more committed CIU roots and adds root identity to runtime names.
 CMRU allocates one context per Git family and coordinates those contexts in

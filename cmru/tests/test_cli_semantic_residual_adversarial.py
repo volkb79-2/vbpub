@@ -77,12 +77,15 @@ def test_isolated_build_requires_declared_artifact_step_and_orders_prepare_gate_
 
 
 def test_worktrees_dispatch_reports_empty_and_inaccessible_records(monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="/repo\n"))
+    monkeypatch.setattr(cli, "_current_git_root", lambda: Path("/repo"))
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [])
     cli.main(["worktrees"])
     assert "No retained CMRU" in capsys.readouterr().out
 
-    workspace = transaction.ReleaseWorkspace(Path("/repo"), Path("/missing"), "cmru/release/x", "a" * 40)
+    workspace = transaction.ReleaseWorkspace(
+        Path("/repo"), Path("/missing"), "cmru/release/x", "a" * 40,
+        is_prunable=True,
+    )
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     output = capsys.readouterr().out

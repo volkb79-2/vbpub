@@ -681,6 +681,84 @@ PYEOF
   run_lint_phase "$scratch"
 }
 
+_assay_gate_container_name=""
+_assay_gate_container_launch_attempted=0
+_assay_gate_container_started=0
+_assay_gate_logs_pid=""
+
+cleanup_assay_gate_container() {
+  local result=$?
+  trap - EXIT
+  if [[ -n "$_assay_gate_logs_pid" ]]; then
+    kill "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
+    wait "$_assay_gate_logs_pid" >/dev/null 2>&1 || true
+    _assay_gate_logs_pid=""
+  fi
+  if [[ "$_assay_gate_container_started" == 1 ]]; then
+    if ! docker rm -f "$_assay_gate_container_name" >/dev/null; then
+      printf 'tester-unified-gate: failed to remove container %s\n' \
+        "$_assay_gate_container_name" >&2
+      [[ $result -ne 0 ]] || result=1
+    fi
+    _assay_gate_container_started=0
+  elif [[ "$_assay_gate_container_launch_attempted" == 1 ]]; then
+    # A failed Docker transport can report an error after the daemon accepted
+    # the named container. Best-effort removal closes that ambiguous window.
+    docker rm -f "$_assay_gate_container_name" >/dev/null 2>&1 || true
+    _assay_gate_container_launch_attempted=0
+  fi
+  exit "$result"
+}
+
+run_registered_tester_container() {
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3"
+  local forwarded_env=() container_id wait_status logs_status
+  _assay_gate_container_name="run-gate-assay-selfhosted-${BASHPID}-${RANDOM}-$(date +%s)"
+  _assay_gate_container_launch_attempted=1
+  _assay_gate_container_started=0
+  _assay_gate_logs_pid=""
+  trap cleanup_assay_gate_container EXIT
+
+  if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
+    forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
+  fi
+
+  printf 'ASSAY_GATE_CONTAINER=%s\n' "$_assay_gate_container_name"
+  container_id="$(docker run -d \
+    --name "$_assay_gate_container_name" \
+    --init \
+    --cgroup-parent="$cgroup_parent" \
+    -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    "${forwarded_env[@]}" \
+    --network=none \
+    --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
+    tester-unified:local \
+    bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
+    || die "could not start named tester-unified container"
+  [[ -n "$container_id" ]] || die "docker run returned an empty container ID"
+  _assay_gate_container_launch_attempted=0
+  _assay_gate_container_started=1
+
+  docker logs --follow "$_assay_gate_container_name" &
+  _assay_gate_logs_pid=$!
+  wait_status="$(docker wait "$_assay_gate_container_name")" \
+    || die "could not collect exit status from $_assay_gate_container_name"
+  [[ "$wait_status" =~ ^[0-9]+$ ]] \
+    || die "docker wait returned a non-decimal exit status: $wait_status"
+
+  if wait "$_assay_gate_logs_pid"; then
+    logs_status=0
+  else
+    logs_status=$?
+  fi
+  _assay_gate_logs_pid=""
+  [[ $logs_status -eq 0 ]] \
+    || die "could not collect logs from $_assay_gate_container_name (exit $logs_status)"
+
+  printf 'ASSAY_GATE_CONTAINER_EXIT=%s\n' "$wait_status"
+  return "$wait_status"
+}
+
 # --- entry points ------------------------------------------------------------
 
 if [[ ${1:-} == "--inner" ]]; then
@@ -709,18 +787,6 @@ fi
 [[ -n "$host_repo_root" ]] || die 'the host repository bind source is empty'
 [[ "$host_repo_root" != *$'\n'* ]] || die 'multiple host repository bind sources were returned'
 
-forwarded_env=()
-if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
-  forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
-fi
-
-docker run --rm \
-  --cgroup-parent="$cgroup_parent" \
-  -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
-  "${forwarded_env[@]}" \
-  --network=none \
-  --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-  tester-unified:local \
-  bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree"
+run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent"
 
 echo 'ASSAY_REGISTERED_GATE_COMPLETE=1'

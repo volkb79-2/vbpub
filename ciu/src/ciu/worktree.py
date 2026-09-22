@@ -196,16 +196,12 @@ WorktreeError = _shared_worktree().WorkspaceError
 
 @dataclass(frozen=True)
 class WorktreeInfo:
-    """One entry from ``git worktree list --porcelain``."""
+    """CIU display record adapted from the neutral Git inventory."""
 
     path: Path
     branch: str
     head: str
-
-    @property
-    def is_primary(self) -> bool:
-        """True for the main checkout (never a candidate for `rm`)."""
-        return not (self.path / ".git").is_file()
+    is_primary: bool
 
 
 # Lease parsing and validation are supplied by the neutral library.  The alias
@@ -686,28 +682,24 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def list_worktrees(repo_root: Path) -> list[WorktreeInfo]:
-    """Every registered worktree, primary first (git's own order)."""
-    res = _git(["worktree", "list", "--porcelain"], repo_root)
-    if res.returncode != 0:
+    """Adapt the neutral, NUL-safe Git inventory to CIU's display record."""
+    try:
+        entries = _shared_worktree().list_git_worktrees(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16] `git worktree list` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
+            f"[S16] could not list Git worktrees for {repo_root}: {exc}"
+        ) from exc
+    return [
+        WorktreeInfo(
+            path=entry.path,
+            branch=entry.branch or (
+                "(detached)" if entry.is_detached else "(bare)" if entry.is_bare else "(unknown)"
+            ),
+            head=(entry.head or "")[:8],
+            is_primary=entry.is_primary,
         )
-    out: list[WorktreeInfo] = []
-    path = head = branch = ""
-    for line in res.stdout.splitlines() + [""]:
-        if line.startswith("worktree "):
-            path = line[len("worktree "):]
-        elif line.startswith("HEAD "):
-            head = line[len("HEAD "):][:8]
-        elif line.startswith("branch "):
-            branch = line[len("branch "):].removeprefix("refs/heads/")
-        elif line.startswith("detached"):
-            branch = "(detached)"
-        elif not line and path:
-            out.append(WorktreeInfo(Path(path), branch or "(unknown)", head))
-            path = head = branch = ""
-    return out
+        for entry in entries
+    ]
 
 
 def find_worktree(repo_root: Path, name: str) -> WorktreeInfo | None:
@@ -4491,18 +4483,16 @@ def git_toplevel(repo_root: Path) -> Path:
     This is the GIT root, which may sit ABOVE this process's own CIU root in
     a monorepo (see :func:`primary_ciu_root`) — never substituted for it.
     """
-    res = _git(["rev-parse", "--show-toplevel"], repo_root)
-    if res.returncode != 0:
+    try:
+        top, _common = _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16.3] `git rev-parse --show-toplevel` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
-        )
-    out = (res.stdout or "").strip()
-    top = Path(out)
-    if not out or not top.is_absolute() or not top.is_dir():
+            f"[S16.3] `git rev-parse --show-toplevel` failed in {repo_root}: {exc}"
+        ) from exc
+    if not top.is_absolute() or not top.is_dir():
         raise WorktreeError(
             f"[S16.3] `git rev-parse --show-toplevel` in {repo_root} did not "
-            f"return one absolute, existing directory: {out!r}"
+            f"return one absolute, existing directory: {str(top)!r}"
         )
     return top
 
@@ -4613,7 +4603,9 @@ def _primary_worktree_table(repo_root: Path) -> Any:
     checkout's configuration is authoritative.
     """
     repo_root = Path(repo_root).resolve()
-    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode != 0:
+    try:
+        _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError:
         return None
     root = primary_ciu_root(repo_root)
     try:
@@ -4825,16 +4817,12 @@ def _git_common_dir(repo_root: Path) -> Path:
     """The ``.git`` directory shared by every linked worktree of *repo_root*'s
     family (S16.3) — the S16.3 lock lives here so it is visible to, and
     shared by, every sibling worktree regardless of which one takes it."""
-    res = _git(["rev-parse", "--git-common-dir"], repo_root)
-    if res.returncode != 0:
+    try:
+        _top, common = _shared_worktree().discover_git_root(repo_root)
+    except WorktreeError as exc:
         raise WorktreeError(
-            f"[S16.3] `git rev-parse --git-common-dir` failed in {repo_root}: "
-            f"{(res.stderr or res.stdout).strip()}"
-        )
-    out = (res.stdout or "").strip()
-    common = Path(out)
-    if not common.is_absolute():
-        common = (Path(repo_root) / common).resolve()
+            f"[S16.3] `git rev-parse --git-common-dir` failed in {repo_root}: {exc}"
+        ) from exc
     return common
 
 

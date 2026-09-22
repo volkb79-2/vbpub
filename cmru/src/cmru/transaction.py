@@ -47,9 +47,7 @@ def _git(repo_root: Path, *args: str, check: bool = True) -> str:
 
 
 def _common_git_dir(repo_root: Path) -> Path:
-    raw = _git(repo_root, "rev-parse", "--git-common-dir")
-    path = Path(raw)
-    return path if path.is_absolute() else (repo_root / path).resolve()
+    return _shared_worktree().discover_git_root(repo_root)[1]
 
 
 @dataclass(frozen=True)
@@ -61,6 +59,7 @@ class ReleaseWorkspace:
     branch: str
     base: str
     context: object | None = None
+    is_prunable: bool = False
 
     @property
     def workspace_id(self) -> str | None:
@@ -1240,35 +1239,32 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     ``cmru/release/*``/``cmru/build/*`` one.
 
     ``git worktree add`` records the absolute path it was given at creation
-    time, and ``git worktree list`` always reports that same literal path
-    back — it never re-resolves it from the *current* process's vantage
-    point. This repo is bind-mounted at two different absolute paths (the
-    devcontainer's ``/workspaces/vbpub`` and the host's own checkout path),
-    so a worktree created from one side is invisible — its recorded path
-    genuinely does not exist — when this runs from the other side.  Keep it
-    in this discovery listing with an empty ``base`` so an operator still sees
-    the path; callers that need to mutate a worktree must require visibility.
+    time, and ``git worktree list --porcelain -z`` reports that literal path
+    without re-resolving it from the current process's vantage point. This
+    repository is bind-mounted at different absolute paths in the cockpit and
+    on the Docker host. The shared Git inventory carries Git's ``prunable``
+    fact, so this adapter need not stat a path belonging to another namespace.
+    Keep prunable worktrees in the listing with an empty ``base``; callers that
+    need to mutate a worktree must require a non-prunable entry.
     """
-    raw = _git(repo_root, "worktree", "list", "--porcelain")
+    shared = _shared_worktree()
     workspaces: list[ReleaseWorkspace] = []
-    for block in raw.split("\n\n"):
-        fields: dict[str, str] = {}
-        for line in block.splitlines():
-            key, _, value = line.partition(" ")
-            if value:
-                fields[key] = value
-        wt_path, branch_ref = fields.get("worktree"), fields.get("branch")
-        if not wt_path or not branch_ref:
+    for entry in shared.list_git_worktrees(repo_root):
+        branch = entry.branch
+        if not branch:
             continue
-        branch = branch_ref[len("refs/heads/"):] if branch_ref.startswith("refs/heads/") else branch_ref
         if not _is_transaction_branch(branch):
             continue
-        path = Path(wt_path)
-        if not path.is_dir():
-            workspaces.append(ReleaseWorkspace(repo_root, path, branch, ""))
-            continue
-        base = _git(path, "rev-parse", "HEAD", check=False) or ""
-        workspaces.append(ReleaseWorkspace(repo_root, path, branch, base))
+        base = "" if entry.is_prunable else entry.head or ""
+        workspaces.append(
+            ReleaseWorkspace(
+                repo_root,
+                entry.path,
+                branch,
+                base,
+                is_prunable=entry.is_prunable,
+            )
+        )
     return workspaces
 
 
@@ -1277,7 +1273,7 @@ def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     return [
         workspace
         for workspace in list_cmru_workspaces(repo_root)
-        if _is_release_branch(workspace.branch) and workspace.path.is_dir()
+        if _is_release_branch(workspace.branch) and not workspace.is_prunable
     ]
 
 
