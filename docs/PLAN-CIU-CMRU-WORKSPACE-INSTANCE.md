@@ -2,7 +2,8 @@
 
 Status: implemented; adversarial follow-up is in
 [`REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md`](REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md)
-and final aggregate gates are pending on the latest review fixes.
+and final aggregate gates are green on the reviewed tip; serial merge to main
+is pending.
 Prepared: 2026-09-19
 Updated: 2026-09-22
 Base commit: `467a889f70e5eac6fd6472c4fcdcbc0d95ba777a`

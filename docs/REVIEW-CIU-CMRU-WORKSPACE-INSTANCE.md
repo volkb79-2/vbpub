@@ -331,3 +331,53 @@ The estate checklist remains partially open until the final exact-commit
 receipts are recorded and an independent reviewer signs Table 2. The present
 review is an adversarial self-review; it does not satisfy that independent
 reviewer requirement.
+
+## Final adversarial review and gate receipts (2026-09-22)
+
+The reviewed tip is `6b5d7fe39a6885fa9866ac2e1ed5e9037e87df3c`.
+
+- **CIU specification and adapter:** S16 now says that `worktree list` exposes
+  the native Git inventory, including unmanaged linked checkouts, matching
+  `ciu.src.ciu.worktree.list_worktrees()` and its tests. The remaining S16
+  contracts cover committed-root discovery, exact workspace records, current
+  Git revalidation, cleanup ordering, identity, leases, and namespace-safe
+  `prunable` handling.
+- **CMRU specification and adapter:** S-CLI.4, S-CLI.5, and S-CLI.5b match
+  the implementation: inventory comes from the shared NUL-safe parser;
+  `prunable` is registration metadata rather than visibility; HEAD is
+  preserved; actions are withheld when the entry is prunable; shared record
+  purpose and branch must agree; legacy records use only the compatibility
+  bridge; and transaction identity is the shared six-character value.
+- **Shared-library specification:** `libraries/worktree/SPEC.md` is a
+  standalone internal-substrate contract and is synchronized with
+  `worktree.__all__`, the value objects, records, leases, exact-path lookup,
+  Git inventory, identity, preflight, cleanup order, and the dedicated lane.
+  Its README, DESIGN-GUIDE, and CONSUMERS document the same boundary and do
+  not present the library as a third release target.
+- **DRY review:** generic Git-family discovery, NUL-framed inventory parsing,
+  path identity, records, exact lookup, locks, leases, create/adopt/ensure,
+  legacy adoption, and removal have one implementation in
+  `libraries/worktree`. CIU retains root discovery/preparation, runtime
+  naming, Docker cleanup, and branch hygiene; CMRU retains release policy,
+  promotion, artifact handling, and project sequencing. Those are policy
+  boundaries, not duplicated generic lifecycle mechanics. No second product
+  porcelain parser or generic removal algorithm remains.
+- **Hypothesis and coverage:** all ten CIU/CMRU/library property tests use
+  deterministic `derandomize=True, database=None` settings. The final lanes
+  require branch coverage and a 100% floor.
+- **Final tester-unified receipts:**
+  - `run-gate-vbpub-worktree-3182024-1790105147`: library R0-R3 PASS;
+    67 tests locally, 100% line/branch coverage, and 183/183 mutation
+    candidates killed with zero survivors, hangs, crashes, or budget overruns.
+  - `run-gate-vbpub-ciu-3223416-1790106689`: CIU R0-R3 PASS; 65/65
+    mutation candidates killed with zero survivors, hangs, crashes, or budget
+    overruns; peak 851 MiB.
+  - `run-gate-vbpub-assay-3315120-1790109732`: CMRU aggregate PASS. Its
+    serialized child containers were `run-gate-vbpub-coverage-3374356-1790111661`
+    (1885 passed, 10 skipped, 100% line/branch),
+    `run-gate-vbpub-mutation-3375729-1790111703` (72/72 killed), and
+    `run-gate-vbpub-canary-3435992-1790113558` (PASS); the bare-host
+    enrollment lane also passed 8 tests. Aggregate exit was 0.
+
+The branch is technically green and merge-ready. The only checklist item not
+claimed by this self-review is the estate-required independent reviewer sign-off.
