@@ -64,11 +64,20 @@ clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `ge
 current Git repository without loading a CMRU config. It MUST list every CMRU-managed
 `cmru-release-*` and `cmru-build-*` worktree (and legacy nested `cmru/release/*`,
 `cmru/build/*` ones; see S-CLI.5b), including a path not visible through the current
-bind-mount view. The adapter MUST use `worktree.list_git_worktrees()` and Git's `prunable`
-marker to represent current-view availability; it MUST NOT stat a literal path that may name
-another filesystem namespace. It MUST print the exact `--resume` or `--discard-build-worktree`
-command only when the shared inventory marks the path non-prunable; it MUST never guess a
-cleanup target. JSON `visible` has that same meaning.
+bind-mount view. The adapter MUST use `worktree.list_git_worktrees()` and MUST NOT stat a
+literal path that may name another filesystem namespace. It MUST preserve Git's reported HEAD
+whether or not the record is prunable. JSON MUST report that HEAD as `source_commit` and the
+native marker as boolean `prunable`; it MUST NOT claim that the marker proves path visibility
+or absence. The adapter MUST print the exact `--resume` or `--discard-build-worktree` command
+only when the shared inventory does not mark the path prunable; that is an action policy, not
+a claim that the path is accessible from this process. It MUST never guess a cleanup target.
+
+For shared records created by CMRU, the record purpose (`cmru-release` or `cmru-build`) MUST
+agree with the transaction branch before CMRU offers or performs a transaction action. The
+`cmru-legacy` purpose written by the compatibility removal bridge is accepted only with a
+matching release/build branch. A branch-name match alone is accepted only for older worktrees
+with no shared record. Non-prunable inventory is not a filesystem-access guarantee; every
+operation MUST validate the exact checkout through shared lifecycle preflight.
 
 **S-CLI.5 — Isolated release transaction.** `release` MUST NOT publish from the caller's
 working tree. For each selected project it resolves that project's Git family and acquires
@@ -231,7 +240,8 @@ the current scheme or the OLDER `cmru/<purpose>/<12-hex>` naming remains just as
 discovery or cleanup parses the directory name. The shared `worktree.list_git_worktrees()` API
 owns the NUL-safe `git worktree list --porcelain -z` parser; CMRU filters its typed branch and
 HEAD facts by transaction policy and preserves Git's `prunable` state without probing a path
-that may belong to another filesystem namespace.
+that may belong to another filesystem namespace. A shared CMRU record, when present, supplies
+the lifecycle context; the legacy removal bridge is used only when no shared record exists.
 
 ### File conventions (all `cmru.`-prefixed)
 

@@ -12,6 +12,7 @@ from worktree import (
     acquire_lease,
     create_workspace,
     ensure_workspace,
+    find_workspace,
     list_git_worktrees,
     physical_path,
     read_record,
@@ -47,6 +48,66 @@ def test_identity_is_six_lowercase_base36(tmp_path: Path) -> None:
     assert len(value) == 6
     assert value == value.lower()
     assert all(char in "0123456789abcdefghijklmnopqrstuvwxyz" for char in value)
+
+
+def test_find_workspace_matches_exact_path_and_distinguishes_absence(repository, tmp_path):
+    context = create_workspace(
+        repository,
+        tmp_path / "linked",
+        branch="find/by-path",
+        base="HEAD",
+    )
+
+    record = find_workspace(context.git_common_dir, context.worktree_path)
+
+    assert record is not None
+    assert record.context() == context
+    assert find_workspace(context.git_common_dir, tmp_path / "not-registered") is None
+    alternate_spelling = context.worktree_path.parent / "absent" / ".." / context.worktree_path.name
+    assert find_workspace(context.git_common_dir, alternate_spelling) is None
+    with pytest.raises(core.WorkspaceError, match="must be absolute"):
+        find_workspace(context.git_common_dir, Path("relative/worktree"))
+    remove_workspace(context)
+
+
+def test_find_workspace_refuses_duplicate_record_ownership(monkeypatch, repository, tmp_path):
+    context = create_workspace(
+        repository,
+        tmp_path / "linked",
+        branch="find/duplicate",
+        base="HEAD",
+    )
+    record = read_record(context.record_path)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(core, "list_workspaces", lambda _common: [record, record])
+        with pytest.raises(
+            core.WorkspaceError, match="multiple shared workspace records"
+        ) as exc:
+            find_workspace(context.git_common_dir, context.worktree_path)
+
+    assert exc.value.category == "invalid-record"
+    remove_workspace(context)
+
+
+def test_list_workspaces_refuses_duplicate_path_ownership(monkeypatch, repository, tmp_path):
+    context = create_workspace(
+        repository,
+        tmp_path / "linked",
+        branch="find/list-duplicate",
+        base="HEAD",
+    )
+    record = read_record(context.record_path)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(core, "_records", lambda _common: [record, record])
+        with pytest.raises(
+            core.WorkspaceError, match="multiple shared workspace records"
+        ) as exc:
+            core.list_workspaces(context.git_common_dir)
+
+    assert exc.value.category == "invalid-record"
+    remove_workspace(context)
 
 
 def test_git_inventory_is_primary_first_and_preserves_opaque_paths(repository, tmp_path):
@@ -94,6 +155,24 @@ def test_git_inventory_uses_git_prunable_fact_without_statting_recorded_path(
     assert inventory[1].path == linked
     assert inventory[1].is_prunable
     _git(repository, "worktree", "prune", "--expire", "now")
+
+
+def test_git_prunable_marker_does_not_mean_checkout_directory_is_missing(repository, tmp_path):
+    linked = tmp_path / "linked-with-broken-gitfile"
+    _git(repository, "worktree", "add", "-b", "inventory/broken-gitfile", str(linked))
+    head = _git(repository, "rev-parse", "inventory/broken-gitfile")
+
+    # Leave the checkout directory in place but break its administrative
+    # back-link. Git reports a prunable record even though this path exists.
+    (linked / ".git").unlink()
+    assert linked.is_dir()
+
+    entry = next(
+        item for item in list_git_worktrees(repository)
+        if item.path == linked
+    )
+    assert entry.is_prunable
+    assert entry.head == head
 
 
 def test_git_inventory_marks_bare_repository_without_primary(tmp_path):

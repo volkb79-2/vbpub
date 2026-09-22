@@ -1,9 +1,10 @@
 # CIU and CMRU shared workspace-instance plan
 
-Status: implemented; adversarial review and local closure evidence are in
+Status: implemented; adversarial follow-up is in
 [`REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md`](REVIEW-CIU-CMRU-WORKSPACE-INSTANCE.md)
+and final aggregate gates are pending on the latest review fixes.
 Prepared: 2026-09-19
-Updated: 2026-09-20
+Updated: 2026-09-22
 Base commit: `467a889f70e5eac6fd6472c4fcdcbc0d95ba777a`
 Worktree: `.worktrees/ciu-cmru-workspace-instance`
 Branch: `feat/ciu-cmru-workspace-instance`
@@ -78,10 +79,10 @@ The following decisions are now part of the proposal:
   independent repositories cannot be one Git atomic commit, so transaction
   state and recovery evidence must identify each project's promotion result.
 
-The implementation is now present in this worktree. The sibling review ledger
-records the remaining qualification boundary: local suites and coverage are
-green, while the real tester-unified admission requires the host-provided gate
-cgroup and cannot be substituted by cockpit execution.
+The implementation is present in this worktree. The sibling review ledger
+records the latest adversarial findings, their closures, local test evidence,
+and the remaining final aggregate gate runs. Earlier checkpoints in that
+ledger remain historical evidence, not current branch status.
 
 ## Why this change is needed
 
@@ -646,11 +647,13 @@ oracles:
 - CIU, CMRU, and library local full-suite equivalents report 100% line and
   branch coverage, with Hypothesis property suites green.
 
-The remaining qualification risk is external rather than a product decision:
-the current cockpit has no host-provided `$CGROUP_PARENT_DEV_GATES`, so the
-tester-unified run-gate lanes refuse before launch. No fallback slice is safe.
-Both checked-in Assay declarations now cover `R0/R1/R2/R3`; this work does not
-claim green tester-unified execution evidence because host admission is absent.
+At the 2026-09-20 checkpoint, the cockpit lacked the host-provided
+`$CGROUP_PARENT_DEV_GATES` value and the tester-unified lanes refused before
+launch. That checkpoint is superseded by the 2026-09-22 continuation in the
+review ledger: the Assay self-hosted lane now passes with the explicit
+`dev-gates.slice` parent, and the final CMRU aggregate plus CIU R0-R3 gate runs
+are being performed serially on the latest review fixes. No gate is run in the
+devcontainer itself; its work is a cockpit for the dedicated gate launcher.
 
 ## Out of scope
 

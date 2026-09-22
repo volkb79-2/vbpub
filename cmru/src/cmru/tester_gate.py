@@ -68,11 +68,11 @@ def _git_common_dir(repo_root: Path) -> Path | None:
     Returns ``None`` for an ordinary (non-worktree) checkout, where the
     mounted tree already contains everything git needs.
     """
-    from cmru.transaction import _shared_worktree
+    from cmru.transaction import _common_git_dir, _shared_worktree
 
     shared = _shared_worktree()
     try:
-        _top, common = shared.discover_git_root(repo_root)
+        common = _common_git_dir(repo_root)
     except shared.WorkspaceError:
         return None
     if common == (repo_root / ".git").resolve():

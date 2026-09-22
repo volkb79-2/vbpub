@@ -1769,16 +1769,16 @@ def _transaction_workspace_from_env(repo_root: Path) -> transaction.ReleaseWorks
             shared = transaction._shared_worktree()
             path = Path(shared_path).resolve()
             _top, common, _branch, _head = shared.discover_git_context(path)
-            for record in shared.list_workspaces(common):
-                if record.worktree_path == path:
-                    context = shared.ensure_workspace(record)
-                    return transaction.ReleaseWorkspace(
-                        repo_root=context.source_git_root,
-                        path=path,
-                        branch=context.branch,
-                        base=context.base_commit,
-                        context=context,
-                    )
+            record = shared.find_workspace(common, path)
+            if record is not None:
+                context = shared.ensure_workspace(record)
+                return transaction.ReleaseWorkspace(
+                    repo_root=context.source_git_root,
+                    path=path,
+                    branch=context.branch,
+                    base=context.base_commit,
+                    context=context,
+                )
         except Exception as exc:
             raise RuntimeError(f"invalid shared workspace context: {exc}") from exc
     workspace = transaction.ReleaseWorkspace(
@@ -2316,7 +2316,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "branch": workspace.branch,
                     "path": str(workspace.path),
                     "source_commit": workspace.base or None,
-                    "visible": not workspace.is_prunable,
+                    "prunable": workspace.is_prunable,
                 }
                 for workspace in workspaces
             ], indent=2, sort_keys=True))
@@ -2326,7 +2326,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             config_hint = _config_hint(repo_root)
             for workspace in workspaces:
                 purpose = transaction.workspace_purpose(workspace.branch)
-                source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
+                source = workspace.base[:12] if workspace.base else "unknown"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
                 if purpose == "release" and not workspace.is_prunable:
                     print(f"  resume: cmru release{config_hint} --resume {shlex.quote(str(workspace.path))}")
@@ -2336,7 +2336,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                         f"{config_hint} --discard-build-worktree {shlex.quote(str(workspace.path))} --yes"
                     )
                 elif workspace.is_prunable:
-                    print("  action: unavailable here; inspect or clean it from the filesystem view that created it")
+                    print(
+                        "  action: withheld; Git marks this worktree registration prunable. "
+                        "Inspect the checkout and its Git metadata before acting."
+                    )
 
     elif verb == "run-step":
         # Raw single-step runner for the one project cmru.toml grammar.

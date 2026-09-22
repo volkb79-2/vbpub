@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 
 CHILD_ENV = "CMRU_RELEASE_TRANSACTION_CHILD"
@@ -48,6 +48,26 @@ def _git(repo_root: Path, *args: str, check: bool = True) -> str:
 
 def _common_git_dir(repo_root: Path) -> Path:
     return _shared_worktree().discover_git_root(repo_root)[1]
+
+
+def _shared_workspace_record(shared: Any, common: Path, path: Path) -> Any | None:
+    """Find the shared lifecycle record for one literal Git worktree path."""
+    return shared.find_workspace(common, path)
+
+
+def _require_cmru_record_purpose(record: Any, purpose: str, path: Path) -> None:
+    """Refuse to treat another product's shared checkout as a CMRU transaction.
+
+    ``cmru-legacy`` is the one intermediate record purpose written by the
+    compatibility removal bridge; its branch still has to match the requested
+    CMRU operation before that record can be resumed or discarded.
+    """
+    expected = f"cmru-{purpose}"
+    if record.purpose not in {expected, "cmru-legacy"}:
+        raise RuntimeError(
+            f"{path} is recorded as workspace purpose {record.purpose!r}, "
+            f"not a CMRU {purpose} transaction"
+        )
 
 
 @dataclass(frozen=True)
@@ -424,20 +444,21 @@ def resume_workspace(repo_root: Path, path: Path) -> ReleaseWorkspace:
     # worktrees have no record and use the compatibility reader below.
     try:
         _top, common, _branch, _head = shared.discover_git_context(path)
-        for record in shared.list_workspaces(common):
-            if record.worktree_path == path:
-                context = shared.ensure_workspace(record)
-                if not _is_release_branch(context.branch):
-                    raise RuntimeError(
-                        f"{path} is not a retained cmru release branch (got {context.branch!r})"
-                    )
-                return ReleaseWorkspace(
-                    repo_root=repo_root.resolve(),
-                    path=path,
-                    branch=context.branch,
-                    base=context.base_commit,
-                    context=context,
+        record = _shared_workspace_record(shared, common, path)
+        if record is not None:
+            _require_cmru_record_purpose(record, "release", path)
+            context = shared.ensure_workspace(record)
+            if not _is_release_branch(context.branch):
+                raise RuntimeError(
+                    f"{path} is not a retained cmru release branch (got {context.branch!r})"
                 )
+            return ReleaseWorkspace(
+                repo_root=repo_root.resolve(),
+                path=path,
+                branch=context.branch,
+                base=context.base_commit,
+                context=context,
+            )
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
     branch = _git(path, "branch", "--show-current")
@@ -965,10 +986,10 @@ def discard_build_workspace(repo_root: Path, path: Path, *, dry_run: bool) -> Re
     shared = _shared_worktree()
     try:
         _top, common, _branch, _head = shared.discover_git_context(path)
-        for record in shared.list_workspaces(common):
-            if record.worktree_path == path:
-                context = shared.ensure_workspace(record)
-                break
+        record = _shared_workspace_record(shared, common, path)
+        if record is not None:
+            _require_cmru_record_purpose(record, "build", path)
+            context = shared.ensure_workspace(record)
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
     workspace = ReleaseWorkspace(
@@ -1244,24 +1265,62 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
     repository is bind-mounted at different absolute paths in the cockpit and
     on the Docker host. The shared Git inventory carries Git's ``prunable``
     fact, so this adapter need not stat a path belonging to another namespace.
-    Keep prunable worktrees in the listing with an empty ``base``; callers that
-    need to mutate a worktree must require a non-prunable entry.
+    That marker describes Git's registration state, not path visibility;
+    preserve the reported HEAD for prunable worktrees too. Callers that need to
+    mutate a worktree must withhold actions for prunable entries and let
+    lifecycle preflight validate every non-prunable target.
     """
     shared = _shared_worktree()
+    entries = shared.list_git_worktrees(repo_root)
+    records = {
+        record.worktree_path: record
+        for record in shared.list_workspaces(_common_git_dir(repo_root))
+    }
     workspaces: list[ReleaseWorkspace] = []
-    for entry in shared.list_git_worktrees(repo_root):
+    cmru_purposes = {"cmru-release", "cmru-build", "cmru-legacy"}
+    for record in records.values():
+        purpose_matches_branch = (
+            record.purpose == "cmru-release" and _is_release_branch(record.branch)
+        ) or (
+            record.purpose == "cmru-build" and _is_build_branch(record.branch)
+        ) or (
+            record.purpose == "cmru-legacy" and _is_transaction_branch(record.branch)
+        )
+        if record.purpose in cmru_purposes and not purpose_matches_branch:
+            raise RuntimeError(
+                f"shared CMRU record {record.record_path} has purpose "
+                f"{record.purpose!r} but branch {record.branch!r}; refusing to "
+                "classify it as a retained transaction"
+            )
+    for entry in entries:
         branch = entry.branch
         if not branch:
             continue
         if not _is_transaction_branch(branch):
             continue
-        base = "" if entry.is_prunable else entry.head or ""
+        purpose = workspace_purpose(branch)
+        record = records.get(entry.path)
+        context = None
+        if record is not None:
+            # A branch-name collision with another product is not CMRU
+            # ownership. Legacy CMRU worktrees have no shared record; those
+            # remain discoverable by their historical branch convention.
+            if record.purpose not in {f"cmru-{purpose}", "cmru-legacy"}:
+                continue
+            if record.branch != branch:
+                raise RuntimeError(
+                    f"Git reports branch {branch!r} at {entry.path}, but its "
+                    f"shared record says {record.branch!r}"
+                )
+            context = record.context()
+        base = entry.head or ""
         workspaces.append(
             ReleaseWorkspace(
                 repo_root,
                 entry.path,
                 branch,
                 base,
+                context=context,
                 is_prunable=entry.is_prunable,
             )
         )
@@ -1269,7 +1328,7 @@ def list_cmru_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
 
 
 def list_retained_workspaces(repo_root: Path) -> list[ReleaseWorkspace]:
-    """Visible retained release worktrees, for release-resume machinery only."""
+    """Non-prunable retained release worktrees, for release-resume machinery only."""
     return [
         workspace
         for workspace in list_cmru_workspaces(repo_root)

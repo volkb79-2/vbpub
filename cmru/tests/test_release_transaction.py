@@ -2625,3 +2625,42 @@ def test_abandon_previous_only_abandons_overlapping_scope():
         assert not ciu_path.exists()
         assert pwmcp_path.exists()       # different scope — left alone
         assert unscoped_path.exists()    # no recorded scope — left alone
+
+
+def test_abandon_previous_uses_the_shared_record_for_new_cmru_workspaces():
+    with _OriginAndClone() as h:
+        workspace = transaction.create_workspace(
+            h.repo_root,
+            base=_git("rev-parse", "HEAD", cwd=h.repo_root),
+            purpose="release",
+            scope="ciu",
+        )
+        transaction.write_release_scope(h.repo_root, workspace, ["ciu"])
+        common = transaction._common_git_dir(h.repo_root)
+        assert len(transaction._shared_worktree().list_workspaces(common)) == 1
+
+        abandoned = transaction.abandon_previous(h.repo_root, ["ciu"])
+
+        assert abandoned == [workspace.branch]
+        assert not workspace.path.exists()
+        assert transaction._shared_worktree().list_workspaces(common) == []
+
+
+def test_cmru_does_not_claim_or_discard_a_foreign_shared_workspace(tmp_path):
+    from worktree import create_workspace, remove_workspace
+
+    with _OriginAndClone() as h:
+        target = h.repo_root / ".worktrees" / "cmru-build-owned-by-ciu"
+        context = create_workspace(
+            h.repo_root,
+            target,
+            branch="cmru-build-owned-by-ciu",
+            base="HEAD",
+            purpose="ciu",
+        )
+
+        assert transaction.list_cmru_workspaces(h.repo_root) == []
+        with pytest.raises(RuntimeError, match="not a CMRU build transaction"):
+            transaction.discard_build_workspace(h.repo_root, target, dry_run=False)
+
+        remove_workspace(context)

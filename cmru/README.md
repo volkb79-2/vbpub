@@ -91,9 +91,12 @@ cmru --version                    # estate-wide top-level compatibility spelling
 cmru --help                       # all verbs, with a TYPICAL WORKFLOW block
 ```
 
-`cmru worktrees` includes retained paths from other bind-mount views. It offers
-resume/discard commands only when Git reports the registered path available in
-the current view; see the [Git-family design note](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root).
+`cmru worktrees` includes retained paths recorded by Git even when they are not
+reachable through the current bind mount. Its `prunable` field reports Git's
+registration marker, not filesystem visibility; the listing preserves the
+reported commit and withholds actions for marked entries. Every offered action
+still validates the exact checkout before changing Git state. See the
+[Git-family design note](docs/DESIGN-GUIDE.md#git-family-is-separate-from-cmru-root).
 
 Both version spellings print exactly one `cmru <version>` identity line to
 stdout and exit 0 without diagnostics on stderr. At every parser depth,

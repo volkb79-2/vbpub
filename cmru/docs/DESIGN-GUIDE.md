@@ -65,9 +65,11 @@ recomputing a second token from a circular final name.
 Native worktree inventory also belongs to that neutral layer. Its NUL-framed
 Git parser preserves literal paths and carries Git's `prunable` fact, avoiding
 both duplicate product parsers and filesystem probes against a path recorded
-in a different mount namespace. CMRU applies only its branch policy; it keeps
-prunable records discoverable but withholds an action that would need the
-unavailable checkout.
+in a different mount namespace. That marker describes Git's registration
+state, not whether the directory is visible here. CMRU keeps prunable records
+discoverable, preserves their HEAD, and withholds actions for marked entries;
+each offered operation still validates the exact checkout through the shared
+lifecycle preflight.
 
 ## Runtime ownership is declared
 

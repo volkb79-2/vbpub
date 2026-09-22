@@ -254,6 +254,8 @@ def test_tester_gate_public_cli_strips_separator_command(monkeypatch, tmp_path):
 def test_transaction_worktree_listing_preserves_shared_inventory_refusals(tmp_path, monkeypatch):
     shared = transaction._shared_worktree()
     monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [])
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [])
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
     assert transaction.list_cmru_workspaces(tmp_path) == []
 
     monkeypatch.setattr(

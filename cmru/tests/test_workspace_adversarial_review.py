@@ -32,6 +32,9 @@ def _fake_shared(*, discover=None, records=()):
         remove_workspace=lambda *args, **kwargs: None,
         discover_git_context=discover or (lambda path: (Path(path), Path("/common"), "main", "a" * 40)),
         list_workspaces=lambda common: list(records),
+        find_workspace=lambda _common, path: next(
+            (record for record in records if record.worktree_path == path), None
+        ),
         ensure_workspace=lambda record: record,
     )
 
@@ -489,6 +492,10 @@ def test_transaction_workspace_from_env_reads_shared_record_and_wraps_errors(mon
         discover_git_context=lambda _path: (path, tmp_path / ".git", "branch", "a" * 40),
         list_workspaces=lambda _common: [record],
         ensure_workspace=lambda _record: context,
+    )
+    shared.find_workspace = lambda common, target: next(
+        (item for item in shared.list_workspaces(common) if item.worktree_path == target),
+        None,
     )
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: shared)
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(path))

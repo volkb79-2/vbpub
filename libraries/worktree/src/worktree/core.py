@@ -750,9 +750,48 @@ def _records(git_common_dir: Path) -> list[WorkspaceRecord]:
 
 
 def list_workspaces(git_common_dir: Path | str) -> list[WorkspaceRecord]:
-    """Read every family record; malformed state refuses the whole inventory."""
+    """Read every family record; malformed or duplicate ownership refuses listing."""
 
-    return _records(canonical_path(git_common_dir))
+    records = _records(canonical_path(git_common_dir))
+    seen_paths: set[Path] = set()
+    for record in records:
+        if record.worktree_path in seen_paths:
+            raise WorkspaceError(
+                f"multiple shared workspace records claim {record.worktree_path}",
+                category="invalid-record",
+            )
+        seen_paths.add(record.worktree_path)
+    return records
+
+
+def find_workspace(
+    git_common_dir: Path | str, worktree_path: Path | str
+) -> WorkspaceRecord | None:
+    """Find the record for an exact absolute worktree path as stored.
+
+    The path is compared literally with the path stored in the record; this
+    helper does not normalize, resolve, stat, or otherwise probe the checkout
+    path. Consumers should pass the exact absolute path obtained from a shared
+    record or a compatible Git inventory. Duplicate ownership records are
+    malformed state, not a reason to choose an arbitrary owner.
+    """
+
+    target = Path(worktree_path)
+    if not target.is_absolute():
+        raise WorkspaceError(
+            f"workspace lookup path must be absolute: {target!s}",
+            category="invalid-input",
+        )
+    matches = [
+        record for record in list_workspaces(git_common_dir)
+        if record.worktree_path == target
+    ]
+    if len(matches) > 1:
+        raise WorkspaceError(
+            f"multiple shared workspace records claim {target}",
+            category="invalid-record",
+        )
+    return matches[0] if matches else None
 
 
 def _validate_branch(branch: str) -> None:

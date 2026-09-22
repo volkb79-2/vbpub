@@ -10,7 +10,7 @@ import pytest
 from cmru import handlers, release, runner, tester_gate, transaction
 
 
-def test_transaction_lists_invisible_retained_worktrees_without_mutating_them(monkeypatch, tmp_path):
+def test_transaction_lists_prunable_worktrees_without_path_probes(monkeypatch, tmp_path):
     missing = tmp_path / "missing-release"
     shared = transaction._shared_worktree()
     entry = shared.GitWorktree(
@@ -21,6 +21,8 @@ def test_transaction_lists_invisible_retained_worktrees_without_mutating_them(mo
         is_prunable=True,
     )
     monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [entry])
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [])
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
     monkeypatch.setattr(
         Path,
         "is_dir",
@@ -29,9 +31,55 @@ def test_transaction_lists_invisible_retained_worktrees_without_mutating_them(mo
     found = transaction.list_cmru_workspaces(tmp_path)
     assert found == [
         transaction.ReleaseWorkspace(
-            tmp_path, missing, "cmru/release/old", "", is_prunable=True
+            tmp_path, missing, "cmru/release/old", "a" * 40, is_prunable=True
         )
     ]
+
+
+def test_transaction_refuses_shared_cmru_record_with_wrong_purpose(monkeypatch, tmp_path):
+    shared = transaction._shared_worktree()
+    entry = shared.GitWorktree(
+        path=tmp_path / "linked",
+        head="a" * 40,
+        branch="cmru-build-inventory",
+        is_primary=False,
+    )
+    record = SimpleNamespace(
+        worktree_path=entry.path,
+        purpose="cmru-release",
+        branch="cmru-build-record",
+        record_path=tmp_path / "record.json",
+    )
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [entry])
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [record])
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
+
+    with pytest.raises(RuntimeError, match="has purpose 'cmru-release'"):
+        transaction.list_cmru_workspaces(tmp_path)
+
+
+def test_transaction_refuses_inventory_and_shared_record_branch_disagreement(
+    monkeypatch, tmp_path
+):
+    shared = transaction._shared_worktree()
+    entry = shared.GitWorktree(
+        path=tmp_path / "linked",
+        head="a" * 40,
+        branch="cmru-release-inventory",
+        is_primary=False,
+    )
+    record = SimpleNamespace(
+        worktree_path=entry.path,
+        purpose="cmru-release",
+        branch="cmru-release-record",
+        record_path=tmp_path / "record.json",
+    )
+    monkeypatch.setattr(shared, "list_git_worktrees", lambda _root: [entry])
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [record])
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
+
+    with pytest.raises(RuntimeError, match="Git reports branch .* shared record says"):
+        transaction.list_cmru_workspaces(tmp_path)
 
 
 def test_transaction_discard_build_workspace_refuses_paths_outside_managed_root(tmp_path):

@@ -679,7 +679,7 @@ def test_remove_reports_shared_legacy_removal_failure(monkeypatch, tmp_path):
     repo, _path = _removal_fixture(monkeypatch, tmp_path)
     shared = SimpleNamespace(
         discover_git_context=lambda _path: (repo, repo / ".git", "demo", "a" * 40),
-        list_workspaces=lambda _common: [],
+        find_workspace=lambda _common, _path: None,
         remove_unrecorded_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("remove failed")
         ),

@@ -92,6 +92,7 @@ class TestRetentionAtomicity:
             lambda: SimpleNamespace(
                 discover_git_context=lambda _path: (repo, repo / ".git", "cmru/build/x", "sha"),
                 list_workspaces=lambda _common: [],
+                find_workspace=lambda _common, _path: None,
             ),
         )
         ws = discard_build_workspace(repo, path, dry_run=True)

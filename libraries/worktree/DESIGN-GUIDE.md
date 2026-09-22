@@ -41,11 +41,19 @@ Native Git-worktree inventory is centralized too. `list_git_worktrees()` parses
 `git worktree list --porcelain -z`, so a path containing spaces or newlines is
 not reparsed as presentation text. Its `GitWorktree` records carry Git's
 primary, detached, bare, locked, and prunable facts. The shared layer never
-stats those literal paths: a consumer may be running in a different namespace,
-and Git's own `prunable` marker is the evidence to use when visibility matters.
-CIU adapts these records for its CLI; CMRU filters them by its transaction
+stats those literal paths: a consumer may be running in a different namespace.
+The `prunable` bit is Git's registration state, not a path-visibility test, so
+consumers preserve HEAD independently and do not report visibility from that
+bit. CIU adapts these records for its CLI; CMRU filters them by its transaction
 branch policy and takes the reported HEAD rather than running a second parser
 or per-worktree `rev-parse`.
+
+Shared-record lookup is centralized as `find_workspace()`: it compares an
+exact absolute stored worktree path and never canonicalizes or probes the
+checkout. `list_workspaces()` rejects duplicate ownership before returning its
+inventory, and the lookup retains the same guard for alternate listing
+implementations. This preserves the namespace boundary and treats ambiguous
+ownership as malformed state instead of choosing whichever record sorts first.
 
 CIU and CMRU therefore share mechanics but not policy. CIU maps one workspace
 to one or more committed CIU roots and adds root identity to runtime names.

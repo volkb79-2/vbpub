@@ -76,7 +76,7 @@ def test_isolated_build_requires_declared_artifact_step_and_orders_prepare_gate_
     assert seen == [["prepare", "run-tests", "build"]]
 
 
-def test_worktrees_dispatch_reports_empty_and_inaccessible_records(monkeypatch, capsys):
+def test_worktrees_dispatch_reports_empty_and_prunable_records(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_current_git_root", lambda: Path("/repo"))
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [])
     cli.main(["worktrees"])
@@ -89,4 +89,4 @@ def test_worktrees_dispatch_reports_empty_and_inaccessible_records(monkeypatch, 
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
     output = capsys.readouterr().out
-    assert "action: unavailable here" in output
+    assert "action: withheld" in output

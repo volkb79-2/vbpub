@@ -48,14 +48,26 @@ def test_release_lock_rejects_nested_transaction(tmp_path):
 
 
 def test_create_resume_and_remove_workspace_are_real_git_lifecycle(tmp_path):
+    from worktree import create_workspace, remove_workspace
+
     root = _repo(tmp_path)
     base = _git(root, "rev-parse", "HEAD")
     workspace = transaction.create_workspace(root, base=base, purpose="build")
     assert workspace.branch.startswith("cmru-build-")
     with pytest.raises(ValueError, match="unknown CMRU workspace purpose"):
         transaction.create_workspace(root, base=base, purpose="other")
-    with pytest.raises(RuntimeError, match="retained cmru release branch"):
-        transaction.resume_workspace(root, workspace.path)
+
+    legacy_context = create_workspace(
+        root,
+        root / ".worktrees" / "cmru-build-legacy-purpose",
+        branch="cmru-build-legacy-purpose",
+        base=base,
+        purpose="cmru-legacy",
+    )
+    with pytest.raises(RuntimeError, match="not a retained cmru release branch"):
+        transaction.resume_workspace(root, legacy_context.worktree_path)
+    remove_workspace(legacy_context)
+
     transaction.remove_workspace(workspace)
     assert not workspace.path.exists()
 

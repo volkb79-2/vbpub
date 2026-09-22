@@ -217,3 +217,65 @@ run.
   fail-closed against ambient values. The earlier pre-final documentation/spec
   slice was CIU `88 passed` and CMRU `46 passed`; the final rerun above is CIU
   `89 passed`, CMRU `47 passed`, and the shared library `23 passed`.
+
+## Adversarial follow-up (2026-09-22; aggregate gates pending)
+
+This pass reviewed the three specifications against the shipped APIs, then
+traced retained-worktree listing through CMRU's automatic-abandon, resume, and
+build-discard call paths.
+
+- **CIU specification:** S16 and the shared-inventory references remain in
+  sync with the CIU adapter. The full local suite is the behavioral check for
+  CIU; its doc/spec contract slice is `89 passed`.
+- **CMRU specification:** S-CLI.4 previously described Git's `prunable` bit as
+  current-view visibility and encoded the false status in `visible`. A broken
+  linked-worktree `.git` back-link can produce `prunable` while the checkout
+  directory and a valid HEAD remain. The CLI now emits `prunable`, preserves
+  `source_commit`, and withholds actions without claiming that the path is
+  absent. README, DESIGN-GUIDE, CONSUMERS, and contract tests were updated in
+  the same change. S-CLI.4/S-CLI.5b now require purpose/branch agreement for
+  shared CMRU records and identify shared lifecycle context as the remover's
+  authority.
+- **Worktree-library specification:** the public API and ownership boundary
+  match `worktree.__all__` and implementation. The specification now defines
+  `GitWorktree.is_prunable` as Git registration metadata, not a path-existence
+  or visibility proof; its consumer and design guides use that same meaning.
+  The exact-record lookup shared by CIU and CMRU is now public
+  `find_workspace()`, exported and specified as an exact absolute stored-path
+  comparison that does not normalize, resolve, or probe the checkout. Consumer
+  and design guides document that contract; tests cover exact match, absence,
+  alternate spelling, relative input, and duplicate ownership.
+- **Lifecycle adversarial finding:** CMRU's inventory-created
+  `ReleaseWorkspace` omitted its existing shared record. Automatic abandon
+  could then route a new CMRU workspace into `remove_unrecorded_workspace`,
+  which is only for pre-library worktrees. Listing now carries the exact
+  shared record context, and resume/discard refuse a shared record owned by a
+  different product or whose purpose disagrees with its branch. Regression
+  tests cover automatic removal, a foreign `ciu`-purpose `cmru-build-*` branch,
+  broken Git back-links, and record/branch disagreement.
+- **DRY review:** NUL-safe worktree inventory, family discovery, path identity,
+  shared records, exact record lookup, leases, and generic
+  create/adopt/resume/remove remain in `libraries/worktree`. CIU and CMRU both
+  call the library's exact lookup instead of maintaining path-search loops;
+  CMRU's handler and tester-gate common-directory lookup delegate to its one
+  transaction wrapper. Product-specific CIU root preparation, CMRU release
+  policy, and their different long-lived locks remain adapter-owned;
+  consolidating those would mix policy, not remove duplicated mechanics. No
+  second product porcelain parser or generic Git removal path remains. The
+  final pass caught CMRU's path-to-record map masking duplicate ownership;
+  uniqueness is now enforced by neutral `list_workspaces()` before any adapter
+  can collapse records into a map.
+- **Local evidence after these fixes:** CIU `3880 passed`, 100% line/branch
+  coverage (11,176 statements / 4,452 branches); CMRU `1883 passed, 10
+  skipped`, 100% line/branch coverage (7,633 statements / 2,814 branches); the
+  library `58 passed`, 100% line/branch coverage (583 statements / 202
+  branches). After the final code/docs edits, CIU cross-document contracts
+  passed `10` tests and CMRU config-example/cross-document contracts passed
+  `5`; the CMRU worktree/spec regression slice passed `32`. Hypothesis suites
+  ran as part of all full suites.
+- **External status:** Assay's self-hosted tester-unified gate passed at
+  `b9cad87c31f4e55e70b31665e3a32ac4bef1c5f1`, container
+  `run-gate-assay-selfhosted-2297444-13689-1790079347`, exit `0`. Its output
+  includes an Assay B006(a) CMRU qualification receipt; that is not the final
+  CMRU product `assay` lane. This pass's final CMRU `gate` and CIU `ciu` lanes
+  have not yet run; local results are not substitutes for them.

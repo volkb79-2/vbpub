@@ -147,14 +147,13 @@ def _git_common_dir(cwd_parent: Path) -> Optional[Path]:
     `cmd_wheel_build` rejects that source tree before the builder is invoked:
     no static package version may stand in for Git-derived release evidence.
     """
-    from cmru.transaction import _shared_worktree
+    from cmru.transaction import _common_git_dir, _shared_worktree
 
     shared = _shared_worktree()
     try:
-        _top, common = shared.discover_git_root(cwd_parent)
+        return _common_git_dir(cwd_parent)
     except shared.WorkspaceError:
         return None
-    return common
 
 
 def _wheel_builder_git_mount_args(

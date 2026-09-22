@@ -31,13 +31,24 @@ shell's `REPO_ROOT`, `ciu.env`, or a translated container path as a substitute
 for the typed context. Do not run local filesystem checks against
 `physical_worktree_path` when that path belongs to another namespace.
 
+To find an existing record by checkout, pass its exact absolute stored path:
+
+```python
+record = worktree.find_workspace(git_common_dir, recorded_worktree_path)
+```
+
+The lookup does not normalize or resolve the target path. A different spelling
+is not a match; duplicate records claiming the same path and malformed record
+state are refusals, not an arbitrary first match. `list_workspaces()` applies
+the same duplicate-ownership refusal before returning its inventory.
+
 For native Git inventory, use the shared API instead of parsing porcelain in a
 product adapter:
 
 ```python
 for checkout in worktree.list_git_worktrees(source_repo):
     if checkout.is_prunable:
-        report_unavailable(checkout.path)
+        report_prunable_registration(checkout.path, checkout.head)
         continue
     report_checkout(checkout.path, checkout.branch, checkout.head)
 ```
@@ -45,7 +56,11 @@ for checkout in worktree.list_git_worktrees(source_repo):
 The list is Git-ordered with the primary checkout first. Detached entries have
 `branch is None`; bare records have `is_bare` and are not a primary checkout.
 The paths are literal Git facts, not permission to run filesystem probes
-against paths translated from a host/daemon namespace.
+against paths translated from a host/daemon namespace. `is_prunable` reports
+only Git's registration marker; it does not prove that the checkout path is
+absent or visible here. Keep the reported HEAD even when the marker is set, and
+withhold operations that need a validated live checkout until the adapter's
+own preflight succeeds.
 
 Use `worktree.discover_git_root(path)` when only repository placement is needed
 and the repository may not have a commit yet. `discover_git_context(path)` is

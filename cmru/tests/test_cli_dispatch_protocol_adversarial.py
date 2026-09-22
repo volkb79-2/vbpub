@@ -28,7 +28,13 @@ def test_worktrees_json_dispatch_emits_machine_readable_records(monkeypatch, cap
     monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: workspaces)
     cli.main(["worktrees", "--json"])
     record = json.loads(capsys.readouterr().out)
-    assert record == [{"branch": "cmru/release/abc", "path": str(tmp_path), "purpose": "release", "source_commit": "a" * 40, "visible": True}]
+    assert record == [{
+        "branch": "cmru/release/abc",
+        "path": str(tmp_path),
+        "purpose": "release",
+        "source_commit": "a" * 40,
+        "prunable": False,
+    }]
 
 
 def test_dependencies_dispatch_writes_and_reports_config_errors(monkeypatch, capsys, tmp_path):

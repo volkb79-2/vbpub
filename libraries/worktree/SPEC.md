@@ -17,6 +17,7 @@ The package exposes these stable operations:
 | `create_workspace` | Given a source, target, and optional `identity_path`, takes the Git-family lock, validates the branch/path, creates one linked checkout, writes one atomic record, and rolls back the checkout if record creation fails. `identity_path`, when supplied, is the canonical, durable identity input recorded in metadata. |
 | `adopt_workspace` | Given a source, target, and optional `identity_path`, records an already-existing linked checkout only after proving it belongs to the source Git family. |
 | `ensure_workspace` | Reopens a record only when checkout, branch, common directory, and the record's identity input still agree. |
+| `find_workspace` | Looks up a record by its exact absolute stored worktree path, without normalizing, resolving, or probing that checkout path; duplicate matches are malformed state. |
 | `inspect_workspace` | Reads the record and fresh Git facts without repairing state. |
 | `remove_workspace` | Given a handle and cleanup callback, refuses active leases, runs adapter cleanup first, and removes Git state and the record only after cleanup succeeds. |
 | `remove_unrecorded_workspace` | Compatibility-only bridge for a legacy checkout with no shared record; adopts it through the same record/lifecycle path and immediately removes it. |
@@ -39,12 +40,23 @@ operations `canonical_path`, `physical_path`, `workspace_id_for_path`,
 typed, neutral primitives behind the lifecycle functions above; they do not
 select a product root or read ambient environment state.
 
+`list_workspaces` refuses duplicate records claiming one worktree path;
+ownership ambiguity is malformed state, not an invitation for consumers to
+select whichever record sorts first. `find_workspace` also refuses duplicate
+matches when used against an alternate listing implementation.
+
 `list_git_worktrees` owns native Git worktree inventory for both adapters. It
 uses `--porcelain -z`, preserves whitespace and newline bytes in path names,
 and trusts Git's inventory and `prunable` marker rather than probing a path
 that may belong to another filesystem namespace. The primary is the first
 non-bare Git record; a bare repository has no primary checkout. Malformed
-records and Git errors refuse the whole listing.
+records, duplicate worktree ownership, and Git errors refuse the whole listing.
+
+`GitWorktree.is_prunable` is exactly the presence of Git's `prunable` field. It
+is Git worktree-administration state, not proof that the checkout directory is
+absent or present in this process's filesystem namespace. Consumers MUST NOT
+translate it into a `visible`/`missing` conclusion, and MUST preserve any
+reported HEAD independently of this marker.
 
 ## Identity and paths
 

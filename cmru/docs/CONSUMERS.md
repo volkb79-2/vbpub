@@ -232,9 +232,12 @@ cmru worktrees                                   # every retained failed build/r
 cmru cleanup --discard-build-worktree <PATH> --yes
 ```
 
-For a script, use `cmru worktrees --json`; `visible: false` means Git marks the
-registered path prunable from this filesystem view, so run the suggested
-recovery command from the view that owns that checkout instead.
+For a script, use `cmru worktrees --json`. `prunable: true` reports Git's
+worktree-registration marker; it does not prove the checkout directory is
+absent or visible in the current filesystem namespace. The `source_commit`
+field preserves Git's reported HEAD even for prunable entries. CMRU withholds
+resume/discard commands for those entries; consumers should likewise validate
+the exact checkout before acting on it.
 
 When the central CMRU root registers projects from independent Git repositories, the same
 selection is dispatched as one transaction per Git family. Each repository therefore gets its

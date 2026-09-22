@@ -104,13 +104,7 @@ def _shared_record_for_checkout(path: Path):
         if exc.category == "git-error":
             return None
         raise
-    return next(
-        (
-            record for record in shared.list_workspaces(common)
-            if record.worktree_path == top.resolve()
-        ),
-        None,
-    )
+    return shared.find_workspace(common, top.resolve())
 
 
 def _physical_workspace_target(repo_root: Path, target: Path) -> Path:
@@ -4133,11 +4127,7 @@ def remove(
     try:
         shared = _shared_worktree()
         _top, common, _branch, _head = shared.discover_git_context(wt.path)
-        shared_record = next(
-            (record for record in shared.list_workspaces(common)
-             if record.worktree_path == wt.path.resolve()),
-            None,
-        )
+        shared_record = shared.find_workspace(common, wt.path.resolve())
     except Exception as exc:
         raise WorktreeError(f"[S16] could not inspect shared workspace ownership: {exc}") from exc
     if shared_record is not None:

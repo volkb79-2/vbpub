@@ -197,7 +197,7 @@ def test_transaction_retain_release_artifacts_writes_authenticated_manifest(tmp_
     transaction.remove_workspace(workspace)
 
 
-def test_transaction_list_workspaces_keeps_missing_recorded_paths_visible(tmp_path):
+def test_transaction_list_workspaces_preserves_head_for_prunable_records(tmp_path, monkeypatch):
     root = repo(tmp_path)
     missing = tmp_path / "gone"
     shared = transaction._shared_worktree()
@@ -205,8 +205,10 @@ def test_transaction_list_workspaces_keeps_missing_recorded_paths_visible(tmp_pa
         path=missing, head="a" * 40, branch="cmru/release/old",
         is_primary=False, is_prunable=True,
     )
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path / ".git")
+    monkeypatch.setattr(shared, "list_workspaces", lambda _common: [])
     with patch.object(shared, "list_git_worktrees", return_value=[entry]):
         listed = transaction.list_cmru_workspaces(root)
     assert listed[0].path == missing
-    assert listed[0].base == ""
+    assert listed[0].base == "a" * 40
     assert listed[0].is_prunable

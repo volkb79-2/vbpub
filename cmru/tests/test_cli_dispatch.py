@@ -506,7 +506,7 @@ def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
         "path": str(workspace.path),
         "purpose": "build",
         "source_commit": "a" * 40,
-        "visible": False,
+        "prunable": True,
     }]
 
 
@@ -532,7 +532,7 @@ def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_p
         "path": str(workspace.path),
         "purpose": "release",
         "source_commit": "a" * 40,
-        "visible": False,
+        "prunable": True,
     }]
 
 

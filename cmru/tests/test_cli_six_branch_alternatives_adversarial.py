@@ -61,7 +61,7 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
     assert cli._release_projects_sequentially(tmp_path, {"demo": project}, workspace, ["demo"], github_config=cli.GitHubConfig("o", "r", "t", "user"), env_config=cli.ReleaseEnvConfig({}, None), no_build=True) == []
 
 
-def test_worktrees_reports_missing_workspace_action(monkeypatch, tmp_path, capsys):
+def test_worktrees_withholds_action_for_prunable_registration(monkeypatch, tmp_path, capsys):
     workspace = transaction.ReleaseWorkspace(
         tmp_path, tmp_path / "missing", "cmru/release/x", "a" * 40,
         is_prunable=True,
@@ -69,10 +69,12 @@ def test_worktrees_reports_missing_workspace_action(monkeypatch, tmp_path, capsy
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
-    assert "action: unavailable here" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "action: withheld" in output
+    assert "Git marks this worktree registration prunable" in output
 
 
-def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch, tmp_path, capsys):
+def test_worktrees_unknown_purpose_prunable_path_reports_registration_state(monkeypatch, tmp_path, capsys):
     workspace = transaction.ReleaseWorkspace(
         tmp_path, tmp_path / "missing", "cmru/other/x", "a" * 40,
         is_prunable=True,
@@ -80,7 +82,7 @@ def test_worktrees_unknown_purpose_missing_path_reports_unavailable(monkeypatch,
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
     cli.main(["worktrees"])
-    assert "action: unavailable here" in capsys.readouterr().out
+    assert "action: withheld" in capsys.readouterr().out
 
 
 def test_worktrees_unknown_purpose_existing_path_has_no_action_hint(monkeypatch, tmp_path, capsys):
