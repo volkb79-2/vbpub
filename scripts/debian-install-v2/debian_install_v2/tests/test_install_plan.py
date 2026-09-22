@@ -22,6 +22,7 @@ def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
         telegram_chat_id="",
         never_reboot=True,
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -47,6 +48,7 @@ def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         swap_disk_total_gb=32, swap_file_count=8,
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     store = StateStore(config.state_dir)
     store.save_new(StateStore.new(config))
@@ -61,6 +63,7 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -88,6 +91,7 @@ def test_fstab_swap_entries_are_planned(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -101,6 +105,7 @@ def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
@@ -151,6 +156,7 @@ def test_resume_restores_config_from_manifest_and_records_success(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)

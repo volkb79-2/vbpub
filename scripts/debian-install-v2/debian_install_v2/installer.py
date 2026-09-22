@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -15,9 +16,9 @@ import urllib.request
 
 from . import inuse_partition_editor
 from .actions import HostActions
-from .config import Config, ConfigError
+from .config import Config, ConfigError, load_config
 from .host_facts import _code, collect_host_facts, format_facts_html
-from .state import StateStore
+from .state import StateError, StateStore
 from .templates import (
     APT_CUSTOM,
     APT_PERIODIC_CONFIG,
@@ -50,8 +51,13 @@ from .templates import (
 
 SUPPORTED_RELEASES = {"trixie", "forky"}
 SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+_LOG = logging.getLogger("debian_install_v2.installer")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+class InstallerError(RuntimeError):
+    """Expected host-precondition or installer-operation failure."""
 
 
 def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -80,13 +86,24 @@ def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> li
 
 
 class Installer:
-    def __init__(self, config: Config, actions: HostActions):
+    def __init__(
+        self,
+        config: Config,
+        actions: HostActions,
+        *,
+        inspect_host: bool = True,
+    ):
         self.config = config
         self.actions = actions
         self.state = StateStore(config.state_dir)
         self.state.dry_run = actions.dry_run
-        self.release = self._detect_release()
-        self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
+        self.release = ""
+        self.root_disk = ""
+        self.root_partition_path = ""
+        self.root_number = 0
+        if inspect_host:
+            self.release = self._detect_release()
+            self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
 
     def _run(
         self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
@@ -120,10 +137,10 @@ class Installer:
             return "vda", "/dev/vda3", 3
         root = self._run(["/usr/bin/findmnt", "-n", "-o", "SOURCE", "/"], "find root device")
         if not root.startswith("/dev/"):
-            raise RuntimeError(f"root is not a plain block-device mount: {root!r}")
+            raise InstallerError(f"root is not a plain block-device mount: {root!r}")
         match = re.fullmatch(r"/dev/(?P<disk>.+?)(?:p)?(?P<number>[0-9]+)", root)
         if not match:
-            raise RuntimeError(f"cannot derive root disk and partition number from {root!r}")
+            raise InstallerError(f"cannot derive root disk and partition number from {root!r}")
         return match.group("disk"), root, int(match.group("number"))
 
     @property
@@ -176,10 +193,10 @@ class Installer:
             try:
                 self._notify(self._initial_report_message())
             except Exception as exc:
-                print(f"[WARN] could not build/send initial report notification: {exc}", flush=True)
+                _LOG.warning("could not build/send initial report notification: %s", exc)
         try:
             self._stage1()
-        except BaseException as exc:
+        except Exception as exc:
             if not self.actions.dry_run:
                 self.state.save(status="failed", phase="stage1", last_error=str(exc))
             self._notify(f"<b>Install FAILED</b> during stage1: {_code(str(exc))}")
@@ -188,15 +205,46 @@ class Installer:
     def resume(self) -> None:
         saved = self.state.load()
         persisted = saved.get("config", {})
-        allowed = set(self.config.__dataclass_fields__)
-        self.config = replace(self.config, **{key: value for key, value in persisted.items() if key in allowed})
+        if not isinstance(persisted, dict):
+            raise StateError("state manifest does not contain a configuration object")
+        config_data = {
+            key: value
+            for key, value in persisted.items()
+            if key not in {"telegram_bot_token", "telegram_chat_id"}
+        }
+        try:
+            persisted_config = load_config(raw_json=json.dumps(config_data))
+        except ConfigError as exc:
+            raise StateError(f"saved installation configuration is invalid: {exc}") from exc
+        if persisted_config.state_dir != self.config.state_dir:
+            raise StateError(
+                "state_dir in the saved configuration does not match the loaded state directory"
+            )
+        self.config = replace(
+            persisted_config,
+            telegram_bot_token=self.config.telegram_bot_token,
+            telegram_chat_id=self.config.telegram_chat_id,
+        )
         if self.config.credential_mode == "systemd":
-            credential_dir = Path("/run/credentials/vbpub-bootstrap-stage2.service")
+            # systemd supplies this path for LoadCredential= entries. Resolve
+            # that runtime fact rather than guessing its private directory.
+            credential_dir_value = os.environ.get("CREDENTIALS_DIRECTORY", "")
+            credential_dir = (
+                Path(credential_dir_value)
+                if credential_dir_value.startswith("/")
+                else None
+            )
         else:
             credential_dir = Path(self.config.state_dir) / "credentials"
-        token_file = credential_dir / "telegram_bot_token"
-        chat_file = credential_dir / "telegram_chat_id"
-        if not self.actions.dry_run and token_file.is_file() and chat_file.is_file():
+        token_file = credential_dir / "telegram_bot_token" if credential_dir else None
+        chat_file = credential_dir / "telegram_chat_id" if credential_dir else None
+        if (
+            not self.actions.dry_run
+            and token_file is not None
+            and chat_file is not None
+            and token_file.is_file()
+            and chat_file.is_file()
+        ):
             token = token_file.read_text(encoding="utf-8").strip()
             chat_id = chat_file.read_text(encoding="utf-8").strip()
             if token and chat_id:
@@ -231,7 +279,7 @@ class Installer:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
                 self._notify(f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}")
-        except BaseException as exc:
+        except Exception as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
             self._notify(f"<b>Install FAILED</b> during stage2: {_code(str(exc))}")
             raise
@@ -278,17 +326,36 @@ class Installer:
     def verify(self) -> None:
         transaction_path = Path(self.config.state_dir) / "disk-transaction.json"
         if not transaction_path.is_file():
-            raise RuntimeError(f"disk transaction manifest does not exist: {transaction_path}")
-        manifest = json.loads(transaction_path.read_text(encoding="utf-8"))
-        backup = Path(manifest["backup"])
-        checksum = Path(manifest["checksum"])
+            raise InstallerError(f"disk transaction manifest does not exist: {transaction_path}")
+        try:
+            manifest = json.loads(transaction_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise InstallerError(f"cannot read disk transaction manifest: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise InstallerError("disk transaction manifest must be a JSON object")
+        paths = {}
+        for name in ("backup", "checksum"):
+            value = manifest.get(name)
+            if not isinstance(value, str) or not value or "\x00" in value:
+                raise InstallerError(f"disk transaction manifest has no valid {name} path")
+            path = Path(value)
+            if not path.is_absolute():
+                raise InstallerError(f"disk transaction manifest {name} path must be absolute")
+            paths[name] = path
+        backup = paths["backup"]
+        checksum = paths["checksum"]
         if not backup.is_file() or not checksum.is_file():
-            raise RuntimeError("backup or checksum is missing")
-        expected = checksum.read_text(encoding="utf-8").split()[0]
+            raise InstallerError("backup or checksum is missing")
+        checksum_fields = checksum.read_text(encoding="utf-8").split()
+        if not checksum_fields or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum_fields[0]):
+            raise InstallerError("disk transaction checksum file is malformed")
+        expected = checksum_fields[0].lower()
         actual = hashlib.sha256(backup.read_bytes()).hexdigest()
         if actual != expected:
-            raise RuntimeError(f"backup checksum mismatch: expected {expected}, got {actual}")
-        self._health_gate_swap_devices()
+            raise InstallerError(f"backup checksum mismatch: expected {expected}, got {actual}")
+        if self.actions.dry_run:
+            raise InstallerError("verify requires live host checks; --dry-run is not meaningful here")
+        self._health_gate_swap_devices(mark_step=False)
 
     def disable_stage2(self) -> None:
         self._run(["/usr/bin/systemctl", "disable", "vbpub-bootstrap-stage2.service"], "disable stage2 unit")
@@ -332,14 +399,14 @@ class Installer:
             if not missing:
                 break
             if attempt < max_attempts:
-                print(
-                    f"[WARN] apt-get update did not resolve suite(s) yet: {', '.join(missing)} "
-                    f"(attempt {attempt}/{max_attempts}); retrying in 5s.",
-                    flush=True,
+                _LOG.warning(
+                    "apt-get update did not resolve suite(s) yet: %s "
+                    "(attempt %s/%s); retrying in 5s.",
+                    ", ".join(missing), attempt, max_attempts,
                 )
                 time.sleep(5)
         if missing:
-            raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+            raise InstallerError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
 
         self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
         self._mark_step("apt_config", "success", self.release)
@@ -385,12 +452,12 @@ MaxFileSec=1month
         elif arch == "aarch64":
             apt_arch = "arm64"
         else:
-            raise RuntimeError(f"unsupported architecture for Docker installation: {arch}")
+            raise InstallerError(f"unsupported architecture for Docker installation: {arch}")
         self._packages(["ca-certificates", "curl", "gnupg"], "docker-prereqs")
         self.actions.mkdir("/etc/apt/keyrings")
         parsed = urllib.parse.urlparse("https://download.docker.com/linux/debian/gpg")
         if parsed.scheme != "https":
-            raise RuntimeError("Docker GPG URI must use HTTPS")
+            raise InstallerError("Docker GPG URI must use HTTPS")
         if self.actions.dry_run:
             self.actions.write_file("/etc/apt/keyrings/docker.asc", "dry-run-gpg-key\n", 0o644)
         else:
@@ -436,7 +503,7 @@ MaxFileSec=1month
         try:
             return json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"refusing to merge into an unparseable {path}: {exc}") from exc
+            raise InstallerError(f"refusing to merge into an unparseable {path}: {exc}") from exc
 
     def _configure_docker_daemon(self) -> None:
         # Owns live-restore/log-driver/log-opts only — see the ownership
@@ -672,7 +739,7 @@ MaxFileSec=1month
             # "{PROG}: action failed: ..." message and state/notification
             # error-reporting path every other RuntimeError here goes
             # through (adversarial review finding).
-            raise RuntimeError(f"could not read partition table: {exc}") from exc
+            raise InstallerError(f"could not read partition table: {exc}") from exc
         if table.sector != 512:
             # Every sector computation in this module (here and throughout
             # _plan_swap_partitions()/_plan_root_shrink()/_write_sfdisk_plan())
@@ -685,15 +752,15 @@ MaxFileSec=1month
             # silently pairing a wrong-unit disk_sectors with sfdisk's own
             # (correctly-scaled) start=/size= values on the destructive
             # Case A/B partitioning path (adversarial review finding).
-            raise RuntimeError(
+            raise InstallerError(
                 f"disk /dev/{self.root_disk} reports {table.sector}-byte sectors, not 512 -- "
                 f"this tool's sector arithmetic assumes 512 throughout and has not been verified against this disk"
             )
         root_entry = next((part for part in table.parts if part["num"] == self.root_number), None)
         if root_entry is None:
-            raise RuntimeError(f"could not parse current root partition from sfdisk dump")
+            raise InstallerError(f"could not parse current root partition from sfdisk dump")
         if root_entry["size"] <= 0:
-            raise RuntimeError(f"root partition {self.root_number} has a non-positive size in sfdisk dump")
+            raise InstallerError(f"root partition {self.root_number} has a non-positive size in sfdisk dump")
         return disk_sectors, root_entry["start"], root_entry["size"]
 
     def _preflight_disk_transaction(self) -> dict[str, object]:
@@ -702,7 +769,7 @@ MaxFileSec=1month
         holders = Path("/sys/block") / self.root_disk / "holders"
         holder_names = sorted(path.name for path in holders.iterdir()) if holders.is_dir() else []
         if holder_names:
-            raise RuntimeError(
+            raise InstallerError(
                 f"refusing disk transaction: {self.root_disk} has active holder mappings: {', '.join(holder_names)}"
             )
         findmnt = self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"], "enumerate mounted sources")
@@ -731,7 +798,7 @@ MaxFileSec=1month
                 continue
             unexpected_mounts.append(line)
         if unexpected_mounts:
-            raise RuntimeError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
+            raise InstallerError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
         return {"holders": holder_names, "mounts": forbidden}
 
     def _parse_partition_entries(self, dump: str) -> dict[int, dict[str, str]]:
@@ -786,14 +853,14 @@ MaxFileSec=1month
         root_current = current.get(self.root_number)
         root_plan = plan.get(self.root_number)
         if not root_current or not root_plan:
-            raise RuntimeError("partition plan does not preserve the root partition")
+            raise InstallerError("partition plan does not preserve the root partition")
         before_end = int(root_current["start"]) + int(root_current["size"])
         after_end = int(root_plan["start"]) + int(root_plan["size"])
         if after_end > before_end:
-            raise RuntimeError("partition plan unexpectedly grows the root partition")
+            raise InstallerError("partition plan unexpectedly grows the root partition")
         for number, entry in current.items():
             if number > self.root_number:
-                raise RuntimeError(
+                raise InstallerError(
                     f"fresh-install contract violated: existing partition {number} follows root and would be dropped"
                 )
         ordered = sorted(plan.items())
@@ -804,12 +871,12 @@ MaxFileSec=1month
             size = int(entry["size"])
             end = start + size
             if previous_end >= 0 and start < previous_end:
-                raise RuntimeError(f"partition plan overlap detected at partition {number}")
+                raise InstallerError(f"partition plan overlap detected at partition {number}")
             previous_start, previous_end = start, end
         swap_numbers = [number for number in plan if number > self.root_number]
         expected_numbers = list(range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1))
         if swap_numbers != expected_numbers:
-            raise RuntimeError(f"partition plan has unexpected swap numbering: {swap_numbers!r}")
+            raise InstallerError(f"partition plan has unexpected swap numbering: {swap_numbers!r}")
 
     def _plan_swap_partitions(self) -> tuple[list[tuple[int, int]], int]:
         disk_sectors, root_start, root_size = self._disk_facts()
@@ -818,7 +885,7 @@ MaxFileSec=1month
         alignment = 2048
         per_device -= per_device % alignment
         if per_device <= 0:
-            raise RuntimeError(f"swap target too small for {self.config.swap_file_count} devices")
+            raise InstallerError(f"swap target too small for {self.config.swap_file_count} devices")
         actual_total = per_device * self.config.swap_file_count
         end_buffer = 2048
         # Case A never resizes root -- it stays exactly its current size,
@@ -839,7 +906,7 @@ MaxFileSec=1month
         required_end = first_swap_start + actual_total + end_buffer
         if required_end > disk_sectors:
             needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
-            raise RuntimeError(f"disk lacks space for known swap shape; reduce swap by about {needed_gib} GiB")
+            raise InstallerError(f"disk lacks space for known swap shape; reduce swap by about {needed_gib} GiB")
         start = first_swap_start
         partitions = [(start + index * per_device, per_device) for index in range(self.config.swap_file_count)]
         return partitions, new_root_size
@@ -864,7 +931,7 @@ MaxFileSec=1month
             if line.strip().startswith("Block size:"):
                 block_size = int(line.split(":", 1)[1].strip())
         if block_size <= 0:
-            raise RuntimeError("could not determine root filesystem block size from dumpe2fs -h")
+            raise InstallerError("could not determine root filesystem block size from dumpe2fs -h")
         resize2fs_output = self._run(
             ["/usr/sbin/resize2fs", "-P", self.root_partition_path],
             "compute minimum ext filesystem size",
@@ -875,7 +942,7 @@ MaxFileSec=1month
             if "Estimated minimum size of the filesystem:" in line:
                 minimum_blocks = int(line.rsplit(":", 1)[1].strip())
         if minimum_blocks <= 0:
-            raise RuntimeError("could not determine minimum root filesystem size from resize2fs -P")
+            raise InstallerError("could not determine minimum root filesystem size from resize2fs -P")
         return block_size, minimum_blocks
 
     def _resolve_swap_plan(self) -> tuple[list[tuple[int, int]], int, bool]:
@@ -922,14 +989,14 @@ MaxFileSec=1month
         # with nothing telling the operator their configured value was
         # overridden.
         if requested_sectors < minimum_sectors + safety_margin_sectors:
-            raise RuntimeError(
+            raise InstallerError(
                 f"preserve_root_size_gb ({self.config.preserve_root_size_gb} GiB) is smaller than the "
                 f"root filesystem's own minimum plus margin ({(minimum_sectors + safety_margin_sectors) * sector / 1024**3:.2f} GiB); "
                 f"raise preserve_root_size_gb rather than shrinking further than configured"
             )
         target_root_sectors = ((requested_sectors + alignment - 1) // alignment) * alignment
         if target_root_sectors >= root_size:
-            raise RuntimeError(
+            raise InstallerError(
                 f"root shrink target ({target_root_sectors} sectors) is not smaller than the current "
                 f"root ({root_size} sectors); refusing to plan a no-op or growing shrink"
             )
@@ -948,7 +1015,7 @@ MaxFileSec=1month
         required_end = first_swap_start + actual_total + end_buffer
         if required_end > disk_sectors:
             needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
-            raise RuntimeError(
+            raise InstallerError(
                 f"disk still lacks space for the known swap shape even after shrinking root to its "
                 f"filesystem minimum; reduce swap by about {needed_gib} GiB"
             )
@@ -1062,7 +1129,7 @@ MaxFileSec=1month
                 if line.startswith("TARGET_SECTORS="):
                     target_sectors = int(line.partition("=")[2].strip())
         if target_sectors is None:
-            raise RuntimeError(
+            raise InstallerError(
                 "root shrink step is 'planned' but /etc/vbpub/root-shrink-plan.env is missing or malformed"
             )
         if root_size <= target_sectors:
@@ -1088,7 +1155,7 @@ MaxFileSec=1month
         # No _notify() here: this raises, and resume()'s own except block already
         # sends a single failure notification covering this (and every other)
         # stage2 failure - a second message here would just be a duplicate.
-        raise RuntimeError(
+        raise InstallerError(
             f"root shrink did not complete: root is still {root_size} sectors (target {target_sectors}); "
             f"stopping before swap placement rather than guessing"
         )
@@ -1321,7 +1388,7 @@ MaxFileSec=1month
                 )
                 self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
                 self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
-                raise RuntimeError(
+                raise InstallerError(
                     f"partition table verification failed; restored backup {backup_dir / backup_name}; "
                     f"diff: {mismatch_detail}"
                 )
@@ -1335,7 +1402,7 @@ MaxFileSec=1month
                         break
                     time.sleep(0.1)
                 else:
-                    raise RuntimeError(f"partition device did not appear after partx/udevadm settle: {path}")
+                    raise InstallerError(f"partition device did not appear after partx/udevadm settle: {path}")
         manifest = {
             "preflight": preflight,
             "plan": plan_text,
@@ -1351,7 +1418,7 @@ MaxFileSec=1month
         )
         self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
 
-    def _health_gate_swap_devices(self) -> None:
+    def _health_gate_swap_devices(self, *, mark_step: bool = True) -> None:
         expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
         prefix = self._partition_base
         swaps_output = self._run(["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"], dangerous=False) if not self.actions.dry_run else ""
@@ -1367,18 +1434,19 @@ MaxFileSec=1month
             path = f"{prefix}{number}"
             partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not partuuid:
-                raise RuntimeError(f"health gate failed: missing PARTUUID on {path}")
+                raise InstallerError(f"health gate failed: missing PARTUUID on {path}")
             if not self.actions.dry_run and path not in active_names:
-                raise RuntimeError(f"health gate failed: {path} is formatted but not active")
+                raise InstallerError(f"health gate failed: {path} is formatted but not active")
             if not self.actions.dry_run and partuuid not in fstab_partuuids:
-                raise RuntimeError(f"health gate failed: {path} PARTUUID is absent from fstab")
+                raise InstallerError(f"health gate failed: {path} PARTUUID is absent from fstab")
         compressor = "zstd" if self.actions.dry_run else Path("/sys/module/zswap/parameters/compressor").read_text(encoding="utf-8").strip()
         if compressor != self.config.zswap_compressor:
-            raise RuntimeError(f"health gate failed: zswap compressor is {compressor!r}, expected {self.config.zswap_compressor!r}")
+            raise InstallerError(f"health gate failed: zswap compressor is {compressor!r}, expected {self.config.zswap_compressor!r}")
         output_file = Path(self.config.stage2_output)
         if not self.actions.dry_run and not (output_file.is_file() and output_file.stat().st_size >= 0):
-            raise RuntimeError(f"health gate failed: stage2 log does not exist: {output_file}")
-        self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
+            raise InstallerError(f"health gate failed: stage2 log does not exist: {output_file}")
+        if mark_step:
+            self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
 
     def _activate_swap_partitions(self) -> None:
         prefix = self._partition_base
@@ -1393,12 +1461,12 @@ MaxFileSec=1month
             label = f"vbpub-swap{offset}"
             partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not self.actions.dry_run and not partuuid:
-                raise RuntimeError(f"expected swap partition has no PARTUUID after partitioning: {path}")
+                raise InstallerError(f"expected swap partition has no PARTUUID after partitioning: {path}")
             self._run(["/usr/sbin/mkswap", "-L", label, path], f"format {path}", dangerous=True)
             self._run(["/usr/sbin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
             refreshed = partuuid if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not refreshed:
-                raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
+                raise InstallerError(f"PARTUUID disappeared after mkswap: {path}")
             fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")
         self._persist_fstab(fstab_entries)
         self._mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps, labeled vbpub-swapN")
@@ -1509,7 +1577,7 @@ MaxFileSec=1month
             try:
                 urllib.request.urlopen(request, timeout=15).close()
             except OSError as exc:
-                print(f"[WARN] Telegram notification failed: {exc}", flush=True)
+                _LOG.warning("Telegram notification failed: %s", exc)
                 break  # don't send later chunks out of order after a failure
 
     #: Confirmed live 2026-09-08 against a real Netcup host: a synchronous

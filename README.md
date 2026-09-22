@@ -17,6 +17,7 @@ one config and one installed CLI.
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
 | **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
+| **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library | independently packageable; not yet in the cmru release set |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
@@ -56,10 +57,30 @@ from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
 the legacy shell bootstrap remains under `scripts/debian-install/`.
 
 For Netcup SCP API provisioning, use the guided tools under
-[`scripts/netcup/`](scripts/netcup/): `login` creates the OAuth refresh token,
-`configure` resolves account/image defaults into a local recipe, and the
-installer can preview or monitor a Debian-install-v2 run. See the
+[`scripts/netcup/`](scripts/netcup/): `scp-api.py login` creates the OAuth refresh token,
+`configure` optionally resolves account/image defaults into a local recipe, and the
+installer can select an existing account SSH key (or explicitly register a
+new one), preview, or monitor a Debian-install-v2 run. The companion explorer
+enumerates server-scoped inventory account-wide by default, provides
+`scp-api.py status` for a compact live table with hostname, state, resources,
+an SSH key-authentication result, and a multiline IP/reverse-DNS column (using
+only the server detail address fields; SSH probes default to two seconds),
+diagnostics such as `scp-api.py metrics SERVER_ID cpu --hours 24`,
+and filters such as `scp-api.py imageflavours --filter debian`. It also exposes
+confirmed ISO attachment, firewall assignment, and grouped power actions
+(`scp-api.py power on|off|cycle|reset SERVER_ID`); validated firewall policy
+create/PUT and account user-ISO upload (`scp-api.py user-iso upload FILE`) are
+also available through the CLI. Debian-install-v2 progress can use Telegram,
+the public nyxloom Mattermost incoming webhook, or no notifications; the
+webhook URL is kept as a local secret and is never committed. See the
 [`Netcup tools README`](scripts/netcup/README.md).
+After login, the wizard can also add `v<digits>` SCP server names to a local
+protected-server denylist; guarded mutating commands refuse those servers.
+
+User-facing Python CLIs can share the estate-wide parser, diagnostics,
+verbosity, colour, progress, and cancellation contract through
+[`libraries/cli-extended/`](libraries/cli-extended/). Its rationale and
+adoption examples are linked from that library's README.
 
 ## Repository setup and initial CMRU build
 

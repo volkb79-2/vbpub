@@ -1,0 +1,44 @@
+{
+  "name": "wireguard-management",
+  "description": "Expose WireGuard UDP; do not expose SSH on the public interface",
+  "rules": [
+    {
+      "description": "Allow WireGuard handshakes",
+      "direction": "INGRESS",
+      "protocol": "UDP",
+      "action": "ACCEPT",
+      "destinationPorts": "51820"
+    },
+    {
+      "description": "Keep SSH off the public interface",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "DROP",
+      "destinationPorts": "22"
+    },
+    {
+      "description": "Drop other public TCP ingress",
+      "direction": "INGRESS",
+      "protocol": "TCP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop public UDP except WireGuard above",
+      "direction": "INGRESS",
+      "protocol": "UDP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop public ICMP ingress",
+      "direction": "INGRESS",
+      "protocol": "ICMP",
+      "action": "DROP"
+    },
+    {
+      "description": "Drop public IPv6 ICMP ingress",
+      "direction": "INGRESS",
+      "protocol": "ICMPv6",
+      "action": "DROP"
+    }
+  ]
+}

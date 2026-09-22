@@ -2,10 +2,10 @@
 """
 vbpub debian-install v2 — remote bootstrap.
 
-Fetches just scripts/debian-install-v2/ from the public volkb79-2/vbpub repo
-(a codeload tarball of one branch — no git, no `tar` binary, stdlib only:
-urllib + tarfile), translates a small set of env vars into v2's strict-JSON
-config, and runs the installer. This is the v2 equivalent of v1's
+Fetches scripts/debian-install-v2/ and the stdlib-only cli-extended runtime
+from the public volkb79-2/vbpub repo (one codeload tarball — no git, no `tar`
+binary, stdlib only: urllib + tarfile), translates a small set of env vars
+into v2's strict-JSON config, and runs the installer. This is the v2 equivalent of v1's
 scripts/debian-install/bootstrap.sh one-liner, not a continuation of it:
 v2's own CLI is strict-JSON only (see debian_install_v2/config.py) and
 rejects v1's env var names outright (SWAP_ARCH, SWAP_TOTAL_GB, SWAP_FILES,
@@ -15,18 +15,39 @@ outbound HTTPS are required before this runs; apt/git are never needed to
 fetch this wrapper or the code it pulls down (the installer's own stage1
 installs git/curl/docker for itself, once it starts).
 
+This file is an intentional cli-extended exception: it must be fetched and
+executed before the target has downloaded cli-extended, so importing that
+shared library here would create a bootstrap cycle. Keep this first-stage
+adapter stdlib-only; after it fetches the installer tree, the actual
+debian-install-v2.py entrypoint uses the shared CLI contract.
+
 Usage (root):
-  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py \\
-    | SWAP_DISK_TOTAL_GB=32 SWAP_FILE_COUNT=8 ZSWAP_COMPRESSOR=zstd ZSWAP_POOL_PERCENT=25 \\
-      AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no \\
-      TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \\
-      python3 -
+  BOOTSTRAP_URL=https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py \\
+  SWAP_DISK_TOTAL_GB=32 SWAP_FILE_COUNT=8 ZSWAP_COMPRESSOR=zstd ZSWAP_POOL_PERCENT=25 \\
+  AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no \\
+  TELEGRAM_BOT_TOKEN=123:token TELEGRAM_CHAT_ID=456 \\
+  python3 -c '
+import os, sys, urllib.request
+url = os.environ["BOOTSTRAP_URL"]
+try:
+    with urllib.request.urlopen(url, timeout=60) as response:
+        source = response.read()
+    if not source.strip():
+        raise ValueError("downloaded bootstrap source was empty")
+except Exception as exc:
+    print(f"debian-install-v2: bootstrap download failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+exec(compile(source, url, "exec"), {"__name__": "__main__", "__file__": url})
+  '
 
 Env vars — every name below maps 1:1 to a debian_install_v2.config.Config
 field (see debian_install_v2/README.md for defaults/validation of each);
 anything else goes through VBPUB_CONFIG_EXTRA_JSON, a raw JSON object
 merged in last (wins over the named vars above):
 
+  Bootstrap: BOOTSTRAP_URL in the manual launcher above selects this first
+             standalone file; REPO_URL/REPO_BRANCH below select the archive
+             it downloads. They are distinct source choices.
   Fetch:     REPO_URL (default https://github.com/volkb79-2/vbpub),
              REPO_BRANCH (default main), INSTALL_DIR (default
              /opt/vbpub-debian-install-v2)
@@ -74,11 +95,15 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-
 REPO_URL_DEFAULT = "https://github.com/volkb79-2/vbpub"
 REPO_BRANCH_DEFAULT = "main"
 INSTALL_DIR_DEFAULT = "/opt/vbpub-debian-install-v2"
 SUBTREE = ("scripts", "debian-install-v2")
+CLI_LIBRARY_SUBTREE = ("libraries", "cli-extended", "src", "cli_extended")
+SUBTREES = (
+    (SUBTREE, ()),
+    (CLI_LIBRARY_SUBTREE, ("cli_extended",)),
+)
 
 _TRUE = {"yes", "true", "1", "on"}
 _FALSE = {"no", "false", "0", "off"}
@@ -158,9 +183,9 @@ def _env_int(name: str) -> int | None:
 
 
 # Mirrors debian_install_v2.config.OBSOLETE_VARIABLES (v1's env-var names).
-# Duplicated rather than imported: this wrapper must run standalone via
-# curl|python3 before the fetched debian_install_v2 package exists on disk
-# at all -- see build_config()'s own module docstring on that constraint.
+# Duplicated rather than imported: this wrapper must run standalone before
+# the fetched debian_install_v2 package exists on disk at all -- see the
+# module docstring's explicit first-stage bootstrap exception.
 # config.py's own OBSOLETE_VARIABLES check only inspects the JSON config
 # FILE's keys, never env vars, so an operator setting one of these (the
 # likely mistake, since they're literally the v1 names) would otherwise be
@@ -206,7 +231,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
     if debug:
         print(f"[bootstrap-remote] downloading {tarball_url}", file=sys.stderr)
     request = urllib.request.Request(tarball_url, headers={"User-Agent": "vbpub-bootstrap-remote"})
-    prefix_len = len(SUBTREE)
+    counts = {source: 0 for source, _ in SUBTREES}
     written = 0
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -214,11 +239,21 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
             with tarfile.open(fileobj=response, mode="r|gz") as archive:
                 for member in archive:
                     parts = Path(member.name).parts
-                    if len(parts) < 1 + prefix_len or parts[1:1 + prefix_len] != SUBTREE:
+                    matched = next(
+                        (
+                            (source, destination)
+                            for source, destination in SUBTREES
+                            if len(parts) >= 1 + len(source)
+                            and parts[1:1 + len(source)] == source
+                        ),
+                        None,
+                    )
+                    if matched is None:
                         continue
                     if not member.isfile():
                         continue
-                    relative_parts = parts[1 + prefix_len:]
+                    source, destination_parts = matched
+                    relative_parts = parts[1 + len(source):]
                     if not relative_parts or ".." in relative_parts or any(
                         Path(part).is_absolute() for part in relative_parts
                     ):
@@ -228,7 +263,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         # touches the real filesystem -- this process runs as
                         # root (enforced in main()).
                         raise BootstrapError(f"refusing archive member with an unsafe path: {member.name!r}")
-                    relative = Path(*relative_parts)
+                    relative = Path(*destination_parts, *relative_parts)
                     target = install_dir / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     extracted = archive.extractfile(member)
@@ -238,6 +273,7 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                     if member.mode & 0o111:
                         target.chmod(target.stat().st_mode | 0o111)
                     written += 1
+                    counts[source] += 1
     except urllib.error.URLError as exc:
         raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
     except tarfile.TarError as exc:
@@ -246,13 +282,17 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
         # not URLError subclasses, and would otherwise surface as a bare
         # traceback instead of this tool's own diagnostic.
         raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
-    if written == 0:
+    missing = ["/".join(source) for source, count in counts.items() if count == 0]
+    if missing:
         raise BootstrapError(
-            f"downloaded {tarball_url} but found nothing under {'/'.join(SUBTREE)}/ — "
-            f"wrong REPO_URL/REPO_BRANCH, or the subtree moved"
+            f"downloaded {tarball_url} but required source tree(s) were empty or missing: "
+            f"{', '.join(missing)} — wrong REPO_URL/REPO_BRANCH, or a required tree moved"
         )
     if debug:
-        print(f"[bootstrap-remote] wrote {written} files under {install_dir}", file=sys.stderr)
+        print(
+            f"[bootstrap-remote] wrote {written} installer/runtime files under {install_dir}",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:
@@ -278,13 +318,13 @@ def main() -> int:
         redacted = {key: ("<redacted>" if "token" in key else value) for key, value in config.items()}
         print(f"[bootstrap-remote] config: {json.dumps(redacted)}", file=sys.stderr)
 
-    argv = [sys.executable, str(entrypoint), "--action", "install", "--config", str(config_path)]
+    argv = [sys.executable, str(entrypoint), "install", "--config", str(config_path), "--yes"]
     if _env_bool("DRY_RUN"):
         argv.append("--dry-run")
     if debug:
         print(f"[bootstrap-remote] exec: {' '.join(argv)}", file=sys.stderr)
     try:
-        return subprocess.run(argv).returncode
+        return subprocess.run(argv, check=False).returncode
     finally:
         # Disposable: the installer's own credential handling
         # (/etc/vbpub/credentials/...) is what stage2 actually relies on —

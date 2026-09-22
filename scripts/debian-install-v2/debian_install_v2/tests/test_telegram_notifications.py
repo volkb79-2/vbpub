@@ -42,6 +42,7 @@ def make_installer(tmp_path, **config_overrides):
         "state_dir": str(tmp_path / "state"), "log_dir": str(tmp_path / "logs"),
         "telegram_bot_token": "123:abc", "telegram_chat_id": "456",
         "auto_reboot_after_stage1": False, "never_reboot": True,
+        "credential_mode": "systemd",
     }
     fields.update(config_overrides)
     config = Config(**fields)
@@ -140,7 +141,7 @@ def test_install_failure_sends_exactly_one_failure_notification(tmp_path, monkey
     assert "boom" in sent[-1]
 
 
-def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, capsys):
+def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, caplog):
     """Adversarial-review regression, 2026-09-08: building/sending the
     initial "Starting debian-install-v2" report happens BEFORE install()'s
     own try/except around _stage1() -- a real bug there (show_plan()
@@ -163,9 +164,8 @@ def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, ca
     installer.install()  # must not raise
 
     assert stage1_calls == [True]
-    out = capsys.readouterr().out
-    assert "could not build/send initial report notification" in out
-    assert "boom in plan preview" in out
+    assert "could not build/send initial report notification" in caplog.text
+    assert "boom in plan preview" in caplog.text
 
 
 def test_verbose_progress_notifies_every_mark_step(tmp_path, monkeypatch):

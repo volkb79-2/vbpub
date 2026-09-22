@@ -49,7 +49,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
+    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
 ]
 clean_tree = false
 budget = "5m"
@@ -99,7 +99,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=.:../../libraries/cli-extended/src /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
 ]
 clean_tree = false
 budget = "3m"

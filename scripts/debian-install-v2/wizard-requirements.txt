@@ -1,0 +1,3 @@
+# Optional only; non-interactive CLI and remote bootstrap dependencies remain
+# stdlib-only. Review dependency updates deliberately.
+questionary==2.1.1

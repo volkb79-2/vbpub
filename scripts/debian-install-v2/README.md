@@ -12,6 +12,37 @@ Design/status docs elsewhere in this tree, not duplicated here:
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
 `testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
 
+## Operator CLI
+
+`debian-install-v2.py` is the operator entry point. It has grouped verbs for
+configuration, installation, status, verification, planning, and generating a
+provider-neutral cloud-init custom-script bundle. Run it without a verb for the
+usage map, or use `--help` for details:
+
+```text
+./debian-install-v2.py --help
+./debian-install-v2.py wizard --help
+```
+
+The usage map explains the CLI's overall job and lists each verb by name with
+an aligned one-line description. Use `debian-install-v2.py VERB --help` for
+that operation's required settings and full invocation syntax.
+
+The settings wizard writes a validated mode-0600 JSON file. The same shipped
+configuration loader validates both wizard output and hand-authored files; the
+wizard is not a second schema. Adoption, safe install examples, and remote
+bootstrap steps are in [docs/CONSUMERS.md](docs/CONSUMERS.md); command and
+wizard design rationale is in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+Verbs that consume settings require exactly one of `--config FILE` and
+`--config-json JSON`; their generated usage shows that required choice.
+The generated remote custom-script launcher uses Python’s standard-library
+HTTPS client and fails nonzero if it cannot retrieve the bootstrap.
+
+Terminal help and diagnostic tags use `cli-extended`'s shared color policy:
+automatic color on a TTY, `NO_COLOR`/`--no-color` to disable, and `--color` to
+force it. JSON and primary status/plan results remain uncolored. The installer
+does not add its own ANSI formatting.
+
 ## What it actually does today
 
 ### Disk / swap

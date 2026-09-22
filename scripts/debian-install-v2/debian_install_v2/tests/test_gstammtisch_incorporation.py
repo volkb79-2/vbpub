@@ -89,6 +89,7 @@ def install_dry(tmp_path, **overrides):
         telegram_chat_id="",
         never_reboot=True,
         auto_reboot_after_stage1=False,
+        credential_mode="systemd",
     )
     defaults.update(overrides)
     config = Config(**defaults)
@@ -232,7 +233,7 @@ def test_stage2_unit_module_path_and_workdir_resolve(tmp_path):
     unit = actions.dry_run_writes["/etc/systemd/system/vbpub-bootstrap-stage2.service"]
     assert "ExecStart=" in unit
     exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
-    assert exec_line.endswith("-m debian_install_v2.bootstrap --action resume")
+    assert exec_line.endswith("-m debian_install_v2.bootstrap resume --yes")
     workdir_line = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
     workdir = workdir_line.removeprefix("WorkingDirectory=")
     # Regression, 2026-09-09: this used to assert workdir.endswith(
@@ -261,9 +262,16 @@ def test_notify_credentials_written_to_fixed_path_under_default_credential_mode(
     # {state_dir}/credentials only, so every vbpub-notify call under the
     # default config silently found empty files and exited 0. That fixed
     # path must be populated regardless of credential_mode.
-    _, actions = install_dry(
-        tmp_path, telegram_bot_token="123:token", telegram_chat_id="456",
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="123:token",
+        telegram_chat_id="456",
+        never_reboot=True,
+        auto_reboot_after_stage1=False,
     )
+    actions = HostActions(dry_run=True)
+    Installer(config, actions).install()
     assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_bot_token"] == "123:token\n"
     assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_chat_id"] == "456\n"
     # And the mode-specific copy is still written too (root-storage's own

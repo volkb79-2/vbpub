@@ -80,10 +80,10 @@ running Mattermost stack on main (`nyxloom/mattermost/`).
   zero third-party dependencies.
 - **Why not import nyxloom as a dependency**: both `scp-api-install-host.py`
   and `debian-install-v2/bootstrap-remote.py` are deliberately single-file,
-  dependency-free scripts — `bootstrap-remote.py` in particular runs via
-  `curl | python3 -` on a freshly-imaged host with zero pip packages
-  available, so pulling in a whole separate product's package there is a
-  non-starter. (Same reasoning already applied the same session when
+  dependency-free scripts — `bootstrap-remote.py` in particular runs on a
+  freshly-imaged host with zero pip packages available, before the installer
+  tree or shared CLI library exists, so pulling in a whole separate product's
+  package there is a non-starter. (Same reasoning already applied the same session when
   `scp-api-install-host.py`'s `_load_env_file`/`_write_env_file` were
   duplicated rather than imported from the sibling `telegram_setup.py`.)
 - **Where the real integration point is**: `debian_install_v2/installer.py`

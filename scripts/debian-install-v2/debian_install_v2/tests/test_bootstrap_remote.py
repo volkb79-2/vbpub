@@ -1,4 +1,4 @@
-"""bootstrap-remote.py — the curl|python3 remote-install wrapper.
+"""bootstrap-remote.py — the stdlib-only remote-install wrapper.
 
 Filename has a hyphen (matches the sibling debian-install-v2.py entrypoint
 convention), so it's loaded by path via importlib, same as
@@ -9,8 +9,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import shlex
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +29,16 @@ def load_module():
 @pytest.fixture()
 def mod():
     return load_module()
+
+
+def test_manual_bootstrap_recipe_uses_native_python_fetch_without_pipeline(mod):
+    assert "urllib.request.urlopen(url, timeout=60)" in mod.__doc__
+    assert "| python3" not in mod.__doc__
+    assert "bootstrap download failed" in mod.__doc__
+    recipe = mod.__doc__.split("Usage (root):\n", 1)[1].split("\n\nEnv vars", 1)[0]
+    tokens = shlex.split(recipe.replace("\\\n", " "))
+    source = tokens[tokens.index("python3") + 2]
+    compile(source, "<bootstrap usage recipe>", "exec")
 
 
 # --- env -> config translation -----------------------------------------
@@ -135,6 +147,8 @@ def test_fetch_subtree_extracts_only_the_matching_subtree(mod, monkeypatch, tmp_
     tarball = _fake_tarball({
         "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
         "scripts/debian-install-v2/debian_install_v2/installer.py": b"# installer\n",
+        "libraries/cli-extended/src/cli_extended/__init__.py": b"# shared CLI\n",
+        "libraries/cli-extended/README.md": b"not runtime\n",
         "scripts/other-tool/README.md": b"unrelated\n",
         "README.md": b"repo root readme\n",
     }, executable={"scripts/debian-install-v2/debian-install-v2.py"})
@@ -146,6 +160,8 @@ def test_fetch_subtree_extracts_only_the_matching_subtree(mod, monkeypatch, tmp_
 
     assert (install_dir / "debian-install-v2.py").read_bytes() == b"#!/usr/bin/env python3\n"
     assert (install_dir / "debian_install_v2" / "installer.py").is_file()
+    assert (install_dir / "cli_extended" / "__init__.py").read_bytes() == b"# shared CLI\n"
+    assert not (install_dir / "cli_extended" / "README.md").exists()
     assert not (install_dir / "other-tool").exists()
     assert not (install_dir / "README.md").exists()
     mode = (install_dir / "debian-install-v2.py").stat().st_mode
@@ -155,7 +171,16 @@ def test_fetch_subtree_extracts_only_the_matching_subtree(mod, monkeypatch, tmp_
 def test_fetch_subtree_raises_when_nothing_matches(mod, monkeypatch, tmp_path):
     tarball = _fake_tarball({"README.md": b"nothing relevant here\n"})
     monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
-    with pytest.raises(SystemExit, match="found nothing under"):
+    with pytest.raises(SystemExit, match="required source tree"):
+        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
+
+
+def test_fetch_subtree_requires_both_installer_and_cli_runtime(mod, monkeypatch, tmp_path):
+    tarball = _fake_tarball({
+        "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
+    })
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
+    with pytest.raises(SystemExit, match="libraries/cli-extended/src/cli_extended"):
         mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
 
 
@@ -188,3 +213,34 @@ def test_fetch_subtree_reports_a_truncated_download_cleanly(mod, monkeypatch, tm
     monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _TruncatedResponse(truncated))
     with pytest.raises(SystemExit, match="corrupt or truncated download"):
         mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
+
+
+def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
+    mod, monkeypatch, tmp_path
+):
+    install_dir = tmp_path / "install"
+    monkeypatch.setenv("INSTALL_DIR", str(install_dir))
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.delenv("DEBUG_MODE", raising=False)
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+
+    def fake_fetch(repo_url, branch, target, *, debug):
+        target.mkdir(parents=True)
+        (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(argv, *, check):
+        assert check is False
+        captured["argv"] = argv
+        captured["config"] = json.loads(Path(argv[argv.index("--config") + 1]).read_text())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod.main() == 0
+    assert captured["argv"][2:4] == ["install", "--config"]
+    assert captured["argv"][-1] == "--yes"
+    assert captured["config"] == {}
+    assert not (install_dir / "remote-install-config.json").exists()

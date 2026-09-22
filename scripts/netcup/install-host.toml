@@ -1,6 +1,6 @@
-# scp-api-install-host.toml
+# install-host.toml
 #
-# Settings for scp-api-install-host.py. Every key here is REQUIRED - the
+# Settings for install-host.py. Every key here is REQUIRED - the
 # script refuses to start if any key is missing, and also refuses to start
 # if this file contains any key NOT listed here (typo/stale-key protection).
 # There is no Python-side fallback for any of these: this file is the single
@@ -8,21 +8,8 @@
 # env vars documented in --help override these values per-run; nothing below
 # is meant to be edited per-run.
 
-[api]
-base_url = "https://www.servercontrolpanel.de/scp-core"
-keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
-
-[bootstrap]
-# The controller expands {{BOOTSTRAP_URL}} in the customScript payload from
-# this template. Keeping the branch in one setting also feeds REPO_BRANCH to
-# bootstrap-remote.py, so the wrapper and the subtree it downloads always
-# come from the same branch during feature-branch live tests.
-raw_url_template = "https://raw.githubusercontent.com/volkb79-2/vbpub/{branch}/scripts/debian-install-v2/bootstrap-remote.py"
-repo_url = "https://github.com/volkb79-2/vbpub"
-repo_branch = "main"
-
 [ssh]
-# Ephemeral, per-host "day-0 bootstrap" key -- one keypair per install, NOT
+# Ephemeral, per-host controller key -- one keypair per install, NOT
 # a shared file reused across hosts (confirmed live 2026-09-08: a shared key
 # meant SSH monitoring for one host could silently pick up a key netcup had
 # actually registered for a *different* host). `{host}`/`{date}` are
@@ -47,11 +34,10 @@ repo_branch = "main"
 # ~/.ssh, bind-mounted readonly for known_hosts/reference - writing there
 # fails with "Read-only file system", confirmed live 2026-09-08). Auto-
 # generated on first use if missing - see _ensure_local_identity_file_exists().
-# This is separate from the per-host *production* access key stage2 itself
-# generates on the host and Telegrams back -- this key is transient: it's
-# also passed through to debian-install-v2 (CONTROLLER_SSH_PUBKEY) so it can
-# be installed into authorized_keys directly and removed again once stage2
-# finishes, independent of whether netcup's own sshKeyIds injection worked.
+# This is separate from any production access key the consumed customScript
+# generates on the host. This key is transient: it is passed through as the
+# generic CONTROLLER_SSH_PUBKEY marker so the hook can install/remove it,
+# independent of whether Netcup's own sshKeyIds injection worked.
 identity_file = "~/.ssh/vbpub-scp_installer-{host}-{date}-ed25519"
 user = "root"
 
@@ -80,4 +66,8 @@ controller_fqdn = "automatic"
 poll_interval = 5.0
 attach_initial_delay = 0.0
 attach_max_wait_seconds = 300.0
-stage2_wait_seconds = 1800.0
+completion_wait_seconds = 1800.0
+# The local controller key is retained by default so the same host-specific
+# key can be reused later. The customScript producer owns any remote key
+# cleanup policy.
+controller_local_key_retention = "retain"

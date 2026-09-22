@@ -77,17 +77,26 @@ such as “the following arguments are required”. The only exception is a CLI
 whose documented purpose is specifically a no-argument action; that action must
 still have a separate `--help` path.
 
-Unknown verbs, missing required values, and malformed options print a concise,
-identity-headed diagnostic to stderr and exit `2`. They may include the
-relevant usage synopsis, but must not print a raw traceback.
+Unknown verbs, missing required values, and malformed options print a concise
+`[ERROR]` diagnostic as the first block on stderr, followed by a blank line and
+the product identity plus relevant help; they exit `2` and must not print a raw
+traceback. This makes the failure immediately visible without displacing the
+identity heading from the help itself.
 
 Once a known verb has been identified, a command-local invocation error also
 prints that verb's complete help immediately. This includes missing required
 positional arguments, missing required options, invalid choices, invalid
 values, and invalid option combinations. The operator should not have to type
 the same command again with `--help` to discover the remedy. The output must
-contain the failed-operation diagnostic and the same command help available
-from `tool <verb> --help`, and must still exit `2`.
+contain the failed-operation diagnostic first, a blank line, and the same
+command help available from `tool <verb> --help`, and must still exit `2`.
+
+Every usage synopsis must match the parser's real constraints. In particular,
+required mutually exclusive alternatives must be shown as required alternatives
+(for example, `(--config FILE | --config-json JSON)`), not as separate optional
+flags. Prefer deriving usage from structured argument/option declarations; an
+overridden synopsis is exceptional and must remain consistent with parser
+validation.
 
 An error before a known verb can be identified prints the top-level help. A
 parser must not let argument ordering hide a more useful command-local error;
@@ -108,6 +117,8 @@ TOOL 1.2.3 — Long Tool Name
 Usage: tool <verb> [options]
        tool help [verb]
        tool version
+
+One-sentence description of the overall CLI and the job it performs.
 
 GETTING STARTED
   ...the shortest useful workflow...
@@ -139,26 +150,42 @@ discovery. Group order should follow the operator's likely workflow, with
 alphabetical order inside a group unless a documented workflow order is more
 useful.
 
-An entry has the form:
+Top-level entries list the verb name only, followed by a concise description.
+The description column is calculated once across all semantic groups so every
+entry starts at the same horizontal position. Positional arguments, options,
+and alternative syntax belong in that verb's detailed `--help` output, not in
+the catalog line. For example:
 
 ```text
-  verb [required arguments] [important options]
-      one-line explanation of the observable operation
+  status       show installation state and recent logs
+  configure    create or update validated settings [interactive]
+  install      run the two-stage installation [mutating; potentially expensive]
 ```
 
 Top-level entries should say whether they are read-only, mutating, interactive,
 or potentially expensive. A mixed verb appears once under `MIXED OPERATIONS`;
-its help entry lists its read-only default and its mutating actions together.
-For example:
-
-```text
-  firewall SERVER [MAC] get|set
-      inspect or replace the interface assignment; set is confirmed
-```
+its concise summary identifies that it also has mutating actions. Detailed
+help for `firewall` can show `firewall SERVER [MAC] get|set` and explain which
+action is confirmed.
 
 Nested actions are actions, not top-level verbs and not boolean options. They
 are written as positional action names (`snapshots SERVER create`), not as
 misleading flags (`snapshots SERVER --create`).
+
+The same structured verb metadata may also render a Markdown usage document
+for a README or operator guide. Markdown is a documentation format, not a
+second hand-maintained command list: it must be generated from the same
+metadata used by terminal help. Terminal `--help` remains plain text unless a
+CLI explicitly documents another format.
+
+The preferred implementation is one command registry that generates parser
+registration, grouped help, help lookup, and dispatch. Each verb definition
+owns its synopsis, description, examples, semantic group, and behavior
+attributes. Positional arguments and options carry their own names, help,
+argparse constraints, and help-group placement. Do not repeat the verb list in
+a parser, handler map, and handwritten usage block when a registry can derive
+those surfaces. Custom parser callbacks are an escape hatch for genuinely
+nested or conditional argument structures.
 
 ## 4. Getting Started and examples
 
@@ -246,14 +273,15 @@ The canonical verbosity control is:
 --log-level {error,warn,info,debug}
 ```
 
-The default is `info`. `--quiet` is an alias for `--log-level=error`, and
-`--debug` is an alias for `--log-level=debug`. `--debug-raw` implies debug
-verbosity in addition to disabling supported redaction. The level controls
+The default is `info`. `--quiet` suppresses informational/debug output while
+retaining warnings and errors (equivalent to `--log-level=warn`), and `--debug`
+is an alias for `--log-level=debug`. `--debug-raw` implies debug verbosity in
+addition to disabling supported redaction. The level controls
 diagnostic/progress messages, not the command's primary result: a successful
 query still returns its result at `--quiet`, while warnings and errors remain
-visible. A CLI may accept `--verbose` as a compatibility alias for debug, but
-new interfaces should not invent a numeric `--verbose` scale alongside
-`--log-level`.
+visible. `--verbose` is accepted by the common helper as a compatibility alias
+for debug. New interfaces should not invent a numeric `--verbose` scale
+alongside `--log-level`.
 
 The level options are mutually exclusive. If more than one is supplied, the
 CLI reports the conflict and prints the relevant help rather than silently
@@ -286,6 +314,12 @@ target deny-lists, explicit target requirements, dry-run rules, or other safety
 guards. A command must still refuse an unsafe or incomplete request with a
 meaningful diagnostic.
 
+The common registration should expose `--yes` only for verbs marked as
+mutating (or a specifically documented mixed verb that has a mutating action).
+The shared confirmation helper may own default-no prompting, TTY refusal, and
+EOF handling, but the CLI owner must validate the exact target/change first
+and call confirmation immediately before making that change.
+
 The normal interactive prompt must clearly state what will change. A declined
 prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
 When stdin is not interactive, a command must not attempt a prompt that will
@@ -305,7 +339,10 @@ example:
 
 Global options may be accepted before the verb. A tool may also accept them
 after the verb for ergonomics, but the accepted placement must be consistent
-within that CLI and documented in its help.
+within that CLI and documented in its help. When a shared option is accepted
+on both sides of a verb, validation must span the whole invocation: mutually
+exclusive controls such as `--quiet` and `--debug` must not become
+last-one-wins merely because they were parsed by different command levels.
 
 ## 6. Errors, exceptions, and cancellation
 
@@ -355,11 +392,14 @@ hard-wrapping all prose at `80` columns. Long option descriptions should wrap
 at word boundaries and preserve indentation.
 
 Colours are optional presentation. Automatic colour must be disabled when
-stdout is not a TTY, when `NO_COLOR` is set, or when the CLI provides
-`--no-color`. Semantic meaning must remain available in plain text. If both
-explicit colour controls are exposed, `--no-color` wins over automatic colour
-and `--color` may explicitly override `NO_COLOR`; JSON output never uses ANSI
-colour.
+the destination stream is not a TTY, when `NO_COLOR` is set, or when the CLI
+provides `--no-color`. Generated terminal help follows this policy just like
+diagnostics and progress; the automatic check uses stdout for help and stderr
+for diagnostics/progress. Semantic meaning must remain available in plain
+text. If both explicit colour controls are exposed, `--no-color` disables
+automatic colour and `--color` may explicitly override `NO_COLOR`; JSON,
+version output, and primary result data never use ANSI colour. Supplying both
+explicit controls is an invocation error rather than a last-option-wins rule.
 
 ### Progress
 
@@ -378,7 +418,10 @@ colour or terminal control sequences. Human progress goes to stderr so that
 normal stdout remains a result stream; `rawjson` is a machine mode and owns
 stdout for the progress event stream. A command must document whether it
 combines a final result with `rawjson` events or represents completion as a
-final event.
+final event. When `--json` selects the command's primary stdout result,
+`--progress=rawjson` is valid but deliberately muted; use `plain` or `tty` if
+progress is wanted on stderr. This prevents a primary JSON document from
+being mixed with a second machine stream.
 
 Tables must preserve stable column meaning, sanitize external values before
 printing, and use explicit placeholders for unknown values. “Could not check”
@@ -431,7 +474,8 @@ library is sufficient for the baseline contract:
   `traceback` cover terminal sizing, cancellation, cleanup, and unexpected
   failures; and
 - `dataclasses` or typed dictionaries can hold the one verb/group/option
-  metadata table used to render top-level help and validate its tests.
+  metadata table used to generate parser registration, top-level help, command
+  help, Markdown docs, and dispatch without parallel hand-maintained lists.
 
 The shared helper is free to reuse established Python libraries where they
 materially improve correctness, presentation, terminal handling, structured
@@ -442,26 +486,28 @@ statuses. A CLI should not acquire multiple overlapping parser/rendering
 frameworks merely because each project chose a different one.
 
 The repository has enough repeated behavior across CIU, CMRU, nyxloom, and the
-Netcup tools that a small custom library is worthwhile once migration begins.
-It should be a focused contract layer, not a replacement for every possible
-CLI framework. It may use or adapt an established parser/renderer, but its
-narrow API should cover:
+Netcup tools that a small custom library is worthwhile. It is a focused
+contract layer, not a replacement for every possible CLI framework. It may use
+or adapt an established parser/renderer, but its narrow API covers:
 
-The recommended home is `libraries/vbpub-cli/`, with distribution name
-`vbpub-cli` and Python import name `vbpub_cli`. It must be independently
+The recommended home is `libraries/cli-extended/`, with distribution name
+`cli-extended` and Python import name `cli_extended`. It must be independently
 packageable so installed CLIs do not depend on importing from the repository
 root.
 
 1. `CliIdentity` and authoritative version resolution;
-2. structured verb/group metadata and top-level help rendering;
+2. a declarative verb/argument/option registry that generates parsers, grouped
+   help, dispatch, and Markdown usage from one set of metadata;
 3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`,
    `--debug-raw`, `--log-level`, colour/progress controls, and
    command-help-on-error;
 4. severity-tagged diagnostics, hints, TTY-aware colour, and progress
    rendering with a plain fallback;
 5. the outer exception and Ctrl-C boundary; and
-6. reusable contract-test helpers for side-effect-free help/version, output
-   streams, exit statuses, and prompt behavior.
+6. reusable black-box contract-test helpers for help/version, parse errors,
+   output streams, exit statuses, and confirmation behavior. Each consumer
+   still proves side-effect freedom with its domain-specific API/filesystem
+   fakes or state probes.
 
 Domain verbs, API clients, configuration loading, and destructive-operation
 policy must remain in each owning project. The helper must not import CIU,
@@ -471,11 +517,11 @@ repository-root import path would make a standalone CLI work only from this
 checkout.
 
 Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
-nyxloom's parser classes) are useful migration evidence, but keeping three
-independent implementations will eventually recreate the drift this standard
-is intended to prevent. A later implementation change should first build the
-helper and migrate the three Netcup entrypoints, then migrate the larger CLIs
-with compatibility tests.
+nyxloom's parser classes) remain useful migration evidence, but keeping three
+independent implementations would recreate the drift this standard is
+intended to prevent. The Debian installer and the three Netcup entrypoints are
+the first adopted consumers; larger CLIs remain follow-on migrations with
+compatibility tests.
 
 ## 11. Further contract areas
 
@@ -507,18 +553,18 @@ tool-specific before a CLI is considered fully adopted:
 ## 12. Adoption inventory
 
 This is an adoption plan, not a claim that all current tools already conform.
+The current scoped review covers the Debian installer and the Netcup tools;
+other rows remain future work and were not re-audited here.
 
 | CLI | Main adoption work |
 |---|---|
+| `debian-install-v2.py` | adopted through `cli-extended` for registry, help/version, common options, output, and dispatch; `bootstrap-remote.py` is the documented stdlib-only bootstrap exception |
+| Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | adopted through `cli-extended` for generated verbs/help, identity/version, common diagnostics, and clean cancellation; Netcup retains API, confirmation, denylist, and install policy |
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
 | `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
-| `scp-api.py` | add version/help verbs, remove duplicate verb list, add identity header, align `--yes`/errors |
-| `install-host.py` | add identity/version/help verb, grouped options, and common error/debug behavior |
-| `monitor-task.py` | make bare/help invocations side-effect free; prevent `help` from being parsed as a UUID |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 
-The first migration target is `scp-api.py`, `install-host.py`, and
-`monitor-task.py`, because the audit found both discoverability defects and a
-real unsafe `monitor-task.py help` path. The standard itself is repository-wide
-and does not require every CLI to be migrated in one change.
+The Debian installer and Netcup tools are the current first-party consumers.
+The standard itself is repository-wide; this scoped migration does not claim
+or require that every repository CLI is converted at once.
