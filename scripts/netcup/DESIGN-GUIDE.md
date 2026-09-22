@@ -1,0 +1,38 @@
+# Netcup SCP tool design guide
+
+## Authentication is an explicit command
+
+The SCP API needs a long-lived OAuth refresh token, but obtaining it is a
+browser-mediated device-code flow. `login` performs that flow and writes the
+token to `.env`; it does not create an SSH key or contact a server. This keeps
+authentication usable before a target host has been selected.
+
+`configure` is also local recipe setup after one read-only server/image lookup.
+It likewise does not generate an SSH identity. The normal install path is the
+only path that needs a per-host controller key for SSH monitoring.
+
+## Generated recipe and source selection
+
+`default-recipe.jsonc` is an operator-local cache, not a portable repository
+configuration. It is ignored because image IDs and account-level choices are
+facts resolved by `configure`, not estate-wide constants.
+
+The customScript keeps the bootstrap location as a placeholder until the
+controller sends the API request. The configured repository branch is passed
+both to the raw bootstrap URL and to `bootstrap-remote.py`; otherwise a
+feature-branch wrapper could silently fetch `main`'s installer subtree.
+
+## SSH identity timing
+
+The normal install path creates a per-host, per-date identity only after it
+knows which host it is targeting. `login`, `configure`, and `build-customscript`
+must not create one merely because the script was invoked. The generated
+controller public key is passed through the bootstrap and removed by stage2;
+the operator's persistent access key remains independent.
+
+## Test boundary
+
+The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap
+commit tests remain in `debian-install-v2`'s explicit QEMU/TCG VM lane. The
+Netcup merge must not resurrect the historical privileged-container harness,
+because Docker shares the host kernel and cannot isolate host-global swap.

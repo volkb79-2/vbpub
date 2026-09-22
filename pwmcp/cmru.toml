@@ -21,6 +21,7 @@ git_tag = true
 build_step = "build"
 commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "pwmcp.contract.json"]
 artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json", ".assay"]
 
 [project_metadata.builder]
 name = "pwmcp-governed-v1"
@@ -39,7 +40,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "pwmcp: resolver and build-contract tests", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q"], cwd = "." },
+  { label = "pwmcp: Assay R1 tester gate", argv = ["./run-gate.py", "r1", "--worktree", "."], cwd = "." },
 ]
 
 [steps.build]

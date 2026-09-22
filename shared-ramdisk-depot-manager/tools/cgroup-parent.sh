@@ -71,6 +71,7 @@ done
 
 verdict="$(
   docker run --rm -i --cgroupns=host --network=none \
+    --cgroup-parent="$slice" \
     -e "CG_REL=$rel" "$PROBE_IMAGE" sh -s <<'PROBE' 2>/dev/null || true
 d="/sys/fs/cgroup${CG_REL}"
 if [ ! -d "$d" ]; then echo "MISSING $d"; exit 0; fi

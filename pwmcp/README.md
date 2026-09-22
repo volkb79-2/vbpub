@@ -288,12 +288,21 @@ ciu-build -d . push-images
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
 - [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
+- [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why the release gate delegates judgment to Assay
+- [docs/CONSUMERS.md](docs/CONSUMERS.md) — commands for the R1 and resumable R2 lanes
 
 ## Testing
 
 `./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+The release gate is `./run-gate.py r1`. It runs the resolver, image-builder
+contract, and client tests through source-backed Assay in `tester-unified`,
+with branch coverage recorded in `coverage.json`. The slower mutation lane is
+`./run-gate.py r2`; it is resumable and may be run separately before a release.
+PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
+version-intersection invariant and Schemathesis is not applicable.
 
 ### CLI diagnostics
 

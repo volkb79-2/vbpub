@@ -52,3 +52,28 @@ v2 rejects v1 environment names such as `SWAP_ARCH`, `SWAP_TOTAL_GB`,
 intentionally deferred. APT uses release, updates, security, backports,
 testing, and unstable; backports are preferred at 600 and unstable remains
 pinned at 50.
+
+## Netcup SCP API provisioning
+
+From `scripts/netcup/`, create the refresh token and local image recipe before
+the first install:
+
+```bash
+python3 scp-api-install-host.py login
+python3 scp-api-install-host.py configure
+python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
+python3 scp-api-install-host.py --payload target-host.jsonc --monitor
+```
+
+The generated `default-recipe.jsonc` is local and ignored. Its customScript
+uses a controller-side bootstrap placeholder; configure a feature-branch
+source before a live test:
+
+```bash
+export NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH=netcup-v2-integration
+python3 scp-api-install-host.py --payload target-host.jsonc --dry-run
+```
+
+The dry run must show the intended branch before a real Netcup API install is
+confirmed. See [`scripts/netcup/README.md`](../scripts/netcup/README.md) for
+attach-only, exploration, and bootstrap-source details.

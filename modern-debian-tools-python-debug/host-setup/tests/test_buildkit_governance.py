@@ -11,8 +11,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from hypothesis import given, strategies as st
+
 
 ROOT = Path(__file__).resolve().parents[1]
+# The assay baseline loads the wizard by absolute path from a Python process
+# whose sys.path starts at this tests directory.  Make the wizard's sibling
+# source directory explicit so its source-tree import of ``mdt_cli`` works in
+# every runner, including assay's isolated snapshot.
+sys.path.insert(0, str(ROOT))
 
 
 def load_module(path: Path, name: str):
@@ -40,6 +47,17 @@ FINALIZE = load_module(
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
+    @given(st.integers(min_value=1, max_value=1024 * 1024 * 1024))
+    def test_size_formatter_never_loses_a_positive_quantity(self, kib: int) -> None:
+        """A displayed cgroup size must remain a positive systemd value.
+
+        This is a pure policy invariant for the ordinary wizard lane. It does
+        not claim that a live kernel accepted the resulting unit; that claim
+        belongs to the VM lane.
+        """
+        rendered = WIZARD.kib_to_size_str(kib)
+        self.assertGreater(WIZARD.parse_size_to_kib(rendered), 0)
+
     def test_wizard_parser_and_terminal_boundaries(self) -> None:
         class TTY(io.StringIO):
             def isatty(self):

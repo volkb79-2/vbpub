@@ -16,49 +16,21 @@ was purely additive and non-breaking for the endpoints this script uses: new
 
 Get API access / Authentication:
 
-1. Get a device_code and activate it 
-curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device' \
-  -d "client_id=scp" \
-  -d 'scope=offline_access openid' | jq
+Run `%(prog)s login` - it automates the whole OAuth2 device-code dance below
+and writes the resulting refresh token straight into .env. See _run_login()'s
+own docstring for the manual curl-by-curl equivalent (useful if you ever
+need to debug the flow itself, or the automated version breaks).
 
-1.2. extract link in "verification_uri_complete", open it, login with SCP credentials, confirm grant access
-1.3. extract the "device_code" : e.g. "BqCuANW2nKFwCtdf5HcbYRIEZ_RrklqiSF40r9AQH0k"
-
-2. Use activated `device-token` to get long-term `refresh_token` to generate `access_token` for API access
-curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
-  -d 'device_code=<device-code>' \
-  -d 'client_id=scp' | jq
-
-Notes: 
-- Use access token within the next 300 seconds to access the API. See "Refresh access token" how to obtain a new access token.
-- The offline refresh token can be used multiple times and does not expire as long as it is used at least once every 30 days.
-- If the refresh token is leaked or no longer needed it could be revoked.
-- Forgotten refresh tokens can be revoked in the Account Console: 
-   https://www.servercontrolpanel.de/realms/scp/account
-
-3. Make API calls:
-3.1. Get fresh access token
-ACCESS_TOKEN=$(curl -s 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'client_id=scp' \
-  -d "refresh_token=${REFRESH_TOKEN}" \
-  -d 'grant_type=refresh_token' | jq -r '.access_token')
-
-3.2. Make API calls with access token
-curl 'https://www.servercontrolpanel.de/scp-core/api/v1/servers?limit=10' \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}"
-
-4. refresh flow: 
-curl 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'client_id=scp' \
-  -d 'refresh_token=<refresh_token>' \
-  -d 'grant_type=refresh_token'
+Once a refresh token exists (in .env or $NETCUP_SCP_API_REFRESH_TOKEN), this
+script handles getting/refreshing short-lived access tokens itself for every
+other mode - no further manual steps needed.
 """
 
 import os
 import sys
 import json
 import re
+import shlex
 import socket
 import argparse
 import subprocess
@@ -71,6 +43,26 @@ import urllib.request
 from typing import Optional, Dict, Any, List, Set
 from datetime import datetime
 from pathlib import Path
+
+import netcup_scp_client
+# _load_env_file/_write_env_file have no call site left in this file's own
+# code (load_env_file() below covers the real runtime need) -- they stay
+# imported anyway because tests/test_scp_api_install_host.py calls them as
+# install_host_mod._load_env_file(...)/._write_env_file(...) directly, the
+# same re-export-for-test-access pattern already used for get_access_token/
+# NetcupSCPClient/HTTPStatusError. Don't remove as "dead" without checking
+# the test file first (caught live, 2026-09-09: removing them broke 5 tests).
+from netcup_scp_client import (
+    HTTPStatusError,
+    NetcupSCPClient,
+    _load_env_file,
+    _load_settings,
+    _redact_for_log,
+    _write_env_file,
+    get_access_token,
+    load_env_file,
+    run_device_code_login as _run_login,
+)
 
 
 def _normalize_ssh_public_key(public_key: str) -> str:
@@ -179,12 +171,36 @@ def _resolve_controller_fqdn(controller_fqdn: str) -> str:
     return local
 
 
+_UNKNOWN_HOST_LABEL = "unknown-host"
+_IDENTITY_FILE_LABEL_RE = re.compile(r"[^A-Za-z0-9.\-]")
+
+
+def _render_identity_file_path(template: str, server_name: Optional[str]) -> str:
+    """Render {host}/{date} placeholders in an ssh.identity_file template.
+
+    A literal path with no placeholders passes through unchanged (backward
+    compatible with a CLI/env override that doesn't want per-host naming).
+    `server_name` is sanitized to safe filename characters; falls back to
+    _UNKNOWN_HOST_LABEL if unset, so a template can still render to a
+    concrete (if less useful) path outside the interactive-gather flow.
+    """
+    host_label = _IDENTITY_FILE_LABEL_RE.sub("-", server_name) if server_name else _UNKNOWN_HOST_LABEL
+    date_label = datetime.now().strftime("%Y%m%d")
+    return template.replace("{host}", host_label).replace("{date}", date_label)
+
+
 def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str) -> None:
     """Generate the local SSH identity key if it doesn't exist yet.
 
-    The filename is static (shared day-0 bootstrap key, reused across every
-    install - see scp-api-install-host.toml's [ssh] comment). Only the key's
-    *comment* is dynamic: it embeds `controller_fqdn` (resolved via
+    One keypair per (already-rendered, per-host/per-date) identity_file path
+    - see _render_identity_file_path(), called before this - not a single
+    shared file reused across every install (confirmed live 2026-09-08: that
+    let SSH monitoring for one host silently pick up a key netcup had
+    actually registered for a different one). The key's *comment* embeds a
+    stable "vbpub-controller-ephemeral" marker (so debian-install-v2's own
+    end-of-stage2 authorized_keys cleanup - and any human auditing a host's
+    authorized_keys - can identify it unambiguously), the same host/date
+    labels as the filename, and `controller_fqdn` (resolved via
     _resolve_controller_fqdn - "automatic" or an explicit value) so anyone
     looking at authorized_keys on a host this key touches can tell who/why
     put it there.
@@ -209,7 +225,7 @@ def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str)
         [
             "ssh-keygen", "-t", "ed25519", "-N", "",
             "-f", str(identity_path),
-            "-C", f"vbpub-netcup-installation@{resolved_fqdn}",
+            "-C", f"vbpub-controller-ephemeral-{identity_path.name}@{resolved_fqdn}",
         ],
         check=True,
         capture_output=True,
@@ -253,34 +269,6 @@ def _ensure_netcup_ssh_key_id_for_identity(
         },
     )
     return int(created["id"])
-
-
-_SENSITIVE_DICT_KEYS = {
-    "access_token",
-    "refresh_token",
-    "rootPassword",
-    "password",
-    "token",
-    "authorization",
-    "Authorization",
-    "cloudInitResultBase64Encoded",
-}
-
-
-def _redact_for_log(value: Any) -> Any:
-    if isinstance(value, dict):
-        redacted: Dict[str, Any] = {}
-        for k, v in value.items():
-            if k in _SENSITIVE_DICT_KEYS:
-                redacted[k] = "***REDACTED***"
-            elif k == "customScript" and isinstance(v, str):
-                redacted[k] = f"***REDACTED customScript (len={len(v)})***"
-            else:
-                redacted[k] = _redact_for_log(v)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_for_log(v) for v in value]
-    return value
 
 
 def _strip_jsonc_comments(text: str) -> str:
@@ -339,103 +327,31 @@ def _strip_jsonc_comments(text: str) -> str:
 
     return "".join(out)
 
-# Load .env file if it exists
-def load_env_file() -> None:
-    """Load environment variables from a local .env file (no external deps).
-
-    Search order:
-      1) current working directory
-      2) directory containing this script (scripts/netcup)
-      3) repo root (two levels up from this script)
-
-    This makes it safe to run the script from repo root while keeping the
-    canonical .env next to the netcup tooling.
+def _resolve_env_path() -> Path:
+    """Which .env file is (or would be) in effect - same search order as
+    load_env_file(), but returns a path even when none of the candidates
+    exist yet: the canonical scripts/netcup/.env, so `login` has somewhere
+    sensible to create it.
     """
-
     script_dir = Path(__file__).resolve().parent
     candidates = [
         Path.cwd() / ".env",
         script_dir / ".env",
         script_dir.parent.parent / ".env",
     ]
-
-    env_file: Optional[Path] = next((p for p in candidates if p.exists()), None)
-    if env_file is None:
-        return
-
-    try:
-        with env_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    value = value.strip()
-
-                    # If the value is unquoted, allow trailing inline comments.
-                    # Example: SERVER_NAME=v1001  # prod
-                    if value and not (value.startswith('"') or value.startswith("'")):
-                        if "#" in value:
-                            value = value.split("#", 1)[0].rstrip()
-
-                    # Remove surrounding quotes if present.
-                    if (len(value) >= 2) and (
-                        (value.startswith('"') and value.endswith('"'))
-                        or (value.startswith("'") and value.endswith("'"))
-                    ):
-                        value = value[1:-1]
-
-                    # In this repo, `.env` is the primary configuration source for the
-                    # installer. Prefer it over pre-set environment variables to keep
-                    # runs deterministic (CLI flags are the intended override channel).
-                    key = key.strip()
-                    os.environ[key] = value
-    except OSError:
-        # Best-effort only; the caller will error out later if required vars are missing.
-        return
+    return next((p for p in candidates if p.exists()), script_dir / ".env")
 
 
+# Load .env file if it exists
 load_env_file()
-
-
-def _flatten_toml(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
-    flat: Dict[str, Any] = {}
-    for k, v in data.items():
-        key = f"{prefix}{k}"
-        if isinstance(v, dict):
-            flat.update(_flatten_toml(v, prefix=f"{key}."))
-        else:
-            flat[key] = v
-    return flat
-
-
-def _load_settings(path: Path, expected_keys: Set[str]) -> Dict[str, Any]:
-    """Load a settings TOML file against a closed schema.
-
-    Every key in `expected_keys` must be present, and any key present that is
-    NOT in `expected_keys` is also an error (typo/stale-key protection). There
-    is no Python-side fallback for any of these values: a missing key is a
-    hard error naming it, not a silently-assumed default.
-    """
-    if not path.exists():
-        raise SystemExit(f"ERROR: missing settings file: {path}")
-    with path.open("rb") as f:
-        data = tomllib.load(f)
-    flat = _flatten_toml(data)
-    missing = expected_keys - flat.keys()
-    unknown = flat.keys() - expected_keys
-    errors = []
-    if missing:
-        errors.append(f"missing required settings: {', '.join(sorted(missing))}")
-    if unknown:
-        errors.append(f"unknown/unexpected settings: {', '.join(sorted(unknown))}")
-    if errors:
-        raise SystemExit(f"ERROR: {path} failed validation:\n  - " + "\n  - ".join(errors))
-    return flat
 
 
 _SETTINGS_EXPECTED_KEYS = {
     "api.base_url",
     "api.keycloak_url",
+    "bootstrap.raw_url_template",
+    "bootstrap.repo_url",
+    "bootstrap.repo_branch",
     "ssh.identity_file",
     "ssh.user",
     "ssh.controller_fqdn",
@@ -451,6 +367,11 @@ SETTINGS = _load_settings(SETTINGS_PATH, _SETTINGS_EXPECTED_KEYS)
 # Configuration
 BASE_URL = SETTINGS["api.base_url"]
 KEYCLOAK_URL = SETTINGS["api.keycloak_url"]
+# netcup_scp_client's own functions/NetcupSCPClient read these as module
+# globals, not parameters (see its own module docstring) -- must be set
+# before get_access_token()/_run_login()/NetcupSCPClient(...) are used.
+netcup_scp_client.BASE_URL = BASE_URL
+netcup_scp_client.KEYCLOAK_URL = KEYCLOAK_URL
 
 # Server configuration
 # Example server info from `/servers` API:
@@ -470,6 +391,37 @@ SERVER_NAME = os.environ.get("NETCUP_SCP_API_SERVER_NAME")    # v1001.vxxu.de
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+
+def _bootstrap_source() -> Dict[str, str]:
+    """Resolve the wrapper URL and the repo source it will fetch.
+
+    The URL is a payload placeholder rather than a Python literal so a saved
+    JSONC recipe remains portable between main and a feature branch. The
+    wrapper also receives the same repo URL/branch explicitly; otherwise a
+    feature-branch wrapper would silently download main's installer subtree.
+    """
+    def setting_or_env(env_name: str, setting_key: str) -> str:
+        value = os.environ.get(env_name, "").strip()
+        return value or str(SETTINGS[setting_key]).strip()
+
+    repo_url = setting_or_env("NETCUP_SCP_API_BOOTSTRAP_REPO_URL", "bootstrap.repo_url").rstrip("/")
+    repo_branch = setting_or_env("NETCUP_SCP_API_BOOTSTRAP_REPO_BRANCH", "bootstrap.repo_branch")
+    remote_url = os.environ.get("NETCUP_SCP_API_BOOTSTRAP_URL", "").strip()
+    if not remote_url:
+        template = str(SETTINGS["bootstrap.raw_url_template"])
+        if "{branch}" not in template:
+            raise ValueError("bootstrap.raw_url_template must contain the {branch} placeholder")
+        remote_url = template.replace("{branch}", urllib.parse.quote(repo_branch, safe="/"))
+
+    if not repo_url.startswith("https://") or any(char.isspace() for char in repo_url):
+        raise ValueError("bootstrap repo URL must be an https:// URL without whitespace")
+    if not remote_url.startswith("https://") or any(char.isspace() for char in remote_url):
+        raise ValueError("bootstrap URL must be an https:// URL without whitespace")
+    if not repo_branch or any(char.isspace() for char in repo_branch):
+        raise ValueError("bootstrap repo branch must be non-empty and contain no whitespace")
+    return {"remote_url": remote_url, "repo_url": repo_url, "repo_branch": repo_branch}
+
+
 # Installation settings (hostname will be set dynamically from server info).
 # customScript targets debian-install-v2's remote bootstrap entrypoint
 # (scripts/debian-install-v2/bootstrap-remote.py), piped to `python3 -` (not
@@ -485,9 +437,11 @@ INSTALLATION_CONFIG = {
     "locale": "en_US.UTF-8",
     "timezone": "Europe/Berlin",
     "customScript": (
-        "curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py | "
+        "curl -fsSL {{BOOTSTRAP_URL}} | "
+        "REPO_URL={{BOOTSTRAP_REPO_URL}} REPO_BRANCH={{BOOTSTRAP_REPO_BRANCH}} "
         "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
-        "TELEGRAM_BOT_TOKEN={{TELEGRAM_BOT_TOKEN}} TELEGRAM_CHAT_ID={{TELEGRAM_CHAT_ID}} "
+        "TELEGRAM_BOT_TOKEN='{{TELEGRAM_BOT_TOKEN}}' TELEGRAM_CHAT_ID='{{TELEGRAM_CHAT_ID}}' "
+        "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' "
         "python3 -"
     ),
     "rootPartitionFullDiskSize": False,
@@ -496,102 +450,9 @@ INSTALLATION_CONFIG = {
 }
 
 # Debug mode: NETCUP_SCP_API_DEBUG env var, OR'd with --debug in main().
-DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
-
-
-def log_debug(message: str):
-    """Print debug messages if DEBUG is enabled"""
-    if DEBUG:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[DEBUG] {timestamp} {message}", file=sys.stderr)
-
-
-def get_access_token(refresh_token: str) -> str:
-    """Get fresh access token using refresh token"""
-    log_debug("Refreshing access token...")
-
-    data = urllib.parse.urlencode(
-        {
-            "client_id": "scp",
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        f"{KEYCLOAK_URL}/token",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise RuntimeError(f"Token request failed: HTTP {e.code}: {body[:500]}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Token request network error: {e}")
-
-    token_data = json.loads(raw)
-    access_token = token_data.get("access_token")
-
-    if not access_token:
-        raise ValueError("No access token in response")
-
-    log_debug(f"Access token obtained (expires in {token_data.get('expires_in', 'unknown')} seconds)")
-    return access_token
-
-
-class HTTPStatusError(RuntimeError):
-    def __init__(self, status: int, message: str, body: str = ""):
-        super().__init__(message)
-        self.status = int(status)
-        self.body = body
-
-
-def _http_json(
-    method: str,
-    url: str,
-    *,
-    headers: Optional[Dict[str, str]] = None,
-    params: Optional[Dict[str, Any]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
-    timeout: float = 30.0,
-) -> Any:
-    if params:
-        q = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
-        if q:
-            url = url + ("&" if "?" in url else "?") + q
-
-    hdrs: Dict[str, str] = {"Accept": "application/json"}
-    if headers:
-        hdrs.update(headers)
-
-    data = None
-    if json_body is not None:
-        data = json.dumps(json_body).encode("utf-8")
-        hdrs.setdefault("Content-Type", "application/json")
-
-    req = urllib.request.Request(url, data=data, method=method.upper(), headers=hdrs)
-    try:
-        with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            if not raw.strip():
-                return {}
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise HTTPStatusError(int(getattr(e, "code", 0) or 0), f"HTTP {getattr(e, 'code', '?')} for {url}", body)
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Network error for {url}: {e}")
+# log_debug() (imported from netcup_scp_client) reads netcup_scp_client's
+# OWN module-level DEBUG, not a local one here -- set that directly.
+netcup_scp_client.DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
 
 
 def parse_args():
@@ -600,6 +461,21 @@ def parse_args():
         description="Netcup Server Control Panel - Automated Debian Installation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Commands (positional, optional; default is the install flow below):
+  login               Automate the OAuth2 device-code login flow and write
+                       the resulting refresh token to .env. No other flags
+                       needed.
+  configure           Interactive wizard: resolve the latest Debian UEFI
+                       image flavour (and other account/image-level
+                       defaults) for $NETCUP_SCP_API_SERVER_NAME and save
+                       them as scripts/netcup/default-recipe.jsonc, used as
+                       the base for every future interactive-gather install.
+  build-customscript  Interactive wizard: build a ready-to-paste customScript
+                       snippet (no Netcup API calls) for manual use in a
+                       web-hoster's own management UI - covers
+                       AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/TELEGRAM_BOT_TOKEN/
+                       TELEGRAM_CHAT_ID/CONTROLLER_SSH_PUBKEY only.
+
 Modes (pick one; default is interactive gather+install):
   (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
   --payload FILE      Direct install from a JSON/JSONC payload file (no gathering).
@@ -607,6 +483,10 @@ Modes (pick one; default is interactive gather+install):
   --poweroff          Power off $NETCUP_SCP_API_SERVER_NAME and exit.
 
 Examples:
+  # First-time setup: log in, then build a default recipe:
+  %(prog)s login
+  %(prog)s configure
+
   # Preview everything (server lookup, image flavour, payload) without
   # calling any mutating API (install/poweroff/ssh-key-create):
   %(prog)s --payload=target-host.jsonc --dry-run
@@ -642,9 +522,20 @@ Environment Variables (see .env.example):
   TELEGRAM_BOT_TOKEN               Optional: forwarded into the bootstrap customScript.
   TELEGRAM_CHAT_ID                 Optional: forwarded into the bootstrap customScript.
   NETCUP_SCP_API_DEBUG             Enable verbose request/response logging (yes/true/1); same as --debug.
+  NETCUP_SCP_API_BOOTSTRAP_URL     Optional direct override for the remote bootstrap URL.
+  NETCUP_SCP_API_BOOTSTRAP_REPO_URL/REPO_BRANCH
+                                    Optional overrides for the source fetched by bootstrap-remote.py;
+                                    set REPO_BRANCH with the URL when testing a feature branch.
 
 These can be set in a .env file in the current directory (see scripts/netcup/.env.example).
 """
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("login", "configure", "build-customscript"),
+        default=None,
+        help="Optional one-shot command; omit for the normal install flow (see Modes above).",
     )
     parser.add_argument(
         "--payload",
@@ -765,8 +656,11 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         help=(
             "Path to LOCAL SSH identity file used for attach/monitoring (default: from "
             "scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
-            "the shared client key pre-seeded during install (auto-generated if missing), "
-            "not the host-generated per-host key from bootstrap stage2."
+            "the ephemeral controller bootstrap key, one per (host, date) - the default is a "
+            "'{host}'/'{date}' TEMPLATE rendered automatically for a real install, but "
+            "--attach-only requires an explicit, already-resolved path here (it will refuse "
+            "an unrendered template rather than silently generate a key that can't match the "
+            "host). Not the host-generated per-host production key from bootstrap stage2."
         )
     )
     return parser.parse_args()
@@ -1413,90 +1307,196 @@ def save_payload_with_comments(
         f.write("\n".join(lines) + "\n")
 
 
-class NetcupSCPClient:
-    def __init__(self, access_token: str, refresh_token: Optional[str] = None):
-        self.base_url = BASE_URL
-        self.refresh_token = refresh_token
-        self.access_token = access_token
+DEFAULT_RECIPE_PATH = Path(__file__).resolve().parent / "default-recipe.jsonc"
 
-    def refresh_access_token(self) -> None:
-        if not self.refresh_token:
-            raise RuntimeError("No refresh token available for access token refresh")
-        new_access_token = get_access_token(self.refresh_token)
-        self.access_token = new_access_token
 
-    def _auth_headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.access_token}"}
+def save_recipe_with_comments(recipe: Dict[str, Any], filepath: str, image_name: str) -> None:
+    """Save a `configure`-produced default recipe to JSONC, with comments.
 
-    def get(self, endpoint: str, params: Optional[Dict] = None) -> Any:
-        """Make GET request to API"""
-        url = f"{self.base_url}{endpoint}"
-        log_debug(f"GET {url} {params or ''}")
-        try:
-            result = _http_json("GET", url, headers=self._auth_headers(), params=params)
-        except HTTPStatusError as e:
-            if e.status == 401 and self.refresh_token:
-                log_debug("401 Unauthorized; refreshing token and retrying once")
-                self.refresh_access_token()
-                result = _http_json("GET", url, headers=self._auth_headers(), params=params)
-            else:
-                raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
-        return result
+    Same visual convention as save_payload_with_comments(), for a different
+    (server-independent) field set: no serverId/hostname/sshKeyIds here -
+    those stay per-run, resolved fresh each install.
+    """
+    lines: List[str] = [
+        "// Default install recipe - generated by `%s configure`." % Path(__file__).name,
+        "// Used as the base payload for interactive-gather installs when present;",
+        "// delete this file (or re-run `configure`) to reset to built-in defaults.",
+        "{",
+    ]
+    items = list(recipe.items())
+    for idx, (key, value) in enumerate(items):
+        if key == "imageFlavourId":
+            lines.append(f"  // Image: {image_name}")
+        if isinstance(value, bool):
+            value_str = str(value).lower()
+        else:
+            value_str = json.dumps(value)
+        suffix = "," if idx < len(items) - 1 else ""
+        lines.append(f'  "{key}": {value_str}{suffix}')
+    lines.append("}")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
-    def post(self, endpoint: str, data: Dict) -> Any:
-        """Make POST request to API"""
-        url = f"{self.base_url}{endpoint}"
-        log_debug(f"POST {url}")
-        log_debug(f"Payload: {json.dumps(_redact_for_log(data), indent=2)}")
-        try:
-            result = _http_json("POST", url, headers=self._auth_headers(), json_body=data)
-        except HTTPStatusError as e:
-            if e.status == 401 and self.refresh_token:
-                log_debug("401 Unauthorized; refreshing token and retrying once")
-                self.refresh_access_token()
-                result = _http_json("POST", url, headers=self._auth_headers(), json_body=data)
-            else:
-                raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
-        return result
 
-    def patch(self, endpoint: str, data: Dict, params: Optional[Dict] = None) -> Any:
-        """Make PATCH request to API."""
-        url = f"{self.base_url}{endpoint}"
-        log_debug(f"PATCH {url} {params or ''}")
-        log_debug(f"Payload: {json.dumps(_redact_for_log(data), indent=2)}")
-        headers = self._auth_headers()
-        headers["Content-Type"] = "application/merge-patch+json"
-        try:
-            result = _http_json("PATCH", url, headers=headers, params=params, json_body=data)
-        except HTTPStatusError as e:
-            if e.status == 401 and self.refresh_token:
-                log_debug("401 Unauthorized; refreshing token and retrying once")
-                self.refresh_access_token()
-                headers = self._auth_headers()
-                headers["Content-Type"] = "application/merge-patch+json"
-                result = _http_json("PATCH", url, headers=headers, params=params, json_body=data)
-            else:
-                raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
-        return result
+def _load_default_recipe(recipe_path: Optional[Path] = None) -> Dict[str, Any]:
+    """The base install config: a `configure`-produced recipe if one exists
+    (see save_recipe_with_comments()), else the script's own built-in
+    INSTALLATION_CONFIG defaults.
 
-    def get_user_info(self) -> Dict:
-        """Get user information from OIDC userinfo endpoint"""
-        url = f"{KEYCLOAK_URL}/userinfo"
-        log_debug(f"GET {url}")
-        try:
-            result = _http_json("GET", url, headers=self._auth_headers())
-        except HTTPStatusError as e:
-            if e.status == 401 and self.refresh_token:
-                log_debug("401 Unauthorized; refreshing token and retrying once")
-                self.refresh_access_token()
-                result = _http_json("GET", url, headers=self._auth_headers())
-            else:
-                raise
-        log_debug(f"Response: {json.dumps(_redact_for_log(result), indent=2)}")
-        return result
+    recipe_path defaults to DEFAULT_RECIPE_PATH looked up at CALL time (not
+    bound as a mutable default argument) so tests can monkeypatch the
+    module-level constant and have callers like main() pick it up.
+    """
+    recipe_path = recipe_path or DEFAULT_RECIPE_PATH
+    if recipe_path.is_file():
+        return json.loads(_strip_jsonc_comments(recipe_path.read_text(encoding="utf-8")))
+    return dict(INSTALLATION_CONFIG)
+
+
+def _run_configure(client: "NetcupSCPClient") -> int:
+    """Interactive wizard: resolve account/image-level defaults (currently
+    just the latest Debian UEFI image flavour, queried live) and write them
+    to DEFAULT_RECIPE_PATH for every future interactive-gather install to
+    use as its base - see _load_default_recipe(). Per-run fields (serverId,
+    hostname, sshKeyIds) are deliberately never part of this recipe.
+    """
+    if not SERVER_NAME:
+        print(
+            "ERROR: missing $NETCUP_SCP_API_SERVER_NAME (needed to query that "
+            "server's available image flavours)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("=" * 70)
+    print("CONFIGURE (write a default install recipe)")
+    print("=" * 70)
+
+    servers = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+    if not servers:
+        print(f"ERROR: server '{SERVER_NAME}' not found", file=sys.stderr)
+        return 1
+    server_id = servers[0]["id"]
+
+    try:
+        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=True)
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    locale = _prompt_text("Locale", INSTALLATION_CONFIG["locale"])
+    timezone = _prompt_text("Timezone", INSTALLATION_CONFIG["timezone"])
+    root_full_disk = _prompt_yes_no(
+        "Full-disk root partition (rootPartitionFullDiskSize)?",
+        INSTALLATION_CONFIG["rootPartitionFullDiskSize"],
+    )
+
+    recipe = {
+        "locale": locale,
+        "timezone": timezone,
+        "customScript": INSTALLATION_CONFIG["customScript"],
+        "rootPartitionFullDiskSize": root_full_disk,
+        "sshPasswordAuthentication": INSTALLATION_CONFIG["sshPasswordAuthentication"],
+        "emailToExecutingUser": INSTALLATION_CONFIG["emailToExecutingUser"],
+        "imageFlavourId": flavour["id"],
+    }
+    save_recipe_with_comments(recipe, str(DEFAULT_RECIPE_PATH), flavour["name"])
+    print(f"✓ Wrote default recipe to {DEFAULT_RECIPE_PATH}")
+    return 0
+
+
+def _build_customscript(
+    *,
+    auto_reboot_after_stage1: bool,
+    never_reboot: bool,
+    telegram_bot_token: str,
+    telegram_chat_id: str,
+    controller_pubkey: str,
+) -> str:
+    """Build a fully-expanded (no {{PLACEHOLDER}} tokens), one-line
+    customScript shell command - the same shape as
+    INSTALLATION_CONFIG["customScript"], but with every value already
+    resolved to a literal. This script's own API-driven install path
+    resolves {{PLACEHOLDER}} tokens itself (_expand_payload_placeholders);
+    a human pasting this into a web-hoster's own reinstall dialog has no
+    such resolution step available, so nothing here can be a placeholder.
+    """
+    # shlex.quote every operator-supplied value -- _prompt_text() does no
+    # validation at all, and unlike the {{PLACEHOLDER}} path (which the
+    # operator never directly types free-form shell text into), this
+    # wizard's whole point is a value a human just typed going straight
+    # into a real shell command that will actually execute as cloud-init
+    # on a live host.
+    bootstrap = _bootstrap_source()
+    env_parts = [
+        f"REPO_URL={shlex.quote(bootstrap['repo_url'])}",
+        f"REPO_BRANCH={shlex.quote(bootstrap['repo_branch'])}",
+        f"AUTO_REBOOT_AFTER_STAGE1={'yes' if auto_reboot_after_stage1 else 'no'}",
+        f"NEVER_REBOOT={'yes' if never_reboot else 'no'}",
+    ]
+    if telegram_bot_token:
+        env_parts.append(f"TELEGRAM_BOT_TOKEN={shlex.quote(telegram_bot_token)}")
+    if telegram_chat_id:
+        env_parts.append(f"TELEGRAM_CHAT_ID={shlex.quote(telegram_chat_id)}")
+    if controller_pubkey:
+        env_parts.append(f"CONTROLLER_SSH_PUBKEY={shlex.quote(controller_pubkey)}")
+    return f"curl -fsSL {shlex.quote(bootstrap['remote_url'])} | " + " ".join(env_parts) + " python3 -"
+
+
+def _run_build_customscript() -> int:
+    """Interactive wizard: build a ready-to-paste customScript snippet for
+    manual use in a web-hoster's own management UI (e.g. netcup SCP's
+    server-reinstall dialog) - covers only the handful of settings
+    INSTALLATION_CONFIG's own customScript template already parameterizes
+    today (bootstrap URL/repository, AUTO_REBOOT_AFTER_STAGE1,
+    NEVER_REBOOT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    CONTROLLER_SSH_PUBKEY) - not the full ~25 env vars
+    bootstrap-remote.py documents. For anything else, append your own
+    KEY=VALUE pairs (or VBPUB_CONFIG_EXTRA_JSON=...) to the printed snippet
+    by hand before the trailing `python3 -`.
+    """
+    print("=" * 70)
+    print("BUILD CUSTOMSCRIPT (for pasting into a web-hoster management UI)")
+    print("=" * 70)
+
+    auto_reboot = _prompt_yes_no("Auto-reboot after stage1?", True)
+    never_reboot = _prompt_yes_no("Never reboot (overrides the reboot schedule entirely)?", False)
+    telegram_bot_token = _prompt_text("Telegram bot token (blank to skip)", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id = _prompt_text("Telegram chat id (blank to skip)", os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+    controller_pubkey = ""
+    if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
+        # Adversarial-review finding, 2026-09-08: this command is explicitly
+        # meant to be usable without $NETCUP_SCP_API_SERVER_NAME set (a
+        # manual web-UI install may never touch this script's own .env at
+        # all) -- silently falling back to SERVER_NAME (possibly None,
+        # rendering to the generic "unknown-host" label) would collapse
+        # every host built this way, on the same calendar day, onto the
+        # SAME keypair -- exactly the failure mode the per-host redesign
+        # exists to prevent, and it would happen with no visible warning.
+        # Always ask, defaulting to SERVER_NAME only if it's already set.
+        host_label = _prompt_text("Target hostname/server name (for a unique per-host key)", SERVER_NAME or "")
+        if not host_label:
+            print("ERROR: a target hostname is required to generate a per-host key", file=sys.stderr)
+            return 1
+        identity_template = os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"])
+        identity_file = _render_identity_file_path(identity_template, host_label)
+        _ensure_local_identity_file_exists(identity_file, SETTINGS["ssh.controller_fqdn"])
+        controller_pubkey = _read_public_key_for_identity(identity_file)
+        print(f"   ✓ Using identity: {identity_file}")
+
+    snippet = _build_customscript(
+        auto_reboot_after_stage1=auto_reboot,
+        never_reboot=never_reboot,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        controller_pubkey=controller_pubkey,
+    )
+    print()
+    print("Paste this into the customScript field:")
+    print("-" * 70)
+    print(snippet)
+    print("-" * 70)
+    return 0
 
 
 def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str) -> int:
@@ -1521,6 +1521,21 @@ def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str)
         if 1 <= choice <= len(items_desc):
             return choice - 1
         print(f"   Please enter a number between 1 and {len(items_desc)}.")
+
+
+def _prompt_text(label: str, default: str) -> str:
+    """Prompt for a free-text value; Enter (empty input) accepts default."""
+    raw = input(f"{label} [{default}]: ").strip()
+    return raw or default
+
+
+def _prompt_yes_no(label: str, default: bool) -> bool:
+    """Prompt for a yes/no value; Enter (empty input) accepts default."""
+    hint = "Y/n" if default else "y/N"
+    raw = input(f"{label} [{hint}]: ").strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes")
 
 
 def _resolve_image_flavour(
@@ -1836,37 +1851,190 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
 
     expanded: Dict[str, Any] = json.loads(json.dumps(payload))
-    try:
-        cs = expanded.get("customScript")
-        if isinstance(cs, str) and "{{" in cs and "}}" in cs:
-            token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-            chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-            server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
+    cs = expanded.get("customScript")
+    if not isinstance(cs, str) or "{{" not in cs or "}}" not in cs:
+        return expanded
 
-            if "{{TELEGRAM_BOT_TOKEN}}" in cs and not token:
-                print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
-            if "{{TELEGRAM_CHAT_ID}}" in cs and not chat_id:
-                print("⚠ WARNING: TELEGRAM_CHAT_ID not set; notifications will be disabled")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
+    controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "")
 
-            cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", token)
-            cs = cs.replace("{{TELEGRAM_CHAT_ID}}", chat_id)
-            cs = cs.replace("{{SERVER_NAME}}", server_name)
-            expanded["customScript"] = cs
-    except Exception:
-        pass
+    if "{{TELEGRAM_BOT_TOKEN}}" in cs and not token:
+        print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
+    if "{{TELEGRAM_CHAT_ID}}" in cs and not chat_id:
+        print("⚠ WARNING: TELEGRAM_CHAT_ID not set; notifications will be disabled")
+    if "{{CONTROLLER_SSH_PUBKEY}}" in cs and not controller_pubkey:
+        print(
+            "⚠ WARNING: CONTROLLER_SSH_PUBKEY not set; debian-install-v2 will rely "
+            "solely on netcup's own sshKeyIds injection for SSH access"
+        )
+
+    cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", token)
+    cs = cs.replace("{{TELEGRAM_CHAT_ID}}", chat_id)
+    cs = cs.replace("{{SERVER_NAME}}", server_name)
+    cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", controller_pubkey)
+
+    bootstrap_tokens = (
+        "{{BOOTSTRAP_URL}}",
+        "{{BOOTSTRAP_REPO_URL}}",
+        "{{BOOTSTRAP_REPO_BRANCH}}",
+    )
+    if any(token in cs for token in bootstrap_tokens):
+        bootstrap = _bootstrap_source()
+        cs = cs.replace("{{BOOTSTRAP_URL}}", shlex.quote(bootstrap["remote_url"]))
+        cs = cs.replace("{{BOOTSTRAP_REPO_URL}}", shlex.quote(bootstrap["repo_url"]))
+        cs = cs.replace("{{BOOTSTRAP_REPO_BRANCH}}", shlex.quote(bootstrap["repo_branch"]))
+
+    expanded["customScript"] = cs
 
     return expanded
 
 
+def _refuse_unrendered_attach_only_identity(identity_file: str) -> None:
+    """Adversarial-review finding, 2026-09-08: without this check,
+    --attach-only with no explicit --ssh-identity-file override would fall
+    through to SETTINGS["ssh.identity_file"] (now a per-host TEMPLATE, not a
+    static path) still containing literal "{host}"/"{date}" text, and
+    _ensure_local_identity_file_exists() would silently generate a brand-new
+    keypair at that nonsense path -- one that was never installed on any
+    host and can never match. That's exactly the SSH-monitoring failure mode
+    (key mismatch) this whole redesign exists to close. Refuse loudly
+    instead: attach-only must be told exactly which already-generated key
+    to use.
+    """
+    if "{host}" in identity_file or "{date}" in identity_file:
+        raise SystemExit(
+            f"ERROR: --attach-only needs an explicit --ssh-identity-file (or "
+            f"NETCUP_SCP_API_SSH_IDENTITY_FILE) pointing at the exact key already "
+            f"used for this host's install -- the configured default "
+            f"({identity_file!r}) is a per-host/per-date TEMPLATE and "
+            f"cannot be resolved without knowing which host and date it was "
+            f"generated for."
+        )
+
+
+def _build_authenticated_client() -> "NetcupSCPClient":
+    """Refresh-token check + access-token fetch + client construction.
+
+    Factored out so both the early `configure` dispatch and the normal flow
+    can build a client without duplicating this (previously the only copy
+    of) error handling.
+    """
+    refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
+    if not refresh_token:
+        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
+        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
+        sys.exit(1)
+    try:
+        access_token = get_access_token(refresh_token)
+    except Exception as e:
+        print(f"❌ Failed to get access token:  {e}", file=sys.stderr)
+        sys.exit(1)
+    return NetcupSCPClient(access_token, refresh_token=refresh_token)
+
+
+def _peek_payload_host_label(payload_path: str) -> Optional[str]:
+    """Cheap, local, no-API-call peek at a --payload file's own "hostname"
+    (or "serverId", as "netcup<id>") so the per-host SSH identity file gets
+    a meaningful label before any network call happens - exactly the fields
+    a `configure`/interactive-gather-produced payload already bakes in.
+    Returns None (falls back to SERVER_NAME / _UNKNOWN_HOST_LABEL) if the
+    file can't be read/parsed or has neither field.
+    """
+    try:
+        with open(payload_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        payload = json.loads(_strip_jsonc_comments(raw))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        # Valid JSON but not an object (e.g. a bare array/string/number) -
+        # not a real payload; let install_from_payload's own validation
+        # produce the real error later instead of raising here.
+        return None
+    hostname = payload.get("hostname")
+    if isinstance(hostname, str) and hostname:
+        return hostname
+    server_id = payload.get("serverId")
+    if isinstance(server_id, int):
+        return f"netcup{server_id}"
+    return None
+
+
 def main():
-    global args, DEBUG
+    global args
     args = parse_args()
-    DEBUG = DEBUG or getattr(args, "debug", False)
+    netcup_scp_client.DEBUG = netcup_scp_client.DEBUG or getattr(args, "debug", False)
 
+    if getattr(args, "command", None) == "login":
+        sys.exit(_run_login(_resolve_env_path()))
+
+    if getattr(args, "command", None) == "build-customscript":
+        # Purely local (identity-file generation only) - no Netcup API call,
+        # no refresh token needed, unlike configure.
+        sys.exit(_run_build_customscript())
+
+    if getattr(args, "command", None) == "configure":
+        # Doesn't touch SSH identity at all (just writes a recipe file) -
+        # dispatch before the identity-rendering block below so it can't
+        # generate a throwaway keypair as a side effect (confirmed live
+        # 2026-09-08: running `configure` with $NETCUP_SCP_API_SERVER_NAME
+        # unset produced a real "unknown-host"-labeled key for no reason).
+        sys.exit(_run_configure(_build_authenticated_client()))
+
+    attach_only = getattr(args, "attach_only", False)
+    client: Optional["NetcupSCPClient"] = None
+    server_lookup: Optional[List[Dict[str, Any]]] = None
     if getattr(args, "ssh_identity_file", None):
+        if not attach_only:
+            # A real hostname/server-id label, resolved WITHOUT an extra API
+            # call where possible, instead of SERVER_NAME's opaque internal
+            # netcup id (confirmed live 2026-09-08: e.g.
+            # "v2202511209318406253" gave every generated key an unreadable
+            # filename with no way to tell which host it belonged to at a
+            # glance - see scp-api-install-host.toml's [ssh] comments).
+            host_label = SERVER_NAME
+            if args.payload:
+                host_label = _peek_payload_host_label(args.payload) or SERVER_NAME
+            elif SERVER_NAME:
+                # One early, authenticated lookup - reused as step 1 below
+                # (via `server_lookup`) so this isn't a second/duplicate
+                # call. This lookup is for LABELING ONLY, so any failure
+                # (transient HTTP error, malformed response) must not crash
+                # main() here - leave server_lookup unset and fall back to
+                # the raw SERVER_NAME label; step 1 below will retry the
+                # same call for real, going through its own existing
+                # HTTPStatusError/KeyError/Exception handling instead of
+                # this early, unguarded copy (adversarial-review finding,
+                # 2026-09-08).
+                client = _build_authenticated_client()
+                try:
+                    server_lookup = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+                    if server_lookup:
+                        host_label = server_lookup[0].get("hostname") or f"netcup{server_lookup[0]['id']}"
+                except Exception:
+                    server_lookup = None
+            # Per-host/per-date identity, rendered now that a host label is
+            # known - see _render_identity_file_path(). --attach-only
+            # intentionally skips rendering: it means to reconnect with an
+            # already-known, already-generated key (passed explicitly via
+            # --ssh-identity-file / NETCUP_SCP_API_SSH_IDENTITY_FILE), not to
+            # silently generate a fresh one that would never match anything
+            # on the host it's attaching to.
+            args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, host_label)
+        else:
+            _refuse_unrendered_attach_only_identity(args.ssh_identity_file)
         _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
+        if not attach_only:
+            # Consumed by _expand_payload_placeholders() (mirrors the
+            # TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID pattern) so debian-install-v2
+            # can install this exact key into authorized_keys itself, rather
+            # than depending solely on netcup's own account-level sshKeyIds
+            # injection actually landing on the host.
+            os.environ["CONTROLLER_SSH_PUBKEY"] = _read_public_key_for_identity(args.ssh_identity_file)
 
-    if getattr(args, "attach_only", False):
+    if attach_only:
         if not getattr(args, "ssh_host", None):
             print("ERROR: --attach-only requires --ssh-host (or NETCUP_SCP_API_SSH_HOST)", file=sys.stderr)
             sys.exit(2)
@@ -1903,22 +2071,8 @@ def main():
         finally:
             follower.stop()
         return
-    
-    # Check for refresh token
-    refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
-    if not refresh_token:
-        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
-        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
-        sys.exit(1)
 
-    try:
-        # Get fresh access token
-        access_token = get_access_token(refresh_token)
-    except Exception as e:
-        print(f"❌ Failed to get access token:  {e}", file=sys.stderr)
-        sys.exit(1)
-
-    client = NetcupSCPClient(access_token, refresh_token=refresh_token)
+    client = client or _build_authenticated_client()
 
     # If payload file is provided, use direct installation mode
     if args.payload:
@@ -1938,9 +2092,12 @@ def main():
     print()
 
     try:
-        # 1. Find server by name
+        # 1. Find server by name (reuse the identity-labeling lookup above,
+        # if one already happened, instead of a second/duplicate GET)
         print(f"1. Finding server '{SERVER_NAME}'...")
-        servers = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+        servers = server_lookup if server_lookup is not None else client.get(
+            "/api/v1/servers", params={"name": SERVER_NAME}
+        )
 
         if not servers:
             print(f"   ❌ ERROR: Server '{SERVER_NAME}' not found!")
@@ -2123,13 +2280,18 @@ def main():
         print()
 
         # 6. Prepare installation payload
+        # Recipe fields go FIRST (defaults only) and the freshly, live-
+        # resolved fields below win by coming last -- a recipe's own
+        # imageFlavourId (if `configure` was ever run against a stale
+        # image catalog) must never override the imageFlavourId this run
+        # just resolved live two steps above.
         installation_payload = {
+            **_load_default_recipe(),
             "serverId": server_id,  # Include for --payload mode
             "hostname": hostname,  # Use reverse DNS hostname from server info
             "imageFlavourId": image_flavour_id,
             "diskName": disk_dev,
             "sshKeyIds": ssh_key_ids,
-            **INSTALLATION_CONFIG
         }
 
         # Expand placeholders only for the API request, while keeping the
@@ -2143,6 +2305,16 @@ def main():
         print(json.dumps(_redact_for_log(installation_payload), indent=2))
         print()
 
+        if getattr(args, "dry_run", False):
+            print("=" * 70)
+            print(
+                "[dry-run] NOT saving to target-host.jsonc (would overwrite any existing "
+                "file, and any not-yet-created SSH key above is only a placeholder id)."
+            )
+            print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
+            print("=" * 70)
+            return
+
         # 8. Save payload to file with comments
         save_payload_with_comments(
             installation_payload,
@@ -2155,12 +2327,6 @@ def main():
         )
         print("✓ Installation payload saved to:  target-host.jsonc")
         print()
-
-        if getattr(args, "dry_run", False):
-            print("=" * 70)
-            print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
-            print("=" * 70)
-            return
 
         # 9. Ask for confirmation (unless non-interactive)
         if not is_noninteractive(args):
@@ -2250,7 +2416,7 @@ def main():
         sys.exit(1)
     except Exception as e:
         print(f"❌ Unexpected error: {e}", file=sys.stderr)
-        if DEBUG:
+        if netcup_scp_client.DEBUG:
             import traceback
             traceback.print_exc()
         sys.exit(1)

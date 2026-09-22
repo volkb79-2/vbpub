@@ -1,8 +1,9 @@
 # Post-CMRU estate release plan
 
-Status: execution in progress, updated 2026-09-19 UTC. CMRU v5.3.1 is
+Status: execution in progress, updated 2026-09-20 UTC. CMRU v5.4.1 is
 released and installed; the reviewed run-gate and estate CLI changes are
-merged, and the final estate release remains in progress.
+merged, the local Debian/NetCup integration is in a CIU worktree, and the
+final estate release remains in progress.
 
 Independent read-only review by Plato on 2026-09-19 found and drove fixes for
 stale checklist rows, the README's obsolete Nyxloom exclusion and broken
@@ -31,21 +32,46 @@ and verify every artifact after the final release.
 
 ## Phase 0 — finish and install CMRU
 
-Completed 2026-09-19 UTC from promoted commit
-`20fa7730cb0f5e46b47b45037ffc88f78dfd17e6`:
+Completed for the CMRU project on 2026-09-19 UTC from promoted commit
+`c22fa2f40edd3ab90ede20160b2edd0a85bba02e`:
 
-- the governed CMRU gate passed with **1796 passed, 10 skipped**, 100% line
-  and branch coverage, and a complete mutation campaign;
-- tag `cmru-v5.3.1`, the published wheel, retained logs, and retained release
-  artifacts were verified; and
-- the wheel was force-reinstalled into the devcontainer's canonical
-  `/home/vscode/.venv` environment and verified outside the editable checkout
-  as CMRU 5.3.1.
+- tag `cmru-v5.4.1`, the published wheel, checksum, and retained release
+  artifacts were verified;
+- the released first-party wheels for CMRU, CIU, Assay, Nyxloom, and Topos
+  were force-reinstalled into the devcontainer's canonical
+  `/home/vscode/.venv` environment and verified outside editable checkouts;
+- the first resume reached the MDT build after **1835 passed, 10 skipped**
+  and stopped because the old cockpit had no `mdt-managed` builder; a
+  disposable governed controller now supplies the managed BuildKit relay;
+- retries r11 and r12 reached the durable backup push but were stopped by the
+  controller's unavailable VS Code credential IPC socket; retry r14 then
+  exposed a helper bug, because the retained secret is `[github].token`, not a
+  root-level `token`. Retry r15 then proved a separate controller defect:
+  Docker API access failed because the disposable image's `docker` group was
+  GID 995 while the mounted host API socket is GID 994; Buildx concealed this
+  because it uses the separate BuildKit socket. A same-image pull probe passed
+  with supplementary GID 994; and
+- retry r16 completed with Docker API access fixed and reached the MDT BuildKit
+  image build, but exited 1 before promotion. The precise failure was
+  `ModuleNotFoundError: No module named 'mdt_cli'` from
+  `/tmp/install_ai_cli_tools.py`: the Dockerfile copied that installer to
+  `/tmp` without copying its sibling `scripts/mdt_cli.py`. No project was
+  promoted by r16. Integration commit `90a37794` copies the parser beside the
+  installer and adds a release-flow regression assertion; the corrected MDT
+  smoke lane is running in `tester-unified` before a fresh stable-source
+  release transaction is started. The controller used direct Git askpass, a
+  Docker API group derived from the mounted socket, and the existing host
+  `/tmp` bind for the governed BuildKit relay; it did not mutate the cockpit's
+  mount namespace.
 
-The remaining steps below use this installed CMRU. The CMRU candidate is
-closed; its merged worktree was retired after its evidence was recorded. The
-final estate release still has to verify the new first-party artifacts after
-promotion.
+The remaining steps use this installed CMRU. The CMRU 5.4.1 candidate is
+closed as a project release; the failed retained candidate remains available
+as an inspection record until the fresh transaction is verified and the old
+attempt is explicitly retired. The final estate release still has to promote
+the local integration tip and verify the new first-party artifacts. The
+integration tip also carries `a4420c42`, which
+keeps Docker pull failure output bounded but preserves the daemon's diagnostic
+context for future release retries.
 
 ## Phase 1 — review the outstanding CLI commits
 
@@ -142,7 +168,7 @@ line coverage or from a green pytest command.
 
 ### Baseline audit
 
-Static audit completed 2026-09-19 UTC against `main` commit `7f1cea69`.
+Static audit completed 2026-09-19 UTC against integration commit `46744b07`.
 This records declarations only; no cockpit result is release evidence.
 
 | project | current evidence and environment | assay/resume state | property testing | highest-value first slice |

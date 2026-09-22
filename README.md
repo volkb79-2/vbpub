@@ -55,6 +55,12 @@ For Debian hosts, `debian-install v2` applies a known fresh-install swap shape
 from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
 the legacy shell bootstrap remains under `scripts/debian-install/`.
 
+For Netcup SCP API provisioning, use the guided tools under
+[`scripts/netcup/`](scripts/netcup/): `login` creates the OAuth refresh token,
+`configure` resolves account/image defaults into a local recipe, and the
+installer can preview or monitor a Debian-install-v2 run. See the
+[`Netcup tools README`](scripts/netcup/README.md).
+
 ## Repository setup and initial CMRU build
 
 CMRU itself is the first wheel to build in a fresh checkout. The bootstrap script is

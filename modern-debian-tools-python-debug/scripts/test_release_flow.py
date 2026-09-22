@@ -80,6 +80,15 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertLess(reconcile, wheels_layer)
         self.assertIn("--upgrade", dockerfile[aider:wheels_layer])
 
+    def test_staged_ai_cli_installer_has_its_parser_module(self) -> None:
+        """The installer runs from /tmp and must receive its local import too."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("COPY scripts/mdt_cli.py /tmp/mdt_cli.py", dockerfile)
+        self.assertLess(
+            dockerfile.index("COPY scripts/mdt_cli.py /tmp/mdt_cli.py"),
+            dockerfile.index("COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py"),
+        )
+
     def test_cockpit_declares_headless_vm_tooling_without_a_vm_daemon(self) -> None:
         package_names = {
             line.split("#", 1)[0].strip()

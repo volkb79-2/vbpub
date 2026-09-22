@@ -146,7 +146,10 @@ def test_vm_wrapper_maps_custom_hostname_to_physical_mount(tmp_path):
     """
     fake_log = tmp_path / "docker.log"
     fake_docker = tmp_path / "docker"
+    physical = tmp_path / "physical"
+    (physical / "testing").mkdir(parents=True)
     hostname = Path("/etc/hostname").read_text().strip()
+    mount_command = f"printf '{TESTING}\\t{physical / 'testing'}\\n'"
     fake_docker.write_text(
         """#!/bin/sh
 set -eu
@@ -167,7 +170,7 @@ case "${1:-}" in
         esac
         ;;
       *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
-      *Mounts*) printf '/workspaces/vbpub\\t/home/vb/physical\\n' ;;
+      *Mounts*) MOUNT_COMMAND ;;
       *) printf '%s\\n' image-id ;;
     esac
     ;;
@@ -183,6 +186,7 @@ case "${1:-}" in
   *) : ;;
 esac
 """
+        .replace("MOUNT_COMMAND", mount_command)
     )
     fake_docker.chmod(0o755)
     env = os.environ.copy()
@@ -205,10 +209,65 @@ esac
     calls = fake_log.read_text()
     assert "inspect physical-id" in calls
     assert "inspect unrelated-id" in calls
-    expected_testing = "/home/vb/physical" + str(TESTING).split("/workspaces/vbpub", 1)[1]
-    expected_project = expected_testing.removesuffix("/testing")
+    expected_testing = str(physical / "testing")
+    expected_project = str(physical)
     assert f"{expected_testing}:/work:ro" in calls
     assert f"{expected_project}:/source:ro" in calls
+
+
+def test_vm_wrapper_maps_an_explicit_project_source_to_the_physical_mount(tmp_path):
+    """A consumer may reuse the harness while its source is a nested project.
+
+    The override must follow Docker's namespace mapping and must become part
+    of the worktree-specific runner identity; passing the cockpit path directly
+    to the daemon would mount the wrong host path or create an empty source.
+    """
+    fake_log = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    physical = tmp_path / "physical"
+    (physical / "testing").mkdir(parents=True)
+    (physical / "modern-debian-tools-python-debug").mkdir()
+    hostname = Path("/etc/hostname").read_text().strip()
+    mount_command = f"printf '{TESTING}\\t{physical / 'testing'}\\n/workspaces/vbpub\\t{physical}\\n'"
+    fake_docker.write_text(
+        """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "${1:-}" in
+  ps) case " $* " in *' -q '*) printf '%s\\n' physical-id ;; esac ;;
+  inspect)
+    case "$*" in
+      *Config.Hostname*) printf '%s\\n' "$FAKE_HOSTNAME" ;;
+      *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
+      *Mounts*) MOUNT_COMMAND ;;
+      *) printf '%s\\n' image-id ;;
+    esac ;;
+  image) exit 1 ;;
+  buildx) exit 0 ;;
+  run) case " $* " in *' -d '*) printf '%s\\n' runner-id ;; esac ;;
+  rm) : ;;
+  *) : ;;
+esac
+""".replace("MOUNT_COMMAND", mount_command)
+    )
+    fake_docker.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        FAKE_DOCKER_LOG=str(fake_log),
+        FAKE_HOSTNAME=hostname,
+        MDT_VM_SOURCE_DIR="/workspaces/vbpub/modern-debian-tools-python-debug",
+        CGROUP_PARENT_DEV_GATES="dev-gates.slice",
+        CGROUP_PARENT_DEV_INTERACTIVE="dev-interactive.slice",
+        BUILDX_BUILDER="fake-builder",
+    )
+    result = subprocess.run(
+        [str(VM / "run-vm-harness.sh"), "--daemon"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr + "\nDocker calls:\n" + fake_log.read_text()
+    calls = fake_log.read_text()
+    assert f"{physical / 'modern-debian-tools-python-debug'}:/source:ro" in calls
 
 
 def test_vmctl_quotes_multiple_ssh_arguments_but_preserves_one_script(tmp_path):

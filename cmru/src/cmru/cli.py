@@ -2121,6 +2121,35 @@ def _prepare_release_projects(
             _commit_prepared_generated(repo_root, project)
 
 
+def _prepare_dry_run_external_versions(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+    *,
+    github_config: "GitHubConfig",
+    env_config: "ReleaseEnvConfig",
+) -> None:
+    """Populate disposable external-version inputs before a dry-run plan.
+
+    ``external:VAR`` is intentionally derived by the project's declared
+    ``prepare`` step. A dry run must therefore execute that narrow preparation
+    in its isolated transaction before asking the version planner what the
+    release would do; otherwise PWMCP's resolver cannot expose the version it
+    just discovered. No gate, tag, build, push, or promotion is performed.
+    """
+    log_dir = repo_root / "logs"
+    for name in project_names:
+        project = configs[name]
+        if not _version_strategy(project).startswith("external:"):
+            continue
+        if "prepare" not in (project.steps or {}):
+            continue
+        apply_project_release_env(github_config, env_config, project)
+        log_info(f"{name}: preparing external version inputs for dry-run")
+        run_project_step(project, "prepare", repo_root, log_dir)
+        _commit_prepared_generated(repo_root, project)
+
+
 def usage() -> str:
     """Return the public CLI overview, including every user-facing option.
 
@@ -2843,6 +2872,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         # that never touches it.
         release_scope = selected_names
         scoped_for_plan = {name: ordered[name] for name in release_scope}
+        if vargs.dry_run:
+            # External version strategies read a fact emitted by prepare. Run
+            # only that declared input-discovery step in this disposable
+            # transaction before the single release-plan comparison below.
+            _prepare_dry_run_external_versions(
+                repo_root, configs, release_scope,
+                github_config=github_config, env_config=env_config,
+            )
         # S12.2a/S12.2b (KI-12): the release plan — unlike a read-only `status`
         # preview or a `changelog` migration — MUST be a function of the pushed
         # repository, and a tag pushed but strictly ahead of the snapshot commit

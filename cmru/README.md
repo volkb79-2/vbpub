@@ -67,7 +67,7 @@ and the pasteable adoption contract is in [CONSUMERS.md](docs/CONSUMERS.md).
 ```bash
 cmru status                       # preview changed projects + next versions (read-only)
 cmru release                      # isolated: prepare → gate → tag → build → publish → promote
-cmru release --dry-run            # show tags only, no writes
+cmru release --dry-run            # preview tags and external-version discovery
 cmru release ciu                  # one project
 cmru changelog assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
@@ -263,6 +263,9 @@ coordinate is never overwritten; remove it explicitly with
 version. It may change only paths declared in `release.commit_generated`; cmru commits those
 mechanical outputs before the gate. Use `version.strategy = "external:VAR"` when prepare
 writes a derived version into `<project>/cmru.vars`: cmru reads it and owns the annotated tag.
+During `release --dry-run`, CMRU runs only this declared external-version preparation inside
+the disposable release candidate first, so the preview includes the version the real run would
+use. It performs no gate, tag, build, push, or promotion, and never writes the caller checkout.
 Never use a build or publish step to make an unreviewed source commit.
 See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
 project-author requirements, and the current gate-adoption audit.

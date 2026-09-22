@@ -314,8 +314,10 @@ A `cmru release` separates generic source policy from project-owned artifact beh
 
 **S-REL.1 — Versioning** (`[project.version].strategy`): `scm` | `counter` | `file:PATH`
 | `external:VAR` | `none`. It determines version discovery only. `external:VAR` reads its
-value from transaction-local `cmru.vars` written by `steps.prepare`; `none` leaves identity
-to the declared project commands.
+value from transaction-local `cmru.vars` written by `steps.prepare`; in a dry-run, the declared
+external-version prepare step runs in the disposable candidate before plan computation so that
+the preview observes the same derived value. `none` leaves identity to the declared project
+commands.
 
 **S-REL.2 — Outputs and tag policy.** `[project].artifacts` is a non-empty inventory of
 `wheel`, `oci-image`, `tarball`, and/or `bundle`. It never produces a command. The required
@@ -1179,8 +1181,12 @@ wall of duplicated prose, and never the old bare `Unchanged, skipping: a, b, c` 
 skipped project has already printed its own line above.
 
 **S-CLI.5c — `--dry-run` MUST NOT be the only way to learn something about a real run
-(KI-14).** The isolated release transaction computes its plan (S12.2a/S12.2b, S12.2e) exactly
-once, unconditionally, before branching on `--dry-run` — both paths therefore observe identical
+(KI-14).** Before plan computation, a dry run MAY execute each selected project's declared
+external-version `steps.prepare` in the disposable candidate, because `external:VAR` cannot be
+observed without its declared source query. This phase commits only declared generated outputs
+inside that candidate and performs no gate, tag, build, push, or promotion. The isolated release
+transaction then computes its plan (S12.2a/S12.2b, S12.2e) exactly once, unconditionally,
+before branching on `--dry-run` — both paths therefore observe identical
 decision-level diagnostics (the plan summary, the baseline, the derived version, and every
 per-project unchanged reason), differing only in the `[DRY] Would …` prefix on what a real run
 instead performs for real, and in the absence of that run's effects. `--dry-run` MAY show
@@ -1219,7 +1225,7 @@ or appear to fail, over cleanup of a branch whose job is already done) but MUST 
 | `scm` | Tag HEAD; setuptools_scm reads it | No extra commit |
 | `file:<PATH>` | Write version to file, commit, then tag | Yes (one bump commit) |
 | `counter` | Find latest `-r<N>` suffix, increment; tag HEAD | No extra commit |
-| `external:VAR` | Read VAR from `<cwd>/cmru.vars` after prepare; tag HEAD | Prepare commit, if changed |
+| `external:VAR` | Read VAR from `<cwd>/cmru.vars` after prepare; in `--dry-run`, run only the declared external-version prepare first; tag HEAD | Prepare commit, if changed |
 
 **S12.6** Dev builds: when HEAD is untagged, the version MUST be `X.Y.Z.devN+g<hash>`. These MUST NOT produce a `<prefix>-v` tag or immutable release.
 

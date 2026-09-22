@@ -287,6 +287,16 @@ inspection. Use `--discard-evidence-on-release` only when deliberately discardin
 outputs. `evidence_paths` is separate from `artifact_dirs`: evidence proves the gate's input
 commit and is not offered to a publisher.
 
+### Previewing an external version
+
+For a project whose version is discovered by a prepare step, declare
+`strategy = "external:VAR"` and the generated files under
+`release.commit_generated`. `cmru release PROJECT --dry-run` then runs that
+declared version query inside its disposable candidate and prints the resulting
+release plan. The candidate is removed afterward and no gate, tag, build, push,
+or promotion occurs. A prepare command must remain deterministic and may write
+only its declared outputs; CMRU refuses any other write.
+
 ---
 
 ## 4. Failure modes worth knowing before your first release

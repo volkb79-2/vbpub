@@ -128,6 +128,7 @@ func pendingVerb(name string) string {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "%s\n\n", cliHeadline())
+	fmt.Fprint(os.Stderr, `
 Operations — each takes --profile <file>, and each is one root process
 under a lock:
   srdm activate --profile <file> --release <id> [--write-owner uid:gid]
