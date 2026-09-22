@@ -29,12 +29,17 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
         "project-first",
         {},
         cli.CleanupConfig([], [], [], []),
-        SimpleNamespace(),
+        SimpleNamespace(owner="owner", repo="repo"),
         SimpleNamespace(),
     )
     config_path = tmp_path / "cmru.orchestration.toml"
     events: list[str] = []
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
+    # This test is about preparation ordering, not invocation-context discovery.
+    # The mocked config loader supplies the project set, so keep scope selection
+    # within that same test boundary rather than asking the filesystem to load the
+    # deliberately nonexistent temporary config.
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["pwmcp"])
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
