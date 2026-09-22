@@ -793,7 +793,11 @@ def find_workspace(
 
 
 def _validate_branch(branch: str) -> None:
-    if not branch or branch.startswith("/") or ".." in branch.split("/"):
+    if not branch:
+        raise WorkspaceError(f"invalid branch name {branch!r}", category="invalid-input")
+    if branch.startswith("/"):
+        raise WorkspaceError(f"invalid branch name {branch!r}", category="invalid-input")
+    if ".." in branch.split("/"):
         raise WorkspaceError(f"invalid branch name {branch!r}", category="invalid-input")
     if not _NAME_RE.fullmatch(branch):
         raise WorkspaceError(f"invalid branch name {branch!r}", category="invalid-input")

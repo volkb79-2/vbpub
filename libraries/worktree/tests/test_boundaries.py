@@ -404,7 +404,7 @@ def test_create_workspace_preserves_git_root_and_subprocess_contract(repository,
 
     monkeypatch.setattr(core.subprocess, "run", observe)
     context = create_workspace(
-        repository / "README", tmp_path / "nested" / "checkout",
+        repository / "README", tmp_path / "new" / "nested" / "checkout",
         branch="test/subprocess-contract", purpose="test",
     )
     assert context.source_git_root == repository.resolve()

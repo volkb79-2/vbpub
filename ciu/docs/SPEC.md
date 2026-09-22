@@ -4104,7 +4104,8 @@ one operation.
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
   config that tells CIU what to clean. A failed clean ABORTS the removal unless
   `--force`.
-- **`worktree list`** — registered worktrees, primary marked.
+- **`worktree list`** — the native Git worktree inventory, including unmanaged
+  linked checkouts, with the primary marked.
 
 Every managed linked checkout has an atomic, non-secret shared-library record
 at `<git-common-dir>/.workspace-instances/<workspace-id>.json`, plus CIU's
