@@ -327,7 +327,10 @@ example:
 
 Global options may be accepted before the verb. A tool may also accept them
 after the verb for ergonomics, but the accepted placement must be consistent
-within that CLI and documented in its help.
+within that CLI and documented in its help. When a shared option is accepted
+on both sides of a verb, validation must span the whole invocation: mutually
+exclusive controls such as `--quiet` and `--debug` must not become
+last-one-wins merely because they were parsed by different command levels.
 
 ## 6. Errors, exceptions, and cancellation
 

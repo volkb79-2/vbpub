@@ -59,6 +59,13 @@ parallel manually formatted epilog for ordinary options. Custom parser
 callbacks are an escape hatch for syntax argparse cannot express through the
 structured fields, not the default registration path.
 
+The generated common output/debugging controls are supported before and after
+the selected verb. Keep their semantics independent of placement: for example,
+`tool --quiet status` and `tool status --quiet` must both work, while combining
+`--quiet` with `--debug` must be rejected in either order. Do not duplicate a
+command-local option at the root merely to make it appear in more than one
+place; register genuinely invocation-wide options once as global options.
+
 For a tool with one operation and no verb token, use
 `CliRegistry(single_command=True)`. This is a supported shape, not a reason to
 keep a UUID or positional word ambiguously doubling as an action. If operators

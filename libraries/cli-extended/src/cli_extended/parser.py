@@ -681,6 +681,94 @@ def discover_command_parsers(
     return {}
 
 
+def _leading_option_remainder(
+    argv: Sequence[str], parser: ExtendedArgumentParser
+) -> list[str] | None:
+    """Return argv after leading root options, or None if it is ambiguous.
+
+    This is used only to recognize the reserved ``help`` and ``version``
+    command forms when global options precede them. Normal command parsing is
+    still delegated entirely to argparse.
+    """
+
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return None
+        if not token.startswith("-"):
+            return list(argv[index:])
+        if token in {"--help", "--version"}:
+            return None
+
+        option, separator, _value = token.partition("=")
+        action = parser._option_string_actions.get(option)
+        if action is None:
+            return None
+        if separator:
+            if action.nargs == 0:
+                return None
+            index += 1
+        elif action.nargs == 0:
+            index += 1
+        elif action.nargs is None:
+            if index + 1 >= len(argv):
+                return None
+            index += 2
+        elif action.nargs == "?":
+            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                index += 2
+            else:
+                index += 1
+        elif isinstance(action.nargs, int):
+            index += 1 + action.nargs
+            if index > len(argv):
+                return None
+        else:
+            return None
+    return []
+
+
+def _common_option_conflict(argv: Sequence[str]) -> str | None:
+    """Reject mutually exclusive common flags split across parser levels."""
+
+    verbosity: list[tuple[str, str | None]] = []
+    color_options: set[str] = set()
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            break
+        option, separator, value = token.partition("=")
+        if option == "--log-level":
+            if not separator:
+                if index + 1 < len(argv):
+                    value = argv[index + 1]
+                    index += 1
+                else:
+                    value = None
+            verbosity.append(("log-level", value))
+        elif option == "--quiet":
+            verbosity.append(("quiet", None))
+        elif option in {"--debug", "--verbose"}:
+            verbosity.append(("debug", None))
+        elif option in {"--color", "--no-color"}:
+            color_options.add(option)
+        index += 1
+
+    if len(verbosity) > 1:
+        supplied = ", ".join(
+            dict.fromkeys(
+                f"--log-level={value}" if name == "log-level" and value else f"--{name}"
+                for name, value in verbosity
+            )
+        )
+        return f"use only one verbosity control; received {supplied}"
+    if len(color_options) > 1:
+        return "--color and --no-color are mutually exclusive"
+    return None
+
+
 class _HelpAction(argparse.Action):
     """Print help through the invocation's injected stream and exit cleanly."""
 
@@ -965,6 +1053,8 @@ class CliRegistry:
     def register(self, verb: VerbSpec) -> None:
         """Register one public command, refusing ambiguous duplicate names."""
 
+        if verb.name in {"help", "version"}:
+            raise ValueError(f"{verb.name!r} is reserved for standard CLI behavior")
         if any(existing.name == verb.name for existing in self._verbs):
             raise ValueError(f"verb {verb.name!r} is already registered")
         self._verbs.append(verb)
@@ -1203,19 +1293,24 @@ def run_cli(
     if not raw and not no_args_action:
         _print_help(parser.format_help(), stdout)
         return 0
-    if raw == ["help"]:
+    command_form = _leading_option_remainder(raw, parser)
+    if command_form == ["help"]:
         _print_help(parser.format_help(), stdout)
         return 0
-    if len(raw) == 2 and raw[0] == "help":
-        command_parser = command_parsers.get(raw[1])
+    if (
+        command_form is not None
+        and len(command_form) == 2
+        and command_form[0] == "help"
+    ):
+        command_parser = command_parsers.get(command_form[1])
         if command_parser is None:
             print(identity.headline, file=stderr)
-            print(f"[ERROR] unknown help topic {raw[1]!r}", file=stderr)
+            print(f"[ERROR] unknown help topic {command_form[1]!r}", file=stderr)
             _print_help(_help_body(parser.format_help(), identity), stderr)
             return 2
         _print_help(command_parser.format_help(), stdout)
         return 0
-    if raw == ["version"]:
+    if command_form == ["version"]:
         _print_help(identity.version_line, stdout)
         return 0
 
@@ -1243,6 +1338,9 @@ def run_cli(
         return 2
 
     try:
+        option_conflict = _common_option_conflict(raw)
+        if option_conflict:
+            raise CliFailure(option_conflict, exit_code=2, show_help=True)
         runtime = _runtime_from_args(
             args,
             identity,

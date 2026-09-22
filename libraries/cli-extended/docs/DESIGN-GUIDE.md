@@ -46,6 +46,12 @@ are ergonomic aliases, not a second verbosity scale. `--debug-raw` is
 intentionally separate because it changes the redaction boundary and emits a
 warning. It must never be enabled from a persistent default.
 
+Common output and debugging options are available on either side of the
+selected verb. Their meaning cannot depend on argument order or parser nesting:
+verbosity and colour conflicts must be rejected across the whole invocation,
+not silently turn into last-option-wins because argparse parsed the options at
+different levels.
+
 The logging adapter accepts ordinary `logging.Logger` records, so a consumer
 can retain its existing logging calls instead of replacing them with a new
 logging API. `CliRegistry` scopes logging to a command namespace and restores

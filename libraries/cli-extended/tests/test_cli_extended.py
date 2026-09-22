@@ -119,6 +119,57 @@ def test_identity_lines_and_version_output():
     assert stdout.getvalue() == "test-tool 1.2.3\n"
 
 
+def test_help_and_version_verbs_follow_leading_global_options():
+    app = _registered_cli()
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert app.run(argv=["--debug", "version"], stdout=stdout, stderr=stderr) == 0
+    assert stdout.getvalue() == IDENTITY.version_line + "\n"
+    assert stderr.getvalue() == ""
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert (
+        app.run(
+            argv=["--config", "settings.json", "help", "status"],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        == 0
+    )
+    assert stdout.getvalue() == app.command_parsers["status"].format_help()
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize("name", ("help", "version"))
+def test_registry_reserves_help_and_version_verbs(name):
+    registry = CliRegistry(IDENTITY, prog="test-tool", description="test CLI")
+    with pytest.raises(ValueError, match="reserved for standard CLI behavior"):
+        registry.register(VerbSpec(name, "", "reserved", handler=lambda *_: 0))
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ("--quiet", "status", "--debug"),
+        ("--no-color", "status", "--color"),
+        ("--log-level", "debug", "status", "--quiet"),
+        ("--quiet", "status", "--quiet"),
+        ("--json", "apply", "change.json", "--yes", "--color", "--no-color"),
+    ),
+)
+def test_common_option_conflicts_are_rejected_across_parser_levels(argv):
+    app = _registered_cli()
+    stderr = io.StringIO()
+    assert app.run(argv=argv, stdout=io.StringIO(), stderr=stderr) == 2
+    assert IDENTITY.headline in stderr.getvalue()
+    assert "[ERROR]" in stderr.getvalue()
+    assert any(
+        message in stderr.getvalue()
+        for message in ("mutually exclusive", "not allowed with", "use only one")
+    )
+    assert "usage:" in stderr.getvalue()
+
+
 def test_identity_distribution_version_is_authoritative_and_missing_is_not_invented(
     monkeypatch,
 ):
