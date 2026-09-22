@@ -88,8 +88,19 @@ python3 -m pip install --editable ./libraries/cli-extended
 PYTHONPATH=libraries/cli-extended/src pytest -q libraries/cli-extended/tests
 ```
 
-Use `cli_extended.CliIdentity`, `ExtendedArgumentParser`, `HelpCatalog`, and
-`run_cli` for the parser shell; use `CliOutput` or `CliRuntime.output` for
-stderr diagnostics and stdout results. The package README contains a complete
-pasteable parser example, while its design guide explains the argparse-first
-compatibility choice.
+Declare commands once with `cli_extended.CliRegistry`, `VerbSpec`,
+`ArgumentSpec`, and `OptionSpec`. The registry generates parser registration,
+grouped help, per-command help, handler dispatch, common options, and Markdown
+reference output. It also provides clean default-no confirmation and redacted
+progress/logging output. See the package's
+[`README`](../libraries/cli-extended/README.md) for a complete example and its
+[`consumer guide`](../libraries/cli-extended/docs/CONSUMERS.md) for the
+adoption boundary.
+
+The adopting CLI still owns authoritative version data, public verb names and
+workflow examples, API/configuration validation, expected exception
+classification, secret registration, result schemas, and whether a proposed
+mutation is safe. `--yes` only accepts a validated prompt; it is not a domain
+safety bypass. Test the real executable with `assert_cli_contract()` and
+separately prove that help/version paths perform no credential, API, file, or
+mutation side effects.

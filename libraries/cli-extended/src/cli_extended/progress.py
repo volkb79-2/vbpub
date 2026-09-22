@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Sequence
 from enum import Enum
 from typing import Any, Self, TextIO
 
-from .output import LogLevel
+from .output import LogLevel, redact_text
 
 
 class ProgressMode(str, Enum):
@@ -47,6 +48,8 @@ class ProgressRenderer:
         color: bool | None = None,
         level: LogLevel | str = LogLevel.INFO,
         json_mode: bool = False,
+        secrets: Sequence[str] = (),
+        debug_raw: bool = False,
     ) -> None:
         requested = ProgressMode.parse(mode) if isinstance(mode, str) else mode
         level = LogLevel.parse(level) if isinstance(level, str) else level
@@ -58,6 +61,8 @@ class ProgressRenderer:
         self.stream = stream
         self.color = color
         self.level = level
+        self.secrets = tuple(secrets)
+        self.debug_raw = debug_raw
         if requested is ProgressMode.AUTO:
             self.mode = ProgressMode.TTY if _is_tty(stream) else ProgressMode.PLAIN
         else:
@@ -81,6 +86,8 @@ class ProgressRenderer:
     def _event(
         self, message: str, *, current: float | None, total: float | None, done: bool
     ) -> dict[str, Any]:
+        if not self.debug_raw:
+            message = redact_text(message, self.secrets)
         event: dict[str, Any] = {"type": "progress", "message": message, "done": done}
         if current is not None:
             event["current"] = current
@@ -100,6 +107,8 @@ class ProgressRenderer:
         if self.mode is ProgressMode.QUIET:
             return
         self._active = True
+        if not self.debug_raw:
+            message = redact_text(message, self.secrets)
         if self.mode is ProgressMode.RAWJSON:
             json.dump(
                 self._event(message, current=current, total=total, done=False),
@@ -131,6 +140,8 @@ class ProgressRenderer:
 
         if self.mode is ProgressMode.QUIET:
             return
+        if not self.debug_raw:
+            message = redact_text(message, self.secrets)
         if self.mode is ProgressMode.RAWJSON:
             json.dump(
                 self._event(message, current=current, total=total, done=True),

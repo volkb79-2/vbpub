@@ -1,112 +1,174 @@
-# cli-extended consumers
+# cli-extended consumer guide
 
-`cli-extended` is a shared library, not a required repository bootstrap
-dependency. An adopter can install it from this checkout while migrating a
-CLI, or build its independently packageable wheel.
+`cli-extended` standardizes CLI mechanics; it is not an application framework
+and does not own product behavior. The adopting CLI declares its public
+interface once with `CliRegistry`, then supplies domain-specific parsers and
+handlers only where needed. The package's
+[`README`](../README.md) contains the complete registration pattern.
 
-## Install from this checkout
+## Install and choose a version source
 
-From the repository root:
+For development in this checkout:
 
 ```bash
 python3 -m pip install --editable ./libraries/cli-extended
-python3 -c 'from cli_extended import CliIdentity; print(CliIdentity("X", "1.0.0", "Example").headline)'
 ```
 
-The package has no runtime dependencies. The editable install is convenient
-for a local migration; a release or isolated consumer should install the
-wheel produced from `libraries/cli-extended/` instead.
+For an independently deployed CLI, install the built `cli-extended` wheel in
+the same environment as the CLI. Do not add repository-root `PYTHONPATH`
+assumptions to an installed executable.
 
-## Add the shared shell to an argparse CLI
+The CLI owner must supply a version from an authoritative source. Prefer
+`CliIdentity.from_distribution()` when the application's distribution is
+installed. For source-run tools, pass the version from that project's checked-in
+version module/metadata. Do not invent a fallback. `cli-extended` itself uses
+its explicit `[project].version` in its `pyproject.toml`.
 
-The smallest complete pattern is shown in the package
-[`README.md`](../README.md). A consumer supplies its own authoritative version,
-verb metadata, handlers, configuration, API client, and mutation policy:
+## Turn an interface inventory into registrations
+
+Before editing parser code, write down the operator-facing verbs/actions and
+classify each as exploration, modification, mixed, setup, or maintenance.
+Mark whether it mutates state, prompts, or can take a long time. Then express
+each interface element once:
+
+- `VerbSpec`: name, synopsis, user-facing description, semantic group,
+  examples, behavior attributes, handler, positional arguments, and options;
+- `ArgumentSpec`: positional name, metavar, description, and argparse
+  attributes such as `nargs`, `choices`, or `type`;
+- `OptionSpec`: flags, display metavar, help group, description, and argparse
+  attributes such as `action`, `choices`, `default`, or `required`.
+
+`CliRegistry` turns those declarations into argparse parsers, grouped terminal
+help, full Markdown reference help, a dispatch map, and common shell options.
+It also checks duplicate command names and catalog/parser consistency. The
+consumer should not separately hand-maintain a command list, parser map, and
+help list.
+
+Use `VerbSpec.configure(parser)` only for genuinely custom structures—for
+example, nested positional actions or a mutually exclusive argument group.
+Keep common simple positionals/options in the structured `arguments` and
+`options` fields so they appear in generated Markdown too.
+
+Place options according to when they can be used: invocation-wide options
+that must precede a verb belong in `CliRegistry.global_options`; command-local
+options belong in that verb's `options`. Give every option an intentional
+display group (`OUTPUT`, `FILTERS`, `STOP CONDITIONS`, etc.) instead of grouping
+by implementation detail. Use `VerbSpec.group` for the semantic top-level
+verb group. The same metadata drives terminal and Markdown help; avoid a
+parallel manually formatted epilog for ordinary options. Custom parser
+callbacks are an escape hatch for syntax argparse cannot express through the
+structured fields, not the default registration path.
+
+For a tool with one operation and no verb token, use
+`CliRegistry(single_command=True)`. This is a supported shape, not a reason to
+keep a UUID or positional word ambiguously doubling as an action. If operators
+have meaningfully different operations, give those operations explicit verbs.
+For example, a task monitor can distinguish `show TASK_UUID` (fetch once) from
+`watch TASK_UUID` (poll with progress until terminal). A former `--dry-run`
+that only fetches the task once is not a third operation; fold that behavior
+into `show` or define a genuinely different preflight contract before adding
+`check`. Likewise, add `wait` only if it has a useful automation contract
+distinct from `watch`. Keep cancellation in the API-owning CLI if it already
+owns task mutations; do not create two interfaces for the same operation by
+default.
+
+For the Netcup task monitor, the migration split is therefore:
+
+| Current behavior | Verb-oriented interface |
+| --- | --- |
+| bare UUID polls until terminal | `watch TASK_UUID`; `--poll` belongs to a `STOP CONDITIONS` option group |
+| `--json` fetches once and exits | `show TASK_UUID --json` |
+| `--json --raw` includes secret-bearing response fields | `show TASK_UUID --json --debug-raw`, with the shared warning and explicit redaction opt-out |
+| `--dry-run` only fetches once to prove the task exists | `show TASK_UUID`; add `check` only if it establishes a stronger, separately useful preflight guarantee |
+| cancel a task | keep under `scp-api.py tasks cancel`, which owns API mutations |
+
+This keeps presentation choices such as JSON from becoming verbs, while making
+the actual one-shot and polling operations explicit.
+
+The registry uses one width-aware formatter for generated top-level and
+command-specific help. Terminal output follows the detected terminal width,
+with a 120-column fallback, while generated Markdown is a full reference
+format rather than terminal output pasted into a document. Structured
+choice/default attributes are rendered there too; keep ordinary argparse
+options in `OptionSpec` so they are not lost from generated docs.
+
+Bare invocation prints help by default. Set `no_args_action=True` only when
+the command's explicitly documented purpose is to act with no arguments; it
+is restricted to the single-command registry form, and `--help` must remain
+side-effect free. The ordinary `assert_cli_contract()` helper assumes bare
+invocation is help, so do not use it unchanged for that deliberate exception.
+
+## Consumer responsibilities
+
+| `cli-extended` guarantees | The adopting CLI must decide and implement |
+|---|---|
+| identity formatting, `help`/`version`, bare invocation, width-aware grouped help | authoritative version source, product identity, verbs, groups, examples, and valid workflows |
+| parser registration and generated parser/dispatch/help consistency | API/config/file/domain validation and all closed vocabulary values |
+| common diagnostics, severity levels, colour controls, stdout/stderr policy, JSON-mode progress handling | result schemas, tables, pagination/truncation semantics, and provider-specific progress events |
+| common `--yes` option only for registrations marked `mutating`; default-no confirmation helper | decide exactly what changes, validate before prompting, and prompt immediately before the mutation |
+| clean Ctrl-C and concise failures for declared expected exceptions | classify expected domain exceptions; unexpected bugs must remain visible as tracebacks |
+| redaction of explicitly registered secrets in output, logging, JSON results, prompts, and progress | identify/provide secret values and avoid leaking them through external subprocesses, files, or messages emitted outside the helper |
+| scoped standard-library logging for the configured logger namespace | put application loggers under that namespace or configure `logging_logger`; retain useful log calls and classify secret-bearing data |
+| a black-box help/version/parse-error contract assertion | launch the real executable in tests and separately prove help/version made no API, credential, or filesystem side effects |
+
+`--yes` is not a safety policy. A handler must finish target/config/API
+validation before asking for consent. The helper cannot decide whether a
+Netcup firewall update, server reinstall, database migration, or deployment is
+safe, and it does not bypass deny-lists or other domain guards.
+
+Expected failures should be passed as specific types to `app.run()`:
 
 ```python
-from cli_extended import (
-    CliIdentity,
-    ExtendedArgumentParser,
-    HelpCatalog,
-    VerbSpec,
-    add_common_options,
-    run_cli,
+raise SystemExit(
+    app.run(
+        expected_exceptions=(NetcupAPIError, OSError),
+        secrets=(refresh_token,),
+    )
 )
-
-identity = CliIdentity(
-    name="TOOL",
-    command="tool",
-    version="1.2.3",  # derive this from the consumer's package metadata
-    long_name="Tool Long Name",
-)
-catalog = HelpCatalog(
-    identity,
-    prog="tool",
-    verbs=(VerbSpec("status", "", "show current state"),),
-)
-parser = ExtendedArgumentParser(
-    prog="tool", identity=identity, catalog=catalog, top_level=True
-)
-add_common_options(parser, identity)
-subparsers = parser.add_subparsers(dest="verb", required=True)
-status = subparsers.add_parser("status")
-add_common_options(status, identity, suppress_defaults=True)
 ```
 
-Use `run_cli` with a handler mapping. It discovers registered subparsers
-automatically and validates them against the help catalog, so a consumer does
-not maintain a second command-parser map. Handlers receive `CliRuntime`; use
-`runtime.output` for diagnostics/results and `runtime.progress()` for long
-operations.
+Do not pass `Exception` as an expected type. That would hide programming bugs
+as ordinary operator errors. Raise `CliFailure` for a known refusal that needs
+a concise message, exit status, or hint. Keep validation messages actionable
+and truthful.
 
-Use `catalog.render(output_format="markdown")` when generating a README or
-operator guide. Keep terminal `--help` in text format.
+### Logging namespace
 
-## Division of responsibility
+`CliRegistry` scopes Python logging to `identity.command_name` by default and
+restores the logger when the handler exits. Application module loggers should
+be named under that namespace, e.g. `example.api`; otherwise set
+`logging_logger="example"` on the registry. The common `--log-level` policy
+then filters ordinary `logging` records. Avoid configuring the process-wide
+root logger in a library module.
 
-`cli-extended` guarantees the shell contract:
+### JSON and progress
 
-- identity/version formatting and side-effect-free help paths;
-- grouped help rendering and parser/catalog drift detection;
-- common verbosity, colour, JSON, progress, and confirmation options;
-- stderr diagnostics versus stdout primary results;
-- explicit redaction and raw-debug warnings;
-- expected-failure and Ctrl-C boundaries; and
-- logging/progress cleanup behavior.
+Primary machine output goes to stdout; diagnostics and human progress go to
+stderr. When `--json` owns stdout, `--progress=rawjson` is intentionally muted;
+`plain`/`tty` progress remains on stderr. `ProgressRenderer` and
+`runtime.progress()` redact the secrets passed to `app.run()` unless
+`--debug-raw` was explicitly requested. Consumers still own the JSON schema
+and must not print ad-hoc progress directly to stdout.
 
-The adopting CLI remains responsible for decisions that require domain
-knowledge:
+## Tests required for an adoption
 
-- derive the authoritative version and choose the product identity;
-- define every public verb, semantic group, synopsis, and example;
-- validate configuration, API responses, files, and closed vocabularies;
-- classify its expected exception types and pass them to `run_cli`;
-- provide known secret values to the redactor and avoid putting secrets into
-  exception messages or subprocess arguments;
-- implement confirmations around the exact mutation being made, honoring
-  `runtime.yes` without bypassing validation or deny-lists;
-- choose JSON schemas, table columns, pagination, and provider-specific
-  progress events; and
-- test the real executable, including no arguments, all help/version paths,
-  malformed input, non-TTY output, JSON streams, Ctrl-C, and mutations.
+Use `assert_cli_contract()` against the real executable/subprocess for bare
+invocation, both help/version spellings, every registered verb's paired help,
+and selected invalid invocations. Also test facts the helper cannot observe:
 
-The helper enforces interface invariants; it cannot decide whether a Netcup
-firewall change, database migration, or deployment is safe. Consumers must
-not treat accepting the shared parser as a substitute for their own domain
-validation and mutation review.
+- no credentials, API calls, file changes, or mutations on help/version paths;
+- real handler dispatch and each verb's parser options/actions;
+- confirmations occur after validation, default to refusal, and `--yes` skips
+  only that prompt;
+- API/config failures are concise while unexpected exceptions retain tracebacks;
+- JSON stdout remains parseable, including progress and error cases;
+- known secrets are absent from normal diagnostics, logging, JSON, and progress;
+- Ctrl-C at prompts and long-running operations exits `130` without traceback.
 
-When `--json` is active, `--progress=rawjson` is deliberately muted so stdout
-contains only the primary JSON result. Use `--progress=plain` or `tty` when
-JSON results should still have human progress on stderr.
-
-## Verify an adoption
+Package self-tests:
 
 ```bash
 PYTHONPATH=libraries/cli-extended/src pytest -q libraries/cli-extended/tests
 ruff check libraries/cli-extended
 ruff format --check libraries/cli-extended
 ```
-
-The consumer's own contract tests must additionally prove its real entrypoint
-has side-effect-free help/version, complete help after local parse errors,
-clean Ctrl-C handling, correct JSON/stdout separation, and redacted output.

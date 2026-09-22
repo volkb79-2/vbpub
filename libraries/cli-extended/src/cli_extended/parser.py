@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from shutil import get_terminal_size
 from textwrap import TextWrapper
 from typing import Any, TextIO
 
 from .identity import CliIdentity
-from .output import CliOutput, LogLevel
+from .output import CliOutput, LogLevel, logging_context
 from .progress import ProgressMode, ProgressRenderer
 
 
@@ -78,13 +79,259 @@ class HelpFormat(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class OptionSpec:
+    """Structured option metadata and argparse registration details.
+
+    ``parser_kwargs`` is deliberately an escape hatch for argparse's large
+    option surface (``action``, ``choices``, ``type``, ``nargs``, and so on).
+    The stable contract-facing fields remain the flags, description, group,
+    and displayed metavar.
+    """
+
+    flags: tuple[str, ...]
+    description: str
+    group: str = "OPTIONS"
+    metavar: str | None = None
+    parser_kwargs: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.flags or any(not flag for flag in self.flags):
+            raise ValueError("an option must define at least one non-empty flag")
+        if any(not flag.startswith("-") for flag in self.flags):
+            raise ValueError(
+                "option flags must begin with '-' (positionals are not options)"
+            )
+        if not self.description:
+            raise ValueError("an option must define a description")
+        if not self.group:
+            raise ValueError("an option must define a non-empty group")
+
+    @property
+    def display(self) -> str:
+        """Return the stable help label for this option."""
+
+        label = "/".join(self.flags)
+        metavar = self.metavar
+        if metavar is None:
+            candidate = self.parser_kwargs.get("metavar")
+            metavar = candidate if isinstance(candidate, str) else None
+        if metavar is None:
+            choices = self.parser_kwargs.get("choices")
+            if choices is not None:
+                metavar = "{" + ",".join(str(choice) for choice in choices) + "}"
+        return f"{label} {metavar}" if metavar else label
+
+    @property
+    def markdown_description(self) -> str:
+        """Include parser constraints that an adopter encoded as attributes."""
+
+        details = []
+        choices = self.parser_kwargs.get("choices")
+        if choices is not None:
+            details.append("choices: " + ", ".join(f"`{choice}`" for choice in choices))
+        if self.parser_kwargs.get("required"):
+            details.append("required")
+        if "default" in self.parser_kwargs:
+            default = self.parser_kwargs["default"]
+            if default is not argparse.SUPPRESS and default is not None:
+                details.append(f"default: `{default}`")
+        return self.description + (f" ({'; '.join(details)})" if details else "")
+
+    def add_to(self, parser: Any, *, suppress_default: bool = False) -> Any:
+        """Register this option with argparse and return its action."""
+
+        kwargs = dict(self.parser_kwargs)
+        kwargs["help"] = self.description
+        if self.metavar is not None:
+            kwargs.setdefault("metavar", self.metavar)
+        if suppress_default:
+            kwargs.setdefault("default", argparse.SUPPRESS)
+        return parser.add_argument(*self.flags, **kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class ArgumentSpec:
+    """Structured positional argument metadata for a registered verb."""
+
+    name: str
+    description: str
+    metavar: str | None = None
+    parser_kwargs: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.name or self.name.startswith("-"):
+            raise ValueError(
+                "a positional argument needs a name without a leading dash"
+            )
+        if not self.description:
+            raise ValueError("a positional argument must define a description")
+
+    @property
+    def display(self) -> str:
+        if self.metavar is not None:
+            return self.metavar
+        candidate = self.parser_kwargs.get("metavar")
+        return candidate if isinstance(candidate, str) else self.name
+
+    @property
+    def markdown_description(self) -> str:
+        details = []
+        choices = self.parser_kwargs.get("choices")
+        if choices is not None:
+            details.append("choices: " + ", ".join(f"`{choice}`" for choice in choices))
+        if "default" in self.parser_kwargs:
+            default = self.parser_kwargs["default"]
+            if default is not argparse.SUPPRESS and default is not None:
+                details.append(f"default: `{default}`")
+        return self.description + (f" ({'; '.join(details)})" if details else "")
+
+    def add_to(self, parser: argparse.ArgumentParser) -> Any:
+        """Register this positional argument and return its action."""
+
+        kwargs = dict(self.parser_kwargs)
+        kwargs["help"] = self.description
+        if self.metavar is not None:
+            kwargs.setdefault("metavar", self.metavar)
+        return parser.add_argument(self.name, **kwargs)
+
+
+def _coerce_option_spec(value: OptionSpec | tuple[str, str]) -> OptionSpec:
+    if isinstance(value, OptionSpec):
+        return value
+    display, description = value
+    parts = display.split(maxsplit=1)
+    flags = tuple(parts[0].split("/"))
+    metavar = parts[1] if len(parts) == 2 else None
+    return OptionSpec(flags, description, group="GLOBAL OPTIONS", metavar=metavar)
+
+
+@dataclass(frozen=True, slots=True)
 class VerbSpec:
-    """One public verb rendered in the grouped top-level help."""
+    """One public verb and its registration/help attributes.
+
+    ``configure`` adds domain-specific positional arguments or options to the
+    generated command parser. ``handler`` is the command implementation. The
+    shared library owns registration and shell behavior; the consumer owns
+    both callbacks and all domain decisions.
+    """
 
     name: str
     synopsis: str
     description: str
     group: str = VerbGroup.EXPLORATION.value
+    examples: tuple[str, ...] = ()
+    mutating: bool = False
+    interactive: bool = False
+    expensive: bool = False
+    include_json: bool = True
+    include_progress: bool = True
+    arguments: tuple[ArgumentSpec, ...] = ()
+    options: tuple[OptionSpec, ...] = ()
+    configure: Callable[[ExtendedArgumentParser], None] | None = None
+    handler: Callable[..., int | None] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name or self.name.startswith("-"):
+            raise ValueError("a verb needs a non-empty name without a leading dash")
+        if not self.description:
+            raise ValueError(f"verb {self.name!r} must define a description")
+        if not self.group:
+            raise ValueError(f"verb {self.name!r} must define a semantic group")
+
+    @property
+    def behavior_labels(self) -> tuple[str, ...]:
+        labels = []
+        if self.mutating:
+            labels.append("mutating")
+        if self.interactive:
+            labels.append("interactive")
+        if self.expensive:
+            labels.append("potentially expensive")
+        return tuple(labels)
+
+    @property
+    def summary(self) -> str:
+        """Return the top-level one-line description with behavior cues."""
+
+        labels = self.behavior_labels
+        if not labels:
+            return self.description
+        return f"{self.description} [{'; '.join(labels)}]"
+
+    @property
+    def command_description(self) -> str:
+        """Return command help including attributes and pasteable examples."""
+
+        sections = [self.description]
+        labels = self.behavior_labels
+        if labels:
+            sections.append("Behavior: " + "; ".join(labels) + ".")
+        if self.mutating:
+            sections.append(
+                "Mutating actions require confirmation unless --yes is supplied."
+            )
+        if self.examples:
+            sections.append(
+                "Examples:\n" + "\n".join(f"  {item}" for item in self.examples)
+            )
+        return "\n\n".join(sections)
+
+
+def _common_option_specs(
+    *, include_json: bool, include_progress: bool, include_confirmation: bool
+) -> tuple[OptionSpec, ...]:
+    """Return common option metadata for generated help surfaces."""
+
+    options = [
+        OptionSpec(("--help",), "show this help and exit", group="HELP AND VERSION"),
+        OptionSpec(
+            ("--version",),
+            "print the short version and exit",
+            group="HELP AND VERSION",
+        ),
+        OptionSpec(
+            ("--log-level",),
+            "set diagnostic verbosity: error, warn, info, debug",
+            group="DEBUGGING",
+            metavar="LEVEL",
+        ),
+        OptionSpec(("--quiet",), "show warnings and errors only", group="DEBUGGING"),
+        OptionSpec(
+            ("--debug", "--verbose"),
+            "show diagnostic detail",
+            group="DEBUGGING",
+        ),
+        OptionSpec(
+            ("--debug-raw",),
+            "show supported raw diagnostic data without redaction",
+            group="DEBUGGING",
+        ),
+        OptionSpec(
+            ("--color", "--no-color"),
+            "control terminal colour",
+            group="OUTPUT CONTROL",
+        ),
+    ]
+    if include_json:
+        options.append(
+            OptionSpec(
+                ("--json",), "emit machine-readable output", group="OUTPUT CONTROL"
+            )
+        )
+    if include_progress:
+        options.append(
+            OptionSpec(
+                ("--progress",),
+                "choose progress: auto, tty, plain, quiet, rawjson (rawjson uses stdout; muted with --json)",
+                group="OUTPUT CONTROL",
+                metavar="MODE",
+            )
+        )
+    if include_confirmation:
+        options.append(
+            OptionSpec(("--yes",), "accept confirmation prompts", group="CONFIRMATION")
+        )
+    return tuple(options)
 
 
 class HelpCatalog:
@@ -98,7 +345,7 @@ class HelpCatalog:
         usage: str | None = None,
         getting_started: Sequence[str] = (),
         verbs: Iterable[VerbSpec] = (),
-        global_options: Sequence[tuple[str, str]] = (),
+        global_options: Sequence[OptionSpec | tuple[str, str]] = (),
         width: int | None = None,
     ) -> None:
         self.identity = identity
@@ -106,20 +353,42 @@ class HelpCatalog:
         self.usage = usage or f"{prog} <verb> [options]"
         self.getting_started = tuple(getting_started)
         self.verbs = tuple(verbs)
-        self.global_options = tuple(global_options)
+        self.global_options = tuple(
+            _coerce_option_spec(item) for item in global_options
+        )
+        displays = [option.display for option in self.global_options]
+        if len(displays) != len(set(displays)):
+            raise ValueError("top-level help cannot contain duplicate option entries")
+        self.command_parsers: Mapping[str, ExtendedArgumentParser] = {}
         self.width = width
         names = [verb.name for verb in self.verbs]
         if len(names) != len(set(names)):
             raise ValueError("top-level help cannot contain duplicate verb names")
 
-    def add_global_options(self, options: Iterable[tuple[str, str]]) -> None:
-        """Add option metadata without allowing duplicate top-level entries."""
+    def add_global_options(
+        self, options: Iterable[OptionSpec | tuple[str, str]]
+    ) -> None:
+        """Add structured metadata, refusing conflicting duplicate labels."""
 
-        existing = {name for name, _ in self.global_options}
-        additions = tuple(
-            (name, description) for name, description in options if name not in existing
-        )
-        self.global_options += additions
+        by_display = {option.display: option for option in self.global_options}
+        additions = []
+        for option in (_coerce_option_spec(item) for item in options):
+            existing = by_display.get(option.display)
+            if existing is None:
+                by_display[option.display] = option
+                additions.append(option)
+            elif existing != option:
+                raise ValueError(
+                    f"conflicting top-level help metadata for {option.display!r}"
+                )
+        self.global_options += tuple(additions)
+
+    def attach_command_parsers(
+        self, parsers: Mapping[str, ExtendedArgumentParser]
+    ) -> None:
+        """Attach generated parsers for Markdown details of custom structures."""
+
+        self.command_parsers = dict(parsers)
 
     def render(
         self,
@@ -164,25 +433,37 @@ class HelpCatalog:
                     break_long_words=False,
                     break_on_hyphens=False,
                 )
-                lines.extend(wrapper.wrap(verb.description) or [prefix])
+                lines.extend(wrapper.wrap(verb.summary) or [prefix])
             lines.append("")
 
-        if self.global_options:
-            lines.append("GLOBAL OPTIONS")
-            option_width = max(len(name) for name, _ in self.global_options)
-            for name, description in self.global_options:
+        option_groups: list[str] = []
+        for option in self.global_options:
+            if option.group not in option_groups:
+                option_groups.append(option.group)
+        for group in option_groups:
+            lines.append(group)
+            group_options = [
+                option for option in self.global_options if option.group == group
+            ]
+            option_width = max(len(option.display) for option in group_options)
+            for option in group_options:
                 wrapper = TextWrapper(
                     width=max(20, width - option_width - 6),
-                    initial_indent=f"  {name.ljust(option_width)}  ",
+                    initial_indent=f"  {option.display.ljust(option_width)}  ",
                     subsequent_indent=" " * (option_width + 4),
                     break_long_words=False,
                     break_on_hyphens=False,
                 )
-                lines.extend(wrapper.wrap(description) or [f"  {name}"])
+                lines.extend(
+                    wrapper.wrap(option.description) or [f"  {option.display}"]
+                )
+            lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def render_markdown(self, *, width: int | None = None) -> str:
-        """Render the same catalog as a documentation-friendly Markdown page."""
+    def render_markdown(
+        self, *, width: int | None = None, include_details: bool = True
+    ) -> str:
+        """Render the catalog as a Markdown reference from the same metadata."""
 
         width = width or self.width or 120
         width = max(60, width)
@@ -214,24 +495,105 @@ class HelpCatalog:
                 if verb.synopsis:
                     label += f" {verb.synopsis}"
                 label += "`"
-                wrapper = TextWrapper(
-                    width=max(20, width - 6),
-                    initial_indent=f"- {label} — ",
-                    subsequent_indent="  ",
-                    break_long_words=False,
-                    break_on_hyphens=False,
+                if not include_details:
+                    wrapper = TextWrapper(
+                        width=max(20, width - 6),
+                        initial_indent=f"- {label} — ",
+                        subsequent_indent="  ",
+                        break_long_words=False,
+                        break_on_hyphens=False,
+                    )
+                    lines.extend(wrapper.wrap(verb.summary) or [f"- {label}"])
+                    continue
+                heading = f"### `{verb.name}`"
+                if verb.synopsis:
+                    heading += f" {verb.synopsis}"
+                command_parser = self.command_parsers.get(verb.name)
+                if verb.configure is not None and command_parser is not None:
+                    lines.extend((heading, ""))
+                    if verb.behavior_labels:
+                        lines.extend(
+                            (
+                                "**Behavior:** "
+                                + "; ".join(verb.behavior_labels)
+                                + ".",
+                                "",
+                            )
+                        )
+                    parser_help = command_parser.format_help()
+                    if parser_help.startswith(self.identity.headline):
+                        parser_help = parser_help[len(self.identity.headline) :].lstrip(
+                            "\n"
+                        )
+                    lines.extend(
+                        ("```text", *parser_help.rstrip().splitlines(), "```", "")
+                    )
+                    continue
+                lines.extend((heading, "", verb.description, ""))
+                if verb.behavior_labels:
+                    lines.extend(
+                        ("**Behavior:** " + "; ".join(verb.behavior_labels) + ".", "")
+                    )
+                if verb.examples:
+                    lines.extend(("**Examples:**", "", "```sh"))
+                    lines.extend(verb.examples)
+                    lines.extend(("```", ""))
+                if verb.arguments:
+                    lines.extend(
+                        (
+                            "#### Arguments",
+                            "",
+                            "| Argument | Description |",
+                            "| --- | --- |",
+                        )
+                    )
+                    for argument in verb.arguments:
+                        lines.append(
+                            f"| `{_markdown_cell(argument.display)}` | {_markdown_cell(argument.markdown_description)} |"
+                        )
+                    lines.append("")
+                options = (
+                    *_common_option_specs(
+                        include_json=verb.include_json,
+                        include_progress=verb.include_progress,
+                        include_confirmation=verb.mutating,
+                    ),
+                    *verb.options,
                 )
-                lines.extend(wrapper.wrap(verb.description) or [f"- {label}"])
+                option_groups: list[str] = []
+                for option in options:
+                    if option.group not in option_groups:
+                        option_groups.append(option.group)
+                for option_group in option_groups:
+                    lines.extend(
+                        (
+                            f"#### {option_group.title()}",
+                            "",
+                            "| Option | Description |",
+                            "| --- | --- |",
+                        )
+                    )
+                    for option in options:
+                        if option.group == option_group:
+                            lines.append(
+                                f"| `{_markdown_cell(option.display)}` | {_markdown_cell(option.markdown_description)} |"
+                            )
+                    lines.append("")
             lines.append("")
 
-        if self.global_options:
+        option_groups = []
+        for option in self.global_options:
+            if option.group not in option_groups:
+                option_groups.append(option.group)
+        for group in option_groups:
             lines.extend(
-                ("## Global options", "", "| Option | Description |", "| --- | --- |")
+                (f"## {group.title()}", "", "| Option | Description |", "| --- | --- |")
             )
-            for name, description in self.global_options:
-                lines.append(
-                    f"| `{_markdown_cell(name)}` | {_markdown_cell(description)} |"
-                )
+            for option in self.global_options:
+                if option.group == group:
+                    lines.append(
+                        f"| `{_markdown_cell(option.display)}` | {_markdown_cell(option.description)} |"
+                    )
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
@@ -267,6 +629,7 @@ class ExtendedArgumentParser(argparse.ArgumentParser):
         **kwargs: Any,
     ) -> None:
         kwargs["add_help"] = False
+        kwargs.setdefault("formatter_class", WideRawDescriptionHelpFormatter)
         self.identity = identity
         self.catalog = catalog
         self.top_level = top_level
@@ -294,6 +657,17 @@ class ExtendedArgumentParser(argparse.ArgumentParser):
 
 def _markdown_cell(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+class WideRawDescriptionHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Preserve examples and use terminal width with a 120-column fallback."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        width = kwargs.setdefault(
+            "width", max(60, get_terminal_size((120, 24)).columns)
+        )
+        kwargs.setdefault("max_help_position", min(40, max(24, width // 3)))
+        super().__init__(*args, **kwargs)
 
 
 def discover_command_parsers(
@@ -376,22 +750,13 @@ def add_common_options(
     parser._cli_extended_common_options = True
     default = argparse.SUPPRESS if suppress_defaults else None
     if parser.top_level and parser.catalog is not None:
-        common_help = [
-            ("--help", "show this help and exit"),
-            ("--version", "print the short version and exit"),
-            ("--log-level LEVEL", "set diagnostic verbosity"),
-            ("--quiet", "show errors and warnings only"),
-            ("--debug/--verbose", "show diagnostic detail"),
-            ("--debug-raw", "show supported raw diagnostic data without redaction"),
-            ("--color/--no-color", "control terminal colour"),
-        ]
-        if include_json:
-            common_help.append(("--json", "emit machine-readable output"))
-        if include_progress:
-            common_help.append(("--progress MODE", "choose progress presentation"))
-        if include_confirmation:
-            common_help.append(("--yes", "accept confirmation prompts"))
-        parser.catalog.add_global_options(common_help)
+        parser.catalog.add_global_options(
+            _common_option_specs(
+                include_json=include_json,
+                include_progress=include_progress,
+                include_confirmation=include_confirmation,
+            )
+        )
     parser.add_argument("--help", action=_HelpAction, help="show this help and exit")
     parser.add_argument(
         "--version",
@@ -475,6 +840,36 @@ class CliRuntime:
     json_mode: bool = False
     progress_mode: ProgressMode = ProgressMode.AUTO
 
+    def confirm(self, prompt: str) -> bool:
+        """Ask for a safe default-no confirmation after caller preflight.
+
+        ``--yes`` accepts the prompt, but does not replace domain validation.
+        Non-interactive stdin refuses instead of attempting a prompt that will
+        fail with EOF. EOF and an explicit negative answer are clean declines.
+        """
+
+        if self.yes:
+            self.output.info("Confirmation accepted via --yes.")
+            return True
+        if not self.output._is_tty(self.output.stdin):
+            raise CliFailure(
+                "confirmation is required, but stdin is not interactive; "
+                "review the requested change and rerun with --yes",
+                exit_code=2,
+            )
+        self.output.stderr.write(f"{self.output._message(prompt)} [y/N] ")
+        self.output.stderr.flush()
+        answer = self.output.stdin.readline()
+        if answer == "":
+            self.output.emit(
+                LogLevel.INFO, "No confirmation received; no changes made.", force=True
+            )
+            return False
+        if answer.strip().casefold() in {"y", "yes"}:
+            return True
+        self.output.emit(LogLevel.INFO, "Declined; no changes made.", force=True)
+        return False
+
     def progress(self, *, mode: ProgressMode | str | None = None) -> ProgressRenderer:
         requested_mode = mode or self.progress_mode
         if isinstance(requested_mode, str):
@@ -492,10 +887,208 @@ class CliRuntime:
             color=self.output.color,
             level=self.output.level,
             json_mode=self.json_mode,
+            secrets=list(self.output.secrets),
+            debug_raw=self.debug_raw,
         )
 
 
 Handler = Callable[[argparse.Namespace, CliRuntime], int | None]
+
+
+@dataclass(slots=True)
+class RegisteredCli:
+    """A fully-built parser and dispatch table produced by :class:`CliRegistry`."""
+
+    identity: CliIdentity
+    parser: ExtendedArgumentParser
+    handlers: Mapping[str, Handler]
+    command_parsers: Mapping[str, ExtendedArgumentParser]
+    default_handler: Handler | None = None
+    logging_logger: str | None = None
+    no_args_action: bool = False
+
+    @property
+    def catalog(self) -> HelpCatalog | None:
+        """Return the generated help catalog when this CLI has verbs."""
+
+        return self.parser.catalog
+
+    def run(self, **kwargs: Any) -> int:
+        """Run this registration with the shared boundary."""
+
+        return run_cli(
+            self.parser,
+            self.handlers,
+            identity=self.identity,
+            command_parsers=self.command_parsers,
+            default_handler=self.default_handler,
+            logging_logger=self.logging_logger,
+            no_args_action=self.no_args_action,
+            **kwargs,
+        )
+
+
+class CliRegistry:
+    """Declare verbs/options once and generate argparse, help, and dispatch.
+
+    Consumers provide the product-specific parser callback and handler for
+    each verb. The registry owns the repetitive parser registration, option
+    groups, common flags, help catalog, and dispatch map.
+    """
+
+    def __init__(
+        self,
+        identity: CliIdentity,
+        *,
+        prog: str,
+        description: str,
+        getting_started: Sequence[str] = (),
+        global_options: Sequence[OptionSpec] = (),
+        single_command: bool = False,
+        logging_logger: str | None = None,
+        no_args_action: bool = False,
+    ) -> None:
+        self.identity = identity
+        self.prog = prog
+        self.description = description
+        self.getting_started = tuple(getting_started)
+        self.global_options = tuple(global_options)
+        self.single_command = single_command
+        self.logging_logger = logging_logger or identity.command_name
+        self.no_args_action = no_args_action
+        self._verbs: list[VerbSpec] = []
+
+    @property
+    def verbs(self) -> tuple[VerbSpec, ...]:
+        return tuple(self._verbs)
+
+    def register(self, verb: VerbSpec) -> None:
+        """Register one public command, refusing ambiguous duplicate names."""
+
+        if any(existing.name == verb.name for existing in self._verbs):
+            raise ValueError(f"verb {verb.name!r} is already registered")
+        self._verbs.append(verb)
+
+    @staticmethod
+    def _add_option_specs(
+        parser: ExtendedArgumentParser,
+        options: Sequence[OptionSpec],
+        *,
+        suppress_defaults: bool = False,
+    ) -> None:
+        groups: dict[str, Any] = {}
+        for option in options:
+            if option.group not in groups:
+                groups[option.group] = parser.add_argument_group(option.group)
+            group = groups[option.group]
+            option.add_to(group, suppress_default=suppress_defaults)
+
+    @staticmethod
+    def _add_argument_specs(
+        parser: ExtendedArgumentParser, arguments: Sequence[ArgumentSpec]
+    ) -> None:
+        for argument in arguments:
+            argument.add_to(parser)
+
+    def build(self) -> RegisteredCli:
+        """Build parser and handler map from the registered definitions."""
+
+        if not self._verbs:
+            raise ValueError("a CLI must register at least one command")
+        if self.single_command and len(self._verbs) != 1:
+            raise ValueError(
+                "single_command registries must register exactly one command"
+            )
+        if self.no_args_action and not self.single_command:
+            raise ValueError("no_args_action is only valid for a single-command CLI")
+        missing_handlers = [verb.name for verb in self._verbs if verb.handler is None]
+        if missing_handlers:
+            raise ValueError("verbs missing handlers: " + ", ".join(missing_handlers))
+
+        catalog = None
+        if not self.single_command:
+            catalog = HelpCatalog(
+                self.identity,
+                prog=self.prog,
+                getting_started=self.getting_started,
+                verbs=self._verbs,
+            )
+        parser = ExtendedArgumentParser(
+            prog=self.prog,
+            description=self.description,
+            formatter_class=WideRawDescriptionHelpFormatter,
+            identity=self.identity,
+            catalog=catalog,
+            top_level=not self.single_command,
+        )
+        add_common_options(
+            parser,
+            self.identity,
+            include_json=(
+                self._verbs[0].include_json
+                if self.single_command
+                else all(verb.include_json for verb in self._verbs)
+            ),
+            include_progress=(
+                self._verbs[0].include_progress
+                if self.single_command
+                else all(verb.include_progress for verb in self._verbs)
+            ),
+            include_confirmation=self.single_command and self._verbs[0].mutating,
+        )
+        self._add_option_specs(parser, self.global_options)
+        if catalog is not None:
+            catalog.add_global_options(self.global_options)
+
+        command_parsers: dict[str, ExtendedArgumentParser] = {}
+        handlers: dict[str, Handler] = {}
+        default_handler: Handler | None = None
+        if self.single_command:
+            verb = self._verbs[0]
+            self._add_argument_specs(parser, verb.arguments)
+            self._add_option_specs(parser, verb.options)
+            if verb.configure is not None:
+                verb.configure(parser)
+            default_handler = verb.handler  # type: ignore[assignment]
+        else:
+            subparsers = parser.add_subparsers(
+                dest="verb", metavar="VERB", required=True
+            )
+            for verb in self._verbs:
+                command_parser = subparsers.add_parser(
+                    verb.name,
+                    help=verb.summary,
+                    description=verb.command_description,
+                    formatter_class=WideRawDescriptionHelpFormatter,
+                )
+                add_common_options(
+                    command_parser,
+                    self.identity,
+                    include_json=verb.include_json,
+                    include_progress=verb.include_progress,
+                    include_confirmation=verb.mutating,
+                    suppress_defaults=True,
+                )
+                self._add_argument_specs(command_parser, verb.arguments)
+                self._add_option_specs(
+                    command_parser, verb.options, suppress_defaults=True
+                )
+                if verb.configure is not None:
+                    verb.configure(command_parser)
+                command_parsers[verb.name] = command_parser
+                handlers[verb.name] = verb.handler  # type: ignore[assignment]
+
+        if catalog is not None:
+            catalog.attach_command_parsers(command_parsers)
+        return RegisteredCli(
+            self.identity,
+            parser,
+            handlers,
+            command_parsers,
+            default_handler,
+            self.logging_logger,
+            self.no_args_action,
+        )
 
 
 def _runtime_from_args(
@@ -504,12 +1097,17 @@ def _runtime_from_args(
     *,
     stdout: TextIO | None,
     stderr: TextIO | None,
+    stdin: TextIO | None,
     secrets: Sequence[str],
 ) -> CliRuntime:
     debug_raw = bool(getattr(args, "debug_raw", False))
-    debug = bool(getattr(args, "debug", False)) or debug_raw
     quiet = bool(getattr(args, "quiet", False))
     explicit_level = getattr(args, "log_level", None)
+    debug = (
+        bool(getattr(args, "debug", False))
+        or debug_raw
+        or explicit_level == LogLevel.DEBUG.value
+    )
     if debug_raw and explicit_level not in (None, LogLevel.DEBUG.value):
         raise CliFailure(
             "--debug-raw implies --log-level=debug; do not combine it with "
@@ -520,7 +1118,7 @@ def _runtime_from_args(
     if explicit_level is not None:
         level = LogLevel.parse(explicit_level)
     elif quiet:
-        level = LogLevel.ERROR
+        level = LogLevel.WARN
     elif debug:
         level = LogLevel.DEBUG
     else:
@@ -541,6 +1139,7 @@ def _runtime_from_args(
         json_mode=json_mode,
         debug_raw=debug_raw,
         secrets=secrets,
+        stdin=stdin,
         stdout=stdout,
         stderr=stderr,
     )
@@ -578,15 +1177,20 @@ def run_cli(
     identity: CliIdentity,
     argv: Sequence[str] | None = None,
     command_parsers: Mapping[str, ExtendedArgumentParser] | None = None,
+    default_handler: Handler | None = None,
+    logging_logger: str | None = None,
+    no_args_action: bool = False,
     expected_exceptions: tuple[type[BaseException], ...] = (),
     secrets: Sequence[str] = (),
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
 ) -> int:
     """Run a conventional CLI while keeping parser and exception policy shared."""
 
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
+    stdin = stdin if stdin is not None else sys.stdin
     raw = list(sys.argv[1:] if argv is None else argv)
     discovered_parsers = discover_command_parsers(parser)
     discovered_parsers.update(command_parsers or {})
@@ -596,7 +1200,7 @@ def run_cli(
     for command_parser in (parser, *command_parsers.values()):
         command_parser._cli_help_stream = stdout
 
-    if not raw:
+    if not raw and not no_args_action:
         _print_help(parser.format_help(), stdout)
         return 0
     if raw == ["help"]:
@@ -624,7 +1228,14 @@ def run_cli(
         return int(exc.code or 0)
 
     verb = getattr(args, "verb", None)
+    if verb is None and default_handler is None:
+        print(identity.headline, file=stderr)
+        print("[ERROR] a verb is required for this invocation", file=stderr)
+        _print_help(_help_body(parser.format_help(), identity), stderr)
+        return 2
     handler = handlers.get(verb)
+    if handler is None and verb is None:
+        handler = default_handler
     if handler is None:
         print(identity.headline, file=stderr)
         print(f"[ERROR] no handler registered for verb {verb!r}", file=stderr)
@@ -637,9 +1248,14 @@ def run_cli(
             identity,
             stdout=stdout,
             stderr=stderr,
+            stdin=stdin,
             secrets=secrets,
         )
-        result = handler(args, runtime)
+        if logging_logger is None:
+            result = handler(args, runtime)
+        else:
+            with logging_context(runtime.output, logging.getLogger(logging_logger)):
+                result = handler(args, runtime)
         return 0 if result is None else int(result)
     except KeyboardInterrupt:
         # Runtime creation normally precedes the handler, but keep Ctrl-C safe
@@ -652,6 +1268,8 @@ def run_cli(
     except CliFailure as exc:
         if "runtime" in locals():
             runtime.output.error(exc.message, hint=exc.hint)
+            if runtime.debug:
+                runtime.output.debug(f"handled CLI refusal in {verb or parser.prog}")
         else:
             print(identity.headline, file=stderr, flush=True)
             print(f"[ERROR] {exc.message}", file=stderr, flush=True)
@@ -669,6 +1287,10 @@ def run_cli(
     except expected_exceptions as exc:
         if "runtime" in locals():
             runtime.output.error(str(exc))
+            if runtime.debug:
+                runtime.output.debug(
+                    f"handled {type(exc).__name__} in {verb or parser.prog}"
+                )
         else:
             print(f"{identity.headline}\n[ERROR] {exc}", file=stderr, flush=True)
         return 1

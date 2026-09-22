@@ -12,11 +12,15 @@ from .output import (
     uninstall_logging,
 )
 from .parser import (
+    ArgumentSpec,
     CliFailure,
+    CliRegistry,
     CliRuntime,
     ExtendedArgumentParser,
     HelpCatalog,
     HelpFormat,
+    OptionSpec,
+    RegisteredCli,
     UsageError,
     VerbGroup,
     VerbSpec,
@@ -25,24 +29,30 @@ from .parser import (
     run_cli,
 )
 from .progress import ProgressMode, ProgressRenderer
+from .testing import assert_cli_contract
 
 __all__ = [
+    "ArgumentSpec",
     "CliFailure",
     "CliIdentity",
     "CliLoggingHandler",
     "CliOutput",
+    "CliRegistry",
     "CliRuntime",
     "ExtendedArgumentParser",
     "HelpCatalog",
     "HelpFormat",
     "LogLevel",
+    "OptionSpec",
     "ProgressMode",
     "ProgressRenderer",
+    "RegisteredCli",
     "UsageError",
     "VerbGroup",
     "VerbSpec",
     "VersionLookupError",
     "add_common_options",
+    "assert_cli_contract",
     "discover_command_parsers",
     "install_logging",
     "logging_context",

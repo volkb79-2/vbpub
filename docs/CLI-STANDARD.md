@@ -166,6 +166,15 @@ second hand-maintained command list: it must be generated from the same
 metadata used by terminal help. Terminal `--help` remains plain text unless a
 CLI explicitly documents another format.
 
+The preferred implementation is one command registry that generates parser
+registration, grouped help, help lookup, and dispatch. Each verb definition
+owns its synopsis, description, examples, semantic group, and behavior
+attributes. Positional arguments and options carry their own names, help,
+argparse constraints, and help-group placement. Do not repeat the verb list in
+a parser, handler map, and handwritten usage block when a registry can derive
+those surfaces. Custom parser callbacks are an escape hatch for genuinely
+nested or conditional argument structures.
+
 ## 4. Getting Started and examples
 
 A `GETTING STARTED` section is included when a first-time operator benefits
@@ -252,9 +261,10 @@ The canonical verbosity control is:
 --log-level {error,warn,info,debug}
 ```
 
-The default is `info`. `--quiet` is an alias for `--log-level=error`, and
-`--debug` is an alias for `--log-level=debug`. `--debug-raw` implies debug
-verbosity in addition to disabling supported redaction. The level controls
+The default is `info`. `--quiet` suppresses informational/debug output while
+retaining warnings and errors (equivalent to `--log-level=warn`), and `--debug`
+is an alias for `--log-level=debug`. `--debug-raw` implies debug verbosity in
+addition to disabling supported redaction. The level controls
 diagnostic/progress messages, not the command's primary result: a successful
 query still returns its result at `--quiet`, while warnings and errors remain
 visible. `--verbose` is accepted by the common helper as a compatibility alias
@@ -291,6 +301,12 @@ user acceptance; it does not bypass validation, authentication, protected
 target deny-lists, explicit target requirements, dry-run rules, or other safety
 guards. A command must still refuse an unsafe or incomplete request with a
 meaningful diagnostic.
+
+The common registration should expose `--yes` only for verbs marked as
+mutating (or a specifically documented mixed verb that has a mutating action).
+The shared confirmation helper may own default-no prompting, TTY refusal, and
+EOF handling, but the CLI owner must validate the exact target/change first
+and call confirmation immediately before making that change.
 
 The normal interactive prompt must clearly state what will change. A declined
 prompt and an intentional Ctrl-C are clean cancellations, not tracebacks.
@@ -441,7 +457,8 @@ library is sufficient for the baseline contract:
   `traceback` cover terminal sizing, cancellation, cleanup, and unexpected
   failures; and
 - `dataclasses` or typed dictionaries can hold the one verb/group/option
-  metadata table used to render top-level help and validate its tests.
+  metadata table used to generate parser registration, top-level help, command
+  help, Markdown docs, and dispatch without parallel hand-maintained lists.
 
 The shared helper is free to reuse established Python libraries where they
 materially improve correctness, presentation, terminal handling, structured
@@ -463,15 +480,18 @@ packageable so installed CLIs do not depend on importing from the repository
 root.
 
 1. `CliIdentity` and authoritative version resolution;
-2. structured verb/group metadata and top-level help rendering;
+2. a declarative verb/argument/option registry that generates parsers, grouped
+   help, dispatch, and Markdown usage from one set of metadata;
 3. a common parser wrapper for `--help`, `--version`, `--debug`, `--yes`,
    `--debug-raw`, `--log-level`, colour/progress controls, and
    command-help-on-error;
 4. severity-tagged diagnostics, hints, TTY-aware colour, and progress
    rendering with a plain fallback;
 5. the outer exception and Ctrl-C boundary; and
-6. reusable contract-test helpers for side-effect-free help/version, output
-   streams, exit statuses, and prompt behavior.
+6. reusable black-box contract-test helpers for help/version, parse errors,
+   output streams, exit statuses, and confirmation behavior. Each consumer
+   still proves side-effect freedom with its domain-specific API/filesystem
+   fakes or state probes.
 
 Domain verbs, API clients, configuration loading, and destructive-operation
 policy must remain in each owning project. The helper must not import CIU,

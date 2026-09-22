@@ -102,6 +102,7 @@ class CliOutput:
         json_mode: bool = False,
         debug_raw: bool = False,
         secrets: Sequence[str] = (),
+        stdin: TextIO | None = None,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
     ) -> None:
@@ -111,6 +112,7 @@ class CliOutput:
         self.json_mode = json_mode
         self.debug_raw = debug_raw
         self.secrets = tuple(secrets)
+        self.stdin = stdin if stdin is not None else sys.stdin
         self.stdout = stdout if stdout is not None else sys.stdout
         self.stderr = stderr if stderr is not None else sys.stderr
         self._identity_written = False

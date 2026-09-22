@@ -40,22 +40,39 @@ library usable by stdlib-only tools such as CMRU.
 
 ## Make verbosity composable
 
-`--log-level` is the canonical level selector. `--quiet`, `--debug`, and
-`--verbose` are ergonomic aliases with one meaning; they are not a second
-verbosity scale. `--debug-raw` is intentionally separate because it changes
-the redaction boundary and emits a warning. It must never be enabled from a
-persistent default.
+`--log-level` is the canonical level selector. `--quiet` retains warnings and
+errors (`warn` threshold); `--debug` and `--verbose` select debug detail. These
+are ergonomic aliases, not a second verbosity scale. `--debug-raw` is
+intentionally separate because it changes the redaction boundary and emits a
+warning. It must never be enabled from a persistent default.
 
 The logging adapter accepts ordinary `logging.Logger` records, so a consumer
 can retain its existing logging calls instead of replacing them with a new
-logging API. Installation defaults to a command-named logger rather than the
-root logger and can be scoped with `logging_context`, so a short-lived CLI
-does not permanently change process-wide logging configuration.
+logging API. `CliRegistry` scopes logging to a command namespace and restores
+its prior state at the end of the invocation; consumers may select the logger
+namespace their modules already use. The process-wide root logger is not
+reconfigured.
 
-The catalog is deliberately paired with parser registration. The helper
-discovers subparsers and refuses a catalog/parser mismatch; the consumer still
-chooses the public vocabulary and descriptions, because those are product
-decisions rather than parser mechanics.
+## Declare the interface once
+
+Repeatedly registering a command in a parser, a help list, a handler map, and
+a docs page invites drift. `CliRegistry` accepts one `VerbSpec` per public
+command and generates parser registration, grouped help, help lookup, and
+dispatch from those definitions. `ArgumentSpec` and `OptionSpec` carry
+positional/option help, groups, and argparse attributes. A command marked
+`mutating` receives the common `--yes` option and confirmation contract;
+read-only commands do not.
+
+The consumer still decides the public vocabulary, behavior labels, examples,
+argument constraints, and mutation policy. A registry is a source of truth for
+the interface, not a source of domain truth. `configure(parser)` remains an
+escape hatch for unusual nested parser structures rather than the default
+place for every argument.
+
+The same registry supports single-command tools during migration. When a tool
+has distinct operator actions, explicit verbs make those differences
+discoverable and testable rather than hiding them behind a positional UUID or
+mode flag.
 
 ## Make long operations automation-safe
 
@@ -69,7 +86,14 @@ transitions.
 ## Markdown is a documentation format
 
 `HelpCatalog.render(output_format="markdown")` renders the same verb metadata
-and common options used by terminal help into a README-friendly page. This
-avoids a second hand-written command list in documentation. It is not the
-default terminal format: shell help stays plain text, while generated Markdown
-is intended for repository docs and operator guides.
+and common options used by terminal help into a README-friendly reference,
+including examples, behavior labels, arguments, parser choices/defaults, and
+grouped options. This avoids a second hand-written command list in
+documentation. It is not the default terminal format: shell help stays plain
+text, while generated Markdown is intended for repository docs and operator
+guides.
+
+The shared confirmation method is default-no and handles non-interactive stdin
+and EOF without tracebacks. It cannot know what a mutation means, so consumers
+must validate first and call it immediately before performing the exact
+validated change.

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cli-extended"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Shared contract helpers for vbpub user-facing Python CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,12 +17,6 @@ test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools_scm]
-root = "../.."
-tag_regex = "^cli-extended-v(?P<version>[0-9].*)$"
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "cli-extended-v*"]
-fallback_version = "0.1.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
