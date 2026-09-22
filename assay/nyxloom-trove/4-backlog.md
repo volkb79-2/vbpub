@@ -9808,3 +9808,88 @@ error selection, and a log whose content exceeds the report limit. Each case
 must assert both JSON and text shape plus the process exit code. The suite must
 prove that no report status is derived from the mere existence of a path or
 from a child log line, and that a report never writes into the judged tree.
+
+## B101 — `snapshot_selection = "repository"`'s `max_total_object_bytes` measures the full reachable git-HISTORY closure, not the current tree; the 1GiB default is unconfigurable and has no path-scoping, so an actively-developed repo eventually breaches it permanently
+
+**Reported by:** dstdns controller, 2026-09-22 (`dstdns@6dd368d7`..`dstdns@285b3965`
+range, provenance: `dstdns/nyxloom-trove/CONTROLLER-BRIEF.md` "operator caps
+concurrency" / "P199 merged, P198 reviewer resumed" entries, 2026-09-22).
+**Status: OPEN; backlog only.**
+
+### Observed mechanism (source-confirmed, not guessed)
+
+`isolation.py`'s `_closure_oids` resolves a lane's snapshot input via
+`git rev-list --objects --no-object-names <commit>` — every commit, tree, and
+blob reachable from the JUDGED COMMIT via its full ancestor chain, not merely
+the objects that make up that commit's own tree. `_object_metadata` then sums
+every object's UNCOMPRESSED size via `git cat-file --batch-check`, and
+`_enforce_object_limits` refuses with `SNAPSHOT_LIMIT_EXCEEDED` once the
+running total exceeds `SnapshotLimits.max_total_object_bytes`
+(`DEFAULT_SNAPSHOT_LIMITS`, hard-coded at `1024 * 1024 * 1024` — exactly 1GiB —
+in `isolation.py`, with **zero exposure in `config.py`'s TOML schema**; grepped
+`config.py` for `max_total_object_bytes`/`SnapshotLimits`/`limits` and found no
+match at all, confirming no `assay.toml` key can currently raise, lower, or
+otherwise configure it per-project or per-lane).
+
+Reproduced live on dstdns: `git rev-list --objects --no-object-names HEAD |
+git cat-file --batch-check='%(objectsize)' | awk '{s+=$1} END {print s}'`
+returned **1,078,066,708 bytes (1028.12 MiB)** against dstdns's own `main` at
+the time this was filed — ~4.3MB over the ceiling. The affected lane
+(`durable_dlq`, R0/R1 coverage-only, no mutation) failed in 2.6s — far too fast
+to have run any test content — confirming the refusal fires during
+pre-execution snapshot preparation, before the declared `argv` ever runs.
+Independently confirmed the underlying test content is unaffected: running the
+lane's own declared pytest argv directly (bypassing assay's isolation
+entirely) passed cleanly, 24/24, in 2.4s.
+
+### Why this is a real defect, not a one-off content problem
+
+- **It is monotonically non-decreasing.** Every new commit permanently adds its
+  own tree+blob objects to the reachable union; there is no routine,
+  non-destructive way to reduce it once a project's history crosses this line.
+  `git gc --prune=now` has zero effect (confirmed by direct experiment) since
+  it only changes packed STORAGE efficiency, never the logical uncompressed
+  content size `cat-file --batch-check` reports. The only reduction path is
+  history rewriting (`git filter-repo` or equivalent) — destructive, rewrites
+  every downstream commit hash, and not something any consumer should be
+  forced into merely to keep a coverage-only lane's isolation working.
+- **It is commit-scoped, not lane- or path-scoped.** Once one lane using
+  `snapshot_selection = "repository"` hits this ceiling at a given commit,
+  every other lane sharing that isolation mode is expected to hit it too, from
+  that commit forward — dstdns alone has 74 lanes on this mode. A tool
+  behavior with that blast radius deserves a config knob, not a fixed
+  code-level constant.
+- **The metric itself is questionable for the stated purpose.** A
+  full-ancestor-history closure sized by UNCOMPRESSED content bytes has little
+  relationship to what an isolation snapshot for a single test run actually
+  needs (the working tree at ONE commit, not every historical version of every
+  file ever committed). A large text file edited many times (this project has
+  two: a decisions ledger and a controller diary, each >1MB and edited dozens
+  of times per session) contributes a full uncompressed copy per edit, forever
+  — an accounting method that penalizes normal iterative development in an
+  append-heavy tracked file, unrelated to how large or risky the isolation
+  snapshot actually needs to be.
+
+### Proposed disposition (either would resolve this; not prescribing which)
+
+1. Expose `SnapshotLimits` (at minimum `max_total_object_bytes`, ideally the
+   whole dataclass) as a real `assay.toml` key, e.g. under a project-level
+   `[isolation.limits]` table, with `DEFAULT_SNAPSHOT_LIMITS`'s current values
+   remaining the fallback when unset — no consumer should need a code change
+   to keep using this isolation mode as their project's own history grows.
+2. Or: measure PACKED/compressed size (`git cat-file --batch-check
+   '%(objectsize:disk)'`, available since git 2.11) instead of uncompressed
+   logical size, or measure only the JUDGED COMMIT'S OWN tree (excluding
+   ancestor history entirely, since the isolation snapshot only ever needs one
+   commit's worth of file content to run a test against) — either change would
+   likely keep this metric aligned with what an "isolate this one run" snapshot
+   actually needs, without requiring per-project configuration at all.
+
+### Oracle sketch for whichever ships
+
+A fixture repo with N commits each appending ~5MB to one tracked file (crossing
+the ceiling by construction) should: FAIL under `DEFAULT_SNAPSHOT_LIMITS` today
+(regression guard for the current, documented behavior); PASS once either (1) a
+raised/removed `[isolation.limits]` override is set, or (2) the packed-size or
+current-tree-only measurement change lands — proving the fix actually changes
+the accounted quantity, not just silences the symptom on this one fixture.
