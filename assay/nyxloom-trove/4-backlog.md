@@ -9303,6 +9303,29 @@ parser and try to reproduce the same four files' coverage record directly
 this filing) to find what's actually inconsistent about the source maps or
 arc positions for these specific components.
 
+**Reproduced twice more, 2026-09-22 (priority evidence — third and fourth
+occurrences of the identical four files/lines, ten days apart, across two
+independent gate runs):**
+- dstdns P197's post-merge `ui_unit` lane (commit `d62a338e`, run-gate rev
+  43, assay-6.4.0.pyz) — identical message, identical four files and line
+  numbers (`ChartCard.tsx:34`, `DataTable.tsx:33-35`, `StatCard.tsx:17`,
+  `StatTile.tsx:28`). `ui_unit: PASS (exit 0)`, same non-blocking defensive
+  behavior as the original filing.
+- dstdns P194's post-merge `ui_unit` lane (commit `9b9bb177`, same run-gate
+  rev, same assay pin) — same message, same four files, same lines, again
+  non-blocking.
+
+Both reproductions are on assay 6.4.0 (the original filing was 6.1.0) and
+against a webapp-ui-react tree that neither P197 nor P194 touched (same
+"unrelated pre-existing files" shape as the original 2026-09-12 sighting)
+— four independent observations now, spanning three assay versions across
+ten days, all identical down to the exact line numbers. This strongly rules
+out a one-off fluke or a since-fixed transient; the underlying istanbul
+record inconsistency for these four specific components looks stable and
+persistent, not incidental. Raises the priority of actually reproducing it
+directly against the parser (as the original filing already asked) over
+continuing to rely on the defensive drop-and-continue behavior masking it.
+
 ## B090 — `judge.mutation.budget_per_candidate` has no default, so one hung mutant blocks a whole R2 run indefinitely, and nothing warns when the key is unset
 
 Observed live 2026-09-12 13:22Z in vbpub's `scripts/cgroup-profiler` r2 lane
