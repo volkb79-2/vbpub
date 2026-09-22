@@ -188,6 +188,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 `run-gate.toml` lane is a thin wrapper referencing the assay lane by name:
 
 ```toml
+schema_version = 1
 [lanes.ciu]
 kind = "assay"            # install selected ../assay + run the judge
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each

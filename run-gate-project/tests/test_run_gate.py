@@ -3661,6 +3661,24 @@ class TestResourceAdmission:
         proj = make_project(repo, cfg)
         return repo, proj
 
+    def test_consumer_lane_schema_example_uses_the_shipped_loader(self, tmp_path):
+        consumers = (RUN_GATE_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+        match = re.search(
+            r"## Lane schema .*?```toml\n(.*?)```", consumers, re.DOTALL
+        )
+        assert match is not None
+        example = match.group(1)
+        parsed = tomllib.loads(example)
+        assert parsed["schema_version"] == 1
+        resources = parsed["lanes"]["suite"]["resources"]
+        assert resources["memory"] == "2g"
+        assert resources["memory_swap"] == "16g"
+        repo = make_repo(tmp_path)
+        project = make_project(repo, example)
+        proc = run_tool(project, "--list")
+        assert proc.returncode == 0, proc.stderr
+        assert "suite" in proc.stdout
+
     @pytest.mark.parametrize("snippet", [
         'memory = "512m"\nwat = 1',
         'cpu_weight = "high"',

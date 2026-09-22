@@ -39,31 +39,43 @@ select a product root or read ambient environment state.
 
 ## Identity and paths
 
-`workspace_id_for_path()` hashes a canonical physical path into exactly six
-lower-case base-36 characters. By default a record uses the physical checkout
-directory. An adapter that must expose the identity while constructing a name
-that itself contains that identity may pass `identity_path`; the record stores
-that exact canonical input as `workspace.identity_path` and every resume checks
-it again. If two live records claim one short identity for different paths,
-allocation refuses with both paths named; it does not lengthen or silently
-replace the identity.
+`workspace_id_for_path()` hashes an absolute, lexically normalized path into
+exactly six lower-case base-36 characters. It collapses `.` and `..` but never
+resolves symlinks or queries the filesystem: identity inputs can name a host
+or daemon namespace this process cannot inspect. By default a record hashes its
+physical checkout path. An adapter that must expose the identity while
+constructing a name that itself contains that identity may pass
+`identity_path`; the record stores that exact canonical absolute input as
+`workspace.identity_path`. A missing key means the default physical path; a
+present null, empty, relative, non-normalized, or identity-mismatching value is
+malformed and refuses read/resume/inspect/removal. Resume also preserves the
+durable identity if adapter metadata is refreshed. If two live records claim
+one short identity for different paths, allocation refuses with both paths
+named; it does not lengthen or silently replace the identity.
 
-`physical_path()` translates a logical path relative to an explicit logical
-root into an explicit physical root. The package never probes the translated
-path with the caller's filesystem: namespace owners perform existence checks in
-their own namespace.
+`physical_path()` translates lexically normalized logical paths relative to an
+explicit logical root into an explicit physical root. Translation and identity
+calculation perform no `resolve`, `stat`, or existence check on namespace
+paths; namespace owners perform existence checks in their own namespace.
 
 ## Record and locking rules
 
 Records are versioned JSON files below the Git common directory's
 `.workspace-instances/`. Writes are temporary-file, `fsync`, and atomic rename.
-Malformed, missing, mismatched, or unsupported records are refusals. The
-family lock serializes Git worktree/branch and record allocation; product
-adapters add their own locks for resources they own.
+Malformed, missing, mismatched, or unsupported records are refusals. Record
+enumeration treats only a genuinely absent record directory as empty; access
+errors and malformed entries refuse the inventory. The family lock serializes
+Git worktree/branch and record allocation; product adapters add their own locks
+for resources they own.
 
-Cleanup is ordered: active lease check, adapter callback, Git worktree removal,
-branch removal, record removal. A failed callback or Git operation leaves the
-record and checkout available for recovery.
+Removal first re-reads and validates the record, then verifies that the live
+checkout top level, branch, Git common directory, and source checkout agree
+with it. Missing/unreadable paths or any mismatch refuse before the adapter
+cleanup callback. After preflight, cleanup is ordered: active lease check,
+adapter callback, Git worktree removal, branch removal, record removal. A
+failed callback or Git operation leaves the record and checkout available for
+recovery. `inspect_workspace()` distinguishes a genuinely missing checkout
+from an inaccessible one; inability to inspect is not reported as absence.
 
 An adapter may retain a product-facing compatibility record, but it must not
 implement a second generic Git lifecycle or lease authority. If it mirrors

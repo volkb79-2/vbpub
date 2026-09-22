@@ -6,10 +6,14 @@ implementation and one set of failure categories. Product adapters retain only
 policy that the neutral layer cannot prove.
 
 The physical path is the default identity input because a logical container path
-can be the same for several host checkouts. A caller constructing a visible name
-from the identity may provide an explicit canonical identity path, which is
-persisted and rechecked rather than hidden in an adapter-only calculation. The
-six-character base-36 value is short
+can be the same for several host checkouts. Path identities are lexically
+canonical absolute strings: `.` and `..` are normalized, but symlinks are not
+resolved and no filesystem query is made. A container cannot safely resolve a
+daemon-host path with its own kernel. A caller constructing a visible name from
+the identity may provide an explicit canonical identity path, which is
+persisted and rechecked rather than hidden in an adapter-only calculation. A
+missing identity key means the physical path; a present malformed value is a
+refusal, not a signal to fall back. The six-character base-36 value is short
 enough for resource names but collision admission is mandatory: a short name
 is never evidence that two paths are the same.
 
@@ -20,10 +24,18 @@ The family lock is separate from CIU's root lock because allocating two
 worktrees in one Git family must serialize, while two nested CIU roots may
 prepare independently.
 
-The cleanup callback runs before Git removal. This is the recovery boundary:
-Docker/Compose cleanup can refuse while the checkout and its exact identity
-remain available for a retry. Removing Git state first would erase the only
-safe ownership evidence.
+Before invoking the cleanup callback, removal re-reads the durable record and
+checks the actual checkout top level, branch, Git common directory, and source
+checkout. A changed or missing checkout refuses before adapter side effects;
+this prevents a damaged record from directing cleanup at an unrelated branch.
+After preflight, the cleanup callback runs before Git removal. This is the
+recovery boundary: Docker/Compose cleanup can refuse while the checkout and
+its exact identity remain available for a retry. Removing Git state first
+would erase the only safe ownership evidence.
+
+Inventory and inspection distinguish absence from indeterminacy. Only a
+genuinely absent record directory is empty; unreadable state is a refusal, and
+an inaccessible checkout is not reported as missing.
 
 CIU and CMRU therefore share mechanics but not policy. CIU maps one workspace
 to one or more committed CIU roots and adds root identity to runtime names.

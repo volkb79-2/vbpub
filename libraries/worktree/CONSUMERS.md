@@ -31,6 +31,16 @@ shell's `REPO_ROOT`, `ciu.env`, or a translated container path as a substitute
 for the typed context. Do not run local filesystem checks against
 `physical_worktree_path` when that path belongs to another namespace.
 
+Identity uses the lexically normalized absolute path string and does not
+resolve symlinks or query the filesystem. When supplying `identity_path`, pass
+the path whose spelling is the shared identity authority; it is recorded in
+`workspace.identity_path` and cannot be removed or changed by a metadata
+refresh. A missing key alone selects the default physical checkout path. A
+present but malformed identity is an error, never a fallback. Removal verifies
+the recorded source and live checkout/branch before calling adapter cleanup;
+if the checkout cannot be inspected, fix the state rather than treating it as
+missing or running cleanup against an unverified target.
+
 The public failure categories are `collision`, `occupied`, `root-mismatch`,
 `stale-record`, `invalid-record`, `cleanup-refusal`, `lease-held`,
 `lock-error`, `git-error`, and `invalid-input`. A caller that cannot safely

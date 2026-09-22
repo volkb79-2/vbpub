@@ -31,7 +31,10 @@ unbounded lane (`timeout=None`) never expires on elapsed budget alone
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -90,6 +93,10 @@ class _FakePopen:
         return self._proc
 
 
+def _ignore_process_group(_pgid: int, _sig: int) -> None:
+    """Fake-Popen tests use synthetic PIDs and must never signal host work."""
+
+
 def _runner(
     tmp_path: Path,
     *,
@@ -112,6 +119,7 @@ def _runner(
         sleep=clock.advance,
         cpu_reader=cpu_reader,
         popen=_FakePopen(proc),
+        process_group_killer=_ignore_process_group,
     )
     cwd = tmp_path / "cand"
     cwd.mkdir()
@@ -477,7 +485,7 @@ def test_xdist_worker_finish_is_ignored_until_owner_finishes(
 
 
 def test_normal_completion_cleans_descendants_after_leader_exits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """A clean leader exit must not leave its process group in the gate.
 
@@ -489,22 +497,68 @@ def test_normal_completion_cleans_descendants_after_leader_exits(
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4246, returncode=0)  # already "exited".
     killed: list[tuple[int, int]] = []
-    monkeypatch.setattr(
-        liveness.os,
-        "killpg",
-        lambda pgid, sig: killed.append((pgid, sig)),
-    )
     runner, cwd = _runner(
         tmp_path,
         proc=proc,
         clock=clock,
         cpu_reader=lambda pid: 1.0,
     )
+    runner._process_group_killer = lambda pgid, sig: killed.append((pgid, sig))
     result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=60.0)
     assert isinstance(result, subprocess.CompletedProcess)
     assert result.returncode == 0
     assert killed == [(4246, liveness.signal.SIGKILL)]
     assert proc.waited
+
+
+def test_normal_completion_really_kills_a_real_descendant(
+    tmp_path: Path,
+) -> None:
+    """Exercise the process-group cleanup against a real orphaned child.
+
+    The leader exits successfully after starting ``sleep``. The runner must
+    still signal the original session/process group after reaping that leader.
+    """
+    pid_file = tmp_path / "descendant.pid"
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    script = (
+        "import subprocess, sys; "
+        "child = subprocess.Popen(['/bin/sleep', '300']); "
+        "open(sys.argv[1], 'w', encoding='ascii').write(str(child.pid))"
+    )
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "events",
+        expect_next_event_within_s=10.0,
+        poll_interval_s=0.01,
+    )
+
+    def still_running(pid: int) -> bool:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        except FileNotFoundError:
+            return False
+        # A zombie has exited and cannot consume CPU or block the gate. Its
+        # parent is the test process's init/subreaper, not this runner.
+        return stat.rsplit(")", 1)[1].lstrip()[0] != "Z"
+
+    descendant_pid: int | None = None
+    try:
+        result = runner(
+            (sys.executable, "-c", script, str(pid_file)),
+            env=os.environ.copy(),
+            cwd=cwd,
+            timeout=10.0,
+        )
+        assert result.returncode == 0
+        descendant_pid = int(pid_file.read_text(encoding="ascii"))
+        deadline = time.monotonic() + 5.0
+        while still_running(descendant_pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not still_running(descendant_pid), "normal completion leaked its child"
+    finally:
+        if descendant_pid is not None and still_running(descendant_pid):
+            os.kill(descendant_pid, liveness.signal.SIGKILL)
 
 
 # --------------------------------------------------------------------------
@@ -660,6 +714,7 @@ def test_a_slow_module_fixture_is_not_hung_under_a_gap_calibrated_bound(
             sleep=clock.advance,
             cpu_reader=reader,
             popen=_FakePopen(proc),
+            process_group_killer=_ignore_process_group,
         )
         return runner(("pytest", "-q"), env={}, cwd=cwd, timeout=127.5)
 
@@ -737,6 +792,7 @@ def test_the_steady_state_bound_takes_over_once_an_event_has_arrived(
         sleep=clock.advance,
         cpu_reader=reader,
         popen=_FakePopen(proc),
+        process_group_killer=_ignore_process_group,
     )
     with pytest.raises(liveness.LivenessHungExpired):
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=500.0)
@@ -775,6 +831,7 @@ def test_a_setup_phase_record_counts_as_progress(tmp_path: Path) -> None:
         sleep=clock.advance,
         cpu_reader=reader,
         popen=_FakePopen(proc),
+        process_group_killer=_ignore_process_group,
     )
     completed = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=300.0)
     assert completed.returncode == 0
@@ -813,6 +870,7 @@ def test_stdout_file_growth_alone_counts_as_progress(tmp_path: Path) -> None:
         sleep=clock.advance,
         cpu_reader=reader,
         popen=_FakePopen(proc),
+        process_group_killer=_ignore_process_group,
     )
     with pytest.raises(liveness.LivenessHungExpired):
         runner(("pytest", "-q"), env={}, cwd=cwd, timeout=500.0)

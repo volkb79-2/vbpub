@@ -107,6 +107,24 @@ def test_path_math_git_errors_and_invocation_resolution(monkeypatch, tmp_path):
     assert invocation.worktree_path == tmp_path
 
 
+def test_physical_translation_and_identity_never_resolve_namespace_paths(
+    monkeypatch, tmp_path
+):
+    def forbidden_resolve(*_args, **_kwargs):
+        pytest.fail("namespace path was probed through Path.resolve")
+
+    monkeypatch.setattr(Path, "resolve", forbidden_resolve)
+    translated = core.physical_path(
+        "/logical/repo/link/../child",
+        logical_root="/logical/repo",
+        physical_root="/host/root/../repo",
+    )
+    assert translated == Path("/host/repo/child")
+    assert core.workspace_id_for_path(tmp_path / "a" / ".." / "b") == (
+        core.workspace_id_for_path(tmp_path / "b")
+    )
+
+
 def test_lock_and_timestamp_validation(monkeypatch, tmp_path):
     with workspace_lock(tmp_path / ".git"):
         assert (tmp_path / ".git" / core._LOCK_NAME).exists()
@@ -130,6 +148,7 @@ def test_record_parser_rejects_every_structural_corruption(repository, tmp_path)
         ([], "one JSON object"),
         ({**raw, "extra": 1}, "unexpected workspace-record keys"),
         ({**raw, "record_version": 9}, "unsupported workspace record"),
+        ({**raw, "record_version": True}, "unsupported workspace record"),
         ({**raw, "workspace_id": "bad"}, "invalid workspace_id"),
         ({**raw, "labels": []}, "labels.*must be an object"),
         ({**raw, "source_git_root": ""}, "source_git_root.*must be a path"),
@@ -175,6 +194,29 @@ def test_record_io_and_handle_coercion_errors(repository, tmp_path, monkeypatch)
     remove_workspace(context, force=True)
 
 
+def test_workspace_record_enumeration_distinguishes_absent_from_unreadable(
+    repository, tmp_path, monkeypatch
+):
+    common = repository / ".git"
+    assert list_workspaces(common) == []
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/scan", purpose="test"
+    )
+    records_dir = common / core.WORKSPACE_RECORD_DIR
+    real_scandir = core.os.scandir
+
+    def unreadable(path):
+        if Path(path) == records_dir:
+            raise PermissionError("injected EACCES")
+        return real_scandir(path)
+
+    monkeypatch.setattr(core.os, "scandir", unreadable)
+    with pytest.raises(WorkspaceError, match="could not enumerate workspace records"):
+        list_workspaces(common)
+    monkeypatch.undo()
+    remove_workspace(context, force=True)
+
+
 def test_branch_and_collision_helpers(repository, tmp_path):
     context = create_workspace(repository, tmp_path / "checkout", branch="test/helpers", purpose="test")
     record = core.read_record(context.record_path)
@@ -195,6 +237,16 @@ def test_branch_and_collision_helpers(repository, tmp_path):
 def test_create_workspace_input_and_git_failure_branches(repository, tmp_path, monkeypatch):
     with pytest.raises(WorkspaceError, match="invalid workspace purpose"):
         create_workspace(repository, tmp_path / "bad", branch="ok", purpose="bad space")
+    with pytest.raises(WorkspaceError, match="physical_target must not be empty"):
+        create_workspace(
+            repository, tmp_path / "empty-physical", branch="empty-physical",
+            physical_target="", purpose="test",
+        )
+    with pytest.raises(WorkspaceError, match="identity_path must not be empty"):
+        create_workspace(
+            repository, tmp_path / "empty-identity", branch="empty-identity",
+            identity_path="", purpose="test",
+        )
     common = repository / ".git"
     monkeypatch.setattr(core, "discover_git_context", lambda _path: (tmp_path / "top", common, "main", "head"))
     monkeypatch.setattr(core, "_workspace_lock", lambda _common: nullcontext())
@@ -319,17 +371,53 @@ def test_ensure_and_inspect_cover_stale_and_refresh_paths(repository, tmp_path, 
     with pytest.raises(WorkspaceError, match="checkout is missing"):
         ensure_workspace(record)
     context.worktree_path.mkdir()
-    monkeypatch.setattr(core, "discover_git_context", lambda _path: (context.worktree_path, record.git_common_dir, "different", "head"))
+    def mismatching_context(path):
+        if Path(path) == record.source_git_root:
+            return record.source_git_root, record.git_common_dir, "main", "head"
+        return context.worktree_path, record.git_common_dir, "different", "head"
+
+    monkeypatch.setattr(core, "discover_git_context", mismatching_context)
     with pytest.raises(WorkspaceError, match="no longer matches"):
         ensure_workspace(record)
-    monkeypatch.setattr(core, "discover_git_context", lambda _path: (context.worktree_path, record.git_common_dir, record.branch, "head"))
+
+    def matching_context(path):
+        if Path(path) == record.source_git_root:
+            return record.source_git_root, record.git_common_dir, "main", "head"
+        return context.worktree_path, record.git_common_dir, record.branch, "head"
+
+    monkeypatch.setattr(core, "discover_git_context", matching_context)
     updated = ensure_workspace(record, labels={"new": "label"}, metadata={"changed": True})
     assert updated.namespace.labels == {"new": "label"}
     inspected = inspect_workspace(updated)
     assert inspected["git"]["matches_record"] is True
     shutil.rmtree(context.worktree_path)
     assert inspect_workspace(updated)["git"]["state"] == "missing"
-    remove_workspace(context, force=True)
+    cleanup_calls = []
+    with pytest.raises(WorkspaceError, match="checkout is missing"):
+        remove_workspace(
+            context,
+            cleanup=lambda _context: cleanup_calls.append("ran"),
+            force=True,
+        )
+    assert cleanup_calls == []
+
+
+def test_inspect_refuses_permission_error_instead_of_reporting_missing(
+    repository, tmp_path, monkeypatch
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/inspect", purpose="test"
+    )
+    real_stat = core.os.stat
+
+    def denied(path, *args, **kwargs):
+        if Path(path) == context.worktree_path:
+            raise PermissionError("injected EACCES")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(core.os, "stat", denied)
+    with pytest.raises(WorkspaceError, match="could not inspect directory"):
+        inspect_workspace(context)
 
 
 def test_lease_expiry_cleanup_and_release_failures(repository, tmp_path, monkeypatch):
@@ -348,6 +436,30 @@ def test_lease_expiry_cleanup_and_release_failures(repository, tmp_path, monkeyp
     ran = []
     remove_workspace(context, cleanup=lambda _ctx: ran.append(True), delete_branch=False)
     assert ran == [True]
+
+
+def test_remove_preflights_git_identity_before_adapter_cleanup(repository, tmp_path):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/remove-check", purpose="test"
+    )
+    _git(repository, "branch", "unrelated/protected")
+    record = core.read_record(context.record_path)
+    tampered = core.replace(record, branch="unrelated/protected")
+    core.write_record(tampered)
+    cleanup_calls = []
+
+    with pytest.raises(WorkspaceError, match="does not match record|refusing cleanup"):
+        remove_workspace(
+            tampered,
+            cleanup=lambda _context: cleanup_calls.append("ran"),
+            force=True,
+        )
+
+    assert cleanup_calls == []
+    assert context.worktree_path.is_dir()
+    assert _git(repository, "branch", "--list", "unrelated/protected") == "unrelated/protected"
+    core.write_record(record)
+    remove_workspace(context, force=True)
 
 
 def test_cleanup_git_and_branch_failures_leave_state(repository, tmp_path, monkeypatch):

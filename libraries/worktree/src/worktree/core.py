@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -25,6 +26,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 CURRENT_RECORD_VERSION = 1
 WORKSPACE_RECORD_DIR = ".workspace-instances"
 _LOCK_NAME = "workspace-instance.lock"
+_IDENTITY_PATH_KEY = "workspace.identity_path"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _LEASE_MODES = frozenset({"held", "perpetual"})
 _BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -78,9 +80,9 @@ class Lease:
     mode: str
 
     def __post_init__(self) -> None:
-        if not self.holder:
+        if not isinstance(self.holder, str) or not self.holder:
             raise WorkspaceError("lease holder must not be empty", category="invalid-record")
-        if self.mode not in _LEASE_MODES:
+        if not isinstance(self.mode, str) or self.mode not in _LEASE_MODES:
             raise WorkspaceError(
                 f"unknown lease mode {self.mode!r}; expected held or perpetual",
                 category="invalid-record",
@@ -221,6 +223,51 @@ def canonical_path(path: Path | str) -> Path:
     return Path(path).expanduser().resolve(strict=False)
 
 
+def _absolute_lexical_path(path: Path | str) -> Path:
+    """Normalize a path without consulting the filesystem or following links."""
+
+    raw = os.path.expanduser(os.fspath(path))
+    if not os.path.isabs(raw):
+        raw = os.path.join(os.getcwd(), raw)
+    return Path(os.path.normpath(raw))
+
+
+def _provided_path(value: Path | str | None, fallback: Path, *, label: str) -> Path:
+    if value is None:
+        return fallback
+    if isinstance(value, str) and not value.strip():
+        raise WorkspaceError(f"{label} must not be empty", category="invalid-input")
+    return _absolute_lexical_path(value)
+
+
+def _is_directory(path: Path) -> bool:
+    """Return false only for a genuinely absent/non-directory path."""
+
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise WorkspaceError(
+            f"could not inspect directory {path}: {exc}", category="filesystem-error"
+        ) from exc
+    return stat.S_ISDIR(info.st_mode)
+
+
+def _path_exists(path: Path) -> bool:
+    """Return false only when the path is absent; propagate indeterminacy."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise WorkspaceError(
+            f"could not inspect path {path}: {exc}", category="filesystem-error"
+        ) from exc
+    return True
+
+
 def physical_path(
     logical_path: Path | str,
     *,
@@ -235,9 +282,9 @@ def physical_path(
     pass through unchanged.
     """
 
-    logical = canonical_path(logical_path)
-    source = canonical_path(logical_root)
-    target = canonical_path(physical_root)
+    logical = _absolute_lexical_path(logical_path)
+    source = _absolute_lexical_path(logical_root)
+    target = _absolute_lexical_path(physical_root)
     try:
         relative = logical.relative_to(source)
     except ValueError:
@@ -258,11 +305,45 @@ def _base36(value: int) -> str:
 
 
 def workspace_id_for_path(path: Path | str) -> str:
-    """Return the six-character lower-case base-36 path identity."""
+    """Hash a lexically canonical absolute path to six lower-case base-36 chars.
 
-    canonical = canonical_path(path)
+    Identity must be stable even when the path names a different filesystem
+    namespace (for example, a daemon-host path unavailable in this process).
+    It therefore normalizes ``.``/``..`` but never resolves symlinks locally.
+    """
+
+    canonical = _absolute_lexical_path(path)
     digest = hashlib.sha256(str(canonical).encode("utf-8")).digest()
     return _base36(int.from_bytes(digest, "big") % _ID_SPACE).zfill(6)
+
+
+def _record_identity_source(record: WorkspaceRecord) -> Path:
+    if _IDENTITY_PATH_KEY not in record.metadata:
+        return _absolute_lexical_path(record.physical_worktree_path)
+    raw = record.metadata[_IDENTITY_PATH_KEY]
+    if not isinstance(raw, str) or not raw:
+        raise WorkspaceError(
+            f"{_IDENTITY_PATH_KEY} in workspace {record.workspace_id} must be a "
+            "canonical absolute path",
+            category="invalid-record",
+        )
+    identity_path = Path(raw)
+    if not identity_path.is_absolute() or str(_absolute_lexical_path(raw)) != raw:
+        raise WorkspaceError(
+            f"{_IDENTITY_PATH_KEY} in workspace {record.workspace_id} must be a "
+            "canonical absolute path",
+            category="invalid-record",
+        )
+    return identity_path
+
+
+def _validate_record_identity(record: WorkspaceRecord) -> None:
+    identity_source = _record_identity_source(record)
+    if workspace_id_for_path(identity_source) != record.workspace_id:
+        raise WorkspaceError(
+            "workspace identity does not match its recorded identity path",
+            category="collision",
+        )
 
 
 def _git(cwd: Path, *args: str, check: bool = True) -> str:
@@ -288,7 +369,7 @@ def discover_git_context(path: Path | str) -> tuple[Path, Path, str, str]:
     """Return ``(top, common_dir, branch, head)`` for *path*."""
 
     cwd = canonical_path(path)
-    if not cwd.is_dir():
+    if not _is_directory(cwd):
         cwd = cwd.parent
     top = canonical_path(_git(cwd, "rev-parse", "--show-toplevel"))
     common_raw = Path(_git(top, "rev-parse", "--git-common-dir"))
@@ -405,7 +486,7 @@ def _record(raw: Any, path: Path) -> WorkspaceRecord:
             f"{path} has unexpected workspace-record keys; expected {sorted(required)}",
             category="invalid-record",
         )
-    if raw["record_version"] != CURRENT_RECORD_VERSION:
+    if type(raw["record_version"]) is not int or raw["record_version"] != CURRENT_RECORD_VERSION:
         raise WorkspaceError(
             f"unsupported workspace record version {raw['record_version']!r} in {path}",
             category="invalid-record",
@@ -424,12 +505,13 @@ def _record(raw: Any, path: Path) -> WorkspaceRecord:
                 f"{key} in {path} must be a non-empty string",
                 category="invalid-record",
             )
+    _validate_branch(raw["branch"])
     _parse_timestamp(raw["created_at_utc"], label="created_at_utc")
-    return WorkspaceRecord(
+    record = WorkspaceRecord(
         workspace_id=raw["workspace_id"],
         source_git_root=canonical_path(raw["source_git_root"]),
         worktree_path=canonical_path(raw["worktree_path"]),
-        physical_worktree_path=canonical_path(raw["physical_worktree_path"]),
+        physical_worktree_path=_absolute_lexical_path(raw["physical_worktree_path"]),
         git_common_dir=canonical_path(raw["git_common_dir"]),
         branch=raw["branch"],
         base_commit=raw["base_commit"],
@@ -441,6 +523,8 @@ def _record(raw: Any, path: Path) -> WorkspaceRecord:
         lease=_lease(raw["lease"]),
         record_version=raw["record_version"],
     )
+    _validate_record_identity(record)
+    return record
 
 
 def read_record(path: Path | str) -> WorkspaceRecord:
@@ -479,10 +563,22 @@ def write_record(record: WorkspaceRecord) -> Path:
 
 def _records(git_common_dir: Path) -> list[WorkspaceRecord]:
     directory = git_common_dir / WORKSPACE_RECORD_DIR
-    if not directory.exists():
+    try:
+        with os.scandir(directory) as entries:
+            paths = sorted(
+                directory / entry.name
+                for entry in entries
+                if entry.name.endswith(".json")
+            )
+    except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise WorkspaceError(
+            f"could not enumerate workspace records in {directory}: {exc}",
+            category="record-read",
+        ) from exc
     result: list[WorkspaceRecord] = []
-    for path in sorted(directory.glob("*.json")):
+    for path in paths:
         result.append(read_record(path))
     return result
 
@@ -502,7 +598,7 @@ def _validate_branch(branch: str) -> None:
 
 def _check_collision(records: Sequence[WorkspaceRecord], workspace_id: str, path: Path) -> None:
     for record in records:
-        recorded_path = canonical_path(record.physical_worktree_path)
+        recorded_path = _absolute_lexical_path(record.physical_worktree_path)
         if recorded_path == path:
             raise WorkspaceError(
                 f"physical workspace path is already recorded: {path}",
@@ -544,15 +640,23 @@ def _new_record(
     state: WorkspaceState = "ready",
     created_at: datetime | None = None,
 ) -> WorkspaceRecord:
-    identity_source = canonical_path(identity_path or physical_worktree_path)
+    physical_path_ = _absolute_lexical_path(physical_worktree_path)
+    identity_source = _provided_path(
+        identity_path, physical_path_, label="identity_path"
+    )
     record_metadata = dict(metadata)
+    if _IDENTITY_PATH_KEY in record_metadata:
+        raise WorkspaceError(
+            f"metadata key {_IDENTITY_PATH_KEY!r} is controlled by identity_path",
+            category="invalid-input",
+        )
     if identity_path is not None:
-        record_metadata["workspace.identity_path"] = str(identity_source)
+        record_metadata[_IDENTITY_PATH_KEY] = str(identity_source)
     return WorkspaceRecord(
         workspace_id=workspace_id_for_path(identity_source),
         source_git_root=canonical_path(source_git_root),
         worktree_path=canonical_path(worktree_path),
-        physical_worktree_path=canonical_path(physical_worktree_path),
+        physical_worktree_path=physical_path_,
         git_common_dir=canonical_path(git_common_dir),
         branch=branch,
         base_commit=base_commit,
@@ -580,21 +684,23 @@ def create_workspace(
 
     source = canonical_path(source_git_root)
     target_path = canonical_path(target)
-    physical = canonical_path(physical_target or target_path)
+    physical = _provided_path(
+        physical_target, target_path, label="physical_target"
+    )
     _validate_branch(branch)
     if not purpose or not _NAME_RE.fullmatch(purpose):
         raise WorkspaceError(f"invalid workspace purpose {purpose!r}", category="invalid-input")
     top, common, _current_branch, _head = discover_git_context(source)
     if top != source:
         source = top
-    identity_source = canonical_path(identity_path or physical)
+    identity_source = _provided_path(identity_path, physical, label="identity_path")
     identity = workspace_id_for_path(identity_source)
     with _workspace_lock(common):
         records = _records(common)
         _check_collision(records, identity, physical)
         if _record_for_path(records, target_path) is not None:
             raise WorkspaceError(f"workspace path is already recorded: {target_path}", category="occupied")
-        if target_path.exists():
+        if _path_exists(target_path):
             raise WorkspaceError(f"workspace path already exists: {target_path}", category="occupied")
         branch_probe = subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -653,7 +759,9 @@ def adopt_workspace(
 
     source = canonical_path(source_git_root)
     target_path = canonical_path(target)
-    physical = canonical_path(physical_target or target_path)
+    physical = _provided_path(
+        physical_target, target_path, label="physical_target"
+    )
     top, common, branch, head = discover_git_context(target_path)
     if top != target_path:
         raise WorkspaceError(f"adopt target is not the worktree top level: {target_path}", category="root-mismatch")
@@ -667,7 +775,7 @@ def adopt_workspace(
         raise WorkspaceError("adopt target belongs to a different Git worktree family", category="root-mismatch")
     with _workspace_lock(common):
         records = _records(common)
-        identity_source = canonical_path(identity_path or physical)
+        identity_source = _provided_path(identity_path, physical, label="identity_path")
         identity = workspace_id_for_path(identity_source)
         _check_collision(records, identity, physical)
         if _record_for_path(records, target_path) is not None:
@@ -702,30 +810,44 @@ def ensure_workspace(
         current = read_record(record.record_path)
         if current.worktree_path != canonical_path(record.worktree_path):
             raise WorkspaceError("workspace record path changed", category="stale-record")
-        if not current.worktree_path.is_dir():
+        if not _is_directory(current.worktree_path):
             raise WorkspaceError(
                 f"workspace checkout is missing: {current.worktree_path}", category="stale-record"
             )
         top, common, branch, head = discover_git_context(current.worktree_path)
-        if common != current.git_common_dir or branch != current.branch:
+        source_top, source_common, _source_branch, _source_head = discover_git_context(
+            current.source_git_root
+        )
+        if (
+            top != current.worktree_path
+            or common != current.git_common_dir
+            or branch != current.branch
+            or source_top != current.source_git_root
+            or source_common != current.git_common_dir
+        ):
             raise WorkspaceError(
                 f"workspace checkout no longer matches record {current.record_path}",
                 category="stale-record",
             )
-        identity_raw = current.metadata.get("workspace.identity_path")
-        identity_source = (
-            canonical_path(identity_raw)
-            if isinstance(identity_raw, str) and identity_raw
-            else current.physical_worktree_path
-        )
-        if workspace_id_for_path(identity_source) != current.workspace_id:
-            raise WorkspaceError("workspace identity does not match recorded identity path", category="collision")
         if labels is not None or metadata is not None:
+            updated_metadata = dict(metadata if metadata is not None else current.metadata)
+            if _IDENTITY_PATH_KEY in current.metadata:
+                supplied_identity = updated_metadata.get(_IDENTITY_PATH_KEY)
+                if (
+                    _IDENTITY_PATH_KEY in updated_metadata
+                    and supplied_identity != current.metadata[_IDENTITY_PATH_KEY]
+                ):
+                    raise WorkspaceError(
+                        f"cannot replace durable {_IDENTITY_PATH_KEY}",
+                        category="invalid-input",
+                    )
+                updated_metadata[_IDENTITY_PATH_KEY] = current.metadata[_IDENTITY_PATH_KEY]
             current = replace(
                 current,
                 labels=dict(labels if labels is not None else current.labels),
-                metadata=dict(metadata if metadata is not None else current.metadata),
+                metadata=updated_metadata,
             )
+            _validate_record_identity(current)
             write_record(current)
         return current.context()
 
@@ -733,9 +855,9 @@ def ensure_workspace(
 def inspect_workspace(record_or_path: WorkspaceRecord | WorkspaceContext | Path | str) -> dict[str, Any]:
     """Return record plus fresh Git facts without repairing state."""
 
-    record = _coerce_record(record_or_path)
+    record = read_record(_coerce_record(record_or_path).record_path)
     result: dict[str, Any] = {"record": record.as_dict()}
-    if not record.worktree_path.is_dir():
+    if not _is_directory(record.worktree_path):
         result["git"] = {"state": "missing"}
         return result
     top, common, branch, head = discover_git_context(record.worktree_path)
@@ -744,7 +866,11 @@ def inspect_workspace(record_or_path: WorkspaceRecord | WorkspaceContext | Path 
         "git_common_dir": str(common),
         "branch": branch,
         "head": head,
-        "matches_record": common == record.git_common_dir and branch == record.branch,
+        "matches_record": (
+            top == record.worktree_path
+            and common == record.git_common_dir
+            and branch == record.branch
+        ),
     }
     return result
 
@@ -799,6 +925,27 @@ def remove_workspace(
     record = _coerce_record(record_or_path)
     with _workspace_lock(record.git_common_dir):
         current = read_record(record.record_path)
+        if not _is_directory(current.worktree_path):
+            raise WorkspaceError(
+                f"workspace checkout is missing: {current.worktree_path}",
+                category="cleanup-refusal",
+            )
+        top, common, branch, _head = discover_git_context(current.worktree_path)
+        source_top, source_common, _source_branch, _source_head = discover_git_context(
+            current.source_git_root
+        )
+        if (
+            top != current.worktree_path
+            or common != current.git_common_dir
+            or branch != current.branch
+            or source_top != current.source_git_root
+            or source_common != current.git_common_dir
+        ):
+            raise WorkspaceError(
+                f"workspace Git checkout does not match record {current.record_path}; "
+                "refusing cleanup and branch removal",
+                category="cleanup-refusal",
+            )
         if current.lease and not force and not _lease_expired(current.lease, _utc_now()):
             raise WorkspaceError(
                 f"workspace {current.workspace_id} has an active lease held by {current.lease.holder!r}",

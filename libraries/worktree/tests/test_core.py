@@ -86,15 +86,58 @@ def test_explicit_identity_path_is_durable_and_rechecked(repository: Path, tmp_p
         identity_path=identity_path,
     )
     record = read_record(context.record_path)
+    original_metadata = dict(record.metadata)
     assert context.workspace_id == workspace_id_for_path(identity_path)
     assert record.metadata["workspace.identity_path"] == str(identity_path.resolve())
     assert ensure_workspace(record).workspace_id == context.workspace_id
+
+    updated = ensure_workspace(record, metadata={"adapter": "value"})
+    assert updated.workspace_id == context.workspace_id
+    assert read_record(context.record_path).metadata["workspace.identity_path"] == str(
+        identity_path.resolve()
+    )
 
     record.metadata["workspace.identity_path"] = str(tmp_path / "different-seed")
     core.write_record(record)
     with pytest.raises(core.WorkspaceError, match="identity does not match"):
         ensure_workspace(record)
+    core.write_record(core.replace(record, metadata=original_metadata))
     remove_workspace(context)
+
+
+@pytest.mark.parametrize(
+    "identity_path",
+    [None, "", 7, "relative/seed", "/tmp/seed/../canonicalized"],
+    ids=("null", "empty", "wrong-type", "relative", "not-normalized"),
+)
+def test_malformed_persisted_identity_refuses_resume_inspect_and_remove(
+    repository: Path, tmp_path: Path, identity_path
+) -> None:
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="workspace/bad-identity", purpose="test"
+    )
+    record = read_record(context.record_path)
+    malformed_metadata = dict(record.metadata)
+    malformed_metadata["workspace.identity_path"] = identity_path
+    malformed = core.replace(record, metadata=malformed_metadata)
+    core.write_record(malformed)
+    cleanup_calls = []
+
+    for operation in (
+        lambda: ensure_workspace(context),
+        lambda: core.inspect_workspace(context),
+        lambda: remove_workspace(
+            context,
+            cleanup=lambda _context: cleanup_calls.append("ran"),
+            force=True,
+        ),
+    ):
+        with pytest.raises(core.WorkspaceError, match="workspace.identity_path"):
+            operation()
+    assert cleanup_calls == []
+    assert context.worktree_path.is_dir()
+    core.write_record(core.replace(record, metadata=dict(record.metadata)))
+    remove_workspace(context, force=True)
 
 
 def test_identity_collision_names_both_paths(repository: Path, tmp_path: Path, monkeypatch) -> None:

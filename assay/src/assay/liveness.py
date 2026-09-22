@@ -1163,6 +1163,7 @@ class LivenessRunner:
         poll_interval_s: float = _LIVENESS_POLL_INTERVAL_S,
         cpu_reader: Callable[[int], float] = tree_cpu_seconds,
         popen: Callable[..., Any] = subprocess.Popen,
+        process_group_killer: Callable[[int, int], None] | None = None,
     ) -> None:
         self._events_dir = events_dir
         self._events_dir.mkdir(parents=True, exist_ok=True)
@@ -1177,6 +1178,10 @@ class LivenessRunner:
         self._poll_interval_s = poll_interval_s
         self._cpu_reader = cpu_reader
         self._popen = popen
+        # Injectable so tests using synthetic PIDs cannot signal an unrelated
+        # real process group on the host. Resolve the default at call time, so
+        # existing syscall-level tests can still monkeypatch os.killpg.
+        self._process_group_killer = process_group_killer
 
     def _events_path_for_cwd(self, cwd: Path) -> Path:
         return candidate_events_path(self._events_dir, cwd)
@@ -1254,7 +1259,7 @@ class LivenessRunner:
         group is the normal completion case, not an infrastructure error.
         """
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            self._kill_process_group(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         try:
@@ -1273,13 +1278,16 @@ class LivenessRunner:
             pgid = None
         if pgid is not None:
             try:
-                os.killpg(pgid, signal.SIGKILL)
+                self._kill_process_group(pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
         try:
             proc.wait(timeout=5.0)
         except Exception:
             pass
+
+    def _kill_process_group(self, pgid: int, sig: int) -> None:
+        (self._process_group_killer or os.killpg)(pgid, sig)
 
     def _monitor(
         self,

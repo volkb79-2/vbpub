@@ -146,11 +146,16 @@ clean_tree = false
 # run-gate.toml — parsed by run-gate.py only
 schema_version = 1
 
-[lanes.<name>]
-kind = "assay" | "command"
-environment = "tester-unified" | "test-runner" | "host" | "<any central/project env name>"
+[environments.tester-unified]
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = ["SCHEMA_GATE_PW"]
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "pytest -q"]  # {worktree} may be substituted
 budget = "20m"                      # advisory wall-clock; printed, never enforced here
-memory = "4g"                       # optional docker --memory (per-lane RAM override)
 clean_tree = true                   # default TRUE; false needs a written reason
 description = "one-line what/why"   # optional; shown by --help (never by --list)
 required_env = ["SCHEMA_GATE_PW"]   # optional; gate refuses to start if unset/empty,
@@ -164,9 +169,9 @@ profile = false                     # optional (RG-55): opt this lane OUT of pro
                                     # [profile]'s own defaults for this lane only
 
 # RG-20 resources (optional sub-table — declare RAM so admission can protect
-# the host; supersedes the top-level `memory` key, never both):
-[lanes.<name>.resources]
-memory = "1g"                       # hard RAM cap (--memory) + admission accounting:
+# the host; `resources.memory` supersedes lane-level `memory`, never declare both):
+[lanes.suite.resources]
+memory = "2g"                       # hard RAM cap (--memory) + admission accounting:
                                     # refused if slice usage + this exceeds memory.max
 memory_swap = "16g"                 # --memory-swap; tight RAM + ample swap absorbs bursts
 cpu_weight = 100                    # advisory 1..10000 (printed; no portable docker flag)
@@ -177,32 +182,13 @@ cpus = "2"                          # RG-48: docker run --cpus (decimal string, 
                                     # FALLBACK for lanes that declare none of their own
                                     # (this lane's own value wins when both are set) --
                                     # the only resources key an environment accepts.
-
-# command kind:
-argv = ["bash", "-c", "..."]        # required, non-empty; {worktree} substituted
-
-# assay kind: assay_lane is required. Internal source mode omits both
-# assay_command and pins; run-gate installs the selected worktree's assay/.
-assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
-
-# External/copy-consumer mode may instead supply both an explicit command and
-# its immutable pin:
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<version>.pyz"]
-[lanes.<name>.pins.assay]
-version = "<version>"               # checked against the command's --version
-sha256 = "tools/assay/assay-<version>.pyz.sha256"   # verified from its own directory
-# ...and NOTHING else. A pin table takes these two keys; any other is
-# refused at load (RG-32, rev 34). In particular `budget` here was never
-# enforced and is now a refusal: a kind = "assay" lane's real budget lives
-# in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
-# lane-level `budget` (one level up, no `pins` in the path) stays advisory.
-# A pin key that is itself a legal LANE key is named as one — "'clean_tree'
-# is a lane key; it belongs one level up in [lanes.<n>], where it is
-# load-bearing — move it, do not delete it". MOVE it: under a pin table it
-# never did anything, so the lane has been running with the default.
-# `budget` is the one exception and keeps its own message: its value belongs
-# in the target assay.toml, so there really is nothing to move.
 ```
+
+For an `assay` lane, replace `kind`/`argv` with `kind = "assay"` and
+`assay_lane = "<name declared in assay.toml>"`. Internal source mode omits
+`assay_command` and pins. External immutable mode supplies both, plus the
+`[lanes.<name>.pins.assay]` version and SHA-256 table; the target assay lane,
+not the pin table, owns its mutation budget.
 
 Environment facts resolution order (no silent fallbacks anywhere):
 `cgroup_slice` declared on the environment → the variable named by

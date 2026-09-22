@@ -258,6 +258,47 @@ def test_machine_facts_rejects_missing_and_unknown_keys_together(monkeypatch, tm
         workspace_env.read_generated_machine_facts(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("missing", "unknown", "diagnostic"),
+    [(True, False, "missing="), (False, True, "unknown=")],
+    ids=("missing-only", "unknown-only"),
+)
+def test_machine_facts_reject_each_invalid_key_axis_independently(
+    monkeypatch, tmp_path, missing, unknown, diagnostic
+):
+    """Either defect must refuse on its own; testing both together masks OR→AND."""
+    table = {"schema_version": 2, **MACHINE}
+    if missing:
+        table.pop(next(iter(MACHINE)))
+    if unknown:
+        table["unexpected"] = "x"
+    monkeypatch.setattr(
+        workspace_env,
+        "generated_facts_document",
+        lambda _root: {"ciu": {"instance": {"machine": table}}},
+    )
+
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="invalid") as exc:
+        workspace_env.read_generated_machine_facts(tmp_path)
+    assert diagnostic in str(exc.value)
+
+
+@pytest.mark.parametrize("version", [True, False], ids=("true-is-not-one", "false-is-not-zero"))
+def test_generated_facts_reader_rejects_bool_schema_versions(
+    monkeypatch, tmp_path, version
+):
+    """bool is an int subclass, so equality alone accepts True as schema 1."""
+    table = {"schema_version": version, **IDENTITY}
+    monkeypatch.setattr(
+        workspace_env,
+        "generated_facts_document",
+        lambda _root: {"ciu": {"instance": {"generated": table}}},
+    )
+
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="schema_version"):
+        workspace_env.read_generated_facts(tmp_path)
+
+
 def test_identity_fallback_rejects_default_repair_and_handles_partial_identity(
     monkeypatch, tmp_path
 ):
