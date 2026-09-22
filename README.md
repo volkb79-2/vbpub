@@ -17,6 +17,7 @@ one config and one installed CLI.
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
 | **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
+| **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library | independently packageable; not yet in the cmru release set |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
@@ -75,6 +76,11 @@ webhook URL is kept as a local secret and is never committed. See the
 [`Netcup tools README`](scripts/netcup/README.md).
 After login, the wizard can also add `v<digits>` SCP server names to a local
 protected-server denylist; guarded mutating commands refuse those servers.
+
+User-facing Python CLIs can share the estate-wide parser, diagnostics,
+verbosity, colour, progress, and cancellation contract through
+[`libraries/cli-extended/`](libraries/cli-extended/). Its rationale and
+adoption examples are linked from that library's README.
 
 ## Repository setup and initial CMRU build
 
