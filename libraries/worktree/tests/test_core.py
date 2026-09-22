@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import shutil
+from dataclasses import FrozenInstanceError
 from datetime import timedelta
 from pathlib import Path
 
@@ -242,21 +243,57 @@ def test_git_inventory_rejects_malformed_porcelain(payload, message):
         core._parse_git_worktrees(payload)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"worktree\0\0",
+        b"worktree \0\0",
+    ],
+)
+def test_git_inventory_rejects_each_malformed_path_predicate(payload):
+    with pytest.raises(core.WorkspaceError, match="malformed worktree path field"):
+        core._parse_git_worktrees(payload)
+
+
+def test_git_inventory_rejects_each_invalid_bare_record_axis():
+    head = b"a" * 40
+    normal = b"worktree /repo\0HEAD " + head + b"\0branch refs/heads/main\0\0"
+    second_bare = normal + b"worktree /bare.git\0bare\0\0"
+    with pytest.raises(core.WorkspaceError, match="invalid bare-worktree record"):
+        core._parse_git_worktrees(second_bare)
+
+    with pytest.raises(core.WorkspaceError, match="invalid bare-worktree record"):
+        core._parse_git_worktrees(b"worktree /bare.git\0bare\0detached\0\0")
+
+
+def test_git_inventory_tracks_bare_record_state():
+    head = b"a" * 40
+    payload = b"worktree /first.git\0bare\0HEAD " + head + b"\0\0"
+    inventory = core._parse_git_worktrees(payload)
+    assert inventory[0].is_bare is True
+
+
 def test_git_inventory_requires_record_terminator():
     with pytest.raises(core.WorkspaceError, match="empty or unterminated"):
         core._parse_git_worktrees(b"worktree /repo\0")
 
 
 def test_git_inventory_surfaces_git_and_startup_failures(monkeypatch, tmp_path):
+    calls = []
+
+    def failing_run(*args, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(
+            args[0], 128, stdout=b"", stderr=b"not a repository"
+        )
+
     monkeypatch.setattr(
         core.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 128, stdout=b"", stderr=b"not a repository"
-        ),
+        "run", failing_run,
     )
     with pytest.raises(core.WorkspaceError, match="not a repository"):
         list_git_worktrees(tmp_path)
+    assert calls[0]["check"] is False
 
     monkeypatch.setattr(
         core.subprocess,
@@ -283,6 +320,8 @@ def test_allocate_resume_lease_and_remove(repository: Path, tmp_path: Path) -> N
         purpose="test",
     )
     record = read_record(context.record_path)
+    with pytest.raises(FrozenInstanceError):
+        record.branch = "mutated"
     assert record.workspace_id == context.workspace_id
     assert ensure_workspace(record).worktree_path == target.resolve()
 

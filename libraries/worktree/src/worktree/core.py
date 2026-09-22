@@ -444,7 +444,6 @@ def _parse_git_worktrees(payload: bytes) -> list[GitWorktree]:
         )
 
     worktrees: list[GitWorktree] = []
-    bare_seen = False
     for index, fields in enumerate(records):
         path_bytes = fields.get(b"worktree", b"")
         path = Path(os.fsdecode(path_bytes))
@@ -461,7 +460,7 @@ def _parse_git_worktrees(payload: bytes) -> list[GitWorktree]:
         head_bytes = fields.get(b"HEAD")
         branch_bytes = fields.get(b"branch")
         if bare:
-            if index != 0 or bare_seen or detached or branch_bytes is not None:
+            if index != 0 or detached or branch_bytes is not None:
                 raise WorkspaceError(
                     "git worktree list returned an invalid bare-worktree record",
                     category="git-error",
@@ -471,7 +470,6 @@ def _parse_git_worktrees(payload: bytes) -> list[GitWorktree]:
                     f"git worktree list returned an invalid HEAD for bare repository {path}",
                     category="git-error",
                 )
-            bare_seen = True
         else:
             if head_bytes is None or not _GIT_OBJECT_ID_RE.fullmatch(head_bytes):
                 raise WorkspaceError(
