@@ -1,0 +1,62 @@
+# LocalAI Multi-Model LLM Service
+# OpenAI-compatible API with support for TinyLlama, Phi-2, and Mistral models
+
+x-defaults: &service-defaults
+  labels:
+    - "project={{ deploy.project_name }}"
+    - "environment={{ deploy.environment_tag }}"
+  user: "${CONTAINER_UID:-0}:${CONTAINER_GID:-0}"
+  environment:
+    {% for key, value in deploy.env.defaults.items() %}
+    - {{ key }}={{ value }}
+    {% endfor %}
+
+services:
+  {{ services.localai.name }}:
+    <<: *service-defaults
+    image: {{ services.localai.image_name }}:{{ services.localai.image_tag }}
+    hostname: {{ services.localai.name }}
+    networks:
+      - {{ deploy.network_name }}
+    # No external ports - accessed only via reverse proxy
+    environment:
+      # Port configuration
+      - PORT={{ services.localai.internal_port }}
+      # LocalAI configuration
+      - THREADS={{ env.LOCALAI_THREADS }}
+      - CONTEXT_SIZE={{ env.LOCALAI_CONTEXT_SIZE }}
+      - MODELS_PATH={{ env.LOCALAI_MODELS_PATH }}
+      - DEBUG={{ env.LOCALAI_DEBUG }}
+      - CORS={{ env.LOCALAI_CORS }}
+      - CORS_ALLOW_ORIGINS={{ env.LOCALAI_CORS_ALLOW_ORIGINS }}
+      # Hardware configuration
+      - CPUS={{ localai.threads }}
+      - BATCH_SIZE={{ localai.batch_size }}
+    volumes:
+      - {{ localai.hostdir.models }}:/models:rw
+      - {{ localai.hostdir.logs }}:/var/log:rw
+    tmpfs:
+      - /tmp:exec,mode=1777
+      - /.cache:exec,mode=1777
+    command: >
+      --models-path /models
+      --threads {{ localai.threads }}
+      --context-size {{ localai.context_size }}
+      --cors
+      --debug=false
+      --address :{{ services.localai.internal_port }}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:{{ services.localai.internal_port }}/readyz"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    restart: unless-stopped
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.localai.name }}"
+      - "{{ deploy.labels.prefix }}.stack=llm"
+      - "{{ deploy.labels.prefix }}.service-type=api"
+
+networks:
+  {{ deploy.network_name }}:
+    external: true

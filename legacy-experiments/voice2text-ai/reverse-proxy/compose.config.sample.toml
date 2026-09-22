@@ -1,0 +1,62 @@
+# Voice2Text AI Reverse Proxy Configuration
+# Provides external HTTPS access to all services
+
+[metadata]
+project_name = "voice2text-reverse-proxy"
+env_tag = "prod"
+
+[project]
+name = "voice2text-reverse-proxy"
+type = "infra"
+
+[compinit]
+enable_env_expansion = true
+
+[global]
+project_name = "Voice2Text-AI"
+environment = "prod"
+
+[global.labels]
+prefix = "de.vxxu.volkb79"
+
+[infrastructure]
+# AUTO-DETECTED: Public FQDN via external IP lookup
+public_fqdn = '''$(curl -s https://api.ipify.org | xargs -I{} sh -c 'host {} | grep pointer | head -1 | awk '\''{print $NF}'\'' | sed '\''s/\.$//'\''; echo {}')'''
+public_tls_key_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/privkey.pem"
+public_tls_crt_pem = "/etc/letsencrypt/live/$(echo $PUBLIC_FQDN | cut -d. -f1-)/fullchain.pem"
+
+[proxy]
+# External ports for access
+external_port = 8443
+https_port = 8443
+http_port = 8080
+
+# Host directory for logs
+hostdir_logs = "./vol-reverse-proxy-logs"
+
+# Service routes (relative URL paths)
+[proxy.routes]
+api = "/api"
+docs = "/docs"
+whisper = "/whisper"
+llm = "/llm"
+
+# Backend service URLs (internal docker network)
+[proxy.backends]
+api = "http://speech-to-copilot-api:8000"
+whisper = "http://whisper-service:9000"
+llm = "http://openai-shim:8300"
+
+[health]
+interval = "10s"
+timeout = "5s"
+retries = 3
+start_period = "20s"
+
+[hooks]
+pre_compose = ["./render_nginx_conf.py"]
+post_compose = []
+
+[env]
+UID = "$(id -u)"
+GID = "$(id -g)"

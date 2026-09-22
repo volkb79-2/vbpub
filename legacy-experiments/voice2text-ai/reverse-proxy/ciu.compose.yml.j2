@@ -1,0 +1,59 @@
+# Voice2Text AI Reverse Proxy
+# Provides external HTTPS access to all Voice2Text services through a single endpoint
+
+x-defaults: &service-defaults
+  labels:
+    - "project={{ deploy.project_name }}"
+    - "environment={{ deploy.environment_tag }}"
+  user: "${CONTAINER_UID:-0}:${CONTAINER_GID:-0}"
+  environment:
+    {% for key, value in deploy.env.defaults.items() %}
+    - {{ key }}={{ value }}
+    {% endfor %}
+
+services:
+  {{ services.reverse_proxy.name }}:
+    <<: *service-defaults
+    image: {{ services.reverse_proxy.image_name }}:{{ services.reverse_proxy.image_tag }}
+    hostname: {{ services.reverse_proxy.name }}
+    restart: unless-stopped
+    user: "0:0"  # Run as root for Let's Encrypt certificate access
+    environment:
+      - PUBLIC_FQDN={{ deploy.env.shared.PUBLIC_FQDN }}
+    ports:
+      - "{{ services.reverse_proxy.external_https_port }}:{{ services.reverse_proxy.internal_https_port }}"
+    volumes:
+      # Config files use PHYSICAL_REPO_ROOT for devcontainer compatibility
+      - ${PHYSICAL_REPO_ROOT:-{{ ciu.physical_repo_root }}}/legacy-experiments/voice2text-ai/reverse-proxy/etc-nginx:/etc/nginx:ro
+      {% if deploy.env.shared.PUBLIC_TLS_CRT_PEM and deploy.env.shared.PUBLIC_TLS_KEY_PEM %}
+      # Mount TLS certificates separately (Let's Encrypt symlinks)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      {% else %}
+      # Self-signed cert generation (fallback if no Let's Encrypt certs)
+      - ./generate-self-signed.sh:/docker-entrypoint.d/90-generate-certs.sh:ro
+      - proxy-certs:/etc/nginx/certs
+      {% endif %}
+      - {{ proxy.hostdir.logs }}:/var/log/nginx
+    networks:
+      - {{ deploy.network_name }}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:{{ services.reverse_proxy.internal_http_port }}/health"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+    labels:
+      - "{{ deploy.labels.prefix }}.component={{ services.reverse_proxy.name }}"
+      - "{{ deploy.labels.prefix }}.stack=infra"
+      - "{{ deploy.labels.prefix }}.service-type=proxy"
+
+{% if not deploy.env.shared.PUBLIC_TLS_CRT_PEM or not deploy.env.shared.PUBLIC_TLS_KEY_PEM %}
+volumes:
+  proxy-certs:
+    name: {{ deploy.project_name }}-proxy-certs
+{% endif %}
+
+networks:
+  {{ deploy.network_name }}:
+    external: true
+    name: {{ deploy.network_name }}

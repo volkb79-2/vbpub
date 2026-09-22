@@ -1,0 +1,71 @@
+# Development ignore patterns
+node_modules/
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+.svelte-kit/
+
+# IDE and editor files
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Cache directories
+.cache/
+.parcel-cache/
+.nuxt/
+.tmp/
+scanner/cache/
+
+# Testing
+coverage/
+.nyc_output/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Docker
+.dockerignore
+
+# Extension development
+*.vsix
+vscode-extension/out/
+vscode-extension/node_modules/
+
+# Audio files (temporary)
+*.wav
+*.mp3
+*.flac
+audio-temp/
+
+# Volume directories
+vol-*/
+
+# SSL certificates
+*.pem
+*.crt
+*.key

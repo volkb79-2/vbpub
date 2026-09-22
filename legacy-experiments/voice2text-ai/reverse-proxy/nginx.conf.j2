@@ -1,0 +1,122 @@
+# Voice2Text AI Reverse Proxy Configuration
+# Generated from nginx.conf.j2 template
+
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 100M;
+
+    # Temporary directories for non-root user
+    client_body_temp_path /tmp/nginx_client_body;
+    proxy_temp_path /tmp/nginx_proxy;
+    fastcgi_temp_path /tmp/nginx_fastcgi;
+    uwsgi_temp_path /tmp/nginx_uwsgi;
+    scgi_temp_path /tmp/nginx_scgi;
+
+    # HTTP server - redirect to HTTPS
+    server {
+        listen 80;
+        server_name {{ deploy.env.shared.PUBLIC_FQDN }};
+
+        # Health check endpoint (no redirect)
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # Redirect all other traffic to HTTPS
+        location / {
+            return 301 https://$host:{{ services.reverse_proxy.external_https_port }}$request_uri;
+        }
+    }
+
+    # HTTPS server
+    server {
+        listen 443 ssl;
+        server_name {{ deploy.env.shared.PUBLIC_FQDN }};
+
+        {% if deploy.env.shared.PUBLIC_TLS_CRT_PEM and deploy.env.shared.PUBLIC_TLS_KEY_PEM %}
+        ssl_certificate {{ deploy.env.shared.PUBLIC_TLS_CRT_PEM }};
+        ssl_certificate_key {{ deploy.env.shared.PUBLIC_TLS_KEY_PEM }};
+        {% else %}
+        ssl_certificate /etc/nginx/certs/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/privkey.pem;
+        {% endif %}
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+        ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+
+        # Root landing page - dynamically generated from config
+        location = / {
+            return 200 '<html><head><title>Voice2Text AI</title></head><body><h1>Voice2Text AI Services</h1><ul>{% for route_name, route_config in proxy.routes.items() %}<li><a href="{{ route_config.path }}/">{{ route_name|title }}</a></li>{% endfor %}</ul></body></html>';
+            add_header Content-Type text/html;
+        }
+
+        # Health check
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # Dynamic route generation from [proxy.routes.*] configuration
+        {% for route_name, route_config in proxy.routes.items() %}
+        # Route: {{ route_name }} -> {{ route_config.backend_service }}
+        location {{ route_config.path }}/ {
+            {% if route_config.strip_path %}
+            # Strip path prefix before forwarding
+            proxy_pass http://{{ services[route_config.backend_service].name }}:{{ services[route_config.backend_service].internal_port }}/;
+            {% else %}
+            # Preserve full path
+            proxy_pass http://{{ services[route_config.backend_service].name }}:{{ services[route_config.backend_service].internal_port }}{{ route_config.path }}/;
+            {% endif %}
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout 300s;
+            proxy_send_timeout 300s;
+            proxy_read_timeout 300s;
+        }
+        {% endfor %}
+
+        # WebSocket support
+        location /ws/ {
+            proxy_pass http://{{ services.speech_api.name }}:{{ services.speech_api.internal_port }}/ws/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_connect_timeout 7d;
+            proxy_send_timeout 7d;
+            proxy_read_timeout 7d;
+        }
+    }
+}

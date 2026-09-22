@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔊 Audio Echo Test - Speech-to-Copilot</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.2em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .info-box {
+            background: #f0f7ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .info-box h3 {
+            margin-top: 0;
+            color: #1976D2;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            font-weight: bold;
+            text-align: center;
+        }
+        
+        .status.idle {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            border: 2px solid #2196F3;
+        }
+        
+        .status.recording {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 2px solid #ffc107;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .status.playing {
+            background-color: #d1ffcd;
+            color: #2d5f2d;
+            border: 2px solid #4caf50;
+        }
+        
+        .status.error {
+            background-color: #ffe6e6;
+            color: #8b0000;
+            border: 2px solid #f44336;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 25px 0;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            min-width: 150px;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+        
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.stop {
+            background: linear-gradient(135deg, #f44336 0%, #e91e63 100%);
+        }
+        
+        button.play {
+            background: linear-gradient(135deg, #4caf50 0%, #8bc34a 100%);
+        }
+        
+        .audio-viz {
+            margin: 20px 0;
+            text-align: center;
+        }
+        
+        canvas {
+            width: 100%;
+            max-width: 800px;
+            height: 100px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            border: 2px solid #ddd;
+        }
+        
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .metric-card {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            text-align: center;
+        }
+        
+        .metric-card .value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+            margin: 10px 0;
+        }
+        
+        .metric-card .label {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .log {
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        
+        .log-entry {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        
+        .log-entry.info { color: #2196F3; }
+        .log-entry.success { color: #4caf50; }
+        .log-entry.error { color: #f44336; }
+        .log-entry.warn { color: #ff9800; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔊 Audio Echo Test</h1>
+        <div class="subtitle">Test your microphone and audio playback</div>
+        
+        <div class="info-box">
+            <h3>ℹ️ How to Use</h3>
+            <ol>
+                <li>Click <strong>"Start Recording"</strong> to begin capturing audio from your microphone</li>
+                <li>Speak into your microphone (say something like "Testing 1, 2, 3")</li>
+                <li>Click <strong>"Stop Recording"</strong> when done</li>
+                <li>Click <strong>"Play Echo"</strong> to hear your recorded audio played back</li>
+                <li>Repeat as needed to test different audio settings</li>
+            </ol>
+            <p><strong>Note:</strong> This test requires HTTPS for microphone access. All audio is processed locally in your browser.</p>
+        </div>
+        
+        <div id="statusBar" class="status idle">
+            🎤 Ready to record
+        </div>
+        
+        <div class="controls">
+            <button id="recordBtn" onclick="startRecording()">
+                🎤 Start Recording
+            </button>
+            <button id="stopBtn" class="stop" onclick="stopRecording()" disabled>
+                ⏹️ Stop Recording
+            </button>
+            <button id="playBtn" class="play" onclick="playEcho()" disabled>
+                ▶️ Play Echo
+            </button>
+            <button id="clearBtn" onclick="clearAll()">
+                🗑️ Clear
+            </button>
+        </div>
+        
+        <div class="audio-viz">
+            <canvas id="visualizer" width="800" height="100"></canvas>
+        </div>
+        
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="label">Recording Duration</div>
+                <div id="duration" class="value">0s</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Audio Level</div>
+                <div id="audioLevel" class="value">0%</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Sample Rate</div>
+                <div id="sampleRate" class="value">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">Status</div>
+                <div id="statusText" class="value" style="font-size: 1.2em;">Idle</div>
+            </div>
+        </div>
+        
+        <h3>📋 Event Log</h3>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        let mediaRecorder = null;
+        let audioStream = null;
+        let audioChunks = [];
+        let audioContext = null;
+        let analyser = null;
+        let animationId = null;
+        let startTime = null;
+        let durationInterval = null;
+        let recordedBlob = null;
+        
+        const statusBar = document.getElementById('statusBar');
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const playBtn = document.getElementById('playBtn');
+        const canvas = document.getElementById('visualizer');
+        const canvasCtx = canvas.getContext('2d');
+        const log = document.getElementById('log');
+        
+        // Logging functions
+        function logEvent(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        function updateStatus(message, className = 'idle') {
+            statusBar.textContent = message;
+            statusBar.className = `status ${className}`;
+            document.getElementById('statusText').textContent = className.charAt(0).toUpperCase() + className.slice(1);
+        }
+        
+        function updateDuration() {
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                document.getElementById('duration').textContent = elapsed + 's';
+            }
+        }
+        
+        // Audio visualization
+        function visualize() {
+            if (!analyser) return;
+            
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            function draw() {
+                animationId = requestAnimationFrame(draw);
+                
+                analyser.getByteFrequencyData(dataArray);
+                
+                // Calculate audio level
+                const average = dataArray.reduce((a, b) => a + b) / bufferLength;
+                const level = Math.round((average / 255) * 100);
+                document.getElementById('audioLevel').textContent = level + '%';
+                
+                // Draw waveform
+                canvasCtx.fillStyle = '#f5f5f5';
+                canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                const barWidth = (canvas.width / bufferLength) * 2.5;
+                let x = 0;
+                
+                for (let i = 0; i < bufferLength; i++) {
+                    const barHeight = (dataArray[i] / 255) * canvas.height;
+                    
+                    const gradient = canvasCtx.createLinearGradient(0, 0, 0, canvas.height);
+                    gradient.addColorStop(0, '#667eea');
+                    gradient.addColorStop(1, '#764ba2');
+                    
+                    canvasCtx.fillStyle = gradient;
+                    canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                    
+                    x += barWidth + 1;
+                }
+            }
+            
+            draw();
+        }
+        
+        async function startRecording() {
+            try {
+                logEvent('Requesting microphone access...', 'info');
+                
+                // Check for HTTPS
+                if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                    throw new Error('HTTPS is required for microphone access. Please use HTTPS or localhost.');
+                }
+                
+                // Request microphone access
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                logEvent('Microphone access granted', 'success');
+                
+                // Get sample rate from audio track
+                const audioTrack = audioStream.getAudioTracks()[0];
+                const settings = audioTrack.getSettings();
+                document.getElementById('sampleRate').textContent = settings.sampleRate + ' Hz';
+                
+                // Setup audio context for visualization
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(audioStream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                
+                visualize();
+                
+                // Setup MediaRecorder
+                const options = {
+                    mimeType: 'audio/webm;codecs=opus',
+                    audioBitsPerSecond: 128000
+                };
+                
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options.mimeType = 'audio/webm';
+                    logEvent('Using fallback audio format: ' + options.mimeType, 'warn');
+                }
+                
+                mediaRecorder = new MediaRecorder(audioStream, options);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = () => {
+                    recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    logEvent(`Recording stopped. Size: ${(recordedBlob.size / 1024).toFixed(2)} KB`, 'success');
+                    playBtn.disabled = false;
+                };
+                
+                // Start recording
+                mediaRecorder.start(100); // Collect data every 100ms
+                startTime = Date.now();
+                durationInterval = setInterval(updateDuration, 1000);
+                
+                // Update UI
+                updateStatus('🔴 Recording...', 'recording');
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                playBtn.disabled = true;
+                
+                logEvent('Recording started', 'success');
+                
+            } catch (error) {
+                logEvent('Error: ' + error.message, 'error');
+                updateStatus('❌ Error: ' + error.message, 'error');
+                console.error('Recording error:', error);
+            }
+        }
+        
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                
+                // Stop all tracks
+                if (audioStream) {
+                    audioStream.getTracks().forEach(track => track.stop());
+                }
+                
+                // Stop visualization
+                if (animationId) {
+                    cancelAnimationFrame(animationId);
+                }
+                
+                // Stop duration counter
+                if (durationInterval) {
+                    clearInterval(durationInterval);
+                }
+                
+                // Update UI
+                updateStatus('✅ Recording stopped', 'idle');
+                recordBtn.disabled = false;
+                stopBtn.disabled = true;
+                document.getElementById('audioLevel').textContent = '0%';
+                
+                logEvent('Recording stopped successfully', 'success');
+            }
+        }
+        
+        function playEcho() {
+            if (!recordedBlob) {
+                logEvent('No recording available to play', 'error');
+                return;
+            }
+            
+            try {
+                const audioUrl = URL.createObjectURL(recordedBlob);
+                const audio = new Audio(audioUrl);
+                
+                audio.onplay = () => {
+                    updateStatus('▶️ Playing echo...', 'playing');
+                    logEvent('Playing recorded audio', 'info');
+                    playBtn.disabled = true;
+                };
+                
+                audio.onended = () => {
+                    updateStatus('✅ Playback complete', 'idle');
+                    logEvent('Playback finished', 'success');
+                    playBtn.disabled = false;
+                    URL.revokeObjectURL(audioUrl);
+                };
+                
+                audio.onerror = (e) => {
+                    logEvent('Playback error: ' + e.message, 'error');
+                    updateStatus('❌ Playback error', 'error');
+                    playBtn.disabled = false;
+                };
+                
+                audio.play();
+                
+            } catch (error) {
+                logEvent('Error playing audio: ' + error.message, 'error');
+                console.error('Playback error:', error);
+            }
+        }
+        
+        function clearAll() {
+            // Stop any ongoing operations
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                stopRecording();
+            }
+            
+            // Clear recorded data
+            audioChunks = [];
+            recordedBlob = null;
+            
+            // Reset UI
+            updateStatus('🎤 Ready to record', 'idle');
+            document.getElementById('duration').textContent = '0s';
+            document.getElementById('audioLevel').textContent = '0%';
+            document.getElementById('sampleRate').textContent = '-';
+            playBtn.disabled = true;
+            
+            // Clear log
+            log.innerHTML = '';
+            
+            logEvent('All data cleared', 'info');
+        }
+        
+        // Initial log entry
+        logEvent('Audio echo test initialized', 'info');
+        logEvent('Click "Start Recording" to begin', 'info');
+        
+        // Check for HTTPS on load
+        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+            logEvent('Warning: HTTPS required for microphone access', 'warn');
+            updateStatus('⚠️ HTTPS required for microphone', 'error');
+        }
+    </script>
+</body>
+</html>
