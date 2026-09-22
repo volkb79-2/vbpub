@@ -81,3 +81,16 @@ The public failure categories are `collision`, `occupied`, `root-mismatch`,
 `stale-record`, `invalid-record`, `cleanup-refusal`, `lease-held`,
 `lock-error`, `git-error`, and `invalid-input`. A caller that cannot safely
 classify a state must preserve the refusal and leave the record in place.
+
+## Qualify the shared source
+
+The internal library has a dedicated tester-unified lane. From this directory,
+run the complete R0-R3 qualification through the project launcher:
+
+```bash
+CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py worktree
+```
+
+This does not release a third package. It verifies the source that CIU and CMRU
+embed; their own product lanes remain required for adapter, wheel, and release
+behavior.

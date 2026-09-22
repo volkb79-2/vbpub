@@ -4,7 +4,7 @@ from hypothesis import given, settings, strategies as st
 from cmru import transaction
 
 
-@settings(max_examples=64, deadline=None)
+@settings(max_examples=64, deadline=None, derandomize=True, database=None)
 @given(scope=st.one_of(st.none(), st.text(min_size=0, max_size=40)))
 def test_scope_sanitization_is_nonempty_and_branch_safe(scope):
     value = transaction._sanitize_scope(scope)
@@ -13,7 +13,7 @@ def test_scope_sanitization_is_nonempty_and_branch_safe(scope):
     assert all(char in "abcdefghijklmnopqrstuvwxyz0123456789-" for char in value)
 
 
-@settings(max_examples=64, deadline=None)
+@settings(max_examples=64, deadline=None, derandomize=True, database=None)
 @given(purpose=st.sampled_from(["release", "build"]), scope=st.text(min_size=0, max_size=20))
 def test_transaction_branch_contains_one_visible_base36_identity(purpose, scope):
     branch = transaction._new_transaction_branch(

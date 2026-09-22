@@ -10,6 +10,8 @@ from ciu import workspace
 @settings(
     max_examples=64,
     deadline=None,
+    derandomize=True,
+    database=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
@@ -42,6 +44,8 @@ def test_nearest_committed_root_is_stable_for_nested_paths(
 @settings(
     max_examples=64,
     deadline=None,
+    derandomize=True,
+    database=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(parts=st.lists(st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_", min_size=1, max_size=8), max_size=4))

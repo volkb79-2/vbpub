@@ -548,12 +548,14 @@ The change should land in small, reviewable commits. A suggested sequence is:
 6. **CMRU runtime declaration.** Add and validate `none`/`ciu`, refuse unsupported
    project-owned multi-container runtimes, and document the known limitation.
 7. **Docs and compatibility.** Update CIU and CMRU SPEC, README, DESIGN-GUIDE,
-   CONSUMERS, templates, changelogs, and trove references. Add tests that load
-   every config example and resolve every cross-document anchor.
-8. **External gates.** Run the complete CIU and CMRU lanes through their declared
-   `run-gate.py` commands in tester-unified, with assay resume/progress. Run any
-   Docker/VM acceptance lane in its designated container or VM. No evidence from
-   this cockpit is a ship signal.
+   CONSUMERS, the shared library README/SPEC/DESIGN-GUIDE/CONSUMERS set,
+   templates, changelogs, and trove references. Add tests that load every
+   config example and resolve every cross-document anchor.
+8. **External gates.** Run the complete CIU, CMRU, and shared
+   `libraries/worktree` lanes through their declared `run-gate.py` commands in
+   tester-unified, with assay resume/progress. Run any Docker/VM acceptance lane
+   in its designated container or VM. No evidence from this cockpit is a ship
+   signal.
 
 Each implementation commit must state the affected S-ID/spec section and keep
 the public docs in the same commit as the capability they describe. The shared

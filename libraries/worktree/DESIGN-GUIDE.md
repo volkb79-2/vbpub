@@ -61,6 +61,13 @@ CMRU allocates one context per Git family and coordinates those contexts in
 release order; it never pretends independent repositories share one atomic Git
 commit.
 
+The substrate is qualified independently as well as through both consumers.
+That is deliberately a test boundary, not a third release boundary: its
+tester-unified `worktree` lane runs the complete library suite through R0-R3,
+including branch coverage, serial mutation, and import-break rejection. This
+catches a shared-core regression even when both adapters happen to exercise the
+same changed path in a way that masks the defect.
+
 Legacy product records that predate the shared record use
 `remove_unrecorded_workspace`; that operation first adopts the registered
 checkout through the neutral record path and then uses the same removal

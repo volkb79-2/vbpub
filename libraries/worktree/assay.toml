@@ -1,0 +1,54 @@
+# Internal worktree substrate qualification. CIU and CMRU ship this source in
+# their own wheels; this lane proves the source itself through tester-unified.
+schema_version = 2
+
+[lanes.worktree]
+scope = "S1"
+rigor = ["R0", "R1", "R2", "R3"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--maxfail=1", "--cov=worktree", "--cov-branch",
+  "--cov-report=json:coverage.json", "--cov-fail-under=100",
+]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
+budget = "8h"
+allow_argv_append = false
+
+[lanes.worktree.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.worktree.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base = "main"
+
+[lanes.worktree.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.worktree.judge.mutation]
+jobs = 1
+max_mutants = 10000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "5m"
+liveness = true
+
+[lanes.worktree.judge.canary]
+mechanism = "import-break"
+target = "src/worktree/core.py"
+budget_per_attempt = "20m"

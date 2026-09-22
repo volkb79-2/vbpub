@@ -311,3 +311,23 @@ build-discard call paths.
   the new commit and CIU aggregate rerun are pending. CMRU's aggregate passed
   on the immediately preceding code commit; both product gates will be
   serialized again on the final reviewed head before merge.
+
+## Methodology follow-up (2026-09-22)
+
+The canonical testing methodology requires Hypothesis tests that participate in
+R2 to set `derandomize=True` and `database=None`; `deadline=None` alone does not
+make generated examples reproducible. All ten CIU, CMRU, and shared-library
+property-test settings now make those controls explicit. This changes the
+judged tree, so the final consumer mutation campaigns must be fresh rather than
+reusing the earlier receipts.
+
+The shared library also now declares its own `libraries/worktree` tester-unified
+R0-R3 lane. CIU and CMRU still qualify their adapters and wheels separately, but
+consumer coverage is not treated as proof that the neutral refusal/lifecycle
+matrix was exercised. The lane is internal qualification evidence, not a third
+release or version-promotion target.
+
+The estate checklist remains partially open until the final exact-commit
+receipts are recorded and an independent reviewer signs Table 2. The present
+review is an adversarial self-review; it does not satisfy that independent
+reviewer requirement.

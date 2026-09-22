@@ -111,3 +111,21 @@ select release projects, publish tags, or interpret labels and metadata. CIU
 owns root discovery and root-local resources. CMRU owns orchestration,
 release policy, and per-project runtime adapters. Both must pass the resulting
 `WorkspaceContext` through without reimplementing generic lifecycle rules.
+
+## Qualification
+
+The source package has a dedicated `worktree` lane under `run-gate.py`. It runs
+the complete `tests/` suite in `tester-unified` at S1 with Assay R0, R1, R2, and
+R3: a 100% line-and-branch coverage floor, serial changed-source mutation, and
+an import-break canary. CIU and CMRU retain their own lanes because they must
+also qualify their adapters and packaged wheels; a consumer suite passing is
+not a substitute for exercising the shared library's own refusal and lifecycle
+matrix. Run it from this directory with:
+
+```console
+$ CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py worktree
+```
+
+The gate uses the estate-approved snapshot boundary and the same serial,
+resumable Assay mechanics as the consumer lanes. Its result is evidence about
+the internal dependency source, not a separate release or version promotion.
