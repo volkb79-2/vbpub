@@ -1423,9 +1423,12 @@ CMRU's internal `assay.toml` declares the `cmru` lane with the complete
 `R0`, `R1`, `R2`, and `R3` ladder. The lane command is the full CMRU test
 suite and emits `coverage.json`; its judge requires 100% line and branch
 coverage, forbids excluded source, and compares changed source against
-`base = "main"`. R2 is native serial Python mutation with the declared
-operator set and per-candidate budget. R3 is an import-break canary against
-`src/cmru/config.py`.
+`base = "main"`. The pytest command sets `--maxfail=1`: a green run still
+executes the complete suite, while a failing mutation candidate stops at its
+first failed test instead of cascading into unrelated teardown/lock tests.
+R2 is native serial Python mutation with the declared operator set and
+per-candidate budget, with Assay liveness enabled for stalled pytest
+candidates. R3 is an import-break canary against `src/cmru/config.py`.
 
 **S16.1 — Snapshot boundary.** R1-R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
@@ -1437,10 +1440,13 @@ the omission list is not a general exclusion mechanism.
 `run-gate.toml` installs Assay from the selected vbpub worktree and invokes
 the `cmru` lane with the mandatory resume/progress arguments. Its verdict is
 `.assay/verdict-cmru.json` and its progress stream is
-`.assay/progress-cmru.jsonl`, both outside the judged tree. The `gate` lane
-also runs CMRU's release-specific coverage, mutation, canary, and real-system
-enrollment checks; those are supplemental evidence, not a second definition
-of the shared workspace lifecycle or a substitute for the Assay ladder.
+`.assay/progress-cmru.jsonl`, both outside the judged tree. The R2 liveness
+plugin bounds stalled pytest candidates and performs process-group cleanup;
+the first-failure limit prevents a bad mutant from running the rest of the
+suite. The `gate` lane also runs CMRU's release-specific coverage, mutation,
+canary, and real-system enrollment checks; those are supplemental evidence,
+not a second definition of the shared workspace lifecycle or a substitute
+for the Assay ladder.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is
 `./run-gate.py`; the tester-unified lane requires the estate-provided

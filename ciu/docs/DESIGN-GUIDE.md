@@ -565,7 +565,11 @@ invisible to `--cov-fail-under=100`, so only a *diff-aware* judgment can
 enforce "no pragma on changed code". Assay's R1 reproduces exactly that
 floor and adds a verifiable verdict. R2 and R3 then exercise the same selected
 source with native mutation and an import-break canary, so coverage, mutation,
-and known-bad rejection cannot drift into separate unjudged commands. R1+ runs
+and known-bad rejection cannot drift into separate unjudged commands. R2 also
+enables Assay's liveness monitor, and `--maxfail=1` stops a failing mutant at
+its first failed test; the successful baseline remains a full-suite run. This
+prevents one mutation's failure cascade from reaching unrelated later tests.
+R1+ runs
 in an isolated snapshot of the
 committed tree; this monorepo tracks exactly three absolute-target
 security-fixture symlinks (topos), which the snapshot substrate refuses, so

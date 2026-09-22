@@ -14,8 +14,11 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--maxfail=1",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
+# A green run still executes the complete suite. A failing mutation candidate
+# stops on its first failing test instead of cascading into later teardown or
+# lock tests; R2 liveness independently bounds and cleans up stalled candidates.
 # These are project test facts, not ambient conveniences: pytest must import
 # the source snapshot it is judging, and it must not create bytecode there.
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
@@ -47,6 +50,7 @@ artifact = "coverage.json"
 # Keep mutation candidates serial: the baseline already uses the project's
 # normal test process, and the host shares capacity with production services.
 jobs = 1
+liveness = true
 max_mutants = 10000
 operators = [
   "python:compare-swap",

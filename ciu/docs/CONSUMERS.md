@@ -874,6 +874,8 @@ assay lanes --file ciu/assay.toml
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
 #    line+branch, judges the changed-line floor (R1), runs native mutation
 #    (R2), and runs the import-break canary (R3).
+#    R2 liveness bounds stalled pytest candidates; --maxfail=1 stops a failing
+#    mutant at its first failed test without shortening a successful full run.
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
   assay run ciu \

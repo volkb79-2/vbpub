@@ -5152,11 +5152,14 @@ evidence-judgment command.
   lane command, inside Assay's isolated snapshot
   (`snapshot_selection = "repository-minus-unsafe-symlinks"`, declaring the
   monorepo's three absolute-target security-fixture symlinks verbatim). The
+  full suite runs with `--maxfail=1` (a passing run still exercises every
+  test; a failing mutation candidate stops at its first test failure). The
   lane declares R1: Assay judges the changed-line floor on `base..HEAD`
   (`fail_under = 100.0`, `require_branch = true`, `allow_excluded = false`)
-  from the lane's coverage artifact, R2: serial native Python mutation with the
-  declared operator set and per-candidate budget, and R3: an import-break
-  canary against the declared CIU source target. A new unsafe
+  from the lane's coverage artifact, R2: serial native Python mutation with
+  active liveness monitoring, the declared operator set, and per-candidate
+  budget, and R3: an import-break canary against the declared CIU source
+  target. A new unsafe
   symlink anywhere in the repository reds the lane until its owner declares
   or untracks it (fail-closed).
 - **S18.3** *Cgroup (fail-closed).* The gate resolves the container slice

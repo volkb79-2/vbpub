@@ -262,7 +262,10 @@ zipapp or fixed version is copied. The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
 line+branch) inside Assay's isolated snapshot. The lane declares the complete
 R0-R3 ladder: changed-line coverage from `base..HEAD` (R1), native Python
-mutation (R2), and an import-break canary (R3), all bound to the same verdict.
+mutation with active liveness and fail-fast candidate execution (R2), and an
+import-break canary (R3), all bound to the same verdict. `--maxfail=1` stops a
+failing mutant at its first failing test; green runs still execute the full
+suite.
 The
 verdict is retained at `.assay/verdict-ciu.json` (gitignored) as review
 evidence. The gate resolves the container slice ONLY from

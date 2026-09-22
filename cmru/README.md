@@ -401,6 +401,9 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 discovers the declared lanes; definitions live in `run-gate.toml`. The
 `assay` lane declares the complete R0-R3 ladder: the full suite and 100%
 line+branch coverage, native mutation, and an import-break canary. The
-selected worktree's Assay source is installed at lane time, and `.assay/`
-verdict/progress artifacts are retained as gate evidence.
+selected worktree's Assay source is installed at lane time. Mutation runs
+stop each failing candidate at its first failed test (`--maxfail=1`) and
+enable Assay liveness for stalled pytest candidates; a successful full-suite
+run still executes all tests. `.assay/` verdict/progress artifacts are
+retained as gate evidence.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).

@@ -123,8 +123,12 @@ also removes it from CMRU's mutation and coverage input lists.
 CMRU's internal `assay.toml` is the authoritative rigor contract for the
 selected worktree. R0 runs the existing full test command, R1 judges the
 100% line-and-branch coverage artifact against `base..HEAD`, R2 runs Assay's
-native serial Python mutation campaign, and R3 runs an import-break canary
-against CMRU source. The lane uses the estate-approved
+native serial Python mutation campaign with liveness monitoring, and R3 runs
+an import-break canary against CMRU source. `--maxfail=1` stops a failing
+mutant at its first failed test; on the known-good baseline it is inert, so
+R0/R1 still execute the full suite. Together liveness and fail-fast keep a
+mutant's failure from cascading into later tests or leaving a stalled
+candidate consuming the lane. The lane uses the estate-approved
 `repository-minus-unsafe-symlinks` snapshot and names the three tracked Topos
 fixture omissions explicitly; a new unsafe symlink therefore fails closed.
 

@@ -191,3 +191,7 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     assert lane["argv"][1:] == helper["pytest_args"]("0")
     assert "--maxfail=1" in lane["argv"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
+    spec = (REPO_ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--maxfail=1" in spec and "liveness monitoring" in spec
+    assert "active liveness" in readme

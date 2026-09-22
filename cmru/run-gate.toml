@@ -32,7 +32,7 @@ memory_swap = "16g"
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -52,7 +52,7 @@ memory_swap = "16g"
 [lanes.mutation]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- env PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- env PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 
@@ -63,7 +63,7 @@ memory_swap = "16g"
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1 --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 

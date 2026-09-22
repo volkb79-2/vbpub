@@ -40,10 +40,26 @@ def test_runtime_vocabulary_and_workspace_contract_are_documented():
 def test_assay_lane_declares_the_complete_rigor_ladder():
     lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert "--maxfail=1" in lane["argv"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["judge"]["mutation"]["jobs"] == 1
+    assert lane["judge"]["mutation"]["liveness"] is True
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
+
+    gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    for name in ("coverage", "mutation", "canary"):
+        assert "--maxfail=1" in " ".join(gate["lanes"][name]["argv"])
+
+    for document in (
+        ROOT / "README.md",
+        ROOT / "docs" / "SPEC.md",
+        ROOT / "docs" / "DESIGN-GUIDE.md",
+        ROOT / "docs" / "CONSUMERS.md",
+    ):
+        text = document.read_text(encoding="utf-8")
+        assert "--maxfail=1" in text
+        assert "liveness" in text.lower()
 
 
 def test_cross_document_links_resolve():

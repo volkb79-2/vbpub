@@ -44,17 +44,15 @@ oracle; a passing cockpit command is not gate evidence.
 - [x] Hypothesis covers CIU, CMRU, and the shared library.
 - [~] R0, R1, R2, and R3 lanes are declared and resumable in both
       `assay.toml` files, with snapshot, coverage, mutation, and canary
-      contracts. CIU has one complete green tester-unified run on commit
-      `20236e43`; after syncing the latest `main`, its merge-commit run was
-      inconclusive (`NO_MUTANTS`) and needs a post-merge-base rerun. CMRU's
-      final tester-unified run is still pending.
+      contracts. CIU now has a complete green tester-unified run on post-sync
+      commit `33dbc009`; CMRU's liveness/fail-fast lane hardening is locally
+      tested, but its final tester-unified run is still pending.
 - [x] Full branch coverage is green in the local full-suite equivalents:
       CIU, CMRU, and the shared library each report 100% line and branch
       coverage.
-- [~] A fresh adversarial review found and closed the mutation-oracle gap, then
-      found an Assay merge-commit boundary that makes the post-sync R2 result
-      inconclusive. The final non-merge feature commit and CMRU gate remain
-      outstanding.
+- [~] A fresh adversarial review found and closed the mutation-oracle gap and
+      the Assay merge-commit boundary. CIU's final post-sync gate is green;
+      CMRU's final tester-unified gate remains outstanding.
 
 ## Adversarial review checkpoint (2026-09-20, before tester-unified execution)
 
@@ -88,8 +86,9 @@ superseded by the 2026-09-22 evidence below.
   measures a merge commit's first-parent payload, which contains no changed
   CIU source here. This run is not accepted as a green for the branch.
 - The `main` sync itself had no merge conflicts. A review-ledger follow-up
-  commit will make `HEAD` non-merge so Assay can resolve the feature fork
-  point, then CIU and CMRU will be rerun on that final tree.
+  commit (`33dbc009`) made `HEAD` non-merge so Assay could resolve the feature
+  fork point. The resulting final CIU gate is green; CMRU's final run remains
+  pending after explicit liveness/fail-fast protections were added.
 
 ## Evidence log
 
@@ -117,6 +116,21 @@ run.
   first parent `20236e43`. This is a measurement-boundary failure, not a
   passing R2 result. Full container log:
   `/tmp/run-gate/run-gate-vbpub-ciu-1960924-1790066446.log`.
+- CIU gate after the non-merge follow-up:
+  `CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py ciu` → container
+  `run-gate-vbpub-ciu-1997513-1790068325`, exit `0`, verdict PASS on
+  `33dbc009f92a052b45fda6de53929062c74bdce7`. Assay resolves the intended
+  merge base `d05939b9`. R0–R3 all PASS; R0 full-source coverage is 11,189 /
+  11,189 statements and 4,474 / 4,474 branches; R1 is 799 / 799 changed
+  executable lines and 122 / 122 branches; R2 killed all 64 candidates with
+  zero survivors, hangs, crashes, or budget overruns; R3 import-break PASS.
+  Verdict: `ciu/.assay/verdict-ciu.json`.
+- CMRU's Assay lane previously relied on liveness `auto` inference and lacked
+  an explicit first-failure limit. The lane now explicitly enables liveness
+  and `--maxfail=1`; the supplemental coverage/mutation/canary test commands
+  also fail fast. The CMRU config/doc/transaction contract slice is green
+  (`111 passed`), as is the CIU documentation/spec contract slice (`89
+  passed`). Final CMRU tester-unified execution is still pending.
 - That run also emitted a cgroup-admission warning because the private
   devcontainer namespace did not expose the host slice's `memory.max`; the
   configured `dev-gates.slice` parent was passed to Docker, and the gate used
