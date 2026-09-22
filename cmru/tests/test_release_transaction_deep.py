@@ -72,6 +72,27 @@ def test_create_resume_and_remove_workspace_are_real_git_lifecycle(tmp_path):
     assert not workspace.path.exists()
 
 
+def test_list_cmru_workspaces_accepts_legacy_purpose_with_transaction_branch(tmp_path):
+    from worktree import create_workspace, remove_workspace
+
+    root = _repo(tmp_path)
+    context = create_workspace(
+        root,
+        root / ".worktrees" / "cmru-release-legacy-purpose",
+        branch="cmru-release-legacy-purpose",
+        base="HEAD",
+        purpose="cmru-legacy",
+    )
+
+    listed = transaction.list_cmru_workspaces(root)
+
+    assert len(listed) == 1
+    assert listed[0].branch == context.branch
+    assert listed[0].base == context.base_commit
+    assert listed[0].context == context
+    remove_workspace(context)
+
+
 def test_create_workspace_captures_reset_diagnostics_and_cleans_failed_allocation(
     monkeypatch, tmp_path
 ):

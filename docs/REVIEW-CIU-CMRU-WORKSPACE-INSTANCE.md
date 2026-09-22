@@ -226,7 +226,7 @@ build-discard call paths.
 
 - **CIU specification:** S16 and the shared-inventory references remain in
   sync with the CIU adapter. The full local suite is the behavioral check for
-  CIU; its doc/spec contract slice is `89 passed`.
+  CIU; the latest cross-document contract slice is `10 passed`.
 - **CMRU specification:** S-CLI.4 previously described Git's `prunable` bit as
   current-view visibility and encoded the false status in `visible`. A broken
   linked-worktree `.git` back-link can produce `prunable` while the checkout
@@ -266,7 +266,7 @@ build-discard call paths.
   uniqueness is now enforced by neutral `list_workspaces()` before any adapter
   can collapse records into a map.
 - **Local evidence after these fixes:** CIU `3880 passed`, 100% line/branch
-  coverage (11,176 statements / 4,452 branches); CMRU `1883 passed, 10
+  coverage (11,176 statements / 4,452 branches); CMRU `1885 passed, 10
   skipped`, 100% line/branch coverage (7,633 statements / 2,814 branches); the
   library `58 passed`, 100% line/branch coverage (583 statements / 202
   branches). After the final code/docs edits, CIU cross-document contracts
@@ -277,5 +277,24 @@ build-discard call paths.
   `b9cad87c31f4e55e70b31665e3a32ac4bef1c5f1`, container
   `run-gate-assay-selfhosted-2297444-13689-1790079347`, exit `0`. Its output
   includes an Assay B006(a) CMRU qualification receipt; that is not the final
-  CMRU product `assay` lane. This pass's final CMRU `gate` and CIU `ciu` lanes
-  have not yet run; local results are not substitutes for them.
+  CMRU product `assay` lane.
+
+## Product-gate R2 follow-up (2026-09-22)
+
+- The first serialized CMRU aggregate on `84b7919d124684c0a53feb65f5cc8de181c249ff`
+  stopped at its first `assay` sub-lane; later CMRU sub-lanes and CIU were not
+  launched. Named container `run-gate-vbpub-assay-2475105-1790083264` exited
+  `1` with `MUTANTS_SURVIVED`: R0 and R1 passed, R2 considered 71 candidates,
+  with 69 killed and two survived; there were no crashes or hangs. The runner
+  reported peak memory of 932 MiB and 8 seconds of memory-full stall; this was
+  a mutation-oracle failure, not a resource/PID termination.
+- The survivors exposed two missing behavioral oracles: CMRU CLI line 2333
+  (`And -> Or`) could print a build-discard command for a prunable registration;
+  `transaction.py` line 1286 (`Or -> And`) rejected a valid `cmru-legacy`
+  record on a transaction branch. Added explicit regressions for withholding
+  discard on prunable build inventory and accepting a correctly scoped legacy
+  record. The focused regressions passed, followed by CMRU `1885 passed, 10
+  skipped` at 100% line/branch coverage (7,633 statements / 2,814 branches).
+- The R2 closures are in the next commit; the complete CMRU aggregate and CIU
+  R0-R3 gate runs remain pending and will run serially. Local green status does
+  not substitute for those external gate results.

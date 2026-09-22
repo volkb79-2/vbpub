@@ -651,9 +651,11 @@ At the 2026-09-20 checkpoint, the cockpit lacked the host-provided
 `$CGROUP_PARENT_DEV_GATES` value and the tester-unified lanes refused before
 launch. That checkpoint is superseded by the 2026-09-22 continuation in the
 review ledger: the Assay self-hosted lane now passes with the explicit
-`dev-gates.slice` parent, and the final CMRU aggregate plus CIU R0-R3 gate runs
-are being performed serially on the latest review fixes. No gate is run in the
-devcontainer itself; its work is a cockpit for the dedicated gate launcher.
+`dev-gates.slice` parent. The first final CMRU aggregate reached R0/R1 but
+failed R2 on two surviving mutants; both behavioral-oracle gaps are fixed in
+the latest commit, and CMRU must be rerun before the serialized CIU R0-R3 gate.
+No gate is run in the devcontainer itself; its work is a cockpit for the
+dedicated gate launcher.
 
 ## Out of scope
 

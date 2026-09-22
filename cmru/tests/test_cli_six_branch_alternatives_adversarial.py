@@ -74,6 +74,23 @@ def test_worktrees_withholds_action_for_prunable_registration(monkeypatch, tmp_p
     assert "Git marks this worktree registration prunable" in output
 
 
+def test_worktrees_withholds_build_discard_for_prunable_registration(
+    monkeypatch, tmp_path, capsys
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "build", "cmru-build-abc", "a" * 40,
+        is_prunable=True,
+    )
+    monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
+    monkeypatch.setattr(transaction, "list_cmru_workspaces", lambda _: [workspace])
+
+    cli.main(["worktrees"])
+
+    output = capsys.readouterr().out
+    assert "action: withheld" in output
+    assert "--discard-build-worktree" not in output
+
+
 def test_worktrees_unknown_purpose_prunable_path_reports_registration_state(monkeypatch, tmp_path, capsys):
     workspace = transaction.ReleaseWorkspace(
         tmp_path, tmp_path / "missing", "cmru/other/x", "a" * 40,
