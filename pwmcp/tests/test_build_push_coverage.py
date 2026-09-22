@@ -143,6 +143,10 @@ def test_assert_remote_builder_accepts_configured_endpoint() -> None:
     build_push._assert_remote_builder(_config(), REMOTE_INSPECT)
 
 
+def test_assert_remote_builder_ignores_unstructured_lines() -> None:
+    build_push._assert_remote_builder(_config(), "unstructured diagnostic\n" + REMOTE_INSPECT)
+
+
 @pytest.mark.parametrize(
     "output",
     [
