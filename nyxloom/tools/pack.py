@@ -16,6 +16,18 @@ are load-bearing — do not "improve" a rule without a new measurement.
     pack.py verify <out-dir>
     pack.py score  <out-dir> --transcript <jsonl>
 
+`--out-dir` DEFAULT — CURRENT vs. FUTURE DIRECTION (NL-19, 2026-09-22): the
+default today is `<repo>/nyxloom-trove/orientation/<handoff-slug>/`, chosen
+because a carve-stage pack is built before any worktree exists. Operator
+observation the same date: in practice a pre-built pack is mostly useful to
+implementer/reviewer agents, and BY THE TIME one of those runs, its worktree
+already exists — so a worktree-local default (e.g. `.worktrees/<branch>/tmp/`)
+would scope a pack's lifetime to the package that actually consumes it,
+instead of it persisting in the shared trove tree indefinitely. Not changed
+yet — filed as a proposal on NL-19, to be considered together with the
+separate upcoming `cli-extended` adoption rather than in isolation. See the
+comment at this file's out_dir default computation in `cmd_build`.
+
 WHY EACH READ-LIST RULE EXISTS
 ------------------------------
 E-002 (REDEFINED) — "Read-list derivation (no model) … the list is data, produced by
@@ -1383,6 +1395,17 @@ def cmd_build(args) -> int:
         print("  (dry run — nothing written)")
         return 0
 
+    # FUTURE DIRECTION (operator note, 2026-09-22, NL-19): this default puts a
+    # carve-stage pack under the shared trove tree even though, by the time an
+    # implementer/reviewer actually reads it, its OWN worktree already exists
+    # (carve happens on main, before dispatch). A worktree-local default —
+    # `.worktrees/<branch>/tmp/` or similar, once a package's worktree is
+    # known — would keep a pack's lifetime scoped to the package that
+    # consumes it instead of accumulating in the shared trove indefinitely.
+    # Not changed here: needs a real trove-root/worktree-root convention
+    # decision (see NL-19), and should be considered alongside `cli-extended`
+    # adoption (a separate upcoming change to how this tool's CLI surface is
+    # invoked) rather than in isolation.
     out_dir = Path(args.out_dir) if args.out_dir else (
         root / "nyxloom-trove/orientation" / pack.handoff.slug)
     out_dir = out_dir if out_dir.is_absolute() else root / out_dir
@@ -1580,6 +1603,54 @@ def cmd_verify(args) -> int:
 
 # ---------------------------------------------------------------------------
 # score (E-006 Task B)
+#
+# KNOWN LIMITATIONS (found during a 2026-09-22 review, before trusting this
+# command's numbers for a pack-effectiveness retrospective — see the NL-19
+# backlog entry's analysis section for the full writeup):
+#
+# 1. "used" == present in `transcript_readset`, which only sees `Read` tool
+#    calls and a Bash command shelling out through one of a fixed allowlist
+#    (cat/head/sed/grep/...). It is BLIND to the native `Grep`/`Glob` tools —
+#    the ones a coding agent's own system prompt tells it to PREFER over Bash
+#    ("prefer dedicated tools over Bash"). A file the agent searched via the
+#    native Grep tool and never separately Read scores as "unused" even
+#    though the agent genuinely engaged with it.
+# 2. STRUCTURAL: this tool's entire value proposition is eliminating the
+#    NEED for a separate Read call — full file content is already inline in
+#    pack.md's context. "used" is defined by the presence of exactly that
+#    now-unnecessary redundant tool call. A perfectly-curated pack, read once
+#    by the agent purely from its own inlined context with zero follow-up
+#    Read calls, scores as "unused" — the algorithm's WORST score for the
+#    BEST outcome. Do not read a high "unused" count as proof of a bad pack
+#    without checking whether the content was genuinely never engaged with,
+#    or just never re-fetched because it didn't need to be.
+# 3. A raw occurrence COUNT, no depth/impact weighting: one glance to check a
+#    line count and ten reads that shaped the final diff score identically.
+# 4. Single-`--transcript` assumption: a checkpoint-resumed package (this
+#    repo's OWN standing discipline for long-running agents) spans multiple
+#    transcript files. Scoring only the final segment under-counts every
+#    read that happened before the resume, inflating "missing"/"unused" for
+#    exactly the packages disciplined enough to checkpoint.
+# 5. File-level granularity for a `slice`: a same-path hit in `read` counts
+#    as "used" even if the agent read a DIFFERENT line range than the one
+#    actually packed — a false positive for "the slice was well-chosen".
+# 6. Corollary of #1/#2: an `Edit` tool call requires an exact byte-match
+#    against current content, so the agent MUST have seen it somehow — but
+#    if that was via inlined pack content or a native Grep, the edit leaves
+#    no Read/Bash trace either, so this cannot be recovered after the fact.
+#
+# Alternatives worth weighing before leaning on this as a primary metric:
+# citation-based scoring (cross-check the agent's final REPORT/diff for
+# file:line references against the pack, closer to actual influence than
+# tool-call presence); extending `compute_readset` to also cover native
+# Grep/Glob tool_use blocks (closes #1 directly, still leaves #2-#6);
+# outcome-based comparison (context growth / checkpoint count / tool-call
+# count between dispatches with a well-curated vs. poorly-curated pack, via
+# jsonl-metrics.py's own `curve`/`boundaries`, rather than input-side
+# file-touch presence); or the cheapest option, the dispatch prompts' own
+# requested "E-002 telemetry section" in each implementer's REPORT — a
+# direct self-report of which pack sections were essential vs. dead weight,
+# which sidesteps all six issues above at the cost of self-report bias.
 # ---------------------------------------------------------------------------
 
 def _load_metrics():

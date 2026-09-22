@@ -32,6 +32,14 @@ Target: `<trove>/orientation/<slug>/{pack.md,read-list.txt}` (+
 `sweep-tables.md` when the carve rests on a measured sweep — persist those tables
 verbatim from controller context, they exist nowhere else).
 
+**Future direction (NL-19, 2026-09-22, not yet implemented):** this default sits
+in the shared trove tree because a carve-stage pack is built before any worktree
+exists. Operator observation: a pre-built pack is mostly useful to implementer/
+reviewer agents, and by the time one of those runs, its own worktree already
+exists — so a worktree-local target (e.g. `.worktrees/<branch>/tmp/`) would scope
+a pack's lifetime to the package that consumes it. Filed on NL-19, to be weighed
+together with the separate upcoming `cli-extended` adoption rather than alone.
+
 ## Curation rules (measured, E-002/E-006/E-007)
 - **FULL files for the edit set**; generous slices for read-only context. State in
   the header: slices of edit targets are comprehension-only (Edit needs byte-exact

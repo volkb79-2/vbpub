@@ -104,3 +104,41 @@ add one.
 ## Updates
 
 **2026-09-22** — jsonl-metrics.py moved alongside pack.py (2026-09-22), same reasoning: a generic Claude Code transcript-metrics tool with one dstdns-hardcoded constant, REPO_ROOT_PREFIXES = ("/workspaces/dstdns/",) -- identical shape to pack.py's ABS_REPO_PREFIX. Both files now co-located at tools/{pack,jsonl-metrics}.py, which incidentally resolved the two xfail tests filed at the original move (score's co-location requirement is satisfied again) -- test_pack.py is 33/33 passing, no xfails remain. The genericization-gap options (a/b/c) in this entry's body apply identically to both hardcodes now.
+
+**2026-09-22** — Operator proposal, 2026-09-22 (worktree-local pack placement): agreed the
+carve-stage-before-worktree-exists rationale for today's shared-trove default,
+but observed that in practice a pre-built pack is mostly useful to
+implementer/reviewer agents, and by the time either runs, its own worktree
+already exists. Proposal: default `--out-dir` to a worktree-local path (e.g.
+`.worktrees/<branch>/tmp/`) instead of `<repo>/nyxloom-trove/orientation/<slug>/`,
+so a pack's lifetime is scoped to the package that consumes it rather than
+persisting indefinitely in the shared trove tree (relevant to this entry's own
+option (a)/(b) trove-root discussion, and a mitigation for the B101
+repository-snapshot-budget growth problem dstdns is separately tracking, since
+fewer trove-tree writes over time means a smaller git-ancestor-history object
+closure for lanes that snapshot the whole repo).
+
+Not implemented — noted here as a direction only. `pack.py`'s own docstring and
+the `cmd_build` out_dir default now carry a pointer comment to this entry
+(vbpub tools/pack.py), and both nyxloom-pack SKILL.md copies (vbpub canonical +
+dstdns vendored) note it too.
+
+Also flagged for awareness, not yet detailed: a future `cli-extended` adoption
+is coming up per the operator, which should be weighed together with any
+out-dir/trove-root redesign here rather than decided in isolation. No further
+detail available on `cli-extended` at filing time -- whoever picks this entry
+back up should ask the operator for specifics before assuming a shape.
+
+**2026-09-22** — Effectiveness-analysis sub-thread started (operator request, 2026-09-22):
+nyxloom-trove/reports/NL-19-pack-orientation-effectiveness/README.md has the
+methodology, eligibility table, and a corrected finding worth flagging
+directly: ALL of Wave B2 T1 (P194/195/196/197/198/199/201) actually DID have
+at least one pack.py-built orientation pack (implementer, several also
+reviewer) -- contradicting an assumption that T1 used no pack. T2 (P202/P203,
+in flight) is the one with NO pack.py orientation found. Also: jsonl-metrics.py
+cmd_curve gained a --raw flag this session (full per-call (idx,ts,context)
+series, JSON-only) to support an x=call_idx/y=context plot -- cmd_boundaries
+already provided the semantic-checkpoint overlay, no gap there. See the
+report folder for full detail; remaining work (matching packs to actual
+consuming subagent transcripts, running curve/boundaries/score per package,
+rendering the plot) is queued there, not yet executed.

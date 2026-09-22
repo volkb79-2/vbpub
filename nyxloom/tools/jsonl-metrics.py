@@ -228,7 +228,19 @@ def cmd_curve(args):
         calls = load_calls(path)
         summ = agent_summary(calls)
         growth = growth_table(calls) if calls else {}
-        out[path.name] = dict(summary=summ, growth=growth)
+        entry = dict(summary=summ, growth=growth)
+        if getattr(args, "raw", False):
+            # NL-19: the full per-call series, for an x=call_idx / y=context plot --
+            # growth_table()'s 5-point percentile summary can't reconstruct this.
+            entry["raw_series"] = [
+                dict(idx=c.idx, ts=c.ts.isoformat(), context=c.context) for c in calls
+            ]
+        out[path.name] = entry
+
+    if args.raw and not args.json:
+        print("curve: --raw requires --json (the raw series is not rendered in text mode)",
+              file=sys.stderr)
+        return 2
 
     if args.json:
         print(json.dumps(out, indent=2))
@@ -1677,6 +1689,11 @@ def main():
     p_curve = sub.add_parser("curve", help="per-agent context-growth summary")
     p_curve.add_argument("files", nargs="+")
     p_curve.add_argument("--json", action="store_true")
+    p_curve.add_argument("--raw", action="store_true",
+                          help="also emit the full per-call (idx, ts, context) series "
+                               "for point-by-point plotting (NL-19, 2026-09-22) -- "
+                               "requires --json; the percentile summary alone cannot "
+                               "reconstruct an x=call-index/y=context-size curve")
     p_curve.set_defaults(func=cmd_curve)
 
     p_sim = sub.add_parser("simulate", help="checkpoint-restart cost simulation")
