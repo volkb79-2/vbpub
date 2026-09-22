@@ -2784,3 +2784,149 @@ verb, and a proposed centralized process/resource-registry service (with
 alternatives considered and a phased implementation plan) are in
 [`design-session-introspection-and-process-registry.md`](design-session-introspection-and-process-registry.md) —
 not started, captured for later revisiting.
+
+## E-018 (proposed, not yet run) · recon-agent-driven orientation packs, replacing hand-authored curation heuristics
+
+Surfaced by the operator (2026-09-22) directly in response to E-006/NL-19's own
+findings: `pack.py`'s read-list is derived from a FIXED set of mechanical rules
+against handoff structure (scope.touch → full file, "Context to read first" →
+slice, `decisions.md` D-refs → D-section slice, gate-adjacent artifacts →
+always-include). That rule set has already needed five documented extensions
+(E-002 addenda 4–7) and still produces real cost blowups with no ceiling — P194's
+protected core alone measured ~660k tokens before any `--extra` additions,
+substantially because `decisions.md` grows unboundedly and "scope.touch → full
+file" has no size cap. The operator's framing: "our python pack script can only
+be so smart making mechanical assumptions. packing large files might be a bad
+idea as well."
+
+**Hypothesis**: a cheap, disposable model (Haiku) given the same handoff and
+instructed to explore only — read/search/grep whatever it judges necessary to
+be "ready to implement," then stop without editing anything — will produce a
+MORE ACCURATE curation signal than a fixed heuristic set, because it is doing
+real task-relevance judgment (even if a shallower one than the eventual
+Sonnet/Opus implementer would make) at a small fraction of the cost. Crucially,
+this needs no new capture mechanism: a dispatched Agent-tool subagent's own
+transcript already persists independently (E-015) and is directly readable by
+`jsonl-metrics.py compute_readset()` — once that function is extended to see
+native Grep/Glob tool_use blocks, a gap already named in NL-19 and now doubly
+motivated by this experiment.
+
+**Proposed protocol**:
+1. Dispatch a Haiku "recon" agent with the handoff (no scope.touch heuristics,
+   no pre-built pack) and an explicit contract: explore only, never Edit/Write,
+   emit a clear terminal signal ("ready to implement") when done — mirroring
+   this project's existing BLOCKED/`escalate_if` convention for a structured
+   stop condition rather than an ad-hoc one.
+2. New `pack.py` build mode, `pack.py build --from-transcript <recon-jsonl>
+   --role implementer`: run the (Grep/Glob-extended) readset extraction against
+   the recon transcript instead of the handoff-heuristic derivation, and
+   assemble the pack from those files (still verbatim, still zero model tokens
+   at assembly time — only the recon PASS spends model tokens, cheaply).
+3. Dispatch the real implementer with that pack.
+4. Optional lever, not required for step 1–3 to be worth trying: a single
+   no-op call with the assembled pack loaded primes a cache snapshot; future
+   agents on a SIMILAR task fork from that snapshot instead of re-paying the
+   read cost. This is not a new mechanism — it's the already-validated B1
+   orientation-snapshot-fork pattern (`design-context-lifecycle.md`, V3/V4
+   addenda in this doc) — the only new part is that the snapshot's CONTENT
+   would be recon-agent-sourced rather than hand-curated.
+
+**Costs/risks, named rather than hidden**: a cheap model may explore less
+thoroughly than the real implementer needs — a recon trace is a plausible
+FLOOR on what's needed, not a ceiling, and could systematically miss what a
+human-authored heuristic reliably catches (e.g., scope.touch's guarantee that
+every edit target is present). It adds one sequential dispatch and wall-clock
+hop per package. MCP tool use during recon is plausible in principle (the
+operator's own suggestion) but no MCP server currently attached to this
+project is relevant to dstdns codebase exploration (pwmcp is browser/UI
+testing only) — noted as forward-looking, not load-bearing today.
+
+**Oracle / what a result would change**: on a matched pair of similar-
+complexity packages, compare (a) today's handoff-heuristic pack against (b) a
+recon-agent-derived pack, using `pack.py score` (non-authoritative alone — see
+its own documented limitations, `vbpub@67aa8794`) PLUS an outcome measure: does
+the real implementer's own subsequent Read/Grep footprint on already-packed
+files shrink, and does its `jsonl-metrics.py curve`/`cmd_boundaries` context-
+growth/checkpoint profile improve. High overlap between the recon-derived
+read-list and what the real implementer independently needed, plus a
+measurably lower follow-up-read count, would make this a real replacement
+candidate. A recon trace dominated by cheap-model noise (speculative reads it
+didn't need) or misses on files the heuristic reliably catches would be a
+genuine negative result worth recording as such, not silently dropped.
+
+**Status**: not run. Blocked on the operator's own current directive
+(2026-09-22): pack-orientation is PAUSED for all live dispatches — see the
+dstdns `nyxloom-dispatch` skill's pause note — pending exactly this kind of
+improved mechanism or a decision not to pursue one. Tracked as nyxloom
+backlog feature `NL-21` (`nyxloom-trove/backlog/NL-21-...md`).
+
+## E-019 (proposed, not yet run) · surface a tool_use's own natural-language intent instead of discarding all tool activity as noise
+
+Surfaced the same session as E-018, a related but distinct idea: `nyxloom
+extract`'s `session_extract` module discards ALL tool_use/tool_result content
+by explicit design — its own `EventKind` docstring states "Adapters never
+emit a kind for tool_use/tool_result content that isn't one of the above ...
+that's the noise this whole tool exists to discard" (`session_extract/
+events.py`), and every dropped run of calls collapses into a bare `"[gap: N
+records omitted]"` count (`session_extract/render.py`) with no attempt to
+characterize WHAT happened in the gap. The operator's framing: "a mechanical
+tool cannot interpret and summarize what a tool call was and its result" —
+true in general, and the deliberate reason `session_extract` draws its line
+where it does.
+
+**But it is not true for every tool call, and the signal already exists
+today, unused.** Verified against this session's own subagent transcripts
+(`~/.claude/projects/-workspaces-dstdns/<session>/subagents/*.jsonl`): every
+single Bash tool_use block carries a `description` field — Claude Code's own
+Bash-tool schema requires one ("Clear, concise description of what this
+command does in active voice") — and the Task/Agent tool likewise requires a
+short `description`. Sampled real values from this session: "Verify
+test-runner lane collects tests/config", "Confirm O2 coverage and size delta",
+etc. — genuinely legible, human-authored intent strings, sitting in the raw
+JSONL right now, that `session_extract` currently throws away along with
+everything else in a gap.
+
+**A working precedent for the general shape already exists in this very
+project** (and independently in another repo the operator pointed at,
+`netcup-api-filter/.vscode/{copilot-plan,copilot-cmd}.sh` — same pattern,
+different repo): dstdns's own `.vscode/copilot-cmd.sh` wrapper, built for a
+policy-constrained shell-command agent, sources `COPILOT_PLAN` (the intent)
+and `COPILOT_EXEC` (the command) from `copilot-plan.sh` and echoes both to the
+same stdout stream (`[PLAN] ...` then `[EXEC] ...`) before running the
+command. Not currently in Claude Code's own Bash-tool code path (Claude Code
+invokes bash directly, not through this wrapper) — but it is direct, already-
+working proof that "annotate intent alongside the action, mechanically
+legible" is a pattern this project already trusts for at least one other
+agent.
+
+**A related empirical check, relevant to E-006/NL-19's `score` critique**:
+grepped all 151 top-level subagent transcripts under this session's own
+`subagents/` directory for native `Grep`/`Glob` tool_use — zero hits; every
+one of the 151 that searched at all did so via Bash-shelled `grep`/`find`
+instead. So `jsonl-metrics.py`'s Grep/Glob blind spot (`pack.py score`
+limitation #1, `vbpub@67aa8794`) is a real code-level gap but has not, so far,
+caused any actual measurement error in THIS project's own corpus — worth
+re-checking if agent tool-use habits shift, not urgent to fix on that basis
+alone.
+
+**Proposal**: extend `session_extract`'s selection to optionally KEEP a
+Bash/Task tool_use's own `description` as a new lightweight `EventKind` (e.g.
+`TOOL_INTENT`) instead of folding it into the anonymous gap count — one short
+string per call, not the full tool_use/tool_result payload, so it stays
+cheap. A rendered gap could then read "[gap: 20 records omitted — intents:
+Verify test-runner lane collects tests/config; Confirm O2 coverage and size
+delta; ...]" instead of a bare count. Read/Edit/Write/Grep/Glob have no
+free-text intent field today, so calls of those kinds would still collapse to
+a bare count unless a future Claude Code version adds one, or dstdns's own
+agents are asked to state intent in adjacent assistant text as a behavioral
+convention rather than a schema change.
+
+**Oracle**: does a rendered gap block with intents attached actually help a
+human (or a downstream mechanical tool) answer "what happened here" better
+than a bare count, tested against one of this project's own real long
+Bash-heavy gap segments, rendered both ways side by side.
+
+**Status**: not run, not built. Smaller and lower-risk than E-018 — touches
+`session_extract` only, does not depend on the pack-orientation pause and
+could proceed independently of it. Tracked as nyxloom backlog feature `NL-22`
+(`nyxloom-trove/backlog/NL-22-...md`).
