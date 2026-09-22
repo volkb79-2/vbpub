@@ -6,21 +6,20 @@ description: Assemble a verbatim orientation pack for a nyxloom package (E-002/E
 > **Tool versions as of last verified update (2026-09-22):** relocated here
 > from dstdns (`nyxloom-trove/orientation/pack.py`) — it was always a generic
 > nyxloom mechanism, just originally written and left inside the one project
-> that used it first. Lives at `tools/pack.py` (+ `tools/test_pack.py`),
-> `{build,delta,verify,score}` with `build --role` accepting
+> that used it first. `jsonl-metrics.py` (also dstdns-local, also generic:
+> a Claude Code transcript-metrics tool) moved alongside it the same day,
+> restoring `score`'s co-location requirement. Lives at `tools/pack.py` +
+> `tools/jsonl-metrics.py` (+ `tools/test_pack.py`), `{build,delta,verify,
+> score}` all verified present and usable, `build --role` accepting
 > `implementer|carver|reviewer`. **Not yet wired into the `nyxloom` CLI
 > itself** — that integration (a `nyxloom pack` verb vs. staying a standalone
 > script every project invokes by absolute cross-repo path, matching how
 > `cgprofile`/`pwmcp-fetch` are consumed today) is an open decision, tracked
-> in the nyxloom backlog (filed 2026-09-22 alongside this move — check
-> `nyxloom-trove/backlog/` for the current entry before assuming either
-> direction). Two known genericization gaps discovered during the move, both
-> named in that entry: `ABS_REPO_PREFIX` hardcodes `/workspaces/dstdns/`, and
-> the `score` subcommand hard-requires a co-located `jsonl-metrics.py` (which
-> stays in dstdns per a separate, still-standing cross-repo placement
-> decision — `score` is `xfail`-marked here for exactly that reason, not
-> broken by the move itself). Re-verify against `tools/pack.py --help` if
-> this drifts.
+> in the nyxloom backlog (`nyxloom-trove/backlog/` — NL-19). One known
+> genericization gap remains, named there: both `pack.py`'s
+> `ABS_REPO_PREFIX` and `jsonl-metrics.py`'s `REPO_ROOT_PREFIXES` hardcode
+> `/workspaces/dstdns/` rather than deriving the target repo's root. Re-verify
+> against `tools/pack.py --help` if this drifts.
 
 > **Canonical, repo-agnostic skill.** The pipeline SHAPE is universal to any
 > nyxloom-registered project; substitute the target repo's own trove paths.

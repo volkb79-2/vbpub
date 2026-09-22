@@ -591,14 +591,6 @@ def _synthetic_transcript(path: Path, reads: list[str], bash: list[str]) -> None
     path.write_text("\n".join(lines) + "\n")
 
 
-@pytest.mark.xfail(
-    reason="pack.py's score command requires a co-located jsonl-metrics.py; "
-    "that file remains in dstdns (nyxloom-trove/orientation/jsonl-metrics.py) "
-    "per an existing cross-repo placement decision, not yet reconciled with "
-    "pack.py's relocation here -- see the NL backlog entry filed alongside "
-    "this move (2026-09-22).",
-    strict=True,
-)
 def test_score_computes_used_unused_missing(repo: Path, tmp_path, monkeypatch, capsys):
     out = tmp_path / "packdir"
     p = _write_pack(repo, "implementer", out)
@@ -649,14 +641,6 @@ def test_normalize_read_path_folds_worktree_and_absolute_prefixes():
     assert pack.normalize_read_path("src/widget.py") == "src/widget.py"   # already canonical
 
 
-@pytest.mark.xfail(
-    reason="pack.py's score command requires a co-located jsonl-metrics.py; "
-    "that file remains in dstdns (nyxloom-trove/orientation/jsonl-metrics.py) "
-    "per an existing cross-repo placement decision, not yet reconciled with "
-    "pack.py's relocation here -- see the NL backlog entry filed alongside "
-    "this move (2026-09-22).",
-    strict=True,
-)
 def test_score_folds_worktree_path_duplicate_into_canonical_read(
         repo: Path, tmp_path, monkeypatch, capsys):
     """The measured P113 artifact: the same file read twice, once via a

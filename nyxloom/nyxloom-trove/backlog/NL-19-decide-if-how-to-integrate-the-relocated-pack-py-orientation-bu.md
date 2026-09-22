@@ -100,3 +100,7 @@ None yet — no nyxloom SPEC.md/ARCHITECTURE.md section currently describes
 orientation-pack assembly as a first-class nyxloom capability (it lives only
 in the `nyxloom-pack` skill's own prose). Whichever option is picked should
 add one.
+
+## Updates
+
+**2026-09-22** — jsonl-metrics.py moved alongside pack.py (2026-09-22), same reasoning: a generic Claude Code transcript-metrics tool with one dstdns-hardcoded constant, REPO_ROOT_PREFIXES = ("/workspaces/dstdns/",) -- identical shape to pack.py's ABS_REPO_PREFIX. Both files now co-located at tools/{pack,jsonl-metrics}.py, which incidentally resolved the two xfail tests filed at the original move (score's co-location requirement is satisfied again) -- test_pack.py is 33/33 passing, no xfails remain. The genericization-gap options (a/b/c) in this entry's body apply identically to both hardcodes now.
