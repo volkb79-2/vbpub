@@ -2,18 +2,23 @@
 
 ## 1. Modes and boundaries
 
-`install-host.py` has four distinct responsibilities:
+`install-host.py` exposes three workflow verbs and one compatibility alias:
 
-1. `wizard`: resolve a target, gather and validate an installation plan, write
-   a reviewed `target-host.jsonc`, confirm, submit the image install, and
-   optionally monitor the provider task/customScript contract.
-2. `configure`: compatibility alias for `wizard`; it is not a separate
-   server-dependent recipe command.
-3. `install`: read and strictly validate a target config (default
-   `target-host.jsonc`, override with `--config`), submit exactly that image
-   payload, and monitor the resulting task by default.
-4. There is no customScript builder in this frontend. A producer such as
-   Debian v2 emits a JSON bundle; `wizard --custom-script-file` consumes it.
+- `wizard`: resolve a target, gather and validate an installation plan, write
+  a reviewed `target-host.jsonc`, confirm, submit the image install, and
+  optionally monitor the provider task/customScript contract.
+- `install`: read and strictly validate a target config (default
+  `target-host.jsonc`, override with `--config`), submit exactly that image
+  payload, and monitor the resulting task by default.
+- `attach`: SSH-attach to an already installing/installed host and follow its
+  provider customScript log. This path requires an SSH host, makes no Netcup
+  API calls, and never creates an identity key; it uses normal SSH identity
+  discovery unless an existing key is explicitly selected.
+
+`configure` is a compatibility alias for `wizard`, not a separate
+server-dependent recipe command. The frontend has no customScript builder: a
+producer such as Debian v2 emits a JSON bundle, and
+`wizard --custom-script-file` consumes it.
 
 A bare invocation prints usage and performs no authentication or SSH work.
 
@@ -21,10 +26,10 @@ A bare invocation prints usage and performs no authentication or SSH work.
 operations, including power control. `install-host.py` may import shared API
 library functions, but it does not call the CLI executable.
 
-Invalid combinations are rejected before authentication or key work. In
-particular, `--attach-only` cannot be combined with `--config`/`--payload`, normal
-install flags, or configuration commands. `--poweroff` is removed from
-`install-host.py`; operators use `scp-api.py power off SERVER_ID`.
+Invalid combinations are rejected by each verb's parser before authentication
+or key work. SSH attachment is a distinct `attach` verb, not an installer mode
+flag, so install/configuration options are not accepted there. `--poweroff` is
+removed from `install-host.py`; operators use `scp-api.py power off SERVER_ID`.
 
 ## 2. Normal installation sequence
 

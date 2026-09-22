@@ -9,8 +9,8 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 From the repository root, make an isolated environment for these scripts. The
 remaining setup commands below assume the current directory is `scripts/netcup`.
-The task monitor uses the repository's `cli-extended` package, installed in the
-same environment that runs the scripts:
+`scp-api.py`, `install-host.py`, and `monitor-task.py` use the repository's
+`cli-extended` package, installed in the same environment that runs them:
 
 ```bash
 cd scripts/netcup
@@ -18,6 +18,21 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --editable ../../libraries/cli-extended
 ```
+
+All three commands use the family version in `VERSION` and generate their
+grouped usage and verb help from their command registries. Discovery is
+side-effect free and does not require a token or API settings:
+
+```bash
+./scp-api.py --help
+./install-host.py help wizard
+./monitor-task.py --version
+```
+
+Bare invocation prints top-level usage, whose common output options are the
+union supported by the CLI. Use `help VERB` or `VERB --help` for detailed
+command help; that selected-verb help shows which options such as `--json`
+actually apply.
 
 Then create the local secret file. A target is optional in an interactive
 terminal: the installer can ask the authenticated API for a server list later.
@@ -205,6 +220,20 @@ no credential or API work.
 ./monitor-task.py watch TASK_UUID
 ./monitor-task.py watch TASK_UUID --poll 2
 ```
+
+`install-host.py attach` is the SSH-only counterpart for reconnecting to an
+existing install and following its provider customScript output. It requires
+`NETCUP_SCP_API_SSH_HOST` in `.env` or `--ssh-host`, makes no Netcup API calls,
+and never creates a local key. It uses normal SSH identity discovery unless
+you select an existing private key with `NETCUP_SCP_API_SSH_IDENTITY_FILE` or
+`--ssh-identity-file`:
+
+```bash
+./install-host.py attach
+```
+
+The `attach` verb appears in `./install-host.py --help`; it replaces the
+former `--attach-only` mode.
 
 JSON output redacts response fields such as generated root passwords. The
 explicit `--debug-raw` opt-out prints secret-bearing fields and request/response

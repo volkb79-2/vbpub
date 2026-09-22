@@ -112,33 +112,47 @@ contains installer/SSH policy only, and `monitor-task.toml` contains
 monitor polling only. Frontends import `netcup_scp_client`; they do not shell
 out to `scp-api.py` or duplicate token/configuration setup.
 
-## Task monitor CLI boundary
+## Shared CLI boundary
 
-The task monitor exposes two different operations as verbs: `show TASK_UUID`
-fetches one snapshot, while `watch TASK_UUID` polls until a terminal provider
-state. JSON is a presentation choice on `show`, not a separate operation;
-cancel remains under `scp-api.py tasks cancel`, the API-owning mutation path.
-The `--poll` interval belongs only to `watch` and defaults from
-`monitor-task.toml`.
+All three Netcup entrypoints—`scp-api.py`, `install-host.py`, and
+`monitor-task.py`—use `cli-extended` for identity/version, grouped help,
+registry-backed verb parsing, common output/diagnostic behavior, and clean
+cancellation. Install the package in the same Python environment that runs
+the scripts; they do not add a repository-root import-path fallback. Their
+shared family version comes from `scripts/netcup/VERSION`, not the helper's
+package version.
 
-The monitor uses `cli-extended` to generate command registration, grouped help,
-common diagnostics, JSON output, progress, clean cancellation, and help/version
-behavior from one structured declaration. This is a pilot consumer, not a
-reason for other Netcup CLIs to import a repository path implicitly: the
-package must be installed in the invoking Python environment. Its family
-version is explicitly sourced from `scripts/netcup/VERSION`; the monitor does
-not borrow the helper package's version.
+Each executable registers its verbs, summaries, full descriptions, groups,
+arguments, options, and examples once. `summary_description` keeps the
+top-level catalog concise while command help retains detailed behavior. The
+top-level common output options can show the union supported by the CLI;
+command-specific help is authoritative, and an unsupported mode is rejected
+with that verb's help. Domain handlers still own provider semantics, API and
+config validation, redaction inputs, result schemas, and confirmation timing.
 
-Help, version, and bare invocation construct the interface only. They do not
-load `.env`, read API endpoint or polling settings, obtain a token, or contact
-Netcup. Authentication and settings load inside the selected handler. The
-monitor validates the task UUID and rejects non-object API responses, while
+Bare invocation, help, and version discovery construct the interface only;
+they do not load `.env`, API settings, or credentials, create SSH identities,
+or contact Netcup. Runtime configuration is loaded only after dispatch. The
+`install-host.py attach` verb is a separate exception to the install/API
+workflow: it loads local SSH settings and follows the provider customScript
+log over SSH, but makes no Netcup API calls and never creates an identity key.
+It uses normal SSH key/agent discovery unless an existing identity is
+explicitly selected.
+
+### Task monitor behavior
+
+The task monitor exposes `show TASK_UUID` to fetch one snapshot and
+`watch TASK_UUID` to poll until a terminal provider state. JSON is a
+presentation choice on `show`, not a separate operation; cancellation remains
+under `scp-api.py tasks cancel`, the API-owning mutation path. The `--poll`
+interval belongs only to `watch` and defaults from `monitor-task.toml`.
+
+The monitor validates task UUIDs and rejects non-object API responses, while
 treating missing optional task fields as unknown rather than crashing.
-`cli-extended` owns the invocation shell; the Netcup handler still owns
-provider-specific redaction, field interpretation, request semantics, and the
-meaning of terminal states. `--debug-raw` is deliberately conspicuous because
-both JSON output and shared-client request/response diagnostics can then expose
-secret-bearing task data.
+`cli-extended` owns the invocation shell; the Netcup handler owns response
+field interpretation, request semantics, and terminal-state meaning.
+`--debug-raw` is deliberately conspicuous because both JSON output and shared
+client diagnostics can expose secret-bearing task data.
 
 ## Account-wide API exploration
 

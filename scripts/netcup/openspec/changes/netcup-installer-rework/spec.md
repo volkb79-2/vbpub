@@ -17,6 +17,17 @@ work. `wizard` MUST expose the API-backed gather-and-install flow.
 `--payload` retained as a deprecated alias), and MUST not gather missing
 values interactively.
 
+### Requirement: SSH-only attach verb
+
+`install-host.py attach` MUST require an SSH host from `--ssh-host` or
+`NETCUP_SCP_API_SSH_HOST`, follow the provider customScript output over SSH,
+and make no Netcup API requests. It MUST NOT generate a local identity key.
+When an identity is explicitly supplied by `--ssh-identity-file` or
+`NETCUP_SCP_API_SSH_IDENTITY_FILE`, the path MUST identify an existing valid
+private key; otherwise the command may use normal SSH identity/agent
+discovery. Installer API/config options MUST not turn `attach` into an install
+or API operation.
+
 ### Requirement: interactive target picker
 
 When normal interactive mode has no payload target, explicit server ID, or

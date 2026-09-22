@@ -27,8 +27,12 @@ def _load_module(path: Path, name: str) -> types.ModuleType:
 
 
 @pytest.fixture()
-def install_host_mod():
-    return _load_module(INSTALL_HOST_PATH, "scp_api_install_host")
+def install_host_mod(monkeypatch):
+    mod = _load_module(INSTALL_HOST_PATH, "scp_api_install_host")
+    settings = mod.netcup_scp_client.load_api_settings(NETCUP_DIR / "netcup.toml")
+    monkeypatch.setattr(mod.netcup_scp_client, "BASE_URL", settings["api.base_url"])
+    monkeypatch.setattr(mod.netcup_scp_client, "KEYCLOAK_URL", settings["api.keycloak_url"])
+    return mod
 
 
 @pytest.fixture()
@@ -43,7 +47,11 @@ def explore_mod(monkeypatch):
     # into explorer tests; individual tests opt into the policy explicitly.
     monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVERS", raising=False)
     monkeypatch.delenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", raising=False)
-    return _load_module(EXPLORE_PATH, "scp_api_explore")
+    mod = _load_module(EXPLORE_PATH, "scp_api_explore")
+    settings = mod.netcup_scp_client.load_api_settings(NETCUP_DIR / "netcup.toml")
+    monkeypatch.setattr(mod.netcup_scp_client, "BASE_URL", settings["api.base_url"])
+    monkeypatch.setattr(mod.netcup_scp_client, "KEYCLOAK_URL", settings["api.keycloak_url"])
+    return mod
 
 
 class FakeHTTPResponse:

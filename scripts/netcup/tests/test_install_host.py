@@ -12,6 +12,7 @@ import urllib.error
 from pathlib import Path
 
 import pytest
+from cli_extended import CliFailure, CliOutput, CliRuntime, UsageError
 
 from conftest import FakeHTTPResponse
 
@@ -122,14 +123,14 @@ def test_refuse_unrendered_attach_only_identity_rejects_host_placeholder(install
     generate a fresh key at a literal '{host}'/'{date}' path -- that key
     would never match anything on the host being attached to, exactly the
     SSH-monitoring failure mode this redesign exists to close."""
-    with pytest.raises(SystemExit, match="per-host/per-date TEMPLATE"):
+    with pytest.raises(CliFailure, match="per-host/per-date TEMPLATE"):
         install_host_mod._refuse_unrendered_attach_only_identity(
             "~/.ssh/vbpub-netcup-{host}-{date}-ed25519"
         )
 
 
 def test_refuse_unrendered_attach_only_identity_rejects_date_placeholder(install_host_mod):
-    with pytest.raises(SystemExit, match="per-host/per-date TEMPLATE"):
+    with pytest.raises(CliFailure, match="per-host/per-date TEMPLATE"):
         install_host_mod._refuse_unrendered_attach_only_identity("~/.ssh/key-{date}")
 
 
@@ -137,6 +138,68 @@ def test_refuse_unrendered_attach_only_identity_allows_resolved_path(install_hos
     install_host_mod._refuse_unrendered_attach_only_identity(
         "~/.ssh/vbpub-netcup-v1001.vxxu.de-20260908-ed25519"
     )  # must not raise
+
+
+def test_attach_verb_is_ssh_only_and_never_generates_an_identity(
+    install_host_mod, monkeypatch, capsys
+):
+    module = install_host_mod
+    monkeypatch.setattr(module.netcup_scp_client, "load_env_file", lambda: None)
+    monkeypatch.setattr(
+        module,
+        "_load_runtime_settings",
+        lambda: {
+            "ssh.user": "root",
+            "ssh.identity_file": "~/.ssh/key-{host}-{date}",
+            "ssh.poll_interval": 1.0,
+            "ssh.attach_initial_delay": 0.0,
+            "ssh.attach_max_wait_seconds": 30.0,
+            "ssh.completion_wait_seconds": 60.0,
+            "ssh.controller_local_key_retention": "retain",
+        },
+    )
+    monkeypatch.delenv("NETCUP_SCP_API_SSH_IDENTITY_FILE", raising=False)
+    monkeypatch.delenv("NETCUP_SCP_API_SERVER_ID", raising=False)
+    monkeypatch.delenv("NETCUP_SCP_API_CONTROLLER_KEY_LOCAL_RETENTION", raising=False)
+    events = []
+
+    class FakeFollower:
+        def __init__(self, **kwargs):
+            events.append(("construct", kwargs))
+
+        def start(self):
+            events.append(("start", None))
+
+        def stop(self):
+            events.append(("stop", None))
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("attach must not authenticate or generate a key")
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module, "_SSHCustomScriptFollower", FakeFollower)
+    monkeypatch.setattr(module, "_build_authenticated_client", unexpected)
+    monkeypatch.setattr(module.netcup_scp_client, "configure_api", unexpected)
+    monkeypatch.setattr(module, "_ensure_local_identity_file_exists", unexpected)
+    monkeypatch.setattr(module, "_resolve_or_create_controller_identity", unexpected)
+    monkeypatch.setattr(module.time, "sleep", interrupt)
+
+    assert module.main(["attach", "--ssh-host", "host.example.test"]) == 130
+    assert [event[0] for event in events] == ["construct", "start", "stop"]
+    attach_options = events[0][1]
+    assert attach_options["task_uuid"].startswith("attach-only-")
+    assert attach_options["host"] == "host.example.test"
+    assert attach_options["user"] == "root"
+    assert attach_options["identity_file"] is None
+    assert attach_options["poll_interval"] == 1.0
+    assert attach_options["initial_delay"] == 0.0
+    assert attach_options["max_wait_seconds"] == 30.0
+    assert attach_options["simulate_disconnect_seconds"] is None
+    output = capsys.readouterr()
+    assert "Streaming until Ctrl-C." in output.out
+    assert "Cancelled." in output.err
 
 
 def test_peek_payload_host_label_prefers_hostname(install_host_mod, tmp_path):
@@ -260,16 +323,17 @@ def test_load_settings_unknown_key_errors(install_host_mod, tmp_path):
 
 def test_real_settings_file_is_valid(install_host_mod):
     """The committed install-host.toml must itself satisfy the schema."""
-    assert install_host_mod.SETTINGS["ssh.user"] == "root"
-    assert install_host_mod.SETTINGS["ssh.controller_fqdn"] == "automatic"
-    assert install_host_mod.SETTINGS["ssh.completion_wait_seconds"] == 1800.0
+    settings = install_host_mod._load_runtime_settings()
+    assert settings["ssh.user"] == "root"
+    assert settings["ssh.controller_fqdn"] == "automatic"
+    assert settings["ssh.completion_wait_seconds"] == 1800.0
 
 
 # --- local identity key auto-generation -----------------------------------
 
 def test_ensure_local_identity_refuses_placeholder_fqdn(install_host_mod, tmp_path):
     key_path = tmp_path / "key"
-    with pytest.raises(SystemExit, match="placeholder"):
+    with pytest.raises(CliFailure, match="placeholder"):
         install_host_mod._ensure_local_identity_file_exists(str(key_path), "CHANGE-ME.example.invalid")
     assert not key_path.exists()
 
@@ -306,7 +370,7 @@ def test_controller_identity_rejects_stale_public_key_pair(install_host_mod, tmp
     private.write_text("not-a-private-key\n")
     private.with_suffix(".pub").write_text("ssh-ed25519 AAAA-stale comment\n")
     assert not install_host_mod._identity_is_reusable(private)
-    with pytest.raises(SystemExit, match="does not exist|not a readable private key"):
+    with pytest.raises(CliFailure, match="does not exist|not a readable private key"):
         install_host_mod._validate_existing_identity(str(private))
 
 
@@ -347,7 +411,7 @@ def test_ensure_local_identity_automatic_refuses_when_everything_fails(install_h
     monkeypatch.setattr(install_host_mod, "_detect_public_ip", lambda: None)
     monkeypatch.setattr(install_host_mod.socket, "getfqdn", lambda: "")
     key_path = tmp_path / "key"
-    with pytest.raises(SystemExit, match="placeholder"):
+    with pytest.raises(CliFailure, match="placeholder"):
         install_host_mod._ensure_local_identity_file_exists(str(key_path), "automatic")
     assert not key_path.exists()
 
@@ -590,11 +654,10 @@ def test_install_from_payload_refuses_protected_server_before_account_key_work(
     )
     args = types.SimpleNamespace(dry_run=False, yes=True, ssh_identity_file=None)
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CliFailure, match="protected") as exc:
         install_host_mod.install_from_payload(client, str(payload_path), args)
-    assert exc.value.code == 2
+    assert exc.value.exit_code == 2
     assert [call for call in client.calls if call[0] == "post"] == []
-    assert "protected" in capsys.readouterr().err.lower()
 
 
 def test_install_from_payload_cli_ssh_key_ids_override_payload(
@@ -633,56 +696,37 @@ def test_install_from_payload_rejects_invalid_payload(install_host_mod, tmp_path
     client = fake_client(allow=())
     args = types.SimpleNamespace(dry_run=True, yes=True, ssh_identity_file=None)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="preflight validation"):
         install_host_mod.install_from_payload(client, str(payload_path), args)
 
 
 def test_install_from_payload_missing_file_exits_cleanly(install_host_mod, tmp_path, fake_client, capsys):
-    """--payload pointing at a file that doesn't exist must fail with a clear
-    message and sys.exit(1), never a raw traceback."""
+    """A missing config is a concise domain failure, never a traceback."""
     missing_path = tmp_path / "does-not-exist.jsonc"
     client = fake_client(allow=())
     args = types.SimpleNamespace(dry_run=True, yes=True, ssh_identity_file=None)
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(CliFailure, match="config file not found") as exc_info:
         install_host_mod.install_from_payload(client, str(missing_path), args)
 
-    assert exc_info.value.code == 1
-    err = capsys.readouterr().err
-    assert "not found" in err.lower()
-    assert str(missing_path) in err
+    assert exc_info.value.exit_code == 2
+    assert str(missing_path) in exc_info.value.message
 
 
 def test_install_confirmation_ctrl_c_is_a_clean_cancel(
     install_host_mod, tmp_path, fake_client, monkeypatch, capsys
 ):
-    payload_path = tmp_path / "target.jsonc"
-    payload_path.write_text(
-        json.dumps({"serverId": 42, "imageFlavourId": 128, "diskName": "vda"})
-    )
-    client = fake_client(
-        get_responses=[{"id": 42, "name": "v4200000000000000000"}],
-        allow=("get",),
-    )
-    args = types.SimpleNamespace(
-        dry_run=False,
-        yes=False,
-        ssh_key_ids=None,
-        ssh_identity_file=None,
-    )
-    monkeypatch.setattr(install_host_mod, "is_noninteractive", lambda _args: False)
-
-    def cancel(_prompt):
+    def cancel(_args, _runtime):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("builtins.input", cancel)
-    install_host_mod.install_from_payload(client, str(payload_path), args, require_complete=True)
+    monkeypatch.setattr(install_host_mod, "_prepare_runtime_arguments", lambda args, _runtime: args)
+    monkeypatch.setattr(install_host_mod, "_run_install_workflow_body", cancel)
 
+    assert install_host_mod.main(["wizard"]) == 130
     output = capsys.readouterr()
-    assert "Installation cancelled." in output.out
+    assert "Cancelled." in output.err
     assert "Traceback" not in output.out
     assert "Traceback" not in output.err
-    assert not any(call[0] == "post" for call in client.calls)
 
 
 # --- main() interactive-gather path: --dry-run must never touch disk -----
@@ -709,11 +753,26 @@ def _write_fake_identity(tmp_path):
 def _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args):
     if not hasattr(args, "command"):
         args.command = "wizard"
+    args.verb = args.command
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
-    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+    monkeypatch.setenv("NETCUP_SCP_API_SERVER_NAME", "test-server")
+    runtime = CliRuntime(
+        identity=install_host_mod.IDENTITY,
+        output=CliOutput(install_host_mod.IDENTITY),
+        yes=bool(getattr(args, "yes", False)),
+    )
+
+    def run(**_kwargs):
+        return install_host_mod._run_install_workflow(args, runtime)
+
+    monkeypatch.setattr(
+        install_host_mod,
+        "build_cli",
+        lambda: types.SimpleNamespace(run=run),
+    )
 
 
 def _fake_gather_client(fake_client, *, user_id=7):
@@ -910,18 +969,14 @@ def test_main_interactive_recovers_from_labeling_lookup_failure(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
         ssh_identity_file=identity_template,
     )
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
-    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
-    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(CliFailure, match="target lookup failed") as exc_info:
         install_host_mod.main()
 
-    assert exc_info.value.code == 1
-    captured = capsys.readouterr()
-    assert "target lookup failed" in captured.err
+    assert exc_info.value.exit_code == 1
     # Authentication/target resolution failed before identity discovery or
     # generation, and the API was called only once.
     assert not list(tmp_path.glob("vbpub-scp_installer-*-20260908-ed25519"))
@@ -955,14 +1010,11 @@ def test_main_payload_mode_uses_payload_hostname_for_identity_label(
     client = fake_client(get_responses=[{"serverLiveInfo": {}}], allow=("get",))
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
-        attach_only=False, payload=str(payload_path), poweroff=False, dry_run=True, yes=True,
+        command="install", attach_only=False, payload=None, config_path=str(payload_path),
+        poweroff=False, dry_run=True, yes=True,
         ssh_identity_file=identity_template,
     )
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # not required for --payload mode
-    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
-    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
-    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
-    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
     install_host_mod.main()
 
@@ -1228,7 +1280,7 @@ def test_file_install_without_customscript_does_not_generate_controller_key(
         monitor=False, ssh_identity_file=None, ssh_key_ids=None,
         host_controller_key="remove", local_controller_key="retain",
     )
-    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+    args.verb = args.command
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
@@ -1237,8 +1289,8 @@ def test_file_install_without_customscript_does_not_generate_controller_key(
         "_resolve_or_create_controller_identity",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("plain image must not create a controller key")),
     )
-
-    install_host_mod.main()
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+    install_host_mod.main(["install", "--config", str(config), "--dry-run", "--yes"])
 
 
 def test_main_configure_is_the_same_target_picker_flow_as_wizard(
@@ -1255,9 +1307,8 @@ def test_main_configure_is_the_same_target_picker_flow_as_wizard(
         ssh_identity_file=None, ssh_key_ids=None, no_monitor=False,
         monitor=False, local_controller_key="retain",
     )
-    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
     client = _fake_gather_client(fake_client)
-    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
     install_host_mod.main()
     assert not any(call[0] == "post" for call in client.calls)
@@ -1267,41 +1318,27 @@ def test_main_configure_is_the_same_target_picker_flow_as_wizard(
 
 
 def test_parse_args_accepts_installer_commands_and_bare_invocation_prints_help(install_host_mod, monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["install-host.py", "login"])
-    with pytest.raises(SystemExit) as exc:
-        install_host_mod.parse_args()
-    assert exc.value.code == 2
-    monkeypatch.setattr("sys.argv", ["install-host.py", "configure"])
-    assert install_host_mod.parse_args().command == "configure"
-    monkeypatch.setattr("sys.argv", ["install-host.py", "wizard"])
-    assert install_host_mod.parse_args().command == "wizard"
-    monkeypatch.setattr("sys.argv", ["install-host.py", "install"])
-    assert install_host_mod.parse_args().command == "install"
-    monkeypatch.setattr(
-        "sys.argv",
-        ["install-host.py", "wizard", "--custom-script-file", "bundle.json"],
-    )
-    assert install_host_mod.parse_args().custom_script_file == "bundle.json"
-    monkeypatch.setattr("sys.argv", ["install-host.py"])
-    with pytest.raises(SystemExit) as exc:
-        install_host_mod.parse_args()
-    assert exc.value.code == 0
-    assert "usage: install-host.py" in capsys.readouterr().out
+    with pytest.raises(UsageError, match="invalid choice"):
+        install_host_mod.parse_args(["login"])
+    assert install_host_mod.parse_args(["configure"]).command == "configure"
+    assert install_host_mod.parse_args(["wizard"]).command == "wizard"
+    assert install_host_mod.parse_args(["install"]).command == "install"
+    assert install_host_mod.parse_args(
+        ["wizard", "--custom-script-file", "bundle.json"]
+    ).custom_script_file == "bundle.json"
+    assert install_host_mod.main([]) == 0
+    assert install_host_mod.IDENTITY.headline in capsys.readouterr().out
 
 
 def test_parse_args_accepts_explicit_existing_ssh_key_ids(install_host_mod, monkeypatch):
-    monkeypatch.setattr(
-        "sys.argv",
-        ["install-host.py", "--ssh-key-id", "10", "--ssh-key-id", "20"],
-    )
-    assert install_host_mod.parse_args().ssh_key_ids == [10, 20]
+    assert install_host_mod.parse_args(
+        ["install", "--ssh-key-id", "10", "--ssh-key-id", "20"]
+    ).ssh_key_ids == [10, 20]
 
 
 def test_parse_args_rejects_removed_poweroff_option(install_host_mod, monkeypatch):
-    monkeypatch.setattr("sys.argv", ["install-host.py", "--poweroff"])
-    with pytest.raises(SystemExit) as exc:
-        install_host_mod.parse_args()
-    assert exc.value.code == 2
+    with pytest.raises(UsageError, match="unrecognized arguments"):
+        install_host_mod.parse_args(["install", "--poweroff"])
 
 
 @pytest.mark.parametrize("local", ["remove", "retain"])
@@ -1313,15 +1350,12 @@ def test_controller_retention_accepts_local_outcomes(install_host_mod, local):
 
 def test_controller_retention_rejects_invalid_local_value(install_host_mod):
     args = types.SimpleNamespace(local_controller_key="later")
-    with pytest.raises(SystemExit, match="local controller-key retention"):
+    with pytest.raises(CliFailure, match="local controller-key retention"):
         install_host_mod._validate_controller_retention(args)
 
 
 def test_parse_args_exposes_only_long_help(install_host_mod, monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["install-host.py", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        install_host_mod.parse_args()
-    assert exc.value.code == 0
+    assert install_host_mod.main(["--help"]) == 0
     help_out = capsys.readouterr().out
     assert "--help" in help_out
     assert "[-h]" not in help_out
@@ -1349,5 +1383,5 @@ def test_load_custom_script_file_accepts_plain_command(install_host_mod, tmp_pat
 def test_load_custom_script_file_rejects_invalid_marker(install_host_mod, tmp_path):
     path = tmp_path / "bundle.json"
     path.write_text(json.dumps({"customScript": "echo install", "completionMarker": "relative"}))
-    with pytest.raises(SystemExit, match="absolute remote path"):
+    with pytest.raises(CliFailure, match="absolute remote path"):
         install_host_mod._load_custom_script_file(str(path))

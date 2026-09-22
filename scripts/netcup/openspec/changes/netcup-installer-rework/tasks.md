@@ -69,6 +69,9 @@
 - [x] Make customScript producer-owned: wizard consumption via
       `--custom-script-file`, authoritative file-driven payload, and no
       controller-key generation for plain image installs.
+- [x] Expose SSH reattachment as the API-free `attach` verb; require an SSH
+      host, validate only explicitly selected identities, and never generate a
+      key from this path.
 - [x] Update README, DESIGN-GUIDE, specification, help examples, and tests
       for the mode and bootstrap boundary.
 

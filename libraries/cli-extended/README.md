@@ -120,13 +120,19 @@ structures such as nested sub-actions.
 Put options that apply before command selection (for example, a config-file
 path) in `CliRegistry.global_options`. Put options that belong to one command
 in that verb's `options`; put standard output/debug controls at the appropriate
-level only when they genuinely apply there. The common output and debugging
-controls are accepted both before and after the selected verb; conflicting
-verbosity or colour selectors are rejected across those parser levels. Each
-`OptionSpec` names its help group, so the registry places and renders options
-from metadata rather than maintaining a second hand-written usage block. The
-command parser uses a terminal-width-aware formatter too, with a 120-column
-fallback when no usable terminal width is reported.
+level only when they genuinely apply there. Supported common output/debug
+controls work both before and after the selected verb; selectors such as
+`--json` and `--progress` may be unavailable on particular verbs. Root help
+lists their union, while command help lists the selected verb's supported set;
+an unsupported selector is refused with command-specific help, independent of
+placement. Conflicting verbosity or colour selectors are rejected across
+parser levels. Each `OptionSpec` names its help group, so the registry places
+and renders options from metadata rather than maintaining a second
+hand-written usage block. A verb may set `summary_description` when its full
+command description is too long for the one-line top-level catalog;
+command-specific help keeps the full `description`. The command parser uses a
+terminal-width-aware formatter too, with a 120-column fallback when no usable
+terminal width is reported.
 
 `runtime.confirm()` is default-no. It refuses to prompt on non-TTY stdin,
 handles EOF/decline cleanly, and honors `--yes`; call it only after domain

@@ -1,63 +1,11 @@
 #!/usr/bin/env python3
-"""Inspect and safely operate the Netcup SCP account and its servers.
+"""Explore and safely operate the Netcup SCP account and its servers.
 
-Start with ``./scp-api.py login`` to obtain the OAuth refresh token and, in an
-interactive terminal, select ``v<digits>`` servers for this checkout's local
-mutation denylist.  Then use ``status`` for a compact live inventory or
-``servers`` and ``server-details`` when you need the raw account records.
-
-The CLI separates read-only exploration from explicitly confirmed
-modification.  Server-scoped reads enumerate every server when no
-``server_id`` is supplied; mutating actions always require an explicit target.
-The API explorer intentionally does not expose destructive disk formatting,
-server image installation, or snapshot revert.  ``install-host.py`` owns the
-Debian installation workflow and uses this module's shared client.
-
-Exploration (read-only; does not change the account or servers):
-  status [server_id]                         parallel live table, addresses, and SSH checks
-  servers                                    account server inventory
-  server-details server_id                   complete server API record
-  imageflavours [server_id] [--filter TEXT]  reinstallable OS/image choices
-  iso-bootable [server_id] [--filter TEXT]   provider bootable ISO choices
-  iso-attached [server_id]                   currently attached ISO
-  disks [server_id]                          disk capacity and drivers
-  rescuesystem [server_id]                   provider rescue-system state
-  snapshots [server_id]                     snapshot inventory
-  tasks [task_uuid] [filters]                task inventory or one task
-  metrics server_id metric                   CPU, disk, or network samples
-  guest-agent-status server_id               QEMU guest-agent availability
-  user-iso                                   account user-ISO inventory
-  firewall-policies                          account firewall-policy inventory
-  firewall server_id [mac] get               interface firewall assignment
-
-Modification (changes provider state; confirmation is required unless
-``--yes`` is supplied):
-  attach-iso server_id                       attach provider or uploaded ISO
-  iso-attached server_id detach              detach the current ISO
-  rescuesystem server_id deactivate           deactivate provider rescue mode
-  snapshots server_id create|dryrun           create/check a snapshot
-  tasks task_uuid cancel                      cancel a task (use --server-id)
-  user-iso upload FILE                       upload an account user ISO
-  firewall-policies create|put                create or replace a policy
-  firewall server_id [mac] set               replace interface assignments
-  power on|off|cycle|reset server_id          control server power state
-
-Authentication:
-  login                                      device-code login and denylist wizard
-
-Examples:
-  ./scp-api.py status
-  ./scp-api.py iso-bootable --filter debian
-  ./scp-api.py attach-iso 799611 --iso-id 1234 --yes
-  ./scp-api.py firewall 799611 get --consistency-check
-  ./scp-api.py power cycle 799611 --yes
-
-Every verb accepts ``--help``.  ``--json`` prints machine-readable output;
-otherwise the CLI prints a sanitized table or summary.  Color auto-detects a
-TTY and respects ``NO_COLOR`` and ``--no-color``.  The shared
-``netcup_scp_client.py`` module handles token refresh, strict local settings,
-and the protected-server policy for ``scp-api.py``, ``install-host.py``, and
-``monitor-task.py``.
+Run ``./scp-api.py --help`` for grouped command help and
+``./scp-api.py help <verb>`` for a verb's arguments and examples. Authentication,
+API configuration, and the local protected-server policy are loaded only
+after a real command starts. The separate ``install-host.py`` owns the image
+installation workflow.
 """
 from __future__ import annotations
 
@@ -65,6 +13,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -76,6 +25,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import netcup_scp_client
+from cli_extended import (
+    ArgumentSpec,
+    CliFailure,
+    CliIdentity,
+    CliRegistry,
+    OptionSpec,
+    VerbGroup,
+    VerbSpec,
+)
 from netcup_scp_client import (
     HTTPStatusError,
     NetcupSCPClient,
@@ -89,6 +47,23 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "netcup.toml"
 INSTALL_HOST_SETTINGS_PATH = Path(__file__).resolve().parent / "install-host.toml"
 DEFAULT_SSH_TIMEOUT_SECONDS = 2.0
 STATUS_MAX_WORKERS = 4
+VERSION_PATH = Path(__file__).resolve().parent / "VERSION"
+
+
+def _cli_identity() -> CliIdentity:
+    version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise ValueError(f"invalid Netcup CLI version in {VERSION_PATH}: {version!r}")
+    return CliIdentity(
+        name="NETCUP SCP",
+        command="scp-api",
+        version=version,
+        long_name="Netcup Server Control Panel API client",
+    )
+
+
+IDENTITY = _cli_identity()
+_ACTIVE_RUNTIME: Any | None = None
 
 # Keep this in sync with install-host.py's closed SSH settings schema. The
 # explorer reads only SSH values; producer-owned customScript settings do not
@@ -108,12 +83,8 @@ _INSTALL_HOST_SETTINGS_EXPECTED_KEYS = {
 def _configure() -> None:
     """Load .env + settings and wire netcup_scp_client's module globals.
 
-    Deliberately NOT run at import time (unlike the pre-existing pattern in
-    install-host.py, which does this eagerly and consequently can't
-    serve --help without a working settings file present -- confirmed live,
-    2026-09-09, not fixed there since it's a separate, already-proven
-    script). Called from main() after parse_args(), so --help short-
-    circuits via argparse's own SystemExit before this ever runs.
+    Deliberately not run at import time: help, version, and bare invocation
+    must work without credentials, configuration, or network access.
     """
     load_env_file()
     # Validate the local safety policy before loading credentials or making
@@ -121,8 +92,15 @@ def _configure() -> None:
     try:
         netcup_scp_client.protected_server_policy()
     except ValueError as exc:
-        raise SystemExit(f"ERROR: invalid protected-server denylist: {exc}") from exc
-    netcup_scp_client.configure_api(load_environment=False)
+        raise CliFailure(
+            f"invalid protected-server denylist: {exc}", exit_code=2
+        ) from exc
+    try:
+        netcup_scp_client.configure_api(load_environment=False)
+    except SystemExit as exc:
+        raise CliFailure(str(exc).removeprefix("ERROR: "), exit_code=2) from exc
+    except (OSError, ValueError) as exc:
+        raise CliFailure(f"invalid Netcup API configuration: {exc}", exit_code=2) from exc
     netcup_scp_client.DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
 
 
@@ -256,6 +234,15 @@ def print_kv(data: Dict[str, Any], pal: _Palette, indent: int = 0) -> None:
 
 
 def emit(data: Any, as_json: bool, table_fn=None) -> None:
+    data = netcup_scp_client._debug_value(data)
+    if _ACTIVE_RUNTIME is not None:
+        if as_json:
+            _ACTIVE_RUNTIME.output.primary_json(data)
+        elif table_fn is not None:
+            table_fn(data)
+        else:
+            print(json.dumps(data, indent=2, sort_keys=True))
+        return
     if as_json:
         print(json.dumps(data, indent=2, sort_keys=True))
     elif table_fn is not None:
@@ -265,6 +252,8 @@ def emit(data: Any, as_json: bool, table_fn=None) -> None:
 
 
 def confirm(prompt: str, yes: bool, pal: _Palette) -> bool:
+    if _ACTIVE_RUNTIME is not None:
+        return _ACTIVE_RUNTIME.confirm(prompt)
     if yes:
         return True
     reply = input(f"{pal.yellow('?')} {prompt} [y/N] ")
@@ -276,13 +265,15 @@ def confirm(prompt: str, yes: bool, pal: _Palette) -> bool:
 def build_client() -> NetcupSCPClient:
     refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
     if not refresh_token:
-        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN -- run: scp-api.py login", file=sys.stderr)
-        sys.exit(1)
+        raise CliFailure(
+            "missing NETCUP_SCP_API_REFRESH_TOKEN",
+            exit_code=2,
+            hint="run ./scp-api.py login first",
+        )
     try:
         access_token = get_access_token(refresh_token)
-    except Exception as e:
-        print(f"ERROR: failed to get access token: {e}", file=sys.stderr)
-        sys.exit(1)
+    except (RuntimeError, ValueError) as exc:
+        raise CliFailure(f"failed to get Netcup access token: {exc}") from exc
     return NetcupSCPClient(access_token, refresh_token=refresh_token)
 
 
@@ -290,10 +281,22 @@ def _api_call(fn, *a, **kw):
     try:
         return fn(*a, **kw)
     except HTTPStatusError as e:
-        print(f"ERROR: {e} (HTTP {e.status})", file=sys.stderr)
+        detail = f"{e} (HTTP {e.status})"
         if e.body:
-            print(e.body[:2000], file=sys.stderr)
-        sys.exit(1)
+            detail += f"; response: {e.body[:2000]}"
+        raise CliFailure(detail) from e
+    except netcup_scp_client.NetcupAPIError as exc:
+        raise CliFailure(str(exc)) from exc
+
+
+def _diagnostic(level: str, message: str) -> None:
+    """Route CLI diagnostics through the shared output policy."""
+    if _ACTIVE_RUNTIME is not None:
+        getattr(_ACTIVE_RUNTIME.output, level)(message)
+        return
+    prefix = {"info": "INFO", "warn": "WARNING", "error": "ERROR"}[level]
+    stream = sys.stderr if level in {"warn", "error"} else sys.stdout
+    print(f"{prefix}: {message}", file=stream)
 
 
 def _guard_server_mutation(client: NetcupSCPClient, server_id: int, operation: str) -> None:
@@ -981,8 +984,7 @@ def _image_flavour_name(row: Dict[str, Any]) -> str:
 
 def _require_server_id(args, action: str) -> int:
     if args.server_id is None:
-        print(f"ERROR: {action} requires a server ID", file=sys.stderr)
-        raise SystemExit(2)
+        raise CliFailure(f"{action} requires a server ID", exit_code=2, show_help=True)
     return args.server_id
 
 
@@ -1501,11 +1503,13 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
             for name in ("query", "state", "limit", "offset")
         )
         if other_filters or (server_filter_id is not None and args.action != "cancel"):
-            print("ERROR: task filters are only valid when listing tasks, except --server-id with cancel", file=sys.stderr)
-            raise SystemExit(2)
+            raise CliFailure(
+                "task filters are only valid when listing tasks, except --server-id with cancel",
+                exit_code=2,
+                show_help=True,
+            )
     if args.action == "cancel" and args.uuid is None:
-        print("ERROR: cancel requires a task uuid", file=sys.stderr)
-        sys.exit(2)
+        raise CliFailure("cancel requires a task UUID", exit_code=2, show_help=True)
     if args.uuid is None:
         tasks = _response_rows(_api_call(client.get, "/api/v1/tasks", params=params), "GET /api/v1/tasks")
         emit(tasks, args.json, lambda d: print_table(
@@ -1515,12 +1519,12 @@ def cmd_tasks(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.action == "cancel":
         protected = netcup_scp_client.protected_server_policy_configured()
         if protected and server_filter_id is None:
-            print(
-                "ERROR: task cancellation requires --server-id when the protected-server denylist is configured; "
+            raise CliFailure(
+                "task cancellation requires --server-id when the protected-server denylist is configured; "
                 "the API task record does not identify its server reliably",
-                file=sys.stderr,
+                exit_code=2,
+                show_help=True,
             )
-            raise SystemExit(2)
         if server_filter_id is not None:
             _guard_server_mutation(client, server_filter_id, "cancel task")
             verification = _response_rows(
@@ -1577,20 +1581,29 @@ def _firewall_policy_input_args(args) -> Dict[str, Any]:
 
 def cmd_firewall_policy_write(client: NetcupSCPClient, args, pal: _Palette) -> None:
     if args.query is not None or args.limit is not None or args.offset is not None:
-        print("ERROR: policy list filters cannot be combined with create or put", file=sys.stderr)
-        raise SystemExit(2)
+        raise CliFailure(
+            "policy list filters cannot be combined with create or put",
+            exit_code=2,
+            show_help=True,
+        )
     policy = _firewall_policy_input_args(args)
     if not policy.get("rules"):
-        print("WARNING: policy contains no rules; it will not match any traffic by itself", file=sys.stderr)
+        _diagnostic("warn", "policy contains no rules; it will not match any traffic by itself")
     if args.action == "put":
         if args.policy_id is None:
-            print("ERROR: firewall-policies put requires a policy_id", file=sys.stderr)
-            raise SystemExit(2)
+            raise CliFailure(
+                "firewall-policies put requires a policy_id",
+                exit_code=2,
+                show_help=True,
+            )
         prompt = f"Update firewall policy {args.policy_id} ({policy['name']!r})?"
     else:
         if args.policy_id is not None:
-            print("ERROR: firewall-policies create does not take a policy_id", file=sys.stderr)
-            raise SystemExit(2)
+            raise CliFailure(
+                "firewall-policies create does not take a policy_id",
+                exit_code=2,
+                show_help=True,
+            )
         prompt = f"Create firewall policy {policy['name']!r}?"
     if not confirm(prompt, args.yes, pal):
         print("aborted")
@@ -1691,8 +1704,11 @@ def cmd_user_iso(client: NetcupSCPClient, args, pal: _Palette) -> None:
             or getattr(args, "multipart", False)
             or getattr(args, "part_size_mib", None) is not None
             or getattr(args, "yes", False)):
-        print("ERROR: user-iso upload options require the explicit upload action", file=sys.stderr)
-        raise SystemExit(2)
+        raise CliFailure(
+            "user-iso upload options require the explicit upload action",
+            exit_code=2,
+            show_help=True,
+        )
     user_id = _scp_user_id(client)
     result = _response_rows(
         _api_call(client.get, f"/api/v1/users/{user_id}/isos"),
@@ -1710,8 +1726,11 @@ def cmd_firewall_policies(client: NetcupSCPClient, args, pal: _Palette) -> None:
             or getattr(args, "policy_json", None) is not None
             or getattr(args, "policy_file", None) is not None
             or getattr(args, "yes", False)):
-        print("ERROR: policy write options require the create or put action", file=sys.stderr)
-        raise SystemExit(2)
+        raise CliFailure(
+            "policy write options require the create or put action",
+            exit_code=2,
+            show_help=True,
+        )
     user_id = _scp_user_id(client)
     params = {}
     if args.query:
@@ -1773,11 +1792,11 @@ def _resolve_firewall_mac(client: NetcupSCPClient, server_id: int) -> str:
         return macs[0]
     if not macs:
         raise ResponseShapeError(f"GET {endpoint}: no interfaces with a MAC address were returned")
-    print(
-        f"ERROR: server {server_id} has multiple interfaces; specify one MAC explicitly: {', '.join(macs)}",
-        file=sys.stderr,
+    raise CliFailure(
+        f"server {server_id} has multiple interfaces; specify one MAC explicitly: {', '.join(macs)}",
+        exit_code=2,
+        show_help=True,
     )
-    raise SystemExit(2)
 
 
 def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
@@ -1787,8 +1806,11 @@ def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
     active = getattr(args, "active", None)
     if action == "get":
         if copied_policy_ids or user_policy_ids or active is not None:
-            print("ERROR: firewall set options require the explicit set action", file=sys.stderr)
-            raise SystemExit(2)
+            raise CliFailure(
+                "firewall set options require the explicit set action",
+                exit_code=2,
+                show_help=True,
+            )
         mac = args.mac or _resolve_firewall_mac(client, args.server_id)
         endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{mac}/firewall"
         params = {"consistencyCheck": True} if args.consistency_check else None
@@ -1797,8 +1819,11 @@ def cmd_firewall(client: NetcupSCPClient, args, pal: _Palette) -> None:
         return
 
     if active is None:
-        print("ERROR: firewall set requires either --active or --inactive", file=sys.stderr)
-        raise SystemExit(2)
+        raise CliFailure(
+            "firewall set requires either --active or --inactive",
+            exit_code=2,
+            show_help=True,
+        )
     mac = args.mac or _resolve_firewall_mac(client, args.server_id)
     endpoint = f"/api/v1/servers/{args.server_id}/interfaces/{mac}/firewall"
     data = {
@@ -1849,10 +1874,10 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
             _api_call(client.get, "/api/v1/servers"),
             "GET /api/v1/servers",
         )
-    except Exception as exc:
-        print(
-            f"WARNING: login succeeded, but protected-server selection could not read the server list: {exc}",
-            file=sys.stderr,
+    except (CliFailure, OSError, RuntimeError, ValueError, ResponseShapeError) as exc:
+        _diagnostic(
+            "warn",
+            f"login succeeded, but protected-server selection could not read the server list: {exc}",
         )
         return 1
 
@@ -1863,9 +1888,9 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
             continue
         server_id = server.get("id")
         if not isinstance(server_id, int) or isinstance(server_id, bool) or server_id <= 0:
-            print(
-                f"ERROR: GET /api/v1/servers: v-name {name!r} at item {index} has no valid positive integer id",
-                file=sys.stderr,
+            _diagnostic(
+                "error",
+                f"GET /api/v1/servers: v-name {name!r} at item {index} has no valid positive integer id",
             )
             return 1
         enriched = {"name": name, "id": server_id}
@@ -1874,28 +1899,32 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
                 client.get(f"/api/v1/servers/{server_id}"),
                 f"GET /api/v1/servers/{server_id}",
             )
-        except Exception as exc:
+        except (CliFailure, OSError, RuntimeError, ValueError, ResponseShapeError) as exc:
             # Login must still let the operator protect a server when its
             # optional detail response is temporarily unavailable.
             # The missing enrichment is explicit in the prompt instead of
             # being mistaken for an empty address set.
-            print(
-                f"WARNING: could not load IP/rDNS details for {name} (id {server_id}): {exc}",
-                file=sys.stderr,
+            _diagnostic(
+                "warn",
+                f"could not load IP/rDNS details for {name} (id {server_id}): {exc}",
             )
             enriched["details"] = enriched.get("details", {})
         eligible.append(enriched)
 
     existing_names, existing_ids = netcup_scp_client.protected_server_policy()
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print(
+        _diagnostic(
+            "info",
             "Login succeeded. Protected-server selection was skipped because this is not an interactive terminal. "
             "Run `scp-api.py login` from a terminal, or set NETCUP_SCP_API_PROTECTED_SERVERS to comma-separated "
             "v<digits> names in .env.",
         )
         return 0
     if not eligible:
-        print("Login succeeded. No servers with an SCP v<digits> name are available for the local denylist.")
+        _diagnostic(
+            "info",
+            "Login succeeded. No servers with an SCP v<digits> name are available for the local denylist.",
+        )
         return 0
 
     print("\nLocal protected-server denylist")
@@ -1928,11 +1957,11 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
             break
         tokens = [token.strip() for token in answer.split(",")]
         if not tokens or any(not token.isdigit() for token in tokens):
-            print("ERROR: enter comma-separated list numbers such as 1,3, or `all`.", file=sys.stderr)
+            _diagnostic("error", "enter comma-separated list numbers such as 1,3, or `all`.")
             continue
         numbers = [int(token) for token in tokens]
         if any(number < 1 or number > len(eligible) for number in numbers):
-            print(f"ERROR: choose numbers from 1 to {len(eligible)}.", file=sys.stderr)
+            _diagnostic("error", f"choose numbers from 1 to {len(eligible)}.")
             continue
         selected = [eligible[number - 1] for number in dict.fromkeys(numbers)]
         break
@@ -1947,15 +1976,16 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
     try:
         netcup_scp_client.write_protected_server_policy(env_path, names, ids)
     except (OSError, ValueError) as exc:
-        print(f"ERROR: could not save protected-server denylist: {exc}", file=sys.stderr)
+        _diagnostic("error", f"could not save protected-server denylist: {exc}")
         return 1
-    print(f"Protected {len(selected)} server(s) locally in {env_path} (mode 0600).")
+    _diagnostic("info", f"Protected {len(selected)} server(s) locally in {env_path} (mode 0600).")
     return 0
 
 
 def cmd_login(args) -> int:
     env_path = netcup_scp_client.resolve_env_path()
-    result = run_device_code_login(env_path)
+    output = _ACTIVE_RUNTIME.output if _ACTIVE_RUNTIME is not None else None
+    result = run_device_code_login(env_path, output=output)
     if result != 0:
         return result
     # The login helper has just written the token to this same .env. Reload it
@@ -1965,485 +1995,439 @@ def cmd_login(args) -> int:
         client = build_client()
         return _configure_protected_servers(env_path, client)
     except netcup_scp_client.ProtectedServerError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        _diagnostic("error", str(exc))
         return 1
 
 
-# --- argument parsing --------------------------------------------------------
+# --- shared CLI registration -------------------------------------------------
 
 
-class _WideHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    """Keep command examples readable in the intended wide terminal view."""
-
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("width", 120)
-        super().__init__(*args, **kwargs)
+def _argument(name: str, description: str, *, metavar: str | None = None, **kwargs):
+    return ArgumentSpec(name, description, metavar=metavar, parser_kwargs=kwargs)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Inspect and safely operate the Netcup SCP account and its servers.",
-        formatter_class=_WideHelpFormatter,
-        epilog=__doc__,
-        add_help=False,
-    )
-    help_options = parser.add_argument_group("help")
-    help_options.add_argument("--help", action="help", help="show this help message and exit")
-    output_options = parser.add_argument_group("output options")
-    output_options.add_argument("--json", action="store_true", help="print raw JSON instead of a formatted table/summary")
-    output_options.add_argument("--no-color", action="store_true", help="disable ANSI color even on a TTY")
-
-    sub = parser.add_subparsers(
-        dest="command",
-        required=True,
-        title="verbs (exploration and modification; see the grouped map below)",
-        metavar="VERB",
+def _option(
+    flags: tuple[str, ...],
+    description: str,
+    *,
+    group: str,
+    metavar: str | None = None,
+    **kwargs,
+) -> OptionSpec:
+    return OptionSpec(
+        flags, description, group=group, metavar=metavar, parser_kwargs=kwargs
     )
 
-    def add_subcommand(name: str, help_text: str, description: str = ""):
-        command_parser = sub.add_parser(
-            name,
-            help=help_text,
-            description=description or help_text,
-            formatter_class=_WideHelpFormatter,
-            add_help=False,
-        )
-        help_options = command_parser.add_argument_group("help")
-        help_options.add_argument("--help", action="help", help="show this help message and exit")
-        # Keep the documented `command --json` spelling working as well as
-        # the global `--json command` spelling. SUPPRESS avoids an omitted
-        # subcommand option overwriting a global one.
-        output_options = command_parser.add_argument_group("output options")
-        output_options.add_argument(
-            "--json", action="store_true", default=argparse.SUPPRESS,
-            help="print raw JSON instead of a formatted table/summary",
-        )
-        output_options.add_argument(
-            "--no-color", action="store_true", default=argparse.SUPPRESS,
-            help="disable ANSI color even on a TTY",
-        )
-        return command_parser
 
-    def add_actions(command_parser, choices, help_text: str):
-        action_group = command_parser.add_argument_group("actions")
-        action_group.add_argument(
-            "action",
-            nargs="?",
-            choices=choices,
-            metavar="{" + ",".join(choices) + "}",
-            help=help_text,
-        )
-
-    def add_confirmation(command_parser, help_text="skip the confirmation prompt"):
-        confirmation = command_parser.add_argument_group("confirmation")
-        confirmation.add_argument("--yes", action="store_true", help=help_text)
-
-    add_subcommand(
-        "login",
-        "OAuth2 login and optional protected-server selection",
-        "Obtain the long-lived refresh token through the browser device-code flow. "
-        "Afterwards, an interactive terminal offers servers named v<digits> for the local protected-server denylist. "
-        "The denylist is enforced by mutating commands in this checkout; it is not a provider-side lock.\n\n"
-        "Examples:\n  ./scp-api.py login",
+def _add_actions(parser, choices, description: str, *, required: bool = False):
+    group = parser.add_argument_group("ACTIONS")
+    return group.add_argument(
+        "action",
+        nargs=None if required else "?",
+        choices=choices,
+        metavar="{" + ",".join(choices) + "}",
+        help=description,
     )
 
-    add_subcommand(
-        "servers",
-        "list all known servers",
-        "List the account's server inventory.\n\nExamples:\n  ./scp-api.py servers",
-    )
-    p = add_subcommand(
-        "status",
-        "show compact live status for all servers or one server",
-        "Fetch each server detail and show vname, hostname, run state, architecture, "
-        "CPU count, RAM, disk capacity, SSH authentication result, and a final "
-        "multiline reverse-DNS column containing only the detail response's "
-        "ipv4Addresses/ipv6Addresses. The SSH column tests every recognizable "
-        "private key in ~/.ssh plus the configured install-host identity without "
-        "creating a key. It first performs one SSH service probe per address, "
-        "then tests keys in server-name/hostname filename order. The default "
-        "probe timeout is 2 seconds. It reports successful key names, `no keys "
-        "match`, `rejected`, or `no answer`. `no keys match` means the service "
-        "answered but every tested key failed public-key authentication; "
-        "`rejected` means the SSH endpoint refused the session itself; "
-        "`no answer` means no address responded. "
-        "With no ID, every account server is queried using a bounded four-worker pool. "
-        "Reverse-DNS lookups are concurrent but are not cached across duplicate addresses.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py status\n"
-        "  ./scp-api.py status 799611 --json",
-    )
-    p.add_argument(
-        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-        help="Netcup SCP server ID; omit to show all account servers",
-    )
-    p.add_argument(
-        "--ssh-timeout",
-        type=_positive_float,
-        default=DEFAULT_SSH_TIMEOUT_SECONDS,
-        metavar="SECONDS",
-        help="per-address SSH service/key timeout (default: 2 seconds)",
-    )
-    p = add_subcommand(
-        "server-details",
-        "show detailed information for one server",
-        "Show the complete API record for one server.\n\nExamples:\n  ./scp-api.py server-details 799611",
-    )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
-    for name, help_text, description in [
-        (
-            "imageflavours",
-            "list reinstallable OS/image flavours (all servers unless an ID is given)",
-            "An image flavour is a server-compatible reinstallable OS/image variant, "
-            "for example a Debian 13 UEFI amd64 image. It is not a VM template.\n\n"
-            "Examples:\n  ./scp-api.py imageflavours --filter debian",
-        ),
-        (
-            "iso-bootable",
-            "list available ISO images (all servers unless an ID is given)",
-            "ISO images are bootable installer/recovery media exposed by SCP. "
-            "Use --filter debian or --filter rescue to narrow the names and descriptions.\n\n"
-            "Examples:\n  ./scp-api.py iso-bootable --filter rescue",
-        ),
-    ]:
-        p = add_subcommand(name, help_text, description)
-        p.add_argument(
-            "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-            help="Netcup SCP server ID; omit to list choices across the account",
-        )
-        selection = p.add_argument_group("selection")
-        selection.add_argument("--filter", type=_nonempty_text, metavar="TEXT", help="case-insensitive text filter across returned fields")
-
-    p = add_subcommand(
-        "iso-attached",
-        "show attached ISOs for all servers, or one server",
-        "Show the ISO currently attached to each server; add the detach action to remove one.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py iso-attached 799611\n"
-        "  ./scp-api.py iso-attached 799611 detach --yes",
+def _configure_attach_iso(parser):
+    source = parser.add_argument_group("ISO SOURCE").add_mutually_exclusive_group(
+        required=True
     )
-    p.add_argument(
-        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-        help="Netcup SCP server ID; omit to inspect every server",
+    source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
+    source.add_argument(
+        "--user-iso-name",
+        type=_nonempty_text,
+        metavar="NAME",
+        help="name of an ISO uploaded to the account",
     )
-    add_actions(p, ("detach",), "detach: remove the currently-attached ISO (safe/reversible)")
-    add_confirmation(p)
-
-    p = add_subcommand(
-        "attach-iso",
-        "attach a bootable or user ISO to one server",
-        "Attach an ISO by ID from iso-bootable, or attach a user-uploaded ISO by name. "
-        "This changes the server's attached media and always asks for confirmation.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py attach-iso 799611 --iso-id 1234 --yes\n"
-        "  ./scp-api.py attach-iso 799611 --user-iso-name custom.iso "
-        "--change-boot-device-to-cdrom --yes",
-    )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
-    iso_source = p.add_argument_group("ISO source").add_mutually_exclusive_group(required=True)
-    iso_source.add_argument("--iso-id", type=_positive_int, help="ID returned by iso-bootable")
-    iso_source.add_argument("--user-iso-name", type=_nonempty_text, metavar="NAME", help="name of an ISO uploaded to the account")
-    boot_options = p.add_argument_group("boot options")
-    boot_options.add_argument(
+    parser.add_argument_group("BOOT OPTIONS").add_argument(
         "--change-boot-device-to-cdrom",
         action="store_true",
         help="also make the virtual CD-ROM the next boot device",
     )
-    add_confirmation(p)
 
-    p = add_subcommand(
-        "disks",
-        "list disks for all servers, or one server",
-        "List disk capacity/allocation and storage drivers.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py disks 799611\n"
-        "  ./scp-api.py disks 799611 supported-drivers",
-    )
-    p.add_argument(
-        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-        help="Netcup SCP server ID; omit to list disks for every server",
-    )
-    add_actions(p, ("supported-drivers",), "supported-drivers: list storage drivers for one server")
 
-    p = add_subcommand(
-        "rescuesystem",
-        "show rescue-system status for all servers, or one server",
-        "Show whether Netcup's provider-managed emergency rescue environment is active; "
-        "this is separate from an arbitrary attached ISO. Add deactivate to turn it off.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py rescuesystem 799611\n"
-        "  ./scp-api.py rescuesystem 799611 deactivate --yes",
-    )
-    p.add_argument(
-        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-        help="Netcup SCP server ID; omit to inspect every server",
-    )
-    add_actions(p, ("deactivate",), "deactivate: turn off the rescue system (safe/reversible)")
-    add_confirmation(p)
+def _configure_iso_attached(parser):
+    _add_actions(parser, ("detach",), "detach the currently attached ISO")
 
-    p = add_subcommand(
-        "snapshots",
-        "list snapshots for all servers, or act on one server",
-        "List snapshots, or use create/dryrun for one server.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py snapshots 799611\n"
-        "  ./scp-api.py snapshots 799611 dryrun\n"
-        "  ./scp-api.py snapshots 799611 create --name before-upgrade --yes",
-    )
-    p.add_argument(
-        "server_id", nargs="?", type=_positive_int, default=None, metavar="server_id",
-        help="Netcup SCP server ID; omit to list snapshots for every server",
-    )
-    add_actions(
-        p,
+
+def _configure_disks(parser):
+    _add_actions(parser, ("supported-drivers",), "list storage drivers for one server")
+
+
+def _configure_rescue(parser):
+    _add_actions(parser, ("deactivate",), "turn off provider-managed rescue mode")
+
+
+def _configure_snapshots(parser):
+    _add_actions(
+        parser,
         ("create", "dryrun"),
-        "create: create a snapshot; dryrun: check whether snapshot creation is possible",
+        "create a snapshot, or check whether creation is currently possible",
     )
-    snapshot_options = p.add_argument_group("snapshot options")
-    snapshot_options.add_argument("--name", default=None, help="optional name for the create action")
-    add_confirmation(p)
 
-    p = add_subcommand(
-        "tasks",
-        "list tasks, show one, or cancel one",
-        "List tasks, show one by UUID, or use cancel with a UUID.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py tasks --state RUNNING\n"
-        "  ./scp-api.py tasks TASK_UUID\n"
-        "  ./scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes",
-    )
-    p.add_argument(
-        "uuid", nargs="?", type=_nonempty_text, default=None, metavar="task_uuid",
-        help="task UUID; omit to list tasks",
-    )
-    add_actions(p, ("cancel",), "cancel: cancel a running task (does not undo whatever it already did)")
-    task_filters = p.add_argument_group("list filters")
-    task_filters.add_argument(
-        "--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT",
-        help="list tasks whose name, UUID, or server fields contain TEXT (API q filter)",
-    )
-    task_filters.add_argument(
-        "--server-id", dest="server_filter_id", type=_positive_int, metavar="ID",
-        help="list tasks for one server; required with cancel when the protected-server denylist is configured",
-    )
-    task_filters.add_argument(
-        "--state",
-        choices=_TASK_STATES,
-        help="list tasks in one state (ROLLBACK is not supported by the API filter)",
-    )
-    task_filters.add_argument("--limit", type=_nonnegative_int, help="maximum number of tasks to return")
-    task_filters.add_argument("--offset", type=_nonnegative_int, help="number of matching tasks to skip")
-    add_confirmation(p)
 
-    p = add_subcommand(
-        "metrics",
-        "show CPU, disk, or network metrics for one server",
-        "Return timestamped SCP metrics. The API's hours value is a lookback window, not a sample interval.\n\n"
-        "Examples:\n  ./scp-api.py metrics 799611 cpu --hours 24",
-    )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
-    p.add_argument(
-        "metric", choices=tuple(_METRIC_ENDPOINTS), metavar="{cpu,disk,network,network-packet}",
-        help="metric series to return",
-    )
-    metrics_options = p.add_argument_group("metric options")
-    metrics_options.add_argument("--hours", type=_hours, help="look back this many hours (1-1440; API default if omitted)")
+def _configure_tasks(parser):
+    _add_actions(parser, ("cancel",), "cancel a task; this does not undo completed work")
 
-    p = add_subcommand(
-        "guest-agent-status",
-        "show the QEMU guest-agent status for one server",
-        "Read whether the guest agent is available; this describes agent reachability, not SSH or bootstrap state.\n\n"
-        "Examples:\n  ./scp-api.py guest-agent-status 799611",
-    )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
-    p = add_subcommand(
-        "user-iso",
-        "list account user ISOs or upload one",
-        "List account-level user ISO objects, or upload a local ISO through SCP's "
-        "presigned single-part or multipart object-storage flow. The upload action "
-        "does not attach or boot the ISO; use attach-iso and power cycle afterward.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py user-iso\n"
-        "  ./scp-api.py user-iso upload ./custom.iso --name custom.iso --yes\n"
-        "  ./scp-api.py attach-iso 799611 --user-iso-name custom.iso --yes\n"
-        "  ./scp-api.py power cycle 799611 --yes",
+def _configure_user_iso(parser):
+    _add_actions(parser, ("upload",), "upload one local ISO (confirmed)")
+    parser.add_argument(
+        "file", nargs="?", metavar="FILE", help="local ISO path; required with upload"
     )
-    add_actions(p, ("upload",), "upload: upload one local ISO (confirmed)")
-    p.add_argument(
-        "file", nargs="?", metavar="FILE",
-        help="local ISO path; required with upload, omitted when listing",
-    )
-    upload_options = p.add_argument_group("upload options")
-    upload_options.add_argument("--name", type=_nonempty_text, metavar="KEY", help="object name; defaults to the local filename")
-    upload_options.add_argument("--multipart", action="store_true", help="use multipart upload for large ISOs")
-    upload_options.add_argument("--part-size-mib", type=_part_size_mib, default=None, metavar="N", help="multipart part size (default: 64; minimum: 5)")
-    add_confirmation(p, "skip the upload confirmation prompt")
 
-    p = add_subcommand(
-        "firewall-policies",
-        "list, create, or PUT firewall policies for this SCP user",
-        "List policy IDs, or create/update a FirewallPolicySave request after strict local JSON validation. "
-        "`put` updates an existing policy definition; `firewall SERVER set` separately assigns policy IDs to an interface.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py firewall-policies\n"
-        "  ./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}'\n"
-        "  ./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json\n"
-        "  ./scp-api.py firewall 799611 set --user-policy-id 12 --active --yes",
-    )
-    add_actions(p, ("create", "put"), "create: POST a new policy; put: PUT an existing policy definition")
-    p.add_argument(
-        "policy_id", nargs="?", type=_positive_int, metavar="policy_id",
-        help="existing policy ID; required with put, unused for list/create",
-    )
-    policy_input = p.add_argument_group("policy input for create/put").add_mutually_exclusive_group()
-    policy_input.add_argument("--policy-json", metavar="JSON", help="validated FirewallPolicySave JSON object")
-    policy_input.add_argument("--policy-file", metavar="PATH", help="file containing validated FirewallPolicySave JSON")
-    policy_filters = p.add_argument_group("list filters")
-    policy_filters.add_argument("--query", "--filter", dest="query", type=_nonempty_text, metavar="TEXT", help="search policy name/description")
-    policy_filters.add_argument("--limit", type=_nonnegative_int, help="maximum number of policies to return")
-    policy_filters.add_argument("--offset", type=_nonnegative_int, help="number of matching policies to skip")
-    add_confirmation(p, "skip the create/PUT confirmation prompt")
 
-    p = add_subcommand(
-        "firewall",
-        "get or set firewall policy assignments for one interface",
-        "The get action reads the firewall attached to an interface MAC. Omit MAC only when the server has exactly "
-        "one interface; the CLI resolves that MAC from live server details. The set action replaces its copied/user "
-        "policy assignments and requires an explicit --active or --inactive choice; it does not create or edit policies.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py firewall 799611 get\n"
-        "  ./scp-api.py firewall 799611 set --user-policy-id 12 --active --yes",
+def _configure_firewall_policies(parser):
+    _add_actions(parser, ("create", "put"), "create a policy or replace an existing policy")
+    parser.add_argument(
+        "policy_id",
+        nargs="?",
+        type=_positive_int,
+        metavar="policy_id",
+        help="existing policy ID; required with put",
     )
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
-    p.add_argument("mac", nargs="?", metavar="mac", help="interface MAC; omitted only when the server has exactly one interface")
-    add_actions(p, ("get", "set"), "get: read assignment; set: replace assignment (confirmed)")
-    firewall_read = p.add_argument_group("get options")
-    firewall_read.add_argument(
+    policy_input = parser.add_argument_group("POLICY INPUT").add_mutually_exclusive_group()
+    policy_input.add_argument(
+        "--policy-json", metavar="JSON", help="validated FirewallPolicySave JSON object"
+    )
+    policy_input.add_argument(
+        "--policy-file", metavar="PATH", help="file containing validated FirewallPolicySave JSON"
+    )
+
+
+def _configure_firewall(parser):
+    parser.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
+    parser.add_argument(
+        "mac",
+        nargs="?",
+        metavar="mac",
+        help="interface MAC; may be omitted only when the server has one interface",
+    )
+    _add_actions(parser, ("get", "set"), "read an assignment or replace it", required=False)
+    parser.add_argument_group("GET OPTIONS").add_argument(
         "--consistency-check",
         action="store_true",
-        help="with get, ask SCP to compare configured and applied firewall state",
+        help="ask SCP to compare configured and applied firewall state",
     )
-    firewall_set = p.add_argument_group("set options")
-    firewall_set.add_argument(
-        "--copied-policy-id", dest="copied_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
+    set_group = parser.add_argument_group("SET OPTIONS")
+    set_group.add_argument(
+        "--copied-policy-id",
+        dest="copied_policy_ids",
+        type=_positive_int,
+        action="append",
+        default=[],
+        metavar="ID",
         help="repeat for copied policy IDs",
     )
-    firewall_set.add_argument(
-        "--user-policy-id", dest="user_policy_ids", type=_positive_int, action="append", default=[], metavar="ID",
+    set_group.add_argument(
+        "--user-policy-id",
+        dest="user_policy_ids",
+        type=_positive_int,
+        action="append",
+        default=[],
+        metavar="ID",
         help="repeat for user policy IDs",
     )
-    active = firewall_set.add_mutually_exclusive_group()
-    active.add_argument("--active", dest="active", action="store_true", help="enable the firewall in the replacement")
-    active.add_argument("--inactive", dest="active", action="store_false", help="disable the firewall in the replacement")
-    p.set_defaults(active=None)
-    add_confirmation(p, "skip the confirmation prompt for set")
+    active = set_group.add_mutually_exclusive_group()
+    active.add_argument("--active", dest="active", action="store_true", help="enable the firewall")
+    active.add_argument("--inactive", dest="active", action="store_false", help="disable the firewall")
+    parser.set_defaults(active=None)
 
-    p = add_subcommand(
-        "power",
-        "power on, off, cycle, or reset one server",
-        "Control server power state. `off` uses Netcup's POWEROFF option; `cycle` and `reset` use Netcup's "
-        "state options. Every action is confirmed unless --yes is supplied.\n\n"
-        "Examples:\n"
-        "  ./scp-api.py power cycle 799611 --yes\n"
-        "  ./scp-api.py power on 799611 --yes",
-    )
-    add_actions(p, ("on", "off", "cycle", "reset"), "on/off/cycle/reset: selected power operation")
-    p.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
-    add_confirmation(p)
 
-    # With no command the most useful response is the top-level usage, not
-    # argparse's implementation detail about a required subparser. Print the
-    # full help so a bare invocation is a useful discovery command.
-    if len(sys.argv) == 1:
-        parser.print_help(sys.stderr)
-        parser.exit(2)
+def _configure_power(parser):
+    _add_actions(parser, ("on", "off", "cycle", "reset"), "select the power operation", required=True)
+    parser.add_argument("server_id", type=_positive_int, metavar="server_id", help="Netcup SCP server ID")
 
-    args = parser.parse_args()
 
-    # `mac` is optional for the one-interface convenience form. Because it
-    # precedes the positional action, argparse initially sees
-    # `firewall SERVER get` as mac="get". Normalize that unambiguous spelling
-    # here while retaining the explicit `firewall SERVER MAC get` form.
-    if args.command == "firewall":
-        if args.mac in ("get", "set") and args.action is None:
-            args.action = args.mac
-            args.mac = None
-        if args.mac is not None:
+def _command_handler(command: str, implementation):
+    def invoke(args, runtime):
+        global _ACTIVE_RUNTIME
+        previous = (
+            netcup_scp_client.DEBUG,
+            netcup_scp_client.DEBUG_RAW,
+            netcup_scp_client.DEBUG_LOGGER,
+            _ACTIVE_RUNTIME,
+        )
+        _ACTIVE_RUNTIME = runtime
+        args.command = command
+        args.json = runtime.json_mode
+        args.yes = runtime.yes
+        args.no_color = not runtime.output.color_enabled(runtime.output.stdout)
+        try:
+            # Validate local upload/policy inputs before credentials or API I/O.
             try:
-                args.mac = _mac_address(args.mac)
-            except argparse.ArgumentTypeError as e:
-                parser.error(f"firewall MAC: {e}")
+                if command == "firewall-policies" and args.action in ("create", "put"):
+                    _load_firewall_policy(args)
+                    if args.action == "put" and args.policy_id is None:
+                        raise ValueError("firewall-policies put requires a policy_id")
+                elif command == "user-iso" and args.action == "upload":
+                    _user_iso_file(args)
+            except (OSError, ValueError) as exc:
+                raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
 
+            _configure()
+            refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
+            if refresh_token:
+                runtime.output.secrets = (*runtime.output.secrets, refresh_token)
+            netcup_scp_client.DEBUG = netcup_scp_client.DEBUG or runtime.debug
+            netcup_scp_client.DEBUG_RAW = runtime.debug_raw
+            netcup_scp_client.DEBUG_LOGGER = logging.getLogger("netcup.scp_api.client")
+
+            if command == "login":
+                return cmd_login(args)
+            client = build_client()
+            if command == "firewall" and args.mac in ("get", "set") and args.action is None:
+                args.action, args.mac = args.mac, None
+            if command == "firewall" and args.mac is not None:
+                try:
+                    args.mac = _mac_address(args.mac)
+                except argparse.ArgumentTypeError as exc:
+                    raise CliFailure(
+                        f"firewall MAC: {exc}", exit_code=2, show_help=True
+                    ) from exc
+            palette = _Palette(runtime.output.color_enabled(runtime.output.stdout))
+            implementation(client, args, palette)
+            return 0
+        except SystemExit as exc:
+            if isinstance(exc.code, int):
+                return exc.code
+            message = str(exc.code or "command failed")
+            if message.startswith("ERROR: "):
+                message = message.removeprefix("ERROR: ")
+            raise CliFailure(message) from exc
+        finally:
+            (
+                netcup_scp_client.DEBUG,
+                netcup_scp_client.DEBUG_RAW,
+                netcup_scp_client.DEBUG_LOGGER,
+                _ACTIVE_RUNTIME,
+            ) = previous
+
+    return invoke
+
+
+def build_cli():
+    registry = CliRegistry(
+        IDENTITY,
+        prog="scp-api.py",
+        description="Explore and safely operate a Netcup SCP account.",
+        getting_started=(
+            "./scp-api.py login",
+            "./scp-api.py status",
+            "./scp-api.py help firewall",
+        ),
+        logging_logger="netcup.scp_api.client",
+    )
+
+    def register(
+        name,
+        synopsis,
+        summary,
+        description,
+        group,
+        implementation,
+        *,
+        arguments=(),
+        options=(),
+        configure=None,
+        examples=(),
+        mutating=False,
+        json=True,
+    ):
+        registry.register(
+            VerbSpec(
+                name,
+                synopsis,
+                description,
+                group=group,
+                examples=examples,
+                mutating=mutating,
+                include_json=json,
+                include_progress=False,
+                arguments=arguments,
+                options=options,
+                configure=configure,
+                handler=_command_handler(name, implementation),
+                summary_description=summary,
+            )
+        )
+
+    register(
+        "login", "", "authenticate and select locally protected servers",
+        "Obtain an OAuth refresh token using the browser device-code flow. An interactive login may then select account servers named v<digits> for this checkout's local mutation denylist. This is local protection, not a provider-side lock.",
+        VerbGroup.AUTHENTICATION.value, cmd_login, examples=("./scp-api.py login",), json=False,
+    )
+
+    server_id_optional = _argument(
+        "server_id", "Netcup SCP server ID; omit to query all account servers.",
+        metavar="server_id", nargs="?", type=_positive_int, default=None,
+    )
+    register(
+        "servers", "", "list the account's known servers",
+        "List all servers known to the authenticated Netcup SCP account.",
+        VerbGroup.EXPLORATION.value, cmd_servers,
+        examples=("./scp-api.py servers",),
+    )
+    register(
+        "status", "[server_id]", "show compact live status and SSH reachability",
+        "Fetch server details and show vname, hostname, run state, architecture, CPU, RAM, disk, SSH authentication, and reverse DNS for the provider's ipv4Addresses/ipv6Addresses. SSH probing creates no key. It probes the service once per address, then tries recognizable private keys in ~/.ssh and the configured install-host identity, preferring host/hostname-matched filenames. The default per-address timeout is 2 seconds. Results distinguish accepted key names, no keys match, rejected, and no answer. With no ID, a bounded four-worker pool queries all servers; reverse-DNS lookups are concurrent and duplicate addresses are not cached.",
+        VerbGroup.EXPLORATION.value, cmd_status,
+        arguments=(server_id_optional,),
+        options=(_option(("--ssh-timeout",), "per-address SSH service/key timeout (default: 2 seconds)", group="SSH PROBE", metavar="SECONDS", type=_positive_float, default=DEFAULT_SSH_TIMEOUT_SECONDS),),
+        examples=("./scp-api.py status", "./scp-api.py status 799611 --json"),
+    )
+    register(
+        "server-details", "server_id", "show one server's detailed API record",
+        "Show the complete server details record returned by SCP.",
+        VerbGroup.EXPLORATION.value, cmd_server_details,
+        arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
+        examples=("./scp-api.py server-details 799611",),
+    )
+    for name, summary, description, example in (
+        ("imageflavours", "list reinstallable OS/image flavours", "An image flavour is a server-compatible reinstallable OS/image variant, such as a Debian 13 UEFI amd64 image; it is not a VM template.", "./scp-api.py imageflavours --filter debian"),
+        ("iso-bootable", "list provider bootable ISO choices", "These are bootable installer or recovery ISO images exposed by SCP. Use --filter to narrow names and descriptions.", "./scp-api.py iso-bootable --filter rescue"),
+    ):
+        register(
+            name, "[server_id]", summary, description,
+            VerbGroup.EXPLORATION.value,
+            cmd_imageflavours if name == "imageflavours" else cmd_iso_bootable,
+            arguments=(server_id_optional,),
+            options=(_option(("--filter",), "case-insensitive text filter across returned fields", group="FILTERS", metavar="TEXT", type=_nonempty_text),),
+            examples=(example,),
+        )
+    register(
+        "iso-attached", "[server_id] [detach]", "inspect attached ISOs or detach one",
+        "Show the ISO currently attached to one or every server. The detach action changes the server's media assignment and is confirmed.",
+        "MIXED OPERATIONS", cmd_attached_iso,
+        arguments=(server_id_optional,), configure=_configure_iso_attached,
+        examples=("./scp-api.py iso-attached 799611", "./scp-api.py iso-attached 799611 detach --yes"), mutating=True,
+    )
+    register(
+        "disks", "[server_id] [supported-drivers]", "list disks or supported storage drivers",
+        "List disk capacity/allocation and storage drivers for one or every server.",
+        VerbGroup.EXPLORATION.value, cmd_disks,
+        arguments=(server_id_optional,), configure=_configure_disks,
+        examples=("./scp-api.py disks 799611", "./scp-api.py disks 799611 supported-drivers"),
+    )
+    register(
+        "rescuesystem", "[server_id] [deactivate]", "inspect or deactivate provider rescue mode",
+        "Read Netcup's provider-managed rescue environment; this is distinct from attaching an arbitrary ISO. The deactivate action changes server state and is confirmed.",
+        "MIXED OPERATIONS", cmd_rescuesystem,
+        arguments=(server_id_optional,), configure=_configure_rescue,
+        examples=("./scp-api.py rescuesystem 799611", "./scp-api.py rescuesystem 799611 deactivate --yes"), mutating=True,
+    )
+    register(
+        "snapshots", "[server_id] [create|dryrun]", "list, check, or create server snapshots",
+        "List snapshots for one or every server. dryrun asks SCP whether creation is possible; create makes a snapshot and is confirmed.",
+        "MIXED OPERATIONS", cmd_snapshots,
+        arguments=(server_id_optional,), configure=_configure_snapshots,
+        options=(_option(("--name",), "snapshot name for create (default is timestamped)", group="SNAPSHOT OPTIONS", metavar="NAME", default=None),),
+        examples=("./scp-api.py snapshots 799611", "./scp-api.py snapshots 799611 dryrun", "./scp-api.py snapshots 799611 create --name before-upgrade --yes"), mutating=True,
+    )
+    register(
+        "tasks", "[task_uuid] [cancel]", "list/filter tasks, inspect one, or cancel one",
+        "List tasks with optional filters, fetch one task by UUID, or cancel a task. Cancellation requires an explicit --server-id when a protected-server denylist is configured.",
+        "MIXED OPERATIONS", cmd_tasks,
+        arguments=(_argument("uuid", "Task UUID; omit to list tasks.", metavar="task_uuid", nargs="?", type=_nonempty_text, default=None),),
+        configure=_configure_tasks,
+        options=(
+            _option(("--query", "--filter"), "search task name, UUID, or server fields (API q filter)", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
+            _option(("--server-id",), "filter by server; required to cancel with protected-server policy", group="FILTERS", metavar="ID", dest="server_filter_id", type=_positive_int),
+            _option(("--state",), "filter by task state", group="FILTERS", choices=_TASK_STATES),
+            _option(("--limit",), "maximum tasks to return", group="FILTERS", type=_nonnegative_int),
+            _option(("--offset",), "matching tasks to skip", group="FILTERS", type=_nonnegative_int),
+        ),
+        examples=("./scp-api.py tasks --state RUNNING", "./scp-api.py tasks TASK_UUID", "./scp-api.py tasks TASK_UUID cancel --server-id 799611 --yes"), mutating=True,
+    )
+    register(
+        "metrics", "server_id metric", "show timestamped CPU, disk, or network metrics",
+        "Return timestamped SCP metrics. --hours is a lookback window, not a sample interval.",
+        VerbGroup.EXPLORATION.value, cmd_metrics,
+        arguments=(
+            _argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),
+            _argument("metric", "metric series to return.", metavar="{cpu,disk,network,network-packet}", choices=tuple(_METRIC_ENDPOINTS)),
+        ),
+        options=(_option(("--hours",), "look back this many hours (1-1440; API default if omitted)", group="TIME RANGE", type=_hours),),
+        examples=("./scp-api.py metrics 799611 cpu --hours 24",),
+    )
+    register(
+        "guest-agent-status", "server_id", "show QEMU guest-agent availability",
+        "Read guest-agent availability. This is not an SSH or bootstrap health check.",
+        VerbGroup.EXPLORATION.value, cmd_guest_agent_status,
+        arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
+        examples=("./scp-api.py guest-agent-status 799611",),
+    )
+    register(
+        "user-iso", "[upload FILE]", "list account user ISOs or upload one",
+        "List account-level ISO objects or upload a local ISO through the provider's signed single-part/multipart object-storage flow. Upload does not attach or boot the ISO; use attach-iso, then select CD-ROM boot/power as needed.",
+        "MIXED OPERATIONS", cmd_user_iso,
+        configure=_configure_user_iso,
+        options=(
+            _option(("--name",), "object name (defaults to the local filename)", group="UPLOAD OPTIONS", metavar="KEY", type=_nonempty_text),
+            _option(("--multipart",), "use multipart upload for large ISO files", group="UPLOAD OPTIONS", action="store_true"),
+            _option(("--part-size-mib",), "multipart part size in MiB (default 64; minimum 5)", group="UPLOAD OPTIONS", metavar="N", type=_part_size_mib, default=None),
+        ),
+        examples=("./scp-api.py user-iso", "./scp-api.py user-iso upload ./custom.iso --name custom.iso --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --yes", "./scp-api.py power cycle 799611 --yes"), mutating=True,
+    )
+    register(
+        "firewall-policies", "[create|put]", "list, create, or replace account firewall policies",
+        "List policy IDs or create/update a FirewallPolicySave object after strict local JSON validation. put changes the policy definition; firewall SERVER set separately assigns policies to an interface.",
+        "MIXED OPERATIONS", cmd_firewall_policies,
+        configure=_configure_firewall_policies,
+        options=(
+            _option(("--query", "--filter"), "search policy name/description", group="FILTERS", metavar="TEXT", dest="query", type=_nonempty_text),
+            _option(("--limit",), "maximum policies to return", group="FILTERS", type=_nonnegative_int),
+            _option(("--offset",), "matching policies to skip", group="FILTERS", type=_nonnegative_int),
+        ),
+        examples=("./scp-api.py firewall-policies", "./scp-api.py firewall-policies create --policy-json '{\"name\":\"ssh\",\"rules\":[]}' --yes", "./scp-api.py firewall-policies put 12 --policy-file firewall-policy.json --yes"), mutating=True,
+    )
+    register(
+        "firewall", "server_id [mac] [get|set]", "read or replace one interface's firewall assignment",
+        "get reads the assignment for one interface. MAC may be omitted only when the server has exactly one interface. set replaces copied/user policy assignments and requires --active or --inactive; policy creation/editing belongs to firewall-policies.",
+        "MIXED OPERATIONS", cmd_firewall,
+        configure=_configure_firewall,
+        examples=("./scp-api.py firewall 799611 get --consistency-check", "./scp-api.py firewall 799611 set --user-policy-id 12 --active --yes"), mutating=True,
+    )
+    register(
+        "power", "{on|off|cycle|reset} server_id", "power on, off, cycle, or reset one server",
+        "Control a server's power state. Every operation is confirmed unless --yes is supplied.",
+        VerbGroup.MODIFICATION.value, cmd_power,
+        configure=_configure_power,
+        examples=("./scp-api.py power cycle 799611 --yes", "./scp-api.py power on 799611 --yes"), mutating=True,
+    )
+    register(
+        "attach-iso", "server_id", "attach a bootable or uploaded ISO to a server",
+        "Attach an ISO by ID from iso-bootable or a user ISO name. This changes attached media and is confirmed.",
+        VerbGroup.MODIFICATION.value, cmd_attach_iso,
+        arguments=(_argument("server_id", "Netcup SCP server ID.", metavar="server_id", type=_positive_int),),
+        configure=_configure_attach_iso,
+        examples=("./scp-api.py attach-iso 799611 --iso-id 1234 --yes", "./scp-api.py attach-iso 799611 --user-iso-name custom.iso --change-boot-device-to-cdrom --yes"), mutating=True,
+    )
+    return registry.build()
+
+
+def parse_args(argv=None):
+    """Compatibility parser for internal callers; executable flow uses cli-extended."""
+    app = build_cli()
+    args = app.parser.parse_args(argv)
+    args.command = args.verb
+    if args.command == "firewall" and args.mac in ("get", "set") and args.action is None:
+        args.action, args.mac = args.mac, None
     return args
 
 
-def _main() -> int:
-    args = parse_args()  # --help exits here, before _configure() ever runs
-    # Validate local write/upload inputs before loading settings, refreshing a
-    # token, or contacting the API. This makes a typo in a policy/file a local
-    # error rather than an authenticated request followed by a provider error.
-    try:
-        if args.command == "firewall-policies" and args.action in ("create", "put"):
-            _load_firewall_policy(args)
-            if args.action == "put" and args.policy_id is None:
-                raise ValueError("firewall-policies put requires a policy_id")
-        elif args.command == "user-iso" and args.action == "upload":
-            _user_iso_file(args)
-    except (OSError, ValueError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 2
-    _configure()
-
-    if args.command == "login":
-        return cmd_login(args)
-
-    pal = _Palette(_color_enabled(args.no_color))
-    client = build_client()
-
-    dispatch = {
-        "servers": cmd_servers,
-        "status": cmd_status,
-        "server-details": cmd_server_details,
-        "imageflavours": cmd_imageflavours,
-        "iso-bootable": cmd_iso_bootable,
-        "iso-attached": cmd_attached_iso,
-        "attach-iso": cmd_attach_iso,
-        "disks": cmd_disks,
-        "rescuesystem": cmd_rescuesystem,
-        "snapshots": cmd_snapshots,
-        "tasks": cmd_tasks,
-        "metrics": cmd_metrics,
-        "guest-agent-status": cmd_guest_agent_status,
-        "user-iso": cmd_user_iso,
-        "firewall-policies": cmd_firewall_policies,
-        "firewall": cmd_firewall,
-        "power": cmd_power,
-    }
-    try:
-        dispatch[args.command](client, args, pal)
-    except Exception as e:
-        # e.g. a bare RuntimeError from _http_json on a network/DNS
-        # failure -- _api_call() only catches HTTPStatusError, so anything
-        # else reaching here would otherwise dump a raw traceback instead
-        # of a clean message (matches install-host.py's own
-        # top-level Exception handling in main()).
-        print(f"ERROR: {e}", file=sys.stderr)
-        if netcup_scp_client.DEBUG:
-            import traceback
-            traceback.print_exc()
-        return 1
-    return 0
-
-
-def main() -> int:
-    """Run the CLI and turn an intentional Ctrl-C into a clean exit."""
-    try:
-        return _main()
-    except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
-        return 130
+def main(argv=None) -> int:
+    return build_cli().run(
+        argv=argv,
+        expected_exceptions=(
+            OSError,
+            netcup_scp_client.NetcupAPIError,
+            netcup_scp_client.ProtectedServerError,
+            ResponseShapeError,
+        ),
+    )
 
 
 if __name__ == "__main__":

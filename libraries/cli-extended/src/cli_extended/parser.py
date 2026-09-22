@@ -229,6 +229,7 @@ class VerbSpec:
     options: tuple[OptionSpec, ...] = ()
     configure: Callable[[ExtendedArgumentParser], None] | None = None
     handler: Callable[..., int | None] | None = None
+    summary_description: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name or self.name.startswith("-"):
@@ -237,6 +238,8 @@ class VerbSpec:
             raise ValueError(f"verb {self.name!r} must define a description")
         if not self.group:
             raise ValueError(f"verb {self.name!r} must define a semantic group")
+        if self.summary_description is not None and not self.summary_description:
+            raise ValueError(f"verb {self.name!r} has an empty summary description")
 
     @property
     def behavior_labels(self) -> tuple[str, ...]:
@@ -254,9 +257,10 @@ class VerbSpec:
         """Return the top-level one-line description with behavior cues."""
 
         labels = self.behavior_labels
+        description = self.summary_description or self.description
         if not labels:
-            return self.description
-        return f"{self.description} [{'; '.join(labels)}]"
+            return description
+        return f"{description} [{'; '.join(labels)}]"
 
     @property
     def command_description(self) -> str:
@@ -1117,12 +1121,12 @@ class CliRegistry:
             include_json=(
                 self._verbs[0].include_json
                 if self.single_command
-                else all(verb.include_json for verb in self._verbs)
+                else any(verb.include_json for verb in self._verbs)
             ),
             include_progress=(
                 self._verbs[0].include_progress
                 if self.single_command
-                else all(verb.include_progress for verb in self._verbs)
+                else any(verb.include_progress for verb in self._verbs)
             ),
             include_confirmation=self.single_command and self._verbs[0].mutating,
         )
@@ -1317,7 +1321,22 @@ def run_cli(
     try:
         args = parser.parse_args(raw)
     except UsageError as exc:
-        _print_help(exc.render(), stderr)
+        error_parser = exc.parser
+        if (
+            error_parser is parser
+            and command_form
+            and command_form[0] in command_parsers
+        ):
+            # argparse can report an unsupported option after a known verb
+            # against the root parser. Keep the standard's known-verb error
+            # behavior by showing that verb's help, not the whole CLI catalog.
+            error_parser = command_parsers[command_form[0]]
+        rendered = (
+            exc.render()
+            if error_parser is exc.parser
+            else UsageError(exc.message, error_parser).render()
+        )
+        _print_help(rendered, stderr)
         return 2
     except SystemExit as exc:
         return int(exc.code or 0)
@@ -1341,6 +1360,26 @@ def run_cli(
         option_conflict = _common_option_conflict(raw)
         if option_conflict:
             raise CliFailure(option_conflict, exit_code=2, show_help=True)
+        command_parser = command_parsers.get(verb)
+        if command_parser is not None:
+            if (
+                bool(getattr(args, "json", False))
+                and "--json" not in command_parser._option_string_actions
+            ):
+                raise CliFailure(
+                    f"--json is not supported for verb {verb!r}",
+                    exit_code=2,
+                    show_help=True,
+                )
+            if (
+                getattr(args, "progress", None) is not None
+                and "--progress" not in command_parser._option_string_actions
+            ):
+                raise CliFailure(
+                    f"--progress is not supported for verb {verb!r}",
+                    exit_code=2,
+                    show_help=True,
+                )
         runtime = _runtime_from_args(
             args,
             identity,

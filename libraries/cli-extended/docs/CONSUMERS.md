@@ -32,7 +32,8 @@ Mark whether it mutates state, prompts, or can take a long time. Then express
 each interface element once:
 
 - `VerbSpec`: name, synopsis, user-facing description, semantic group,
-  examples, behavior attributes, handler, positional arguments, and options;
+  optional shorter `summary_description` for the top-level catalog, examples,
+  behavior attributes, handler, positional arguments, and options;
 - `ArgumentSpec`: positional name, metavar, description, and argparse
   attributes such as `nargs`, `choices`, or `type`;
 - `OptionSpec`: flags, display metavar, help group, description, and argparse
@@ -54,14 +55,19 @@ that must precede a verb belong in `CliRegistry.global_options`; command-local
 options belong in that verb's `options`. Give every option an intentional
 display group (`OUTPUT`, `FILTERS`, `STOP CONDITIONS`, etc.) instead of grouping
 by implementation detail. Use `VerbSpec.group` for the semantic top-level
-verb group. The same metadata drives terminal and Markdown help; avoid a
+verb group. Use `summary_description` only to shorten the one-line top-level
+catalog entry; keep the full behavior and caveats in `description` and
+examples. The same metadata drives terminal and Markdown help; avoid a
 parallel manually formatted epilog for ordinary options. Custom parser
 callbacks are an escape hatch for syntax argparse cannot express through the
 structured fields, not the default registration path.
 
-The generated common output/debugging controls are supported before and after
-the selected verb. Keep their semantics independent of placement: for example,
-`tool --quiet status` and `tool status --quiet` must both work, while combining
+Supported common output/debugging controls are accepted before or after the
+selected verb with the same meaning. A CLI may support `--json` or
+`--progress` only for some verbs: top-level help can list the union, but
+command help is authoritative, and using an unsupported selector must fail
+with that verb's help instead of being ignored. For options that do apply,
+`tool --quiet status` and `tool status --quiet` must behave alike; combining
 `--quiet` with `--debug` must be rejected in either order. Do not duplicate a
 command-local option at the root merely to make it appear in more than one
 place; register genuinely invocation-wide options once as global options.
@@ -79,7 +85,18 @@ distinct from `watch`. Keep cancellation in the API-owning CLI if it already
 owns task mutations; do not create two interfaces for the same operation by
 default.
 
-The Netcup task monitor is the first consumer of this split:
+The Netcup task monitor was the first consumer of this split. The account API
+CLI and installer now use the same registry and shell boundary while retaining
+their own operation vocabularies and provider logic. In particular, the API
+CLI disables JSON for interactive `login`, and the installer disables JSON and
+progress for its workflow commands; unsupported common selectors are refused
+with the selected verb's help. `install-host.py attach` is an SSH-only
+operation, not an API-backed install mode. See the
+[`Netcup quickstart`](../../../scripts/netcup/README.md) and
+[`Netcup design guide`](../../../scripts/netcup/DESIGN-GUIDE.md) for their
+command-level workflows.
+
+The task monitor's operation split is:
 
 | Operation | Netcup command |
 | --- | --- |

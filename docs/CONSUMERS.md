@@ -73,9 +73,9 @@ pinned at 50.
 
 ## Netcup SCP API provisioning
 
-Use a dedicated Python environment for the scripts. `monitor-task.py` consumes
-the shared `cli-extended` package; install that package into the same
-environment used to invoke the scripts:
+Use a dedicated Python environment for the scripts. `scp-api.py`,
+`install-host.py`, and `monitor-task.py` all consume the shared `cli-extended`
+package; install it into the same environment used to invoke the scripts:
 
 ```bash
 cd scripts/netcup
@@ -118,6 +118,21 @@ different file, pass `--config`:
 ./install-host.py install --config target-host.jsonc --dry-run
 ./install-host.py install --config target-host.jsonc
 ```
+
+To reattach to an existing host and follow the provider customScript output,
+set `NETCUP_SCP_API_SSH_HOST` in `.env` (optionally set an exact existing key
+in `NETCUP_SCP_API_SSH_IDENTITY_FILE`) and run the SSH-only verb:
+
+```bash
+./install-host.py attach
+```
+
+This makes no Netcup API calls and never creates a key. It replaces the former
+`--attach-only` mode. All three Netcup commands generate grouped usage and
+verb-specific help from their registries; bare invocation, `help VERB`, and
+version discovery do not need API credentials. Top-level help lists the union
+of common output options; command-specific help shows which switches, such as
+`--json`, apply to that verb.
 
 `wizard` gathers server-specific values; `install` consumes a complete file.
 The frontend does not generate an OS-specific `customScript`; for Debian v2,

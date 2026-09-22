@@ -37,8 +37,10 @@ ciu 7.15.0
 ```
 
 The long name belongs in help/usage, not in the output of `version` or
-`--version`. Version and help must work without a config file, credentials,
-network access, Docker, SSH, or other runtime dependencies.
+`--version`. Version and help must work without application configuration,
+credentials, network access, or external services such as Docker and SSH. The
+CLI's packaged dependencies must be installed, but discovery must not load
+domain configuration or initialize those services.
 
 ## 2. Invocation and help
 
@@ -195,7 +197,13 @@ derive or accept.
 ## 5. Common options
 
 Common options are shown in semantic sections rather than one undifferentiated
-list. A CLI only advertises options that apply to the selected command.
+list. Command-specific help advertises only options supported by that command.
+Because no verb is selected in top-level help, a CLI may list the union of
+common output options used by any verb. That top-level list is an inventory,
+not a promise that every option applies to every command. An option supplied
+to an unsupported verb must be rejected with that verb's help; it must never
+be silently ignored. The same rule applies whether the option appears before
+or after the verb.
 
 ### Help and version
 
@@ -472,15 +480,15 @@ statuses. A CLI should not acquire multiple overlapping parser/rendering
 frameworks merely because each project chose a different one.
 
 The repository has enough repeated behavior across CIU, CMRU, nyxloom, and the
-Netcup tools that a small custom library is worthwhile once migration begins.
-It should be a focused contract layer, not a replacement for every possible
-CLI framework. It may use or adapt an established parser/renderer, but its
-narrow API should cover:
+Netcup tools to justify a small custom library. `libraries/cli-extended/` is
+the focused contract layer, not a replacement for every possible CLI
+framework. It may use or adapt an established parser/renderer, but its narrow
+API covers:
 
-The recommended home is `libraries/cli-extended/`, with distribution name
-`cli-extended` and Python import name `cli_extended`. It must be independently
-packageable so installed CLIs do not depend on importing from the repository
-root.
+The shared implementation lives in `libraries/cli-extended/`, with
+distribution name `cli-extended` and Python import name `cli_extended`. It is
+independently packageable so installed CLIs do not depend on importing from
+the repository root.
 
 1. `CliIdentity` and authoritative version resolution;
 2. a declarative verb/argument/option registry that generates parsers, grouped
@@ -504,11 +512,11 @@ repository-root import path would make a standalone CLI work only from this
 checkout.
 
 Existing project-local helpers (`ciu.cli_utils`, `cmru.cli_support`, and
-nyxloom's parser classes) are useful migration evidence, but keeping three
-independent implementations will eventually recreate the drift this standard
-is intended to prevent. A later implementation change should first build the
-helper and migrate the three Netcup entrypoints, then migrate the larger CLIs
-with compatibility tests.
+nyxloom's parser classes) remain useful migration evidence, but keeping three
+independent implementations would recreate the drift this standard is
+intended to prevent. The helper is implemented and the Netcup entrypoints use
+it; the larger CLIs remain follow-on adopters and should migrate with
+compatibility tests.
 
 ## 11. Further contract areas
 
@@ -546,15 +554,13 @@ This is an adoption plan, not a claim that all current tools already conform.
 | `ciu` | align `help` verb and remove `-h`; retain its strong grouped/help model |
 | `cmru` | scope options to the selected verb; align `help`, `--yes`, and exception behavior |
 | `nyxloom` | make bare invocation exit `0`; remove flat parser list; align version output and `help` |
-| `scp-api.py` | add version/help verbs, remove duplicate verb list, add identity header, align `--yes`/errors |
-| `install-host.py` | add identity/version/help verb, grouped options, and common error/debug behavior |
-| `monitor-task.py` | pilot adoption: explicit `show`/`watch`, generated help/version, side-effect-free discovery, structured common output, and clean cancellation |
+| Netcup `scp-api.py`, `install-host.py`, `monitor-task.py` | all three use `cli-extended` for generated verbs/help, identity/version, config-free discovery, common diagnostics, and clean cancellation; each retains ownership of its API/installer/task domain behavior |
 | `debian-install-v2.py` | audit its action model separately; any shared-helper adoption must preserve offline/bootstrap delivery and unattended `resume` semantics |
 | other `scripts/` CLIs | audit and adopt the same contract when they are user-facing |
 
-`monitor-task.py` is the first bounded consumer pilot because it had a real
-unsafe `help`-as-task path and cleanly separates one-shot inspection from
-polling. `scp-api.py` and `install-host.py` remain follow-on migrations. The
+The Netcup tools are the first adopted family: `monitor-task.py` separates
+one-shot inspection from polling, `scp-api.py` owns account API operations,
+and `install-host.py` owns installation and SSH attachment workflows. The
 Debian installer needs its own delivery-boundary review before it imports this
 library: its remote bootstrap must not assume the repository checkout or an
 online package install exists. The standard itself is repository-wide and does

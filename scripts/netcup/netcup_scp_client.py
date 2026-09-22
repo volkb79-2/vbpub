@@ -385,7 +385,11 @@ def _debug_value(value: Any) -> Any:
 
 # --- low-level HTTP ----------------------------------------------------------
 
-class HTTPStatusError(RuntimeError):
+class NetcupAPIError(RuntimeError):
+    """Expected transport, provider, or response failure from Netcup APIs."""
+
+
+class HTTPStatusError(NetcupAPIError):
     def __init__(self, status: int, message: str, body: str = ""):
         super().__init__(message)
         self.status = int(status)
@@ -396,7 +400,7 @@ def _upload_presigned_stream(url: str, stream, size: int, *, timeout: float = 30
     """PUT a file stream to an S3 presigned URL without adding API auth."""
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise RuntimeError("presigned upload URL is not an absolute HTTP(S) URL")
+        raise NetcupAPIError("presigned upload URL is not an absolute HTTP(S) URL")
     connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
     connection = connection_class(parsed.netloc, timeout=timeout)
     target = parsed.path or "/"
@@ -411,7 +415,7 @@ def _upload_presigned_stream(url: str, stream, size: int, *, timeout: float = 30
         while remaining:
             chunk = stream.read(min(1024 * 1024, remaining))
             if not chunk:
-                raise RuntimeError("local ISO changed or ended before the declared upload size")
+                raise NetcupAPIError("local ISO changed or ended before the declared upload size")
             connection.send(chunk)
             remaining -= len(chunk)
         response = connection.getresponse()
@@ -473,9 +477,9 @@ def _http_json(
             pass
         raise HTTPStatusError(int(getattr(e, "code", 0) or 0), f"HTTP {getattr(e, 'code', '?')} for {url}", body)
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Network error for {url}: {e}")
+        raise NetcupAPIError(f"Network error for {url}: {e}") from e
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"Invalid JSON response from {method.upper()} {url}: {e}") from e
+        raise NetcupAPIError(f"Invalid JSON response from {method.upper()} {url}: {e}") from e
 
 
 # --- OAuth2 device-code login + token refresh -------------------------------
@@ -507,16 +511,16 @@ def get_access_token(refresh_token: str) -> str:
             body = e.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        raise RuntimeError(f"Token request failed: HTTP {e.code}: {body[:500]}")
+        raise NetcupAPIError(f"Token request failed: HTTP {e.code}: {body[:500]}") from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Token request network error: {e}")
+        raise NetcupAPIError(f"Token request network error: {e}") from e
 
     try:
         token_data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"Token response was not valid JSON: {e}") from e
+        raise NetcupAPIError(f"Token response was not valid JSON: {e}") from e
     if not isinstance(token_data, dict):
-        raise RuntimeError("Token response was not a JSON object")
+        raise NetcupAPIError("Token response was not a JSON object")
     access_token = token_data.get("access_token")
 
     if not isinstance(access_token, str) or not access_token.strip():
@@ -526,7 +530,7 @@ def get_access_token(refresh_token: str) -> str:
     return access_token
 
 
-def run_device_code_login(env_path: Path) -> int:
+def run_device_code_login(env_path: Path, *, output: Any | None = None) -> int:
     """Automate the OAuth2 device-code grant and write the resulting
     refresh token into env_path (NETCUP_SCP_API_REFRESH_TOKEN). Uses
     module-level KEYCLOAK_URL -- set it before calling.
@@ -560,9 +564,19 @@ def run_device_code_login(env_path: Path) -> int:
       revoked. Forgotten refresh tokens can be revoked in the Account
       Console: https://www.servercontrolpanel.de/realms/scp/account
     """
-    print("=" * 70)
-    print("LOGIN (netcup SCP OAuth2 device-code flow)")
-    print("=" * 70)
+    def info(message: str) -> None:
+        if output is not None:
+            output.info(message)
+        else:
+            print(message)
+
+    def report_error(message: str) -> None:
+        if output is not None:
+            output.error(message)
+        else:
+            print(f"❌ ERROR: {message}", file=sys.stderr)
+
+    info("Starting Netcup SCP OAuth2 device-code login.")
 
     device_data = urllib.parse.urlencode(
         {"client_id": "scp", "scope": "offline_access openid"}
@@ -577,34 +591,34 @@ def run_device_code_login(env_path: Path) -> int:
         with urllib.request.urlopen(device_req, timeout=30) as resp:
             device = json.loads(resp.read().decode("utf-8", errors="replace"))
     except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as e:
-        print(f"❌ ERROR: could not start device login: {e}", file=sys.stderr)
+        report_error(f"could not start device login: {e}")
         return 1
 
     if not isinstance(device, dict):
-        print("❌ ERROR: device-code response was not a JSON object", file=sys.stderr)
+        report_error("device-code response was not a JSON object")
         return 1
     device_code = device.get("device_code")
     if not isinstance(device_code, str) or not device_code.strip():
-        print(f"❌ ERROR: device-code response had no device_code: {device}", file=sys.stderr)
+        report_error("device-code response had no device_code")
         return 1
     try:
         interval = max(1, int(device.get("interval", 5)))
         expires_in = int(device.get("expires_in", 600))
     except (TypeError, ValueError) as e:
-        print(f"❌ ERROR: device-code response had invalid timing values: {e}", file=sys.stderr)
+        report_error(f"device-code response had invalid timing values: {e}")
         return 1
     if expires_in <= 0:
-        print("❌ ERROR: device-code response had non-positive expires_in", file=sys.stderr)
+        report_error("device-code response had non-positive expires_in")
         return 1
     verification_url = device.get("verification_uri_complete") or device.get("verification_uri")
     if not isinstance(verification_url, str) or not verification_url.strip():
-        print("❌ ERROR: device-code response had no verification URL", file=sys.stderr)
+        report_error("device-code response had no verification URL")
         return 1
 
-    print(f"1. Open this URL and log in with your SCP credentials:\n   {verification_url}")
+    info(f"Open this URL and log in with your SCP credentials: {verification_url}")
     if not device.get("verification_uri_complete") and device.get("user_code"):
-        print(f"   Enter code: {device['user_code']}")
-    print("2. Waiting for you to complete login (Ctrl-C to cancel)...")
+        info(f"Enter code: {device['user_code']}")
+    info("Waiting for you to complete login (Ctrl-C to cancel)...")
 
     deadline = time.monotonic() + expires_in
     try:
@@ -640,30 +654,32 @@ def run_device_code_login(env_path: Path) -> int:
                 if error == "slow_down":
                     interval += 5
                     continue
-                print(f"❌ ERROR: {error or e}: {body.get('error_description', '')}", file=sys.stderr)
+                report_error(f"{error or e}: {body.get('error_description', '')}")
                 return 1
             except urllib.error.URLError as e:
-                print(f"❌ ERROR: token poll network error: {e}", file=sys.stderr)
+                report_error(f"token poll network error: {e}")
                 return 1
             except json.JSONDecodeError as e:
-                print(f"❌ ERROR: token response was not valid JSON: {e}", file=sys.stderr)
+                report_error(f"token response was not valid JSON: {e}")
                 return 1
 
             if not isinstance(token_response, dict):
-                print("❌ ERROR: token response was not a JSON object", file=sys.stderr)
+                report_error("token response was not a JSON object")
                 return 1
             refresh_token = token_response.get("refresh_token")
             if not isinstance(refresh_token, str) or not refresh_token.strip():
-                print("❌ ERROR: token response had no refresh_token", file=sys.stderr)
+                report_error("token response had no refresh_token")
                 return 1
             _write_env_file(env_path, {"NETCUP_SCP_API_REFRESH_TOKEN": refresh_token})
-            print(f"✓ Logged in. Wrote NETCUP_SCP_API_REFRESH_TOKEN to {env_path}")
+            info(f"Logged in. Wrote NETCUP_SCP_API_REFRESH_TOKEN to {env_path}")
             return 0
     except KeyboardInterrupt:
+        if output is not None:
+            raise
         print("\nLogin cancelled.", file=sys.stderr)
         return 130
 
-    print("❌ ERROR: login timed out waiting for browser confirmation", file=sys.stderr)
+    report_error("login timed out waiting for browser confirmation")
     return 1
 
 
@@ -677,7 +693,7 @@ class NetcupSCPClient:
 
     def refresh_access_token(self) -> None:
         if not self.refresh_token:
-            raise RuntimeError("No refresh token available for access token refresh")
+            raise NetcupAPIError("No refresh token available for access token refresh")
         new_access_token = get_access_token(self.refresh_token)
         self.access_token = new_access_token
 

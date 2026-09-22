@@ -46,11 +46,13 @@ are ergonomic aliases, not a second verbosity scale. `--debug-raw` is
 intentionally separate because it changes the redaction boundary and emits a
 warning. It must never be enabled from a persistent default.
 
-Common output and debugging options are available on either side of the
-selected verb. Their meaning cannot depend on argument order or parser nesting:
-verbosity and colour conflicts must be rejected across the whole invocation,
-not silently turn into last-option-wins because argparse parsed the options at
-different levels.
+Supported common output and debugging options are available on either side of
+the selected verb. Some output modes, such as JSON or progress, can be scoped
+to only the verbs that implement them. Root help lists the available union;
+verb help is authoritative, and the parser refuses an unsupported mode with
+that verb's help. For supported options, meaning cannot depend on argument
+order or parser nesting: verbosity and colour conflicts are rejected across
+the invocation, not resolved by last-option-wins.
 
 The logging adapter accepts ordinary `logging.Logger` records, so a consumer
 can retain its existing logging calls instead of replacing them with a new
@@ -68,6 +70,10 @@ dispatch from those definitions. `ArgumentSpec` and `OptionSpec` carry
 positional/option help, groups, and argparse attributes. A command marked
 `mutating` receives the common `--yes` option and confirmation contract;
 read-only commands do not.
+
+The top-level catalog may need a shorter line than command-specific help.
+`VerbSpec.summary_description` supplies that concise discovery label without
+discarding the full `description` shown for the verb itself.
 
 The consumer still decides the public vocabulary, behavior labels, examples,
 argument constraints, and mutation policy. A registry is a source of truth for

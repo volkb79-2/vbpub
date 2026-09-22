@@ -8,6 +8,7 @@ import types
 from pathlib import Path
 
 import pytest
+from cli_extended import CliFailure
 
 
 # --- presentation helpers ---------------------------------------------------
@@ -109,7 +110,7 @@ def test_confirm_prompts_and_parses_reply(explore_mod, monkeypatch, reply, expec
 
 def test_build_client_missing_refresh_token_exits(explore_mod, monkeypatch):
     monkeypatch.delenv("NETCUP_SCP_API_REFRESH_TOKEN", raising=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="NETCUP_SCP_API_REFRESH_TOKEN"):
         explore_mod.build_client()
 
 
@@ -149,7 +150,7 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
         "ipv4Addresses": [{"ip": "198.51.100.42", "rdns": "vm.example"}],
     }])
     monkeypatch.setattr(explore_mod.netcup_scp_client, "resolve_env_path", lambda: env_path)
-    monkeypatch.setattr(explore_mod, "run_device_code_login", lambda path: 0)
+    monkeypatch.setattr(explore_mod, "run_device_code_login", lambda path, **kwargs: 0)
     monkeypatch.setattr(explore_mod, "load_env_file", lambda: None)
     monkeypatch.setattr(explore_mod, "build_client", lambda: client)
     monkeypatch.setattr(explore_mod.sys.stdin, "isatty", lambda: True)
@@ -518,7 +519,7 @@ def test_cmd_tasks_passes_api_filters(explore_mod, fake_client):
 def test_cmd_tasks_rejects_filters_with_task_uuid(explore_mod, fake_client):
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="task filters are only valid"):
         explore_mod.cmd_tasks(
             client,
             _ns(uuid="abc", action=None, query="install", server_filter_id=None, state=None, limit=None, offset=None),
@@ -774,7 +775,7 @@ def test_cmd_firewall_omitted_mac_resolves_single_interface(explore_mod, fake_cl
     ]
 
 
-def test_cmd_firewall_omitted_mac_rejects_multiple_interfaces(explore_mod, fake_client, capsys):
+def test_cmd_firewall_omitted_mac_rejects_multiple_interfaces(explore_mod, fake_client):
     client = fake_client(get_responses=[{
         "serverLiveInfo": {"interfaces": [
             {"mac": "aa:bb:cc:dd:ee:ff"},
@@ -782,14 +783,13 @@ def test_cmd_firewall_omitted_mac_rejects_multiple_interfaces(explore_mod, fake_
         ]}
     }])
     pal = explore_mod._Palette(enabled=False)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CliFailure, match="multiple interfaces") as exc:
         explore_mod.cmd_firewall(
             client,
             _ns(server_id=1, mac=None, action="get", consistency_check=False),
             pal,
         )
-    assert exc.value.code == 2
-    assert "multiple interfaces" in capsys.readouterr().err
+    assert exc.value.exit_code == 2
 
 
 def test_cmd_firewall_omitted_mac_rejects_partial_server_answer(explore_mod, fake_client):
@@ -840,7 +840,7 @@ def test_cmd_firewall_set_replaces_assignments_and_is_confirmed(explore_mod, fak
 def test_cmd_firewall_set_requires_explicit_active_state(explore_mod, fake_client):
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="requires either --active or --inactive"):
         explore_mod.cmd_firewall(
             client,
             _ns(
@@ -931,7 +931,7 @@ def test_protected_task_cancel_requires_and_verifies_server(explore_mod, fake_cl
     monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
     pal = explore_mod._Palette(enabled=False)
     missing_server = fake_client(allow=())
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="requires --server-id"):
         explore_mod.cmd_tasks(missing_server, _ns(uuid="task-1", action="cancel", server_filter_id=None, yes=True), pal)
     assert missing_server.calls == []
 
@@ -953,7 +953,7 @@ def test_protected_task_cancel_requires_and_verifies_server(explore_mod, fake_cl
 def test_cmd_tasks_cancel_without_uuid_errors_instead_of_silently_listing(explore_mod, fake_client):
     client = fake_client(allow=())
     pal = explore_mod._Palette(enabled=False)
-    with pytest.raises(SystemExit):
+    with pytest.raises(CliFailure, match="cancel requires a task UUID"):
         explore_mod.cmd_tasks(client, _ns(uuid=None, action="cancel", yes=True), pal)
     assert client.calls == []
 
@@ -988,14 +988,11 @@ def test_cmd_power_actions_are_confirmed_and_use_server_patch(
 # --- main()/--help must not require a working settings file -------------------
 
 def test_help_short_circuits_before_configure(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "--help"])
     monkeypatch.setattr(
         explore_mod, "_configure",
         lambda: (_ for _ in ()).throw(AssertionError("_configure() must not run for --help")),
     )
-    with pytest.raises(SystemExit) as exc:
-        explore_mod.main()
-    assert exc.value.code == 0
+    assert explore_mod.main(["--help"]) == 0
     help_out = capsys.readouterr().out
     assert "--help" in help_out
     assert "[-h]" not in help_out
@@ -1005,8 +1002,8 @@ def test_main_turns_ctrl_c_into_clean_cancellation(explore_mod, monkeypatch, cap
     def interrupt():
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(explore_mod, "_main", interrupt)
-    assert explore_mod.main() == 130
+    monkeypatch.setattr(explore_mod, "_configure", interrupt)
+    assert explore_mod.main(["status"]) == 130
     captured = capsys.readouterr()
     assert "Cancelled." in captured.err
     assert "Traceback" not in captured.err
@@ -1014,51 +1011,39 @@ def test_main_turns_ctrl_c_into_clean_cancellation(explore_mod, monkeypatch, cap
 
 def test_main_rejects_invalid_policy_before_configure(explore_mod, monkeypatch, capsys):
     monkeypatch.setattr(
-        explore_mod.sys,
-        "argv",
-        ["scp-api.py", "firewall-policies", "create", "--policy-json", "[]"],
-    )
-    monkeypatch.setattr(
         explore_mod, "_configure",
         lambda: (_ for _ in ()).throw(AssertionError("settings must not load for invalid local input")),
     )
-    assert explore_mod.main() == 2
+    assert explore_mod.main(["firewall-policies", "create", "--policy-json", "[]"]) == 2
     assert "must be a JSON object" in capsys.readouterr().err
 
 
 def test_no_argument_prints_top_level_usage_without_required_command_error(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py"])
-    with pytest.raises(SystemExit) as exc:
-        explore_mod.parse_args()
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "usage:" in err
-    assert "required: command" not in err
-    assert "imageflavours" in err
+    assert explore_mod.main([]) == 0
+    out = capsys.readouterr().out
+    assert explore_mod.IDENTITY.headline in out
+    assert "required: VERB" not in out
+    assert "imageflavours" in out
 
 
 # --- CLI wiring ----------------------------------------------------------------
 
 def test_parse_args_servers_no_id(explore_mod, monkeypatch):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "servers"])
-    args = explore_mod.parse_args()
+    args = explore_mod.parse_args(["servers"])
     assert args.command == "servers"
     assert not hasattr(args, "server_id")
 
 
 def test_parse_args_status_has_two_second_ssh_timeout(explore_mod, monkeypatch):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "status"])
-    args = explore_mod.parse_args()
+    args = explore_mod.parse_args(["status"])
     assert args.ssh_timeout == 2.0
 
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "status", "--ssh-timeout", "0.5"])
-    args = explore_mod.parse_args()
+    args = explore_mod.parse_args(["status", "--ssh-timeout", "0.5"])
     assert args.ssh_timeout == 0.5
 
 
 def test_parse_args_iso_attached_detach_yes(explore_mod, monkeypatch):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "iso-attached", "42", "detach", "--yes"])
-    args = explore_mod.parse_args()
+    args = explore_mod.parse_args(["iso-attached", "42", "detach", "--yes"])
     assert args.command == "iso-attached"
     assert args.server_id == 42
     assert args.action == "detach"
@@ -1185,39 +1170,28 @@ def test_parse_args_firewall_policy_put(explore_mod, monkeypatch):
 
 
 def test_parse_args_accepts_filter_and_help_after_command(explore_mod, monkeypatch):
-    monkeypatch.setattr(
-        explore_mod.sys,
-        "argv",
-        ["scp-api.py", "iso-bootable", "--filter", "debian", "--json"],
-    )
-    args = explore_mod.parse_args()
+    args = explore_mod.parse_args(["iso-bootable", "--filter", "debian", "--json"])
     assert args.server_id is None
     assert args.filter == "debian"
     assert args.json is True
 
 
 def test_subcommand_help_separates_actions_from_options(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "snapshots", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        explore_mod.parse_args()
-    assert exc.value.code == 0
+    assert explore_mod.main(["snapshots", "--help"]) == 0
     out = capsys.readouterr().out
-    assert "actions:" in out
+    assert "ACTIONS:" in out
     assert "{create,dryrun}" in out
     assert "--create" not in out
     assert "--yes" in out
 
 
 def test_user_iso_help_is_singular_and_groups_upload_options(explore_mod, monkeypatch, capsys):
-    monkeypatch.setattr(explore_mod.sys, "argv", ["scp-api.py", "user-iso", "--help"])
-    with pytest.raises(SystemExit) as exc:
-        explore_mod.parse_args()
-    assert exc.value.code == 0
+    assert explore_mod.main(["user-iso", "--help"]) == 0
     out = capsys.readouterr().out
     assert "scp-api.py user-iso upload" in out
     assert "user-isos" not in out
-    assert "actions:" in out
-    assert "upload options:" in out
-    assert "confirmation:" in out
+    assert "ACTIONS:" in out
+    assert "UPLOAD OPTIONS:" in out
+    assert "CONFIRMATION:" in out
     assert "--multipart" in out
     assert "attach-iso" in out

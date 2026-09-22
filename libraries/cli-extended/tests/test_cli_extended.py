@@ -221,6 +221,25 @@ def test_grouped_help_has_each_verb_once_and_no_short_help():
     assert text.count("--help") == 1
 
 
+def test_verb_can_have_a_short_catalog_summary_and_detailed_command_help():
+    registry = CliRegistry(IDENTITY, prog="test-tool", description="test CLI")
+    registry.register(
+        VerbSpec(
+            "configure",
+            "",
+            "Configure the account, including interactive server protection and token storage.",
+            summary_description="authenticate and configure local protection",
+            handler=lambda *_: 0,
+        )
+    )
+    app = registry.build()
+    assert "authenticate and configure local protection" in app.parser.format_help()
+    assert (
+        "Configure the account, including interactive server protection"
+        in app.command_parsers["configure"].format_help()
+    )
+
+
 def test_help_and_missing_argument_are_side_effect_free_and_actionable():
     parser, command_parsers = make_cli()
     stdout, stderr = io.StringIO(), io.StringIO()
@@ -491,6 +510,69 @@ def test_registry_dispatch_and_global_values_survive_subparser_defaults():
     assert app.run(argv=["--json"], stdout=io.StringIO(), stderr=missing_verb) == 2
     assert "required: VERB" in missing_verb.getvalue()
     assert IDENTITY.headline in missing_verb.getvalue()
+
+
+def test_root_common_output_options_exist_when_only_some_verbs_use_them():
+    registry = CliRegistry(IDENTITY, prog="mixed", description="mixed output modes")
+    registry.register(
+        VerbSpec(
+            "login",
+            "",
+            "authenticate interactively",
+            include_json=False,
+            include_progress=False,
+            handler=lambda args, runtime: 0,
+        )
+    )
+
+    def inspect(_args, runtime):
+        runtime.output.primary({"ok": True})
+        return 0
+
+    registry.register(VerbSpec("inspect", "", "inspect an object", handler=inspect))
+    app = registry.build()
+
+    assert "--json" in app.parser.format_help()
+    assert "--progress MODE" in app.parser.format_help()
+    stdout, stderr = io.StringIO(), io.StringIO()
+    assert app.run(argv=["--json", "inspect"], stdout=stdout, stderr=stderr) == 0
+    assert stdout.getvalue() == '{"ok": true}\n'
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ("--json", "login"),
+        ("login", "--json"),
+        ("--progress", "rawjson", "login"),
+        ("login", "--progress", "rawjson"),
+    ),
+)
+def test_unsupported_common_output_option_shows_known_verb_help(argv):
+    registry = CliRegistry(IDENTITY, prog="mixed", description="mixed output modes")
+    registry.register(
+        VerbSpec(
+            "login",
+            "",
+            "authenticate interactively",
+            include_json=False,
+            include_progress=False,
+            handler=lambda *_: 0,
+        )
+    )
+    registry.register(
+        VerbSpec("inspect", "", "inspect an object", handler=lambda *_: 0)
+    )
+    app = registry.build()
+    stderr = io.StringIO()
+
+    assert app.run(argv=argv, stdout=io.StringIO(), stderr=stderr) == 2
+    error = stderr.getvalue()
+    assert error.startswith(IDENTITY.headline)
+    assert "[ERROR]" in error
+    assert "usage: mixed login" in error
+    assert "Usage: mixed <verb>" not in error
 
 
 def test_black_box_contract_helper_and_help_paths_do_not_call_handlers():
