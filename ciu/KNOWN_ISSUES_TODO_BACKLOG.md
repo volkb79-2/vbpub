@@ -4347,3 +4347,29 @@ the worktree registry, and a stale ambient `REPO_ROOT` makes
 worktree-record-enumerating path inside `ciu up` — refuted, the only such path
 (S16.3 `_resolve_budget_candidates`) passes `write_rendered=False`. Nothing in
 `CHANGES.md` covers this at or after 7.14/7.15.
+
+## CIU-110
+
+Issue:
+```
+the numbers come from:
+- wiops=400 — a hardcoded estate-wide default in vbpub/ciu/src/ciu/governance.py's GOVERNANCE_DEFAULTS.
+- riops=200 — derived (baseline × 2/3) from a stored fio measurement (ciu iops-baseline), not hardcoded.
+- dstdns's own ciu.global.toml [governance] block doesn't override either — it only sets mem_limit/device/cgroup_parent/ksm_optin, so it silently inherits both defaults.
+```
+
+This goes against our rules of "no defaults in code". *Any* default must only be set in config files. 
+For cgroup limits, if none are explicitly set, none shall be applied. 
+The values we can potentially use should be set in the commented default ciu global config file. 
+
+Do a test pass that our `ciu init` writes complete config files with *all* tables/values/structures the user might want to activate (remove comments). 
+
+## CIU-111
+
+`iops-baseline` and io-governance needs to be reworked.
+we already use a improved io.cost benchmark, see `scripts/debian-install-v2/tools/iocost-calibrate.sh`
+this is not completely decided if we should just consume externally run benchmark results. 
+if we should allow pointing in our config to a official io.cost benchmark file. 
+so far we relied on cgroups (and io limits) being set up on the host (see `modern-debian-tools-python-debug/host-setup`)
+but it could be worth to allow ciu to do things itself. ciu will also get a optional daemon which might be the right way to 
+proceed with this integration.
