@@ -27,6 +27,15 @@ Status:         running
 BuildKit:       v0.32.2
 """
 
+MANAGED_REMOTE_INSPECT = """Name:           mdt-managed
+Driver:        remote
+Nodes:
+Name:           mdt-managed
+Endpoint:       unix:///run/mdt-buildkitd/buildkitd.sock
+Status:         running
+BuildKit:       v0.32.2
+"""
+
 
 def _config() -> build_push.BuilderConfig:
     return build_push.BuilderConfig(
@@ -258,7 +267,7 @@ def test_module_entrypoint_dispatches_build(monkeypatch: pytest.MonkeyPatch) -> 
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[:3] == ["docker", "buildx", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, stdout=REMOTE_INSPECT, stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=MANAGED_REMOTE_INSPECT, stderr="")
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(build_push.subprocess, "run", fake_run)
